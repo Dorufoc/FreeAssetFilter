@@ -72,10 +72,6 @@ class CustomFileSelector(QWidget):
         self.sort_order = "asc"  # 默认升序
         self.view_mode = "card"  # 默认卡片视图
         
-        # 导航历史记录
-        self.nav_history = []  # 存储访问过的路径
-        self.history_index = -1  # 当前历史记录索引
-        
         # 保存当前路径到文件
         self.save_path_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "last_path.json")
         
@@ -101,9 +97,6 @@ class CustomFileSelector(QWidget):
         
         # 初始化文件列表
         self.refresh_files()
-        
-        # 更新历史记录
-        self._update_history()
     
     def load_last_path(self):
         """
@@ -195,19 +188,14 @@ class CustomFileSelector(QWidget):
         
         main_layout.addLayout(dir_layout)
         
-        # 第二行：前进、后退和刷新按钮
+        # 第二行：返回上级和刷新按钮
         nav_layout = QHBoxLayout()
         nav_layout.setSpacing(5)
         
-        # 后退按钮
-        self.back_btn = QPushButton("后退")
-        self.back_btn.clicked.connect(self.go_back)
-        nav_layout.addWidget(self.back_btn)
-        
-        # 前进按钮
-        self.forward_btn = QPushButton("前进")
-        self.forward_btn.clicked.connect(self.go_forward)
-        nav_layout.addWidget(self.forward_btn)
+        # 返回上级文件夹按钮
+        self.parent_btn = QPushButton("返回上级文件夹")
+        self.parent_btn.clicked.connect(self.go_to_parent)
+        nav_layout.addWidget(self.parent_btn)
         
         # 刷新按钮
         refresh_btn = QPushButton("刷新")
@@ -308,14 +296,17 @@ class CustomFileSelector(QWidget):
         
         # 筛选出需要生成缩略图的文件（图片和视频）
         media_files = []
-        # 支持的图片格式（仅处理这些图片格式，其他非图片格式都视为视频处理）
+        # 支持的图片格式
         image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif"]
+        # 支持的视频格式
+        video_formats = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"]
         
         for file in files:
             if not file["is_dir"]:
                 suffix = file["suffix"].lower()  # 转换为小写，确保不区分大小写
-                # 所有非图片格式都视为视频处理，这样可以支持所有视频格式
-                media_files.append(file)
+                # 只有图片和视频格式才生成缩略图
+                if suffix in image_formats or suffix in video_formats:
+                    media_files.append(file)
         
         if not media_files:
             QMessageBox.information(self, "提示", "当前目录下没有需要生成缩略图的媒体文件")
@@ -670,16 +661,14 @@ class CustomFileSelector(QWidget):
             # 处理其他可能的错误
             print(f"生成缩略图失败: {file_path}, 错误: {e}")
     
-    def go_back(self):
+    def go_to_parent(self):
         """
-        返回上一级目录
+        返回当前目录的上一级
         """
         parent_dir = os.path.dirname(self.current_path)
         if parent_dir and parent_dir != self.current_path:
             self.current_path = parent_dir
             self.refresh_files()
-            # 更新历史记录
-            self._update_history()
     
     def _load_favorites(self):
         """
@@ -892,25 +881,37 @@ class CustomFileSelector(QWidget):
     
     def go_forward(self):
         """
-        前进到下一个路径
+        前进到导航历史中的下一个路径
         """
         if self.history_index < len(self.nav_history) - 1:
             self.history_index += 1
             self.current_path = self.nav_history[self.history_index]
             self.refresh_files()
+            # 更新按钮状态
+            self.back_btn.setEnabled(self.history_index > 0)
+            self.forward_btn.setEnabled(self.history_index < len(self.nav_history) - 1)
     
     def _update_history(self):
         """
         更新导航历史记录
         """
-        # 如果当前路径与历史记录中的最后一个路径不同，则添加到历史记录
-        if not self.nav_history or self.current_path != self.nav_history[-1]:
+        # 确保当前路径不在历史记录的最后位置，或者与最后位置的路径不同
+        if not self.nav_history:
+            # 初始化历史记录
+            self.nav_history.append(self.current_path)
+            self.history_index = 0
+        elif self.current_path != self.nav_history[self.history_index]:
             # 如果当前不是在历史记录的最后位置，删除后面的历史记录
             if self.history_index < len(self.nav_history) - 1:
                 self.nav_history = self.nav_history[:self.history_index + 1]
             
+            # 添加新路径到历史记录
             self.nav_history.append(self.current_path)
             self.history_index = len(self.nav_history) - 1
+        
+        # 更新按钮状态
+        self.back_btn.setEnabled(self.history_index > 0)
+        self.forward_btn.setEnabled(self.history_index < len(self.nav_history) - 1)
     
     def go_to_path(self):
         """
@@ -920,8 +921,6 @@ class CustomFileSelector(QWidget):
         if path and os.path.exists(path):
             self.current_path = path
             self.refresh_files()
-            # 更新历史记录
-            self._update_history()
         else:
             QMessageBox.warning(self, "警告", "无效的路径")
     
@@ -1141,6 +1140,17 @@ class CustomFileSelector(QWidget):
             if col >= max_cols:
                 col = 0
                 row += 1
+    
+    def event(self, event):
+        """
+        处理鼠标硬件按钮事件
+        """
+        if event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.BackButton:
+                # 鼠标后退按钮事件 - 返回上级文件夹
+                self.go_to_parent()
+                return True
+        return super().event(event)
     
     def _create_file_card(self, file_info):
         """
@@ -1561,13 +1571,25 @@ class CustomFileSelector(QWidget):
                 # 处理鼠标点击事件
                 if event.button() == Qt.LeftButton:
                     # 左键点击：如果是文件则预览，文件夹则打开
-                    self._open_file(obj)
-                    # 发出文件选择信号用于预览
-                    self.file_selected.emit(obj.file_info)
+                    if obj.file_info["is_dir"]:
+                        # 文件夹：打开文件夹，不发出预览信号
+                        self._open_file(obj)
+                    else:
+                        # 文件：打开文件并发出预览信号
+                        self._open_file(obj)
+                        # 发出文件选择信号用于预览
+                        self.file_selected.emit(obj.file_info)
                     return True
                 elif event.button() == Qt.RightButton:
-                    # 右键点击选中/取消选中文件
-                    self._toggle_selection(obj)
+                    # 右键点击：发出预览信号并选中/取消选中
+                    if obj.file_info["is_dir"]:
+                        # 文件夹：发出预览信号并选中/取消选中
+                        self.file_selected.emit(obj.file_info)
+                        self._toggle_selection(obj)
+                    else:
+                        # 文件：选中/取消选中文件并发出预览信号
+                        self._toggle_selection(obj)
+                        self.file_selected.emit(obj.file_info)
                     return True
         # 处理大小变化事件：包括视口和文件容器的大小变化
         elif event.type() == QEvent.Resize:
@@ -1661,8 +1683,6 @@ class CustomFileSelector(QWidget):
                 # 如果是目录，进入该目录
                 self.current_path = file_path
                 self.refresh_files()
-            # 如果是文件，只进行预览，不使用默认应用打开
-            # 预览功能通过file_right_clicked信号实现
     
     def _show_properties(self, card):
         """
