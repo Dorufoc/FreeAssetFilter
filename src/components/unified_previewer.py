@@ -25,6 +25,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
 from src.core.file_info_viewer import FileInfoViewer
+from src.components.folder_content_list import FolderContentList
 
 class UnifiedPreviewer(QWidget):
     """
@@ -172,11 +173,10 @@ class UnifiedPreviewer(QWidget):
             # 根据预览类型显示新的预览组件
             if preview_type == "dir":
                 # 文件夹预览
-                dir_label = QLabel(f"文件夹预览: {self.current_file_info['name']}")
-                dir_label.setAlignment(Qt.AlignCenter)
-                dir_label.setStyleSheet("font-size: 16px; font-weight: bold;")
-                self.preview_layout.addWidget(dir_label)
-                self.current_preview_widget = dir_label
+                self.folder_previewer = FolderContentList()
+                self.folder_previewer.set_path(file_path)
+                self.preview_layout.addWidget(self.folder_previewer)
+                self.current_preview_widget = self.folder_previewer
             elif preview_type == "image":
                 # 图片预览
                 self._show_image_preview(file_path)
