@@ -40,6 +40,7 @@ from PyQt5.QtGui import (
     QBrush, QPainter, QPen, QPalette, QImage
 )
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
+from src.utils.svg_renderer import SvgRenderer
 
 
 class CustomFileSelector(QWidget):
@@ -1486,42 +1487,8 @@ class CustomFileSelector(QWidget):
                 # 音频文件使用音频图标
                 icon_path = os.path.join(icon_dir, "音频.svg")
         
-        # 加载并渲染SVG图标为QPixmap
-        if icon_path and os.path.exists(icon_path):
-            try:
-                # 使用QSvgRenderer渲染SVG为QPixmap
-                svg_renderer = QSvgRenderer(icon_path)
-                
-                # 创建一个QImage，使用ARGB32_Premultiplied格式以支持正确的透明度
-                image = QImage(icon_size, icon_size, QImage.Format_ARGB32_Premultiplied)
-                image.fill(Qt.transparent)  # 使用透明背景
-                
-                # 创建画家
-                painter = QPainter(image)
-                
-                # 设置最高质量的渲染提示
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                painter.setRenderHint(QPainter.TextAntialiasing, True)
-                painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
-                
-                # 渲染SVG图标
-                svg_renderer.render(painter)
-                
-                painter.end()
-                
-                # 将QImage转换为QPixmap
-                pixmap = QPixmap.fromImage(image)
-                
-                if not pixmap.isNull():
-                    return pixmap
-            except Exception as e:
-                print(f"渲染文件类型图标失败: {e}")
-        
-        # 如果无法获取图标，返回透明像素图
-        pixmap = QPixmap(icon_size, icon_size)
-        pixmap.fill(Qt.transparent)
-        return pixmap
+        # 使用SvgRenderer工具渲染SVG图标为QPixmap
+        return SvgRenderer.render_svg_to_pixmap(icon_path, icon_size)
     
     def _get_thumbnail_path(self, file_path):
         """

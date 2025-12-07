@@ -235,7 +235,7 @@ class VideoPlayer(QWidget):
         
         # 设置窗口属性
         self.setWindowTitle("Video Player")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(400, 300)
         
         # 初始化所有属性
         self.init_attributes()
