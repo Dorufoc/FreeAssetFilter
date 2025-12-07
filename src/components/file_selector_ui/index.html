@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文件选择器</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+</head>
+<body>
+    <div class="file-selector-container">
+        <!-- 顶部地址栏 -->
+        <div class="top-bar">
+            <div class="drive-selector">
+                <select id="driveSelect"></select>
+            </div>
+            <div class="path-input-container">
+                <input type="text" id="pathInput" placeholder="输入文件路径">
+                <button id="goButton">前往</button>
+            </div>
+        </div>
+
+        <!-- 控制按钮栏 -->
+        <div class="control-bar">
+            <div class="nav-buttons">
+                <button id="backButton" disabled>← 后退</button>
+                <button id="forwardButton" disabled>前进 →</button>
+                <button id="refreshButton">刷新</button>
+            </div>
+            
+            <div class="filter-sort">
+                <div class="filter-group">
+                    <input type="text" id="filterInput" placeholder="正则表达式筛选">
+                    <button id="filterButton">筛选</button>
+                </div>
+                
+                <div class="sort-group">
+                    <select id="sortBySelect">
+                        <option value="name">名称</option>
+                        <option value="create_time">创建时间</option>
+                        <option value="modify_time">修改时间</option>
+                        <option value="size">文件大小</option>
+                    </select>
+                    <select id="sortOrderSelect">
+                        <option value="asc">正序</option>
+                        <option value="desc">降序</option>
+                    </select>
+                    <button id="sortButton">排序</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 文件列表区域 -->
+        <div class="files-container">
+            <div id="filesList" class="files-list"></div>
+        </div>
+
+        <!-- 底部操作栏 -->
+        <div class="bottom-bar">
+            <div class="selection-buttons">
+                <button id="selectAllButton">全选（包括文件夹）</button>
+                <button id="selectAllFilesButton">仅全选文件</button>
+                <button id="selectNoneButton">取消全选</button>
+                <button id="invertSelectionButton">反选</button>
+            </div>
+            
+            <div class="output-section">
+                <span id="selectedCount">已选择 0 个文件</span>
+                <button id="outputButton">输出选中文件</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

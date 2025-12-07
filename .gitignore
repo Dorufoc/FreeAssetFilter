@@ -1,0 +1,39 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Temporary files
+.trae/
+*.log
+
+# Data directories
+data/thumbnails/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.avi
+*.mkv
+*.pdf
+*.txt
+*.md
+
+# Configuration files
+config/
+*.json
+
+# Testing files
+tests/
+*.test
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
