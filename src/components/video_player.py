@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage
+from src.utils.svg_renderer import SvgRenderer
 
 # 用于读取音频文件封面
 from mutagen.id3 import ID3
@@ -397,33 +398,43 @@ class VideoPlayer(QWidget):
         
         main_layout.addLayout(info_layout)
         
-        # 控制按钮区域
+        # 控制按钮区域 - 根据Figma设计稿更新样式
         control_container = QWidget()
-        control_container.setStyleSheet("background-color: #2d2d2d; border-radius: 0;")
+        control_container.setStyleSheet("background-color: #2d2d2d; border-radius: 0 0 20px 20px;")
         control_layout = QHBoxLayout(control_container)
         control_layout.setContentsMargins(15, 15, 15, 15)
         control_layout.setSpacing(15)
         
-        # 播放/暂停按钮
-        self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        # 播放/暂停按钮 - 根据Figma设计稿更新为透明背景并使用SVG图标
         self.play_button.setStyleSheet("""
             QPushButton {
-                background-color: #3a3a3a;
+                background-color: transparent;
                 color: white;
                 border: none;
-                padding: 12px;
-                border-radius: 50%;
+                padding: 12px 12px;
+                border-radius: 0px;
                 min-width: 40px;
+                max-width: 40px;
                 min-height: 40px;
+                font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #4a4a4a;
+                background-color: transparent;
             }
             QPushButton:pressed {
-                background-color: #5a5a5a;
+                background-color: transparent;
             }
         """)
+        
+        # 初始化鼠标悬停状态变量
+        self._is_mouse_over_play_button = False
+        
+        # 设置播放按钮SVG图标
+        self._update_play_button_icon()
         self.play_button.clicked.connect(self.toggle_play_pause)
+        # 连接鼠标事件
+        self.play_button.enterEvent = lambda event: self._update_mouse_hover_state(True)
+        self.play_button.leaveEvent = lambda event: self._update_mouse_hover_state(False)
         control_layout.addWidget(self.play_button)
         
         # 音量控制
@@ -460,10 +471,10 @@ class VideoPlayer(QWidget):
         
         main_layout.addWidget(control_container)
         
-        # 设置主窗口样式
+        # 设置主窗口样式 - 根据Figma设计稿更新大圆角
         self.setStyleSheet("""
             background-color: #1a1a1a;
-            border-radius: 8px;
+            border-radius: 20px;
         """)
         
         # 初始化音量设置
@@ -691,7 +702,8 @@ class VideoPlayer(QWidget):
                 self.player_core.pause()
             else:
                 self.player_core.play()
-            self.update_play_button()
+            # 更新按钮图标
+            self._update_play_button_icon()
         except Exception as e:
             print(f"切换播放状态时出错: {e}")
     
@@ -762,13 +774,45 @@ class VideoPlayer(QWidget):
         """
         更新播放按钮图标
         """
-        try:
-            if self.player_core and self.player_core.is_playing:
-                self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+        # 保持兼容，实际由_update_play_button_icon处理
+        self._update_play_button_icon()
+    
+    def _update_mouse_hover_state(self, is_hovered):
+        """
+        更新鼠标悬停状态并更新按钮图标
+        
+        Args:
+            is_hovered: 是否有鼠标悬停在按钮上
+        """
+        self._is_mouse_over_play_button = is_hovered
+        self._update_play_button_icon()
+    
+    def _update_play_button_icon(self):
+        """
+        根据播放状态和鼠标悬停状态更新播放按钮的SVG图标
+        使用固定的图标大小，避免在布局过程中频繁计算和更新图标，防止窗口大小闪烁
+        """
+        icon_path = "src/Icon/"
+        
+        # 使用固定的图标大小，不依赖于按钮的实际大小
+        # 根据按钮的最小高度(40px)的比例计算得出
+        fixed_icon_size = 68  # 调整图标大小，默认为24px (40px * 0.6 = 24px)
+        
+        # 根据播放状态和鼠标悬停状态选择不同的SVG图标
+        if self.player_core and self.player_core.is_playing:
+            if self._is_mouse_over_play_button:
+                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path + "暂停时-按下.svg", fixed_icon_size)
             else:
-                self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        except Exception as e:
-            print(f"更新播放按钮时出错: {e}")
+                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path + "暂停时.svg", fixed_icon_size)
+        else:
+            if self._is_mouse_over_play_button:
+                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path + "播放时-按下.svg", fixed_icon_size)
+            else:
+                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path + "播放时.svg", fixed_icon_size)
+        
+        # 设置固定的图标大小，确保在任何情况下都不会改变
+        self.play_button.setIcon(QIcon(pixmap))
+        self.play_button.setIconSize(QSize(fixed_icon_size, fixed_icon_size))
     
     def pause_progress_update(self):
         """
