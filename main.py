@@ -55,7 +55,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 获取全局字体
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
-        print(f"\n[DEBUG] 主窗口获取到的全局字体: {self.global_font.family()}")
+        #print(f"\n[DEBUG] 主窗口获取到的全局字体: {self.global_font.family()}")
         
         # 设置窗口字体
         self.setFont(self.global_font)
@@ -167,7 +167,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label.setFont(self.global_font)
         self.status_label.setStyleSheet("font-size: 12px; color: #666; margin-top: 10px;")
         main_layout.addWidget(self.status_label)
-        print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
+        #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
     
     def show_info(self, title, message):
         """
@@ -270,8 +270,8 @@ if __name__ == "__main__":
     font_families = font_db.families()
     
     # 调试信息：打印系统支持的所有字体
-    print(f"[DEBUG] 系统支持的字体数量: {len(font_families)}")
-    print(f"[DEBUG] 系统字体列表: {font_families[:10]}...")  # 只打印前10个字体
+    #print(f"[DEBUG] 系统支持的字体数量: {len(font_families)}")
+    #print(f"[DEBUG] 系统字体列表: {font_families[:10]}...")  # 只打印前10个字体
     
     # 检查系统是否包含微软雅黑字体（支持Microsoft YaHei和Microsoft YaHei UI两种名称）
     yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
@@ -283,12 +283,12 @@ if __name__ == "__main__":
     
     if selected_font:
         # 设置全局字体为微软雅黑
-        print(f"[DEBUG] 系统包含微软雅黑字体 ({selected_font})，设置为全局字体")
+        #print(f"[DEBUG] 系统包含微软雅黑字体 ({selected_font})，设置为全局字体")
         app.setFont(QFont(selected_font))
         # 设置全局字体变量
         global_font = QFont(selected_font)
     else:
-        print(f"[DEBUG] 系统不包含微软雅黑字体，使用系统默认字体")
+        #print(f"[DEBUG] 系统不包含微软雅黑字体，使用系统默认字体")
         # 使用系统默认字体
         global_font = QFont()
     

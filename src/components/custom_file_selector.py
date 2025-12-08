@@ -60,7 +60,7 @@ class CustomFileSelector(QWidget):
         # 获取全局字体
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
-        print(f"[DEBUG] CustomFileSelector获取到的全局字体: {self.global_font.family()}")
+        #print(f"[DEBUG] CustomFileSelector获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -1216,7 +1216,7 @@ class CustomFileSelector(QWidget):
         name_label.setMaximumHeight(20)
         # 使用全局字体，并设置字体大小
         name_label.setFont(temp_font)
-        print(f"[DEBUG] 文件卡片文件名标签设置字体: {name_label.font().family()}, 大小: {name_label.font().pointSize()}")
+        #print(f"[DEBUG] 文件卡片文件名标签设置字体: {name_label.font().family()}, 大小: {name_label.font().pointSize()}")
         # 确保标签透明，仅显示文本
         name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
         layout.addWidget(name_label, alignment=Qt.AlignCenter)
@@ -1232,7 +1232,7 @@ class CustomFileSelector(QWidget):
         temp_font = QFont(self.global_font)
         temp_font.setPointSize(8)
         size_label.setFont(temp_font)
-        print(f"[DEBUG] 文件卡片大小标签设置字体: {size_label.font().family()}, 大小: {size_label.font().pointSize()}")
+        #print(f"[DEBUG] 文件卡片大小标签设置字体: {size_label.font().family()}, 大小: {size_label.font().pointSize()}")
         # 确保标签透明，仅显示文本
         size_label.setStyleSheet("background: transparent; border: none; color: #666666;")
         layout.addWidget(size_label, alignment=Qt.AlignCenter)
@@ -1246,7 +1246,7 @@ class CustomFileSelector(QWidget):
         temp_font = QFont(self.global_font)
         temp_font.setPointSize(7)
         modified_label.setFont(temp_font)
-        print(f"[DEBUG] 文件卡片修改时间标签设置字体: {modified_label.font().family()}, 大小: {modified_label.font().pointSize()}")
+        #print(f"[DEBUG] 文件卡片修改时间标签设置字体: {modified_label.font().family()}, 大小: {modified_label.font().pointSize()}")
         # 确保标签透明，仅显示文本
         modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
         layout.addWidget(modified_label, alignment=Qt.AlignCenter)

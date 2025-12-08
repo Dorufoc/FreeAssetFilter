@@ -53,8 +53,8 @@ class CustomProgressBar(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(200, 20)
-        self.setMaximumHeight(20)
+        self.setMinimumSize(200, 28)
+        self.setMaximumHeight(28)
         
         # 进度条属性
         self._minimum = 0
@@ -64,14 +64,26 @@ class CustomProgressBar(QWidget):
         self._last_pos = 0
         
         # 外观属性
-        self._bg_color = QColor(58, 58, 58)  # #3a3a3a
+        self._bg_color = QColor(99, 99, 99)  # 进度条背景颜色
         self._progress_color = QColor(0, 120, 212)  # #0078d4
         self._handle_color = QColor(0, 120, 212)  # #0078d4
         self._handle_hover_color = QColor(16, 110, 190)  # #106ebe
         self._handle_pressed_color = QColor(0, 90, 158)  # #005a9e
-        self._handle_radius = 8
+        self._handle_radius = 12
         self._bar_height = 6
         self._bar_radius = 3
+        
+        # SVG 图标路径
+        import os
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Icon')
+        self._icon_path = os.path.join(icon_dir, '条-顶-尾.svg')
+        self._head_icon_path = os.path.join(icon_dir, '条-顶-头.svg')
+        self._middle_icon_path = os.path.join(icon_dir, '条-顶-中.svg')
+        
+        # 渲染 SVG 图标为 QPixmap
+        self._handle_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, self._handle_radius * 2)
+        self._head_pixmap = SvgRenderer.render_svg_to_pixmap(self._head_icon_path, self._handle_radius * 2)
+        # 条顶中 SVG 会在绘制时根据需要直接渲染，这里只保存路径
     
     def setRange(self, minimum, maximum):
         """
@@ -149,19 +161,24 @@ class CustomProgressBar(QWidget):
         """
         绘制进度条
         """
+        # 确保Qt已导入
+        from PyQt5.QtCore import Qt
+        
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # 计算绘制区域
         rect = self.rect()
-        bar_width = rect.width() - (self._handle_radius * 2)
+        
+        # 计算进度条参数
         bar_y = (rect.height() - self._bar_height) // 2
+        bar_width = rect.width() - 2 * self._handle_radius
         
         # 绘制背景
         bg_rect = QRect(
             self._handle_radius, bar_y, 
             bar_width, self._bar_height
         )
+        
         painter.setBrush(QBrush(self._bg_color))
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
@@ -172,19 +189,108 @@ class CustomProgressBar(QWidget):
             self._handle_radius, bar_y, 
             progress_width, self._bar_height
         )
-        painter.setBrush(QBrush(self._progress_color))
-        painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
         
-        # 绘制滑块
+        # 使用条顶中 SVG 图形填充已播放部分
+        if progress_width > 0:
+            try:
+                from PyQt5.QtSvg import QSvgRenderer
+                from PyQt5.QtGui import QPixmap, QTransform
+                from PyQt5.QtCore import Qt
+                
+                # 先渲染 SVG 到临时 QPixmap
+                svg_renderer = QSvgRenderer(self._middle_icon_path)
+                # 使用与头和尾相同的尺寸
+                icon_size = self._handle_radius * 2
+                temp_pixmap = QPixmap(icon_size, icon_size)
+                temp_pixmap.fill(Qt.transparent)
+                painter_temp = QPainter(temp_pixmap)
+                svg_renderer.render(painter_temp)
+                painter_temp.end()
+                
+                # 将临时 pixmap 旋转 90 度
+                transform = QTransform()
+                transform.rotate(90)
+                rotated_pixmap = temp_pixmap.transformed(transform, Qt.SmoothTransformation)
+                
+                # 计算与头和尾相同的纵向宽度的矩形
+                # 头图标的纵向宽度是 self._handle_radius * 2
+                # 计算垂直居中的位置
+                middle_y = (rect.height() - self._handle_radius * 2) // 2
+                middle_rect = QRect(
+                    self._handle_radius, middle_y, 
+                    progress_width, self._handle_radius * 2
+                )
+                
+                # 拉伸渲染旋转后的 pixmap 到中间矩形
+                painter.drawPixmap(middle_rect, rotated_pixmap)
+            except Exception as e:
+                print(f"渲染条顶中 SVG 失败: {e}")
+                # 备用方案：使用纯色填充
+                painter.setBrush(QBrush(self._progress_color))
+                painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+        else:
+            # 进度为0时，不绘制已播放部分
+            pass
+        
+        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标（逆时针旋转90度）
+        head_x = -self._handle_radius // 2  # 向左偏移一点
+        head_y = (rect.height() - self._handle_radius * 2) // 2
+        
+        if not self._head_pixmap.isNull():
+            # 保存当前画家状态
+            painter.save()
+            
+            # 计算旋转中心
+            center_x = head_x + self._handle_radius
+            center_y = head_y + self._handle_radius
+            
+            # 移动坐标原点到旋转中心
+            painter.translate(center_x, center_y)
+            
+            # 逆时针旋转90度
+            painter.rotate(-90)
+            
+            # 绘制旋转后的图标
+            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
+            
+            # 恢复画家状态
+            painter.restore()
+        
+        # 绘制滑块 - 使用 SVG 图标（逆时针旋转90度）
         handle_x = self._handle_radius + progress_width
+        # 确保滑块不会超出进度条范围
+        handle_x = min(handle_x, self.width() - self._handle_radius * 2)
         handle_y = (rect.height() - self._handle_radius * 2) // 2
-        painter.setBrush(QBrush(
-            self._handle_pressed_color if self._is_pressed else 
-            self._handle_hover_color if self.underMouse() else 
-            self._handle_color
-        ))
-        painter.setPen(QPen(QColor(255, 255, 255), 1))
-        painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+        
+        # 确保图标已正确加载
+        if not self._handle_pixmap.isNull():
+            # 保存当前画家状态
+            painter.save()
+            
+            # 计算旋转中心
+            center_x = handle_x + self._handle_radius
+            center_y = handle_y + self._handle_radius
+            
+            # 移动坐标原点到旋转中心
+            painter.translate(center_x, center_y)
+            
+            # 逆时针旋转90度
+            painter.rotate(-90)
+            
+            # 绘制旋转后的图标
+            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+            
+            # 恢复画家状态
+            painter.restore()
+        else:
+            # 备用方案：如果 SVG 加载失败，绘制圆形滑块
+            painter.setBrush(QBrush(
+                self._handle_pressed_color if self._is_pressed else 
+                self._handle_hover_color if self.underMouse() else 
+                self._handle_color
+            ))
+            painter.setPen(Qt.NoPen)  # 去除滑块边框
+            painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
         
         painter.end()
     
@@ -271,7 +377,7 @@ class VideoPlayer(QWidget):
         self.time_label = QLabel("00:00 / 00:00")
         self.play_button = QPushButton()
         self.volume_label = QLabel("音量:")
-        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider = CustomProgressBar()
         
         # 状态标志
         self._user_interacting = False
@@ -371,46 +477,19 @@ class VideoPlayer(QWidget):
         # 添加媒体区域到主布局
         main_layout.addWidget(self.media_frame, 1)
         
-        # 进度条和时间标签
-        info_layout = QHBoxLayout()
-        info_layout.setContentsMargins(10, 5, 10, 5)
-        info_layout.setSpacing(10)
-        
-        # 时间标签样式
-        self.time_label.setStyleSheet("""
-            color: #e0e0e0;
-            background-color: #2d2d2d;
-            padding: 8px 12px;
-            border-radius: 8px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            font-size: 12px;
-        """)
-        info_layout.addWidget(self.time_label)
-        
-        # 自定义进度条设置
-        self.progress_slider.setRange(0, 1000)
-        self.progress_slider.setValue(0)
-        # 连接进度条信号
-        self.progress_slider.userInteractionEnded.connect(self._handle_user_seek)
-        self.progress_slider.userInteracting.connect(self.pause_progress_update)
-        self.progress_slider.userInteractionEnded.connect(self.resume_progress_update)
-        info_layout.addWidget(self.progress_slider, 1)
-        
-        main_layout.addLayout(info_layout)
-        
         # 控制按钮区域 - 根据Figma设计稿更新样式
         control_container = QWidget()
-        control_container.setStyleSheet("background-color: #2d2d2d; border-radius: 0 0 20px 20px;")
+        control_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF; border-radius: 35px 35px 35px 35px;")
         control_layout = QHBoxLayout(control_container)
         control_layout.setContentsMargins(15, 15, 15, 15)
         control_layout.setSpacing(15)
         
-        # 播放/暂停按钮 - 根据Figma设计稿更新为透明背景并使用SVG图标
+        # 播放/暂停按钮 - 更新为白色背景和边框
         self.play_button.setStyleSheet("""
             QPushButton {
-                background-color: transparent;
-                color: white;
-                border: none;
+                background-color: #FFFFFF;
+                color: #000000;
+                border: 1px solid #FFFFFF;
                 padding: 12px 12px;
                 border-radius: 0px;
                 min-width: 40px;
@@ -419,10 +498,10 @@ class VideoPlayer(QWidget):
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: transparent;
+                background-color: #FFFFFF;
             }
             QPushButton:pressed {
-                background-color: transparent;
+                background-color: #FFFFFF;
             }
         """)
         
@@ -437,37 +516,58 @@ class VideoPlayer(QWidget):
         self.play_button.leaveEvent = lambda event: self._update_mouse_hover_state(False)
         control_layout.addWidget(self.play_button)
         
-        # 音量控制
-        control_layout.addStretch(1)
+        # 进度条和时间标签 - 从主布局移动到播放按钮右侧
+        # 创建一个垂直布局容器，用于放置进度条、时间标签和音量控件
+        progress_time_container = QWidget()
+        progress_time_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF;")
+        progress_time_layout = QVBoxLayout(progress_time_container)
+        progress_time_layout.setContentsMargins(0, 0, 0, 0)
+        progress_time_layout.setSpacing(2)
         
-        self.volume_label.setStyleSheet("color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 13px;")
-        control_layout.addWidget(self.volume_label)
+        # 自定义进度条设置
+        self.progress_slider.setRange(0, 1000)
+        self.progress_slider.setValue(0)
+        # 连接进度条信号
+        self.progress_slider.userInteractionEnded.connect(self._handle_user_seek)
+        self.progress_slider.userInteracting.connect(self.pause_progress_update)
+        self.progress_slider.userInteractionEnded.connect(self.resume_progress_update)
+        progress_time_layout.addWidget(self.progress_slider)
+        
+        # 创建一个水平布局来放置时间标签和音量控件
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(10)
+        
+        # 时间标签样式
+        self.time_label.setStyleSheet("""
+            color: #000000;
+            background-color: #FFFFFF;
+            padding: 0 5px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 16px;
+            text-align: left;
+            border: 1px solid #FFFFFF;
+        """)
+        bottom_layout.addWidget(self.time_label)
+        
+        # 添加伸缩项使音量控件靠右
+        bottom_layout.addStretch(1)
+        
+        # 音量控制
+        self.volume_label.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF; color: #000000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 13px;")
+        bottom_layout.addWidget(self.volume_label)
         
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(50)
         self.volume_slider.setMaximumWidth(120)
-        self.volume_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                background: #3a3a3a;
-                height: 6px;
-                border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                background: #0078d4;
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                margin: -5px 0;
-            }
-            QSlider::handle:horizontal:hover {
-                background: #106ebe;
-            }
-            QSlider::handle:horizontal:pressed {
-                background: #005a9e;
-            }
-        """)
         self.volume_slider.valueChanged.connect(self.set_volume)
-        control_layout.addWidget(self.volume_slider)
+        bottom_layout.addWidget(self.volume_slider)
+        
+        # 将水平布局添加到垂直布局中
+        progress_time_layout.addLayout(bottom_layout)
+        
+        # 将包含进度条和时间/音量控件的容器添加到控制布局中
+        control_layout.addWidget(progress_time_container, 1)
         
         main_layout.addWidget(control_container)
         
