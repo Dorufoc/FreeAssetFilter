@@ -113,7 +113,7 @@ class FileInfoBrowser:
             QTextBrowser, QTreeWidget, QTreeWidgetItem
         )
         from PyQt5.QtCore import Qt
-        from PyQt5.QtGui import QFont
+        from PyQt5.QtGui import QFont, QCursor
         
         # 创建滚动区域，作为主容器
         scroll_area = QScrollArea()
@@ -129,26 +129,15 @@ class FileInfoBrowser:
         main_widget.setMinimumWidth(180)  # 设置主widget的最小宽度
         main_layout = QVBoxLayout(main_widget)
         
-        # 创建标签页控件
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setFont(self.global_font)
-        self.tab_widget.setMinimumWidth(160)  # 设置标签页的最小宽度
-        self.tab_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        # 创建统一的信息组，包含所有信息
+        self.info_group = QGroupBox("文件信息")
+        self.info_group.setFont(self.global_font)
+        self.info_group.setMinimumWidth(140)  # 设置组框的最小宽度
+        self.info_grid = QGridLayout(self.info_group)
+        self.info_grid.setContentsMargins(5, 5, 5, 5)  # 减小内边距
+        self.info_grid.setSpacing(5)  # 减小间距
         
-        # 1. 基本信息标签页
-        basic_tab = QWidget()
-        basic_tab.setMinimumWidth(150)  # 设置标签页内容的最小宽度
-        basic_layout = QVBoxLayout(basic_tab)
-        basic_layout.setContentsMargins(5, 5, 5, 5)  # 减小内边距
-        
-        # 基本信息组
-        basic_group = QGroupBox("基本信息")
-        basic_group.setFont(self.global_font)
-        basic_group.setMinimumWidth(140)  # 设置组框的最小宽度
-        basic_grid = QGridLayout(basic_group)
-        basic_grid.setContentsMargins(5, 5, 5, 5)  # 减小内边距
-        basic_grid.setSpacing(5)  # 减小间距
-        
+        # 基本信息标签
         self.basic_info_labels = {
             "文件名": QLabel("-"),
             "文件路径": QLabel("-"),
@@ -156,7 +145,6 @@ class FileInfoBrowser:
             "文件类型": QLabel("-"),
             "创建时间": QLabel("-"),
             "修改时间": QLabel("-"),
-            "访问时间": QLabel("-"),
             "权限": QLabel("-"),
             "所有者": QLabel("-"),
             "组": QLabel("-"),
@@ -165,6 +153,10 @@ class FileInfoBrowser:
             "SHA256": QLabel("-")
         }
         
+        # 存储详细信息标签，用于动态添加和删除
+        self.details_info_widgets = []
+        
+        # 添加基本信息到网格布局
         row = 0
         for label, widget in self.basic_info_labels.items():
             widget.setWordWrap(True)
@@ -179,11 +171,64 @@ class FileInfoBrowser:
             label_widget.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
             
-            basic_grid.addWidget(label_widget, row, 0)
-            basic_grid.addWidget(widget, row, 1)
+            # 为基本信息添加右键菜单支持
+            label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            
+            # 添加右键菜单的槽函数
+            def create_basic_context_menu(widget, label=label):
+                """创建基本信息的右键菜单"""
+                from PyQt5.QtWidgets import QMenu, QAction
+                from PyQt5.QtGui import QCursor
+                
+                menu = QMenu(widget)
+                
+                # 设置右键菜单样式，确保悬停时显示蓝色背景和白色文字
+                menu.setStyleSheet("""
+                    QMenu {
+                        background-color: white;
+                        color: black;
+                        border: 1px solid #ccc;
+                    }
+                    QMenu::item {
+                        padding: 5px 20px;
+                    }
+                    QMenu::item:selected {
+                        background-color: #1E90FF; /* 蓝色背景 */
+                        color: white; /* 白色文字 */
+                    }
+                """)
+                
+                # 复制当前信息
+                copy_current_action = QAction("复制当前信息", widget)
+                # 获取当前值
+                current_value = self.basic_info_labels[label].text()
+                copy_current_action.triggered.connect(lambda: self._copy_current_info(label, current_value))
+                menu.addAction(copy_current_action)
+                
+                # 复制全部信息
+                copy_all_action = QAction("复制全部信息", widget)
+                copy_all_action.triggered.connect(self._copy_all_info)
+                menu.addAction(copy_all_action)
+                
+                return menu
+            
+            # 连接右键菜单信号
+            label_widget.customContextMenuRequested.connect(
+                lambda point, l=label: create_basic_context_menu(label_widget, l).popup(QCursor.pos())
+            )
+            widget.customContextMenuRequested.connect(
+                lambda point, l=label: create_basic_context_menu(widget, l).popup(QCursor.pos())
+            )
+            
+            self.info_grid.addWidget(label_widget, row, 0)
+            self.info_grid.addWidget(widget, row, 1)
             row += 1
         
-        basic_layout.addWidget(basic_group)
+        # 存储基本信息的行数，用于后续添加详细信息
+        self.basic_info_row_count = row
+        
+        main_layout.addWidget(self.info_group)
         
         # 自定义标签组
         custom_group = QGroupBox("自定义标签")
@@ -198,25 +243,7 @@ class FileInfoBrowser:
         self.custom_tags_browser.setMinimumHeight(80)  # 设置最小高度
         custom_layout.addWidget(self.custom_tags_browser)
         
-        basic_layout.addWidget(custom_group)
-        
-        self.tab_widget.addTab(basic_tab, "基本信息")
-        
-        # 2. 扩展信息标签页
-        self.extra_tab = QWidget()
-        self.extra_tab.setMinimumWidth(150)  # 设置标签页内容的最小宽度
-        self.extra_layout = QVBoxLayout(self.extra_tab)
-        self.extra_layout.setContentsMargins(5, 5, 5, 5)  # 减小内边距
-        self.tab_widget.addTab(self.extra_tab, "扩展信息")
-        
-        # 3. 高级信息标签页
-        self.advanced_tab = QWidget()
-        self.advanced_tab.setMinimumWidth(150)  # 设置标签页内容的最小宽度
-        self.advanced_layout = QVBoxLayout(self.advanced_tab)
-        self.advanced_layout.setContentsMargins(5, 5, 5, 5)  # 减小内边距
-        self.tab_widget.addTab(self.advanced_tab, "高级信息")
-        
-        main_layout.addWidget(self.tab_widget)
+        main_layout.addWidget(custom_group)
         
         # 将主widget设置为滚动区域的内容
         scroll_area.setWidget(main_widget)
@@ -246,35 +273,42 @@ class FileInfoBrowser:
         # 提取基本信息
         self.file_info["basic"] = self._get_basic_info(file_path)
         
-        # 根据文件类型提取额外信息
+        # 提取详细信息，将扩展信息和高级信息合并
+        self.file_info["details"] = {}
+        
+        # 根据文件类型提取详细信息
         if self.current_file["is_dir"]:
-            self.file_info["extra"] = self._get_directory_info(file_path)
+            self.file_info["details"] = self._get_directory_info(file_path)
         else:
             file_ext = self.current_file["suffix"].lower()
             if file_ext in ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg"]:
-                self.file_info["extra"] = self._get_image_info(file_path)
-                self.file_info["advanced"] = self._get_image_advanced_info(file_path)
+                # 合并图像基本信息和高级信息
+                self.file_info["details"].update(self._get_image_info(file_path))
+                self.file_info["details"].update(self._get_image_advanced_info(file_path))
             elif file_ext in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
-                self.file_info["extra"] = self._get_audio_info(file_path)
-                self.file_info["advanced"] = self._get_audio_advanced_info(file_path)
+                # 合并音频基本信息和高级信息
+                self.file_info["details"].update(self._get_audio_info(file_path))
+                self.file_info["details"].update(self._get_audio_advanced_info(file_path))
             elif file_ext in ["mp4", "avi", "mov", "mkv", "m4v", "flv", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb"]:
-                self.file_info["extra"] = self._get_video_info(file_path)
-                self.file_info["advanced"] = self._get_video_advanced_info(file_path)
+                # 合并视频基本信息和高级信息
+                self.file_info["details"].update(self._get_video_info(file_path))
+                self.file_info["details"].update(self._get_video_advanced_info(file_path))
             elif file_ext in ["txt", "md", "rst", "py", "java", "cpp", "js", "html", "css", "php", "c", "h", "cs", "go", "rb", "swift", "kt", "yml", "yaml", "json", "xml"]:
-                self.file_info["extra"] = self._get_text_info(file_path)
-                self.file_info["advanced"] = self._get_text_advanced_info(file_path)
+                # 合并文本基本信息和高级信息
+                self.file_info["details"].update(self._get_text_info(file_path))
+                self.file_info["details"].update(self._get_text_advanced_info(file_path))
             elif file_ext in ["zip", "rar", "tar", "gz", "tgz", "bz2", "xz", "7z", "iso"]:
-                self.file_info["extra"] = self._get_archive_info(file_path)
-                self.file_info["advanced"] = self._get_archive_advanced_info(file_path)
+                # 合并压缩文件基本信息和高级信息
+                self.file_info["details"].update(self._get_archive_info(file_path))
+                self.file_info["details"].update(self._get_archive_advanced_info(file_path))
             elif file_ext in ["pdf"]:
-                self.file_info["extra"] = self._get_pdf_info(file_path)
-                self.file_info["advanced"] = self._get_pdf_advanced_info(file_path)
+                # 合并PDF基本信息和高级信息
+                self.file_info["details"].update(self._get_pdf_info(file_path))
+                self.file_info["details"].update(self._get_pdf_advanced_info(file_path))
             elif file_ext in ["ttf", "otf", "woff", "woff2", "eot"]:
-                self.file_info["extra"] = self._get_font_info(file_path)
-                self.file_info["advanced"] = self._get_font_advanced_info(file_path)
-            else:
-                self.file_info["extra"] = {}
-                self.file_info["advanced"] = {}
+                # 合并字体文件基本信息和高级信息
+                self.file_info["details"].update(self._get_font_info(file_path))
+                self.file_info["details"].update(self._get_font_advanced_info(file_path))
     
     def _get_basic_info(self, file_path: str) -> Dict[str, str]:
         """
@@ -299,7 +333,6 @@ class FileInfoBrowser:
             "文件大小": self._format_size(stat.st_size),
             "创建时间": datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
             "修改时间": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-            "访问时间": datetime.fromtimestamp(stat.st_atime).strftime("%Y-%m-%d %H:%M:%S"),
             "权限": oct(stat.st_mode)[-3:],
             "所有者": f"{stat.st_uid}",
             "组": f"{stat.st_gid}",
@@ -439,98 +472,128 @@ class FileInfoBrowser:
     
     def _get_video_info(self, file_path: str) -> Dict[str, Any]:
         """
-        获取视频文件基本信息
+        获取视频文件基本信息，使用不依赖ffprobe的方法
         
         Args:
             file_path (str): 视频文件路径
         
         Returns:
-            Dict[str, Any]: 视频信息字典
+            Dict[str, Any]: 视频信息字典，只包含对用户有用的信息
         """
         info = {}
         
-        # 尝试使用ffprobe获取视频信息
+        # 只添加对用户有用的基本文件信息
+        info["文件大小"] = self._format_size(os.path.getsize(file_path))
+        
+        # 尝试使用moviepy（如果可用）
         try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", file_path],
-                capture_output=True, text=True, check=True
-            )
-            ffprobe_data = json.loads(result.stdout)
-            
-            # 提取格式信息
-            if "format" in ffprobe_data:
-                format_info = ffprobe_data["format"]
-                info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
-                info["总比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
-                info["容器格式"] = format_info.get("format_name", "未知")
-            
-            # 提取视频流信息
-            for stream in ffprobe_data.get("streams", []):
-                if stream["codec_type"] == "video":
-                    info["视频编码"] = stream.get("codec_name", "未知")
-                    width = stream.get("width", 0)
-                    height = stream.get("height", 0)
-                    if width and height:
-                        info["分辨率"] = f"{width} x {height}"
-                    if "r_frame_rate" in stream:
-                        info["帧率"] = stream["r_frame_rate"]
-                    if "bit_rate" in stream:
-                        info["视频比特率"] = self._format_bitrate(int(stream["bit_rate"]))
-                    break
-            
-            # 提取音频流信息
-            for stream in ffprobe_data.get("streams", []):
-                if stream["codec_type"] == "audio":
-                    info["音频编码"] = stream.get("codec_name", "未知")
-                    if "bit_rate" in stream:
-                        info["音频比特率"] = self._format_bitrate(int(stream["bit_rate"]))
-                    break
+            from moviepy.editor import VideoFileClip
+            with VideoFileClip(file_path) as clip:
+                info["时长"] = self._format_duration(clip.duration)
+                info["分辨率"] = f"{clip.size[0]} x {clip.size[1]}"
+                info["帧率"] = f"{clip.fps:.2f} fps"  # 保留两位小数
+                return info
         except Exception:
-            info["时长"] = "无法获取"
-            info["视频编码"] = "无法获取"
-            info["分辨率"] = "无法获取"
+            # 不显示moviepy相关的错误信息给用户
+            pass
+        
+        # 尝试使用opencv-python（如果可用）
+        try:
+            import cv2
+            cap = cv2.VideoCapture(file_path)
+            if cap.isOpened():
+                # 计算时长（总帧数/帧率）
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                if frame_count > 0 and fps > 0:
+                    info["时长"] = self._format_duration(frame_count / fps)
+                
+                # 获取分辨率
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if width > 0 and height > 0:
+                    info["分辨率"] = f"{width} x {height}"
+                
+                # 获取帧率
+                if fps > 0:
+                    info["帧率"] = f"{fps:.2f} fps"  # 保留两位小数
+                
+                cap.release()
+                return info
+            cap.release()
+        except Exception:
+            # 不显示opencv相关的错误信息给用户
+            pass
+        
+        # 尝试简单的文件头解析（MP4格式）
+        try:
+            with open(file_path, 'rb') as f:
+                # 检查文件是否是MP4格式
+                f.seek(4)
+                box_type = f.read(4)
+                if box_type == b'ftyp':
+                    info["文件格式"] = "MP4"
+                    # 可以添加更多MP4特定的解析
+        except Exception:
+            pass
         
         return info
     
     def _get_video_advanced_info(self, file_path: str) -> Dict[str, Any]:
         """
-        获取视频文件高级信息
+        获取视频文件高级信息，使用不依赖ffprobe的方法
         
         Args:
             file_path (str): 视频文件路径
         
         Returns:
-            Dict[str, Any]: 视频高级信息字典
+            Dict[str, Any]: 视频高级信息字典，只包含对用户有用的信息
         """
         info = {}
         
-        # 尝试使用ffprobe获取详细信息
+        # 尝试使用opencv获取一些高级信息（如果可用）
         try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", file_path],
-                capture_output=True, text=True, check=True
-            )
-            ffprobe_data = json.loads(result.stdout)
-            
-            # 提取详细流信息
-            streams_info = {}
-            for i, stream in enumerate(ffprobe_data.get("streams", [])):
-                stream_info = {}
-                stream_info["类型"] = stream.get("codec_type", "未知")
-                stream_info["编码"] = stream.get("codec_name", "未知")
-                stream_info["语言"] = stream.get("tags", {}).get("language", "未知")
-                if stream.get("codec_type") == "video":
-                    stream_info["宽度"] = stream.get("width", 0)
-                    stream_info["高度"] = stream.get("height", 0)
-                    stream_info["宽高比"] = stream.get("display_aspect_ratio", "未知")
-                    stream_info["色彩空间"] = stream.get("color_space", "未知")
-                    stream_info["色彩深度"] = stream.get("bits_per_raw_sample", "未知")
-                streams_info[f"流 {i+1}"] = stream_info
-            
-            if streams_info:
-                info["流信息"] = streams_info
+            import cv2
+            cap = cv2.VideoCapture(file_path)
+            if cap.isOpened():
+                # 获取一些基本的高级信息
+                fourcc = cap.get(cv2.CAP_PROP_FOURCC)
+                # 只显示易读的编解码器字符串，不显示原始数值
+                try:
+                    fourcc_int = int(fourcc)
+                    # 转换为易读的字符串格式
+                    codec_chars = []
+                    for i in range(4):
+                        char = chr((fourcc_int >> (8 * i)) & 0xFF)
+                        if char.isprintable() and char != '\x00':
+                            codec_chars.append(char)
+                    
+                    if codec_chars:
+                        codec_str = ''.join(codec_chars)
+                        info["视频编解码器"] = codec_str
+                except Exception:
+                    pass
                 
+                # 获取帧数
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                if frame_count > 0:
+                    info["帧数"] = int(frame_count)
+                
+                cap.release()
         except Exception:
+            # 不显示opencv相关的错误信息给用户
+            pass
+        
+        # 尝试使用moviepy获取一些高级信息（如果可用）
+        try:
+            from moviepy.editor import VideoFileClip
+            with VideoFileClip(file_path) as clip:
+                # 获取音频相关信息
+                if clip.audio:
+                    info["音频采样率"] = f"{clip.audio.fps} Hz"
+                    info["音频通道数"] = clip.audio.nchannels
+        except Exception:
+            # 不显示moviepy相关的错误信息给用户
             pass
         
         return info
@@ -969,30 +1032,82 @@ class FileInfoBrowser:
         else:
             self.custom_tags_browser.setText("无自定义标签")
         
-        # 清空扩展信息和高级信息布局
-        for i in reversed(range(self.extra_layout.count())):
-            item = self.extra_layout.itemAt(i)
-            if item is not None:
-                widget = item.widget()
-                if widget is not None:
-                    self.extra_layout.removeWidget(widget)
-                    widget.deleteLater()
+        # 清空之前的详细信息标签
+        for widget_pair in self.details_info_widgets:
+            label_widget, value_widget = widget_pair
+            self.info_grid.removeWidget(label_widget)
+            self.info_grid.removeWidget(value_widget)
+            label_widget.deleteLater()
+            value_widget.deleteLater()
+        self.details_info_widgets.clear()
         
-        for i in reversed(range(self.advanced_layout.count())):
-            item = self.advanced_layout.itemAt(i)
-            if item is not None:
-                widget = item.widget()
-                if widget is not None:
-                    self.advanced_layout.removeWidget(widget)
-                    widget.deleteLater()
-        
-        # 更新扩展信息
-        if "extra" in self.file_info and self.file_info["extra"]:
-            self._add_info_group(self.extra_layout, "扩展信息", self.file_info["extra"])
-        
-        # 更新高级信息
-        if "advanced" in self.file_info and self.file_info["advanced"]:
-            self._add_info_group(self.advanced_layout, "高级信息", self.file_info["advanced"])
+        # 在统一的网格布局中添加详细信息
+        if "details" in self.file_info and self.file_info["details"]:
+            # 导入需要的PyQt组件
+            from PyQt5.QtWidgets import QLabel, QSizePolicy
+            from PyQt5.QtGui import QFontMetrics
+            from PyQt5.QtCore import Qt
+            
+            # 收集所有标签文本，计算最大宽度
+            all_labels = list(self.basic_info_labels.keys()) + list(self.file_info["details"].keys())
+            
+            # 计算最大标签宽度
+            max_width = 0
+            font_metrics = QFontMetrics(self.global_font)
+            for label in all_labels:
+                width = font_metrics.width(label + ":")
+                if width > max_width:
+                    max_width = width
+            
+            # 添加5像素的边距，确保标签完全显示
+            max_width += 5
+            
+            # 首先更新基本信息标签的宽度
+            for i, (label, widget) in enumerate(self.basic_info_labels.items()):
+                # 获取基本信息的标签控件
+                item = self.info_grid.itemAtPosition(i, 0)
+                if item is not None:
+                    label_widget = item.widget()
+                    if label_widget is not None:
+                        label_widget.setMinimumWidth(max_width)
+                        label_widget.setFixedWidth(max_width)
+            
+            row = self.basic_info_row_count
+            for key, value in self.file_info["details"].items():
+                # 创建标签文本并设置字体
+                label_widget = QLabel(key + ":")
+                label_widget.setFont(self.global_font)
+                label_widget.setMinimumWidth(max_width)  # 使用计算出的最大宽度
+                label_widget.setFixedWidth(max_width)  # 固定宽度，确保对齐
+                label_widget.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+                
+                value_widget = QLabel(str(value))
+                value_widget.setWordWrap(True)
+                value_widget.setFont(self.global_font)
+                value_widget.setMinimumWidth(80)  # 设置标签的最小宽度
+                value_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+                
+                # 为详细信息添加右键菜单支持
+                label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                value_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                
+                # 连接右键菜单信号
+                label_widget.customContextMenuRequested.connect(
+                    lambda point, k=key, v=value: self._show_context_menu(label_widget, k, v)
+                )
+                value_widget.customContextMenuRequested.connect(
+                    lambda point, k=key, v=value: self._show_context_menu(value_widget, k, v)
+                )
+                
+                # 添加到网格布局
+                self.info_grid.addWidget(label_widget, row, 0)
+                self.info_grid.addWidget(value_widget, row, 1)
+                
+                # 存储详细信息标签，用于后续删除
+                self.details_info_widgets.append((label_widget, value_widget))
+                
+                row += 1
     
     def _add_info_group(self, layout, title, info_dict):
         """
@@ -1012,6 +1127,28 @@ class FileInfoBrowser:
         # 检查信息是否包含嵌套字典
         has_nested = any(isinstance(v, dict) for v in info_dict.values())
         
+        # 导入需要的PyQt组件
+        from PyQt5.QtWidgets import QMenu, QAction, QSizePolicy
+        from PyQt5.QtGui import QCursor
+        
+        # 创建右键菜单
+        def create_context_menu(widget, key="", value=""):
+            """创建右键菜单"""
+            # 确保菜单的父部件正确设置，以便正确显示
+            menu = QMenu(widget)
+            
+            # 复制当前信息
+            copy_current_action = QAction("复制当前信息", widget)
+            copy_current_action.triggered.connect(lambda: self._copy_current_info(key, value))
+            menu.addAction(copy_current_action)
+            
+            # 复制全部信息
+            copy_all_action = QAction("复制全部信息", widget)
+            copy_all_action.triggered.connect(self._copy_all_info)
+            menu.addAction(copy_all_action)
+            
+            return menu
+        
         if has_nested:
             # 使用树形控件显示嵌套信息
             tree = QTreeWidget()
@@ -1029,21 +1166,61 @@ class FileInfoBrowser:
             
             tree.expandAll()
             group_layout = QGridLayout(group)
+            group_layout.setContentsMargins(5, 5, 5, 5)  # 减小内边距
             group_layout.addWidget(tree)
+            
+            # 为树状控件添加右键菜单
+            def tree_context_menu(point):
+                item = tree.itemAt(point)
+                if item:
+                    # 无论点击属性列还是值列，都获取相同的键值对
+                    key = item.text(0)
+                    value = item.text(1)
+                    menu = create_context_menu(tree, key, value)
+                    
+                    # 使用QCursor.pos()获取准确的鼠标位置，自动处理DPI缩放
+                    menu.popup(QCursor.pos())
+            
+            tree.setContextMenuPolicy(Qt.CustomContextMenu)
+            tree.customContextMenuRequested.connect(tree_context_menu)
         else:
-            # 使用网格布局显示简单信息
+            # 使用网格布局显示简单信息，参考基础信息的显示方式
             grid = QGridLayout(group)
+            grid.setContentsMargins(5, 5, 5, 5)  # 减小内边距
+            grid.setSpacing(5)  # 减小间距，调整上下宽度
             row = 0
             for key, value in info_dict.items():
                 # 创建标签文本并设置字体
                 label_widget = QLabel(key + ":")
                 label_widget.setFont(self.global_font)
+                label_widget.setMinimumWidth(60)  # 设置标签文本的最小宽度
+                label_widget.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
                 
                 value_widget = QLabel(str(value))
                 value_widget.setWordWrap(True)
                 value_widget.setFont(self.global_font)
+                value_widget.setMinimumWidth(80)  # 设置标签的最小宽度
+                value_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
                 
-                grid.addWidget(label_widget, row, 0, Qt.AlignRight)
+                # 为标签和值添加右键菜单
+                label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                value_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                
+                def label_menu(point, k=key, v=value):
+                    menu = create_context_menu(label_widget, k, v)
+                    # 使用QCursor.pos()获取准确的鼠标位置，自动处理DPI缩放
+                    menu.popup(QCursor.pos())
+                
+                def value_menu(point, k=key, v=value):
+                    menu = create_context_menu(value_widget, k, v)
+                    # 使用QCursor.pos()获取准确的鼠标位置，自动处理DPI缩放
+                    menu.popup(QCursor.pos())
+                
+                label_widget.customContextMenuRequested.connect(label_menu)
+                value_widget.customContextMenuRequested.connect(value_menu)
+                
+                grid.addWidget(label_widget, row, 0)
                 grid.addWidget(value_widget, row, 1)
                 row += 1
         
@@ -1077,6 +1254,88 @@ class FileInfoBrowser:
         """
         self.custom_tags.clear()
         self.update_ui()
+    
+    def _copy_current_info(self, key: str, value: str):
+        """
+        复制当前信息到剪贴板
+        
+        Args:
+            key (str): 信息键
+            value (str): 信息值
+        """
+        from PyQt5.QtWidgets import QApplication
+        
+        clipboard = QApplication.clipboard()
+        clipboard.setText(f"{key}: {value}")
+    
+    def _copy_all_info(self):
+        """
+        复制所有信息到剪贴板
+        """
+        from PyQt5.QtWidgets import QApplication
+        
+        all_info = []
+        
+        # 添加所有信息
+        all_info.append("文件信息")
+        all_info.append("=" * 20)
+        
+        # 添加基本信息
+        if "basic" in self.file_info:
+            for key, value in self.file_info["basic"].items():
+                all_info.append(f"{key}: {value}")
+        
+        # 添加详细信息
+        if "details" in self.file_info:
+            for key, value in self.file_info["details"].items():
+                all_info.append(f"{key}: {value}")
+        
+        # 复制到剪贴板
+        clipboard = QApplication.clipboard()
+        clipboard.setText("\n".join(all_info))
+    
+    def _show_context_menu(self, widget, key, value):
+        """
+        显示右键菜单
+        
+        Args:
+            widget: 调用右键菜单的控件
+            key: 信息键
+            value: 信息值
+        """
+        from PyQt5.QtWidgets import QMenu, QAction
+        from PyQt5.QtGui import QCursor
+        
+        menu = QMenu(widget)
+        
+        # 设置右键菜单样式，确保悬停时显示蓝色背景和白色文字
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                color: black;
+                border: 1px solid #ccc;
+            }
+            QMenu::item {
+                padding: 5px 20px;
+            }
+            QMenu::item:selected {
+                background-color: #1E90FF; /* 蓝色背景 */
+                color: white; /* 白色文字 */
+            }
+        """)
+        
+        # 复制当前信息
+        copy_current_action = QAction("复制当前信息", widget)
+        copy_current_action.triggered.connect(lambda: self._copy_current_info(key, value))
+        menu.addAction(copy_current_action)
+        
+        # 复制全部信息
+        copy_all_action = QAction("复制全部信息", widget)
+        copy_all_action.triggered.connect(self._copy_all_info)
+        menu.addAction(copy_all_action)
+        
+        # 显示右键菜单
+        menu.popup(QCursor.pos())
 
 # 测试代码
 if __name__ == "__main__":
