@@ -875,9 +875,12 @@ class CustomFileSelector(QWidget):
         """
         当盘符选择改变时的处理
         """
-        # 切换到选择的盘符
-        if os.path.exists(drive):
-            self.current_path = drive
+        # 切换到选择的盘符，确保使用完整的根目录路径
+        # 对于Windows，确保路径格式为 "D:\\"
+        drive_path = drive + '\\' if sys.platform == 'win32' else drive
+        # 确保路径存在且是根目录
+        if os.path.exists(drive_path) and os.path.isabs(drive_path):
+            self.current_path = drive_path
             self.refresh_files()
     
     def go_forward(self):
@@ -1016,12 +1019,10 @@ class CustomFileSelector(QWidget):
         files = []
         try:
             # 获取当前目录下的所有文件和文件夹
-            # print(f"[DEBUG] CustomFileSelector - _get_files: 当前路径: {self.current_path}")
             entries = os.listdir(self.current_path)
             
             for entry in entries:
                 entry_path = os.path.join(self.current_path, entry)
-                # print(f"[DEBUG] CustomFileSelector - _get_files: 生成的entry_path: {entry_path}")
                 file_info = QFileInfo(entry_path)
                 
                 # 跳过隐藏文件
@@ -1038,7 +1039,6 @@ class CustomFileSelector(QWidget):
                     "created": file_info.birthTime().toString(Qt.ISODate),
                     "suffix": file_info.suffix().lower()
                 }
-                # print(f"[DEBUG] CustomFileSelector - _get_files: 生成的file_dict: {file_dict}")
                 
                 files.append(file_dict)
         except Exception as e:
