@@ -42,7 +42,7 @@ class UnifiedPreviewer(QWidget):
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
-        print(f"[DEBUG] UnifiedPreviewer获取到的全局字体: {self.global_font.family()}")
+        #print(f"[DEBUG] UnifiedPreviewer获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -70,11 +70,11 @@ class UnifiedPreviewer(QWidget):
         main_layout.setContentsMargins(10, 10, 10, 10)
         
         # 创建标题
-        title_label = QLabel("统一文件预览器")
+        #title_label = QLabel("统一文件预览器")
         # 只设置字体大小和粗细，不指定字体名称，使用全局字体
         font = QFont("", 12, QFont.Bold)
-        title_label.setFont(font)
-        main_layout.addWidget(title_label)
+        #title_label.setFont(font)
+        #main_layout.addWidget(title_label)
         
         # 创建预览内容区域
         self.preview_area = QWidget()
@@ -89,7 +89,7 @@ class UnifiedPreviewer(QWidget):
         main_layout.addWidget(self.preview_area, 2)
         
         # 创建文件信息区域
-        self.info_group = QGroupBox("文件信息")
+        self.info_group = QGroupBox(" ")
         self.info_layout = QVBoxLayout(self.info_group)
         
         # 创建文件信息查看器的UI

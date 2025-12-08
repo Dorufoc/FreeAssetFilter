@@ -465,7 +465,7 @@ class PhotoViewer(QWidget):
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
-        print(f"[DEBUG] PhotoViewer获取到的全局字体: {self.global_font.family()}")
+        #print(f"[DEBUG] PhotoViewer获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
         self.setFont(self.global_font)

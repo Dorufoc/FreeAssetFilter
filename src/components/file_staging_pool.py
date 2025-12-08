@@ -54,7 +54,7 @@ class FileStagingPool(QWidget):
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
-        print(f"[DEBUG] FileStagingPool获取到的全局字体: {self.global_font.family()}")
+        #print(f"[DEBUG] FileStagingPool获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -82,16 +82,11 @@ class FileStagingPool(QWidget):
         title_layout = QHBoxLayout()
         
         # 标题
-        title_label = QLabel("文件临时存储池")
+        #title_label = QLabel("文件临时存储池")
         # 只设置字体大小和粗细，不指定字体名称，使用全局字体
         font = QFont("", 12, QFont.Bold)
-        title_label.setFont(font)
-        title_layout.addWidget(title_label)
-        
-        # 控制按钮
-        clear_btn = QPushButton("清空所有")
-        clear_btn.clicked.connect(self.clear_all)
-        title_layout.addWidget(clear_btn, 0, Qt.AlignRight)
+        #title_label.setFont(font)
+        #title_layout.addWidget(title_label)
         
         main_layout.addLayout(title_layout)
         
@@ -106,6 +101,11 @@ class FileStagingPool(QWidget):
         
         # 创建导出功能区
         export_layout = QHBoxLayout()
+        
+        # 控制按钮
+        clear_btn = QPushButton("清空所有")
+        clear_btn.clicked.connect(self.clear_all)
+        export_layout.addWidget(clear_btn)
         
         # 导出按钮
         self.export_btn = QPushButton("导出文件")

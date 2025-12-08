@@ -53,7 +53,7 @@ class TextPreviewWidget(QWidget):
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
-        print(f"[DEBUG] TextPreviewWidget获取到的全局字体: {self.global_font.family()}")
+        #print(f"[DEBUG] TextPreviewWidget获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -441,7 +441,7 @@ class TextPreviewer(QMainWindow):
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
-        print(f"[DEBUG] TextPreviewer获取到的全局字体: {self.global_font.family()}")
+        #print(f"[DEBUG] TextPreviewer获取到的全局字体: {self.global_font.family()}")
         
         # 设置窗口字体
         self.setFont(self.global_font)
