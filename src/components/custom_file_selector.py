@@ -162,7 +162,7 @@ class CustomFileSelector(QWidget):
         # 盘符选择器
         self.drive_combo = QComboBox()
         # 设置固定宽度，增加盘符选择器的宽度
-        self.drive_combo.setFixedWidth(100)
+        self.drive_combo.setFixedWidth(80)
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
         self.drive_combo.currentTextChanged.connect(self._on_drive_changed)
@@ -1041,7 +1041,7 @@ class CustomFileSelector(QWidget):
                 file_info = QFileInfo(entry_path)
                 
                 # 跳过隐藏文件
-                if entry.startswith("."):
+                if entry.startswith(".") or file_info.isHidden():
                     continue
                 
                 # 构建文件信息字典
