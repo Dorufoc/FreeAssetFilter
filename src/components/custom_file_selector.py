@@ -1548,15 +1548,13 @@ class CustomFileSelector(QWidget):
                         self.file_selected.emit(obj.file_info)
                     return True
                 elif event.button() == Qt.RightButton:
-                    # 右键点击：发出预览信号并选中/取消选中
+                    # 右键点击：选中/取消选中，不发出预览信号
                     if obj.file_info["is_dir"]:
-                        # 文件夹：发出预览信号并选中/取消选中
-                        self.file_selected.emit(obj.file_info)
+                        # 文件夹：选中/取消选中
                         self._toggle_selection(obj)
                     else:
-                        # 文件：选中/取消选中文件并发出预览信号
+                        # 文件：选中/取消选中
                         self._toggle_selection(obj)
-                        self.file_selected.emit(obj.file_info)
                     return True
         # 处理大小变化事件：包括视口和文件容器的大小变化
         elif event.type() == QEvent.Resize:
@@ -1566,9 +1564,13 @@ class CustomFileSelector(QWidget):
         
         return super().eventFilter(obj, event)
     
-    def _toggle_selection(self, card):
+    def _toggle_selection(self, card, emit_preview=False):
         """
         切换文件的选中状态
+        
+        Args:
+            card: 文件卡片对象
+            emit_preview: 是否发出预览信号，默认为False
         """
         file_path = card.file_info["path"]
         file_dir = os.path.dirname(file_path)
@@ -1610,8 +1612,9 @@ class CustomFileSelector(QWidget):
                     padding: 8px;
                 }
             """)
-            # 发出选择信号
-            self.file_selected.emit(card.file_info)
+            # 发出选择信号（仅当emit_preview为True时）
+            if emit_preview:
+                self.file_selected.emit(card.file_info)
             # 发出选择状态改变信号
             self.file_selection_changed.emit(card.file_info, True)
         

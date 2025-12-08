@@ -26,6 +26,7 @@ from PyQt5.QtGui import QFont
 
 from src.core.file_info_viewer import FileInfoViewer
 from src.components.folder_content_list import FolderContentList
+from src.components.archive_browser import ArchiveBrowser
 
 class UnifiedPreviewer(QWidget):
     """
@@ -158,6 +159,8 @@ class UnifiedPreviewer(QWidget):
             preview_type = "pdf"
         elif file_type in ["txt", "md", "rst", "py", "java", "cpp", "js", "html", "css", "php", "c", "h", "cs", "go", "rb", "swift", "kt", "yml", "yaml", "json", "xml"]:
             preview_type = "text"
+        elif file_type in ["zip", "rar", "tar", "gz", "tgz", "bz2", "xz", "7z", "iso"]:
+            preview_type = "archive"
         else:
             preview_type = "unknown"
         
@@ -192,6 +195,12 @@ class UnifiedPreviewer(QWidget):
             elif preview_type == "text":
                 # 文本预览
                 self._show_text_preview(file_path)
+            elif preview_type == "archive":
+                # 压缩包预览
+                self.archive_browser = ArchiveBrowser()
+                self.archive_browser.set_archive_path(file_path)
+                self.preview_layout.addWidget(self.archive_browser)
+                self.current_preview_widget = self.archive_browser
             else:
                 # 未知文件类型预览
                 unknown_label = QLabel(f"无法预览该类型文件: {file_type}")
@@ -291,6 +300,14 @@ class UnifiedPreviewer(QWidget):
                 # 文本预览组件
                 if hasattr(self.current_preview_widget, 'set_file'):
                     self.current_preview_widget.set_file(file_path)
+            elif preview_type == "archive":
+                # 压缩包预览组件
+                if hasattr(self.current_preview_widget, 'set_archive_path'):
+                    self.current_preview_widget.set_archive_path(file_path)
+            elif preview_type == "dir":
+                # 文件夹预览组件
+                if hasattr(self.current_preview_widget, 'set_path'):
+                    self.current_preview_widget.set_path(file_path)
         except Exception as e:
             print(f"更新预览组件时出错: {e}")
             # 如果更新失败，清除当前组件，重新创建
