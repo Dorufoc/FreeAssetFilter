@@ -16,7 +16,6 @@ data/thumbnails/
 *.avi
 *.mkv
 *.pdf
-*.md
 
 # Configuration files
 config/
