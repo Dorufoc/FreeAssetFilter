@@ -205,16 +205,20 @@ class FreeAssetFilterApp(QMainWindow):
         file_path = file_info['path']
         file_dir = os.path.dirname(file_path)
         
-        # 1. 直接从文件选择器的selected_files字典中移除文件，无论是否在当前目录
+        # 1. 首先从selected_files中移除文件，无论是否在当前目录
         if file_dir in self.file_selector_a.selected_files:
             self.file_selector_a.selected_files[file_dir].discard(file_path)
+            
+            # 如果目录下没有选中的文件了，删除该目录的键
+            if not self.file_selector_a.selected_files[file_dir]:
+                del self.file_selector_a.selected_files[file_dir]
             
             # 更新文件选择器的选中文件计数
             current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
             total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
             self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
         
-        # 2. 如果文件在当前目录显示，直接更新文件卡片的视觉状态，而不调用toggle_selection()
+        # 2. 如果文件在当前目录显示，直接更新文件卡片的视觉状态
         if self.file_selector_a.current_path == file_dir:
             # 遍历当前目录显示的所有文件卡片，找到对应文件的卡片
             for i in range(self.file_selector_a.files_layout.count()):
@@ -222,31 +226,26 @@ class FreeAssetFilterApp(QMainWindow):
                 if widget is not None and hasattr(widget, 'file_info'):
                     # 检查是否是目标文件
                     if widget.file_info['path'] == file_path:
-                        # 如果卡片处于选中状态，直接更新其视觉状态，不触发on_file_selected
-                        if widget.is_selected:
-                            # 直接设置is_selected为False，不调用toggle_selection()
-                            widget.is_selected = False
-                            # 恢复默认样式
-                            widget.setStyleSheet("""
+                        # 直接更新卡片的选中状态和样式，不调用toggle_selection
+                        widget.is_selected = False
+                        widget.setStyleSheet("""
+                            QWidget#FileCard {
                                 background-color: #ffffff;
                                 border: 2px solid #e0e0e0;
                                 border-radius: 8px;
                                 padding: 8px;
-                            """)
-                            # 更新标签样式
-                            widget.name_label.setStyleSheet("""
-                                font-size: 14px;
-                                color: #333333;
-                                font-weight: bold;
-                                background-color: transparent;
-                                border: none;
-                            """)
-                            widget.detail_label.setStyleSheet("""
-                                font-size: 12px;
-                                color: #666666;
-                                background-color: transparent;
-                                border: none;
-                            """)
+                                text-align: center;
+                            }
+                            QWidget#FileCard:hover {
+                                border-color: #4a7abc;
+                                background-color: #f0f8ff;
+                            }
+                        """)
+                        # 恢复标签样式
+                        widget.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
+                        widget.detail_label.setStyleSheet("background: transparent; border: none; color: #666666;")
+                        if hasattr(widget, 'modified_label'):
+                            widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
     
     def show_info(self, title, message):
         """
@@ -258,7 +257,6 @@ class FreeAssetFilterApp(QMainWindow):
         """
         # 简单的信息显示，使用状态标签
         self.status_label.setText(f"{title}: {message}")
-
 
 # 主程序入口
 if __name__ == "__main__":

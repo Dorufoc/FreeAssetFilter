@@ -138,6 +138,9 @@ class FileStagingPool(QWidget):
             if item["path"] == file_info["path"]:
                 return  # 文件已存在，不重复添加
         
+        # 添加前端显示文件名字段，默认为原始文件名
+        file_info["display_name"] = file_info["name"]
+        
         # 添加到项目列表
         self.items.append(file_info)
         
@@ -166,11 +169,15 @@ class FileStagingPool(QWidget):
         # 查找并移除项目
         for i, item in enumerate(self.items):
             if item["path"] == file_path:
+                # 保存文件信息用于发出信号
+                removed_file = item
                 self.items.pop(i)
                 # 从列表中移除对应的项
                 list_item = self.items_list.item(i)
                 if list_item:
                     self.items_list.takeItem(i)
+                # 发出信号通知文件选择器取消选中
+                self.remove_from_selector.emit(removed_file)
                 break
         
         # 更新统计信息
@@ -187,6 +194,13 @@ class FileStagingPool(QWidget):
         )
         
         if reply == QMessageBox.Yes:
+            # 保存当前项目列表的副本，因为清空操作会修改原列表
+            items_to_remove = self.items.copy()
+            
+            # 发出信号通知文件选择器取消所有选中
+            for item in items_to_remove:
+                self.remove_from_selector.emit(item)
+            
             # 清空列表
             self.items.clear()
             self.items_list.clear()
@@ -242,10 +256,12 @@ class FileStagingPool(QWidget):
         # 添加文件信息
         info_layout = QVBoxLayout()
         
-        # 文件名
-        name_label = QLabel(file_info["name"])
+        # 文件名 - 使用前端显示文件名
+        name_label = QLabel(file_info["display_name"])
         name_label.setStyleSheet("font-weight: bold;")
         name_label.setWordWrap(True)
+        # 存储label引用，方便后续更新
+        name_label.setObjectName("name_label")
         info_layout.addWidget(name_label)
         
         # 文件路径（仅显示部分）
@@ -256,12 +272,37 @@ class FileStagingPool(QWidget):
         
         layout.addLayout(info_layout, 1)
         
+        # 创建按钮布局
+        buttons_layout = QVBoxLayout()
+        buttons_layout.setSpacing(4)
+        
+        # 添加重命名按钮
+        rename_btn = QPushButton("重命名")
+        rename_btn.setFixedWidth(60)
+        rename_btn.setStyleSheet("background-color: #4488ff; color: white; border: none; border-radius: 4px;")
+        rename_btn.clicked.connect(lambda _, fi=file_info, w=widget: self.rename_file(fi, w))
+        # 默认隐藏重命名按钮
+        rename_btn.setVisible(False)
+        buttons_layout.addWidget(rename_btn)
+        
         # 添加删除按钮
         delete_btn = QPushButton("删除")
         delete_btn.setFixedWidth(60)
         delete_btn.setStyleSheet("background-color: #ff4444; color: white; border: none; border-radius: 4px;")
         delete_btn.clicked.connect(lambda _, fi=file_info: self.remove_file(fi["path"]))
-        layout.addWidget(delete_btn)
+        # 默认隐藏删除按钮
+        delete_btn.setVisible(False)
+        buttons_layout.addWidget(delete_btn)
+        
+        layout.addLayout(buttons_layout)
+        
+        # 添加事件过滤器，监听鼠标进入和离开事件
+        widget.setMouseTracking(True)
+        widget.installEventFilter(self)
+        # 存储按钮引用到widget上，方便事件处理
+        widget.delete_btn = delete_btn
+        widget.rename_btn = rename_btn
+        widget.file_info = file_info
         
         return widget
     
@@ -328,6 +369,97 @@ class FileStagingPool(QWidget):
         if file_info:
             self.open_file(file_info)
     
+    def rename_file(self, file_info, widget):
+        """
+        重命名文件（仅修改前端显示名称，保持原始后缀名）
+        
+        Args:
+            file_info (dict): 文件信息字典
+            widget (QWidget): 文件卡片widget
+        """
+        from PyQt5.QtWidgets import QInputDialog, QMessageBox
+        
+        # 获取当前显示名称
+        current_name = file_info["display_name"]
+        
+        # 分离文件名主体和后缀名
+        if "." in current_name:
+            # 有后缀名的情况
+            name_parts = current_name.rsplit(".", 1)
+            name_base = name_parts[0]
+            name_ext = name_parts[1]
+        else:
+            # 没有后缀名的情况
+            name_base = current_name
+            name_ext = ""
+        
+        # 定义文件名非法字符
+        illegal_chars = '<>:"/\\|?*' + ''.join([chr(c) for c in range(32)])
+        
+        while True:
+            # 弹出输入对话框，只显示和允许修改文件名主体
+            new_name_input, ok = QInputDialog.getText(
+                self, "重命名", "请输入新的文件名：",
+                text=name_base
+            )
+            
+            if not ok:
+                # 用户取消操作
+                return
+            
+            if not new_name_input:
+                # 文件名不能为空
+                QMessageBox.warning(self, "错误", "文件名不能为空！")
+                continue
+            
+            if new_name_input == current_name:
+                # 文件名未改变
+                return
+            
+            # 检查是否包含非法字符
+            if any(char in new_name_input for char in illegal_chars):
+                QMessageBox.warning(self, "错误", "文件名包含非法字符！请避免使用：< > : \" / \\ | ? * 以及控制字符")
+                continue
+            
+            # 生成新的文件名
+            # 不管用户输入是否包含后缀名，都保留所有用户输入内容，然后加上原始后缀名
+            # 这样可以确保用户想在文件名中使用的点号被保留
+            if name_ext:
+                new_name = f"{new_name_input}.{name_ext}"
+            else:
+                new_name = new_name_input
+            
+            # 检查路径长度，确保加上可能的导出路径后不超过MAX_PATH
+            # Windows系统的MAXPATH限制为260字符
+            MAX_PATH = 260
+            # 这里使用一个保守的估计：假设导出目录路径长度为150字符
+            # 实际使用时会根据用户选择的导出目录动态计算
+            estimated_total_length = len(new_name) + 150  # 150字符用于估计的导出路径
+            if estimated_total_length > MAX_PATH:
+                QMessageBox.warning(
+                    self, "错误", 
+                    f"文件名过长！加上路径后可能超过Windows系统的{MAX_PATH}字符限制。\n"
+                    f"当前估计总长度：{estimated_total_length}字符，建议缩短文件名。"
+                )
+                continue
+            
+            # 更新文件信息中的显示名称
+            file_info["display_name"] = new_name
+            
+            # 更新UI上的显示
+            name_label = widget.findChild(QLabel, "name_label")
+            if name_label:
+                name_label.setText(new_name)
+            
+            # 更新列表项的数据
+            for i in range(self.items_list.count()):
+                item = self.items_list.item(i)
+                if item.data(Qt.UserRole)["path"] == file_info["path"]:
+                    item.setData(Qt.UserRole, file_info)
+                    break
+            
+            break
+    
     def open_file(self, file_info):
         """
         打开文件
@@ -360,6 +492,25 @@ class FileStagingPool(QWidget):
         
         # 获取所有文件信息
         all_files = self.items
+        
+        # Windows系统的MAXPATH限制为260字符
+        MAX_PATH = 260
+        
+        # 检查每个文件的实际导出路径长度
+        for file_info in all_files:
+            # 生成目标文件路径
+            target_path = os.path.join(target_dir, file_info["display_name"])
+            
+            # 检查路径长度
+            if len(target_path) > MAX_PATH:
+                QMessageBox.warning(
+                    self, "错误", 
+                    f"导出路径过长！\n"
+                    f"文件：{file_info['display_name']}\n"
+                    f"路径：{target_path}\n"
+                    f"长度：{len(target_path)}字符，超过Windows系统{MAX_PATH}字符限制。"
+                )
+                return
         
         # 显示进度条
         self.progress_bar.setVisible(True)
@@ -399,6 +550,31 @@ class FileStagingPool(QWidget):
                 error_msg += f"\n\n还有 {len(errors) - 5} 个错误未显示"
             QMessageBox.warning(self, "导出结果", error_msg)
     
+    def eventFilter(self, obj, event):
+        """
+        事件过滤器，用于处理鼠标进入和离开事件
+        
+        Args:
+            obj (QObject): 事件对象
+            event (QEvent): 事件类型
+        
+        Returns:
+            bool: 是否处理了事件
+        """
+        if event.type() == event.Enter:
+            # 鼠标进入时显示删除和重命名按钮
+            if hasattr(obj, 'delete_btn'):
+                obj.delete_btn.setVisible(True)
+            if hasattr(obj, 'rename_btn'):
+                obj.rename_btn.setVisible(True)
+        elif event.type() == event.Leave:
+            # 鼠标离开时隐藏删除和重命名按钮
+            if hasattr(obj, 'delete_btn'):
+                obj.delete_btn.setVisible(False)
+            if hasattr(obj, 'rename_btn'):
+                obj.rename_btn.setVisible(False)
+        return super().eventFilter(obj, event)
+    
     def copy_files(self, files, target_dir):
         """
         复制文件到目标目录
@@ -418,7 +594,8 @@ class FileStagingPool(QWidget):
             
             for i, file_info in enumerate(files):
                 source_path = file_info["path"]
-                target_path = os.path.join(target_dir, file_info["name"])
+                # 使用前端显示的文件名作为目标文件名
+                target_path = os.path.join(target_dir, file_info["display_name"])
                 
                 try:
                     if file_info["is_dir"]:
@@ -430,7 +607,7 @@ class FileStagingPool(QWidget):
                     success_count += 1
                 except Exception as e:
                     error_count += 1
-                    errors.append(f"{file_info['name']}: {str(e)}")
+                    errors.append(f"{file_info['display_name']}: {str(e)}")
                 
                 # 发送进度更新信号
                 progress = i + 1

@@ -19,6 +19,7 @@ data/thumbnails/
 
 # Configuration files
 config/
+test/
 *.json
 
 # Testing files

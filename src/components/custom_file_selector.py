@@ -161,6 +161,8 @@ class CustomFileSelector(QWidget):
         
         # 盘符选择器
         self.drive_combo = QComboBox()
+        # 设置固定宽度，增加盘符选择器的宽度
+        self.drive_combo.setFixedWidth(100)
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
         self.drive_combo.currentTextChanged.connect(self._on_drive_changed)
@@ -870,6 +872,19 @@ class CustomFileSelector(QWidget):
         # 添加到下拉框
         if drives:
             self.drive_combo.addItems(drives)
+            
+            # 设置默认选中项为当前路径所在的盘符
+            if sys.platform == 'win32':
+                # Windows系统：提取当前路径的盘符，如 "C:\path\to\dir" -> "C:"
+                current_drive = os.path.splitdrive(self.current_path)[0]
+            else:
+                # Linux/macOS系统：根目录
+                current_drive = '/'
+            
+            # 在盘符列表中查找并设置默认选中项
+            index = self.drive_combo.findText(current_drive)
+            if index != -1:
+                self.drive_combo.setCurrentIndex(index)
     
     def _on_drive_changed(self, drive):
         """
@@ -1119,7 +1134,7 @@ class CustomFileSelector(QWidget):
         columns = max(1, available_width // card_actual_width)
         
         # 打印调试信息，便于监控计算过程
-        print(f"视口宽度: {viewport_width}px, 可用宽度: {available_width}px, 卡片实际宽度: {card_actual_width}px, 计算列数: {columns}")
+        #print(f"视口宽度: {viewport_width}px, 可用宽度: {available_width}px, 卡片实际宽度: {card_actual_width}px, 计算列数: {columns}")
         
         return columns
     
@@ -1181,7 +1196,14 @@ class CustomFileSelector(QWidget):
         
         # 保存文件信息到卡片
         card.file_info = file_info
+        
+        # 检查文件是否已被选中
+        file_path = file_info["path"]
+        file_dir = os.path.dirname(file_path)
         card.is_selected = False
+        
+        if file_dir in self.selected_files and file_path in self.selected_files[file_dir]:
+            card.is_selected = True
         
         # 创建卡片布局
         layout = QVBoxLayout(card)
@@ -1254,7 +1276,33 @@ class CustomFileSelector(QWidget):
         # 保存标签引用到卡片对象
         card.name_label = name_label
         card.detail_label = size_label
+        card.modified_label = modified_label
         card.icon_display = icon_display
+        
+        # 根据is_selected属性设置初始样式
+        if card.is_selected:
+            card.setStyleSheet("""
+                QWidget#FileCard {
+                    background-color: #e6f7ff;
+                    border: 2px solid #1890ff;
+                    border-radius: 8px;
+                    padding: 8px;
+                }
+            """)
+        else:
+            card.setStyleSheet("""
+                QWidget#FileCard {
+                    background-color: #ffffff;
+                    border: 2px solid #e0e0e0;
+                    border-radius: 8px;
+                    padding: 8px;
+                    text-align: center;
+                }
+                QWidget#FileCard:hover {
+                    border-color: #4a7abc;
+                    background-color: #f0f8ff;
+                }
+            """)
         
         # 安装事件过滤器，用于处理鼠标事件
         card.installEventFilter(self)
@@ -1318,6 +1366,7 @@ class CustomFileSelector(QWidget):
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
         font_formats = ["ttf", "otf", "woff", "woff2", "eot", "svg"]
+        archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "tar.gz", "tar.bz2", "tar.xz", "tar.lzma", "iso", "cab", "arj", "lzh", "ace", "z"]
         
         # 确定要使用的SVG图标
         icon_path = None
@@ -1345,6 +1394,12 @@ class CustomFileSelector(QWidget):
             elif suffix in font_formats:
                 # 字体文件使用字体图标
                 icon_path = os.path.join(icon_dir, "字体.svg")
+            elif suffix in audio_formats:
+                # 音频文件使用音频图标
+                icon_path = os.path.join(icon_dir, "音乐.svg")
+            elif suffix in archive_formats:
+                # 压缩文件使用压缩文件图标
+                icon_path = os.path.join(icon_dir, "压缩文件.svg")
         
         # 加载并显示SVG图标
         if icon_path and os.path.exists(icon_path):
@@ -1456,6 +1511,7 @@ class CustomFileSelector(QWidget):
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
         font_formats = ["ttf", "otf", "woff", "woff2", "eot", "svg"]
+        archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "tar.gz", "tar.bz2", "tar.xz", "tar.lzma", "iso", "cab", "arj", "lzh", "ace", "z"]
         
         # 确定要使用的SVG图标
         icon_path = None
@@ -1485,7 +1541,10 @@ class CustomFileSelector(QWidget):
                 icon_path = os.path.join(icon_dir, "字体.svg")
             elif suffix in audio_formats:
                 # 音频文件使用音频图标
-                icon_path = os.path.join(icon_dir, "音频.svg")
+                icon_path = os.path.join(icon_dir, "音乐.svg")
+            elif suffix in archive_formats:
+                # 压缩文件使用压缩文件图标
+                icon_path = os.path.join(icon_dir, "压缩文件.svg")
         
         # 使用SvgRenderer工具渲染SVG图标为QPixmap
         return SvgRenderer.render_svg_to_pixmap(icon_path, icon_size)
