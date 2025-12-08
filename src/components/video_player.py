@@ -535,7 +535,7 @@ class VideoPlayer(QWidget):
         
         # 创建一个水平布局来放置时间标签和音量控件
         bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setContentsMargins(0, 0, 60, 0)  # 增加右边距60像素，使整体向左挤压对齐
         bottom_layout.setSpacing(10)
         
         # 时间标签样式
@@ -559,9 +559,17 @@ class VideoPlayer(QWidget):
         
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(50)
-        self.volume_slider.setMaximumWidth(120)
+        self.volume_slider.setMaximumWidth(80)  # 缩短音量条长度
         self.volume_slider.valueChanged.connect(self.set_volume)
-        bottom_layout.addWidget(self.volume_slider)
+        
+        # 为音量条添加容器，增加右边距避免显示不全
+        volume_container = QWidget()
+        volume_container.setStyleSheet("background-color: #FFFFFF; border: none;")
+        volume_layout = QHBoxLayout(volume_container)
+        volume_layout.setContentsMargins(0, 0, 20, 0)  # 增加右边距20像素，避免音量条显示不全
+        volume_layout.addWidget(self.volume_slider)
+        
+        bottom_layout.addWidget(volume_container)
         
         # 将水平布局添加到垂直布局中
         progress_time_layout.addLayout(bottom_layout)
