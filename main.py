@@ -375,9 +375,9 @@ class FreeAssetFilterApp(QMainWindow):
                 del self.file_selector_a.selected_files[file_dir]
             
             # 更新文件选择器的选中文件计数
-            current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
-            total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
-            self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
+            #current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
+            #total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
+            #self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
         
         # 2. 如果文件在当前目录显示，直接更新文件卡片的视觉状态
         if self.file_selector_a.current_path == file_dir:
@@ -481,9 +481,9 @@ class FreeAssetFilterApp(QMainWindow):
             self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
         
         # 更新文件选择器的选中文件计数
-        current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
-        total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
-        self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
+        #current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
+        #total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
+        #self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
         
         # 刷新当前目录的文件显示，确保选中状态正确
         if hasattr(self.file_selector_a, 'current_path'):
