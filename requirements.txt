@@ -7,6 +7,7 @@ PyQt5>=5.15.0
 PyQt5-Qt5>=5.15.0
 PyQt5-sip>=12.8.0
 PyQt5-tools>=5.15.0
+PyQtWebEngine>=5.15.0  # Web引擎支持，用于QWebEngineView和QWebChannel
 
 # 媒体播放和处理
 python-vlc>=3.0.16120
@@ -22,6 +23,14 @@ Pygments>=2.8.0
 
 # 图像EXIF信息处理
 exifread>=2.3.0
+
+# 文件类型检测和编码处理
+python-magic>=0.4.24  # 文件类型检测
+chardet>=4.0.0  # 文本编码检测
+
+# 视频和字体处理
+moviepy>=1.0.0  # 视频处理
+fonttools>=4.28.0  # 字体文件处理
 
 # 可选依赖（某些功能可能需要）
 # opencv-python>=4.5.0  # 视频处理增强
