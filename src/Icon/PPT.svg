@@ -4,7 +4,7 @@
       <stop offset="0" stop-color="#fff"/>
       <stop offset="1" stop-color="#dfdfdf"/>
     </linearGradient>
-    <filter id="矩形_11" x="33" y="36" width="191" height="191" filterUnits="userSpaceOnUse">
+    <filter id="矩形_21" x="33" y="36" width="191" height="191" filterUnits="userSpaceOnUse">
       <feOffset dy="3" input="SourceAlpha"/>
       <feGaussianBlur stdDeviation="3" result="blur"/>
       <feFlood flood-opacity="0.161"/>
@@ -12,10 +12,10 @@
       <feComposite in="SourceGraphic"/>
     </filter>
     <linearGradient id="linear-gradient-2" x1="0.048" y1="0.052" x2="0.944" y2="0.964" gradientUnits="objectBoundingBox">
-      <stop offset="0" stop-color="#bbeaf7"/>
-      <stop offset="1" stop-color="#5da1d5"/>
+      <stop offset="0" stop-color="#ffd6fb"/>
+      <stop offset="1" stop-color="#e58c8c"/>
     </linearGradient>
-    <filter id="矩形_18" x="68.91" y="133.511" width="118.349" height="56.077" filterUnits="userSpaceOnUse">
+    <filter id="矩形_1" x="66" y="61" width="133" height="139" filterUnits="userSpaceOnUse">
       <feOffset dy="3" input="SourceAlpha"/>
       <feGaussianBlur stdDeviation="3" result="blur-2"/>
       <feFlood flood-opacity="0.161"/>
@@ -26,40 +26,36 @@
       <stop offset="0" stop-color="#f7bbf1"/>
       <stop offset="1" stop-color="#d55d5d"/>
     </linearGradient>
-    <filter id="矩形_19" x="69" y="113" width="119" height="57" filterUnits="userSpaceOnUse">
+    <filter id="矩形_22" x="50" y="124" width="80" height="80" filterUnits="userSpaceOnUse">
       <feOffset dy="3" input="SourceAlpha"/>
       <feGaussianBlur stdDeviation="3" result="blur-3"/>
       <feFlood flood-opacity="0.161"/>
       <feComposite operator="in" in2="blur-3"/>
       <feComposite in="SourceGraphic"/>
     </filter>
-    <linearGradient id="linear-gradient-4" x1="0.952" y1="0.052" x2="0.056" y2="0.964" gradientUnits="objectBoundingBox">
-      <stop offset="0" stop-color="#f57e7e"/>
-      <stop offset="1" stop-color="#f1cb8b"/>
-    </linearGradient>
-    <filter id="矩形_20" x="69" y="73" width="119" height="79" filterUnits="userSpaceOnUse">
+    <filter id="P" x="66.5" y="132" width="48" height="64" filterUnits="userSpaceOnUse">
       <feOffset dy="3" input="SourceAlpha"/>
       <feGaussianBlur stdDeviation="3" result="blur-4"/>
       <feFlood flood-opacity="0.161"/>
       <feComposite operator="in" in2="blur-4"/>
       <feComposite in="SourceGraphic"/>
     </filter>
-    <clipPath id="clip-压缩文件">
+    <clipPath id="clip-PPT">
       <rect width="256" height="256"/>
     </clipPath>
   </defs>
-  <g id="压缩文件" clip-path="url(#clip-压缩文件)">
-    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_11)">
-      <rect id="矩形_11-2" data-name="矩形 11" width="173" height="173" rx="28" transform="translate(42 42)" fill="url(#linear-gradient)"/>
+  <g id="PPT" clip-path="url(#clip-PPT)">
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_21)">
+      <rect id="矩形_21-2" data-name="矩形 21" width="173" height="173" rx="28" transform="translate(42 42)" fill="url(#linear-gradient)"/>
     </g>
-    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_18)">
-      <rect id="矩形_18-2" data-name="矩形 18" width="99.73" height="36.342" rx="18.171" transform="matrix(1, -0.02, 0.02, 1, 77.91, 141.25)" fill="url(#linear-gradient-2)"/>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_1)">
+      <rect id="矩形_1-2" data-name="矩形 1" width="115" height="121" rx="28" transform="translate(75 67)" fill="url(#linear-gradient-2)"/>
     </g>
-    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_19)">
-      <rect id="矩形_19-2" data-name="矩形 19" width="101" height="39" rx="19.5" transform="translate(78 119)" fill="url(#linear-gradient-3)"/>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_22)">
+      <rect id="矩形_22-2" data-name="矩形 22" width="62" height="62" rx="13" transform="translate(59 130)" fill="url(#linear-gradient-3)"/>
     </g>
-    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_20)">
-      <rect id="矩形_20-2" data-name="矩形 20" width="101" height="61" rx="28" transform="translate(78 79)" fill="url(#linear-gradient-4)"/>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#P)">
+      <text id="P-2" data-name="P" transform="translate(90.5 175)" fill="#fff" font-size="43" font-family="PangMenZhengDao"><tspan x="-14.728" y="0">P</tspan></text>
     </g>
   </g>
 </svg>

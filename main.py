@@ -24,11 +24,166 @@ import sys
 import os
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter
+    QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
 )
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
+
+# 尝试导入依赖检查所需的模块
+exportlib_metadata_available = False
+
+# 尝试使用importlib.metadata（Python 3.8+内置）
+try:
+    import importlib.metadata
+    exportlib_metadata_available = True
+except ImportError:
+    # 如果内置的不可用，尝试使用importlib_metadata包（Python 3.7及以下需要）
+    try:
+        import importlib_metadata
+        # 动态创建importlib.metadata别名
+        import sys
+        sys.modules['importlib.metadata'] = importlib_metadata
+        exportlib_metadata_available = True
+    except ImportError:
+        # 如果所有方法都失败，依赖检查将无法正常工作
+        exportlib_metadata_available = False
+
+# 尝试导入版本解析模块
+try:
+    from packaging.version import parse
+except ImportError:
+    # 如果packaging不可用，使用简单的版本比较
+    def parse(version_str):
+        return tuple(map(int, version_str.split('.')[:3]))
+
+
+def check_dependencies():
+    """
+    检查项目依赖是否已安装，根据requirements.txt文件
+    
+    Returns:
+        tuple: (success, missing_deps, version_issues)
+            success: bool - 是否所有依赖都满足
+            missing_deps: list - 缺失的依赖列表
+            version_issues: list - 版本不符合要求的依赖列表
+    """
+    requirements_file = os.path.join(os.path.dirname(__file__), 'requirements.txt')
+    missing_deps = []
+    version_issues = []
+    
+    try:
+        with open(requirements_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        for line in lines:
+            # 跳过注释行和空行
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            # 移除依赖项后面的注释（如：library>=version # comment）
+            if '#' in line:
+                line = line.split('#', 1)[0].strip()
+            
+            # 解析依赖项，支持格式如：library>=version
+            if '>=' in line:
+                lib_name, required_version = line.split('>=', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            elif '>' in line:
+                lib_name, required_version = line.split('>', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            elif '<=' in line:
+                lib_name, required_version = line.split('<=', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            elif '<' in line:
+                lib_name, required_version = line.split('<', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            elif '==' in line:
+                lib_name, required_version = line.split('==', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            else:
+                # 没有版本要求
+                lib_name = line.strip()
+                required_version = None
+            
+            # 检查依赖是否已安装
+            try:
+                installed_version = importlib.metadata.version(lib_name)
+                # 检查版本是否符合要求
+                if required_version:
+                    if parse(installed_version) < parse(required_version):
+                        version_issues.append((lib_name, installed_version, required_version))
+            except (importlib.metadata.PackageNotFoundError, NameError):
+                missing_deps.append((lib_name, required_version))
+            except Exception as e:
+                missing_deps.append((lib_name, required_version))
+        
+        success = len(missing_deps) == 0 and len(version_issues) == 0
+        return success, missing_deps, version_issues
+        
+    except Exception as e:
+        print(f"读取requirements.txt文件时出错: {e}")
+        return False, [], []
+
+
+def show_dependency_error(missing_deps, version_issues):
+    """
+    显示依赖错误信息，提示用户安装缺失的依赖
+    
+    Args:
+        missing_deps: list - 缺失的依赖列表
+        version_issues: list - 版本不符合要求的依赖列表
+    """
+    message = "检测到项目依赖问题，请安装或更新以下依赖：\n\n"
+    
+    if missing_deps:
+        message += "缺失的依赖：\n"
+        for lib, version in missing_deps:
+            if version:
+                message += f"  - {lib}>= {version}\n"
+            else:
+                message += f"  - {lib}\n"
+        message += "\n"
+    
+    if version_issues:
+        message += "版本不符合要求的依赖：\n"
+        for lib, installed, required in version_issues:
+            message += f"  - {lib}: 已安装 {installed}, 要求 >= {required}\n"
+    
+    message += "\n安装命令：\npip install -r requirements.txt"
+    
+    # 使用简单的print输出，避免依赖PyQt5
+    print("\n" + "="*50)
+    print("依赖错误")
+    print("="*50)
+    print(message)
+    print("="*50 + "\n")
+    
+    # 尝试使用PyQt5消息框显示错误
+    try:
+        app = QApplication.instance()
+        if not app:
+            # 不要在这里创建新的QApplication实例，避免与主程序冲突
+            pass
+        else:
+            QMessageBox.warning(
+                None, 
+                "依赖警告", 
+                message,
+                QMessageBox.Ok
+            )
+    except Exception as e:
+        # 如果PyQt5不可用，只使用print输出
+        pass
+    
+    # 不要强制退出，让应用程序继续运行
+    print("[警告] 依赖检查失败，但应用程序将继续运行，某些功能可能不可用。")
 
 # 导入自定义文件选择器组件
 from src.components.custom_file_selector import CustomFileSelector
@@ -65,11 +220,14 @@ class FreeAssetFilterApp(QMainWindow):
     
     def closeEvent(self, event):
         """
-        主窗口关闭事件，确保保存文件选择器的当前路径
+        主窗口关闭事件，确保保存文件选择器的当前路径和文件存储池状态
         """
         # 保存文件选择器A的当前路径
         if hasattr(self, 'file_selector_a'):
             self.file_selector_a.save_current_path()
+        # 保存文件存储池状态
+        if hasattr(self, 'file_staging_pool'):
+            self.file_staging_pool.save_backup()
         # 调用父类的closeEvent
         super().closeEvent(event)
     
@@ -168,6 +326,9 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label.setStyleSheet("font-size: 12px; color: #666; margin-top: 10px;")
         main_layout.addWidget(self.status_label)
         #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
+        
+        # 初始化完成后，检查是否需要恢复上次的文件列表
+        self.check_and_restore_backup()
     
     def show_info(self, title, message):
         """
@@ -247,6 +408,94 @@ class FreeAssetFilterApp(QMainWindow):
                         if hasattr(widget, 'modified_label'):
                             widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
     
+    def check_and_restore_backup(self):
+        """
+        检查是否存在备份文件，并询问用户是否要恢复上次的文件列表
+        """
+        from PyQt5.QtWidgets import QMessageBox
+        import os
+        import json
+        
+        # 备份文件路径
+        backup_file = os.path.join(os.path.dirname(__file__), 'data', 'staging_pool_backup.json')
+        
+        # 检查备份文件是否存在
+        if os.path.exists(backup_file):
+            # 读取备份文件，检查是否有内容
+            with open(backup_file, 'r', encoding='utf-8') as f:
+                backup_data = json.load(f)
+            
+            if backup_data:
+                # 询问用户是否恢复
+                reply = QMessageBox.question(
+                    self, "恢复文件列表", 
+                    f"检测到上次有 {len(backup_data)} 个文件在文件存储池中，是否要恢复？",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.restore_backup(backup_data)
+    
+    def restore_backup(self, backup_data):
+        """
+        从备份数据恢复文件列表，包含文件存在性校验
+        
+        Args:
+            backup_data (list): 备份的文件列表数据
+        """
+        import os
+        
+        # 恢复文件到存储池，并检查文件是否存在
+        success_count = 0
+        unlinked_files = []
+        
+        for file_info in backup_data:
+            # 检查文件是否存在
+            if os.path.exists(file_info["path"]):
+                # 添加到文件存储池
+                self.file_staging_pool.add_file(file_info)
+                
+                # 更新文件选择器的选中状态
+                file_path = file_info['path']
+                file_dir = os.path.dirname(file_path)
+                
+                # 确保文件选择器的selected_files字典中存在该目录
+                if file_dir not in self.file_selector_a.selected_files:
+                    self.file_selector_a.selected_files[file_dir] = set()
+                
+                # 添加到选中文件集合
+                self.file_selector_a.selected_files[file_dir].add(file_path)
+                
+                success_count += 1
+            else:
+                # 添加到未链接文件列表
+                unlinked_files.append({
+                    "original_file_info": file_info,
+                    "status": "unlinked",  # unlinked, ignored, linked
+                    "new_path": None,
+                    "md5": self.file_staging_pool.calculate_md5(file_info["path"]) if os.path.exists(file_info["path"]) else None
+                })
+        
+        # 如果有未链接文件，显示处理对话框
+        if unlinked_files:
+            self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
+        
+        # 更新文件选择器的选中文件计数
+        current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
+        total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
+        self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
+        
+        # 刷新当前目录的文件显示，确保选中状态正确
+        if hasattr(self.file_selector_a, 'current_path'):
+            # 获取当前目录的文件列表
+            current_files = self.file_selector_a._get_files()
+            # 应用排序和筛选
+            current_files = self.file_selector_a._sort_files(current_files)
+            current_files = self.file_selector_a._filter_files(current_files)
+            # 重新创建文件卡片，确保选中状态正确
+            self.file_selector_a._clear_files_layout()
+            self.file_selector_a._create_file_cards(current_files)
+    
     def show_info(self, title, message):
         """
         显示信息提示
@@ -260,6 +509,11 @@ class FreeAssetFilterApp(QMainWindow):
 
 # 主程序入口
 if __name__ == "__main__":
+    # 检查依赖
+    success, missing_deps, version_issues = check_dependencies()
+    if not success:
+        show_dependency_error(missing_deps, version_issues)
+    
     app = QApplication(sys.argv)
     
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
