@@ -291,8 +291,8 @@ class CustomFileSelector(QWidget):
         layout.addWidget(self.clear_thumbnails_btn)
         
         # 选中文件计数
-        self.selected_count_label = QLabel("当前目录: 0 个，所有目录: 0 个")
-        layout.addWidget(self.selected_count_label, 1, Qt.AlignRight)
+        #self.selected_count_label = QLabel("当前目录: 0 个，所有目录: 0 个")
+        #layout.addWidget(self.selected_count_label, 1, Qt.AlignRight)
         
         return status_bar
     
@@ -1048,7 +1048,7 @@ class CustomFileSelector(QWidget):
         self._create_file_cards(files)
         
         # 更新选中文件计数
-        self._update_selected_count()
+        #self._update_selected_count()
     
     def _clear_files_layout(self):
         """
@@ -1672,13 +1672,13 @@ class CustomFileSelector(QWidget):
         else:
             return f"{size / (1024 * 1024 * 1024):.1f} GB"
     
-    def _update_selected_count(self):
+    #def _update_selected_count(self):
         """
         更新选中文件计数
         """
-        current_selected = len(self.selected_files.get(self.current_path, set()))
-        total_selected = sum(len(files) for files in self.selected_files.values())
-        self.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
+       # current_selected = len(self.selected_files.get(self.current_path, set()))
+        #total_selected = sum(len(files) for files in self.selected_files.values())
+        #self.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
     
     def eventFilter(self, obj, event):
         """
@@ -1771,7 +1771,7 @@ class CustomFileSelector(QWidget):
             self.file_selection_changed.emit(card.file_info, True)
         
         # 更新选中文件计数
-        self._update_selected_count()
+        #self._update_selected_count()
     
     def _show_context_menu(self, card, pos):
         """
