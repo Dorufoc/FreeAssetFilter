@@ -998,12 +998,31 @@ class CustomFileSelector(QWidget):
         self.view_mode = view_options[index]
         self.refresh_files()
     
+    def _update_drive_selector(self):
+        """
+        更新盘符选择器的选中项，根据当前路径自动选择对应的盘符
+        """
+        if sys.platform == 'win32':
+            # Windows系统：提取当前路径的盘符，如 "C:\path\to\dir" -> "C:"
+            current_drive = os.path.splitdrive(self.current_path)[0]
+        else:
+            # Linux/macOS系统：根目录
+            current_drive = '/'
+        
+        # 在盘符列表中查找并设置默认选中项
+        index = self.drive_combo.findText(current_drive)
+        if index != -1:
+            self.drive_combo.setCurrentIndex(index)
+    
     def refresh_files(self):
         """
         刷新文件列表
         """
         # 更新路径输入框
         self.path_edit.setText(self.current_path)
+        
+        # 更新盘符选择器
+        self._update_drive_selector()
         
         # 清空现有文件卡片
         self._clear_files_layout()
