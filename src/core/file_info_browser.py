@@ -110,7 +110,7 @@ class FileInfoBrowser:
         from PyQt5.QtWidgets import (
             QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox, QGridLayout,
             QTabWidget, QFrame, QSplitter, QSizePolicy, QHBoxLayout, QPushButton,
-            QTextBrowser, QTreeWidget, QTreeWidgetItem
+            QTextBrowser, QTreeWidget, QTreeWidgetItem, QFormLayout
         )
         from PyQt5.QtCore import Qt
         from PyQt5.QtGui import QFont, QCursor
@@ -120,22 +120,30 @@ class FileInfoBrowser:
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setMinimumWidth(200)  # 设置最小宽度
+        scroll_area.setMinimumWidth(450)  # 增加最小宽度，确保信息完整显示
         scroll_area.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         
         # 创建主widget
         main_widget = QWidget()
         main_widget.setFont(self.global_font)
-        main_widget.setMinimumWidth(180)  # 设置主widget的最小宽度
+        main_widget.setMinimumWidth(430)  # 增加主widget的最小宽度
         main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
         
         # 创建统一的信息组，包含所有信息
         self.info_group = QGroupBox("文件信息")
         self.info_group.setFont(self.global_font)
-        self.info_group.setMinimumWidth(140)  # 设置组框的最小宽度
-        self.info_grid = QGridLayout(self.info_group)
-        self.info_grid.setContentsMargins(5, 5, 5, 5)  # 减小内边距
-        self.info_grid.setSpacing(5)  # 减小间距
+        self.info_group.setMinimumWidth(410)  # 增加组框的最小宽度
+        # 设置组框标题左对齐
+        self.info_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 15px; }")
+        
+        # 使用QFormLayout替代QGridLayout，更适合表单布局
+        self.info_layout = QFormLayout(self.info_group)
+        self.info_layout.setContentsMargins(10, 40, 15, 15)  # 左边距减少5px，让标签左移
+        self.info_layout.setSpacing(8)  # 调整间距，适合左对齐布局
+        self.info_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # 标签左对齐
+        self.info_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)  # 表单左对齐
         
         # 基本信息标签
         self.basic_info_labels = {
@@ -156,86 +164,78 @@ class FileInfoBrowser:
         # 存储详细信息标签，用于动态添加和删除
         self.details_info_widgets = []
         
-        # 添加基本信息到网格布局
-        row = 0
-        for label, widget in self.basic_info_labels.items():
+        # 添加基本信息到表单布局
+        # 使用有序列表确保基本信息顺序一致
+        basic_info_order = [
+            "文件名", "文件路径", "文件大小", "文件类型",
+            "创建时间", "修改时间", "权限", "所有者",
+            "组", "MD5", "SHA1", "SHA256"
+        ]
+        
+        # 存储基本信息控件的引用
+        self.basic_info_widgets = {}
+        
+        # 首先计算所有标签的最大宽度
+        from PyQt5.QtGui import QFontMetrics
+        font_metrics = QFontMetrics(self.global_font)
+        max_label_width = 0
+        
+        # 计算所有基本信息标签的最大宽度
+        for key in basic_info_order:
+            label_text = key + f":" 
+            width = font_metrics.width(label_text)
+            if width > max_label_width:
+                max_label_width = width
+        
+        # 增加一些边距，确保文本有足够空间
+        max_label_width += 10
+        
+        for key in basic_info_order:
+            # 获取或创建值标签
+            if key not in self.basic_info_labels:
+                self.basic_info_labels[key] = QLabel("-")
+            
+            widget = self.basic_info_labels[key]
             widget.setWordWrap(True)
             widget.setFont(self.global_font)
-            widget.setMinimumWidth(80)  # 设置标签的最小宽度
-            widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-            
-            # 创建标签文本并设置字体
-            label_widget = QLabel(label + ":")
-            label_widget.setFont(self.global_font)
-            label_widget.setMinimumWidth(60)  # 设置标签文本的最小宽度
-            label_widget.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-            
-            # 为基本信息添加右键菜单支持
-            label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            widget.setMinimumWidth(300)  # 增加值标签的最小宽度
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
             widget.setContextMenuPolicy(Qt.CustomContextMenu)
             
-            # 添加右键菜单的槽函数
-            def create_basic_context_menu(widget, label=label):
-                """创建基本信息的右键菜单"""
-                from PyQt5.QtWidgets import QMenu, QAction
-                from PyQt5.QtGui import QCursor
-                
-                menu = QMenu(widget)
-                
-                # 设置右键菜单样式，确保悬停时显示蓝色背景和白色文字
-                menu.setStyleSheet("""
-                    QMenu {
-                        background-color: white;
-                        color: black;
-                        border: 1px solid #ccc;
-                    }
-                    QMenu::item {
-                        padding: 5px 20px;
-                    }
-                    QMenu::item:selected {
-                        background-color: #1E90FF; /* 蓝色背景 */
-                        color: white; /* 白色文字 */
-                    }
-                """)
-                
-                # 复制当前信息
-                copy_current_action = QAction("复制当前信息", widget)
-                # 获取当前值
-                current_value = self.basic_info_labels[label].text()
-                copy_current_action.triggered.connect(lambda: self._copy_current_info(label, current_value))
-                menu.addAction(copy_current_action)
-                
-                # 复制全部信息
-                copy_all_action = QAction("复制全部信息", widget)
-                copy_all_action.triggered.connect(self._copy_all_info)
-                menu.addAction(copy_all_action)
-                
-                return menu
+            # 创建标签文本
+            label_widget = QLabel(key + ":")
+            label_widget.setFont(self.global_font)
+            label_widget.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)  # 标签文本居中
+            label_widget.setFixedWidth(max_label_width)  # 统一设置为最大宽度
+            label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
             
             # 连接右键菜单信号
-            label_widget.customContextMenuRequested.connect(
-                lambda point, l=label: create_basic_context_menu(label_widget, l).popup(QCursor.pos())
-            )
-            widget.customContextMenuRequested.connect(
-                lambda point, l=label: create_basic_context_menu(widget, l).popup(QCursor.pos())
-            )
+            self._connect_context_menu(label_widget, key)
+            self._connect_context_menu(widget, key)
             
-            self.info_grid.addWidget(label_widget, row, 0)
-            self.info_grid.addWidget(widget, row, 1)
-            row += 1
+            # 添加到表单布局
+            self.info_layout.addRow(label_widget, widget)
+            
+            # 存储控件引用
+            self.basic_info_widgets[key] = {
+                "label": label_widget,
+                "value": widget
+            }
         
         # 存储基本信息的行数，用于后续添加详细信息
-        self.basic_info_row_count = row
+        self.basic_info_row_count = len(basic_info_order)
         
         main_layout.addWidget(self.info_group)
         
         # 自定义标签组
         custom_group = QGroupBox("自定义标签")
         custom_group.setFont(self.global_font)
-        custom_group.setMinimumWidth(140)  # 设置组框的最小宽度
+        custom_group.setMinimumWidth(410)  # 增加最小宽度
+        # 设置组框标题左对齐，保持一致性
+        custom_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 15px; }")
         custom_layout = QVBoxLayout(custom_group)
-        custom_layout.setContentsMargins(5, 5, 5, 5)  # 减小内边距
+        custom_layout.setContentsMargins(15, 20, 15, 15)  # 增加内边距
         
         self.custom_tags_browser = QTextBrowser()
         self.custom_tags_browser.setFont(self.global_font)
@@ -1035,79 +1035,73 @@ class FileInfoBrowser:
         # 清空之前的详细信息标签
         for widget_pair in self.details_info_widgets:
             label_widget, value_widget = widget_pair
-            self.info_grid.removeWidget(label_widget)
-            self.info_grid.removeWidget(value_widget)
+            # 从布局中移除并删除组件
+            label_widget.hide()
+            value_widget.hide()
             label_widget.deleteLater()
             value_widget.deleteLater()
         self.details_info_widgets.clear()
         
-        # 在统一的网格布局中添加详细信息
+        # 在表单布局中添加详细信息
         if "details" in self.file_info and self.file_info["details"]:
             # 导入需要的PyQt组件
             from PyQt5.QtWidgets import QLabel, QSizePolicy
-            from PyQt5.QtGui import QFontMetrics
             from PyQt5.QtCore import Qt
+            from PyQt5.QtGui import QFontMetrics
             
-            # 收集所有标签文本，计算最大宽度
-            all_labels = list(self.basic_info_labels.keys()) + list(self.file_info["details"].keys())
-            
-            # 计算最大标签宽度
-            max_width = 0
+            # 计算所有标签的最大宽度（包括基本信息和详细信息）
             font_metrics = QFontMetrics(self.global_font)
-            for label in all_labels:
-                width = font_metrics.width(label + ":")
-                if width > max_width:
-                    max_width = width
+            max_label_width = 0
             
-            # 添加5像素的边距，确保标签完全显示
-            max_width += 5
+            # 首先计算基本信息标签的最大宽度
+            for key in self.basic_info_labels.keys():
+                label_text = key + f":" 
+                width = font_metrics.width(label_text)
+                if width > max_label_width:
+                    max_label_width = width
             
-            # 首先更新基本信息标签的宽度
-            for i, (label, widget) in enumerate(self.basic_info_labels.items()):
-                # 获取基本信息的标签控件
-                item = self.info_grid.itemAtPosition(i, 0)
-                if item is not None:
-                    label_widget = item.widget()
-                    if label_widget is not None:
-                        label_widget.setMinimumWidth(max_width)
-                        label_widget.setFixedWidth(max_width)
+            # 然后计算详细信息标签的最大宽度
+            for key in self.file_info["details"].keys():
+                label_text = key + f":" 
+                width = font_metrics.width(label_text)
+                if width > max_label_width:
+                    max_label_width = width
             
-            row = self.basic_info_row_count
+            # 增加一些边距，确保文本有足够空间
+            max_label_width += 10
+            
+            # 为基本信息标签统一设置最大宽度
+            for key, widget_pair in self.basic_info_widgets.items():
+                label_widget = widget_pair["label"]
+                label_widget.setFixedWidth(max_label_width)
+            
+            # 为详细信息创建标签和值
             for key, value in self.file_info["details"].items():
-                # 创建标签文本并设置字体
+                # 创建标签文本
                 label_widget = QLabel(key + ":")
                 label_widget.setFont(self.global_font)
-                label_widget.setMinimumWidth(max_width)  # 使用计算出的最大宽度
-                label_widget.setFixedWidth(max_width)  # 固定宽度，确保对齐
-                label_widget.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+                label_widget.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)  # 标签文本居中
+                label_widget.setFixedWidth(max_label_width)  # 统一设置为最大宽度
+                label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
                 
+                # 创建值标签
                 value_widget = QLabel(str(value))
                 value_widget.setWordWrap(True)
                 value_widget.setFont(self.global_font)
-                value_widget.setMinimumWidth(80)  # 设置标签的最小宽度
-                value_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-                
-                # 为详细信息添加右键菜单支持
-                label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                value_widget.setMinimumWidth(300)  # 足够的最小宽度
+                value_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                value_widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
                 value_widget.setContextMenuPolicy(Qt.CustomContextMenu)
                 
                 # 连接右键菜单信号
-                label_widget.customContextMenuRequested.connect(
-                    lambda point, k=key, v=value: self._show_context_menu(label_widget, k, v)
-                )
-                value_widget.customContextMenuRequested.connect(
-                    lambda point, k=key, v=value: self._show_context_menu(value_widget, k, v)
-                )
+                self._connect_context_menu(label_widget, key)
+                self._connect_context_menu(value_widget, key)
                 
-                # 添加到网格布局
-                self.info_grid.addWidget(label_widget, row, 0)
-                self.info_grid.addWidget(value_widget, row, 1)
+                # 添加到表单布局
+                self.info_layout.addRow(label_widget, value_widget)
                 
                 # 存储详细信息标签，用于后续删除
                 self.details_info_widgets.append((label_widget, value_widget))
-                
-                row += 1
     
     def _add_info_group(self, layout, title, info_dict):
         """
@@ -1202,6 +1196,7 @@ class FileInfoBrowser:
                 value_widget.setFont(self.global_font)
                 value_widget.setMinimumWidth(80)  # 设置标签的最小宽度
                 value_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+                value_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # 设置统一的对齐方式
                 
                 # 为标签和值添加右键菜单
                 label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1293,6 +1288,55 @@ class FileInfoBrowser:
         # 复制到剪贴板
         clipboard = QApplication.clipboard()
         clipboard.setText("\n".join(all_info))
+    
+    def _connect_context_menu(self, widget, key):
+        """
+        连接控件的右键菜单信号
+        
+        Args:
+            widget: 要连接右键菜单的控件
+            key: 信息键
+        """
+        def show_menu(point):
+            """显示右键菜单"""
+            from PyQt5.QtWidgets import QMenu, QAction
+            from PyQt5.QtGui import QCursor
+            
+            menu = QMenu(widget)
+            
+            # 设置右键菜单样式
+            menu.setStyleSheet("""
+                QMenu {
+                    background-color: white;
+                    color: black;
+                    border: 1px solid #ccc;
+                }
+                QMenu::item {
+                    padding: 5px 20px;
+                }
+                QMenu::item:selected {
+                    background-color: #1E90FF; /* 蓝色背景 */
+                    color: white; /* 白色文字 */
+                }
+            """)
+            
+            # 获取当前值
+            value = self.basic_info_labels[key].text() if key in self.basic_info_labels else ""
+            
+            # 复制当前信息
+            copy_current_action = QAction("复制当前信息", widget)
+            copy_current_action.triggered.connect(lambda: self._copy_current_info(key, value))
+            menu.addAction(copy_current_action)
+            
+            # 复制全部信息
+            copy_all_action = QAction("复制全部信息", widget)
+            copy_all_action.triggered.connect(self._copy_all_info)
+            menu.addAction(copy_all_action)
+            
+            # 显示右键菜单
+            menu.popup(QCursor.pos())
+        
+        widget.customContextMenuRequested.connect(show_menu)
     
     def _show_context_menu(self, widget, key, value):
         """
