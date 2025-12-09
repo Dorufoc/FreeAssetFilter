@@ -1443,6 +1443,9 @@ class CustomFileSelector(QWidget):
             elif suffix in archive_formats:
                 # 压缩文件使用压缩文件图标
                 icon_path = os.path.join(icon_dir, "压缩文件.svg")
+            else:
+                # 未知文件类型使用未知底板图标
+                icon_path = os.path.join(icon_dir, "未知底板.svg")
         
         # 加载并显示SVG图标
         if icon_path and os.path.exists(icon_path):
@@ -1588,7 +1591,10 @@ class CustomFileSelector(QWidget):
             elif suffix in archive_formats:
                 # 压缩文件使用压缩文件图标
                 icon_path = os.path.join(icon_dir, "压缩文件.svg")
-        
+            else:
+                # 未知文件类型使用未知底板图标
+                icon_path = os.path.join(icon_dir, "未知底板.svg")
+
         # 使用SvgRenderer工具渲染SVG图标为QPixmap
         return SvgRenderer.render_svg_to_pixmap(icon_path, icon_size)
     
