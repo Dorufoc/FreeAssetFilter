@@ -325,25 +325,38 @@ class CustomFileSelector(QWidget):
         
         # 开始生成缩略图
         generated_count = 0
+        success_count = 0
         
         for i, file in enumerate(media_files):
             # 检查是否取消
             if progress_dialog.wasCanceled():
                 break
             
-            # 生成缩略图
-            self._create_thumbnail(file["path"])
-            generated_count += 1
-            
-            # 更新进度条和文本
-            progress_dialog.setValue(generated_count)
-            progress_dialog.setLabelText(f"正在生成缩略图... ({generated_count}/{len(media_files)})")
-            
-            # 处理事件，防止界面冻结
-            QApplication.processEvents()
+            try:
+                # 生成缩略图
+                result = self._create_thumbnail(file["path"])
+                generated_count += 1
+                if result:
+                    success_count += 1
+                
+                # 更新进度条和文本
+                progress_dialog.setValue(generated_count)
+                progress_dialog.setLabelText(f"正在生成缩略图... ({generated_count}/{len(media_files)})")
+                
+                # 处理事件，防止界面冻结
+                QApplication.processEvents()
+            except Exception as e:
+                print(f"生成缩略图失败: {file['path']}, 错误: {e}")
+                generated_count += 1
+                progress_dialog.setValue(generated_count)
+                progress_dialog.setLabelText(f"正在生成缩略图... ({generated_count}/{len(media_files)})")
+                QApplication.processEvents()
         
         # 关闭进度对话框
         progress_dialog.close()
+        
+        # 显示结果
+        QMessageBox.information(self, "提示", f"缩略图生成完成！成功: {success_count}, 总数: {generated_count}")
         
         # 刷新文件列表，显示新生成的缩略图
         self.refresh_files()
@@ -441,8 +454,10 @@ class CustomFileSelector(QWidget):
                         # 保存缩略图为PNG格式
                         thumbnail.save(thumbnail_path, format='PNG', quality=85)
                         print(f"已生成图片缩略图 (PIL保持比例): {file_path}")
+                        return True
                 except Exception as pil_e:
                     print(f"无法生成缩略图: {file_path}, PIL处理失败: {pil_e}")
+                    return False
             # 处理所有视频文件格式
             else:
                 print(f"开始生成视频缩略图: {file_path}")
@@ -550,6 +565,7 @@ class CustomFileSelector(QWidget):
                                     print(f"✓ 使用PIL保存缩略图成功")
                                     print(f"✓ 已生成视频缩略图: {file_path}, 使用第 {frame_pos} 帧，保持原始比例")
                                     success = True
+                                    return True
                                 except Exception as e:
                                     print(f"✗ 处理视频时出错: {file_path}, 错误: {e}")
                                 break
@@ -597,7 +613,7 @@ class CustomFileSelector(QWidget):
                                     # 保存缩略图
                                     thumbnail.save(thumbnail_path, format='PNG', quality=85)
                                     print(f"✓ 已生成视频缩略图: {file_path}, 使用中间位置相对帧")
-                                    success = True
+                                    return True
                                 except Exception as e:
                                     print(f"✗ 使用PIL处理视频帧失败: {e}")
                             else:
@@ -645,7 +661,7 @@ class CustomFileSelector(QWidget):
                                     # 保存缩略图
                                     thumbnail_pil.save(thumbnail_path, format='PNG', quality=85)
                                     print(f"✓ 已生成视频缩略图: {file_path}, 使用相对位置帧")
-                                    success = True
+                                    return True
                                 except Exception as pil_e:
                                     print(f"✗ 使用PIL处理视频帧失败: {pil_e}")
                             else:
@@ -663,6 +679,7 @@ class CustomFileSelector(QWidget):
         except Exception as e:
             # 处理其他可能的错误
             print(f"生成缩略图失败: {file_path}, 错误: {e}")
+        return False
     
     def go_to_parent(self):
         """
