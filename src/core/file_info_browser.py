@@ -208,6 +208,7 @@ class FileInfoBrowser:
             label_widget.setFont(self.global_font)
             label_widget.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)  # 标签文本居中
             label_widget.setFixedWidth(max_label_width)  # 统一设置为最大宽度
+            label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)  # 固定宽度，高度自适应
             label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
             
             # 连接右键菜单信号
@@ -1082,6 +1083,7 @@ class FileInfoBrowser:
                 label_widget.setFont(self.global_font)
                 label_widget.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)  # 标签文本居中
                 label_widget.setFixedWidth(max_label_width)  # 统一设置为最大宽度
+                label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)  # 固定宽度，高度自适应
                 label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
                 
                 # 创建值标签
@@ -1089,7 +1091,7 @@ class FileInfoBrowser:
                 value_widget.setWordWrap(True)
                 value_widget.setFont(self.global_font)
                 value_widget.setMinimumWidth(300)  # 足够的最小宽度
-                value_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                value_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 宽度扩展，高度自适应
                 value_widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
                 value_widget.setContextMenuPolicy(Qt.CustomContextMenu)
                 
@@ -1188,14 +1190,14 @@ class FileInfoBrowser:
                 label_widget = QLabel(key + ":")
                 label_widget.setFont(self.global_font)
                 label_widget.setMinimumWidth(60)  # 设置标签文本的最小宽度
-                label_widget.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+                label_widget.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)  # 标签文本居中
+                label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)  # 固定宽度，高度自适应
                 
                 value_widget = QLabel(str(value))
                 value_widget.setWordWrap(True)
                 value_widget.setFont(self.global_font)
                 value_widget.setMinimumWidth(80)  # 设置标签的最小宽度
-                value_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+                value_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)  # 宽度扩展，高度自适应
                 value_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # 设置统一的对齐方式
                 
                 # 为标签和值添加右键菜单
