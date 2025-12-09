@@ -239,7 +239,7 @@ class FileInfoBrowser:
         
         self.custom_tags_browser = QTextBrowser()
         self.custom_tags_browser.setFont(self.global_font)
-        self.custom_tags_browser.setPlainText("无自定义标签")
+        self.custom_tags_browser.setPlainText("当前功能暂未开发完成，敬请期待！")
         self.custom_tags_browser.setMinimumHeight(80)  # 设置最小高度
         custom_layout.addWidget(self.custom_tags_browser)
         
