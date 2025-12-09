@@ -19,7 +19,7 @@ import sys
 import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QGroupBox, QGridLayout, QMessageBox, QSizePolicy
+    QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -80,6 +80,20 @@ class UnifiedPreviewer(QWidget):
         self.preview_area = QWidget()
         self.preview_layout = QVBoxLayout(self.preview_area)
         
+        # 创建预览控制栏（右上角按钮）- 放在预览组件上方
+        self.control_layout = QHBoxLayout()
+        self.control_layout.setContentsMargins(0, 0, 0, 5)  # 底部添加5px间距
+        self.control_layout.setAlignment(Qt.AlignRight)
+        
+        # 创建"使用系统默认方式打开"按钮
+        self.open_with_system_button = QPushButton("使用系统默认方式打开")
+        self.open_with_system_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.open_with_system_button.clicked.connect(self._open_file_with_system)
+        self.open_with_system_button.hide()  # 默认隐藏
+        
+        self.control_layout.addWidget(self.open_with_system_button)
+        self.preview_layout.addLayout(self.control_layout)  # 控制栏放在最上方
+        
         # 添加默认提示信息
         self.default_label = QLabel("请选择一个文件进行预览")
         self.default_label.setAlignment(Qt.AlignCenter)
@@ -122,6 +136,7 @@ class UnifiedPreviewer(QWidget):
             self._clear_preview()
             self.preview_layout.addWidget(self.default_label)
             self.default_label.show()
+            self.open_with_system_button.hide()
             return
         
         # 获取文件路径和类型
@@ -143,6 +158,7 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(error_label)
             self.current_preview_widget = error_label
             self.current_preview_type = "error"
+            self.open_with_system_button.hide()
             return
         
         # 确定预览类型
@@ -211,10 +227,45 @@ class UnifiedPreviewer(QWidget):
             
             # 更新当前预览类型
             self.current_preview_type = preview_type
+        
+        # 显示"使用系统默认方式打开"按钮
+        self.open_with_system_button.show()
+        
+    def _open_file_with_system(self):
+        """
+        使用系统默认方式打开当前预览的文件
+        """
+        if not self.current_file_info:
+            return
+        
+        file_path = self.current_file_info["path"]
+        if not file_path:
+            return
+        
+        # 确保文件路径是绝对路径
+        file_path = os.path.abspath(file_path)
+        
+        # 检查文件是否存在
+        if not os.path.exists(file_path):
+            QMessageBox.warning(self, "错误", f"文件不存在: {file_path}")
+            return
+        
+        try:
+            if sys.platform == "win32":
+                # Windows系统
+                os.startfile(file_path)
+            elif sys.platform == "darwin":
+                # macOS系统
+                os.system(f"open \"{file_path}\"")
+            else:
+                # Linux系统
+                os.system(f"xdg-open \"{file_path}\"")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"无法打开文件: {str(e)}")
     
     def _clear_preview(self):
         """
-        清除当前预览内容，确保所有组件都被正确释放
+        清除当前预览内容，确保所有组件都被正确释放，但保留控制栏
         """
         # 先移除默认标签（如果存在），避免重复添加
         if hasattr(self, 'default_label') and self.default_label and self.default_label.parent() is self.preview_area:
@@ -233,8 +284,11 @@ class UnifiedPreviewer(QWidget):
             # 断开所有信号连接
             self.current_preview_widget.disconnect()
             
-            # 清除布局中的所有组件
+            # 清除布局中的所有组件，除了控制栏
+            # 控制栏是第一个组件，所以只清除从索引1开始的组件
             for i in reversed(range(self.preview_layout.count())):
+                if i == 0:  # 保留控制栏
+                    continue
                 item = self.preview_layout.itemAt(i)
                 if item is not None:
                     widget = item.widget()
@@ -242,9 +296,9 @@ class UnifiedPreviewer(QWidget):
                         self.preview_layout.removeWidget(widget)
                         widget.deleteLater()
         
-        # 清空布局中的所有子项，确保彻底清除
-        while self.preview_layout.count() > 0:
-            item = self.preview_layout.takeAt(0)
+        # 确保布局中只保留控制栏
+        while self.preview_layout.count() > 1:  # 1表示只保留控制栏
+            item = self.preview_layout.takeAt(1)  # 从索引1开始移除
             if item is not None:
                 widget = item.widget()
                 if widget is not None:
