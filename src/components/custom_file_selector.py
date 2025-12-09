@@ -1428,11 +1428,21 @@ class CustomFileSelector(QWidget):
                 # 图像文件使用图像图标
                 icon_path = os.path.join(icon_dir, "图像.svg")
             elif suffix in document_formats:
-                # 文档文件使用文档图标
+                # 文档文件使用对应图标
                 if suffix == "pdf":
                     # PDF文件使用专门的PDF图标
                     icon_path = os.path.join(icon_dir, "PDF.svg")
+                elif suffix in ["ppt", "pptx", "ppsx"]:
+                    # PowerPoint文件使用PPT图标
+                    icon_path = os.path.join(icon_dir, "PPT.svg")
+                elif suffix in ["xls", "xlsx", "csv"]:
+                    # Excel文件使用表格图标
+                    icon_path = os.path.join(icon_dir, "表格.svg")
+                elif suffix in ["doc", "docx", "wps"]:
+                    # Word文件使用Word文档图标
+                    icon_path = os.path.join(icon_dir, "Word文档.svg")
                 else:
+                    # 其他文档使用默认文档图标
                     icon_path = os.path.join(icon_dir, "文档.svg")
             elif suffix in font_formats:
                 # 字体文件使用字体图标
@@ -1576,11 +1586,21 @@ class CustomFileSelector(QWidget):
                 # 图像文件使用图像图标
                 icon_path = os.path.join(icon_dir, "图像.svg")
             elif suffix in document_formats:
-                # 文档文件使用文档图标
+                # 文档文件使用对应图标
                 if suffix == "pdf":
                     # PDF文件使用专门的PDF图标
                     icon_path = os.path.join(icon_dir, "PDF.svg")
+                elif suffix in ["ppt", "pptx", "ppsx"]:
+                    # PowerPoint文件使用PPT图标
+                    icon_path = os.path.join(icon_dir, "PPT.svg")
+                elif suffix in ["xls", "xlsx", "csv"]:
+                    # Excel文件使用表格图标
+                    icon_path = os.path.join(icon_dir, "表格.svg")
+                elif suffix in ["doc", "docx", "wps"]:
+                    # Word文件使用Word文档图标
+                    icon_path = os.path.join(icon_dir, "Word文档.svg")
                 else:
+                    # 其他文档使用默认文档图标
                     icon_path = os.path.join(icon_dir, "文档.svg")
             elif suffix in font_formats:
                 # 字体文件使用字体图标
