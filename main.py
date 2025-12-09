@@ -65,11 +65,14 @@ class FreeAssetFilterApp(QMainWindow):
     
     def closeEvent(self, event):
         """
-        主窗口关闭事件，确保保存文件选择器的当前路径
+        主窗口关闭事件，确保保存文件选择器的当前路径和文件存储池状态
         """
         # 保存文件选择器A的当前路径
         if hasattr(self, 'file_selector_a'):
             self.file_selector_a.save_current_path()
+        # 保存文件存储池状态
+        if hasattr(self, 'file_staging_pool'):
+            self.file_staging_pool.save_backup()
         # 调用父类的closeEvent
         super().closeEvent(event)
     
@@ -168,6 +171,9 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label.setStyleSheet("font-size: 12px; color: #666; margin-top: 10px;")
         main_layout.addWidget(self.status_label)
         #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
+        
+        # 初始化完成后，检查是否需要恢复上次的文件列表
+        self.check_and_restore_backup()
     
     def show_info(self, title, message):
         """
@@ -246,6 +252,94 @@ class FreeAssetFilterApp(QMainWindow):
                         widget.detail_label.setStyleSheet("background: transparent; border: none; color: #666666;")
                         if hasattr(widget, 'modified_label'):
                             widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
+    
+    def check_and_restore_backup(self):
+        """
+        检查是否存在备份文件，并询问用户是否要恢复上次的文件列表
+        """
+        from PyQt5.QtWidgets import QMessageBox
+        import os
+        import json
+        
+        # 备份文件路径
+        backup_file = os.path.join(os.path.dirname(__file__), 'data', 'staging_pool_backup.json')
+        
+        # 检查备份文件是否存在
+        if os.path.exists(backup_file):
+            # 读取备份文件，检查是否有内容
+            with open(backup_file, 'r', encoding='utf-8') as f:
+                backup_data = json.load(f)
+            
+            if backup_data:
+                # 询问用户是否恢复
+                reply = QMessageBox.question(
+                    self, "恢复文件列表", 
+                    f"检测到上次有 {len(backup_data)} 个文件在文件存储池中，是否要恢复？",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.restore_backup(backup_data)
+    
+    def restore_backup(self, backup_data):
+        """
+        从备份数据恢复文件列表，包含文件存在性校验
+        
+        Args:
+            backup_data (list): 备份的文件列表数据
+        """
+        import os
+        
+        # 恢复文件到存储池，并检查文件是否存在
+        success_count = 0
+        unlinked_files = []
+        
+        for file_info in backup_data:
+            # 检查文件是否存在
+            if os.path.exists(file_info["path"]):
+                # 添加到文件存储池
+                self.file_staging_pool.add_file(file_info)
+                
+                # 更新文件选择器的选中状态
+                file_path = file_info['path']
+                file_dir = os.path.dirname(file_path)
+                
+                # 确保文件选择器的selected_files字典中存在该目录
+                if file_dir not in self.file_selector_a.selected_files:
+                    self.file_selector_a.selected_files[file_dir] = set()
+                
+                # 添加到选中文件集合
+                self.file_selector_a.selected_files[file_dir].add(file_path)
+                
+                success_count += 1
+            else:
+                # 添加到未链接文件列表
+                unlinked_files.append({
+                    "original_file_info": file_info,
+                    "status": "unlinked",  # unlinked, ignored, linked
+                    "new_path": None,
+                    "md5": self.file_staging_pool.calculate_md5(file_info["path"]) if os.path.exists(file_info["path"]) else None
+                })
+        
+        # 如果有未链接文件，显示处理对话框
+        if unlinked_files:
+            self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
+        
+        # 更新文件选择器的选中文件计数
+        current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
+        total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
+        self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
+        
+        # 刷新当前目录的文件显示，确保选中状态正确
+        if hasattr(self.file_selector_a, 'current_path'):
+            # 获取当前目录的文件列表
+            current_files = self.file_selector_a._get_files()
+            # 应用排序和筛选
+            current_files = self.file_selector_a._sort_files(current_files)
+            current_files = self.file_selector_a._filter_files(current_files)
+            # 重新创建文件卡片，确保选中状态正确
+            self.file_selector_a._clear_files_layout()
+            self.file_selector_a._create_file_cards(current_files)
     
     def show_info(self, title, message):
         """
