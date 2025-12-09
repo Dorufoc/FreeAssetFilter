@@ -37,7 +37,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import (
     QIcon, QPixmap, QFont, QFontMetrics, QColor, QCursor,
-    QBrush, QPainter, QPen, QPalette, QImage
+    QBrush, QPainter, QPen, QPalette, QImage, QFontDatabase
 )
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from src.utils.svg_renderer import SvgRenderer
@@ -64,6 +64,12 @@ class CustomFileSelector(QWidget):
         
         # 设置组件字体
         self.setFont(self.global_font)
+        
+        # 设置最小宽度，确保能容纳3列卡片
+        # 计算方式：基于_calculate_max_columns方法的逻辑
+        # 3个卡片实际宽度(150*3) + 左右边距(20) = 450 + 20 = 470
+        # 卡片实际宽度=卡片宽度(140)+右侧间距(10)
+        self.setMinimumWidth(520)
         
         # 初始化配置
         self.current_path = os.path.expanduser("~")  # 默认路径为用户主目录
@@ -1459,87 +1465,105 @@ class CustomFileSelector(QWidget):
         
         # 加载并显示SVG图标
         if icon_path and os.path.exists(icon_path):
-            try:
-                # 读取SVG文件内容，预处理以确保兼容性
-                with open(icon_path, 'r', encoding='utf-8') as f:
-                    svg_content = f.read()
+            # 创建一个透明的QLabel
+            label = QLabel()
+            label.setAlignment(Qt.AlignCenter)
+            label.setFixedSize(120, 120)
+            
+            # 使用改进的QSvgRenderer实现
+            svg_renderer = QSvgRenderer(icon_path)
+            
+            # 创建一个QImage，使用ARGB32_Premultiplied格式以支持正确的透明度
+            image = QImage(120, 120, QImage.Format_ARGB32_Premultiplied)
+            image.fill(Qt.transparent)  # 使用透明背景
+            
+            # 创建画家
+            painter = QPainter(image)
+            
+            # 设置最高质量的渲染提示
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
+            
+            # 渲染SVG图标
+            svg_renderer.render(painter)
+            
+            # 如果是未知文件类型，在图标上显示后缀名
+            if icon_path.endswith("未知底板.svg"):
+                # 获取后缀名
+                suffix = file_info["suffix"].upper()
                 
-                # 预处理SVG内容：将rgba颜色转换为十六进制格式
-                import re
+                # 限制后缀名长度，最多5个字符
+                if len(suffix) > 6:
+                    suffix = "FILE"
                 
-                def rgba_to_hex(match):
-                    rgba_values = match.group(1).split(',')
-                    # 去除空格并转换为浮点数
-                    r = float(rgba_values[0].strip())
-                    g = float(rgba_values[1].strip())
-                    b = float(rgba_values[2].strip())
-                    a = float(rgba_values[3].strip())
-                    # 将alpha值转换为十六进制（0-255）
-                    a = int(a * 255)
-                    # 转换为十六进制格式，使用小写字母，不足两位补零
-                    return f'#{int(r):02x}{int(g):02x}{int(b):02x}{a:02x}'
+                # 加载指定字体
+                font_path = os.path.join(os.path.dirname(__file__), "..", "Icon", "庞门正道标题体.ttf")
+                font = QFont()
                 
-                # 替换CSS rgba格式为十六进制格式
-                svg_content = re.sub(r'rgba\(([^\)]+)\)', rgba_to_hex, svg_content)
+                # 尝试加载字体文件，如果失败则使用默认字体
+                if os.path.exists(font_path):
+                    font_id = QFontDatabase.addApplicationFont(font_path)
+                    if font_id != -1:
+                        font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                        font.setFamily(font_family)
                 
-                # 使用QSvgWidget直接渲染SVG，这对透明度支持更好
-                svg_widget = QSvgWidget()
-                svg_widget.load(svg_content.encode('utf-8'))
-                svg_widget.setFixedSize(120, 120)
-                svg_widget.setStyleSheet("background: transparent;")
-                return svg_widget
-            except Exception as e:
-                print(f"使用QSvgWidget加载SVG图标失败: {e}")
-                # 如果QSvgWidget失败，回退到QSvgRenderer
-                try:
-                    # 创建一个透明的QLabel
-                    label = QLabel()
-                    label.setAlignment(Qt.AlignCenter)
-                    label.setFixedSize(120, 120)
-                    
-                    # 使用改进的QSvgRenderer实现
-                    svg_renderer = QSvgRenderer(icon_path)
-                    
-                    # 创建一个QImage，使用ARGB32_Premultiplied格式以支持正确的透明度
-                    image = QImage(120, 120, QImage.Format_ARGB32_Premultiplied)
-                    image.fill(Qt.transparent)  # 使用透明背景
-                    
-                    # 创建画家
-                    painter = QPainter(image)
-                    
-                    # 设置最高质量的渲染提示
-                    painter.setRenderHint(QPainter.Antialiasing, True)
-                    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                    painter.setRenderHint(QPainter.TextAntialiasing, True)
-                    painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
-                    
-                    # 渲染SVG图标
-                    svg_renderer.render(painter)
-                    
-                    painter.end()
-                    
-                    # 将QImage转换为QPixmap，确保透明度正确
-                    pixmap = QPixmap.fromImage(image)
-                    
-                    if not pixmap.isNull():
-                        label.setPixmap(pixmap)
-                    else:
-                        # 如果加载失败，创建一个默认的透明图标
-                        pixmap = QPixmap(120, 120)
-                        pixmap.fill(Qt.transparent)
-                        label.setPixmap(pixmap)
-                    
-                    return label
-                except Exception as renderer_e:
-                    print(f"使用QSvgRenderer加载SVG图标失败: {renderer_e}")
-                    # 如果加载失败，创建一个默认的透明图标
-                    label = QLabel()
-                    label.setAlignment(Qt.AlignCenter)
-                    label.setFixedSize(120, 120)
-                    pixmap = QPixmap(120, 120)
-                    pixmap.fill(Qt.transparent)
-                    label.setPixmap(pixmap)
-                    return label
+                # 设置字体大小，初始值为40
+                font_size = 40
+                font.setPointSize(font_size)
+                font.setBold(True)
+                
+                # 自适应调整字体大小，确保文字不超出图标边界
+                font_metrics = QFontMetrics(font)
+                text_width = font_metrics.width(suffix)
+                text_height = font_metrics.height()
+                
+                # 调整字体大小，确保文字在图标内居中显示
+                max_text_width = 60  # 最大文本宽度
+                while text_width > max_text_width and font_size > 10:
+                    font_size -= 1
+                    font.setPointSize(font_size)
+                    font_metrics = QFontMetrics(font)
+                    text_width = font_metrics.width(suffix)
+                
+                # 设置字体
+                painter.setFont(font)
+                
+                # 设置文字颜色为纯黑色
+                painter.setPen(QPen(QColor(0, 0, 0), 1, Qt.SolidLine))
+                
+                # 计算文字位置，确保整个文本在图标正中心显示
+                x = (120 - text_width) // 2
+                
+                # 获取字体的ascent和descent，用于准确计算垂直居中位置
+                ascent = font_metrics.ascent()
+                descent = font_metrics.descent()
+                
+                # 计算文本的实际高度（ascent + descent）
+                actual_text_height = ascent + descent
+                
+                # 计算y坐标，确保整个文本块在图标中心
+                # y坐标是基线位置，所以需要调整为：(图标高度 + ascent - descent) // 2
+                y = (120 + ascent - descent) // 2
+                
+                # 绘制文字
+                painter.drawText(x, y, suffix)
+            
+            painter.end()
+            
+            # 将QImage转换为QPixmap，确保透明度正确
+            pixmap = QPixmap.fromImage(image)
+            
+            if not pixmap.isNull():
+                label.setPixmap(pixmap)
+            else:
+                # 如果加载失败，创建一个默认的透明图标
+                pixmap = QPixmap(120, 120)
+                pixmap.fill(Qt.transparent)
+                label.setPixmap(pixmap)
+            
+            return label
         else:
             # 如果没有对应的SVG图标，创建一个默认的透明图标
             label = QLabel()

@@ -1,10 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="79" viewBox="0 0 256 79">
-  <defs>
-    <clipPath id="clip-条-底部-头">
-      <rect width="256" height="79"/>
-    </clipPath>
-  </defs>
-  <g id="条-底部-头" clip-path="url(#clip-条-底部-头)">
-    <rect id="矩形_2" data-name="矩形 2" width="144" height="221" rx="72" transform="translate(56 5)" fill="#ccc"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="79" viewBox="0 0 256 79"><defs><style>.a{clip-path:url(#b);}.b{fill:#ccc;}</style><clipPath id="b"><rect width="256" height="79"/></clipPath></defs><g id="a" class="a"><rect class="b" width="144" height="221" rx="72" transform="translate(56 5)"/></g></svg>

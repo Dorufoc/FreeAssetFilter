@@ -219,9 +219,8 @@ class UnifiedPreviewer(QWidget):
                 self.current_preview_widget = self.archive_browser
             else:
                 # 未知文件类型预览
-                unknown_label = QLabel(f"无法预览该类型文件: {file_type}")
+                unknown_label = QLabel("不支持预览")
                 unknown_label.setAlignment(Qt.AlignCenter)
-                unknown_label.setStyleSheet("color: orange; font-weight: bold;")
                 self.preview_layout.addWidget(unknown_label)
                 self.current_preview_widget = unknown_label
             
