@@ -62,6 +62,11 @@ class FileStagingPool(QWidget):
         # 初始化数据
         self.items = []  # 存储所有添加的文件/文件夹项目
         
+        # 备份文件路径
+        self.backup_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'staging_pool_backup.json')
+        # 确保数据目录存在
+        os.makedirs(os.path.dirname(self.backup_file), exist_ok=True)
+        
         # 初始化UI
         self.init_ui()
         
@@ -112,6 +117,11 @@ class FileStagingPool(QWidget):
         self.export_btn.clicked.connect(self.export_selected_files)
         export_layout.addWidget(self.export_btn)
         
+        # 导入/导出数据按钮
+        self.import_export_btn = QPushButton("导入/导出数据")
+        self.import_export_btn.clicked.connect(self.show_import_export_dialog)
+        export_layout.addWidget(self.import_export_btn)
+        
         # 进度条
         from PyQt5.QtWidgets import QProgressBar
         self.progress_bar = QProgressBar()
@@ -158,6 +168,9 @@ class FileStagingPool(QWidget):
         
         # 更新统计信息
         self.update_stats()
+        
+        # 实时保存备份
+        self.save_backup()
     
     def remove_file(self, file_path):
         """
@@ -182,6 +195,9 @@ class FileStagingPool(QWidget):
         
         # 更新统计信息
         self.update_stats()
+        
+        # 实时保存备份
+        self.save_backup()
     
     def clear_all(self):
         """
@@ -206,6 +222,9 @@ class FileStagingPool(QWidget):
             self.items_list.clear()
             # 更新统计信息
             self.update_stats()
+            
+            # 实时保存备份
+            self.save_backup()
     
     def create_item_widget(self, file_info):
         """
@@ -458,6 +477,8 @@ class FileStagingPool(QWidget):
                     item.setData(Qt.UserRole, file_info)
                     break
             
+            # 实时保存备份
+            self.save_backup()
             break
     
     def open_file(self, file_info):
@@ -574,6 +595,521 @@ class FileStagingPool(QWidget):
             if hasattr(obj, 'rename_btn'):
                 obj.rename_btn.setVisible(False)
         return super().eventFilter(obj, event)
+    
+    def save_backup(self):
+        """
+        保存当前文件列表到备份文件
+        """
+        import json
+        try:
+            with open(self.backup_file, 'w', encoding='utf-8') as f:
+                json.dump(self.items, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存文件列表备份失败: {e}")
+    
+    def show_import_export_dialog(self):
+        """
+        显示导入/导出数据对话框
+        """
+        from PyQt5.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QPushButton, QLabel
+        
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("导入/导出数据")
+        dialog.setMinimumSize(300, 150)
+        
+        # 创建布局
+        layout = QVBoxLayout(dialog)
+        
+        # 添加标题
+        title_label = QLabel("请选择操作:")
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # 创建按钮布局
+        button_layout = QHBoxLayout()
+        
+        # 导入按钮
+        import_btn = QPushButton("导入数据")
+        import_btn.clicked.connect(lambda: self.import_data(dialog))
+        button_layout.addWidget(import_btn)
+        
+        # 导出按钮
+        export_btn = QPushButton("导出数据")
+        export_btn.clicked.connect(lambda: self.export_data(dialog))
+        button_layout.addWidget(export_btn)
+        
+        # 取消按钮
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        # 添加按钮布局到主布局
+        layout.addLayout(button_layout)
+        
+        # 显示对话框
+        dialog.exec_()
+    
+    def import_data(self, dialog):
+        """
+        导入数据功能
+        
+        Args:
+            dialog (QDialog): 父对话框
+        """
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        import json
+        
+        # 打开文件选择对话框，选择JSON文件
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择导入文件", "", "JSON文件 (*.json)"
+        )
+        
+        if file_path:
+            try:
+                # 读取JSON文件
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    import_data = json.load(f)
+                
+                # 验证数据格式
+                if not isinstance(import_data, list):
+                    QMessageBox.warning(self, "导入失败", "文件格式不正确，应为JSON数组格式")
+                    return
+                
+                # 询问用户是否要清空现有数据
+                reply = QMessageBox.question(
+                    self, "确认导入", 
+                    f"即将导入 {len(import_data)} 个文件，是否要清空现有数据？",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    # 清空现有数据
+                    self.clear_all_without_confirmation()
+                
+                # 导入数据并检查文件是否存在
+                success_count = 0
+                unlinked_files = []
+                
+                for file_info in import_data:
+                    # 验证文件信息格式
+                    if isinstance(file_info, dict) and "path" in file_info and "name" in file_info:
+                        # 检查文件是否存在
+                        if os.path.exists(file_info["path"]):
+                            self.add_file(file_info)
+                            success_count += 1
+                        else:
+                            # 添加到未链接文件列表
+                            unlinked_files.append({
+                                "original_file_info": file_info,
+                                "status": "unlinked",  # unlinked, ignored, linked
+                                "new_path": None,
+                                "md5": self.calculate_md5(file_info["path"]) if os.path.exists(file_info["path"]) else None
+                            })
+                
+                # 如果有未链接文件，显示处理对话框
+                if unlinked_files:
+                    self.show_unlinked_files_dialog(unlinked_files)
+                
+                QMessageBox.information(
+                    self, "导入完成", 
+                    f"成功导入 {success_count} 个文件，{len(unlinked_files)} 个文件需要手动链接"
+                )
+                
+                # 关闭对话框
+                dialog.accept()
+            except json.JSONDecodeError:
+                QMessageBox.warning(self, "导入失败", "JSON文件格式不正确")
+            except Exception as e:
+                QMessageBox.warning(self, "导入失败", f"导入过程中发生错误: {str(e)}")
+    
+    def calculate_md5(self, file_path):
+        """
+        计算文件的MD5值
+        
+        Args:
+            file_path (str): 文件路径
+            
+        Returns:
+            str: 文件的MD5值，如果文件不存在则返回None
+        """
+        import hashlib
+        try:
+            if not os.path.exists(file_path):
+                return None
+            
+            hash_md5 = hashlib.md5()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+            return hash_md5.hexdigest()
+        except Exception as e:
+            print(f"计算MD5失败: {e}")
+            return None
+    
+    def show_unlinked_files_dialog(self, unlinked_files):
+        """
+        显示未链接文件处理对话框
+        
+        Args:
+            unlinked_files (list): 未链接文件列表
+        """
+        from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
+                                     QListWidget, QListWidgetItem, QMenu, QAction, 
+                                     QMessageBox, QFileDialog, QLabel, QGridLayout)
+        
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("处理未链接文件")
+        dialog.setMinimumSize(600, 400)
+        
+        # 创建布局
+        main_layout = QVBoxLayout(dialog)
+        
+        # 添加标题
+        title_label = QLabel(f"有 {len(unlinked_files)} 个文件需要手动链接:")
+        title_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(title_label)
+        
+        # 创建未链接文件列表
+        self.unlinked_list_widget = QListWidget()
+        self.unlinked_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.unlinked_list_widget.customContextMenuRequested.connect(lambda pos: self.show_unlinked_context_menu(pos, unlinked_files))
+        
+        # 添加未链接文件到列表
+        for i, file_item in enumerate(unlinked_files):
+            list_item = QListWidgetItem()
+            file_info = file_item["original_file_info"]
+            display_text = f"{file_info['name']} - {file_info['path']} ({file_item['status']})"
+            list_item.setText(display_text)
+            list_item.setData(Qt.UserRole, i)  # 存储索引
+            self.unlinked_list_widget.addItem(list_item)
+        
+        main_layout.addWidget(self.unlinked_list_widget)
+        
+        # 创建按钮布局
+        button_layout = QHBoxLayout()
+        
+        # 手动链接按钮
+        manual_link_btn = QPushButton("手动链接")
+        manual_link_btn.clicked.connect(lambda: self.manual_link_files(unlinked_files, self.unlinked_list_widget))
+        button_layout.addWidget(manual_link_btn)
+        
+        # 忽略所有按钮
+        ignore_all_btn = QPushButton("忽略所有")
+        ignore_all_btn.clicked.connect(lambda: self.ignore_all_files(unlinked_files))
+        button_layout.addWidget(ignore_all_btn)
+        
+        # 完成按钮
+        finish_btn = QPushButton("完成")
+        finish_btn.clicked.connect(lambda: self.finish_unlinked_files_dialog(dialog, unlinked_files))
+        button_layout.addWidget(finish_btn)
+        
+        main_layout.addLayout(button_layout)
+        
+        # 显示对话框
+        dialog.exec_()
+        
+        # 处理已链接的文件
+        for file_item in unlinked_files:
+            if file_item["status"] == "linked" and file_item["new_path"]:
+                # 更新文件信息
+                new_file_info = file_item["original_file_info"].copy()
+                new_file_info["path"] = file_item["new_path"]
+                new_file_info["name"] = os.path.basename(file_item["new_path"])
+                # 添加到文件存储池
+                self.add_file(new_file_info)
+    
+    def show_unlinked_context_menu(self, pos, unlinked_files):
+        """
+        显示未链接文件的右键菜单
+        
+        Args:
+            pos (QPoint): 鼠标位置
+            unlinked_files (list): 未链接文件列表
+        """
+        from PyQt5.QtWidgets import QMenu, QAction
+        
+        # 获取当前选中的项
+        selected_items = self.unlinked_list_widget.selectedItems()
+        if not selected_items:
+            return
+        
+        # 创建菜单
+        menu = QMenu()
+        
+        # 忽略此项
+        ignore_action = menu.addAction("忽略此项")
+        ignore_action.triggered.connect(lambda: self.ignore_selected_files(unlinked_files, selected_items))
+        
+        # 手动链接此项
+        link_action = menu.addAction("手动链接此文件")
+        link_action.triggered.connect(lambda: self.manual_link_selected_files(unlinked_files, selected_items))
+        
+        # 显示菜单
+        menu.exec_(self.unlinked_list_widget.mapToGlobal(pos))
+    
+    def manual_link_files(self, unlinked_files, list_widget):
+        """
+        手动链接文件
+        
+        Args:
+            unlinked_files (list): 未链接文件列表
+            list_widget (QListWidget): 列表控件
+        """
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        
+        # 选择一个目录
+        dir_path = QFileDialog.getExistingDirectory(self, "选择文件目录")
+        if not dir_path:
+            return
+        
+        # 遍历目录下所有文件
+        matched_count = 0
+        for root, dirs, files in os.walk(dir_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                file_md5 = self.calculate_md5(file_path)
+                
+                # 查找匹配的未链接文件
+                for file_item in unlinked_files:
+                    if file_item["status"] == "unlinked":
+                        original_file_info = file_item["original_file_info"]
+                        original_name = original_file_info["name"]
+                        original_md5 = self.calculate_md5(original_file_info["path"])
+                        
+                        # 优先匹配MD5
+                        if file_md5 and original_md5 and file_md5 == original_md5:
+                            file_item["status"] = "linked"
+                            file_item["new_path"] = file_path
+                            matched_count += 1
+                            break
+                        # 其次匹配文件名
+                        elif file == original_name:
+                            # 询问用户是否接受仅文件名匹配
+                            reply = QMessageBox.question(
+                                self, "文件名匹配",
+                                f"找到文件名匹配的文件，但MD5不匹配。\n"\
+                                f"原始文件: {original_name}\n"\
+                                f"找到文件: {file_path}\n"\
+                                f"是否接受仅文件名匹配？",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                            )
+                            
+                            if reply == QMessageBox.Yes:
+                                file_item["status"] = "linked"
+                                file_item["new_path"] = file_path
+                                matched_count += 1
+                                break
+        
+        # 更新列表显示
+        self.update_unlinked_list(unlinked_files)
+        
+        QMessageBox.information(self, "匹配完成", f"成功匹配 {matched_count} 个文件")
+    
+    def manual_link_selected_files(self, unlinked_files, selected_items):
+        """
+        手动链接选中的文件
+        
+        Args:
+            unlinked_files (list): 未链接文件列表
+            selected_items (list): 选中的列表项
+        """
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        
+        for item in selected_items:
+            index = item.data(Qt.UserRole)
+            file_item = unlinked_files[index]
+            
+            if file_item["status"] == "unlinked":
+                # 让用户选择文件
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self, "选择文件", "", "所有文件 (*.*)"
+                )
+                
+                if file_path:
+                    # 检查文件名是否匹配
+                    original_name = file_item["original_file_info"]["name"]
+                    new_name = os.path.basename(file_path)
+                    
+                    if original_name != new_name:
+                        # 询问用户是否接受不同文件名
+                        reply = QMessageBox.question(
+                            self, "文件名不匹配",
+                            f"选中文件的文件名与原始文件不同。\n"\
+                            f"原始文件名: {original_name}\n"\
+                            f"选中文件名: {new_name}\n"\
+                            f"是否继续？",
+                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                        )
+                        
+                        if reply != QMessageBox.Yes:
+                            continue
+                    
+                    # 更新文件状态
+                    file_item["status"] = "linked"
+                    file_item["new_path"] = file_path
+        
+        # 更新列表显示
+        self.update_unlinked_list(unlinked_files)
+    
+    def ignore_selected_files(self, unlinked_files, selected_items):
+        """
+        忽略选中的文件
+        
+        Args:
+            unlinked_files (list): 未链接文件列表
+            selected_items (list): 选中的列表项
+        """
+        for item in selected_items:
+            index = item.data(Qt.UserRole)
+            file_item = unlinked_files[index]
+            file_item["status"] = "ignored"
+        
+        # 更新列表显示
+        self.update_unlinked_list(unlinked_files)
+    
+    def ignore_all_files(self, unlinked_files):
+        """
+        忽略所有未链接文件
+        
+        Args:
+            unlinked_files (list): 未链接文件列表
+        """
+        from PyQt5.QtWidgets import QMessageBox
+        
+        reply = QMessageBox.question(
+            self, "确认忽略所有",
+            "确定要忽略所有未链接的文件吗？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            for file_item in unlinked_files:
+                file_item["status"] = "ignored"
+            
+            # 更新列表显示
+            self.update_unlinked_list(unlinked_files)
+    
+    def update_unlinked_list(self, unlinked_files):
+        """
+        更新未链接文件列表显示
+        
+        Args:
+            unlinked_files (list): 未链接文件列表
+        """
+        self.unlinked_list_widget.clear()
+        
+        for i, file_item in enumerate(unlinked_files):
+            list_item = QListWidgetItem()
+            file_info = file_item["original_file_info"]
+            display_text = f"{file_info['name']} - {file_info['path']} ({file_item['status']})"
+            list_item.setText(display_text)
+            list_item.setData(Qt.UserRole, i)
+            self.unlinked_list_widget.addItem(list_item)
+    
+    def finish_unlinked_files_dialog(self, dialog, unlinked_files):
+        """
+        完成未链接文件处理
+        
+        Args:
+            dialog (QDialog): 对话框实例
+            unlinked_files (list): 未链接文件列表
+        """
+        from PyQt5.QtWidgets import QMessageBox
+        
+        # 检查是否还有未处理的文件
+        has_unlinked = any(item["status"] == "unlinked" for item in unlinked_files)
+        
+        if has_unlinked:
+            reply = QMessageBox.question(
+                self, "还有未处理文件",
+                "还有未链接的文件，确定要完成吗？未处理的文件将被忽略。",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                # 忽略所有未处理的文件
+                for file_item in unlinked_files:
+                    if file_item["status"] == "unlinked":
+                        file_item["status"] = "ignored"
+                dialog.accept()
+        else:
+            dialog.accept()
+    
+    def export_data(self, dialog):
+        """
+        导出数据功能
+        
+        Args:
+            dialog (QDialog): 父对话框
+        """
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        import json
+        from datetime import datetime
+        
+        # 检查是否有数据可导出
+        if not self.items:
+            QMessageBox.information(self, "导出提示", "文件存储池中没有数据可以导出")
+            return
+        
+        # 生成带时间戳的默认文件名
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        default_filename = f"FAF_{current_time}.json"
+        
+        # 打开文件保存对话框，选择保存路径
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "选择导出文件", default_filename, "JSON文件 (*.json)"
+        )
+        
+        if file_path:
+            try:
+                # 导出数据到JSON文件
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.items, f, ensure_ascii=False, indent=2)
+                
+                QMessageBox.information(self, "导出成功", f"成功导出 {len(self.items)} 个文件的数据到 {file_path}")
+                
+                # 关闭对话框
+                dialog.accept()
+            except Exception as e:
+                QMessageBox.warning(self, "导出失败", f"导出过程中发生错误: {str(e)}")
+    
+    def clear_all_without_confirmation(self):
+        """
+        不显示确认对话框，直接清空所有项目
+        """
+        # 保存当前项目列表的副本，因为清空操作会修改原列表
+        items_to_remove = self.items.copy()
+        
+        # 发出信号通知文件选择器取消所有选中
+        for item in items_to_remove:
+            self.remove_from_selector.emit(item)
+        
+        # 清空列表
+        self.items.clear()
+        self.items_list.clear()
+        # 更新统计信息
+        self.update_stats()
+        
+        # 实时保存备份
+        self.save_backup()
+    
+    def load_backup(self):
+        """
+        从备份文件加载文件列表
+        
+        Returns:
+            list: 加载的文件列表，如果没有备份则返回空列表
+        """
+        import json
+        try:
+            if os.path.exists(self.backup_file):
+                with open(self.backup_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"加载文件列表备份失败: {e}")
+        return []
     
     def copy_files(self, files, target_dir):
         """
