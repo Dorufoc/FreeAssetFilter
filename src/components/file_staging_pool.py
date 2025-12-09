@@ -98,8 +98,6 @@ class FileStagingPool(QWidget):
         # 创建项目列表
         self.items_list = QListWidget()
         self.items_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.items_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.items_list.customContextMenuRequested.connect(self.show_context_menu)
         self.items_list.itemDoubleClicked.connect(self.on_item_double_clicked)
         
         main_layout.addWidget(self.items_list)
@@ -332,51 +330,6 @@ class FileStagingPool(QWidget):
         """
         total_items = len(self.items)
         self.stats_label.setText(f"当前项目数: {total_items}")
-    
-    def show_context_menu(self, position):
-        """
-        显示上下文菜单
-        
-        Args:
-            position (QPoint): 菜单位置
-        """
-        # 获取当前选中的项
-        selected_items = self.items_list.selectedItems()
-        if not selected_items:
-            return
-        
-        # 创建菜单
-        menu = QMenu()
-        
-        # 添加操作
-        open_action = menu.addAction("打开")
-        open_action.triggered.connect(self.open_selected_items)
-        
-        menu.addSeparator()
-        
-        remove_action = menu.addAction("删除选中项")
-        remove_action.triggered.connect(self.remove_selected_items)
-        
-        # 显示菜单
-        menu.exec_(self.items_list.mapToGlobal(position))
-    
-    def open_selected_items(self):
-        """
-        打开选中的项目
-        """
-        for item in self.items_list.selectedItems():
-            file_info = item.data(Qt.UserRole)
-            if file_info:
-                self.open_file(file_info)
-    
-    def remove_selected_items(self):
-        """
-        删除选中的项目
-        """
-        for item in reversed(self.items_list.selectedItems()):
-            file_info = item.data(Qt.UserRole)
-            if file_info:
-                self.remove_file(file_info["path"])
     
     def on_item_double_clicked(self, item):
         """
