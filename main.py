@@ -24,11 +24,166 @@ import sys
 import os
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter
+    QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
 )
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
+
+# 尝试导入依赖检查所需的模块
+exportlib_metadata_available = False
+
+# 尝试使用importlib.metadata（Python 3.8+内置）
+try:
+    import importlib.metadata
+    exportlib_metadata_available = True
+except ImportError:
+    # 如果内置的不可用，尝试使用importlib_metadata包（Python 3.7及以下需要）
+    try:
+        import importlib_metadata
+        # 动态创建importlib.metadata别名
+        import sys
+        sys.modules['importlib.metadata'] = importlib_metadata
+        exportlib_metadata_available = True
+    except ImportError:
+        # 如果所有方法都失败，依赖检查将无法正常工作
+        exportlib_metadata_available = False
+
+# 尝试导入版本解析模块
+try:
+    from packaging.version import parse
+except ImportError:
+    # 如果packaging不可用，使用简单的版本比较
+    def parse(version_str):
+        return tuple(map(int, version_str.split('.')[:3]))
+
+
+def check_dependencies():
+    """
+    检查项目依赖是否已安装，根据requirements.txt文件
+    
+    Returns:
+        tuple: (success, missing_deps, version_issues)
+            success: bool - 是否所有依赖都满足
+            missing_deps: list - 缺失的依赖列表
+            version_issues: list - 版本不符合要求的依赖列表
+    """
+    requirements_file = os.path.join(os.path.dirname(__file__), 'requirements.txt')
+    missing_deps = []
+    version_issues = []
+    
+    try:
+        with open(requirements_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        for line in lines:
+            # 跳过注释行和空行
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            # 移除依赖项后面的注释（如：library>=version # comment）
+            if '#' in line:
+                line = line.split('#', 1)[0].strip()
+            
+            # 解析依赖项，支持格式如：library>=version
+            if '>=' in line:
+                lib_name, required_version = line.split('>=', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            elif '>' in line:
+                lib_name, required_version = line.split('>', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            elif '<=' in line:
+                lib_name, required_version = line.split('<=', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            elif '<' in line:
+                lib_name, required_version = line.split('<', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            elif '==' in line:
+                lib_name, required_version = line.split('==', 1)
+                lib_name = lib_name.strip()
+                required_version = required_version.strip()
+            else:
+                # 没有版本要求
+                lib_name = line.strip()
+                required_version = None
+            
+            # 检查依赖是否已安装
+            try:
+                installed_version = importlib.metadata.version(lib_name)
+                # 检查版本是否符合要求
+                if required_version:
+                    if parse(installed_version) < parse(required_version):
+                        version_issues.append((lib_name, installed_version, required_version))
+            except (importlib.metadata.PackageNotFoundError, NameError):
+                missing_deps.append((lib_name, required_version))
+            except Exception as e:
+                missing_deps.append((lib_name, required_version))
+        
+        success = len(missing_deps) == 0 and len(version_issues) == 0
+        return success, missing_deps, version_issues
+        
+    except Exception as e:
+        print(f"读取requirements.txt文件时出错: {e}")
+        return False, [], []
+
+
+def show_dependency_error(missing_deps, version_issues):
+    """
+    显示依赖错误信息，提示用户安装缺失的依赖
+    
+    Args:
+        missing_deps: list - 缺失的依赖列表
+        version_issues: list - 版本不符合要求的依赖列表
+    """
+    message = "检测到项目依赖问题，请安装或更新以下依赖：\n\n"
+    
+    if missing_deps:
+        message += "缺失的依赖：\n"
+        for lib, version in missing_deps:
+            if version:
+                message += f"  - {lib}>= {version}\n"
+            else:
+                message += f"  - {lib}\n"
+        message += "\n"
+    
+    if version_issues:
+        message += "版本不符合要求的依赖：\n"
+        for lib, installed, required in version_issues:
+            message += f"  - {lib}: 已安装 {installed}, 要求 >= {required}\n"
+    
+    message += "\n安装命令：\npip install -r requirements.txt"
+    
+    # 使用简单的print输出，避免依赖PyQt5
+    print("\n" + "="*50)
+    print("依赖错误")
+    print("="*50)
+    print(message)
+    print("="*50 + "\n")
+    
+    # 尝试使用PyQt5消息框显示错误
+    try:
+        app = QApplication.instance()
+        if not app:
+            # 不要在这里创建新的QApplication实例，避免与主程序冲突
+            pass
+        else:
+            QMessageBox.warning(
+                None, 
+                "依赖警告", 
+                message,
+                QMessageBox.Ok
+            )
+    except Exception as e:
+        # 如果PyQt5不可用，只使用print输出
+        pass
+    
+    # 不要强制退出，让应用程序继续运行
+    print("[警告] 依赖检查失败，但应用程序将继续运行，某些功能可能不可用。")
 
 # 导入自定义文件选择器组件
 from src.components.custom_file_selector import CustomFileSelector
@@ -354,6 +509,11 @@ class FreeAssetFilterApp(QMainWindow):
 
 # 主程序入口
 if __name__ == "__main__":
+    # 检查依赖
+    success, missing_deps, version_issues = check_dependencies()
+    if not success:
+        show_dependency_error(missing_deps, version_issues)
+    
     app = QApplication(sys.argv)
     
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
