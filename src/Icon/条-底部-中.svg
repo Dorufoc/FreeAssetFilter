@@ -1,1 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="41" viewBox="0 0 256 41"><defs><style>.a{clip-path:url(#b);}.b{fill:#ccc;}</style><clipPath id="b"><rect width="256" height="41"/></clipPath></defs><g id="a" class="a"><rect class="b" width="144" height="487" rx="72" transform="translate(56 -115)"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="41" viewBox="0 0 256 41">
+  <defs>
+    <clipPath id="clip-条-底部-中_">
+      <rect width="256" height="41"/>
+    </clipPath>
+  </defs>
+  <g id="条-底部-中_" data-name="条-底部-中 " clip-path="url(#clip-条-底部-中_)">
+    <rect id="矩形_2" data-name="矩形 2" width="144" height="487" rx="72" transform="translate(56 -115)" fill="#ccc"/>
+  </g>
+</svg>

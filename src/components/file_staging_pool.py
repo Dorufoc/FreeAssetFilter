@@ -247,12 +247,13 @@ class FileStagingPool(QWidget):
         icon_label.setFixedSize(32, 32)
         
         # 设置图标
-        if file_info["is_dir"]:
+        is_dir = file_info.get("is_dir", False)
+        if is_dir:
             icon = QIcon.fromTheme("folder")
             icon_label.setPixmap(icon.pixmap(24, 24))
         else:
             # 为不同类型的文件设置不同的图标
-            suffix = file_info["suffix"]
+            suffix = file_info.get("suffix", "")
             if suffix in ["jpg", "jpeg", "png", "gif", "bmp"]:
                 icon = QIcon.fromTheme("image")
             elif suffix in ["mp4", "avi", "mov", "mkv"]:
