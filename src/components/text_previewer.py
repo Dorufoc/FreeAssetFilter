@@ -25,7 +25,7 @@ import os
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QFileDialog, QLabel, QScrollArea, QGroupBox, QGridLayout,
-    QTextEdit, QComboBox
+    QTextEdit, QComboBox, QMenu, QAction
 )
 from PyQt5.QtGui import (
     QFont, QIcon
@@ -116,6 +116,9 @@ class TextPreviewWidget(QWidget):
         self.web_view = QWebEngineView()
         self.web_view.setMinimumHeight(500)
         self.web_view.setStyleSheet("background-color: white; border: 1px solid #e0e0e0; border-radius: 8px;")
+        # 为WebView添加自定义上下文菜单
+        self.web_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.web_view.customContextMenuRequested.connect(self.show_context_menu)
         layout.addWidget(self.web_view)
         print(f"[DEBUG] TextPreviewWidget UI组件设置字体: {self.global_font.family()}")
     
@@ -191,6 +194,39 @@ class TextPreviewWidget(QWidget):
         
         # 设置HTML内容
         self.web_view.setHtml(html_content)
+    
+    def show_context_menu(self, position):
+        """
+        显示自定义上下文菜单，仅在有选中文本时显示复制选项
+        """
+        # 使用JavaScript检查是否有选中的文本
+        def check_selection(selection_text):
+            if selection_text.strip():
+                # 创建上下文菜单
+                menu = QMenu(self.web_view)
+                
+                # 创建复制动作
+                copy_action = QAction("复制", self.web_view)
+                copy_action.triggered.connect(self.copy_selected_text)
+                menu.addAction(copy_action)
+                
+                # 在鼠标位置显示菜单
+                menu.exec_(self.web_view.mapToGlobal(position))
+        
+        # 执行JavaScript获取选中的文本
+        self.web_view.page().runJavaScript("window.getSelection().toString();", check_selection)
+    
+    def copy_selected_text(self):
+        """
+        复制选中的文本到剪贴板
+        """
+        def copy_to_clipboard(selection_text):
+            if selection_text.strip():
+                clipboard = QApplication.clipboard()
+                clipboard.setText(selection_text)
+        
+        # 执行JavaScript获取选中的文本并复制到剪贴板
+        self.web_view.page().runJavaScript("window.getSelection().toString();", copy_to_clipboard)
     
     def render_plain_text(self, content):
         """
