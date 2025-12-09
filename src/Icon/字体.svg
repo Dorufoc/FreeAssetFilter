@@ -1,1 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256"><defs><style>.a{clip-path:url(#g);}.b{fill:url(#a);}.c{fill:#fff;stroke:#fff;stroke-linecap:round;stroke-linejoin:round;stroke-width:6px;font-size:125px;font-family:SourceHanSerifCN-Regular, Source Han Serif CN;}.d{filter:url(#d);}.e{filter:url(#b);}</style><linearGradient id="a" x1="0.048" y1="0.052" x2="0.944" y2="0.964" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#c6c6c6"/><stop offset="1" stop-color="#9a9a9a"/></linearGradient><filter id="b" x="33" y="36" width="191" height="191" filterUnits="userSpaceOnUse"><feOffset dy="3" input="SourceAlpha"/><feGaussianBlur stdDeviation="3" result="c"/><feFlood flood-opacity="0.161"/><feComposite operator="in" in2="c"/><feComposite in="SourceGraphic"/></filter><filter id="d" x="72" y="17" width="112" height="210" filterUnits="userSpaceOnUse"><feOffset dy="3" input="SourceAlpha"/><feGaussianBlur stdDeviation="3" result="e"/><feFlood flood-opacity="0.161"/><feComposite operator="in" in2="e"/><feComposite in="SourceGraphic"/></filter><clipPath id="g"><rect width="256" height="256"/></clipPath></defs><g id="f" class="a"><g class="e" transform="matrix(1, 0, 0, 1, 0, 0)"><rect class="b" width="173" height="173" rx="28" transform="translate(42 42)"/></g><g class="d" transform="matrix(1, 0, 0, 1, 0, 0)"><text class="c" transform="translate(128 173)"><tspan x="-40.813" y="0">T</tspan></text></g></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="linear-gradient" x1="0.048" y1="0.052" x2="0.944" y2="0.964" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#c6c6c6"/>
+      <stop offset="1" stop-color="#9a9a9a"/>
+    </linearGradient>
+    <filter id="矩形_1" x="33" y="36" width="191" height="191" filterUnits="userSpaceOnUse">
+      <feOffset dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <filter id="T" x="72" y="17" width="112" height="210" filterUnits="userSpaceOnUse">
+      <feOffset dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur-2"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur-2"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <clipPath id="clip-字体">
+      <rect width="256" height="256"/>
+    </clipPath>
+  </defs>
+  <g id="字体" clip-path="url(#clip-字体)">
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_1)">
+      <rect id="矩形_1-2" data-name="矩形 1" width="173" height="173" rx="28" transform="translate(42 42)" fill="url(#linear-gradient)"/>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#T)">
+      <text id="T-2" data-name="T" transform="translate(128 173)" fill="#fff" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="6" font-size="125" font-family="SourceHanSerifCN-Regular, Source Han Serif CN"><tspan x="-40.813" y="0">T</tspan></text>
+    </g>
+  </g>
+</svg>
