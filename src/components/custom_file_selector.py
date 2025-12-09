@@ -165,7 +165,7 @@ class CustomFileSelector(QWidget):
         self.drive_combo.setFixedWidth(80)
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
-        self.drive_combo.currentTextChanged.connect(self._on_drive_changed)
+        self.drive_combo.activated.connect(self._on_drive_changed)
         dir_layout.addWidget(self.drive_combo)
         
         # 目录显示区域（可编辑）
@@ -903,10 +903,15 @@ class CustomFileSelector(QWidget):
             if index != -1:
                 self.drive_combo.setCurrentIndex(index)
     
-    def _on_drive_changed(self, drive):
+    def _on_drive_changed(self, index):
         """
         当盘符选择改变时的处理
+        
+        Args:
+            index (int): 选中的盘符索引
         """
+        # 获取选中的盘符文本
+        drive = self.drive_combo.itemText(index)
         # 切换到选择的盘符，确保使用完整的根目录路径
         # 对于Windows，确保路径格式为 "D:\\"
         drive_path = drive + '\\' if sys.platform == 'win32' else drive
