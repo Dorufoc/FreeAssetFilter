@@ -725,25 +725,25 @@ class CustomFileSelector(QWidget):
         layout = QVBoxLayout(dialog)
         
         # 创建收藏夹列表
-        self.favorites_list = QListWidget()
+        favorites_list = QListWidget()
         for favorite in self.favorites:
-            self.favorites_list.addItem(favorite['name'] + ' - ' + favorite['path'])
+            favorites_list.addItem(favorite['name'] + ' - ' + favorite['path'])
         
         # 双击列表项跳转到对应路径
-        self.favorites_list.itemDoubleClicked.connect(self._on_favorite_double_clicked)
+        favorites_list.itemDoubleClicked.connect(lambda item: self._on_favorite_double_clicked(item, dialog))
         
         # 右键菜单
-        self.favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.favorites_list.customContextMenuRequested.connect(self._show_favorite_context_menu)
+        favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        favorites_list.customContextMenuRequested.connect(lambda pos: self._show_favorite_context_menu(pos, favorites_list))
         
-        layout.addWidget(self.favorites_list)
+        layout.addWidget(favorites_list)
         
         # 创建底部按钮布局
         btn_layout = QHBoxLayout()
         
         # 添加当前路径到收藏夹按钮
         add_btn = QPushButton("添加当前路径到收藏夹")
-        add_btn.clicked.connect(lambda: self._add_current_path_to_favorites(dialog))
+        add_btn.clicked.connect(lambda: self._add_current_path_to_favorites(dialog, favorites_list))
         btn_layout.addWidget(add_btn)
         
         # 关闭按钮
@@ -756,7 +756,7 @@ class CustomFileSelector(QWidget):
         # 显示对话框
         dialog.exec_()
     
-    def _on_favorite_double_clicked(self, item):
+    def _on_favorite_double_clicked(self, item, dialog):
         """
         双击收藏夹项时跳转到对应路径
         """
@@ -767,12 +767,14 @@ class CustomFileSelector(QWidget):
             if os.path.exists(path):
                 self.current_path = path
                 self.refresh_files()
+                # 关闭收藏夹对话框
+                dialog.accept()
     
-    def _show_favorite_context_menu(self, pos):
+    def _show_favorite_context_menu(self, pos, favorites_list):
         """
         显示收藏夹项的右键菜单
         """
-        item = self.favorites_list.itemAt(pos)
+        item = favorites_list.itemAt(pos)
         if not item:
             return
         
@@ -780,18 +782,18 @@ class CustomFileSelector(QWidget):
         
         # 重命名菜单项
         rename_action = QAction("重命名", self)
-        rename_action.triggered.connect(lambda: self._rename_favorite(item))
+        rename_action.triggered.connect(lambda: self._rename_favorite(item, favorites_list))
         menu.addAction(rename_action)
         
         # 删除菜单项
         delete_action = QAction("删除", self)
-        delete_action.triggered.connect(lambda: self._delete_favorite(item))
+        delete_action.triggered.connect(lambda: self._delete_favorite(item, favorites_list))
         menu.addAction(delete_action)
         
         # 显示菜单
-        menu.exec_(self.favorites_list.mapToGlobal(pos))
+        menu.exec_(favorites_list.mapToGlobal(pos))
     
-    def _rename_favorite(self, item):
+    def _rename_favorite(self, item, favorites_list):
         """
         重命名收藏夹项
         """
@@ -811,7 +813,7 @@ class CustomFileSelector(QWidget):
                         item.setText(new_name + ' - ' + path)
                     break
     
-    def _delete_favorite(self, item):
+    def _delete_favorite(self, item, favorites_list):
         """
         删除收藏夹项
         """
@@ -827,9 +829,9 @@ class CustomFileSelector(QWidget):
                 self.favorites = [f for f in self.favorites if not (f['path'] == path and f['name'] == name)]
                 self._save_favorites()
                 # 更新列表
-                self.favorites_list.takeItem(self.favorites_list.row(item))
+                favorites_list.takeItem(favorites_list.row(item))
     
-    def _add_current_path_to_favorites(self, dialog):
+    def _add_current_path_to_favorites(self, dialog, favorites_list):
         """
         添加当前路径到收藏夹
         """
@@ -859,7 +861,7 @@ class CustomFileSelector(QWidget):
             self._save_favorites()
             
             # 更新列表
-            self.favorites_list.addItem(name + ' - ' + current_path)
+            favorites_list.addItem(name + ' - ' + current_path)
     
     def _go_to_last_path(self):
         """
