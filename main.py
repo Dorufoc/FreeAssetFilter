@@ -320,7 +320,7 @@ class FreeAssetFilterApp(QMainWindow):
         main_layout.addWidget(splitter, 1)
         
         # 状态标签
-        self.status_label = QLabel("FreeAssetFilter v1.0 Alpha | 本软件由Dorufoc与Renmoren共同开发，遵循MIT协议开源。")
+        self.status_label = QLabel("FreeAssetFilter v1.0 Alpha | BY Dorufoc & renmoren | 遵循MIT协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(self.global_font)
         self.status_label.setStyleSheet("font-size: 12px; color: #666; margin-top: 10px;")
