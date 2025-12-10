@@ -307,6 +307,266 @@ class CustomProgressBar(QWidget):
         self.update()
 
 
+class CustomVolumeBar(QWidget):
+    """
+    自定义音量控制条
+    支持点击任意位置调整音量和拖拽功能
+    """
+    valueChanged = pyqtSignal(int)  # 值变化信号
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(100, 28)
+        self.setMaximumHeight(28)
+        
+        # 音量条属性
+        self._minimum = 0
+        self._maximum = 100
+        self._value = 50  # 默认音量50%
+        self._is_pressed = False
+        self._last_pos = 0
+        
+        # 外观属性
+        self._bg_color = QColor(99, 99, 99)  # 音量条背景颜色
+        self._progress_color = QColor(0, 120, 212)  # #0078d4
+        self._handle_color = QColor(0, 120, 212)  # #0078d4
+        self._handle_hover_color = QColor(16, 110, 190)  # #106ebe
+        self._handle_pressed_color = QColor(0, 90, 158)  # #005a9e
+        self._handle_radius = 12
+        self._bar_height = 6
+        self._bar_radius = 3
+        
+        # SVG 图标路径
+        import os
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Icon')
+        self._bottom_tail_icon = os.path.join(icon_dir, '条-底部-尾.svg')
+        self._bottom_head_icon = os.path.join(icon_dir, '条-底部-头.svg')
+        self._bottom_middle_icon = os.path.join(icon_dir, '条-底部-中.svg')
+        self._progress_button_icon = os.path.join(icon_dir, '进度条按钮.svg')
+        
+        # 渲染 SVG 图标为 QPixmap
+        self._handle_pixmap = SvgRenderer.render_svg_to_pixmap(self._progress_button_icon, self._handle_radius * 2)
+        self._head_pixmap = SvgRenderer.render_svg_to_pixmap(self._bottom_head_icon, self._handle_radius * 2)
+        # 条底部中 SVG 会在绘制时根据需要直接渲染，这里只保存路径
+    
+    def setRange(self, minimum, maximum):
+        """
+        设置音量条范围
+        """
+        self._minimum = minimum
+        self._maximum = maximum
+        self.update()
+    
+    def setValue(self, value):
+        """
+        设置音量条值
+        """
+        if value < self._minimum:
+            value = self._minimum
+        elif value > self._maximum:
+            value = self._maximum
+        
+        if self._value != value:
+            self._value = value
+            self.update()
+            self.valueChanged.emit(value)
+    
+    def value(self):
+        """
+        获取当前音量值
+        """
+        return self._value
+    
+    def mousePressEvent(self, event):
+        """
+        鼠标按下事件
+        """
+        if event.button() == Qt.LeftButton:
+            self._is_pressed = True
+            self._last_pos = event.pos().x()
+            # 计算点击位置对应的音量值
+            self._update_value_from_pos(event.pos().x())
+    
+    def mouseMoveEvent(self, event):
+        """
+        鼠标移动事件
+        """
+        if self._is_pressed:
+            self._last_pos = event.pos().x()
+            self._update_value_from_pos(event.pos().x())
+    
+    def mouseReleaseEvent(self, event):
+        """
+        鼠标释放事件
+        """
+        if self._is_pressed and event.button() == Qt.LeftButton:
+            self._is_pressed = False
+    
+    def _update_value_from_pos(self, x_pos):
+        """
+        根据鼠标位置更新音量值
+        """
+        # 计算音量条总宽度
+        bar_width = self.width() - (self._handle_radius * 2)
+        # 计算鼠标在音量条上的相对位置
+        relative_x = x_pos - self._handle_radius
+        if relative_x < 0:
+            relative_x = 0
+        elif relative_x > bar_width:
+            relative_x = bar_width
+        
+        # 计算对应的音量值
+        ratio = relative_x / bar_width
+        value = int(self._minimum + ratio * (self._maximum - self._minimum))
+        self.setValue(value)
+    
+    def paintEvent(self, event):
+        """
+        绘制音量条
+        """
+        # 确保Qt已导入
+        from PyQt5.QtCore import Qt
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        rect = self.rect()
+        
+        # 计算音量条参数
+        bar_y = (rect.height() - self._bar_height) // 2
+        bar_width = rect.width() - 2 * self._handle_radius
+        
+        # 绘制背景
+        bg_rect = QRect(
+            self._handle_radius, bar_y, 
+            bar_width, self._bar_height
+        )
+        
+        painter.setBrush(QBrush(self._bg_color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+        
+        # 绘制已音量部分
+        progress_width = int(bar_width * (self._value - self._minimum) / (self._maximum - self._minimum))
+        progress_rect = QRect(
+            self._handle_radius, bar_y, 
+            progress_width, self._bar_height
+        )
+        
+        # 使用条底部中 SVG 图形填充已音量部分
+        if progress_width > 0:
+            try:
+                from PyQt5.QtSvg import QSvgRenderer
+                from PyQt5.QtGui import QPixmap, QTransform
+                from PyQt5.QtCore import Qt
+                
+                # 先渲染 SVG 到临时 QPixmap
+                svg_renderer = QSvgRenderer(self._bottom_middle_icon)
+                # 使用与头和尾相同的尺寸
+                icon_size = self._handle_radius * 2
+                temp_pixmap = QPixmap(icon_size, icon_size)
+                temp_pixmap.fill(Qt.transparent)
+                painter_temp = QPainter(temp_pixmap)
+                svg_renderer.render(painter_temp)
+                painter_temp.end()
+                
+                # 将临时 pixmap 旋转 90 度
+                transform = QTransform()
+                transform.rotate(90)
+                rotated_pixmap = temp_pixmap.transformed(transform, Qt.SmoothTransformation)
+                
+                # 计算与头和尾相同的纵向宽度的矩形
+                # 头图标的纵向宽度是 self._handle_radius * 2
+                # 计算垂直居中的位置
+                middle_y = (rect.height() - self._handle_radius * 2) // 2
+                middle_rect = QRect(
+                    self._handle_radius, middle_y, 
+                    progress_width, self._handle_radius * 2
+                )
+                
+                # 拉伸渲染旋转后的 pixmap 到中间矩形
+                painter.drawPixmap(middle_rect, rotated_pixmap)
+            except Exception as e:
+                print(f"渲染条底部中 SVG 失败: {e}")
+                # 备用方案：使用纯色填充
+                painter.setBrush(QBrush(self._progress_color))
+                painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+        else:
+            # 音量为0时，不绘制已音量部分
+            pass
+        
+        # 绘制已完成区域的起始点 - 使用条-底部-头.svg图标（逆时针旋转90度）
+        head_x = -self._handle_radius // 2  # 向左偏移一点
+        head_y = (rect.height() - self._handle_radius * 2) // 2
+        
+        if not self._head_pixmap.isNull():
+            # 保存当前画家状态
+            painter.save()
+            
+            # 计算旋转中心
+            center_x = head_x + self._handle_radius
+            center_y = head_y + self._handle_radius
+            
+            # 移动坐标原点到旋转中心
+            painter.translate(center_x, center_y)
+            
+            # 逆时针旋转90度
+            painter.rotate(-90)
+            
+            # 绘制旋转后的图标
+            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
+            
+            # 恢复画家状态
+            painter.restore()
+        
+        # 绘制滑块 - 使用 进度条按钮.svg 图标
+        handle_x = self._handle_radius + progress_width
+        # 确保滑块不会超出音量条范围
+        handle_x = min(handle_x, self.width() - self._handle_radius * 2)
+        handle_y = (rect.height() - self._handle_radius * 2) // 2
+        
+        # 确保图标已正确加载
+        if not self._handle_pixmap.isNull():
+            # 保存当前画家状态
+            painter.save()
+            
+            # 计算旋转中心
+            center_x = handle_x + self._handle_radius
+            center_y = handle_y + self._handle_radius
+            
+            # 移动坐标原点到旋转中心
+            painter.translate(center_x, center_y)
+            
+            # 绘制图标（不需要旋转）
+            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+            
+            # 恢复画家状态
+            painter.restore()
+        else:
+            # 备用方案：如果 SVG 加载失败，绘制圆形滑块
+            painter.setBrush(QBrush(
+                self._handle_pressed_color if self._is_pressed else 
+                self._handle_hover_color if self.underMouse() else 
+                self._handle_color
+            ))
+            painter.setPen(Qt.NoPen)  # 去除滑块边框
+            painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+        
+        painter.end()
+    
+    def enterEvent(self, event):
+        """
+        鼠标进入事件
+        """
+        self.update()
+    
+    def leaveEvent(self, event):
+        """
+        鼠标离开事件
+        """
+        self.update()
+
+
 class VideoPlayer(QWidget):
     """
     通用媒体播放器组件
@@ -334,8 +594,6 @@ class VideoPlayer(QWidget):
         self.progress_slider = None
         self.time_label = None
         self.play_button = None
-        self.volume_label = None
-        self.volume_slider = None
         self.timer = None
         self.player_core = None
         self._user_interacting = False
@@ -376,8 +634,7 @@ class VideoPlayer(QWidget):
         self.progress_slider = CustomProgressBar()
         self.time_label = QLabel("00:00 / 00:00")
         self.play_button = QPushButton()
-        self.volume_label = QLabel("音量:")
-        self.volume_slider = CustomProgressBar()
+        self.volume_slider = CustomVolumeBar()  # 音量控制条
         
         # 状态标志
         self._user_interacting = False
@@ -533,9 +790,9 @@ class VideoPlayer(QWidget):
         self.progress_slider.userInteractionEnded.connect(self.resume_progress_update)
         progress_time_layout.addWidget(self.progress_slider)
         
-        # 创建一个水平布局来放置时间标签和音量控件
+        # 创建一个水平布局来放置时间标签和音量控制
         bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(0, 0, 60, 0)  # 增加右边距60像素，使整体向左挤压对齐
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(10)
         
         # 时间标签样式
@@ -550,26 +807,15 @@ class VideoPlayer(QWidget):
         """)
         bottom_layout.addWidget(self.time_label)
         
-        # 添加伸缩项使音量控件靠右
+        # 添加伸缩项
         bottom_layout.addStretch(1)
         
-        # 音量控制
-        self.volume_label.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF; color: #000000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 13px;")
-        bottom_layout.addWidget(self.volume_label)
-        
+        # 音量控制条设置
         self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(50)
-        self.volume_slider.setMaximumWidth(80)  # 缩短音量条长度
+        self.volume_slider.setValue(50)  # 默认音量50%
+        # 连接音量条信号
         self.volume_slider.valueChanged.connect(self.set_volume)
-        
-        # 为音量条添加容器，增加右边距避免显示不全
-        volume_container = QWidget()
-        volume_container.setStyleSheet("background-color: #FFFFFF; border: none;")
-        volume_layout = QHBoxLayout(volume_container)
-        volume_layout.setContentsMargins(0, 0, 20, 0)  # 增加右边距20像素，避免音量条显示不全
-        volume_layout.addWidget(self.volume_slider)
-        
-        bottom_layout.addWidget(volume_container)
+        bottom_layout.addWidget(self.volume_slider)
         
         # 将水平布局添加到垂直布局中
         progress_time_layout.addLayout(bottom_layout)
@@ -585,8 +831,7 @@ class VideoPlayer(QWidget):
             border-radius: 20px;
         """)
         
-        # 初始化音量设置
-        self.set_volume(50)
+        
     
     def extract_cover_art(self, file_path):
         """
