@@ -218,7 +218,7 @@ class PlayerCore:
     def play(self):
         """
         开始播放媒体
-        
+
         Returns:
             bool: 播放成功返回 True，否则返回 False
         """
@@ -229,6 +229,9 @@ class PlayerCore:
             
             # 开始播放
             result = self._player.play()
+            if result == 0:
+                # 立即更新播放状态，不依赖事件回调
+                self._is_playing = True
             return result == 0
         except Exception:
             return False
@@ -238,7 +241,15 @@ class PlayerCore:
         暂停播放媒体
         """
         try:
+            # 保存当前状态，用于判断暂停后的状态
+            was_playing = self._is_playing
+            
+            # 切换暂停状态
             self._player.pause()
+            
+            # 立即更新播放状态，不依赖事件回调
+            # pause() 方法会切换状态：如果正在播放则暂停，否则继续播放
+            self._is_playing = not was_playing
         except Exception:
             pass
     
@@ -355,6 +366,30 @@ class PlayerCore:
                 self._instance = None
         except Exception:
             pass
+    
+    def set_rate(self, rate):
+        """
+        设置播放速度
+        
+        Args:
+            rate (float): 播放速度，1.0为正常速度
+        """
+        try:
+            self._player.set_rate(rate)
+        except Exception:
+            pass
+    
+    def get_rate(self):
+        """
+        获取当前播放速度
+        
+        Returns:
+            float: 当前播放速度
+        """
+        try:
+            return self._player.get_rate()
+        except Exception:
+            return 1.0
     
     def __del__(self):
         """
