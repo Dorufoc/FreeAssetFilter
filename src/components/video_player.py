@@ -316,7 +316,10 @@ class CustomVolumeBar(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(100, 28)
+        self._handle_radius = 12
+        # 设置合理的最小宽度，确保音量条有足够的可见区域
+        min_width = 100  # 固定最小宽度，确保音量条不会被压缩得太小
+        self.setMinimumSize(min_width, 28)
         self.setMaximumHeight(28)
         
         # 音量条属性
@@ -329,7 +332,6 @@ class CustomVolumeBar(QWidget):
         # 外观属性
         self._bg_color = QColor(99, 99, 99)  # 音量条背景颜色
         self._progress_color = QColor(0, 120, 212)  # #0078d4
-        self._handle_radius = 12
         self._bar_height = 6
         self._bar_radius = 3
         
@@ -398,8 +400,9 @@ class CustomVolumeBar(QWidget):
         """
         根据鼠标位置更新音量值
         """
-        # 计算音量条总宽度
-        bar_width = self.width() - (self._handle_radius * 2)
+        # 计算音量条总宽度，确保不小于0
+        effective_width = max(0, self.width() - (self._handle_radius * 2))
+        bar_width = effective_width
         # 计算鼠标在音量条上的相对位置
         relative_x = x_pos - self._handle_radius
         if relative_x < 0:
@@ -407,8 +410,11 @@ class CustomVolumeBar(QWidget):
         elif relative_x > bar_width:
             relative_x = bar_width
         
-        # 计算对应的音量值
-        ratio = relative_x / bar_width
+        # 计算对应的音量值，避免除以0
+        if bar_width > 0:
+            ratio = relative_x / bar_width
+        else:
+            ratio = 0.0
         value = int(self._minimum + ratio * (self._maximum - self._minimum))
         self.setValue(value)
     
@@ -426,9 +432,10 @@ class CustomVolumeBar(QWidget):
         
         # 计算音量条参数
         bar_y = (rect.height() - self._bar_height) // 2
-        bar_width = rect.width() - 2 * self._handle_radius
+        # 确保bar_width不小于0
+        bar_width = max(0, rect.width() - 2 * self._handle_radius)
         
-        # 绘制背景
+        # 绘制背景 - 确保背景矩形宽度不小于0
         bg_rect = QRect(
             self._handle_radius, bar_y, 
             bar_width, self._bar_height
@@ -439,7 +446,12 @@ class CustomVolumeBar(QWidget):
         painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
         
         # 绘制已音量部分 - 使用纯色填充，不使用其他SVG图标
-        progress_width = int(bar_width * (self._value - self._minimum) / (self._maximum - self._minimum))
+        # 确保分母不为0
+        if (self._maximum - self._minimum) > 0:
+            progress_ratio = (self._value - self._minimum) / (self._maximum - self._minimum)
+        else:
+            progress_ratio = 0.0
+        progress_width = int(bar_width * progress_ratio)
         progress_rect = QRect(
             self._handle_radius, bar_y, 
             progress_width, self._bar_height
@@ -451,8 +463,11 @@ class CustomVolumeBar(QWidget):
         
         # 绘制滑块 - 只使用进度条按钮.svg 图标
         handle_x = self._handle_radius + progress_width
-        # 确保滑块不会超出音量条范围
-        handle_x = min(handle_x, self.width() - self._handle_radius * 2)
+        # 确保滑块不会超出音量条范围，考虑实际窗口宽度
+        max_handle_x = max(self._handle_radius, self.width() - self._handle_radius * 2)
+        handle_x = min(handle_x, max_handle_x)
+        # 确保滑块不会小于最小值
+        handle_x = max(handle_x, self._handle_radius)
         handle_y = (rect.height() - self._handle_radius * 2) // 2
         
         # 确保图标已正确加载
@@ -526,7 +541,7 @@ class VideoPlayer(QWidget):
         
         # 设置窗口属性
         self.setWindowTitle("Video Player")
-        self.setMinimumSize(400, 300)
+        self.setMinimumSize(480, 400)
         
         # 初始化所有属性
         self.init_attributes()
@@ -561,7 +576,7 @@ class VideoPlayer(QWidget):
         self.time_label = QLabel("00:00 / 00:00")
         self.play_button = QPushButton()
         self.volume_slider = CustomVolumeBar()  # 音量控制条
-        self.volume_label = QLabel("音量")  # 音量文字描述
+        self.volume_button = QPushButton()  # 音量图标按钮，替换文字描述
         
         # 倍速控制组件
         self.speed_button = QPushButton("1.0x")
@@ -589,7 +604,7 @@ class VideoPlayer(QWidget):
         main_layout.setSpacing(0)
         
         # 媒体显示区域设置
-        self.media_frame.setStyleSheet("background-color: black;")
+        self.media_frame.setStyleSheet("background-color: white;")
         self.media_frame.setMinimumSize(400, 300)
         
         # 视频显示区域设置
@@ -674,10 +689,10 @@ class VideoPlayer(QWidget):
         
         # 控制按钮区域 - 根据Figma设计稿更新样式
         control_container = QWidget()
-        control_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF; border-radius: 35px 35px 35px 35px;")
+        control_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF; border-radius: 45x 45px 45px 45px;")
         self.control_layout = QHBoxLayout(control_container)
-        self.control_layout.setContentsMargins(15, 15, 15, 15)
-        self.control_layout.setSpacing(15)
+        self.control_layout.setContentsMargins(6, 6, 6, 6)
+        self.control_layout.setSpacing(6)
         
         # 播放/暂停按钮 - 更新为白色背景和边框
         self.play_button.setStyleSheet("""
@@ -717,7 +732,7 @@ class VideoPlayer(QWidget):
         progress_time_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF;")
         progress_time_layout = QVBoxLayout(progress_time_container)
         progress_time_layout.setContentsMargins(0, 0, 0, 0)
-        progress_time_layout.setSpacing(2)
+        progress_time_layout.setSpacing(1)
         
         # 自定义进度条设置
         self.progress_slider.setRange(0, 1000)
@@ -728,41 +743,37 @@ class VideoPlayer(QWidget):
         self.progress_slider.userInteractionEnded.connect(self.resume_progress_update)
         progress_time_layout.addWidget(self.progress_slider)
         
-        # 创建一个水平布局来放置时间标签和音量控制
+        # 创建一个水平布局来放置音量控制、时间标签和倍速按钮
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(10)
         
-        # 时间标签样式
-        self.time_label.setStyleSheet("""
-            color: #000000;
-            background-color: #FFFFFF;
-            padding: 0 5px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            font-size: 16px;
-            text-align: left;
-            border: 1px solid #FFFFFF;
-        """)
-        bottom_layout.addWidget(self.time_label)
-        
-        # 添加伸缩项
-        bottom_layout.addStretch(1)
-        
-        # 音量文字标签样式
-        self.volume_label.setStyleSheet("""
-            color: #000000;
-            background-color: #FFFFFF;
-            padding: 0 2px 0 5px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            font-size: 16px;
-            text-align: right;
-            border: 1px solid #FFFFFF;
+        # 音量图标按钮设置
+        self.volume_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FFFFFF;
+                color: #000000;
+                border: 1px solid #FFFFFF;
+                padding: 5px;
+                border-radius: 0px;
+                min-width: 20px;
+                max-width: 20px;
+                max-height: 20px;
+            }
+            QPushButton:hover {
+                background-color: #f0f0f0;
+            }
+            QPushButton:pressed {
+                background-color: #e0e0e0;
+            }
         """)
         # 设置鼠标指针为手型，表示可点击
-        self.volume_label.setCursor(Qt.PointingHandCursor)
+        self.volume_button.setCursor(Qt.PointingHandCursor)
         # 添加点击事件，实现一键静音/恢复
-        self.volume_label.mousePressEvent = lambda event: self.toggle_mute()
-        bottom_layout.addWidget(self.volume_label)
+        self.volume_button.clicked.connect(self.toggle_mute)
+        bottom_layout.addWidget(self.volume_button)  # 音量图标居左
+        # 初始化音量图标
+        self.update_volume_icon()
         
         # 音量控制条设置
         self.volume_slider.setRange(0, 100)
@@ -777,7 +788,22 @@ class VideoPlayer(QWidget):
         self._previous_volume = saved_volume
         # 连接音量条信号
         self.volume_slider.valueChanged.connect(self.set_volume)
-        bottom_layout.addWidget(self.volume_slider)
+        bottom_layout.addWidget(self.volume_slider)  # 音量滑块居左
+        
+        # 添加伸缩项，将音量组件和时间/倍速组件分开
+        bottom_layout.addStretch(1)
+        
+        # 时间标签样式
+        self.time_label.setStyleSheet("""
+            color: #000000;
+            background-color: #FFFFFF;
+            padding: 0 5px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 16px;
+            text-align: left;
+            border: 1px solid #FFFFFF;
+        """)
+        bottom_layout.addWidget(self.time_label)  # 时间标签在进度条右侧
         
         # 添加倍速控制按钮
         self.speed_button.setStyleSheet("""
@@ -785,10 +811,10 @@ class VideoPlayer(QWidget):
                 background-color: #FFFFFF;
                 color: #000000;
                 border: 1px solid #FFFFFF;
-                padding: 5px 10px;
-                border-radius: 5px;
-                min-width: 60px;
-                max-width: 60px;
+                padding: 15px 10px;
+                border-radius: 20px;
+                min-width: 40px;
+                max-width: 40px;
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                 font-size: 16px;
             }
@@ -799,7 +825,7 @@ class VideoPlayer(QWidget):
         # 将点击事件改为鼠标悬停事件
         self.speed_button.enterEvent = self.show_speed_menu
         self.speed_button.leaveEvent = lambda event: self._handle_speed_button_leave(event)
-        bottom_layout.addWidget(self.speed_button)
+        bottom_layout.addWidget(self.speed_button)  # 倍速按钮居右
         
         # 将水平布局添加到垂直布局中
         progress_time_layout.addLayout(bottom_layout)
@@ -1219,16 +1245,6 @@ class VideoPlayer(QWidget):
                 # 如果当前是静音状态，取消静音
                 if self._is_muted:
                     self._is_muted = False
-                    # 更新音量标签样式为正常状态
-                    self.volume_label.setStyleSheet("""
-                        color: #000000;
-                        background-color: #FFFFFF;
-                        padding: 0 2px 0 5px;
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        font-size: 16px;
-                        text-align: right;
-                        border: 1px solid #FFFFFF;
-                    """)
                 
                 # 保存当前音量作为静音前的音量
                 self._previous_volume = value
@@ -1238,6 +1254,9 @@ class VideoPlayer(QWidget):
                 
                 # 保存音量设置
                 self.save_volume_setting(value)
+                
+                # 更新音量图标
+                self.update_volume_icon()
         except Exception as e:
             print(f"设置音量时出错: {e}")
     
@@ -1299,6 +1318,35 @@ class VideoPlayer(QWidget):
         
         return 50  # 默认音量
     
+    def update_volume_icon(self):
+        """
+        根据音量状态更新音量图标
+        """
+        try:
+            # 图标路径
+            icon_dir = os.path.join(os.path.dirname(__file__), '..', 'Icon')
+            
+            # 固定图标大小
+            fixed_icon_size = 32
+            
+            # 根据静音状态选择不同的图标
+            if self._is_muted:
+                # 静音状态使用音量静音图标
+                icon_path = os.path.join(icon_dir, '音量静音.svg')
+            else:
+                # 非静音状态使用普通音量图标
+                icon_path = os.path.join(icon_dir, '音量.svg')
+            
+            # 渲染SVG图标为QPixmap
+            from src.utils.svg_renderer import SvgRenderer
+            pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, fixed_icon_size)
+            
+            # 设置按钮图标
+            self.volume_button.setIcon(QIcon(pixmap))
+            self.volume_button.setIconSize(QSize(fixed_icon_size, fixed_icon_size))
+        except Exception as e:
+            print(f"更新音量图标时出错: {e}")
+    
     def toggle_mute(self):
         """
         一键静音/恢复音量
@@ -1318,16 +1366,6 @@ class VideoPlayer(QWidget):
                     self.volume_slider.setValue(volume)
                     # 重新连接信号
                     self.volume_slider.valueChanged.connect(self.set_volume)
-                    # 更新音量标签样式
-                    self.volume_label.setStyleSheet("""
-                        color: #000000;
-                        background-color: #FFFFFF;
-                        padding: 0 2px 0 5px;
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        font-size: 16px;
-                        text-align: right;
-                        border: 1px solid #FFFFFF;
-                    """)
                 else:
                     # 当前不是静音状态，保存当前音量并静音
                     # 1. 保存当前音量
@@ -1344,17 +1382,9 @@ class VideoPlayer(QWidget):
                     self.volume_slider.setValue(0)
                     # 7. 重新连接信号
                     self.volume_slider.valueChanged.connect(self.set_volume)
-                    # 8. 更新音量标签样式，添加静音标记
-                    self.volume_label.setStyleSheet("""
-                        color: #FF4444;
-                        background-color: #FFFFFF;
-                        padding: 0 2px 0 5px;
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        font-size: 16px;
-                        text-align: right;
-                        border: 1px solid #FFFFFF;
-                        font-weight: bold;
-                    """)
+                
+                # 更新音量图标
+                self.update_volume_icon()
         except Exception as e:
             print(f"切换静音状态时出错: {e}")
     
