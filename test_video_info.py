@@ -17,8 +17,16 @@ if __name__ == "__main__":
     # 创建文件信息浏览组件
     file_info_browser = FileInfoBrowser()
     
-    # 检查ffprobe是否可用
-    print(f"ffprobe是否可用: {file_info_browser._is_ffprobe_available()}")
+    # 测试ffprobe是否可用的简单方法
+    def is_ffprobe_available():
+        try:
+            import subprocess
+            result = subprocess.run(["ffprobe", "-version"], capture_output=True, text=True)
+            return result.returncode == 0
+        except Exception:
+            return False
+    
+    print(f"ffprobe是否可用: {is_ffprobe_available()}")
     
     # 找一个测试视频文件
     test_file = None
@@ -48,24 +56,14 @@ if __name__ == "__main__":
         
         # 打印提取的视频信息
         print("\n=== 视频基本信息 ===")
-        if "extra" in file_info_browser.file_info:
-            for key, value in file_info_browser.file_info["extra"].items():
+        if "basic" in file_info_browser.file_info:
+            for key, value in file_info_browser.file_info["basic"].items():
                 print(f"{key}: {value}")
         
-        print("\n=== 视频高级信息 ===")
-        if "advanced" in file_info_browser.file_info:
-            for key, value in file_info_browser.file_info["advanced"].items():
-                if isinstance(value, dict):
-                    print(f"{key}:")
-                    for sub_key, sub_value in value.items():
-                        if isinstance(sub_value, dict):
-                            print(f"  {sub_key}:")
-                            for sub_sub_key, sub_sub_value in sub_value.items():
-                                print(f"    {sub_sub_key}: {sub_sub_value}")
-                        else:
-                            print(f"  {sub_key}: {sub_sub_value}")
-                else:
-                    print(f"{key}: {value}")
+        print("\n=== 视频详细信息 ===")
+        if "details" in file_info_browser.file_info:
+            for key, value in file_info_browser.file_info["details"].items():
+                print(f"{key}: {value}")
     else:
         print("未找到测试视频文件，创建一个简单的测试")
         
@@ -91,8 +89,13 @@ if __name__ == "__main__":
         
         # 打印提取的视频信息
         print("\n=== 视频基本信息 ===")
-        if "extra" in file_info_browser.file_info:
-            for key, value in file_info_browser.file_info["extra"].items():
+        if "basic" in file_info_browser.file_info:
+            for key, value in file_info_browser.file_info["basic"].items():
+                print(f"{key}: {value}")
+        
+        print("\n=== 视频详细信息 ===")
+        if "details" in file_info_browser.file_info:
+            for key, value in file_info_browser.file_info["details"].items():
                 print(f"{key}: {value}")
         
         # 删除测试文件

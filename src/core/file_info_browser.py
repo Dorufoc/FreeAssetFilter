@@ -539,7 +539,7 @@ class FileInfoBrowser:
     
     def _get_video_advanced_info(self, file_path: str) -> Dict[str, Any]:
         """
-        获取视频文件高级信息，使用不依赖ffprobe的方法
+        获取视频文件高级信息
         
         Args:
             file_path (str): 视频文件路径
@@ -572,15 +572,97 @@ class FileInfoBrowser:
                 except Exception:
                     pass
                 
-                # 获取帧数
-                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                if frame_count > 0:
-                    info["帧数"] = int(frame_count)
-                
                 cap.release()
         except Exception:
             # 不显示opencv相关的错误信息给用户
             pass
+        
+        # 确保码率信息被添加，默认值为"无法获取"
+        info["码率"] = "无法获取"
+        
+        # 尝试获取视频码率，使用多种方法确保成功
+        # 方法1：通过文件大小和时长计算总码率（最可靠的后备方案）
+        try:
+            # 先获取视频时长
+            duration = 0
+            
+            # 尝试使用moviepy获取时长
+            try:
+                from moviepy.editor import VideoFileClip
+                with VideoFileClip(file_path) as clip:
+                    duration = clip.duration
+            except Exception:
+                # 尝试使用opencv获取时长
+                try:
+                    import cv2
+                    cap = cv2.VideoCapture(file_path)
+                    if cap.isOpened():
+                        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        if frame_count > 0 and fps > 0:
+                            duration = frame_count / fps
+                        cap.release()
+                except Exception:
+                    pass
+            
+            if duration > 0:
+                # 获取文件大小（字节）
+                file_size = os.path.getsize(file_path)
+                # 计算码率（bps）: 码率 = 文件大小（字节） * 8 / 时长（秒）
+                bitrate = int((file_size * 8) / duration)
+                info["码率"] = self._format_bitrate(bitrate)
+        except Exception as e:
+            pass
+        
+        # 方法2：如果ffprobe可用，尝试获取更准确的视频流码率
+        try:
+            # 使用ffprobe获取视频流的码率
+            result = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", file_path],
+                capture_output=True, text=True, check=True
+            )
+            ffprobe_data = json.loads(result.stdout)
+            if "streams" in ffprobe_data:
+                # 遍历所有流，找到视频流
+                for stream in ffprobe_data["streams"]:
+                    if stream.get("codec_type") == "video":
+                        # 获取视频流的比特率
+                        bit_rate = stream.get("bit_rate")
+                        if bit_rate:
+                            info["码率"] = self._format_bitrate(int(bit_rate))
+                            break
+                        # 如果没有直接的bit_rate字段，尝试从bit_rate字段或计算
+                        if not bit_rate and stream.get("duration") and stream.get("nb_frames"):
+                            try:
+                                duration = float(stream["duration"])
+                                frame_count = int(stream["nb_frames"])
+                                if duration > 0:
+                                    # 从帧率和分辨率估算码率
+                                    width = int(stream.get("width", 0))
+                                    height = int(stream.get("height", 0))
+                                    fps = frame_count / duration
+                                    # 简单估算：码率 = 分辨率 * 帧率 * 位深（假设24位）
+                                    estimated_bitrate = int(width * height * fps * 24 / 1000) * 1000
+                                    info["码率"] = self._format_bitrate(estimated_bitrate)
+                                    break
+                            except Exception:
+                                pass
+        except Exception:
+            # 方法3：尝试获取总码率作为备选
+            try:
+                result = subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
+                    capture_output=True, text=True, check=True
+                )
+                ffprobe_data = json.loads(result.stdout)
+                if "format" in ffprobe_data:
+                    format_info = ffprobe_data["format"]
+                    bit_rate = format_info.get("bit_rate")
+                    if bit_rate:
+                        info["码率"] = self._format_bitrate(int(bit_rate))
+            except Exception:
+                # 所有方法都失败了，保留默认值"无法获取"
+                pass
         
         # 尝试使用moviepy获取一些高级信息（如果可用）
         try:
