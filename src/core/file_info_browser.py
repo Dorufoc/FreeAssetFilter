@@ -136,7 +136,7 @@ class FileInfoBrowser:
         self.info_group.setFont(self.global_font)
         self.info_group.setMinimumWidth(410)  # 增加组框的最小宽度
         # 设置组框标题左对齐
-        self.info_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 15px; }")
+        self.info_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; }")
         
         # 使用QFormLayout替代QGridLayout，更适合表单布局
         self.info_layout = QFormLayout(self.info_group)
@@ -233,10 +233,10 @@ class FileInfoBrowser:
         custom_group = QGroupBox("自定义标签")
         custom_group.setFont(self.global_font)
         custom_group.setMinimumWidth(410)  # 增加最小宽度
-        # 设置组框标题左对齐，保持一致性
-        custom_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 15px; }")
+        # 设置组框标题左对齐，与框内文本左端对齐
+        custom_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; }")
         custom_layout = QVBoxLayout(custom_group)
-        custom_layout.setContentsMargins(15, 20, 15, 15)  # 增加内边距
+        custom_layout.setContentsMargins(10, 35, 15, 15)  # 调整左边距与文件信息框一致，避免内容盖住标题
         
         self.custom_tags_browser = QTextBrowser()
         self.custom_tags_browser.setFont(self.global_font)
