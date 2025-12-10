@@ -109,8 +109,6 @@ class UnifiedPreviewer(QWidget):
         
         # 创建文件信息查看器的UI
         self.file_info_widget = self.file_info_viewer.get_ui()
-        # 设置最小宽度，确保信息完整显示
-        self.file_info_widget.setMinimumWidth(450)
         self.info_layout.addWidget(self.file_info_widget)
         
         main_layout.addWidget(self.info_group, 1)

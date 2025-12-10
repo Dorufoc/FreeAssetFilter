@@ -120,13 +120,11 @@ class FileInfoBrowser:
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setMinimumWidth(450)  # 增加最小宽度，确保信息完整显示
-        scroll_area.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # 创建主widget
         main_widget = QWidget()
         main_widget.setFont(self.global_font)
-        main_widget.setMinimumWidth(430)  # 增加主widget的最小宽度
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
@@ -134,7 +132,7 @@ class FileInfoBrowser:
         # 创建统一的信息组，包含所有信息
         self.info_group = QGroupBox("文件信息")
         self.info_group.setFont(self.global_font)
-        self.info_group.setMinimumWidth(410)  # 增加组框的最小宽度
+        self.info_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # 设置组框标题左对齐
         self.info_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; }")
         
@@ -198,7 +196,6 @@ class FileInfoBrowser:
             widget = self.basic_info_labels[key]
             widget.setWordWrap(True)
             widget.setFont(self.global_font)
-            widget.setMinimumWidth(300)  # 增加值标签的最小宽度
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
             widget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -232,7 +229,7 @@ class FileInfoBrowser:
         # 自定义标签组
         custom_group = QGroupBox("自定义标签")
         custom_group.setFont(self.global_font)
-        custom_group.setMinimumWidth(410)  # 增加最小宽度
+        custom_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # 设置组框标题左对齐，与框内文本左端对齐
         custom_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; }")
         custom_layout = QVBoxLayout(custom_group)
