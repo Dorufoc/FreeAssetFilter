@@ -328,7 +328,7 @@ class FreeAssetFilterApp(QMainWindow):
         #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
         
         # 初始化完成后，检查是否需要恢复上次的文件列表
-        self.check_and_restore_backup()
+        # 移到window.show()之后执行，确保主面板先显示
     
     def show_info(self, title, message):
         """
@@ -549,4 +549,6 @@ if __name__ == "__main__":
     
     window = FreeAssetFilterApp()
     window.show()
+    # 窗口显示后再检查并恢复文件列表，确保主面板先显示
+    window.check_and_restore_backup()
     sys.exit(app.exec_())
