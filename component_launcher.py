@@ -215,6 +215,11 @@ class ComponentLauncher(QMainWindow):
         self.show_all_check.stateChanged.connect(self._filter_logs)
         filter_layout.addWidget(self.show_all_check)
         
+        # 复制日志按钮
+        copy_button = QPushButton("复制最近日志")
+        copy_button.clicked.connect(self._copy_recent_logs)
+        filter_layout.addWidget(copy_button)
+        
         filter_layout.addStretch()
         log_layout.addLayout(filter_layout)
         
@@ -450,6 +455,33 @@ class ComponentLauncher(QMainWindow):
         except Exception as e:
             self._log(f"保存日志失败: {str(e)}", component=component_name, level="ERROR")
             QMessageBox.critical(self, "保存失败", f"保存日志时发生错误:\n{str(e)}")
+    
+    def _copy_recent_logs(self):
+        """复制最近一次启动的日志"""
+        try:
+            # 获取所有日志文本
+            all_logs = self.log_text.toPlainText()
+            log_lines = all_logs.split('\n')
+            
+            # 查找最后一次启动的日志行
+            start_index = 0
+            for i, line in enumerate(log_lines):
+                if "组件启动器已启动" in line:
+                    start_index = i
+            
+            # 提取最近一次启动的日志
+            recent_logs = '\n'.join(log_lines[start_index:])
+            
+            # 复制到剪贴板
+            clipboard = QApplication.clipboard()
+            clipboard.setText(recent_logs)
+            
+            # 显示成功消息
+            QMessageBox.information(self, "复制成功", "最近一次启动的日志已复制到剪贴板！")
+            self._log("已复制最近一次启动的日志", level="INFO")
+        except Exception as e:
+            self._log(f"复制日志失败: {str(e)}", level="ERROR")
+            QMessageBox.critical(self, "复制失败", f"复制日志时发生错误:\n{str(e)}")
     
     def _log(self, message, level="INFO", component="Launcher", file="", line=""):
         """添加日志信息"""
