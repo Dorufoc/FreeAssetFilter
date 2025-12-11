@@ -317,8 +317,8 @@ class CustomVolumeBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._handle_radius = 12
-        # 设置合理的最小宽度，确保音量条有足够的可见区域
-        min_width = 100  # 固定最小宽度，确保音量条不会被压缩得太小
+        # 设置最小尺寸为滑块直径加上一定余量，确保滑块始终可见
+        min_width = self._handle_radius * 3  # 滑块直径 + 两侧余量
         self.setMinimumSize(min_width, 28)
         self.setMaximumHeight(28)
         
@@ -541,7 +541,7 @@ class VideoPlayer(QWidget):
         
         # 设置窗口属性
         self.setWindowTitle("Video Player")
-        self.setMinimumSize(480, 400)
+        self.setMinimumSize(400, 300)
         
         # 初始化所有属性
         self.init_attributes()
@@ -604,7 +604,7 @@ class VideoPlayer(QWidget):
         main_layout.setSpacing(0)
         
         # 媒体显示区域设置
-        self.media_frame.setStyleSheet("background-color: white;")
+        self.media_frame.setStyleSheet("background-color: black;")
         self.media_frame.setMinimumSize(400, 300)
         
         # 视频显示区域设置
@@ -689,10 +689,10 @@ class VideoPlayer(QWidget):
         
         # 控制按钮区域 - 根据Figma设计稿更新样式
         control_container = QWidget()
-        control_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF; border-radius: 45x 45px 45px 45px;")
+        control_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF; border-radius: 35px 35px 35px 35px;")
         self.control_layout = QHBoxLayout(control_container)
-        self.control_layout.setContentsMargins(6, 6, 6, 6)
-        self.control_layout.setSpacing(6)
+        self.control_layout.setContentsMargins(15, 15, 15, 15)
+        self.control_layout.setSpacing(15)
         
         # 播放/暂停按钮 - 更新为白色背景和边框
         self.play_button.setStyleSheet("""
@@ -732,7 +732,7 @@ class VideoPlayer(QWidget):
         progress_time_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF;")
         progress_time_layout = QVBoxLayout(progress_time_container)
         progress_time_layout.setContentsMargins(0, 0, 0, 0)
-        progress_time_layout.setSpacing(1)
+        progress_time_layout.setSpacing(2)
         
         # 自定义进度条设置
         self.progress_slider.setRange(0, 1000)
@@ -743,10 +743,25 @@ class VideoPlayer(QWidget):
         self.progress_slider.userInteractionEnded.connect(self.resume_progress_update)
         progress_time_layout.addWidget(self.progress_slider)
         
-        # 创建一个水平布局来放置音量控制、时间标签和倍速按钮
+        # 创建一个水平布局来放置时间标签和音量控制
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(10)
+        
+        # 时间标签样式
+        self.time_label.setStyleSheet("""
+            color: #000000;
+            background-color: #FFFFFF;
+            padding: 0 5px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 16px;
+            text-align: left;
+            border: 1px solid #FFFFFF;
+        """)
+        bottom_layout.addWidget(self.time_label)
+        
+        # 添加伸缩项
+        bottom_layout.addStretch(1)
         
         # 音量图标按钮设置
         self.volume_button.setStyleSheet("""
@@ -771,7 +786,7 @@ class VideoPlayer(QWidget):
         self.volume_button.setCursor(Qt.PointingHandCursor)
         # 添加点击事件，实现一键静音/恢复
         self.volume_button.clicked.connect(self.toggle_mute)
-        bottom_layout.addWidget(self.volume_button)  # 音量图标居左
+        bottom_layout.addWidget(self.volume_button)
         # 初始化音量图标
         self.update_volume_icon()
         
@@ -788,22 +803,7 @@ class VideoPlayer(QWidget):
         self._previous_volume = saved_volume
         # 连接音量条信号
         self.volume_slider.valueChanged.connect(self.set_volume)
-        bottom_layout.addWidget(self.volume_slider)  # 音量滑块居左
-        
-        # 添加伸缩项，将音量组件和时间/倍速组件分开
-        bottom_layout.addStretch(1)
-        
-        # 时间标签样式
-        self.time_label.setStyleSheet("""
-            color: #000000;
-            background-color: #FFFFFF;
-            padding: 0 5px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            font-size: 16px;
-            text-align: left;
-            border: 1px solid #FFFFFF;
-        """)
-        bottom_layout.addWidget(self.time_label)  # 时间标签在进度条右侧
+        bottom_layout.addWidget(self.volume_slider)
         
         # 添加倍速控制按钮
         self.speed_button.setStyleSheet("""
@@ -811,10 +811,10 @@ class VideoPlayer(QWidget):
                 background-color: #FFFFFF;
                 color: #000000;
                 border: 1px solid #FFFFFF;
-                padding: 15px 10px;
-                border-radius: 20px;
-                min-width: 40px;
-                max-width: 40px;
+                padding: 5px 10px;
+                border-radius: 5px;
+                min-width: 60px;
+                max-width: 60px;
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                 font-size: 16px;
             }
@@ -825,7 +825,7 @@ class VideoPlayer(QWidget):
         # 将点击事件改为鼠标悬停事件
         self.speed_button.enterEvent = self.show_speed_menu
         self.speed_button.leaveEvent = lambda event: self._handle_speed_button_leave(event)
-        bottom_layout.addWidget(self.speed_button)  # 倍速按钮居右
+        bottom_layout.addWidget(self.speed_button)
         
         # 将水平布局添加到垂直布局中
         progress_time_layout.addLayout(bottom_layout)

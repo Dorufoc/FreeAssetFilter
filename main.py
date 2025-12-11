@@ -29,6 +29,10 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
+from PyQt5.QtGui import QFont
+
+# 导入自定义控件库
+from src.widgets.custom_widgets import CustomWindow, CustomButton
 
 # 尝试导入依赖检查所需的模块
 exportlib_metadata_available = False
@@ -327,6 +331,8 @@ class FreeAssetFilterApp(QMainWindow):
         main_layout.addWidget(self.status_label)
         #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
         
+        # 自定义窗口演示按钮已移至组件启动器，此处隐藏
+        
         # 初始化完成后，检查是否需要恢复上次的文件列表
         # 移到window.show()之后执行，确保主面板先显示
     
@@ -340,6 +346,55 @@ class FreeAssetFilterApp(QMainWindow):
         """
         # 简单的信息显示，使用状态标签
         self.status_label.setText(f"{title}: {message}")
+    
+    def show_custom_window_demo(self):
+        """
+        演示自定义窗口的使用
+        """
+        # 创建自定义窗口实例
+        custom_window = CustomWindow("自定义窗口演示", self)
+        custom_window.setGeometry(200, 200, 400, 300)
+        
+        # 添加示例控件
+        
+        # 1. 添加标题标签
+        title_label = QLabel("这是一个自定义窗口")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 18px;
+                font-weight: 600;
+                color: #333333;
+                margin-bottom: 16px;
+                text-align: center;
+            }
+        """)
+        custom_window.add_widget(title_label)
+        
+        # 2. 添加说明文本
+        info_label = QLabel("这个窗口具有以下特点：\n\n" \
+                            "• 纯白圆角矩形外观\n" \
+                            "• 右上角圆形关闭按钮\n" \
+                            "• 可拖拽移动（通过标题栏）\n" \
+                            "• 支持内嵌其他控件\n" \
+                            "• 带阴影效果")
+        info_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #666666;
+                line-height: 1.6;
+                margin-bottom: 24px;
+            }
+        """)
+        info_label.setWordWrap(True)
+        custom_window.add_widget(info_label)
+        
+        # 3. 添加自定义按钮
+        demo_button = CustomButton("示例按钮")
+        demo_button.clicked.connect(lambda: QMessageBox.information(custom_window, "提示", "自定义按钮被点击了！"))
+        custom_window.add_widget(demo_button)
+        
+        # 显示窗口
+        custom_window.show()
     
     def handle_file_selection_changed(self, file_info, is_selected):
         """

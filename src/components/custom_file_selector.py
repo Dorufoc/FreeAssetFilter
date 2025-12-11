@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QDialog, QApplication,
     QPushButton, QLabel, QComboBox, QLineEdit, QScrollArea,
-    QHeaderView, QGroupBox, QGridLayout, QMenu, QAction, QMessageBox,
+    QHeaderView, QGroupBox, QGridLayout, QMenu, QAction,
     QFrame, QSplitter, QSizePolicy, QInputDialog, QListWidget, QProgressBar,
     QProgressDialog
 )
@@ -41,6 +41,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from src.utils.svg_renderer import SvgRenderer
+from src.widgets.custom_widgets import CustomButton
 
 
 class CustomFileSelector(QWidget):
@@ -181,17 +182,17 @@ class CustomFileSelector(QWidget):
         dir_layout.addWidget(self.path_edit, 1)
         
         # 前往按钮
-        go_btn = QPushButton("前往")
+        go_btn = CustomButton("前往", button_type="normal")
         go_btn.clicked.connect(self.go_to_path)
         dir_layout.addWidget(go_btn)
         
         # 收藏夹按钮
-        self.favorites_btn = QPushButton("收藏夹")
+        self.favorites_btn = CustomButton("收藏夹", button_type="normal")
         self.favorites_btn.clicked.connect(self._show_favorites_dialog)
         dir_layout.addWidget(self.favorites_btn)
         
         # 返回上一次退出所在目录按钮
-        self.last_path_btn = QPushButton("上次目录")
+        self.last_path_btn = CustomButton("上次目录", button_type="normal")
         self.last_path_btn.clicked.connect(self._go_to_last_path)
         dir_layout.addWidget(self.last_path_btn)
         
@@ -202,12 +203,12 @@ class CustomFileSelector(QWidget):
         nav_layout.setSpacing(5)
         
         # 返回上级文件夹按钮
-        self.parent_btn = QPushButton("返回上级文件夹")
+        self.parent_btn = CustomButton("返回上级文件夹", button_type="normal")
         self.parent_btn.clicked.connect(self.go_to_parent)
         nav_layout.addWidget(self.parent_btn)
         
         # 刷新按钮
-        refresh_btn = QPushButton("刷新")
+        refresh_btn = CustomButton("刷新", button_type="normal")
         refresh_btn.clicked.connect(self.refresh_files)
         nav_layout.addWidget(refresh_btn)
         
@@ -227,7 +228,7 @@ class CustomFileSelector(QWidget):
         filter_sort_layout.addWidget(self.filter_edit, 1)
         
         # 筛选按钮
-        self.filter_btn = QPushButton("筛选")
+        self.filter_btn = CustomButton("筛选", button_type="normal")
         self.filter_btn.clicked.connect(self.apply_filter)
         filter_sort_layout.addWidget(self.filter_btn)
         
@@ -281,12 +282,12 @@ class CustomFileSelector(QWidget):
 
         
         # 生成缩略图按钮
-        self.generate_thumbnails_btn = QPushButton("生成缩略图")
+        self.generate_thumbnails_btn = CustomButton("生成缩略图", button_type="primary")
         self.generate_thumbnails_btn.clicked.connect(self._generate_thumbnails)
         layout.addWidget(self.generate_thumbnails_btn)
         
         # 清理缩略图缓存按钮
-        self.clear_thumbnails_btn = QPushButton("清理缩略图缓存")
+        self.clear_thumbnails_btn = CustomButton("清理缩略图缓存", button_type="secondary")
         self.clear_thumbnails_btn.clicked.connect(self._clear_thumbnail_cache)
         layout.addWidget(self.clear_thumbnails_btn)
         
@@ -318,24 +319,72 @@ class CustomFileSelector(QWidget):
                     media_files.append(file)
         
         if not media_files:
-            QMessageBox.information(self, "提示", "当前目录下没有需要生成缩略图的媒体文件")
+            # 当前目录下没有需要生成缩略图的媒体文件
+            from src.widgets.custom_widgets import CustomMessageBox
+            info_msg = CustomMessageBox(self)
+            info_msg.set_title("提示")
+            info_msg.set_text("当前目录下没有需要生成缩略图的媒体文件")
+            info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            info_msg.buttonClicked.connect(info_msg.close)
+            info_msg.exec_()
             return
         
-        # 使用QProgressDialog来显示进度
-        progress_dialog = QProgressDialog("正在生成缩略图...", "取消", 0, len(media_files), self)
-        progress_dialog.setWindowTitle("生成缩略图")
-        progress_dialog.setMinimumWidth(400)
-        progress_dialog.setWindowModality(Qt.WindowModal)  # 设置为模态对话框，防止用户操作其他窗口
-        progress_dialog.setValue(0)
-        progress_dialog.show()
+        # 筛选出需要生成缩略图的文件（缩略图不存在的文件）
+        files_to_generate = []
+        for file in media_files:
+            thumbnail_path = self._get_thumbnail_path(file["path"])
+            if not os.path.exists(thumbnail_path):
+                files_to_generate.append(file)
+        
+        if not files_to_generate:
+            # 所有文件都已有缩略图，无需重新生成
+            from src.widgets.custom_widgets import CustomMessageBox
+            info_msg = CustomMessageBox(self)
+            info_msg.set_title("提示")
+            info_msg.set_text("所有文件都已有缩略图，无需重新生成")
+            info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            info_msg.buttonClicked.connect(info_msg.close)
+            info_msg.exec_()
+            return
+        
+        # 使用自定义提示窗口来显示进度
+        from src.widgets.custom_widgets import CustomMessageBox, CustomProgressBar
+        
+        # 创建自定义提示窗口
+        progress_msg = CustomMessageBox(self)
+        progress_msg.set_title("生成缩略图")
+        progress_msg.set_text(f"正在生成缩略图... (0/{len(files_to_generate)})")
+        
+        # 创建并配置自定义进度条
+        progress_bar = CustomProgressBar()
+        progress_bar.setRange(0, len(files_to_generate))
+        progress_bar.setValue(0)
+        progress_bar.setInteractive(False)  # 禁用交互，只用于显示进度
+        progress_msg.set_progress(progress_bar)
+        
+        # 设置只有一个取消按钮
+        progress_msg.set_buttons(["取消"], Qt.Horizontal, ["normal"])
+        
+        # 记录是否取消的标志
+        is_canceled = False
+        
+        # 连接取消按钮的信号
+        def on_cancel_clicked():
+            nonlocal is_canceled
+            is_canceled = True
+        
+        progress_msg.buttonClicked.connect(on_cancel_clicked)
+        
+        # 显示自定义提示窗口
+        progress_msg.show()
         
         # 开始生成缩略图
         generated_count = 0
         success_count = 0
         
-        for i, file in enumerate(media_files):
+        for i, file in enumerate(files_to_generate):
             # 检查是否取消
-            if progress_dialog.wasCanceled():
+            if is_canceled:
                 break
             
             try:
@@ -346,23 +395,28 @@ class CustomFileSelector(QWidget):
                     success_count += 1
                 
                 # 更新进度条和文本
-                progress_dialog.setValue(generated_count)
-                progress_dialog.setLabelText(f"正在生成缩略图... ({generated_count}/{len(media_files)})")
+                progress_bar.setValue(generated_count)
+                progress_msg.set_text(f"正在生成缩略图... ({generated_count}/{len(files_to_generate)})")
                 
                 # 处理事件，防止界面冻结
                 QApplication.processEvents()
             except Exception as e:
                 print(f"生成缩略图失败: {file['path']}, 错误: {e}")
                 generated_count += 1
-                progress_dialog.setValue(generated_count)
-                progress_dialog.setLabelText(f"正在生成缩略图... ({generated_count}/{len(media_files)})")
+                progress_bar.setValue(generated_count)
+                progress_msg.set_text(f"正在生成缩略图... ({generated_count}/{len(files_to_generate)})")
                 QApplication.processEvents()
         
-        # 关闭进度对话框
-        progress_dialog.close()
+        # 关闭自定义提示窗口
+        progress_msg.close()
         
         # 显示结果
-        QMessageBox.information(self, "提示", f"缩略图生成完成！成功: {success_count}, 总数: {generated_count}")
+        result_msg = CustomMessageBox(self)
+        result_msg.set_title("提示")
+        result_msg.set_text(f"缩略图生成完成！成功: {success_count}, 总数: {generated_count}")
+        result_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+        result_msg.buttonClicked.connect(result_msg.close)
+        result_msg.exec_()
         
         # 刷新文件列表，显示新生成的缩略图
         self.refresh_files()
@@ -371,14 +425,27 @@ class CustomFileSelector(QWidget):
         """
         清理缩略图缓存，删除所有本地存储的缩略图文件，并刷新页面显示
         """
-        from PyQt5.QtWidgets import QMessageBox
         import shutil
+        from src.widgets.custom_widgets import CustomMessageBox
         
         # 确认对话框
-        reply = QMessageBox.question(self, "确认清理", "确定要清理所有缩略图缓存吗？这将删除所有生成的缩略图，并恢复默认图标显示。", 
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        confirm_msg = CustomMessageBox(self)
+        confirm_msg.set_title("确认清理")
+        confirm_msg.set_text("确定要清理所有缩略图缓存吗？这将删除所有生成的缩略图，并恢复默认图标显示。")
+        confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
         
-        if reply == QMessageBox.Yes:
+        # 记录确认结果
+        is_confirmed = False
+        
+        def on_confirm_clicked(button_index):
+            nonlocal is_confirmed
+            is_confirmed = (button_index == 0)  # 0表示确定按钮
+            confirm_msg.close()
+        
+        confirm_msg.buttonClicked.connect(on_confirm_clicked)
+        confirm_msg.exec_()
+        
+        if is_confirmed:
             try:
                 # 获取缩略图存储目录
                 thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
@@ -399,14 +466,54 @@ class CustomFileSelector(QWidget):
                         # 刷新文件列表，恢复默认图标显示
                         self.refresh_files()
                         
-                        QMessageBox.information(self, "清理成功", f"已成功清理 {file_count} 个缩略图缓存文件。")
+                        # 清理成功提示
+                        success_msg = CustomMessageBox(self)
+                        success_msg.set_title("清理成功")
+                        success_msg.set_text(f"已成功清理 {file_count} 个缩略图缓存文件。")
+                        success_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                        
+                        def on_success_ok_clicked():
+                            success_msg.close()
+                        
+                        success_msg.buttonClicked.connect(on_success_ok_clicked)
+                        success_msg.exec_()
                     else:
-                        QMessageBox.information(self, "提示", "缩略图缓存目录为空，无需清理。")
+                        # 缓存目录为空提示
+                        empty_msg = CustomMessageBox(self)
+                        empty_msg.set_title("提示")
+                        empty_msg.set_text("缩略图缓存目录为空，无需清理。")
+                        empty_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                        
+                        def on_empty_ok_clicked():
+                            empty_msg.close()
+                        
+                        empty_msg.buttonClicked.connect(on_empty_ok_clicked)
+                        empty_msg.exec_()
                 else:
-                    QMessageBox.information(self, "提示", "缩略图缓存目录不存在，无需清理。")
+                    # 缓存目录不存在提示
+                    not_exist_msg = CustomMessageBox(self)
+                    not_exist_msg.set_title("提示")
+                    not_exist_msg.set_text("缩略图缓存目录不存在，无需清理。")
+                    not_exist_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                    
+                    def on_not_exist_ok_clicked():
+                        not_exist_msg.close()
+                    
+                    not_exist_msg.buttonClicked.connect(on_not_exist_ok_clicked)
+                    not_exist_msg.exec_()
             except Exception as e:
                 print(f"清理缩略图缓存失败: {e}")
-                QMessageBox.critical(self, "错误", f"清理缩略图缓存失败: {e}")
+                # 清理失败错误提示
+                error_msg = CustomMessageBox(self)
+                error_msg.set_title("错误")
+                error_msg.set_text(f"清理缩略图缓存失败: {e}")
+                error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                
+                def on_error_ok_clicked():
+                    error_msg.close()
+                
+                error_msg.buttonClicked.connect(on_error_ok_clicked)
+                error_msg.exec_()
     
     def _create_thumbnail(self, file_path):
         """
@@ -749,11 +856,17 @@ class CustomFileSelector(QWidget):
         
         # 添加当前路径到收藏夹按钮
         add_btn = QPushButton("添加当前路径到收藏夹")
+        font = add_btn.font()
+        font.setPointSize(8)
+        add_btn.setFont(font)
         add_btn.clicked.connect(lambda: self._add_current_path_to_favorites(dialog, favorites_list))
         btn_layout.addWidget(add_btn)
         
         # 关闭按钮
         close_btn = QPushButton("关闭")
+        font = close_btn.font()
+        font.setPointSize(8)
+        close_btn.setFont(font)
         close_btn.clicked.connect(dialog.accept)
         btn_layout.addWidget(close_btn)
         
@@ -828,9 +941,24 @@ class CustomFileSelector(QWidget):
             name, path = text.split(' - ', 1)
             
             # 确认删除
-            reply = QMessageBox.question(self, "确认删除", f"确定要删除收藏夹项 '{name}' 吗?", 
-                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
+            from src.widgets.custom_widgets import CustomMessageBox
+            confirm_msg = CustomMessageBox(self)
+            confirm_msg.set_title("确认删除")
+            confirm_msg.set_text(f"确定要删除收藏夹项 '{name}' 吗?")
+            confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
+            
+            # 记录确认结果
+            is_confirmed = False
+            
+            def on_delete_clicked(button_index):
+                nonlocal is_confirmed
+                is_confirmed = (button_index == 0)  # 0表示确定按钮
+                confirm_msg.close()
+            
+            confirm_msg.buttonClicked.connect(on_delete_clicked)
+            confirm_msg.exec_()
+            
+            if is_confirmed:
                 # 从收藏夹列表中删除
                 self.favorites = [f for f in self.favorites if not (f['path'] == path and f['name'] == name)]
                 self._save_favorites()
@@ -852,7 +980,13 @@ class CustomFileSelector(QWidget):
         # 检查是否已存在
         for favorite in self.favorites:
             if favorite['path'] == current_path:
-                QMessageBox.information(self, "提示", "该路径已在收藏夹中")
+                from src.widgets.custom_widgets import CustomMessageBox
+                info_msg = CustomMessageBox(self)
+                info_msg.set_title("提示")
+                info_msg.set_text("该路径已在收藏夹中")
+                info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                info_msg.buttonClicked.connect(info_msg.close)
+                info_msg.exec_()
                 return
         
         # 弹出输入框获取名称
@@ -971,7 +1105,13 @@ class CustomFileSelector(QWidget):
             self.current_path = path
             self.refresh_files()
         else:
-            QMessageBox.warning(self, "警告", "无效的路径")
+            from src.widgets.custom_widgets import CustomMessageBox
+            warning_msg = CustomMessageBox(self)
+            warning_msg.set_title("警告")
+            warning_msg.set_text("无效的路径")
+            warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            warning_msg.buttonClicked.connect(warning_msg.close)
+            warning_msg.exec_()
     
     def apply_filter(self):
         """
@@ -1107,7 +1247,13 @@ class CustomFileSelector(QWidget):
                 files.append(file_dict)
         except Exception as e:
             print(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
-            QMessageBox.critical(self, "错误", f"读取目录失败: {e}")
+            from src.widgets.custom_widgets import CustomMessageBox
+            error_msg = CustomMessageBox(self)
+            error_msg.set_title("错误")
+            error_msg.set_text(f"读取目录失败: {e}")
+            error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            error_msg.buttonClicked.connect(error_msg.close)
+            error_msg.exec_()
         
         return files
     
@@ -1843,6 +1989,9 @@ class CustomFileSelector(QWidget):
         
         # 添加关闭按钮
         close_btn = QPushButton("关闭")
+        font = close_btn.font()
+        font.setPointSize(8)
+        close_btn.setFont(font)
         close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn, 0, Qt.AlignRight)
         
