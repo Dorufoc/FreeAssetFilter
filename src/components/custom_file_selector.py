@@ -1012,30 +1012,134 @@ class CustomFileSelector(QWidget):
     
     def _update_drive_list(self):
         """
-        动态获取当前系统存在的盘符列表并更新到下拉框
+        动态获取当前系统存在的盘符列表和网络位置并更新到下拉框
         """
         # 清空现有选项
         self.drive_combo.clear()
         
+        local_drives = []
+        network_locations = []
         if sys.platform == 'win32':
             # Windows系统：遍历A-Z，检查存在的盘符
-            drives = []
             for drive in range(65, 91):  # A-Z
                 drive_letter = chr(drive) + ':/'
                 if os.path.exists(drive_letter):
-                    drives.append(drive_letter[:-1])  # 显示为 "C:" 而不是 "C:/"
+                    local_drives.append(drive_letter[:-1])  # 显示为 "C:" 而不是 "C:/"
+            
+            # 获取网络映射驱动器
+            try:
+                import ctypes
+                from ctypes import wintypes
+                
+                # 定义Windows API函数
+                mpr = ctypes.WinDLL('mpr')
+                
+                # 定义结构体
+                class NETRESOURCE(ctypes.Structure):
+                    _fields_ = [
+                        ('dwScope', wintypes.DWORD),
+                        ('dwType', wintypes.DWORD),
+                        ('dwDisplayType', wintypes.DWORD),
+                        ('dwUsage', wintypes.DWORD),
+                        ('lpLocalName', wintypes.LPWSTR),
+                        ('lpRemoteName', wintypes.LPWSTR),
+                        ('lpComment', wintypes.LPWSTR),
+                        ('lpProvider', wintypes.LPWSTR)
+                    ]
+                
+                # 定义常量
+                RESOURCE_CONNECTED = 1
+                RESOURCETYPE_ANY = 0
+                
+                # 调用WNetOpenEnum获取网络资源枚举句柄
+                hEnum = wintypes.HANDLE()
+                if mpr.WNetOpenEnumW(RESOURCE_CONNECTED, RESOURCETYPE_ANY, 0, None, ctypes.byref(hEnum)) == 0:
+                    # 枚举网络资源
+                    while True:
+                        # 第一次调用获取需要的缓冲区大小
+                        buf_size = wintypes.DWORD(0)
+                        count = wintypes.DWORD(0)
+                        if mpr.WNetEnumResourceW(hEnum, ctypes.byref(count), None, ctypes.byref(buf_size)) != 234:  # ERROR_MORE_DATA
+                            break
+                        
+                        # 分配缓冲区
+                        buf = ctypes.create_string_buffer(buf_size.value)
+                        
+                        # 再次调用获取网络资源
+                        if mpr.WNetEnumResourceW(hEnum, ctypes.byref(count), buf, ctypes.byref(buf_size)) != 0:
+                            break
+                        
+                        # 解析结果
+                        resources = []
+                        ptr = ctypes.cast(buf, ctypes.POINTER(NETRESOURCE))
+                        for i in range(count.value):
+                            res = ptr[i]
+                            if res.lpLocalName and res.lpRemoteName:
+                                # 添加网络映射驱动器
+                                local_name = ctypes.wstring_at(res.lpLocalName)
+                                if local_name and local_name not in drives:
+                                    drives.append(local_name)  # 如 "Z:"
+                                # 直接添加网络位置（UNC路径）
+                                remote_name = ctypes.wstring_at(res.lpRemoteName)
+                                if remote_name and remote_name not in drives:
+                                    drives.append(remote_name)  # 如 "\\server\share"
+                        
+                # 关闭枚举句柄
+                mpr.WNetCloseEnum(hEnum)
+            except Exception as e:
+                print(f"获取网络映射驱动器失败: {e}")
+                # 使用net use命令作为备选方案
+                try:
+                    import subprocess
+                    result = subprocess.run(['net', 'use'], capture_output=True, text=True, encoding='gbk')
+                    if result.returncode == 0:
+                        lines = result.stdout.strip().split('\n')
+                        for line in lines[6:]:  # 跳过前6行标题和分隔线
+                            line = line.strip()
+                            if not line:
+                                continue
+                            # 解析net use命令输出
+                            # 示例输出: "Z:        \\server\share     Microsoft Windows Network"
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                local_name = parts[0]
+                                remote_name = parts[1]
+                                if local_name and local_name not in local_drives:
+                                    local_drives.append(local_name)
+                                if remote_name and remote_name not in network_locations:
+                                    network_locations.append(remote_name)
+                except Exception as e:
+                    print(f"使用net use命令获取网络位置失败: {e}")
         else:
             # Linux/macOS系统：根目录
-            drives = ['/']
+            local_drives = ['/']
+        
+        # 对网络位置进行去重和排序
+        network_locations = list(set(network_locations))
+        network_locations.sort()
+        
+        # 先添加本地驱动器，然后添加网络位置
+        all_drives = local_drives.copy()
+        if network_locations:
+            # 添加一个分隔符，区分本地驱动器和网络位置
+            all_drives.append("--- 网络位置 ---")
+            all_drives.extend(network_locations)
         
         # 添加到下拉框
-        if drives:
-            self.drive_combo.addItems(drives)
+        if all_drives:
+            self.drive_combo.addItems(all_drives)
             
             # 设置默认选中项为当前路径所在的盘符
             if sys.platform == 'win32':
                 # Windows系统：提取当前路径的盘符，如 "C:\path\to\dir" -> "C:"
                 current_drive = os.path.splitdrive(self.current_path)[0]
+                # 如果当前路径是UNC路径，直接使用完整路径作为当前盘符
+                if not current_drive and self.current_path.startswith('\\'):
+                    # 查找包含当前路径的网络位置
+                    for drive in all_drives:
+                        if drive != "--- 网络位置 ---" and self.current_path.startswith(drive):
+                            current_drive = drive
+                            break
             else:
                 # Linux/macOS系统：根目录
                 current_drive = '/'
@@ -1054,10 +1158,24 @@ class CustomFileSelector(QWidget):
         """
         # 获取选中的盘符文本
         drive = self.drive_combo.itemText(index)
-        # 切换到选择的盘符，确保使用完整的根目录路径
-        # 对于Windows，确保路径格式为 "D:\\"
-        drive_path = drive + '\\' if sys.platform == 'win32' else drive
-        # 确保路径存在且是根目录
+        
+        # 跳过分隔符选项
+        if drive == "--- 网络位置 ---":
+            return
+        
+        if sys.platform == 'win32':
+            # 处理Windows系统
+            if drive.startswith('\\'):  # UNC路径，如 \\server\share
+                # 直接使用UNC路径作为当前路径
+                drive_path = drive
+            else:  # 本地盘符，如 C:
+                # 确保路径格式为 "D:\\"
+                drive_path = drive + '\\'
+        else:
+            # Linux/macOS系统：根目录
+            drive_path = drive
+        
+        # 确保路径存在且是绝对路径
         if os.path.exists(drive_path) and os.path.isabs(drive_path):
             self.current_path = drive_path
             self.refresh_files()
