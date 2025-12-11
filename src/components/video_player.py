@@ -508,6 +508,339 @@ class CustomVolumeBar(QWidget):
         self.update()
 
 
+
+
+
+class CustomValueBar(QWidget):
+    """
+    自定义数值控制条组件
+    完全复用可交互进度条逻辑，滑块图标替换为进度条按钮
+    已完成区域使用不可交互的颜色样式
+    支持横向和竖向两种显示方式
+    """
+    valueChanged = pyqtSignal(int)  # 值变化信号
+    userInteracting = pyqtSignal()  # 用户开始交互信号
+    userInteractionEnded = pyqtSignal()  # 用户结束交互信号
+    
+    # 方向常量
+    Horizontal = 0
+    Vertical = 1
+    
+    def __init__(self, parent=None, orientation=Horizontal):
+        super().__init__(parent)
+        
+        # 方向属性
+        self._orientation = orientation
+        
+        # 根据方向设置最小和最大尺寸
+        if self._orientation == self.Horizontal:
+            self.setMinimumSize(200, 28)
+            self.setMaximumHeight(28)
+        else:  # Vertical
+            self.setMinimumSize(28, 200)
+            self.setMaximumWidth(28)
+        
+        # 进度条属性
+        self._minimum = 0
+        self._maximum = 1000
+        self._value = 0
+        self._is_pressed = False
+        self._last_pos = 0
+        
+        # 外观属性
+        self._bg_color = QColor(99, 99, 99)  # 进度条背景颜色
+        self._progress_color = QColor(0, 120, 212)  # 已完成区域颜色（蓝色，与不可交互进度条一致）
+        self._handle_radius = 12
+        self._bar_size = 6  # 横向时为高度，竖向时为宽度
+        self._bar_radius = 3
+        
+        # SVG 图标路径 - 只使用进度条按钮.svg
+        import os
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Icon')
+        self._progress_button_icon = os.path.join(icon_dir, '进度条按钮.svg')
+        
+        # 渲染 SVG 图标为 QPixmap
+        self._handle_pixmap = SvgRenderer.render_svg_to_pixmap(self._progress_button_icon, self._handle_radius * 2)
+    
+    def setRange(self, minimum, maximum):
+        """
+        设置数值条范围
+        """
+        self._minimum = minimum
+        self._maximum = maximum
+        self.update()
+    
+    def setValue(self, value):
+        """
+        设置数值条值
+        """
+        if value < self._minimum:
+            value = self._minimum
+        elif value > self._maximum:
+            value = self._maximum
+        
+        if self._value != value:
+            self._value = value
+            self.update()
+            self.valueChanged.emit(value)
+    
+    def value(self):
+        """
+        获取当前数值
+        """
+        return self._value
+    
+    def setOrientation(self, orientation):
+        """
+        设置数值条方向
+        
+        Args:
+            orientation: 方向常量，Horizontal 或 Vertical
+        """
+        if self._orientation != orientation:
+            self._orientation = orientation
+            
+            # 根据新方向更新尺寸限制
+            if orientation == self.Horizontal:
+                self.setMinimumSize(200, 28)
+                self.setMaximumHeight(28)
+            else:  # Vertical
+                self.setMinimumSize(28, 200)
+                self.setMaximumWidth(28)
+            
+            self.update()
+    
+    def mousePressEvent(self, event):
+        """
+        鼠标按下事件
+        """
+        if event.button() == Qt.LeftButton:
+            self._is_pressed = True
+            if self._orientation == self.Horizontal:
+                self._last_pos = event.pos().x()
+                self._update_value_from_pos(self._last_pos)
+            else:  # Vertical
+                self._last_pos = event.pos().y()
+                self._update_value_from_pos(self._last_pos)
+            self.userInteracting.emit()
+    
+    def mouseMoveEvent(self, event):
+        """
+        鼠标移动事件
+        """
+        if self._is_pressed:
+            if self._orientation == self.Horizontal:
+                self._last_pos = event.pos().x()
+                self._update_value_from_pos(self._last_pos)
+            else:  # Vertical
+                self._last_pos = event.pos().y()
+                self._update_value_from_pos(self._last_pos)
+    
+    def mouseReleaseEvent(self, event):
+        """
+        鼠标释放事件
+        """
+        if self._is_pressed and event.button() == Qt.LeftButton:
+            self._is_pressed = False
+            self.userInteractionEnded.emit()
+    
+    def _update_value_from_pos(self, pos):
+        """
+        根据鼠标位置更新数值
+        
+        Args:
+            pos: 鼠标位置（横向为x坐标，竖向为y坐标）
+        """
+        if self._orientation == self.Horizontal:
+            # 横向处理
+            # 计算数值条总宽度
+            bar_length = self.width() - (self._handle_radius * 2)
+            # 计算鼠标在数值条上的相对位置
+            relative_pos = pos - self._handle_radius
+            if relative_pos < 0:
+                relative_pos = 0
+            elif relative_pos > bar_length:
+                relative_pos = bar_length
+                
+            # 计算对应的值
+            if bar_length > 0:
+                ratio = relative_pos / bar_length
+            else:
+                ratio = 0.0
+            value = int(self._minimum + ratio * (self._maximum - self._minimum))
+        else:  # Vertical
+            # 竖向处理 - 滑动方向修正：向上滑动数值增加，向下滑动数值减少
+            # 计算数值条总高度
+            bar_length = self.height() - (self._handle_radius * 2)
+            # 计算鼠标在数值条上的相对位置
+            relative_pos = pos - self._handle_radius
+            if relative_pos < 0:
+                relative_pos = 0
+            elif relative_pos > bar_length:
+                relative_pos = bar_length
+                
+            # 计算对应的值 - 反向映射：relative_pos越大，值越小
+            if bar_length > 0:
+                ratio = 1.0 - (relative_pos / bar_length)
+            else:
+                ratio = 0.0
+            value = int(self._minimum + ratio * (self._maximum - self._minimum))
+        
+        self.setValue(value)
+    
+    def paintEvent(self, event):
+        """
+        绘制数值控制条
+        """
+        # 确保Qt已导入
+        from PyQt5.QtCore import Qt
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        rect = self.rect()
+        
+        if self._orientation == self.Horizontal:
+            # 横向绘制
+            # 计算数值条参数
+            bar_y = (rect.height() - self._bar_size) // 2
+            bar_length = rect.width() - 2 * self._handle_radius
+            
+            # 绘制背景
+            bg_rect = QRect(
+                self._handle_radius, bar_y, 
+                bar_length, self._bar_size
+            )
+            
+            painter.setBrush(QBrush(self._bg_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+            
+            # 绘制已完成部分
+            if (self._maximum - self._minimum) > 0:
+                progress_ratio = (self._value - self._minimum) / (self._maximum - self._minimum)
+            else:
+                progress_ratio = 0.0
+            progress_length = int(bar_length * progress_ratio)
+            progress_rect = QRect(
+                self._handle_radius, bar_y, 
+                progress_length, self._bar_size
+            )
+            
+            painter.setBrush(QBrush(self._progress_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+            
+            # 绘制滑块
+            handle_x = self._handle_radius + progress_length
+            # 确保滑块不会超出数值条范围
+            handle_x = min(handle_x, self.width() - self._handle_radius * 2)
+            handle_y = (rect.height() - self._handle_radius * 2) // 2
+            
+            # 确保图标已正确加载
+            if not self._handle_pixmap.isNull():
+                # 保存当前画家状态
+                painter.save()
+                
+                # 计算旋转中心
+                center_x = handle_x + self._handle_radius
+                center_y = handle_y + self._handle_radius
+                
+                # 移动坐标原点到旋转中心
+                painter.translate(center_x, center_y)
+                
+                # 绘制图标（不需要旋转）
+                painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+                
+                # 恢复画家状态
+                painter.restore()
+            else:
+                # 备用方案：如果 SVG 加载失败，绘制圆形滑块
+                painter.setBrush(QBrush(self._progress_color))
+                painter.setPen(Qt.NoPen)  # 去除滑块边框
+                painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+        else:  # Vertical
+            # 竖向绘制
+            # 计算数值条参数
+            bar_x = (rect.width() - self._bar_size) // 2
+            bar_length = rect.height() - 2 * self._handle_radius
+            
+            # 绘制背景
+            bg_rect = QRect(
+                bar_x, self._handle_radius, 
+                self._bar_size, bar_length
+            )
+            
+            painter.setBrush(QBrush(self._bg_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+            
+            # 绘制已完成部分
+            if (self._maximum - self._minimum) > 0:
+                progress_ratio = (self._value - self._minimum) / (self._maximum - self._minimum)
+            else:
+                progress_ratio = 0.0
+            progress_length = int(bar_length * progress_ratio)
+            
+            # 只有当progress_length > 0时才绘制已完成部分，避免值为0时的视觉偏移
+            if progress_length > 0:
+                # 竖向进度条：已完成部分从底部开始向上延伸
+                progress_rect = QRect(
+                    bar_x, 
+                    self._handle_radius + (bar_length - progress_length),  # 底部对齐
+                    self._bar_size, 
+                    progress_length
+                )
+                
+                painter.setBrush(QBrush(self._progress_color))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+            
+            # 绘制滑块 - 修正位置计算：值越大，滑块越靠上
+            handle_y = self._handle_radius + (bar_length - progress_length)
+            # 确保滑块不会超出数值条范围
+            handle_y = max(handle_y, self._handle_radius)
+            handle_y = min(handle_y, rect.height() - self._handle_radius * 2)
+            handle_x = (rect.width() - self._handle_radius * 2) // 2
+            
+            # 确保图标已正确加载
+            if not self._handle_pixmap.isNull():
+                # 保存当前画家状态
+                painter.save()
+                
+                # 计算旋转中心
+                center_x = handle_x + self._handle_radius
+                center_y = handle_y + self._handle_radius
+                
+                # 移动坐标原点到旋转中心
+                painter.translate(center_x, center_y)
+                
+                # 绘制图标（不需要旋转）
+                painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+                
+                # 恢复画家状态
+                painter.restore()
+            else:
+                # 备用方案：如果 SVG 加载失败，绘制圆形滑块
+                painter.setBrush(QBrush(self._progress_color))
+                painter.setPen(Qt.NoPen)  # 去除滑块边框
+                painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+        
+        painter.end()
+    
+    def enterEvent(self, event):
+        """
+        鼠标进入事件
+        """
+        self.update()
+    
+    def leaveEvent(self, event):
+        """
+        鼠标离开事件
+        """
+        self.update()
+
+
 class VideoPlayer(QWidget):
     """
     通用媒体播放器组件
@@ -572,10 +905,10 @@ class VideoPlayer(QWidget):
         self.audio_container = QWidget()
         
         # 控制组件
-        self.progress_slider = CustomProgressBar()
+        self.progress_slider = CustomProgressBar()  # 视频进度条使用可交互进度条
         self.time_label = QLabel("00:00 / 00:00")
         self.play_button = QPushButton()
-        self.volume_slider = CustomVolumeBar()  # 音量控制条
+        self.volume_slider = CustomValueBar()  # 音量控制条使用新的数值控制条
         self.volume_button = QPushButton()  # 音量图标按钮，替换文字描述
         
         # 倍速控制组件
@@ -584,6 +917,13 @@ class VideoPlayer(QWidget):
         self.speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
         self.is_speed_menu_visible = False
         self.speed_menu_timer = None  # 菜单关闭定时器
+        
+        # 音量菜单组件
+        self.volume_menu = None  # 音量菜单
+        self.is_volume_menu_visible = False
+        self.volume_menu_timer = None  # 音量菜单关闭定时器
+        self.volume_menu_slider = None  # 音量菜单中的纵向音量条
+        self.volume_menu_label = None  # 音量菜单中的音量值显示
         
         # 状态标志
         self._user_interacting = False
@@ -790,20 +1130,20 @@ class VideoPlayer(QWidget):
         # 初始化音量图标
         self.update_volume_icon()
         
-        # 音量控制条设置
-        self.volume_slider.setRange(0, 100)
+        # 音量按钮悬停显示音量菜单
+        self.volume_button.enterEvent = self.show_volume_menu
+        self.volume_button.leaveEvent = lambda event: self._handle_volume_button_leave(event)
+        
         # 加载保存的音量设置
         saved_volume = self.load_volume_setting()
-        # 设置音量滑块值
-        self.volume_slider.setValue(saved_volume)
         # 设置初始音量
         if self.player_core:
             self.player_core.set_volume(saved_volume)
         # 保存当前音量作为静音前的初始音量
         self._previous_volume = saved_volume
-        # 连接音量条信号
-        self.volume_slider.valueChanged.connect(self.set_volume)
-        bottom_layout.addWidget(self.volume_slider)
+        
+        # 初始化音量菜单
+        self._init_volume_menu(saved_volume)
         
         # 添加倍速控制按钮
         self.speed_button.setStyleSheet("""
@@ -901,6 +1241,15 @@ class VideoPlayer(QWidget):
                 # 鼠标离开菜单，只有当鼠标不在倍速按钮上时才启动定时器
                 if self.speed_menu_timer and self.is_speed_menu_visible and not self._is_mouse_over_speed_button():
                     self.speed_menu_timer.start()
+        elif obj == self.volume_menu:
+            if event.type() == QEvent.Enter:
+                # 鼠标进入音量菜单，停止定时器
+                if self.volume_menu_timer:
+                    self.volume_menu_timer.stop()
+            elif event.type() == QEvent.Leave:
+                # 鼠标离开音量菜单，只有当鼠标不在音量按钮上时才启动定时器
+                if self.volume_menu_timer and self.is_volume_menu_visible and not self._is_mouse_over_volume_button():
+                    self.volume_menu_timer.start()
         return False
     
     def show_speed_menu(self, event=None):
@@ -983,6 +1332,234 @@ class VideoPlayer(QWidget):
         
         # 隐藏菜单 - QMenu会自动处理关闭，这里只需要更新状态
         self.is_speed_menu_visible = False
+    
+    def _init_volume_menu(self, initial_volume):
+        """
+        初始化音量菜单
+        使用自定义PopupMenu替代QMenu，实现更好的圆角效果
+        
+        Args:
+            initial_volume (int): 初始音量值
+        """
+        from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout
+        from PyQt5.QtCore import Qt
+        
+        # 创建音量菜单定时器
+        self.volume_menu_timer = QTimer(self)
+        self.volume_menu_timer.setInterval(300)  # 300毫秒延迟
+        self.volume_menu_timer.setSingleShot(True)  # 单次触发
+        self.volume_menu_timer.timeout.connect(self.hide_volume_menu)
+        
+        # 使用QMenu实现音量菜单
+        from PyQt5.QtWidgets import QMenu, QWidgetAction
+        self.volume_menu = QMenu(self)
+        
+        # 创建包含音量控制的自定义控件
+        volume_control_widget = QWidget()
+        
+        # 优化菜单布局
+        main_layout = QVBoxLayout(volume_control_widget)
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(15, 15, 15, 15)  # 添加内边距
+        main_layout.setAlignment(Qt.AlignCenter)
+        
+        # 创建音量值显示区域
+        volume_label = QLabel(f"{initial_volume}%")
+        volume_label.setAlignment(Qt.AlignCenter)
+        volume_label.setStyleSheet("""
+            font-weight: normal;
+            font-size: 12px;
+            color: #333;
+            background-color: transparent;
+            border: none;
+        """)
+        # 固定标签宽度，防止文本变化导致布局抖动
+        volume_label.setFixedWidth(50)
+        main_layout.addWidget(volume_label)
+        
+        # 创建音量滑块区域
+        slider_container = QWidget()
+        slider_container.setStyleSheet("background-color: transparent;")
+        slider_layout = QHBoxLayout(slider_container)
+        slider_layout.setContentsMargins(0, 0, 0, 0)
+        slider_layout.setAlignment(Qt.AlignCenter)
+        
+        # 创建竖向自定义数值条作为音量滑块
+        self.volume_menu_slider = CustomValueBar(orientation=CustomValueBar.Vertical)
+        self.volume_menu_slider.setRange(0, 100)
+        self.volume_menu_slider.setValue(initial_volume)
+        self.volume_menu_slider.setFixedSize(28, 160)
+        # 连接滑块信号
+        self.volume_menu_slider.valueChanged.connect(self._on_volume_slider_changed)
+        
+        slider_layout.addWidget(self.volume_menu_slider)
+        main_layout.addWidget(slider_container)
+        
+        # 保存标签引用
+        self.volume_menu_label = volume_label
+        
+        # 使用QWidgetAction将自定义控件添加到菜单
+        volume_action = QWidgetAction(self.volume_menu)
+        volume_action.setDefaultWidget(volume_control_widget)
+        self.volume_menu.addAction(volume_action)
+        
+        # 为菜单添加事件过滤器，用于监听enter和leave事件
+        self.volume_menu.installEventFilter(self)
+        
+        # 设置菜单样式
+        self.volume_menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 0;
+                margin: 0;
+            }
+            QMenu::item {
+                background-color: transparent;
+                padding: 0;
+                margin: 0;
+            }
+            QMenu::item:selected {
+                background-color: transparent;
+            }
+        """)
+    
+    def show_volume_menu(self, event=None):
+        """
+        显示音量菜单
+        
+        Args:
+            event: PyQt事件对象，可选
+        """
+        # 停止任何现有的定时器
+        if self.volume_menu_timer:
+            self.volume_menu_timer.stop()
+        
+        # 更新菜单中的音量值和滑块位置
+        current_volume = self.player_core.get_volume() if self.player_core else self._previous_volume
+        
+        # 确保滑块和标签已初始化
+        if hasattr(self, 'volume_menu_slider') and self.volume_menu_slider:
+            self.volume_menu_slider.setValue(current_volume)
+        if hasattr(self, 'volume_menu_label') and self.volume_menu_label:
+            self.volume_menu_label.setText(f"{current_volume}%")
+        
+        # 计算动态圆角半径：当前窗口最短边的一半
+        window_width = self.width()
+        window_height = self.height()
+        min_side = min(window_width, window_height)
+        corner_radius = min_side // 2
+        
+        # 更新音量菜单样式，应用动态圆角半径
+        if hasattr(self, 'volume_menu'):
+            # 使用普通字符串并手动格式化，避免样式表中的{被错误解析
+            style = """
+                QMenu {
+                    background-color: white;
+                    border: 1px solid #e0e0e0;
+                    border-radius: %spx;
+                    padding: 0;
+                    margin: 0;
+                }
+                QMenu::item {
+                    background-color: transparent;
+                    padding: 0;
+                    margin: 0;
+                }
+                QMenu::item:selected {
+                    background-color: transparent;
+                }
+            """ % corner_radius
+            self.volume_menu.setStyleSheet(style)
+        
+        # 获取音量按钮的位置和大小
+        button_rect = self.volume_button.rect()
+        button_pos = self.volume_button.mapToGlobal(button_rect.topLeft())
+        button_center_x = button_pos.x() + button_rect.width() // 2
+        
+        # 计算菜单位置，使其浮在音量按钮正上方，水平居中
+        menu_width = self.volume_menu.sizeHint().width()
+        menu_height = self.volume_menu.sizeHint().height()
+        
+        # 水平居中：菜单位置 = 按钮中心 - 菜单宽度的一半
+        menu_x = button_center_x - menu_width // 2
+        # 垂直位置：菜单底部距离按钮顶部15像素
+        menu_y = button_pos.y() - menu_height - 15
+        
+        # 使用QMenu的popup方法显示菜单
+        menu_pos = button_pos
+        menu_pos.setX(menu_x)
+        menu_pos.setY(menu_y)
+        self.volume_menu.popup(menu_pos)
+        self.is_volume_menu_visible = True
+    
+    def hide_volume_menu(self, event=None):
+        """
+        隐藏音量菜单
+        
+        Args:
+            event: PyQt事件对象，可选
+        """
+        # 停止定时器
+        if self.volume_menu_timer:
+            self.volume_menu_timer.stop()
+        
+        # 关闭菜单
+        self.volume_menu.close()
+        self.is_volume_menu_visible = False
+    
+    def _handle_volume_button_leave(self, event):
+        """
+        处理音量按钮的鼠标离开事件
+        启动定时器，300毫秒后关闭菜单
+        
+        Args:
+            event: PyQt事件对象
+        """
+        # 只有当鼠标不在音量按钮上且菜单可见时，才启动定时器
+        if self.volume_menu_timer and self.is_volume_menu_visible and not self._is_mouse_over_volume_button():
+            self.volume_menu_timer.start()
+    
+    def _is_mouse_over_volume_button(self):
+        """
+        检查鼠标是否在音量按钮上
+        
+        Returns:
+            bool: 鼠标是否在音量按钮上
+        """
+        from PyQt5.QtGui import QCursor
+        # 获取鼠标全局位置
+        global_pos = QCursor.pos()
+        # 转换为相对于音量按钮的位置
+        local_pos = self.volume_button.mapFromGlobal(global_pos)
+        # 检查是否在按钮范围内
+        return self.volume_button.rect().contains(local_pos)
+    
+    def _on_volume_slider_changed(self, value):
+        """
+        音量滑块值变化回调
+        
+        Args:
+            value (int): 新的音量值
+        """
+        # 更新音量值显示
+        self.volume_menu_label.setText(f"{value}%")
+        
+        # 设置播放器音量
+        if self.player_core:
+            self.player_core.set_volume(value)
+        
+        # 更新音量按钮图标
+        self.update_volume_icon()
+        
+        # 保存音量设置
+        self.save_volume_setting(value)
+        
+        # 更新静音状态和之前的音量值
+        self._is_muted = (value == 0)
+        if value > 0:
+            self._previous_volume = value
     
     def extract_cover_art(self, file_path):
         """
@@ -1358,33 +1935,40 @@ class VideoPlayer(QWidget):
                     self._is_muted = False
                     # 恢复音量值
                     volume = self._previous_volume
-                    # 先设置播放器音量，再更新滑块，避免触发不必要的信号
+                    # 先设置播放器音量
                     self.player_core.set_volume(volume)
-                    # 断开信号连接，避免触发set_volume导致_previous_volume被修改
-                    self.volume_slider.valueChanged.disconnect(self.set_volume)
-                    # 更新音量滑块
-                    self.volume_slider.setValue(volume)
-                    # 重新连接信号
-                    self.volume_slider.valueChanged.connect(self.set_volume)
+                    # 更新音量菜单中的滑块
+                    if self.volume_menu_slider:
+                        self.volume_menu_slider.setValue(volume)
+                    # 更新音量菜单中的标签
+                    if self.volume_menu_label:
+                        self.volume_menu_label.setText(f"{volume}%")
                 else:
                     # 当前不是静音状态，保存当前音量并静音
                     # 1. 保存当前音量
-                    current_volume = self.volume_slider.value()
+                    current_volume = self.player_core.get_volume()
                     # 2. 设置静音状态
                     self._is_muted = True
                     # 3. 保存当前音量到_previous_volume
                     self._previous_volume = current_volume
-                    # 4. 先设置播放器音量为0
+                    # 4. 设置播放器音量为0
                     self.player_core.set_volume(0)
-                    # 5. 断开信号连接，避免触发set_volume导致_previous_volume被修改
-                    self.volume_slider.valueChanged.disconnect(self.set_volume)
-                    # 6. 更新音量滑块为0
-                    self.volume_slider.setValue(0)
-                    # 7. 重新连接信号
-                    self.volume_slider.valueChanged.connect(self.set_volume)
+                    # 5. 更新音量菜单中的滑块
+                    if self.volume_menu_slider:
+                        self.volume_menu_slider.setValue(0)
+                    # 6. 更新音量菜单中的标签
+                    if self.volume_menu_label:
+                        self.volume_menu_label.setText("0%")
                 
                 # 更新音量图标
                 self.update_volume_icon()
+                # 保存音量设置
+                self.save_volume_setting(self.player_core.get_volume())
+                
+                # 确保菜单在点击后保持显示状态
+                if self.is_volume_menu_visible and self.volume_menu:
+                    # 重新显示菜单，确保它不会关闭
+                    self.volume_menu.raise_()
         except Exception as e:
             print(f"切换静音状态时出错: {e}")
     
