@@ -102,8 +102,14 @@ class FileStagingPool(QWidget):
         self.items_list = QListWidget()
         self.items_list.setSelectionMode(QListWidget.ExtendedSelection)
         self.items_list.itemDoubleClicked.connect(self.on_item_double_clicked)
+        # 设置列表为可调整大小，使其能随父容器变化
+        self.items_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # 隐藏水平滚动条，避免出现水平滑块
+        self.items_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 连接窗口大小变化事件，更新列表项宽度
+        self.resizeEvent = self.on_resize
         
-        main_layout.addWidget(self.items_list)
+        main_layout.addWidget(self.items_list, 1)
         
         # 创建导出功能区
         export_layout = QHBoxLayout()
@@ -161,17 +167,67 @@ class FileStagingPool(QWidget):
         
         # 创建自定义widget
         item_widget = self.create_item_widget(file_info)
+        # 设置列表项大小
         list_item.setSizeHint(item_widget.sizeHint())
         
         # 添加到列表
         self.items_list.addItem(list_item)
         self.items_list.setItemWidget(list_item, item_widget)
         
+        # 更新列表项宽度
+        self.update_list_item_widths()
+        
         # 更新统计信息
         self.update_stats()
         
         # 实时保存备份
         self.save_backup()
+    
+    def on_resize(self, event):
+        """
+        处理窗口大小变化事件，更新所有列表项的宽度
+        
+        Args:
+            event (QResizeEvent): 窗口大小变化事件
+        """
+        # 更新所有列表项的宽度
+        self.update_list_item_widths()
+        # 调用父类的resizeEvent
+        super().resizeEvent(event)
+    
+    def update_list_item_widths(self):
+        """
+        更新所有列表项的宽度，使其适应列表宽度
+        """
+        # 获取列表的可见宽度，减去滚动条和边距
+        list_width = self.items_list.width()
+        
+        # 遍历所有列表项，更新它们的大小
+        for i in range(self.items_list.count()):
+            list_item = self.items_list.item(i)
+            if list_item:
+                item_widget = self.items_list.itemWidget(list_item)
+                if item_widget:
+                    # 获取widget的布局
+                    layout = item_widget.layout()
+                    if layout:
+                        # 重新设置widget的最小和最大宽度
+                        item_widget.setMinimumWidth(list_width - 20)
+                        item_widget.setMaximumWidth(list_width - 20)
+                        
+                        # 调整布局中的各个部件
+                        for j in range(layout.count()):
+                            widget = layout.itemAt(j).widget()
+                            if widget:
+                                # 对于信息布局中的标签，确保它们能够自动换行
+                                if isinstance(widget, QLabel):
+                                    widget.setWordWrap(True)
+                        
+                        # 强制布局更新
+                        item_widget.updateGeometry()
+                        
+                    # 更新列表项的大小提示
+                    list_item.setSizeHint(item_widget.sizeHint())
     
     def remove_file(self, file_path):
         """
