@@ -20,8 +20,11 @@ import tempfile
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QScrollArea, QGroupBox, QListWidget, QListWidgetItem, 
-    QSizePolicy, QCheckBox, QMessageBox, QMenu, QAction, QProgressBar, QFileDialog
+    QSizePolicy, QCheckBox, QMenu, QAction, QProgressBar, QFileDialog
 )
+
+# 导入自定义控件
+from src.widgets.custom_widgets import CustomButton, CustomMessageBox, CustomProgressBar
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo
 )
@@ -106,23 +109,23 @@ class FileStagingPool(QWidget):
         export_layout = QHBoxLayout()
         
         # 控制按钮
-        clear_btn = QPushButton("清空所有")
+        clear_btn = CustomButton("清空所有", button_type="secondary")
         clear_btn.clicked.connect(self.clear_all)
         export_layout.addWidget(clear_btn)
         
         # 导出按钮
-        self.export_btn = QPushButton("导出文件")
+        self.export_btn = CustomButton("导出文件", button_type="primary")
         self.export_btn.clicked.connect(self.export_selected_files)
         export_layout.addWidget(self.export_btn)
         
         # 导入/导出数据按钮
-        self.import_export_btn = QPushButton("导入/导出数据")
+        self.import_export_btn = CustomButton("导入/导出数据", button_type="normal")
         self.import_export_btn.clicked.connect(self.show_import_export_dialog)
         export_layout.addWidget(self.import_export_btn)
         
         # 进度条
-        from PyQt5.QtWidgets import QProgressBar
-        self.progress_bar = QProgressBar()
+        self.progress_bar = CustomProgressBar()
+        self.progress_bar.setInteractive(False)  # 禁用交互，只用于显示进度
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
         export_layout.addWidget(self.progress_bar, 1)
@@ -201,13 +204,24 @@ class FileStagingPool(QWidget):
         """
         清空所有项目
         """
-        reply = QMessageBox.question(
-            self, "确认清空", 
-            "确定要清空所有项目吗？",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        )
+        # 确认对话框
+        confirm_msg = CustomMessageBox(self)
+        confirm_msg.set_title("确认清空")
+        confirm_msg.set_text("确定要清空所有项目吗？")
+        confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
         
-        if reply == QMessageBox.Yes:
+        # 记录确认结果
+        is_confirmed = False
+        
+        def on_confirm_clicked(button_index):
+            nonlocal is_confirmed
+            is_confirmed = (button_index == 0)  # 0表示确定按钮
+            confirm_msg.close()
+        
+        confirm_msg.buttonClicked.connect(on_confirm_clicked)
+        confirm_msg.exec_()
+        
+        if is_confirmed:
             # 保存当前项目列表的副本，因为清空操作会修改原列表
             items_to_remove = self.items.copy()
             
@@ -350,7 +364,7 @@ class FileStagingPool(QWidget):
             file_info (dict): 文件信息字典
             widget (QWidget): 文件卡片widget
         """
-        from PyQt5.QtWidgets import QInputDialog, QMessageBox
+        from PyQt5.QtWidgets import QInputDialog
         
         # 获取当前显示名称
         current_name = file_info["display_name"]
@@ -382,7 +396,12 @@ class FileStagingPool(QWidget):
             
             if not new_name_input:
                 # 文件名不能为空
-                QMessageBox.warning(self, "错误", "文件名不能为空！")
+                warning_msg = CustomMessageBox(self)
+                warning_msg.set_title("错误")
+                warning_msg.set_text("文件名不能为空！")
+                warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                warning_msg.buttonClicked.connect(warning_msg.close)
+                warning_msg.exec_()
                 continue
             
             if new_name_input == current_name:
@@ -391,7 +410,12 @@ class FileStagingPool(QWidget):
             
             # 检查是否包含非法字符
             if any(char in new_name_input for char in illegal_chars):
-                QMessageBox.warning(self, "错误", "文件名包含非法字符！请避免使用：< > : \" / \\ | ? * 以及控制字符")
+                warning_msg = CustomMessageBox(self)
+                warning_msg.set_title("错误")
+                warning_msg.set_text("文件名包含非法字符！请避免使用：< > : \" / \\ | ? * 以及控制字符")
+                warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                warning_msg.buttonClicked.connect(warning_msg.close)
+                warning_msg.exec_()
                 continue
             
             # 生成新的文件名
@@ -409,11 +433,13 @@ class FileStagingPool(QWidget):
             # 实际使用时会根据用户选择的导出目录动态计算
             estimated_total_length = len(new_name) + 150  # 150字符用于估计的导出路径
             if estimated_total_length > MAX_PATH:
-                QMessageBox.warning(
-                    self, "错误", 
-                    f"文件名过长！加上路径后可能超过Windows系统的{MAX_PATH}字符限制。\n"
-                    f"当前估计总长度：{estimated_total_length}字符，建议缩短文件名。"
-                )
+                warning_msg = CustomMessageBox(self)
+                warning_msg.set_title("错误")
+                warning_msg.set_text(f"文件名过长！加上路径后可能超过Windows系统的{MAX_PATH}字符限制。\n"
+                                    f"当前估计总长度：{estimated_total_length}字符，建议缩短文件名。")
+                warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                warning_msg.buttonClicked.connect(warning_msg.close)
+                warning_msg.exec_()
                 continue
             
             # 更新文件信息中的显示名称
@@ -457,7 +483,12 @@ class FileStagingPool(QWidget):
         """
         # 检查是否有文件可以导出
         if not self.items:
-            QMessageBox.information(self, "提示", "文件临时存储池中没有文件可以导出")
+            info_msg = CustomMessageBox(self)
+            info_msg.set_title("提示")
+            info_msg.set_text("文件临时存储池中没有文件可以导出")
+            info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            info_msg.buttonClicked.connect(info_msg.close)
+            info_msg.exec_()
             return
         
         # 选择目标目录
@@ -478,13 +509,15 @@ class FileStagingPool(QWidget):
             
             # 检查路径长度
             if len(target_path) > MAX_PATH:
-                QMessageBox.warning(
-                    self, "错误", 
-                    f"导出路径过长！\n"
-                    f"文件：{file_info['display_name']}\n"
-                    f"路径：{target_path}\n"
-                    f"长度：{len(target_path)}字符，超过Windows系统{MAX_PATH}字符限制。"
-                )
+                warning_msg = CustomMessageBox(self)
+                warning_msg.set_title("错误")
+                warning_msg.set_text(f"导出路径过长！\n"
+                                    f"文件：{file_info['display_name']}\n"
+                                    f"路径：{target_path}\n"
+                                    f"长度：{len(target_path)}字符，超过Windows系统{MAX_PATH}字符限制。")
+                warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                warning_msg.buttonClicked.connect(warning_msg.close)
+                warning_msg.exec_()
                 return
         
         # 显示进度条
@@ -517,13 +550,19 @@ class FileStagingPool(QWidget):
         self.progress_bar.setVisible(False)
         
         # 显示导出结果
+        result_msg = CustomMessageBox(self)
         if error_count == 0:
-            QMessageBox.information(self, "导出完成", f"成功导出 {success_count} 个文件")
+            result_msg.set_title("导出完成")
+            result_msg.set_text(f"成功导出 {success_count} 个文件")
         else:
+            result_msg.set_title("导出结果")
             error_msg = f"成功导出 {success_count} 个文件，失败 {error_count} 个文件\n\n失败详情：\n" + "\n".join(errors[:5])
             if len(errors) > 5:
                 error_msg += f"\n\n还有 {len(errors) - 5} 个错误未显示"
-            QMessageBox.warning(self, "导出结果", error_msg)
+            result_msg.set_text(error_msg)
+        result_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+        result_msg.buttonClicked.connect(result_msg.close)
+        result_msg.exec_()
     
     def eventFilter(self, obj, event):
         """
@@ -565,44 +604,37 @@ class FileStagingPool(QWidget):
         """
         显示导入/导出数据对话框
         """
-        from PyQt5.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QPushButton, QLabel
+        # 使用自定义提示窗口实现导入/导出选择
+        msg_box = CustomMessageBox(self)
+        msg_box.set_title("导入/导出数据")
+        msg_box.set_text("请选择操作:")
         
-        # 创建对话框
-        dialog = QDialog(self)
-        dialog.setWindowTitle("导入/导出数据")
-        dialog.setMinimumSize(300, 150)
+        # 设置按钮，使用垂直排列
+        msg_box.set_buttons(["导入数据", "导出数据", "取消"], Qt.Vertical, ["normal", "normal", "normal"])
         
-        # 创建布局
-        layout = QVBoxLayout(dialog)
+        # 记录用户选择
+        user_choice = -1
         
-        # 添加标题
-        title_label = QLabel("请选择操作:")
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
+        def on_button_clicked(button_index):
+            nonlocal user_choice
+            user_choice = button_index
+            msg_box.close()
         
-        # 创建按钮布局
-        button_layout = QHBoxLayout()
+        msg_box.buttonClicked.connect(on_button_clicked)
+        msg_box.exec_()
         
-        # 导入按钮
-        import_btn = QPushButton("导入数据")
-        import_btn.clicked.connect(lambda: self.import_data(dialog))
-        button_layout.addWidget(import_btn)
-        
-        # 导出按钮
-        export_btn = QPushButton("导出数据")
-        export_btn.clicked.connect(lambda: self.export_data(dialog))
-        button_layout.addWidget(export_btn)
-        
-        # 取消按钮
-        cancel_btn = QPushButton("取消")
-        cancel_btn.clicked.connect(dialog.reject)
-        button_layout.addWidget(cancel_btn)
-        
-        # 添加按钮布局到主布局
-        layout.addLayout(button_layout)
-        
-        # 显示对话框
-        dialog.exec_()
+        # 根据用户选择执行相应操作
+        if user_choice == 0:  # 导入数据
+            # 创建一个临时对话框实例用于传递给import_data方法
+            from PyQt5.QtWidgets import QDialog
+            temp_dialog = QDialog(self)
+            self.import_data(temp_dialog)
+        elif user_choice == 1:  # 导出数据
+            # 创建一个临时对话框实例用于传递给export_data方法
+            from PyQt5.QtWidgets import QDialog
+            temp_dialog = QDialog(self)
+            self.export_data(temp_dialog)
+        # 否则取消操作，不做任何处理
     
     def import_data(self, dialog):
         """
@@ -611,7 +643,7 @@ class FileStagingPool(QWidget):
         Args:
             dialog (QDialog): 父对话框
         """
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt5.QtWidgets import QFileDialog
         import json
         
         # 打开文件选择对话框，选择JSON文件
@@ -627,17 +659,32 @@ class FileStagingPool(QWidget):
                 
                 # 验证数据格式
                 if not isinstance(import_data, list):
-                    QMessageBox.warning(self, "导入失败", "文件格式不正确，应为JSON数组格式")
+                    warning_msg = CustomMessageBox(self)
+                    warning_msg.set_title("导入失败")
+                    warning_msg.set_text("文件格式不正确，应为JSON数组格式")
+                    warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                    warning_msg.buttonClicked.connect(warning_msg.close)
+                    warning_msg.exec_()
                     return
                 
                 # 询问用户是否要清空现有数据
-                reply = QMessageBox.question(
-                    self, "确认导入", 
-                    f"即将导入 {len(import_data)} 个文件，是否要清空现有数据？",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                )
+                confirm_msg = CustomMessageBox(self)
+                confirm_msg.set_title("确认导入")
+                confirm_msg.set_text(f"即将导入 {len(import_data)} 个文件，是否要清空现有数据？")
+                confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
                 
-                if reply == QMessageBox.Yes:
+                # 记录确认结果
+                is_confirmed = False
+                
+                def on_confirm_clicked(button_index):
+                    nonlocal is_confirmed
+                    is_confirmed = (button_index == 0)  # 0表示确定按钮
+                    confirm_msg.close()
+                
+                confirm_msg.buttonClicked.connect(on_confirm_clicked)
+                confirm_msg.exec_()
+                
+                if is_confirmed:
                     # 清空现有数据
                     self.clear_all_without_confirmation()
                 
@@ -665,17 +712,30 @@ class FileStagingPool(QWidget):
                 if unlinked_files:
                     self.show_unlinked_files_dialog(unlinked_files)
                 
-                QMessageBox.information(
-                    self, "导入完成", 
-                    f"成功导入 {success_count} 个文件，{len(unlinked_files)} 个文件需要手动链接"
-                )
+                # 显示导入结果
+                info_msg = CustomMessageBox(self)
+                info_msg.set_title("导入完成")
+                info_msg.set_text(f"成功导入 {success_count} 个文件，{len(unlinked_files)} 个文件需要手动链接")
+                info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                info_msg.buttonClicked.connect(info_msg.close)
+                info_msg.exec_()
                 
                 # 关闭对话框
                 dialog.accept()
             except json.JSONDecodeError:
-                QMessageBox.warning(self, "导入失败", "JSON文件格式不正确")
+                warning_msg = CustomMessageBox(self)
+                warning_msg.set_title("导入失败")
+                warning_msg.set_text("JSON文件格式不正确")
+                warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                warning_msg.buttonClicked.connect(warning_msg.close)
+                warning_msg.exec_()
             except Exception as e:
-                QMessageBox.warning(self, "导入失败", f"导入过程中发生错误: {str(e)}")
+                warning_msg = CustomMessageBox(self)
+                warning_msg.set_title("导入失败")
+                warning_msg.set_text(f"导入过程中发生错误: {str(e)}")
+                warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                warning_msg.buttonClicked.connect(warning_msg.close)
+                warning_msg.exec_()
     
     def calculate_md5(self, file_path):
         """
@@ -710,7 +770,7 @@ class FileStagingPool(QWidget):
         """
         from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
                                      QListWidget, QListWidgetItem, QMenu, QAction, 
-                                     QMessageBox, QFileDialog, QLabel, QGridLayout)
+                                     QFileDialog, QLabel, QGridLayout)
         
         # 创建对话框
         dialog = QDialog(self)
@@ -745,17 +805,17 @@ class FileStagingPool(QWidget):
         button_layout = QHBoxLayout()
         
         # 手动链接按钮
-        manual_link_btn = QPushButton("手动链接")
+        manual_link_btn = CustomButton("手动链接", button_type="normal")
         manual_link_btn.clicked.connect(lambda: self.manual_link_files(unlinked_files, self.unlinked_list_widget))
         button_layout.addWidget(manual_link_btn)
         
         # 忽略所有按钮
-        ignore_all_btn = QPushButton("忽略所有")
+        ignore_all_btn = CustomButton("忽略所有", button_type="normal")
         ignore_all_btn.clicked.connect(lambda: self.ignore_all_files(unlinked_files))
         button_layout.addWidget(ignore_all_btn)
         
         # 完成按钮
-        finish_btn = QPushButton("完成")
+        finish_btn = CustomButton("完成", button_type="primary")
         finish_btn.clicked.connect(lambda: self.finish_unlinked_files_dialog(dialog, unlinked_files))
         button_layout.addWidget(finish_btn)
         
@@ -811,7 +871,7 @@ class FileStagingPool(QWidget):
             unlinked_files (list): 未链接文件列表
             list_widget (QListWidget): 列表控件
         """
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt5.QtWidgets import QFileDialog
         
         # 选择一个目录
         dir_path = QFileDialog.getExistingDirectory(self, "选择文件目录")
@@ -841,16 +901,26 @@ class FileStagingPool(QWidget):
                         # 其次匹配文件名
                         elif file == original_name:
                             # 询问用户是否接受仅文件名匹配
-                            reply = QMessageBox.question(
-                                self, "文件名匹配",
-                                f"找到文件名匹配的文件，但MD5不匹配。\n"\
-                                f"原始文件: {original_name}\n"\
-                                f"找到文件: {file_path}\n"\
-                                f"是否接受仅文件名匹配？",
-                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                            )
+                            confirm_msg = CustomMessageBox(self)
+                            confirm_msg.set_title("文件名匹配")
+                            confirm_msg.set_text(f"找到文件名匹配的文件，但MD5不匹配。\n"
+                                                f"原始文件: {original_name}\n"
+                                                f"找到文件: {file_path}\n"
+                                                f"是否接受仅文件名匹配？")
+                            confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
                             
-                            if reply == QMessageBox.Yes:
+                            # 记录确认结果
+                            is_confirmed = False
+                            
+                            def on_confirm_clicked(button_index):
+                                nonlocal is_confirmed
+                                is_confirmed = (button_index == 0)  # 0表示确定按钮
+                                confirm_msg.close()
+                            
+                            confirm_msg.buttonClicked.connect(on_confirm_clicked)
+                            confirm_msg.exec_()
+                                
+                            if is_confirmed:
                                 file_item["status"] = "linked"
                                 file_item["new_path"] = file_path
                                 matched_count += 1
@@ -859,7 +929,12 @@ class FileStagingPool(QWidget):
         # 更新列表显示
         self.update_unlinked_list(unlinked_files)
         
-        QMessageBox.information(self, "匹配完成", f"成功匹配 {matched_count} 个文件")
+        info_msg = CustomMessageBox(self)
+        info_msg.set_title("匹配完成")
+        info_msg.set_text(f"成功匹配 {matched_count} 个文件")
+        info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+        info_msg.buttonClicked.connect(info_msg.close)
+        info_msg.exec_()
     
     def manual_link_selected_files(self, unlinked_files, selected_items):
         """
@@ -869,7 +944,7 @@ class FileStagingPool(QWidget):
             unlinked_files (list): 未链接文件列表
             selected_items (list): 选中的列表项
         """
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt5.QtWidgets import QFileDialog
         
         for item in selected_items:
             index = item.data(Qt.UserRole)
@@ -888,16 +963,26 @@ class FileStagingPool(QWidget):
                     
                     if original_name != new_name:
                         # 询问用户是否接受不同文件名
-                        reply = QMessageBox.question(
-                            self, "文件名不匹配",
-                            f"选中文件的文件名与原始文件不同。\n"\
-                            f"原始文件名: {original_name}\n"\
-                            f"选中文件名: {new_name}\n"\
-                            f"是否继续？",
-                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                        )
+                        confirm_msg = CustomMessageBox(self)
+                        confirm_msg.set_title("文件名不匹配")
+                        confirm_msg.set_text(f"选中文件的文件名与原始文件不同。\n"
+                                            f"原始文件名: {original_name}\n"
+                                            f"选中文件名: {new_name}\n"
+                                            f"是否继续？")
+                        confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
                         
-                        if reply != QMessageBox.Yes:
+                        # 记录确认结果
+                        is_confirmed = False
+                        
+                        def on_confirm_clicked(button_index):
+                            nonlocal is_confirmed
+                            is_confirmed = (button_index == 0)  # 0表示确定按钮
+                            confirm_msg.close()
+                        
+                        confirm_msg.buttonClicked.connect(on_confirm_clicked)
+                        confirm_msg.exec_()
+                        
+                        if not is_confirmed:
                             continue
                     
                     # 更新文件状态
@@ -930,15 +1015,26 @@ class FileStagingPool(QWidget):
         Args:
             unlinked_files (list): 未链接文件列表
         """
-        from PyQt5.QtWidgets import QMessageBox
+
         
-        reply = QMessageBox.question(
-            self, "确认忽略所有",
-            "确定要忽略所有未链接的文件吗？",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        )
+        # 确认忽略所有对话框
+        confirm_msg = CustomMessageBox(self)
+        confirm_msg.set_title("确认忽略所有")
+        confirm_msg.set_text("确定要忽略所有未链接的文件吗？")
+        confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
         
-        if reply == QMessageBox.Yes:
+        # 记录确认结果
+        is_confirmed = False
+        
+        def on_confirm_clicked(button_index):
+            nonlocal is_confirmed
+            is_confirmed = (button_index == 0)  # 0表示确定按钮
+            confirm_msg.close()
+        
+        confirm_msg.buttonClicked.connect(on_confirm_clicked)
+        confirm_msg.exec_()
+        
+        if is_confirmed:
             for file_item in unlinked_files:
                 file_item["status"] = "ignored"
             
@@ -970,19 +1066,29 @@ class FileStagingPool(QWidget):
             dialog (QDialog): 对话框实例
             unlinked_files (list): 未链接文件列表
         """
-        from PyQt5.QtWidgets import QMessageBox
+
         
         # 检查是否还有未处理的文件
         has_unlinked = any(item["status"] == "unlinked" for item in unlinked_files)
         
         if has_unlinked:
-            reply = QMessageBox.question(
-                self, "还有未处理文件",
-                "还有未链接的文件，确定要完成吗？未处理的文件将被忽略。",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
+            confirm_msg = CustomMessageBox(self)
+            confirm_msg.set_title("还有未处理文件")
+            confirm_msg.set_text("还有未链接的文件，确定要完成吗？未处理的文件将被忽略。")
+            confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
             
-            if reply == QMessageBox.Yes:
+            # 记录确认结果
+            is_confirmed = False
+            
+            def on_confirm_clicked(button_index):
+                nonlocal is_confirmed
+                is_confirmed = (button_index == 0)  # 0表示确定按钮
+                confirm_msg.close()
+            
+            confirm_msg.buttonClicked.connect(on_confirm_clicked)
+            confirm_msg.exec_()
+            
+            if is_confirmed:
                 # 忽略所有未处理的文件
                 for file_item in unlinked_files:
                     if file_item["status"] == "unlinked":
@@ -998,13 +1104,18 @@ class FileStagingPool(QWidget):
         Args:
             dialog (QDialog): 父对话框
         """
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from PyQt5.QtWidgets import QFileDialog
         import json
         from datetime import datetime
         
         # 检查是否有数据可导出
         if not self.items:
-            QMessageBox.information(self, "导出提示", "文件存储池中没有数据可以导出")
+            info_msg = CustomMessageBox(self)
+            info_msg.set_title("导出提示")
+            info_msg.set_text("文件存储池中没有数据可以导出")
+            info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            info_msg.buttonClicked.connect(info_msg.close)
+            info_msg.exec_()
             return
         
         # 生成带时间戳的默认文件名
@@ -1022,12 +1133,22 @@ class FileStagingPool(QWidget):
                 with open(file_path, 'w', encoding='utf-8') as f:
                     json.dump(self.items, f, ensure_ascii=False, indent=2)
                 
-                QMessageBox.information(self, "导出成功", f"成功导出 {len(self.items)} 个文件的数据到 {file_path}")
+                info_msg = CustomMessageBox(self)
+                info_msg.set_title("导出成功")
+                info_msg.set_text(f"成功导出 {len(self.items)} 个文件的数据到 {file_path}")
+                info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                info_msg.buttonClicked.connect(lambda: [info_msg.close(), dialog.accept()])
+                info_msg.exec_()
                 
                 # 关闭对话框
                 dialog.accept()
             except Exception as e:
-                QMessageBox.warning(self, "导出失败", f"导出过程中发生错误: {str(e)}")
+                warning_msg = CustomMessageBox(self)
+                warning_msg.set_title("导出失败")
+                warning_msg.set_text(f"导出过程中发生错误: {str(e)}")
+                warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                warning_msg.buttonClicked.connect(warning_msg.close)
+                warning_msg.exec_()
     
     def clear_all_without_confirmation(self):
         """

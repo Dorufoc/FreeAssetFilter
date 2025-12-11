@@ -18,6 +18,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import sys
 import os
 from datetime import datetime
+import chardet
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, 
     QWidget, QLabel, QGroupBox, QTextEdit, 
@@ -46,6 +47,11 @@ class ComponentLauncher(QMainWindow):
                 "description": "主应用程序，包含完整的文件管理和预览功能"
             },
             {
+                "name": "自定义控件演示",
+                "command": [sys.executable, "demo_custom_widgets.py"],
+                "description": "演示自定义窗口和按钮控件的使用，展示纯白圆角矩形外观和右上角圆形关闭按钮"
+            },
+            {
                 "name": "照片查看器",
                 "command": [sys.executable, "src/components/photo_viewer.py"],
                 "description": "照片查看器组件，实现缩放/自适应/拖动/右键菜单功能"
@@ -69,6 +75,11 @@ class ComponentLauncher(QMainWindow):
                 "name": "统一文件预览器",
                 "command": [sys.executable, "src/components/unified_previewer.py"],
                 "description": "统一文件预览器，根据文件类型动态调用对应预览组件"
+            },
+            {
+                "name": "中文日志测试",
+                "command": [sys.executable, "test_chinese_log.py"],
+                "description": "测试中文日志输出是否正常"
             }
         ]
         
@@ -265,7 +276,11 @@ class ComponentLauncher(QMainWindow):
     def _read_process_output(self, process, component_name):
         """读取进程输出"""
         try:
-            output = process.readAllStandardOutput().data().decode('utf-8', errors='replace')
+            data = process.readAllStandardOutput().data()
+            # 使用chardet检测编码
+            result = chardet.detect(data)
+            encoding = result['encoding'] or 'utf-8'
+            output = data.decode(encoding, errors='replace')
             if output:
                 # 分割多行输出，每行单独记录
                 for line in output.strip().split('\n'):
