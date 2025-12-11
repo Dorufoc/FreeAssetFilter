@@ -291,6 +291,18 @@ class PlayerCore:
         except Exception:
             pass
     
+    def get_volume(self):
+        """
+        获取当前音量
+        
+        Returns:
+            int: 当前音量值，范围 0 到 100
+        """
+        try:
+            return self._player.audio_get_volume()
+        except Exception:
+            return 50  # 默认返回50%
+    
     def set_loop(self, loop):
         """
         设置循环播放
