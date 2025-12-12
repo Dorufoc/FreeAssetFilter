@@ -1,45 +1,13 @@
-# FreeAssetFilter - 项目依赖文件
-# 生成时间: 2025年
-# 项目描述: 基于PyQt5的多功能文件预览和管理工具
-
-# PyQt5相关依赖
 PyQt5>=5.15.0
-PyQt5-Qt5>=5.15.0
-PyQt5-sip>=12.8.0
-PyQt5-tools>=5.15.0
-PyQtWebEngine>=5.15.0  # Web引擎支持，用于QWebEngineView和QWebChannel
-
-# 媒体播放和处理
-python-vlc>=3.0.16120
-mutagen>=1.45.0
-Pillow>=8.0.0
-
-# PDF处理
-PyMuPDF>=1.18.0
-
-# 文本处理和代码高亮
-markdown>=3.3.0
-Pygments>=2.8.0
-
-# 图像EXIF信息处理
-exifread>=2.3.0
-
-# 文件类型检测和编码处理
-python-magic>=0.4.24  # 文件类型检测
-chardet>=4.0.0  # 文本编码检测
-
-# 视频和字体处理
-moviepy>=1.0.0  # 视频处理
-fonttools>=4.28.0  # 字体文件处理
-
-# 可选依赖（某些功能可能需要）
-# opencv-python>=4.5.0  # 视频处理增强
-# numpy>=1.19.0  # 数值计算
-# requests>=2.25.0  # 网络请求
-
-
-
-# 压缩包处理依赖
-rarfile>=4.0  # 用于处理 RAR 文件
-py7zr>=0.20.0  # 用于处理 7z 文件
-pycdlib>=1.14.0  # 用于处理 ISO 文件
+chardet>=5.0.0
+mutagen>=1.46.0
+Pillow>=10.0.0
+PyMuPDF>=1.24.0
+python-vlc>=3.0.0
+packaging>=23.0
+importlib-metadata>=6.0.0
+markdown>=3.4.0
+pygments>=2.15.0
+rarfile>=4.0.0
+py7zr>=0.21.0
+pycdlib>=1.14.0
