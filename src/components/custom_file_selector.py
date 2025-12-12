@@ -307,7 +307,7 @@ class CustomFileSelector(QWidget):
         # 筛选出需要生成缩略图的文件（图片和视频）
         media_files = []
         # 支持的图片格式
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         # 支持的视频格式
         video_formats = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"]
         
@@ -526,48 +526,62 @@ class CustomFileSelector(QWidget):
             thumbnail_path = self._get_thumbnail_path(file_path)
             
             image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif"]
+            # 支持的raw格式
+            raw_formats = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf"]
             
-            if suffix in image_formats:
+            if suffix in image_formats or suffix in raw_formats:
                 # 处理图片文件
                 try:
-                    # 尝试使用PIL处理图片，确保保持原始比例
                     from PIL import Image, ImageDraw
                     
-                    # 使用PIL打开图片
-                    with Image.open(file_path) as img:
-                        # 转换为RGBA模式，支持透明背景
-                        img = img.convert("RGBA")
+                    if suffix in raw_formats:
+                        # 使用rawpy处理raw图像
+                        import rawpy
+                        import numpy as np
                         
-                        # 计算原始宽高比
-                        original_width, original_height = img.size
-                        aspect_ratio = original_width / original_height
+                        with rawpy.imread(file_path) as raw:
+                            # 处理raw图像，使用默认参数
+                            rgb = raw.postprocess()
                         
-                        # 计算新尺寸，保持原始比例，最大尺寸为128x128
-                        if aspect_ratio > 1:
-                            # 宽图，以宽度为基准
-                            new_width = 128
-                            new_height = int(new_width / aspect_ratio)
-                        else:
-                            # 高图或正方形，以高度为基准
-                            new_height = 128
-                            new_width = int(new_height * aspect_ratio)
-                        
-                        # 调整大小，保持原始比例
-                        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                        
-                        # 创建一个128x128的透明背景
-                        thumbnail = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
-                        
-                        # 将调整大小后的图片居中绘制到透明背景上
-                        draw = ImageDraw.Draw(thumbnail)
-                        x_offset = (128 - new_width) // 2
-                        y_offset = (128 - new_height) // 2
-                        thumbnail.paste(resized_img, (x_offset, y_offset), resized_img)
-                        
-                        # 保存缩略图为PNG格式
-                        thumbnail.save(thumbnail_path, format='PNG', quality=85)
-                        print(f"已生成图片缩略图 (PIL保持比例): {file_path}")
-                        return True
+                        # 将numpy数组转换为PIL Image
+                        img = Image.fromarray(rgb)
+                    else:
+                        # 使用PIL打开普通图片
+                        img = Image.open(file_path)
+                    
+                    # 转换为RGBA模式，支持透明背景
+                    img = img.convert("RGBA")
+                    
+                    # 计算原始宽高比
+                    original_width, original_height = img.size
+                    aspect_ratio = original_width / original_height
+                    
+                    # 计算新尺寸，保持原始比例，最大尺寸为128x128
+                    if aspect_ratio > 1:
+                        # 宽图，以宽度为基准
+                        new_width = 128
+                        new_height = int(new_width / aspect_ratio)
+                    else:
+                        # 高图或正方形，以高度为基准
+                        new_height = 128
+                        new_width = int(new_height * aspect_ratio)
+                    
+                    # 调整大小，保持原始比例
+                    resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    
+                    # 创建一个128x128的透明背景
+                    thumbnail = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+                    
+                    # 将调整大小后的图片居中绘制到透明背景上
+                    draw = ImageDraw.Draw(thumbnail)
+                    x_offset = (128 - new_width) // 2
+                    y_offset = (128 - new_height) // 2
+                    thumbnail.paste(resized_img, (x_offset, y_offset), resized_img)
+                    
+                    # 保存缩略图为PNG格式
+                    thumbnail.save(thumbnail_path, format='PNG', quality=85)
+                    print(f"已生成图片缩略图 (PIL保持比例): {file_path}")
+                    return True
                 except Exception as pil_e:
                     print(f"无法生成缩略图: {file_path}, PIL处理失败: {pil_e}")
                     return False
@@ -1727,7 +1741,7 @@ class CustomFileSelector(QWidget):
             return label
         
         # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
@@ -1903,7 +1917,7 @@ class CustomFileSelector(QWidget):
             QPixmap: 文件类型图标
         """
         # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]

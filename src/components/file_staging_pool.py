@@ -155,8 +155,12 @@ class FileStagingPool(QWidget):
             if item["path"] == file_info["path"]:
                 return  # 文件已存在，不重复添加
         
-        # 添加前端显示文件名字段，默认为原始文件名
-        file_info["display_name"] = file_info["name"]
+        # 添加前端显示文件名字段，默认为原始文件名（如果不存在）
+        if "display_name" not in file_info:
+            file_info["display_name"] = file_info["name"]
+        # 添加原始文件名字段，用于保存原始文件名和重命名记录（如果不存在）
+        if "original_name" not in file_info:
+            file_info["original_name"] = file_info["name"]
         
         # 添加到项目列表
         self.items.append(file_info)
