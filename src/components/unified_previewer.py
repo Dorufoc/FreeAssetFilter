@@ -166,7 +166,7 @@ class UnifiedPreviewer(QWidget):
         preview_type = None
         if self.current_file_info["is_dir"]:
             preview_type = "dir"
-        elif file_type in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg"]:
+        elif file_type in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]:
             preview_type = "image"
         elif file_type in ["mp4", "avi", "mov", "mkv", "m4v", "flv", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb"]:
             preview_type = "video"
