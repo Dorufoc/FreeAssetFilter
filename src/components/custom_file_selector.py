@@ -73,7 +73,7 @@ class CustomFileSelector(QWidget):
         self.setMinimumWidth(520)
         
         # 初始化配置
-        self.current_path = os.path.expanduser("~")  # 默认路径为用户主目录
+        self.current_path = "此电脑"  # 默认路径为"此电脑"
         self.selected_files = {}  # 存储每个目录下的选中文件 {directory: {file_path1, file_path2}}]
         self.filter_pattern = "*"  # 默认显示所有文件
         self.sort_by = "name"  # 默认按名称排序
@@ -1118,8 +1118,8 @@ class CustomFileSelector(QWidget):
         network_locations = list(set(network_locations))
         network_locations.sort()
         
-        # 先添加本地驱动器，然后添加网络位置
-        all_drives = local_drives.copy()
+        # 先添加"此电脑"选项，然后添加本地驱动器，最后添加网络位置
+        all_drives = ["此电脑"] + local_drives.copy()
         if network_locations:
             # 添加一个分隔符，区分本地驱动器和网络位置
             all_drives.append("--- 网络位置 ---")
@@ -1161,6 +1161,13 @@ class CustomFileSelector(QWidget):
         
         # 跳过分隔符选项
         if drive == "--- 网络位置 ---":
+            return
+        
+        # 处理"此电脑"选项
+        if drive == "此电脑":
+            # 设置一个特殊的路径标识，表示当前处于"此电脑"视图
+            self.current_path = "此电脑"
+            self.refresh_files()
             return
         
         if sys.platform == 'win32':
@@ -1268,15 +1275,21 @@ class CustomFileSelector(QWidget):
         """
         更新盘符选择器的选中项，根据当前路径自动选择对应的盘符
         """
-        if sys.platform == 'win32':
+        # 检查当前是否处于"此电脑"视图
+        if self.current_path == "此电脑":
+            # 选中"此电脑"选项
+            index = self.drive_combo.findText("此电脑")
+        elif sys.platform == 'win32':
             # Windows系统：提取当前路径的盘符，如 "C:\path\to\dir" -> "C:"
             current_drive = os.path.splitdrive(self.current_path)[0]
+            # 在盘符列表中查找并设置默认选中项
+            index = self.drive_combo.findText(current_drive)
         else:
             # Linux/macOS系统：根目录
             current_drive = '/'
+            # 在盘符列表中查找并设置默认选中项
+            index = self.drive_combo.findText(current_drive)
         
-        # 在盘符列表中查找并设置默认选中项
-        index = self.drive_combo.findText(current_drive)
         if index != -1:
             self.drive_combo.setCurrentIndex(index)
     
@@ -1339,39 +1352,79 @@ class CustomFileSelector(QWidget):
         获取当前目录下的文件列表
         """
         files = []
-        try:
-            # 获取当前目录下的所有文件和文件夹
-            entries = os.listdir(self.current_path)
-            
-            for entry in entries:
-                entry_path = os.path.join(self.current_path, entry)
-                file_info = QFileInfo(entry_path)
-                
-                # 跳过隐藏文件
-                if entry.startswith(".") or file_info.isHidden():
-                    continue
-                
-                # 构建文件信息字典
+        
+        # 处理"此电脑"视图
+        if self.current_path == "此电脑":
+            if sys.platform == 'win32':
+                # Windows系统：遍历A-Z，检查存在的盘符
+                for drive in range(65, 91):  # A-Z
+                    drive_letter = chr(drive) + ':/'
+                    if os.path.exists(drive_letter):
+                        drive_name = chr(drive) + ':'
+                        drive_path = drive_letter
+                        file_info = QFileInfo(drive_path)
+                        
+                        # 构建磁盘驱动器信息字典
+                        file_dict = {
+                            "name": drive_name,
+                            "path": drive_path,
+                            "is_dir": True,
+                            "size": 0,  # 磁盘大小暂不获取
+                            "modified": file_info.lastModified().toString(Qt.ISODate),
+                            "created": file_info.birthTime().toString(Qt.ISODate),
+                            "suffix": ""
+                        }
+                        
+                        files.append(file_dict)
+            else:
+                # Linux/macOS系统：显示根目录
+                root_path = "/"
+                file_info = QFileInfo(root_path)
                 file_dict = {
-                    "name": entry,
-                    "path": entry_path,
-                    "is_dir": file_info.isDir(),
-                    "size": file_info.size(),
+                    "name": root_path,
+                    "path": root_path,
+                    "is_dir": True,
+                    "size": 0,
                     "modified": file_info.lastModified().toString(Qt.ISODate),
                     "created": file_info.birthTime().toString(Qt.ISODate),
-                    "suffix": file_info.suffix().lower()
+                    "suffix": ""
                 }
-                
                 files.append(file_dict)
-        except Exception as e:
-            print(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
-            from src.widgets.custom_widgets import CustomMessageBox
-            error_msg = CustomMessageBox(self)
-            error_msg.set_title("错误")
-            error_msg.set_text(f"读取目录失败: {e}")
-            error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            error_msg.buttonClicked.connect(error_msg.close)
-            error_msg.exec_()
+        else:
+            # 正常目录视图
+            try:
+                # 获取当前目录下的所有文件和文件夹
+                entries = os.listdir(self.current_path)
+                
+                for entry in entries:
+                    entry_path = os.path.join(self.current_path, entry)
+                    file_info = QFileInfo(entry_path)
+                    
+                    # 跳过隐藏文件
+                    if entry.startswith(".") or file_info.isHidden():
+                        continue
+                    
+                    # 构建文件信息字典
+                    file_dict = {
+                        "name": entry,
+                        "path": entry_path,
+                        "is_dir": file_info.isDir(),
+                        "size": file_info.size(),
+                        "modified": file_info.lastModified().toString(Qt.ISODate),
+                        "created": file_info.birthTime().toString(Qt.ISODate),
+                        "suffix": file_info.suffix().lower()
+                    }
+                    
+                    files.append(file_dict)
+            except Exception as e:
+                print(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
+                from src.widgets.custom_widgets import CustomMessageBox
+                error_msg = CustomMessageBox(self)
+                error_msg.set_title("错误")
+                error_msg.set_text(f"读取目录失败: {e}")
+                error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                error_msg.buttonClicked.connect(error_msg.close)
+                error_msg.exec_()
         
         return files
     
