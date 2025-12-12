@@ -75,7 +75,34 @@ class ImageWidget(QWidget):
             if not os.path.exists(image_path):
                 return False
             
-            self.original_image = QImage(image_path)
+            # 获取文件扩展名
+            file_ext = os.path.splitext(image_path)[1].lower()
+            # 支持的raw格式列表
+            raw_formats = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf']
+            
+            if file_ext in raw_formats:
+                # 使用rawpy加载raw图像
+                import rawpy
+                import numpy as np
+                
+                with rawpy.imread(image_path) as raw:
+                    # 处理raw图像，使用默认参数
+                    rgb = raw.postprocess()
+                    
+                # 将numpy数组转换为QImage
+                height, width, channel = rgb.shape
+                bytes_per_line = 3 * width
+                # 注意numpy数组是RGB格式，而QImage需要BGR格式
+                bgr = np.zeros((height, width, 3), dtype=np.uint8)
+                bgr[:, :, 0] = rgb[:, :, 2]  # B
+                bgr[:, :, 1] = rgb[:, :, 1]  # G
+                bgr[:, :, 2] = rgb[:, :, 0]  # R
+                
+                self.original_image = QImage(bgr.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            else:
+                # 常规图片格式，使用QImage直接加载
+                self.original_image = QImage(image_path)
+            
             if not self.original_image.isNull():
                 # 保存当前文件路径
                 self.current_file_path = image_path
