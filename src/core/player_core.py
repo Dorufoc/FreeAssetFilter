@@ -184,6 +184,7 @@ class PlayerCore:
     def set_media(self, file_path):
         """
         设置要播放的媒体文件
+        移除了os.path.exists调用，避免网络文件阻塞主线程
         
         Args:
             file_path (str): 媒体文件路径
@@ -191,28 +192,42 @@ class PlayerCore:
         Returns:
             bool: 设置成功返回 True，否则返回 False
         """
+        # 生成带时间戳的debug信息
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [PlayerCore] {msg}")
+        
         try:
-            # 验证文件存在
-            if not os.path.exists(file_path):
-                return False
-            
+            debug(f"开始设置媒体: {file_path}")
             # 停止当前播放
+            debug("停止当前播放")
             self.stop()
             
             # 创建新的媒体对象
+            debug("创建新的媒体对象")
             self._media = self._instance.media_new(file_path)
+            debug(f"媒体对象创建成功: {self._media}")
             
             # 设置媒体到播放器
+            debug("设置媒体到播放器")
             self._player.set_media(self._media)
             
             # 开始异步解析媒体信息
+            # 对于网络文件，使用network标志，1秒超时
+            debug("开始异步解析媒体信息，1秒超时")
             self._media.parse_with_options(vlc.MediaParseFlag.network, 1000)  # 1秒超时
             
             # 重置时长缓存
+            debug("重置时长缓存")
             self._duration = 0
             
+            debug("媒体设置成功")
             return True
-        except Exception:
+        except Exception as e:
+            debug(f"媒体设置失败: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def play(self):
