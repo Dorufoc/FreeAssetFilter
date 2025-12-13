@@ -13,9 +13,6 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
-1. 个人非商业使用：需保留本注释及开发者署名；
-项目地址：https://github.com/Dorufoc/FreeAssetFilter
-许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 FreeAssetFilter 主程序
 核心功能应用程序，不包含视频播放器功能
 """
@@ -106,6 +103,7 @@ class FreeAssetFilterApp(QMainWindow):
         """
         # 创建中央部件
         central_widget = QWidget()
+        central_widget.setStyleSheet("background-color: #ffffff;")
         self.setCentralWidget(central_widget)
         
         # 创建主布局：标题 + 三列
@@ -122,7 +120,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 左侧列：文件选择器A
         left_column = QWidget()
         left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        left_column.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 8px;")
+        left_column.setStyleSheet("background-color: #ffffff; border: 1px solid #ccc; border-radius: 8px;")
         left_layout = QVBoxLayout(left_column)
         
 
@@ -134,7 +132,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 中间列：文件临时存储池
         middle_column = QWidget()
         middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        middle_column.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 8px;")
+        middle_column.setStyleSheet("background-color: #ffffff; border: 1px solid #ccc; border-radius: 8px;")
         middle_layout = QVBoxLayout(middle_column)
         
         # 添加文件临时存储池组件
@@ -144,7 +142,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 右侧列：统一文件预览器
         right_column = QWidget()
         right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        right_column.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 8px;")
+        right_column.setStyleSheet("background-color: #ffffff; border: 1px solid #ccc; border-radius: 8px;")
         right_layout = QVBoxLayout(right_column)
         
 

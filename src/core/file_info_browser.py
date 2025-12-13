@@ -117,6 +117,7 @@ class FileInfoBrowser:
         
         # 创建滚动区域，作为主容器
         scroll_area = QScrollArea()
+        scroll_area.setStyleSheet("background-color: #ffffff;")
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -125,6 +126,7 @@ class FileInfoBrowser:
         # 创建主widget
         main_widget = QWidget()
         main_widget.setFont(self.global_font)
+        main_widget.setStyleSheet("background-color: #ffffff;")
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
