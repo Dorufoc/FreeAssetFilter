@@ -818,10 +818,29 @@ class CustomFileSelector(QWidget):
         """
         返回当前目录的上一级
         """
-        parent_dir = os.path.dirname(self.current_path)
-        if parent_dir and parent_dir != self.current_path:
-            self.current_path = parent_dir
+        # 检查当前是否已经在磁盘根目录
+        is_root_dir = False
+        
+        if sys.platform == 'win32':
+            # Windows系统：检查是否为磁盘根目录，如 "C:\"
+            drive, path = os.path.splitdrive(self.current_path)
+            if path in ['\\', '/']:
+                is_root_dir = True
+        else:
+            # Linux/macOS系统：检查是否为根目录 "/"
+            if self.current_path == '/':
+                is_root_dir = True
+        
+        # 如果是磁盘根目录，返回到All页面
+        if is_root_dir:
+            self.current_path = "All"
             self.refresh_files()
+        else:
+            # 否则，执行原有的返回上级目录逻辑
+            parent_dir = os.path.dirname(self.current_path)
+            if parent_dir and parent_dir != self.current_path:
+                self.current_path = parent_dir
+                self.refresh_files()
     
     def _load_favorites(self):
         """
