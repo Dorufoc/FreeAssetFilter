@@ -1,4 +1,4 @@
-# FreeAssetFilter v1.0
+# FreeAssetFilter v0.1.0
 
 基于PyQt5的多功能文件预览和管理工具，支持多种文件类型的快速预览和筛选。
 
