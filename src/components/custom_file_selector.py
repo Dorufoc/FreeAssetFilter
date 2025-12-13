@@ -91,9 +91,6 @@ class CustomFileSelector(QWidget):
         os.makedirs(os.path.dirname(self.save_path_file), exist_ok=True)
         os.makedirs(os.path.dirname(self.favorites_file), exist_ok=True)
         
-        # 读取保存的路径
-        self.load_last_path()
-        
         # 添加防抖定时器，用于减少刷新频率（在init_ui之前初始化，避免_clear_files_layout访问时出错）
         self.resize_timer = QTimer(self)
         self.resize_timer.setSingleShot(True)
@@ -102,6 +99,9 @@ class CustomFileSelector(QWidget):
         
         # 初始化UI
         self.init_ui()
+        
+        # 无论上次保存的路径是什么，都默认显示"此电脑"界面
+        self.current_path = "此电脑"
         
         # 初始化文件列表
         self.refresh_files()
@@ -114,10 +114,16 @@ class CustomFileSelector(QWidget):
             if os.path.exists(self.save_path_file):
                 with open(self.save_path_file, 'r') as f:
                     data = json.load(f)
-                    if "last_path" in data and os.path.exists(data["last_path"]):
-                        self.current_path = data["last_path"]
+                    # 只有当上次保存的路径存在且不是无效路径时才使用
+                    if "last_path" in data:
+                        last_path = data["last_path"]
+                        # 检查路径是否有效（普通路径需要存在，"此电脑"是特殊路径）
+                        if last_path == "此电脑" or os.path.exists(last_path):
+                            self.current_path = last_path
         except Exception as e:
             print(f"加载上次路径失败: {e}")
+            # 如果加载失败，确保默认显示"此电脑"
+            self.current_path = "此电脑"
     
     def save_current_path(self):
         """
