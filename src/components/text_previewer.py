@@ -31,7 +31,7 @@ from PyQt5.QtGui import (
     QFont, QIcon
 )
 from PyQt5.QtCore import (
-    Qt, QUrl
+    Qt, QUrl, QThread, pyqtSignal
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 import markdown
@@ -40,10 +40,164 @@ from pygments.lexers import get_lexer_for_filename, TextLexer
 from pygments.formatters import HtmlFormatter
 
 
+class FileReadThread(QThread):
+    """
+    文件读取线程，用于异步读取文件内容并报告进度
+    特别优化了网络文件（如NAS上的文件）的读取方式
+    """
+    # 信号定义
+    progress_updated = pyqtSignal(int, str)  # 进度更新信号，参数：进度值(0-100)，状态描述
+    file_read_completed = pyqtSignal(str, str)  # 文件读取完成信号，参数：文件内容，编码
+    file_read_failed = pyqtSignal(str)  # 文件读取失败信号，参数：错误信息
+    
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+        self.encoding = 'utf-8'
+        self.is_cancelled = False
+    
+    def run(self):
+        """
+        执行文件读取操作
+        优化了网络文件的读取方式，确保进度实时更新
+        """
+        try:
+            # 第一步：获取文件大小（这一步对于网络文件可能会阻塞，需要优化）
+            self.progress_updated.emit(0, "正在获取文件信息...")
+            
+            # 异步获取文件大小，避免阻塞主线程
+            file_size = self._get_file_size_with_timeout()
+            if file_size == -1:
+                raise Exception("无法获取文件大小")
+            
+            # 第二步：打开文件并分块读取
+            self.progress_updated.emit(5, "正在打开文件...")
+            
+            # 计算分块大小，根据文件大小动态调整
+            # 网络文件使用较小的分块，确保进度实时更新
+            chunk_size = 65536  # 64KB，适合网络文件
+            
+            read_bytes = 0
+            content = []
+            encoding = self.encoding
+            
+            # 尝试使用UTF-8编码
+            try:
+                # 使用二进制模式打开文件，然后手动解码
+                # 这样可以更精确地控制读取进度，特别是对于网络文件
+                with open(self.file_path, 'rb') as f:
+                    while not self.is_cancelled:
+                        # 读取二进制数据
+                        binary_chunk = f.read(chunk_size)
+                        if not binary_chunk:
+                            break
+                        
+                        # 更新已读取字节数
+                        read_bytes += len(binary_chunk)
+                        
+                        # 解码为文本
+                        text_chunk = binary_chunk.decode(encoding)
+                        content.append(text_chunk)
+                        
+                        # 计算进度
+                        progress = 5 + int(min(95, (read_bytes / file_size) * 95))
+                        self.progress_updated.emit(progress, f"正在读取文件... {progress}%")
+            except UnicodeDecodeError:
+                # 尝试使用GBK编码
+                encoding = 'gbk'
+                read_bytes = 0
+                content = []
+                self.progress_updated.emit(0, "正在使用GBK编码打开文件...")
+                
+                with open(self.file_path, 'rb') as f:
+                    while not self.is_cancelled:
+                        # 读取二进制数据
+                        binary_chunk = f.read(chunk_size)
+                        if not binary_chunk:
+                            break
+                        
+                        # 更新已读取字节数
+                        read_bytes += len(binary_chunk)
+                        
+                        # 解码为文本
+                        text_chunk = binary_chunk.decode(encoding)
+                        content.append(text_chunk)
+                        
+                        # 计算进度
+                        progress = 5 + int(min(95, (read_bytes / file_size) * 95))
+                        self.progress_updated.emit(progress, f"正在读取文件... {progress}%")
+            except Exception as e:
+                # 处理其他可能的错误
+                self.file_read_failed.emit(f"读取文件时出错: {str(e)}")
+                return
+            
+            if not self.is_cancelled:
+                self.progress_updated.emit(100, "文件读取完成")
+                self.file_read_completed.emit(''.join(content), encoding)
+        except Exception as e:
+            self.file_read_failed.emit(str(e))
+    
+    def _get_file_size_with_timeout(self, timeout=5):
+        """
+        带超时的文件大小获取，避免网络文件阻塞过长时间
+        
+        Args:
+            timeout (int): 超时时间（秒）
+            
+        Returns:
+            int: 文件大小（字节），如果超时返回-1
+        """
+        import threading
+        
+        file_size = [0]
+        error = [None]
+        
+        def get_size():
+            try:
+                file_size[0] = os.path.getsize(self.file_path)
+            except Exception as e:
+                error[0] = e
+        
+        # 创建线程获取文件大小
+        thread = threading.Thread(target=get_size)
+        thread.daemon = True
+        thread.start()
+        
+        # 等待线程完成或超时
+        thread.join(timeout)
+        
+        if thread.is_alive():
+            # 超时，尝试使用备用方案
+            try:
+                # 尝试打开文件并获取大小（对于某些网络文件系统可能更可靠）
+                with open(self.file_path, 'rb') as f:
+                    f.seek(0, os.SEEK_END)
+                    file_size[0] = f.tell()
+                    f.seek(0)
+            except Exception as e:
+                error[0] = e
+        
+        if error[0]:
+            print(f"获取文件大小失败: {error[0]}")
+            return -1
+        
+        return file_size[0]
+    
+    def cancel(self):
+        """
+        取消文件读取操作
+        """
+        self.is_cancelled = True
+
+
 class TextPreviewWidget(QWidget):
     """
     文本预览部件，支持Markdown渲染和代码高�?
     """
+    # 信号定义
+    file_read_progress = pyqtSignal(int, str)  # 文件读取进度信号，参数：进度值(0-100)，状态描述
+    file_read_finished = pyqtSignal()  # 文件读取完成信号
+    file_read_cancelled = pyqtSignal()  # 文件读取取消信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,6 +218,9 @@ class TextPreviewWidget(QWidget):
         
         # 预览模式
         self.preview_mode = "auto"  # auto, text, markdown, code
+        
+        # 文件读取线程
+        self.read_thread = None
         
         # 初始化UI
         self.init_ui()
@@ -132,19 +289,71 @@ class TextPreviewWidget(QWidget):
         if os.path.exists(file_path):
             self.current_file_path = file_path
             
-            # 读取文件内容
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    self.file_content = f.read()
-            except UnicodeDecodeError:
-                # 尝试使用其他编码
-                with open(file_path, 'r', encoding='gbk') as f:
-                    self.file_content = f.read()
+            # 如果当前有正在运行的读取线程，先取消
+            if self.read_thread and self.read_thread.isRunning():
+                self.read_thread.cancel()
+                self.read_thread.wait()
             
-            # 更新预览
-            self.update_preview()
+            # 创建新的文件读取线程
+            self.read_thread = FileReadThread(file_path)
+            
+            # 连接信号
+            self.read_thread.progress_updated.connect(self.on_file_read_progress)
+            self.read_thread.file_read_completed.connect(self.on_file_read_completed)
+            self.read_thread.file_read_failed.connect(self.on_file_read_failed)
+            
+            # 启动线程
+            self.read_thread.start()
+            
             return True
         return False
+    
+    def on_file_read_progress(self, progress, status):
+        """
+        文件读取进度更新回调
+        
+        Args:
+            progress (int): 进度值(0-100)
+            status (str): 状态描述
+        """
+        # 发射进度信号，供外部进度条使用
+        self.file_read_progress.emit(progress, status)
+    
+    def on_file_read_completed(self, content, encoding):
+        """
+        文件读取完成回调
+        
+        Args:
+            content (str): 文件内容
+            encoding (str): 文件编码
+        """
+        self.file_content = content
+        # 更新预览
+        self.update_preview()
+        # 发射读取完成信号
+        self.file_read_finished.emit()
+    
+    def on_file_read_failed(self, error):
+        """
+        文件读取失败回调
+        
+        Args:
+            error (str): 错误信息
+        """
+        print(f"文件读取失败: {error}")
+        # 显示错误信息
+        self.file_content = f"文件读取失败: {error}"
+        self.update_preview()
+        # 发射读取完成信号
+        self.file_read_finished.emit()
+    
+    def cancel_file_read(self):
+        """
+        取消文件读取操作
+        """
+        if self.read_thread and self.read_thread.isRunning():
+            self.read_thread.cancel()
+            self.file_read_cancelled.emit()
     
     def change_preview_mode(self, mode_text):
         """

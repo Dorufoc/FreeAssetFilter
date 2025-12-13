@@ -2046,13 +2046,22 @@ class CustomFileSelector(QWidget):
                 # 处理鼠标点击事件
                 if event.button() == Qt.LeftButton:
                     # 左键点击：如果是文件则预览，文件夹则打开
+                    # 生成带时间戳的debug信息
+                    import datetime
+                    def debug(msg):
+                        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                        print(f"[{timestamp}] [CustomFileSelector] {msg}")
+                    
                     if obj.file_info["is_dir"]:
                         # 文件夹：打开文件夹，不发出预览信号
+                        debug("左键点击文件夹，准备打开")
                         self._open_file(obj)
                     else:
                         # 文件：打开文件并发出预览信号
+                        debug("左键点击文件，准备打开并预览")
                         self._open_file(obj)
                         # 发出文件选择信号用于预览
+                        debug(f"发出file_selected信号，文件信息: {obj.file_info}")
                         self.file_selected.emit(obj.file_info)
                     return True
                 elif event.button() == Qt.RightButton:
@@ -2155,12 +2164,23 @@ class CustomFileSelector(QWidget):
         """
         打开文件
         """
+        # 生成带时间戳的debug信息
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileSelector] {msg}")
+        
         file_path = card.file_info["path"]
+        debug(f"打开文件: {file_path}, 是否为目录: {card.file_info['is_dir']}")
+        
         if os.path.exists(file_path):
             if card.file_info["is_dir"]:
+                debug(f"打开目录，进入新路径: {file_path}")
                 # 如果是目录，进入该目录
                 self.current_path = file_path
                 self.refresh_files()
+            else:
+                debug(f"打开文件，文件信息: {card.file_info}")
     
     def _show_properties(self, card):
         """

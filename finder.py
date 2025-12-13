@@ -101,29 +101,34 @@ def check_dependencies():
 
             # 检查依赖是否已安装
             try:
-                installed_version = importlib.metadata.version(lib_name)
-                # 检查版本是否符合要求
-                if required_version:
-                    installed = parse(installed_version)
-                    required = parse(required_version)
-                    version_ok = True
-                    
-                    # 根据运算符检查版本
-                    if operator == '>':
-                        version_ok = installed > required
-                    elif operator == '>=':
-                        version_ok = installed >= required
-                    elif operator == '<':
-                        version_ok = installed < required
-                    elif operator == '<=':
-                        version_ok = installed <= required
-                    elif operator == '==':
-                        version_ok = installed == required
-                    
-                    if not version_ok:
-                        version_issues.append((lib_name, installed_version, required_version))
-                        missing_deps.append(line)  # 将版本问题也视为需要安装的依赖
-            except (importlib.metadata.PackageNotFoundError, NameError):
+                if not importlib_metadata_available:
+                    # 如果importlib.metadata不可用，使用简单的尝试导入方式
+                    __import__(lib_name)
+                    # 无法检查版本，假设版本符合要求
+                else:
+                    installed_version = importlib.metadata.version(lib_name)
+                    # 检查版本是否符合要求
+                    if required_version:
+                        installed = parse(installed_version)
+                        required = parse(required_version)
+                        version_ok = True
+                        
+                        # 根据运算符检查版本
+                        if operator == '>':
+                            version_ok = installed > required
+                        elif operator == '>=':
+                            version_ok = installed >= required
+                        elif operator == '<':
+                            version_ok = installed < required
+                        elif operator == '<=':
+                            version_ok = installed <= required
+                        elif operator == '==':
+                            version_ok = installed == required
+                        
+                        if not version_ok:
+                            version_issues.append((lib_name, installed_version, required_version))
+                            missing_deps.append(line)  # 将版本问题也视为需要安装的依赖
+            except (ImportError, NameError):
                 missing_deps.append(line)  # 直接添加完整依赖字符串
             except Exception:
                 missing_deps.append(line)  # 其他错误也视为缺失
@@ -162,13 +167,35 @@ def install_missing_dependencies(missing_deps):
 
     try:
         print(f"执行命令: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        # 使用shell=True和timeout来避免某些环境下的问题
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, shell=False, timeout=300)
         print(f"依赖安装成功:\n{result.stdout}")
         if result.stderr:
             print(f"安装警告:\n{result.stderr}")
         return True
     except subprocess.CalledProcessError as e:
         print(f"依赖安装失败:\n{e.stderr}")
+        # 尝试单独安装每个依赖，以便找出具体哪个依赖安装失败
+        print("\n尝试单独安装每个依赖...")
+        all_success = True
+        for dep in missing_deps:
+            try:
+                single_cmd = [
+                    sys.executable, "-m", "pip", "install",
+                    "-i", "https://pypi.tuna.tsinghua.edu.cn/simple/",
+                    "--upgrade", dep]
+                print(f"执行命令: {' '.join(single_cmd)}")
+                single_result = subprocess.run(single_cmd, check=True, capture_output=True, text=True, shell=False, timeout=120)
+                print(f"依赖 {dep} 安装成功")
+            except subprocess.CalledProcessError as se:
+                print(f"依赖 {dep} 安装失败:\n{se.stderr}")
+                all_success = False
+            except Exception as se:
+                print(f"安装依赖 {dep} 时发生未知错误: {se}")
+                all_success = False
+        return all_success
+    except subprocess.TimeoutExpired:
+        print("依赖安装超时，请手动安装依赖")
         return False
     except Exception as e:
         print(f"安装过程中发生未知错误: {e}")
