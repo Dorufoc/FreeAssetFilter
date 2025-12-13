@@ -415,7 +415,21 @@ class FreeAssetFilterApp(QMainWindow):
 # 主程序入口
 if __name__ == "__main__":
     print("=== FreeAssetFilter 主程序 ===")
+    
+    # 修改sys.argv[0]以确保Windows任务栏显示正确图标
+    sys.argv[0] = os.path.abspath(__file__)
+    
+    # 在Windows系统上设置应用程序身份，确保任务栏显示正确图标
+    if sys.platform == 'win32':
+        import ctypes
+        # 加载Windows API库
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeAssetFilter.App")
+    
     app = QApplication(sys.argv)
+    
+    # 设置应用程序图标，用于任务栏显示
+    icon_path = os.path.join(os.path.dirname(__file__), 'src', 'Icon', 'FAF-main.ico')
+    app.setWindowIcon(QIcon(icon_path))
     
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
     from PyQt5.QtGui import QFontDatabase, QFont
