@@ -21,6 +21,9 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox
 )
+
+# 导入自定义按钮
+from src.widgets.custom_widgets import CustomButton
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
@@ -86,7 +89,7 @@ class UnifiedPreviewer(QWidget):
         self.control_layout.setAlignment(Qt.AlignRight)
         
         # 创建"使用系统默认方式打开"按钮
-        self.open_with_system_button = QPushButton("使用系统默认方式打开")
+        self.open_with_system_button = CustomButton("使用系统默认方式打开", button_type="normal")
         self.open_with_system_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.open_with_system_button.clicked.connect(self._open_file_with_system)
         self.open_with_system_button.hide()  # 默认隐藏
