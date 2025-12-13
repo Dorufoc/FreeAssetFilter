@@ -73,7 +73,7 @@ class CustomFileSelector(QWidget):
         self.setMinimumWidth(520)
         
         # 初始化配置
-        self.current_path = "此电脑"  # 默认路径为"此电脑"
+        self.current_path = "All"  # 默认路径为"All"
         self.selected_files = {}  # 存储每个目录下的选中文件 {directory: {file_path1, file_path2}}]
         self.filter_pattern = "*"  # 默认显示所有文件
         self.sort_by = "name"  # 默认按名称排序
@@ -100,8 +100,8 @@ class CustomFileSelector(QWidget):
         # 初始化UI
         self.init_ui()
         
-        # 无论上次保存的路径是什么，都默认显示"此电脑"界面
-        self.current_path = "此电脑"
+        # 无论上次保存的路径是什么，都默认显示"All"界面
+        self.current_path = "All"
         
         # 初始化文件列表
         self.refresh_files()
@@ -117,13 +117,13 @@ class CustomFileSelector(QWidget):
                     # 只有当上次保存的路径存在且不是无效路径时才使用
                     if "last_path" in data:
                         last_path = data["last_path"]
-                        # 检查路径是否有效（普通路径需要存在，"此电脑"是特殊路径）
-                        if last_path == "此电脑" or os.path.exists(last_path):
+                        # 检查路径是否有效（普通路径需要存在，"All"是特殊路径）
+                        if last_path == "All" or os.path.exists(last_path):
                             self.current_path = last_path
         except Exception as e:
             print(f"加载上次路径失败: {e}")
-            # 如果加载失败，确保默认显示"此电脑"
-            self.current_path = "此电脑"
+            # 如果加载失败，确保默认显示"All"
+            self.current_path = "All"
     
     def save_current_path(self):
         """
@@ -1138,8 +1138,8 @@ class CustomFileSelector(QWidget):
         network_locations = list(set(network_locations))
         network_locations.sort()
         
-        # 先添加"此电脑"选项，然后添加本地驱动器，最后添加网络位置
-        all_drives = ["此电脑"] + local_drives.copy()
+        # 先添加"All"选项，然后添加本地驱动器，最后添加网络位置
+        all_drives = ["All"] + local_drives.copy()
         if network_locations:
             # 添加一个分隔符，区分本地驱动器和网络位置
             all_drives.append("--- 网络位置 ---")
@@ -1183,10 +1183,10 @@ class CustomFileSelector(QWidget):
         if drive == "--- 网络位置 ---":
             return
         
-        # 处理"此电脑"选项
-        if drive == "此电脑":
-            # 设置一个特殊的路径标识，表示当前处于"此电脑"视图
-            self.current_path = "此电脑"
+        # 处理"All"选项
+        if drive == "All":
+            # 设置一个特殊的路径标识，表示当前处于"All"视图
+            self.current_path = "All"
             self.refresh_files()
             return
         
@@ -1295,10 +1295,10 @@ class CustomFileSelector(QWidget):
         """
         更新盘符选择器的选中项，根据当前路径自动选择对应的盘符
         """
-        # 检查当前是否处于"此电脑"视图
-        if self.current_path == "此电脑":
-            # 选中"此电脑"选项
-            index = self.drive_combo.findText("此电脑")
+        # 检查当前是否处于"All"视图
+        if self.current_path == "All":
+            # 选中"All"选项
+            index = self.drive_combo.findText("All")
         elif sys.platform == 'win32':
             # Windows系统：提取当前路径的盘符，如 "C:\path\to\dir" -> "C:"
             current_drive = os.path.splitdrive(self.current_path)[0]
@@ -1373,8 +1373,8 @@ class CustomFileSelector(QWidget):
         """
         files = []
         
-        # 处理"此电脑"视图
-        if self.current_path == "此电脑":
+        # 处理"All"视图
+        if self.current_path == "All":
             if sys.platform == 'win32':
                 # Windows系统：遍历A-Z，检查存在的盘符
                 for drive in range(65, 91):  # A-Z
