@@ -3,7 +3,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FreeAssetFilter v1.0
+FreeAssetFilter v0.1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
@@ -179,7 +179,7 @@ class FreeAssetFilterApp(QMainWindow):
         main_layout.addWidget(splitter, 1)
         
         # 状态标签
-        self.status_label = QLabel("FreeAssetFilter v1.0 Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
+        self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(self.global_font)
         self.status_label.setStyleSheet("font-size: 12px; color: #666; margin-top: 10px;")
