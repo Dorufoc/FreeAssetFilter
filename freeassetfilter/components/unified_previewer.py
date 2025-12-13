@@ -23,15 +23,15 @@ from PyQt5.QtWidgets import (
 )
 
 # 导入自定义按钮
-from src.widgets.custom_widgets import CustomButton
+from freeassetfilter.widgets.custom_widgets import CustomButton
 from PyQt5.QtCore import Qt
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QFont
 
-from src.core.file_info_browser import FileInfoBrowser
-from src.components.folder_content_list import FolderContentList
-from src.components.archive_browser import ArchiveBrowser
-from src.widgets.custom_widgets import CustomMessageBox, CustomProgressBar
+from freeassetfilter.core.file_info_browser import FileInfoBrowser
+from freeassetfilter.components.folder_content_list import FolderContentList
+from freeassetfilter.components.archive_browser import ArchiveBrowser
+from freeassetfilter.widgets.custom_widgets import CustomMessageBox, CustomProgressBar
 
 class UnifiedPreviewer(QWidget):
     """
@@ -402,7 +402,7 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             # 使用专业的PhotoViewer组件进行图片预览
-            from src.components.photo_viewer import PhotoViewer
+            from freeassetfilter.components.photo_viewer import PhotoViewer
             
             # 创建PhotoViewer实例
             photo_viewer = PhotoViewer()
@@ -446,7 +446,7 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             # 尝试导入VideoPlayer组件（基于VLC的播放器）
-            from src.components.video_player import VideoPlayer
+            from freeassetfilter.components.video_player import VideoPlayer
             
             # 创建VideoPlayer视频播放器
             video_player = VideoPlayer()
@@ -542,7 +542,7 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             # 使用视频播放器组件处理音频文件，因为它已经支持音频播放
-            from src.components.video_player import VideoPlayer
+            from freeassetfilter.components.video_player import VideoPlayer
             
             # 创建视频播放器（支持音频播放）
             audio_player = VideoPlayer()
@@ -566,7 +566,7 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             # 尝试导入PDF预览器组件
-            from src.components.pdf_previewer import PDFPreviewer
+            from freeassetfilter.components.pdf_previewer import PDFPreviewer
             
             # 创建PDF预览器
             pdf_previewer = PDFPreviewer()
@@ -685,7 +685,7 @@ class UnifiedPreviewer(QWidget):
             
             if preview_type == "dir":
                 # 文件夹预览
-                from src.components.folder_content_list import FolderContentList
+                from freeassetfilter.components.folder_content_list import FolderContentList
                 created_widget = FolderContentList()
                 created_widget.set_path(file_path)
             elif preview_type == "image":
@@ -710,7 +710,7 @@ class UnifiedPreviewer(QWidget):
                 return  # _show_text_preview已经处理了组件添加
             elif preview_type == "archive":
                 # 压缩包预览
-                from src.components.archive_browser import ArchiveBrowser
+                from freeassetfilter.components.archive_browser import ArchiveBrowser
                 created_widget = ArchiveBrowser()
                 created_widget.set_archive_path(file_path)
             
@@ -843,7 +843,7 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             # 尝试导入文本预览器组件
-            from src.components.text_previewer import TextPreviewer
+            from freeassetfilter.components.text_previewer import TextPreviewer
             
             # 创建文本预览器
             text_previewer = TextPreviewer()

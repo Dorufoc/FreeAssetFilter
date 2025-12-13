@@ -40,8 +40,8 @@ from PyQt5.QtGui import (
     QBrush, QPainter, QPen, QPalette, QImage, QFontDatabase
 )
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
-from src.utils.svg_renderer import SvgRenderer
-from src.widgets.custom_widgets import CustomButton
+from freeassetfilter.utils.svg_renderer import SvgRenderer
+from freeassetfilter.widgets.custom_widgets import CustomButton
 
 
 class CustomFileSelector(QWidget):
@@ -326,7 +326,7 @@ class CustomFileSelector(QWidget):
         
         if not media_files:
             # 当前目录下没有需要生成缩略图的媒体文件
-            from src.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
             info_msg = CustomMessageBox(self)
             info_msg.set_title("提示")
             info_msg.set_text("当前目录下没有需要生成缩略图的媒体文件")
@@ -344,7 +344,7 @@ class CustomFileSelector(QWidget):
         
         if not files_to_generate:
             # 所有文件都已有缩略图，无需重新生成
-            from src.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
             info_msg = CustomMessageBox(self)
             info_msg.set_title("提示")
             info_msg.set_text("所有文件都已有缩略图，无需重新生成")
@@ -354,7 +354,7 @@ class CustomFileSelector(QWidget):
             return
         
         # 使用自定义提示窗口来显示进度
-        from src.widgets.custom_widgets import CustomMessageBox, CustomProgressBar
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox, CustomProgressBar
         
         # 创建自定义提示窗口
         progress_msg = CustomMessageBox(self)
@@ -432,7 +432,7 @@ class CustomFileSelector(QWidget):
         清理缩略图缓存，删除所有本地存储的缩略图文件，并刷新页面显示
         """
         import shutil
-        from src.widgets.custom_widgets import CustomMessageBox
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
         
         # 确认对话框
         confirm_msg = CustomMessageBox(self)
@@ -980,7 +980,7 @@ class CustomFileSelector(QWidget):
             name, path = text.split(' - ', 1)
             
             # 确认删除
-            from src.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
             confirm_msg = CustomMessageBox(self)
             confirm_msg.set_title("确认删除")
             confirm_msg.set_text(f"确定要删除收藏夹项 '{name}' 吗?")
@@ -1019,7 +1019,7 @@ class CustomFileSelector(QWidget):
         # 检查是否已存在
         for favorite in self.favorites:
             if favorite['path'] == current_path:
-                from src.widgets.custom_widgets import CustomMessageBox
+                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
                 info_msg = CustomMessageBox(self)
                 info_msg.set_title("提示")
                 info_msg.set_text("该路径已在收藏夹中")
@@ -1269,7 +1269,7 @@ class CustomFileSelector(QWidget):
             self.current_path = path
             self.refresh_files()
         else:
-            from src.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
             warning_msg = CustomMessageBox(self)
             warning_msg.set_title("警告")
             warning_msg.set_text("无效的路径")
@@ -1457,7 +1457,7 @@ class CustomFileSelector(QWidget):
                     files.append(file_dict)
             except Exception as e:
                 print(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
-                from src.widgets.custom_widgets import CustomMessageBox
+                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
                 error_msg = CustomMessageBox(self)
                 error_msg.set_title("错误")
                 error_msg.set_text(f"读取目录失败: {e}")
@@ -1775,7 +1775,7 @@ class CustomFileSelector(QWidget):
         
         # 确定要使用的SVG图标
         icon_path = None
-        icon_dir = os.path.join(os.path.dirname(__file__), "..", "Icon")
+        icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
         
         if file_info["is_dir"]:
             # 文件夹使用文件夹图标
@@ -1855,7 +1855,7 @@ class CustomFileSelector(QWidget):
                     suffix = "FILE"
                 
                 # 加载指定字体
-                font_path = os.path.join(os.path.dirname(__file__), "..", "Icon", "庞门正道标题体.ttf")
+                font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
                 font = QFont()
                 
                 # 尝试加载字体文件，如果失败则使用默认字体
@@ -1951,7 +1951,7 @@ class CustomFileSelector(QWidget):
         
         # 确定要使用的SVG图标
         icon_path = None
-        icon_dir = os.path.join(os.path.dirname(__file__), "..", "Icon")
+        icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
         
         if file_info["is_dir"]:
             # 文件夹使用文件夹图标
