@@ -325,14 +325,29 @@ class ArchiveBrowser(QWidget):
         try:
             if self.archive_type == 'zip':
                 files = self._get_zip_files()
-            elif self.archive_type == 'rar' and rarfile:
-                files = self._get_rar_files()
+            elif self.archive_type == 'rar':
+                if rarfile:
+                    files = self._get_rar_files()
+                else:
+                    # 如果rarfile库不可用，显示错误信息
+                    raise Exception("需要rarfile库来处理RAR文件。请使用pip install rarfile安装。")
             elif self.archive_type == 'tar':
                 files = self._get_tar_files()
-            elif self.archive_type == '7z' and py7zr:
-                files = self._get_7z_files()
-            elif self.archive_type == 'iso' and pycdlib:
-                files = self._get_iso_files()
+            elif self.archive_type == '7z':
+                if py7zr:
+                    files = self._get_7z_files()
+                else:
+                    # 如果py7zr库不可用，显示错误信息
+                    raise Exception("需要py7zr库来处理7z文件。请使用pip install py7zr安装。")
+            elif self.archive_type == 'iso':
+                if pycdlib:
+                    files = self._get_iso_files()
+                else:
+                    # 如果pycdlib库不可用，显示错误信息
+                    raise Exception("需要pycdlib库来处理ISO文件。请使用pip install pycdlib安装。")
+            else:
+                # 未知压缩包类型
+                raise Exception(f"不支持的压缩包类型: {self.archive_type}")
         except Exception as e:
             raise e
         
@@ -480,12 +495,15 @@ class ArchiveBrowser(QWidget):
                         dirs.add(sub_dir if not self.current_path else f"{self.current_path}/{sub_dir}")
                 else:
                     # 是当前目录下的文件
+                    # 使用getattr函数获取属性，避免AttributeError
+                    file_size = getattr(info, 'file_size', 0)
+                    file_mtime = getattr(info, 'mtime', 0)
                     files.append({
                         "name": rel_path,
                         "path": file_path,
                         "is_dir": False,
-                        "size": info.file_size,
-                        "modified": datetime.fromtimestamp(info.mtime).isoformat(),
+                        "size": file_size,
+                        "modified": datetime.fromtimestamp(file_mtime).isoformat() if file_mtime else "",
                         "suffix": os.path.splitext(rel_path)[1].lower()[1:] if '.' in rel_path else ''
                     })
         
@@ -688,12 +706,15 @@ class ArchiveBrowser(QWidget):
                         dirs.add(sub_dir if not self.current_path else f"{self.current_path}/{sub_dir}")
                 else:
                     # 是当前目录下的文件
+                    # 修复py7zr库FileInfo对象的属性访问
+                    file_size = getattr(info, 'uncompressed_size', 0)  # 使用正确的属性名
+                    file_mtime = getattr(info, 'mtime', 0)  # 使用正确的属性名
                     files.append({
                         "name": rel_path,
                         "path": file_path,
                         "is_dir": False,
-                        "size": info.size,
-                        "modified": datetime.fromtimestamp(info.mtime).isoformat(),
+                        "size": file_size,
+                        "modified": datetime.fromtimestamp(file_mtime).isoformat() if file_mtime else "",
                         "suffix": os.path.splitext(rel_path)[1].lower()[1:] if '.' in rel_path else ''
                     })
         
