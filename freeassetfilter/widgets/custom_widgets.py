@@ -14,7 +14,7 @@ from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
 # 用于SVG渲染
-from src.utils.svg_renderer import SvgRenderer
+from freeassetfilter.utils.svg_renderer import SvgRenderer
 import os
 
 
@@ -528,7 +528,7 @@ class CustomProgressBar(QWidget):
         self._bar_radius = 3
         
         # SVG 图标路径
-        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Icon')
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
         self._icon_path = os.path.join(icon_dir, '条-顶-尾.svg')
         self._head_icon_path = os.path.join(icon_dir, '条-顶-头.svg')
         self._middle_icon_path = os.path.join(icon_dir, '条-顶-中.svg')

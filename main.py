@@ -36,16 +36,16 @@ from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtGui import QFont, QIcon
 
 # 导入自定义控件库
-from src.widgets.custom_widgets import CustomWindow, CustomButton
+from freeassetfilter.widgets.custom_widgets import CustomWindow, CustomButton
 
 
 
 # 导入自定义文件选择器组件
-from src.components.custom_file_selector import CustomFileSelector
+from freeassetfilter.components.custom_file_selector import CustomFileSelector
 # 导入统一文件预览器组件
-from src.components.unified_previewer import UnifiedPreviewer
+from freeassetfilter.components.unified_previewer import UnifiedPreviewer
 # 导入文件临时存储池组件
-from src.components.file_staging_pool import FileStagingPool
+from freeassetfilter.components.file_staging_pool import FileStagingPool
 
 
 class FreeAssetFilterApp(QMainWindow):
@@ -60,7 +60,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
         
         # 设置程序图标
-        icon_path = os.path.join(os.path.dirname(__file__), 'src', 'Icon', 'FAF-main.ico')
+        icon_path = os.path.join(os.path.dirname(__file__), 'freeassetfilter', 'icons', 'FAF-main.ico')
         self.setWindowIcon(QIcon(icon_path))
         
         # 用于生成唯一的文件选择器实例ID
@@ -428,7 +428,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     
     # 设置应用程序图标，用于任务栏显示
-    icon_path = os.path.join(os.path.dirname(__file__), 'src', 'Icon', 'FAF-main.ico')
+    icon_path = os.path.join(os.path.dirname(__file__), 'freeassetfilter', 'icons', 'FAF-main.ico')
     app.setWindowIcon(QIcon(icon_path))
     
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体

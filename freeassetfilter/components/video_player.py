@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage
-from src.utils.svg_renderer import SvgRenderer
+from freeassetfilter.utils.svg_renderer import SvgRenderer
 
 # 用于读取音频文件封面
 from mutagen.id3 import ID3
@@ -39,7 +39,7 @@ from mutagen.asf import ASF
 from PIL import Image
 import io
 
-from src.core.player_core import PlayerCore
+from freeassetfilter.core.player_core import PlayerCore
 
 
 class CustomProgressBar(QWidget):
@@ -75,7 +75,7 @@ class CustomProgressBar(QWidget):
         
         # SVG 图标路径
         import os
-        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Icon')
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
         self._icon_path = os.path.join(icon_dir, '条-顶-尾.svg')
         self._head_icon_path = os.path.join(icon_dir, '条-顶-头.svg')
         self._middle_icon_path = os.path.join(icon_dir, '条-顶-中.svg')
@@ -1914,7 +1914,7 @@ class VideoPlayer(QWidget):
         """
         try:
             # 图标路径
-            icon_dir = os.path.join(os.path.dirname(__file__), '..', 'Icon')
+            icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
             
             # 固定图标大小
             fixed_icon_size = 32
@@ -1928,7 +1928,7 @@ class VideoPlayer(QWidget):
                 icon_path = os.path.join(icon_dir, '音量.svg')
             
             # 渲染SVG图标为QPixmap
-            from src.utils.svg_renderer import SvgRenderer
+            from freeassetfilter.utils.svg_renderer import SvgRenderer
             pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, fixed_icon_size)
             
             # 设置按钮图标

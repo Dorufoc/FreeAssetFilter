@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
 )
 
 # 导入自定义控件
-from src.widgets.custom_widgets import CustomButton, CustomMessageBox, CustomProgressBar
+from freeassetfilter.widgets.custom_widgets import CustomButton, CustomMessageBox, CustomProgressBar
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo
 )
