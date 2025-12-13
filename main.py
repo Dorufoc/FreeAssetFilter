@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QIcon
 
 # 导入自定义控件库
 from src.widgets.custom_widgets import CustomWindow, CustomButton
@@ -58,6 +58,10 @@ class FreeAssetFilterApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("FreeAssetFilter")
         self.setGeometry(100, 100, 1200, 800)
+        
+        # 设置程序图标
+        icon_path = os.path.join(os.path.dirname(__file__), 'src', 'Icon', 'FAF-main.ico')
+        self.setWindowIcon(QIcon(icon_path))
         
         # 用于生成唯一的文件选择器实例ID
         self.file_selector_counter = 0
