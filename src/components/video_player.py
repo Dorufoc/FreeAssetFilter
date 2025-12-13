@@ -1665,24 +1665,34 @@ class VideoPlayer(QWidget):
     def load_media(self, file_path):
         """
         加载媒体文件（视频或音频）
+        优化：移除了可能阻塞主线程的操作
         
         Args:
             file_path (str): 媒体文件路径
         """
+        # 生成带时间戳的debug信息
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [VideoPlayer] {msg}")
+        
         try:
-            print(f"VideoPlayer.load_media: 正在加载文件: {file_path}")
+            debug(f"开始加载媒体文件: {file_path}")
             # 确保player_core已初始化
             if not self.player_core:
+                debug("初始化player_core")
                 self.player_core = PlayerCore()
             
             # 停止当前播放并重置进度条
+            debug("停止当前播放并重置进度条")
             self.player_core.stop()
             self.progress_slider.setValue(0)
             self.time_label.setText("00:00 / 00:00")
             
             # 尝试设置媒体
+            debug("调用player_core.set_media()设置媒体")
             media_set = self.player_core.set_media(file_path)
-            print(f"VideoPlayer.load_media: 设置媒体结果: {media_set}")
+            debug(f"设置媒体结果: {media_set}")
             
             if media_set:
                 # 获取文件扩展名，判断文件类型
@@ -1706,8 +1716,9 @@ class VideoPlayer(QWidget):
                     # 清除视频输出窗口
                     self.player_core.clear_window()
                     
-                    # 提取音频封面图
-                    cover_pixmap = self.extract_cover_art(file_path)
+                    # 注意：暂时移除音频封面提取，避免网络文件阻塞主线程
+                    # cover_pixmap = self.extract_cover_art(file_path)
+                    cover_pixmap = None
                     
                     if cover_pixmap:
                         # 设置封面图到背景（模糊效果）
@@ -1770,12 +1781,14 @@ class VideoPlayer(QWidget):
             else:
                 print(f"VideoPlayer.load_media: 设置媒体失败")
                 # 显示友好的错误信息
-                QMessageBox.information(self, "信息", f"无法加载媒体文件: {os.path.basename(file_path)}\n可能是VLC配置问题或文件格式不支持。")
+                # 注意：移除了QMessageBox，避免阻塞主线程
+                print(f"无法加载媒体文件: {os.path.basename(file_path)}\n可能是VLC配置问题或文件格式不支持。")
         except Exception as e:
             print(f"加载媒体时出错: {e}")
             import traceback
             traceback.print_exc()
-            QMessageBox.warning(self, "警告", f"媒体播放可能有问题: {str(e)}")
+            # 注意：移除了QMessageBox，避免阻塞主线程
+            print(f"媒体播放可能有问题: {str(e)}")
     
     def toggle_play_pause(self):
         """
