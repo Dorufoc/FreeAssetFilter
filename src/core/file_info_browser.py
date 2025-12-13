@@ -262,55 +262,38 @@ class FileInfoBrowser:
     def extract_file_info(self):
         """
         提取文件信息
+        优化：移除了所有可能阻塞主线程的操作，只提取基本信息
         """
         if not self.current_file:
             return
         
         file_path = self.current_file["path"]
         
-        # 提取基本信息
+        # 提取基本信息（已优化，移除了哈希计算）
         self.file_info["basic"] = self._get_basic_info(file_path)
         
-        # 提取详细信息，将扩展信息和高级信息合并
+        # 初始化详细信息字典
         self.file_info["details"] = {}
         
-        # 根据文件类型提取详细信息
+        # 根据文件类型提取最小化的详细信息，避免阻塞
         if self.current_file["is_dir"]:
             self.file_info["details"] = self._get_directory_info(file_path)
         else:
             file_ext = self.current_file["suffix"].lower()
-            if file_ext in ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg"]:
-                # 合并图像基本信息和高级信息
-                self.file_info["details"].update(self._get_image_info(file_path))
-                self.file_info["details"].update(self._get_image_advanced_info(file_path))
-            elif file_ext in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
-                # 合并音频基本信息和高级信息
-                self.file_info["details"].update(self._get_audio_info(file_path))
-                self.file_info["details"].update(self._get_audio_advanced_info(file_path))
-            elif file_ext in ["mp4", "avi", "mov", "mkv", "m4v", "flv", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb"]:
-                # 合并视频基本信息和高级信息
-                self.file_info["details"].update(self._get_video_info(file_path))
-                self.file_info["details"].update(self._get_video_advanced_info(file_path))
-            elif file_ext in ["txt", "md", "rst", "py", "java", "cpp", "js", "html", "css", "php", "c", "h", "cs", "go", "rb", "swift", "kt", "yml", "yaml", "json", "xml"]:
-                # 合并文本基本信息和高级信息
-                self.file_info["details"].update(self._get_text_info(file_path))
-                self.file_info["details"].update(self._get_text_advanced_info(file_path))
-            elif file_ext in ["zip", "rar", "tar", "gz", "tgz", "bz2", "xz", "7z", "iso"]:
-                # 合并压缩文件基本信息和高级信息
-                self.file_info["details"].update(self._get_archive_info(file_path))
-                self.file_info["details"].update(self._get_archive_advanced_info(file_path))
-            elif file_ext in ["pdf"]:
-                # 合并PDF基本信息和高级信息
-                self.file_info["details"].update(self._get_pdf_info(file_path))
-                self.file_info["details"].update(self._get_pdf_advanced_info(file_path))
-            elif file_ext in ["ttf", "otf", "woff", "woff2", "eot"]:
-                # 合并字体文件基本信息和高级信息
-                self.file_info["details"].update(self._get_font_info(file_path))
-                self.file_info["details"].update(self._get_font_advanced_info(file_path))
+            # 只添加文件类型信息，不执行任何可能阻塞的操作
+            self.file_info["details"]["文件类型"] = file_ext
+            
+            # 对于大文件，不执行任何可能阻塞的详细信息提取
+            # 避免使用PIL、moviepy、opencv等库打开大文件
+            # 避免读取文件内容或元数据
+            
+            # 可以在后续添加异步提取机制，但当前优先确保UI响应
+            self.file_info["details"]["详细信息"] = "为保证程序响应速度，未提取详细信息"
     
     def _get_basic_info(self, file_path: str) -> Dict[str, str]:
         """
         获取文件基本信息
+        优化：移除了文件哈希计算，避免阻塞主线程
         
         Args:
             file_path (str): 文件路径
@@ -318,13 +301,26 @@ class FileInfoBrowser:
         Returns:
             Dict[str, str]: 基本信息字典
         """
-        stat = os.stat(file_path)
+        try:
+            stat = os.stat(file_path)
+        except Exception:
+            # 处理网络文件无法访问的情况
+            return {
+                "文件名": os.path.basename(file_path),
+                "文件路径": file_path,
+                "文件大小": "无法获取",
+                "创建时间": "无法获取",
+                "修改时间": "无法获取",
+                "权限": "无法获取",
+                "所有者": "无法获取",
+                "组": "无法获取",
+                "文件类型": "目录" if os.path.isdir(file_path) else "文件",
+                "MD5": "不计算",
+                "SHA1": "不计算",
+                "SHA256": "不计算"
+            }
         
-        # 获取文件哈希值
-        md5 = self._get_file_hash(file_path, hashlib.md5)
-        sha1 = self._get_file_hash(file_path, hashlib.sha1)
-        sha256 = self._get_file_hash(file_path, hashlib.sha256)
-        
+        # 移除文件哈希计算，避免阻塞主线程
         return {
             "文件名": os.path.basename(file_path),
             "文件路径": file_path,
@@ -335,9 +331,9 @@ class FileInfoBrowser:
             "所有者": f"{stat.st_uid}",
             "组": f"{stat.st_gid}",
             "文件类型": "目录" if os.path.isdir(file_path) else "文件",
-            "MD5": md5,
-            "SHA1": sha1,
-            "SHA256": sha256
+            "MD5": "不计算",  # 移除文件哈希计算，避免阻塞
+            "SHA1": "不计算",  # 移除文件哈希计算，避免阻塞
+            "SHA256": "不计算"  # 移除文件哈希计算，避免阻塞
         }
     
     def _get_file_hash(self, file_path: str, hash_func) -> str:

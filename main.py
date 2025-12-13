@@ -393,14 +393,9 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 刷新当前目录的文件显示，确保选中状态正确
         if hasattr(self.file_selector_a, 'current_path'):
-            # 获取当前目录的文件列表
-            current_files = self.file_selector_a._get_files()
-            # 应用排序和筛选
-            current_files = self.file_selector_a._sort_files(current_files)
-            current_files = self.file_selector_a._filter_files(current_files)
-            # 重新创建文件卡片，确保选中状态正确
-            self.file_selector_a._clear_files_layout()
-            self.file_selector_a._create_file_cards(current_files)
+            # 调用refresh_files方法，使用异步方式刷新文件列表
+            # 这将确保文件选择器使用后台线程读取文件，避免阻塞主线程
+            self.file_selector_a.refresh_files()
     
     def show_info(self, title, message):
         """

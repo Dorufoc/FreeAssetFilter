@@ -25,11 +25,13 @@ from PyQt5.QtWidgets import (
 # 导入自定义按钮
 from src.widgets.custom_widgets import CustomButton
 from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QFont
 
 from src.core.file_info_browser import FileInfoBrowser
 from src.components.folder_content_list import FolderContentList
 from src.components.archive_browser import ArchiveBrowser
+from src.widgets.custom_widgets import CustomMessageBox, CustomProgressBar
 
 class UnifiedPreviewer(QWidget):
     """
@@ -59,6 +61,10 @@ class UnifiedPreviewer(QWidget):
         # 初始化当前预览组件
         self.current_preview_widget = None
         self.current_preview_type = None
+        
+        # 初始化进度条弹窗
+        self.progress_dialog = None
+        self.is_cancelled = False
         
         # 初始化UI
         self.init_ui()
@@ -123,47 +129,52 @@ class UnifiedPreviewer(QWidget):
         Args:
             file_info (dict): 文件信息字典
         """
+        # 生成带时间戳的debug信息
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
+        
+        debug(f"接收到file_selected信号，文件信息: {file_info}")
+        
         self.current_file_info = file_info
         
         # 更新文件信息查看器
+        debug("更新文件信息查看器")
         self.file_info_viewer.set_file(file_info)
         
         # 根据文件类型显示不同的预览内容
+        debug("调用_show_preview()显示预览")
         self._show_preview()
     
     def _show_preview(self):
         """
         根据文件类型显示预览内容，确保只有一个预览组件在工作
         """
+        # 生成带时间戳的debug信息
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
+        
+        debug("开始处理文件预览")
+        
         if not self.current_file_info:
             # 没有文件信息时，显示默认提示
+            debug("没有文件信息，显示默认提示")
             self._clear_preview()
             self.preview_layout.addWidget(self.default_label)
             self.default_label.show()
             self.open_with_system_button.hide()
             return
         
-        # 获取文件路径和类型
-        # print(f"[DEBUG] UnifiedPreviewer - 当前文件信息字典: {self.current_file_info}")
-        file_path = self.current_file_info["path"]
-        # 确保文件路径是绝对路径，并且格式正确
-        if file_path:
-            file_path = os.path.abspath(file_path)
-            # print(f"[DEBUG] UnifiedPreviewer - 转换为绝对路径: {file_path}")
-        file_type = self.current_file_info["suffix"]
-        # print(f"[DEBUG] UnifiedPreviewer - 提取的文件路径: {file_path}, 文件类型: {file_type}")
+        debug(f"获取文件信息: {self.current_file_info}")
         
-        # 检查文件是否存在
-        if not os.path.exists(file_path):
-            self._clear_preview()
-            error_label = QLabel(f"文件不存在: {self.current_file_info['name']}")
-            error_label.setAlignment(Qt.AlignCenter)
-            error_label.setStyleSheet("color: red; font-weight: bold;")
-            self.preview_layout.addWidget(error_label)
-            self.current_preview_widget = error_label
-            self.current_preview_type = "error"
-            self.open_with_system_button.hide()
-            return
+        # 获取文件路径和类型
+        file_path = self.current_file_info["path"]
+        file_type = self.current_file_info["suffix"]
+        
+        debug(f"提取的文件路径: {file_path}, 文件类型: {file_type}")
         
         # 确定预览类型
         preview_type = None
@@ -171,7 +182,7 @@ class UnifiedPreviewer(QWidget):
             preview_type = "dir"
         elif file_type in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]:
             preview_type = "image"
-        elif file_type in ["mp4", "avi", "mov", "mkv", "m4v", "flv", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb"]:
+        elif file_type in ["mp4", "avi", "mov", "mkv", "m4v", "flac", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb"]:
             preview_type = "video"
         elif file_type in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
             preview_type = "audio"
@@ -184,51 +195,72 @@ class UnifiedPreviewer(QWidget):
         else:
             preview_type = "unknown"
         
+        debug(f"确定预览类型: {preview_type}")
+        
         # 检查当前预览组件是否可以处理该类型
         # 如果预览类型相同，直接更新组件
         if preview_type == self.current_preview_type and self.current_preview_widget:
             # 更新现有组件
+            debug(f"预览类型相同，直接更新组件: {preview_type}")
             self._update_preview_widget(file_path, preview_type)
         else:
+            # 对于所有预览类型，都使用后台线程加载，确保UI响应
+            debug(f"预览类型不同，创建新组件: {preview_type}")
+            
+            # 显示进度条弹窗
+            title = "正在加载预览"
+            message = "正在准备预览组件..."
+            if preview_type == "video":
+                title = "正在加载视频"
+                message = "正在准备视频播放器..."
+                debug("显示视频加载进度条")
+            elif preview_type == "audio":
+                title = "正在加载音频"
+                message = "正在准备音频播放器..."
+                debug("显示音频加载进度条")
+            elif preview_type == "pdf":
+                title = "正在加载PDF"
+                message = "正在准备PDF阅读器..."
+                debug("显示PDF加载进度条")
+            elif preview_type == "archive":
+                title = "正在加载压缩包"
+                message = "正在准备压缩包浏览器..."
+                debug("显示压缩包加载进度条")
+            elif preview_type == "image":
+                title = "正在加载图片"
+                message = "正在准备图片查看器..."
+                debug("显示图片加载进度条")
+            elif preview_type == "text":
+                title = "正在加载文本"
+                message = "正在准备文本查看器..."
+                debug("显示文本加载进度条")
+            elif preview_type == "dir":
+                title = "正在加载文件夹"
+                message = "正在准备文件夹浏览器..."
+                debug("显示文件夹加载进度条")
+            
+            self._show_progress_dialog(title, message)
+            
             # 预览类型不同，清除当前组件，创建新组件
+            debug("清除当前预览组件")
             self._clear_preview()
             
-            # 根据预览类型显示新的预览组件
-            if preview_type == "dir":
-                # 文件夹预览
-                self.folder_previewer = FolderContentList()
-                self.folder_previewer.set_path(file_path)
-                self.preview_layout.addWidget(self.folder_previewer)
-                self.current_preview_widget = self.folder_previewer
-            elif preview_type == "image":
-                # 图片预览
-                self._show_image_preview(file_path)
-            elif preview_type == "video":
-                # 视频预览
-                self._show_video_preview(file_path)
-            elif preview_type == "audio":
-                # 音频预览
-                self._show_audio_preview(file_path)
-            elif preview_type == "pdf":
-                # PDF预览
-                self._show_pdf_preview(file_path)
-            elif preview_type == "text":
-                # 文本预览
-                self._show_text_preview(file_path)
-            elif preview_type == "archive":
-                # 压缩包预览
-                self.archive_browser = ArchiveBrowser()
-                self.archive_browser.set_archive_path(file_path)
-                self.preview_layout.addWidget(self.archive_browser)
-                self.current_preview_widget = self.archive_browser
-            else:
-                # 未知文件类型预览
-                unknown_label = QLabel("不支持预览")
-                unknown_label.setAlignment(Qt.AlignCenter)
-                self.preview_layout.addWidget(unknown_label)
-                self.current_preview_widget = unknown_label
+            # 创建后台加载线程
+            debug(f"创建后台加载线程，预览类型: {preview_type}, 文件路径: {file_path}")
+            self._preview_thread = self.PreviewLoaderThread(file_path, preview_type)
+            
+            # 连接线程信号
+            debug("连接线程信号")
+            self._preview_thread.preview_created.connect(self._on_preview_created)
+            self._preview_thread.preview_error.connect(self._on_preview_error)
+            self._preview_thread.preview_progress.connect(self._on_progress_updated)
+            
+            # 启动线程
+            debug("启动后台加载线程")
+            self._preview_thread.start()
             
             # 更新当前预览类型
+            debug(f"更新当前预览类型: {preview_type}")
             self.current_preview_type = preview_type
         
         # 显示"使用系统默认方式打开"按钮
@@ -314,23 +346,13 @@ class UnifiedPreviewer(QWidget):
     def _update_preview_widget(self, file_path, preview_type):
         """
         更新现有预览组件，确保组件状态正确刷新
+        移除了os.path.exists检查，避免网络文件阻塞主线程
         
         Args:
             file_path (str): 文件路径
             preview_type (str): 预览类型
         """
         if not self.current_preview_widget:
-            return
-        
-        # 先检查文件是否存在，避免无效文件路径导致的错误
-        if not os.path.exists(file_path):
-            error_label = QLabel(f"文件不存在: {os.path.basename(file_path)}")
-            error_label.setAlignment(Qt.AlignCenter)
-            error_label.setStyleSheet("color: red; font-weight: bold;")
-            self._clear_preview()
-            self.preview_layout.addWidget(error_label)
-            self.current_preview_widget = error_label
-            self.current_preview_type = "error"
             return
         
         try:
@@ -417,26 +439,24 @@ class UnifiedPreviewer(QWidget):
     def _show_video_preview(self, file_path):
         """
         显示视频预览
+        进度条已在_show_preview中显示并在_on_preview_created中关闭
         
         Args:
             file_path (str): 视频文件路径
         """
         try:
-            # print(f"[DEBUG] 统一预览器 - 开始视频预览，文件路径: {file_path}")
             # 尝试导入VideoPlayer组件（基于VLC的播放器）
             from src.components.video_player import VideoPlayer
             
-            # print(f"[DEBUG] 统一预览器 - 导入VideoPlayer组件成功")
             # 创建VideoPlayer视频播放器
             video_player = VideoPlayer()
-            # print(f"[DEBUG] 统一预览器 - 创建VideoPlayer实例成功")
+            
             # 加载视频文件
             video_player.load_media(file_path)
-            # print(f"[DEBUG] 统一预览器 - 调用VideoPlayer.load_media()方法成功")
             
+            # 添加到布局
             self.preview_layout.addWidget(video_player)
             self.current_preview_widget = video_player
-            # print(f"[DEBUG] 统一预览器 - 将VideoPlayer添加到预览布局成功")
         except Exception as e:
             import traceback
             # 打印详细错误信息到控制台
@@ -515,6 +535,7 @@ class UnifiedPreviewer(QWidget):
     def _show_audio_preview(self, file_path):
         """
         显示音频预览
+        进度条已在_show_preview中显示并在_on_preview_created中关闭
         
         Args:
             file_path (str): 音频文件路径
@@ -538,6 +559,7 @@ class UnifiedPreviewer(QWidget):
     def _show_pdf_preview(self, file_path):
         """
         显示PDF预览
+        进度条已在_show_preview中显示并在_on_preview_created中关闭
         
         Args:
             file_path (str): PDF文件路径
@@ -558,9 +580,263 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(error_label)
             self.current_preview_widget = error_label
     
+    def _show_progress_dialog(self, title, message):
+        """
+        显示进度条弹窗
+        
+        Args:
+            title (str): 弹窗标题
+            message (str): 弹窗消息
+        """
+        # 如果已经存在进度条弹窗，先关闭
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        
+        # 创建进度条
+        progress_bar = CustomProgressBar(is_interactive=False)
+        progress_bar.setRange(0, 100)
+        progress_bar.setValue(0)
+        
+        # 创建进度条弹窗
+        self.progress_dialog = CustomMessageBox(self)
+        self.progress_dialog.set_title(title)
+        self.progress_dialog.set_text(message)
+        self.progress_dialog.set_progress(progress_bar)
+        self.progress_dialog.set_buttons(["取消"], orientations=Qt.Horizontal)
+        
+        # 连接取消按钮信号
+        self.progress_dialog.buttonClicked.connect(self._on_cancel_progress)
+        
+        # 显示弹窗（非模态，允许主程序继续响应）
+        self.progress_dialog.show()
+    
+    def _on_progress_updated(self, progress, status):
+        """
+        更新进度条进度
+        
+        Args:
+            progress (int): 进度值(0-100)
+            status (str): 状态描述
+        """
+        if self.progress_dialog:
+            # 更新进度条值
+            progress_widget = self.progress_dialog._progress
+            if progress_widget:
+                progress_widget.setValue(progress)
+            # 更新状态文本
+            self.progress_dialog.set_text(status)
+    
+    def _on_cancel_progress(self, button_index):
+        """
+        取消文件读取操作
+        
+        Args:
+            button_index (int): 按钮索引
+        """
+        self.is_cancelled = True
+        # 关闭进度条弹窗
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        # 取消当前预览组件的文件读取操作
+        if self.current_preview_widget and hasattr(self.current_preview_widget, 'cancel_file_read'):
+            self.current_preview_widget.cancel_file_read()
+        # 取消后台加载线程
+        if hasattr(self, '_preview_thread') and self._preview_thread and self._preview_thread.isRunning():
+            self._preview_thread.cancel()
+            self._preview_thread.wait(1000)  # 等待1秒让线程结束
+        # 如果有模拟进度定时器，停止它
+        if hasattr(self, '_progress_timer') and self._progress_timer:
+            self._progress_timer.stop()
+            self._progress_timer.deleteLater()
+            delattr(self, '_progress_timer')
+    
+    def _on_file_read_finished(self):
+        """
+        文件读取完成，关闭进度条弹窗
+        """
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        # 如果有模拟进度定时器，停止它
+        if hasattr(self, '_progress_timer') and self._progress_timer:
+            self._progress_timer.stop()
+            self._progress_timer.deleteLater()
+            delattr(self, '_progress_timer')
+    
+    def _on_preview_created(self, preview_widget, preview_type):
+        """
+        预览准备完成，在主线程中创建预览组件并添加到布局中
+        
+        Args:
+            preview_widget: 预览组件实例（不再使用，改为在主线程创建）
+            preview_type (str): 预览类型
+        """
+        try:
+            # 关闭进度条弹窗
+            self._on_file_read_finished()
+            
+            # 获取文件路径
+            file_path = self.current_file_info["path"]
+            
+            # 在主线程中创建预览组件
+            created_widget = None
+            
+            if preview_type == "dir":
+                # 文件夹预览
+                from src.components.folder_content_list import FolderContentList
+                created_widget = FolderContentList()
+                created_widget.set_path(file_path)
+            elif preview_type == "image":
+                # 图片预览
+                self._show_image_preview(file_path)
+                return  # _show_image_preview已经处理了组件添加
+            elif preview_type == "video":
+                # 视频预览
+                self._show_video_preview(file_path)
+                return  # _show_video_preview已经处理了组件添加
+            elif preview_type == "audio":
+                # 音频预览
+                self._show_audio_preview(file_path)
+                return  # _show_audio_preview已经处理了组件添加
+            elif preview_type == "pdf":
+                # PDF预览
+                self._show_pdf_preview(file_path)
+                return  # _show_pdf_preview已经处理了组件添加
+            elif preview_type == "text":
+                # 文本预览
+                self._show_text_preview(file_path)
+                return  # _show_text_preview已经处理了组件添加
+            elif preview_type == "archive":
+                # 压缩包预览
+                from src.components.archive_browser import ArchiveBrowser
+                created_widget = ArchiveBrowser()
+                created_widget.set_archive_path(file_path)
+            
+            # 添加创建的组件到布局
+            if created_widget:
+                self.preview_layout.addWidget(created_widget)
+                self.current_preview_widget = created_widget
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            error_label = QLabel(f"创建预览组件失败: {str(e)}")
+            error_label.setAlignment(Qt.AlignCenter)
+            error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+            self.preview_layout.addWidget(error_label)
+            self.current_preview_widget = error_label
+            self.current_preview_type = "error"
+        
+        # 清理线程资源
+        if hasattr(self, '_preview_thread'):
+            self._preview_thread.deleteLater()
+            delattr(self, '_preview_thread')
+    
+    def _on_preview_error(self, error_message):
+        """
+        预览创建失败，显示错误信息
+        
+        Args:
+            error_message (str): 错误信息
+        """
+        # 关闭进度条弹窗
+        self._on_file_read_finished()
+        
+        # 显示错误信息
+        error_label = QLabel(f"预览失败: {error_message}")
+        error_label.setAlignment(Qt.AlignCenter)
+        error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+        self.preview_layout.addWidget(error_label)
+        self.current_preview_widget = error_label
+        self.current_preview_type = "error"
+        
+        # 清理线程资源
+        if hasattr(self, '_preview_thread'):
+            self._preview_thread.deleteLater()
+            delattr(self, '_preview_thread')
+    
+    class PreviewLoaderThread(QThread):
+        """
+        预览加载后台线程
+        用于在后台线程中创建预览组件和加载媒体文件，避免阻塞主线程
+        优化：避免在后台线程中创建UI组件，只处理媒体加载逻辑
+        """
+        # 信号定义
+        preview_created = pyqtSignal(object, str)  # 预览组件创建完成，参数：组件实例，预览类型
+        preview_error = pyqtSignal(str)  # 预览创建失败，参数：错误信息
+        preview_progress = pyqtSignal(int, str)  # 预览进度更新，参数：进度(0-100)，状态描述
+        
+        def __init__(self, file_path, preview_type, parent=None):
+            super().__init__(parent)
+            self.file_path = file_path
+            self.preview_type = preview_type
+            self.is_cancelled = False
+        
+        def run(self):
+            """
+            后台线程执行逻辑
+            注意：PyQt的UI组件必须在主线程中创建，所以我们只在后台线程中处理媒体加载
+            """
+            try:
+                self.preview_progress.emit(10, "正在准备预览...")
+                
+                # 注意：UI组件必须在主线程中创建，所以我们只在后台线程中处理非UI逻辑
+                # 实际的UI组件创建将在主线程中完成
+                
+                # 对于不同的预览类型，执行不同的预处理逻辑
+                if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir"]:
+                    # 模拟进度更新，确保UI能响应
+                    import time
+                    for i in range(20, 100, 10):
+                        if self.is_cancelled:
+                            self.preview_error.emit("预览已取消")
+                            return
+                        self.preview_progress.emit(i, f"正在加载{self.preview_type}文件...")
+                        # 短暂休眠，让主线程有机会处理事件
+                        time.sleep(0.1)
+                    
+                    # 标记预览准备完成
+                    self.preview_progress.emit(100, f"{self.preview_type}文件准备完成")
+                    
+                    # 发送信号，通知主线程创建预览组件
+                    # 注意：我们不在后台线程中创建UI组件，而是让主线程创建
+                    self.preview_created.emit(None, self.preview_type)
+                else:
+                    self.preview_error.emit("不支持的预览类型")
+                    
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.preview_error.emit(str(e))
+        
+        def cancel(self):
+            """
+            取消预览加载
+            """
+            self.is_cancelled = True
+    
+    def _simulate_video_progress(self):
+        """
+        模拟视频加载进度，当视频播放器没有进度信号时使用
+        """
+        if not hasattr(self, '_progress'):
+            self._progress = 0
+        
+        # 每次更新增加5%的进度，直到95%
+        self._progress += 5
+        if self._progress >= 95:
+            self._progress = 95
+            # 不再增加，等待实际加载完成
+        
+        # 更新进度条
+        self._on_progress_updated(self._progress, f"正在加载视频... {self._progress}%")
+    
     def _show_text_preview(self, file_path):
         """
         显示文本预览
+        进度条已在_show_preview中显示并在_on_preview_created中关闭
         
         Args:
             file_path (str): 文本文件路径
@@ -571,6 +847,8 @@ class UnifiedPreviewer(QWidget):
             
             # 创建文本预览器
             text_previewer = TextPreviewer()
+            
+            # 设置文件，开始异步读取
             text_previewer.set_file(file_path)
             
             self.preview_layout.addWidget(text_previewer)

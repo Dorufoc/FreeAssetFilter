@@ -1,4 +1,5 @@
 PyQt5>=5.15.0
+PyQtWebEngine>=5.15.0
 chardet>=5.0.0
 mutagen>=1.46.0
 Pillow>=10.0.0
