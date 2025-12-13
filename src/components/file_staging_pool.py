@@ -580,13 +580,35 @@ class FileStagingPool(QWidget):
                 warning_msg.exec_()
                 return
         
-        # 显示进度条
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setMaximum(len(all_files))
-        self.progress_bar.setValue(0)
+        # 创建带进度条的自定义提示窗口
+        progress_msg_box = CustomMessageBox(self)
+        progress_msg_box.set_title("导出进度")
+        progress_msg_box.set_text("正在导出文件，请稍候...")
+        
+        # 创建并配置进度条
+        export_progress_bar = CustomProgressBar()
+        export_progress_bar.setInteractive(False)  # 禁用交互
+        export_progress_bar.setRange(0, len(all_files))
+        export_progress_bar.setValue(0)
+        
+        # 设置进度条到提示窗口
+        progress_msg_box.set_progress(export_progress_bar)
+        
+        # 设置取消按钮，但暂时不连接槽函数（需要处理线程终止）
+        progress_msg_box.set_buttons(["取消"], Qt.Horizontal, ["normal"])
+        
+        # 保存引用以便在进度更新和完成时访问
+        self.current_progress_msg_box = progress_msg_box
+        self.current_export_progress_bar = export_progress_bar
+        
+        # 连接进度更新信号到新的进度条
+        self.update_progress.connect(self.on_update_export_progress)
         
         # 开始复制文件
         self.copy_files(all_files, target_dir)
+        
+        # 显示提示窗口
+        progress_msg_box.exec_()
     
     def on_update_progress(self, value):
         """
@@ -597,6 +619,16 @@ class FileStagingPool(QWidget):
         """
         self.progress_bar.setValue(value)
     
+    def on_update_export_progress(self, value):
+        """
+        更新导出提示框中的进度条
+        
+        Args:
+            value (int): 进度值
+        """
+        if hasattr(self, 'current_export_progress_bar'):
+            self.current_export_progress_bar.setValue(value)
+    
     def on_export_finished(self, success_count, error_count, errors):
         """
         处理导出完成
@@ -606,8 +638,15 @@ class FileStagingPool(QWidget):
             error_count (int): 失败的文件数
             errors (list): 错误信息列表
         """
-        # 隐藏进度条
-        self.progress_bar.setVisible(False)
+        # 断开进度更新信号的连接
+        self.update_progress.disconnect(self.on_update_export_progress)
+        
+        # 关闭进度提示窗口
+        if hasattr(self, 'current_progress_msg_box'):
+            self.current_progress_msg_box.close()
+            # 清理引用
+            delattr(self, 'current_progress_msg_box')
+            delattr(self, 'current_export_progress_bar')
         
         # 显示导出结果
         result_msg = CustomMessageBox(self)
