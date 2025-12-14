@@ -39,9 +39,9 @@ class VideoFrameRenderer(QWidget):
         """
         super().__init__(parent)
         
-        # 设置窗口属性
-        self.setWindowTitle("Video Frame Renderer")
-        self.setMinimumSize(400, 300)
+        # 作为子组件，不设置窗口标题，最小尺寸由父容器控制
+        # 移除窗口属性，避免作为独立窗口弹出
+        self.setMinimumSize(0, 0)  # 允许父容器自由调整尺寸
         
         # 当前显示的图像
         self._current_pixmap = QPixmap()

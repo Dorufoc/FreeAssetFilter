@@ -866,9 +866,9 @@ class VideoPlayer(QWidget):
         self.player_core = None
         self._user_interacting = False
         
-        # 设置窗口属性
-        self.setWindowTitle("Video Player")
-        self.setMinimumSize(400, 300)
+        # 作为子组件，不设置窗口标题和最小尺寸，而是由父容器控制
+        # 移除窗口属性，避免作为独立窗口弹出
+        self.setStyleSheet("background-color: transparent;")
         
         # 初始化所有属性
         self.init_attributes()
@@ -1298,9 +1298,14 @@ class VideoPlayer(QWidget):
     def _connect_ff_signals(self):
         """
         连接FF内核的信号到统一的处理函数
+        添加异常处理，确保FFmpeg错误不会影响整个播放器
         """
-        # 连接FF内核的帧可用信号
-        self.player_core.frame_available.connect(self._video_renderer.render_frame)
+        try:
+            # 连接FF内核的帧可用信号
+            self.player_core.frame_available.connect(self._video_renderer.render_frame)
+        except Exception as e:
+            print(f"[VideoPlayer] 警告: 连接FFmpeg信号失败 - {e}")
+            # 忽略FFmpeg信号连接错误，确保程序继续运行
     
     def load_media(self, file_path):
         """
@@ -1505,21 +1510,39 @@ class VideoPlayer(QWidget):
         self._current_player = engine_id
         
         # 初始化新的播放器内核
-        self.player_core = self._player_engines[engine_id]()
-        
-        # 连接信号
-        self._connect_core_signals()
-        
-        # 更新按钮显示
-        self.player_switch_button.setText(engine_name)
-        
-        # 恢复播放状态
-        if current_file:
-            # 根据不同内核调用不同的方法
-            if engine_id == 'vlc':
-                success = self.player_core.set_media(current_file)
-            else:  # 'ff'
-                success = self.player_core.load_media(current_file)
+        try:
+            self.player_core = self._player_engines[engine_id]()
+            
+            # 连接信号
+            self._connect_core_signals()
+            
+            # 更新按钮显示
+            self.player_switch_button.setText(engine_name)
+            
+            # 恢复播放状态
+            if current_file:
+                # 根据不同内核调用不同的方法
+                if engine_id == 'vlc':
+                    success = self.player_core.set_media(current_file)
+                else:  # 'ff'
+                    try:
+                        success = self.player_core.load_media(current_file)
+                    except Exception as e:
+                        print(f"[VideoPlayer] 警告: FFmpeg加载媒体失败 - {e}")
+                        success = False
+            
+            if success:
+                # 对于视频文件，需要重新绑定窗口
+                if self._current_file_path:
+                    ext = os.path.splitext(self._current_file_path)[1].lower()
+                    if ext in self.player_core.SUPPORTED_VIDEO_FORMATS:
+                        # 重新绑定VLC播放器到窗口
+                        if engine_id == 'vlc':
+                            try:
+                                window_id = self._video_renderer.winId()
+                                self.player_core.set_window(window_id)
+                            except Exception as e:
+                                print(f"[VideoPlayer] 切换后绑定VLC窗口失败: {e}")
             
             if success:
                 if current_position > 0:
@@ -1527,6 +1550,24 @@ class VideoPlayer(QWidget):
                 if was_playing:
                     self.player_core.play()
                     self._update_play_button_icon()
+        except Exception as e:
+            print(f"[VideoPlayer] 警告: 初始化{engine_name}播放器失败 - {e}")
+            # 如果是FFmpeg播放器失败，回退到VLC
+            if engine_id == 'ff':
+                print(f"[VideoPlayer] 回退到VLC播放器")
+                self._current_player = 'vlc'
+                self.player_core = PlayerCore()
+                self._connect_core_signals()
+                self.player_switch_button.setText("VLC")
+                # 恢复VLC播放状态
+                if current_file:
+                    success = self.player_core.set_media(current_file)
+                    if success:
+                        if current_position > 0:
+                            self.player_core.set_position(current_position)
+                        if was_playing:
+                            self.player_core.play()
+                            self._update_play_button_icon()
         
         # 隐藏菜单
         self.hide_player_switch_menu()
@@ -1604,6 +1645,13 @@ class VideoPlayer(QWidget):
         """
         # 更新倍速按钮显示
         self.speed_button.setText(f"{speed}x")
+        
+        # 设置播放器核心的播放速度
+        if self.player_core:
+            self.player_core.set_speed(speed)
+        
+        # 更新当前速度记录
+        self._current_speed = speed
         
         # 隐藏菜单 - QMenu会自动处理关闭，这里只需要更新状态
         self.is_speed_menu_visible = False
@@ -1824,6 +1872,10 @@ class VideoPlayer(QWidget):
         # 更新当前音量值
         self._current_volume = value
         
+        # 设置播放器核心的音量
+        if self.player_core:
+            self.player_core.set_volume(value)
+        
         # 保存当前音量作为静音前的音量
         if not self._is_muted:
             self._previous_volume = value
@@ -1972,9 +2024,27 @@ class VideoPlayer(QWidget):
             self.time_label.setText("00:00 / 00:00")
             
             # 尝试设置媒体
-            debug("调用player_core.set_media()设置媒体")
-            media_set = self.player_core.set_media(file_path)
-            debug(f"设置媒体结果: {media_set}")
+            debug("调用player_core.load_media()加载媒体")
+            try:
+                media_set = self.player_core.load_media(file_path)
+                debug(f"设置媒体结果: {media_set}")
+            except Exception as e:
+                debug(f"设置媒体失败: {e}")
+                media_set = False
+                # 如果是FFmpeg播放器失败，尝试回退到VLC
+                if self._current_player == 'ff':
+                    debug("FFmpeg加载媒体失败，尝试切换到VLC播放器")
+                    try:
+                        self.player_core = PlayerCore()
+                        self._current_player = 'vlc'
+                        self.player_switch_button.setText("VLC")
+                        self._connect_core_signals()
+                        # 重新尝试加载媒体
+                        media_set = self.player_core.set_media(file_path)
+                        debug(f"VLC回退加载媒体结果: {media_set}")
+                    except Exception as fallback_e:
+                        debug(f"VLC回退也失败: {fallback_e}")
+                        media_set = False
             
             if media_set:
                 # 获取文件扩展名，判断文件类型
@@ -1989,14 +2059,26 @@ class VideoPlayer(QWidget):
                     # 视频文件：显示视频帧，隐藏音频界面
                     self.video_frame.show()
                     self.audio_stacked_widget.hide()
-                    # 设置视频输出窗口
-                    self.player_core.set_window(self.video_frame.winId())
+                    
+                    # 根据不同播放器内核设置视频输出窗口
+                    if self._current_player == 'vlc':
+                        # VLC播放器需要绑定窗口句柄
+                        try:
+                            # 获取视频渲染器的窗口句柄
+                            window_id = self._video_renderer.winId()
+                            # 绑定VLC播放器到窗口
+                            self.player_core.set_window(window_id)
+                            debug(f"绑定VLC播放器到窗口: {window_id}")
+                        except Exception as e:
+                            debug(f"绑定VLC窗口失败: {e}")
+                    else:  # FF播放器使用信号机制，不需要直接绑定窗口
+                        debug("FF播放器使用信号机制渲染视频")
+                    
                 elif is_audio:
                     # 音频文件：隐藏视频帧，显示音频界面
                     self.video_frame.hide()
                     self.audio_stacked_widget.show()
-                    # 清除视频输出窗口
-                    self.player_core.clear_window()
+                    
                     
                     # 注意：暂时移除音频封面提取，避免网络文件阻塞主线程
                     # cover_pixmap = self.extract_cover_art(file_path)
@@ -2252,6 +2334,10 @@ class VideoPlayer(QWidget):
                 # 6. 更新音量菜单中的标签
                 if self.volume_menu_label:
                     self.volume_menu_label.setText("0%")
+            
+            # 设置播放器核心的音量
+            if self.player_core:
+                self.player_core.set_volume(self._current_volume)
             
             # 更新音量图标
             self.update_volume_icon()
