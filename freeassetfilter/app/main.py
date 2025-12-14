@@ -23,6 +23,7 @@ FreeAssetFilter 主程序
 
 import sys
 import os
+from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 
 # 添加父目录到Python路径，确保包能被正确导入
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -83,11 +84,13 @@ class FreeAssetFilterApp(QMainWindow):
         主窗口关闭事件，确保保存文件选择器的当前路径和文件存储池状态
         """
         # 保存文件选择器A的当前路径
+        last_path = 'All'
         if hasattr(self, 'file_selector_a'):
             self.file_selector_a.save_current_path()
-        # 保存文件存储池状态
+            last_path = self.file_selector_a.current_path
+        # 保存文件存储池状态，传递文件选择器的当前路径
         if hasattr(self, 'file_staging_pool'):
-            self.file_staging_pool.save_backup()
+            self.file_staging_pool.save_backup(last_path)
         # 调用父类的closeEvent
         super().closeEvent(event)
     
@@ -322,14 +325,15 @@ class FreeAssetFilterApp(QMainWindow):
     
     def check_and_restore_backup(self):
         """
-        检查是否存在备份文件，并询问用户是否要恢复上次的文件列表
+        检查是否存在备份文件，并询问用户是否要恢复上次的文件列表和文件选择器目录
         """
         from PyQt5.QtWidgets import QMessageBox
         import os
         import json
         
         # 备份文件路径
-        backup_file = os.path.join(os.path.dirname(__file__), 'data', 'staging_pool_backup.json')
+        backup_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'staging_pool_backup.json')
+        print(f"[DEBUG] 检查备份文件路径: {backup_file}")
         
         # 检查备份文件是否存在
         if os.path.exists(backup_file):
@@ -337,11 +341,15 @@ class FreeAssetFilterApp(QMainWindow):
             with open(backup_file, 'r', encoding='utf-8') as f:
                 backup_data = json.load(f)
             
-            if backup_data:
+            # 检查备份数据格式和内容
+            items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
+            selector_state = backup_data.get('selector_state', {}) if isinstance(backup_data, dict) else {}
+            
+            if items:
                 # 询问用户是否恢复
                 reply = QMessageBox.question(
-                    self, "恢复文件列表", 
-                    f"检测到上次有 {len(backup_data)} 个文件在文件存储池中，是否要恢复？",
+                    self, "恢复文件列表和目录", 
+                    f"检测到上次有 {len(items)} 个文件在文件存储池中，是否要恢复文件列表和上次打开的目录？",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No
                 )
                 
@@ -350,18 +358,22 @@ class FreeAssetFilterApp(QMainWindow):
     
     def restore_backup(self, backup_data):
         """
-        从备份数据恢复文件列表，包含文件存在性校验
+        从备份数据恢复文件列表和文件选择器目录，包含文件存在性校验
         
         Args:
-            backup_data (list): 备份的文件列表数据
+            backup_data (dict or list): 备份数据，可以是包含items和selector_state的字典，或旧格式的文件列表
         """
         import os
+        
+        # 处理不同格式的备份数据
+        items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
+        selector_state = backup_data.get('selector_state', {}) if isinstance(backup_data, dict) else {}
         
         # 恢复文件到存储池，并检查文件是否存在
         success_count = 0
         unlinked_files = []
         
-        for file_info in backup_data:
+        for file_info in items:
             # 检查文件是否存在
             if os.path.exists(file_info["path"]):
                 # 添加到文件存储池
@@ -392,16 +404,18 @@ class FreeAssetFilterApp(QMainWindow):
         if unlinked_files:
             self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
         
-        # 更新文件选择器的选中文件计数
-        #current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
-        #total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
-        #self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
-        
-        # 刷新当前目录的文件显示，确保选中状态正确
-        if hasattr(self.file_selector_a, 'current_path'):
-            # 调用refresh_files方法，使用异步方式刷新文件列表
-            # 这将确保文件选择器使用后台线程读取文件，避免阻塞主线程
+        # 恢复文件选择器的目录
+        last_path = selector_state.get('last_path', 'All')
+        if last_path and (last_path == 'All' or os.path.exists(last_path)):
+            self.file_selector_a.current_path = last_path
+            # 刷新文件列表，显示恢复的目录内容
             self.file_selector_a.refresh_files()
+        else:
+            # 如果恢复的目录不存在，刷新当前目录的文件显示，确保选中状态正确
+            if hasattr(self.file_selector_a, 'current_path'):
+                # 调用refresh_files方法，使用异步方式刷新文件列表
+                # 这将确保文件选择器使用后台线程读取文件，避免阻塞主线程
+                self.file_selector_a.refresh_files()
     
     def show_info(self, title, message):
         """
@@ -432,7 +446,7 @@ def main():
     app = QApplication(sys.argv)
     
     # 设置应用程序图标，用于任务栏显示
-    icon_path = os.path.join(os.path.dirname(__file__), '../icons', 'FAF-main.ico')
+    icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
     app.setWindowIcon(QIcon(icon_path))
     
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
