@@ -331,7 +331,7 @@ class CustomVolumeBar(QWidget):
         
         # SVG 图标路径 - 只使用进度条按钮.svg
         import os
-        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Icon')
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
         self._progress_button_icon = os.path.join(icon_dir, '进度条按钮.svg')
         
         # 渲染 SVG 图标为 QPixmap
@@ -550,7 +550,7 @@ class CustomValueBar(QWidget):
         
         # SVG 图标路径 - 只使用进度条按钮.svg
         import os
-        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Icon')
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
         self._progress_button_icon = os.path.join(icon_dir, '进度条按钮.svg')
         
         # 渲染 SVG 图标为 QPixmap
@@ -1324,6 +1324,9 @@ class VideoPlayer(QWidget):
                 return success
             except Exception as e:
                 print(f"加载媒体时出错: {e}")
+                # 打印详细错误信息
+                import traceback
+                traceback.print_exc()
         return False
     
     def eventFilter(self, obj, event):
