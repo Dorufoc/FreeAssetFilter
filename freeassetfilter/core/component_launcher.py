@@ -45,47 +45,47 @@ class ComponentLauncher(QMainWindow):
         self.components = [
             {
                 "name": "主应用程序",
-                "command": [sys.executable, "main.py"],
+                "command": [sys.executable, "freeassetfilter/app/main.py"],
                 "description": "主应用程序，包含完整的文件管理和预览功能"
             },
             {
                 "name": "自定义控件演示",
-                "command": [sys.executable, "demo_custom_widgets.py"],
+                "command": [sys.executable, "freeassetfilter/app/demo_custom_widgets.py"],
                 "description": "演示自定义窗口和按钮控件的使用，展示纯白圆角矩形外观和右上角圆形关闭按钮"
             },
             {
                 "name": "照片查看器",
-                "command": [sys.executable, "src/components/photo_viewer.py"],
+                "command": [sys.executable, "freeassetfilter/components/photo_viewer.py"],
                 "description": "照片查看器组件，实现缩放/自适应/拖动/右键菜单功能"
             },
             {
                 "name": "视频播放器",
-                "command": [sys.executable, "src/components/video_player.py"],
+                "command": [sys.executable, "freeassetfilter/components/video_player.py"],
                 "description": "视频播放器组件，支持播放/暂停/音量控制"
             },
             {
                 "name": "PDF预览器",
-                "command": [sys.executable, "src/components/pdf_previewer.py"],
+                "command": [sys.executable, "freeassetfilter/components/pdf_previewer.py"],
                 "description": "PDF预览器组件，支持PDF文件实时浏览渲染"
             },
             {
                 "name": "文本预览器",
-                "command": [sys.executable, "src/components/text_previewer.py"],
+                "command": [sys.executable, "freeassetfilter/components/text_previewer.py"],
                 "description": "文本预览器组件，支持Markdown渲染和代码语法高亮"
             },
             {
                 "name": "统一文件预览器",
-                "command": [sys.executable, "src/components/unified_previewer.py"],
+                "command": [sys.executable, "freeassetfilter/components/unified_previewer.py"],
                 "description": "统一文件预览器，根据文件类型动态调用对应预览组件"
             },
             {
                 "name": "中文日志测试",
-                "command": [sys.executable, "test_chinese_log.py"],
+                "command": [sys.executable, "freeassetfilter/app/test_chinese_log.py"],
                 "description": "测试中文日志输出是否正常"
             },
             {
                 "name": "数值控制条演示",
-                "command": [sys.executable, "demo_custom_value_bar.py"],
+                "command": [sys.executable, "freeassetfilter/app/demo_custom_value_bar.py"],
                 "description": "演示新创建的数值控制条组件，复用可交互进度条逻辑，滑块图标替换为进度条按钮"
             }
         ]
