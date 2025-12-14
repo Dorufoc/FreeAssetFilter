@@ -40,6 +40,7 @@ from PIL import Image
 import io
 
 from freeassetfilter.core.player_core import PlayerCore
+from freeassetfilter.core.ffplayer_core import FFPlayerCore
 
 
 class CustomProgressBar(QWidget):
@@ -193,19 +194,12 @@ class CustomProgressBar(QWidget):
         # 使用条顶中 SVG 图形填充已播放部分
         if progress_width > 0:
             try:
-                from PyQt5.QtSvg import QSvgRenderer
                 from PyQt5.QtGui import QPixmap, QTransform
                 from PyQt5.QtCore import Qt
                 
-                # 先渲染 SVG 到临时 QPixmap
-                svg_renderer = QSvgRenderer(self._middle_icon_path)
-                # 使用与头和尾相同的尺寸
+                # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap
                 icon_size = self._handle_radius * 2
-                temp_pixmap = QPixmap(icon_size, icon_size)
-                temp_pixmap.fill(Qt.transparent)
-                painter_temp = QPainter(temp_pixmap)
-                svg_renderer.render(painter_temp)
-                painter_temp.end()
+                temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size)
                 
                 # 将临时 pixmap 旋转 90 度
                 transform = QTransform()
@@ -889,6 +883,12 @@ class VideoPlayer(QWidget):
         self.timer = QTimer(self)
         self.timer.setInterval(500)  # 500ms更新一次，减少UI更新频率，提高流畅度
         self.timer.timeout.connect(self.update_progress)
+        
+        # 连接内核信号到适配层
+        self._connect_core_signals()
+        
+        # 初始化定时器
+        self.timer.start()
     
     def init_attributes(self):
         """
@@ -918,6 +918,12 @@ class VideoPlayer(QWidget):
         self.is_speed_menu_visible = False
         self.speed_menu_timer = None  # 菜单关闭定时器
         
+        # 播放器内核切换组件
+        self.player_switch_button = QPushButton("VLC")
+        self.player_switch_menu = None
+        self.is_player_switch_menu_visible = False
+        self.player_switch_menu_timer = None
+        
         # 音量菜单组件
         self.volume_menu = None  # 音量菜单
         self.is_volume_menu_visible = False
@@ -930,9 +936,28 @@ class VideoPlayer(QWidget):
         self.player_core = None
         self.timer = None
         
+        # 播放器内核相关属性
+        self._current_player = 'vlc'  # 当前播放器内核：'vlc' 或 'ff'
+        self._player_engines = {
+            'vlc': PlayerCore,
+            'ff': FFPlayerCore
+        }
+        self._current_file_path = ""  # 当前播放的文件路径
+        self._current_speed = 1.0  # 当前播放速度
+        
         # 音量控制相关属性
         self._is_muted = False  # 静音状态
         self._previous_volume = 50  # 静音前的音量值
+        self._current_volume = 50  # 当前音量值
+        
+        # 内核适配层相关
+        self._core_signal_adapters = {
+            'vlc': self._connect_vlc_signals,
+            'ff': self._connect_ff_signals
+        }
+        
+        # 视频渲染相关
+        self._video_renderer = None
     
     def init_ui(self):
         """
@@ -950,6 +975,14 @@ class VideoPlayer(QWidget):
         # 视频显示区域设置
         self.video_frame.setStyleSheet("background-color: transparent;")
         self.video_frame.setMinimumSize(400, 300)
+        
+        # 添加视频渲染器
+        from freeassetfilter.core.video_frame_renderer import VideoFrameRenderer
+        self._video_renderer = VideoFrameRenderer()
+        video_layout = QVBoxLayout(self.video_frame)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setSpacing(0)
+        video_layout.addWidget(self._video_renderer)
         
         # 音频显示区域设置
         audio_layout = QVBoxLayout(self.audio_stacked_widget)
@@ -1137,9 +1170,7 @@ class VideoPlayer(QWidget):
         # 加载保存的音量设置
         saved_volume = self.load_volume_setting()
         # 设置初始音量
-        if self.player_core:
-            self.player_core.set_volume(saved_volume)
-        # 保存当前音量作为静音前的初始音量
+        self._current_volume = saved_volume
         self._previous_volume = saved_volume
         
         # 初始化音量菜单
@@ -1166,6 +1197,31 @@ class VideoPlayer(QWidget):
         self.speed_button.enterEvent = self.show_speed_menu
         self.speed_button.leaveEvent = lambda event: self._handle_speed_button_leave(event)
         bottom_layout.addWidget(self.speed_button)
+        
+        # 添加播放器内核切换按钮
+        self.player_switch_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FFFFFF;
+                color: #000000;
+                border: 1px solid #FFFFFF;
+                padding: 5px 10px;
+                border-radius: 5px;
+                min-width: 60px;
+                max-width: 60px;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #f0f0f0;
+            }
+        """)
+        # 设置鼠标悬停显示播放器切换菜单
+        self.player_switch_button.enterEvent = self.show_player_switch_menu
+        self.player_switch_button.leaveEvent = lambda event: self._handle_player_switch_button_leave(event)
+        bottom_layout.addWidget(self.player_switch_button)
+        
+        # 初始化播放器切换菜单
+        self._init_player_switch_menu()
         
         # 将水平布局添加到垂直布局中
         progress_time_layout.addLayout(bottom_layout)
@@ -1212,6 +1268,12 @@ class VideoPlayer(QWidget):
         # 为菜单添加事件过滤器，用于监听enter和leave事件
         self.speed_menu.installEventFilter(self)
         
+        # 初始化播放器切换菜单关闭定时器
+        self.player_switch_menu_timer = QTimer(self)
+        self.player_switch_menu_timer.setInterval(300)  # 300毫秒延迟
+        self.player_switch_menu_timer.setSingleShot(True)  # 单次触发
+        self.player_switch_menu_timer.timeout.connect(self.hide_player_switch_menu)
+        
         # 设置主窗口样式 - 根据Figma设计稿更新大圆角
         self.setStyleSheet("""
             background-color: #1a1a1a;
@@ -1219,6 +1281,51 @@ class VideoPlayer(QWidget):
         """)
         
         
+    def _connect_core_signals(self):
+        """
+        根据当前内核类型连接相应的信号
+        """
+        if self._current_player in self._core_signal_adapters:
+            self._core_signal_adapters[self._current_player]()
+    
+    def _connect_vlc_signals(self):
+        """
+        连接VLC内核的信号到统一的处理函数
+        """
+        # VLC内核不需要额外的信号连接，使用定时器轮询
+        pass
+    
+    def _connect_ff_signals(self):
+        """
+        连接FF内核的信号到统一的处理函数
+        """
+        # 连接FF内核的帧可用信号
+        self.player_core.frame_available.connect(self._video_renderer.render_frame)
+    
+    def load_media(self, file_path):
+        """
+        加载媒体文件
+        
+        Args:
+            file_path (str): 媒体文件路径
+        """
+        self._current_file_path = file_path
+        if self.player_core:
+            try:
+                # 根据当前内核类型调用相应的方法
+                if self._current_player == 'vlc':
+                    success = self.player_core.set_media(file_path)
+                else:  # 'ff'
+                    success = self.player_core.load_media(file_path)
+                
+                if success:
+                    self.player_core.play()
+                    self._update_play_button_icon()
+                return success
+            except Exception as e:
+                print(f"加载媒体时出错: {e}")
+        return False
+    
     def eventFilter(self, obj, event):
         """
         事件过滤器，用于监听菜单的enter和leave事件
@@ -1250,7 +1357,176 @@ class VideoPlayer(QWidget):
                 # 鼠标离开音量菜单，只有当鼠标不在音量按钮上时才启动定时器
                 if self.volume_menu_timer and self.is_volume_menu_visible and not self._is_mouse_over_volume_button():
                     self.volume_menu_timer.start()
+        elif obj == self.player_switch_menu:
+            if event.type() == QEvent.Enter:
+                # 鼠标进入播放器切换菜单，停止定时器
+                if self.player_switch_menu_timer:
+                    self.player_switch_menu_timer.stop()
+            elif event.type() == QEvent.Leave:
+                # 鼠标离开菜单，只有当鼠标不在播放器切换按钮上时才启动定时器
+                if self.player_switch_menu_timer and self.is_player_switch_menu_visible and not self._is_mouse_over_player_switch_button():
+                    self.player_switch_menu_timer.start()
         return False
+    
+    def _init_player_switch_menu(self):
+        """
+        初始化播放器切换菜单
+        """
+        from PyQt5.QtWidgets import QMenu
+        
+        self.player_switch_menu = QMenu(self)
+        self.player_switch_menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 5px;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                font-size: 16px;
+            }
+            QMenu::item {
+                padding: 8px 12px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #0078d4;
+                color: white;
+            }
+        """)
+        
+        # 添加播放器内核选项
+        engines = {
+            'vlc': 'VLC',
+            'ff': 'FF Player'
+        }
+        
+        for engine_id, engine_name in engines.items():
+            action = self.player_switch_menu.addAction(engine_name)
+            action.triggered.connect(lambda checked, eid=engine_id, ename=engine_name: self.switch_player_engine(eid, ename))
+        
+        # 为菜单添加事件过滤器
+        self.player_switch_menu.installEventFilter(self)
+    
+    def show_player_switch_menu(self, event=None):
+        """
+        显示播放器切换菜单
+        
+        Args:
+            event: PyQt事件对象，可选
+        """
+        # 停止任何现有的定时器
+        if self.player_switch_menu_timer:
+            self.player_switch_menu_timer.stop()
+        
+        # 获取播放器切换按钮的位置
+        button_pos = self.player_switch_button.mapToGlobal(self.player_switch_button.rect().topLeft())
+        
+        # 使用QMenu的popup方法显示菜单
+        menu_height = 2 * 35 + 10  # 2个选项，每个35px，加上10px内边距
+        menu_y = button_pos.y() - menu_height - 5
+        menu_pos = button_pos
+        menu_pos.setY(menu_y)
+        self.player_switch_menu.popup(menu_pos)
+        self.is_player_switch_menu_visible = True
+    
+    def hide_player_switch_menu(self, event=None):
+        """
+        隐藏播放器切换菜单
+        
+        Args:
+            event: PyQt事件对象，可选
+        """
+        # 停止定时器
+        if self.player_switch_menu_timer:
+            self.player_switch_menu_timer.stop()
+        
+        # 关闭菜单
+        self.player_switch_menu.close()
+        self.is_player_switch_menu_visible = False
+    
+    def _is_mouse_over_player_switch_button(self):
+        """
+        检查鼠标是否在播放器切换按钮上
+        
+        Returns:
+            bool: 鼠标是否在播放器切换按钮上
+        """
+        from PyQt5.QtGui import QCursor
+        
+        # 获取鼠标全局位置
+        global_pos = QCursor.pos()
+        # 转换为相对于播放器切换按钮的位置
+        local_pos = self.player_switch_button.mapFromGlobal(global_pos)
+        # 检查是否在按钮范围内
+        return self.player_switch_button.rect().contains(local_pos)
+    
+    def _handle_player_switch_button_leave(self, event):
+        """
+        处理播放器切换按钮的鼠标离开事件
+        启动定时器，300毫秒后关闭菜单
+        
+        Args:
+            event: PyQt事件对象
+        """
+        # 只有当鼠标不在播放器切换菜单上时才启动定时器
+        if self.player_switch_menu_timer and self.is_player_switch_menu_visible and not self._is_mouse_over_player_switch_button():
+            self.player_switch_menu_timer.start()
+    
+    def switch_player_engine(self, engine_id, engine_name):
+        """
+        切换播放器内核
+        
+        Args:
+            engine_id (str): 播放器内核ID ('vlc' 或 'ff')
+            engine_name (str): 播放器内核名称
+        """
+        if self._current_player == engine_id:
+            # 已经是当前内核，不需要切换
+            self.hide_player_switch_menu()
+            return
+        
+        # 保存当前播放状态
+        current_file = self._current_file_path
+        current_position = 0
+        was_playing = False
+        
+        if self.player_core and current_file:
+            was_playing = self.player_core.is_playing
+            current_position = self.player_core.position
+        
+        # 停止当前播放器
+        if self.player_core:
+            self.player_core.stop()
+        
+        # 更新当前播放器内核
+        self._current_player = engine_id
+        
+        # 初始化新的播放器内核
+        self.player_core = self._player_engines[engine_id]()
+        
+        # 连接信号
+        self._connect_core_signals()
+        
+        # 更新按钮显示
+        self.player_switch_button.setText(engine_name)
+        
+        # 恢复播放状态
+        if current_file:
+            # 根据不同内核调用不同的方法
+            if engine_id == 'vlc':
+                success = self.player_core.set_media(current_file)
+            else:  # 'ff'
+                success = self.player_core.load_media(current_file)
+            
+            if success:
+                if current_position > 0:
+                    self.player_core.set_position(current_position)
+                if was_playing:
+                    self.player_core.play()
+                    self._update_play_button_icon()
+        
+        # 隐藏菜单
+        self.hide_player_switch_menu()
     
     def show_speed_menu(self, event=None):
         """
@@ -1325,10 +1601,6 @@ class VideoPlayer(QWidget):
         """
         # 更新倍速按钮显示
         self.speed_button.setText(f"{speed}x")
-        
-        # 设置播放器速度
-        if self.player_core:
-            self.player_core.set_rate(speed)
         
         # 隐藏菜单 - QMenu会自动处理关闭，这里只需要更新状态
         self.is_speed_menu_visible = False
@@ -1437,7 +1709,7 @@ class VideoPlayer(QWidget):
             self.volume_menu_timer.stop()
         
         # 更新菜单中的音量值和滑块位置
-        current_volume = self.player_core.get_volume() if self.player_core else self._previous_volume
+        current_volume = self._current_volume
         
         # 确保滑块和标签已初始化
         if hasattr(self, 'volume_menu_slider') and self.volume_menu_slider:
@@ -1546,15 +1818,18 @@ class VideoPlayer(QWidget):
         # 更新音量值显示
         self.volume_menu_label.setText(f"{value}%")
         
-        # 设置播放器音量
-        if self.player_core:
-            self.player_core.set_volume(value)
+        # 更新当前音量值
+        self._current_volume = value
         
-        # 更新音量按钮图标
-        self.update_volume_icon()
+        # 保存当前音量作为静音前的音量
+        if not self._is_muted:
+            self._previous_volume = value
         
         # 保存音量设置
         self.save_volume_setting(value)
+        
+        # 更新音量按钮图标
+        self.update_volume_icon()
         
         # 更新静音状态和之前的音量值
         self._is_muted = (value == 0)
@@ -1678,10 +1953,14 @@ class VideoPlayer(QWidget):
         
         try:
             debug(f"开始加载媒体文件: {file_path}")
+            
+            # 保存当前文件路径
+            self._current_file_path = file_path
+            
             # 确保player_core已初始化
             if not self.player_core:
                 debug("初始化player_core")
-                self.player_core = PlayerCore()
+                self.player_core = self._player_engines[self._current_player]()
             
             # 停止当前播放并重置进度条
             debug("停止当前播放并重置进度条")
@@ -1765,8 +2044,7 @@ class VideoPlayer(QWidget):
                 # 更新窗口标题
                 self.setWindowTitle(f"Media Player - {os.path.basename(file_path)}")
                 
-                # 启用循环播放
-                self.player_core.set_loop(True)
+                # 循环播放功能已移至VideoPlayer统一管理
                 
                 # 重置倍速为默认1.0x
                 self.set_speed(1.0)
@@ -1942,46 +2220,45 @@ class VideoPlayer(QWidget):
         一键静音/恢复音量
         """
         try:
-            if self.player_core:
-                if self._is_muted:
-                    # 当前是静音状态，恢复之前的音量
-                    self._is_muted = False
-                    # 恢复音量值
-                    volume = self._previous_volume
-                    # 先设置播放器音量
-                    self.player_core.set_volume(volume)
-                    # 更新音量菜单中的滑块
-                    if self.volume_menu_slider:
-                        self.volume_menu_slider.setValue(volume)
-                    # 更新音量菜单中的标签
-                    if self.volume_menu_label:
-                        self.volume_menu_label.setText(f"{volume}%")
-                else:
-                    # 当前不是静音状态，保存当前音量并静音
-                    # 1. 保存当前音量
-                    current_volume = self.player_core.get_volume()
-                    # 2. 设置静音状态
-                    self._is_muted = True
-                    # 3. 保存当前音量到_previous_volume
-                    self._previous_volume = current_volume
-                    # 4. 设置播放器音量为0
-                    self.player_core.set_volume(0)
-                    # 5. 更新音量菜单中的滑块
-                    if self.volume_menu_slider:
-                        self.volume_menu_slider.setValue(0)
-                    # 6. 更新音量菜单中的标签
-                    if self.volume_menu_label:
-                        self.volume_menu_label.setText("0%")
-                
-                # 更新音量图标
-                self.update_volume_icon()
-                # 保存音量设置
-                self.save_volume_setting(self.player_core.get_volume())
-                
-                # 确保菜单在点击后保持显示状态
-                if self.is_volume_menu_visible and self.volume_menu:
-                    # 重新显示菜单，确保它不会关闭
-                    self.volume_menu.raise_()
+            if self._is_muted:
+                # 当前是静音状态，恢复之前的音量
+                self._is_muted = False
+                # 恢复音量值
+                volume = self._previous_volume
+                # 更新当前音量
+                self._current_volume = volume
+                # 更新音量菜单中的滑块
+                if self.volume_menu_slider:
+                    self.volume_menu_slider.setValue(volume)
+                # 更新音量菜单中的标签
+                if self.volume_menu_label:
+                    self.volume_menu_label.setText(f"{volume}%")
+            else:
+                # 当前不是静音状态，保存当前音量并静音
+                # 1. 保存当前音量
+                current_volume = self._current_volume
+                # 2. 设置静音状态
+                self._is_muted = True
+                # 3. 保存当前音量到_previous_volume
+                self._previous_volume = current_volume
+                # 4. 更新当前音量为0
+                self._current_volume = 0
+                # 5. 更新音量菜单中的滑块
+                if self.volume_menu_slider:
+                    self.volume_menu_slider.setValue(0)
+                # 6. 更新音量菜单中的标签
+                if self.volume_menu_label:
+                    self.volume_menu_label.setText("0%")
+            
+            # 更新音量图标
+            self.update_volume_icon()
+            # 保存音量设置
+            self.save_volume_setting(self._current_volume)
+            
+            # 确保菜单在点击后保持显示状态
+            if self.is_volume_menu_visible and self.volume_menu:
+                # 重新显示菜单，确保它不会关闭
+                self.volume_menu.raise_()
         except Exception as e:
             print(f"切换静音状态时出错: {e}")
     
@@ -2015,11 +2292,9 @@ class VideoPlayer(QWidget):
         Args:
             loop (bool): 是否循环播放
         """
-        try:
-            if self.player_core:
-                self.player_core.set_loop(loop)
-        except Exception as e:
-            print(f"设置循环播放时出错: {e}")
+        # 循环播放功能已移至VideoPlayer统一管理
+        # 这里只记录状态，不直接调用player_core
+        self._loop = loop
     
     def update_play_button(self):
         """
@@ -2043,7 +2318,9 @@ class VideoPlayer(QWidget):
         根据播放状态和鼠标悬停状态更新播放按钮的SVG图标
         使用固定的图标大小，避免在布局过程中频繁计算和更新图标，防止窗口大小闪烁
         """
-        icon_path = "src/Icon/"
+        # 获取正确的图标路径
+        import os
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
         
         # 使用固定的图标大小，不依赖于按钮的实际大小
         # 根据按钮的最小高度(40px)的比例计算得出
@@ -2052,14 +2329,17 @@ class VideoPlayer(QWidget):
         # 根据播放状态和鼠标悬停状态选择不同的SVG图标
         if self.player_core and self.player_core.is_playing:
             if self._is_mouse_over_play_button:
-                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path + "暂停时-按下.svg", fixed_icon_size)
+                icon_path = os.path.join(icon_dir, "暂停时-按下.svg")
             else:
-                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path + "暂停时.svg", fixed_icon_size)
+                icon_path = os.path.join(icon_dir, "暂停时.svg")
         else:
             if self._is_mouse_over_play_button:
-                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path + "播放时-按下.svg", fixed_icon_size)
+                icon_path = os.path.join(icon_dir, "播放时-按下.svg")
             else:
-                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path + "播放时.svg", fixed_icon_size)
+                icon_path = os.path.join(icon_dir, "播放时.svg")
+        
+        # 渲染SVG图标
+        pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, fixed_icon_size)
         
         # 设置固定的图标大小，确保在任何情况下都不会改变
         self.play_button.setIcon(QIcon(pixmap))

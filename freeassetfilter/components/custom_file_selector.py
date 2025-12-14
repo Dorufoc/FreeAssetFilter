@@ -1856,14 +1856,17 @@ class CustomFileSelector(QWidget):
             # 渲染SVG图标
             svg_renderer.render(painter)
             
-            # 如果是未知文件类型，在图标上显示后缀名
-            if icon_path.endswith("未知底板.svg"):
-                # 获取后缀名
-                suffix = file_info["suffix"].upper()
-                
-                # 限制后缀名长度，最多5个字符
-                if len(suffix) > 6:
-                    suffix = "FILE"
+            # 如果是未知文件类型或压缩文件类型，在图标上显示后缀名
+            if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
+                # 获取后缀名，压缩文件显示带点的后缀名（如".zip"），未知文件显示大写后缀名
+                if icon_path.endswith("压缩文件.svg"):
+                    suffix = "." + file_info["suffix"]
+                else:
+                    suffix = file_info["suffix"].upper()
+                    
+                    # 限制未知文件后缀名长度，最多5个字符
+                    if len(suffix) > 6:
+                        suffix = "FILE"
                 
                 # 加载指定字体
                 font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
@@ -1897,8 +1900,11 @@ class CustomFileSelector(QWidget):
                 # 设置字体
                 painter.setFont(font)
                 
-                # 设置文字颜色为纯黑色
-                painter.setPen(QPen(QColor(0, 0, 0), 1, Qt.SolidLine))
+                # 设置文字颜色：压缩文件使用白色，未知文件使用黑色
+                if icon_path.endswith("压缩文件.svg"):
+                    painter.setPen(QPen(QColor(255, 255, 255), 1, Qt.SolidLine))
+                else:
+                    painter.setPen(QPen(QColor(0, 0, 0), 1, Qt.SolidLine))
                 
                 # 计算文字位置，确保整个文本在图标正中心显示
                 x = (120 - text_width) // 2

@@ -446,7 +446,7 @@ class UnifiedPreviewer(QWidget):
             file_path (str): 视频文件路径
         """
         try:
-            # 尝试导入VideoPlayer组件（基于VLC的播放器）
+            # 使用统一的VideoPlayer组件处理视频文件
             from freeassetfilter.components.video_player import VideoPlayer
             
             # 创建VideoPlayer视频播放器

@@ -72,15 +72,15 @@ class CustomWindow(QWidget):
             QWidget {
                 background-color: #ffffff;
                 border-radius: 12px;
-                border: none;
+                border: 1px solid #e9ecef;
             }
         """)
         
         # 添加阴影效果
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(15)
-        shadow.setOffset(0, 5)
-        shadow.setColor(QColor(0, 0, 0, 50))
+        shadow.setBlurRadius(20)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(0, 0, 0, 60))
         self.window_body.setGraphicsEffect(shadow)
         
         # 窗口主体布局
@@ -331,24 +331,39 @@ class CustomButton(QPushButton):
     - 圆角设计
     - 悬停和点击效果
     - 支持强调色和次选色方案
+    - 支持文字和图标两种显示模式
     """
     
-    def __init__(self, text="Button", parent=None, button_type="primary"):
+    def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text"):
         """
         初始化自定义按钮
         
         Args:
-            text (str): 按钮文本
+            text (str): 按钮文本或SVG图标路径
             parent (QWidget): 父控件
             button_type (str): 按钮类型，可选值："primary"（强调色）、"secondary"（次选色）、"normal"（普通样式）
+            display_mode (str): 显示模式，可选值："text"（文字显示）、"icon"（图标显示）
+                              当未传入该参数或参数为空时，默认启用文字显示功能
+                              当传入该参数且参数不为空时，启用图标显示功能
         """
         super().__init__(text, parent)
         self.button_type = button_type
+        
+        # 显示模式：text（文字）或icon（图标）
+        self._display_mode = display_mode
+        # SVG图标路径
+        self._icon_path = text if self._display_mode == "icon" else None
+        # 渲染后的图标Pixmap
+        self._icon_pixmap = None
         
         # 获取全局字体
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
+        
+        # 如果是图标模式，渲染图标
+        if self._display_mode == "icon":
+            self._render_icon()
         
         self.update_style()
     
@@ -358,9 +373,9 @@ class CustomButton(QPushButton):
         """
         # 添加阴影效果
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(0)
-        shadow.setOffset(0, 0)
-        shadow.setColor(QColor(0, 0, 0, 0))
+        shadow.setBlurRadius(2)
+        shadow.setOffset(0, 2)
+        shadow.setColor(QColor(0, 0, 0, 15))
         self.setGraphicsEffect(shadow)
         
         if self.button_type == "primary":
@@ -369,67 +384,76 @@ class CustomButton(QPushButton):
                 QPushButton {
                     background-color: #0a59f7;
                     color: #ffffff;
-                    border: none;
+                    border: 1px solid #0a59f7;
                     border-radius: 20px;
                     padding: 8px 12px;
                     font-size: 18px;
                     font-weight: 400;
                 }
                 QPushButton:hover {
-                    background-color: #0a59f7;
+                    background-color: #0d6efd;
+                    border-color: #0d6efd;
                 }
                 QPushButton:pressed {
                     background-color: #0A51E0;
+                    border-color: #0A51E0;
                 }
                 QPushButton:disabled {
                     background-color: #88A9EB;
                     color: #FFFFFF;
+                    border-color: #88A9EB;
                 }
             """)
         elif self.button_type == "secondary":
             # 次选色方案
             self.setStyleSheet("""
                 QPushButton {
-                    background-color: #e5e7e9;
+                    background-color: #f8f9fa;
                     color: #0a59f7;
-                    border: none;
+                    border: 1px solid #dee2e6;
                     border-radius: 20px;
                     padding: 8px 12px;
                     font-size: 18px;
                     font-weight: 400;
                 }
                 QPushButton:hover {
-                    background-color: #e5e7e9;
+                    background-color: #e9ecef;
+                    border-color: #adb5bd;
                 }
                 QPushButton:pressed {
                     background-color: #DADFE4;
+                    border-color: #ced4da;
                 }
                 QPushButton:disabled {
                     background-color: #C7CBD0;
                     color: #515151;
+                    border-color: #C7CBD0;
                 }
             """)
         else:  # normal
-            # 普通按钮方案：纯白色背景，纯黑色文字
+            # 普通按钮方案：确保在白色背景下可见
             self.setStyleSheet("""
                 QPushButton {
                     background-color: #ffffff;
                     color: #0a59f7;
-                    border: 1px solid #e0e0e0;
+                    border: 2px solid #0a59f7;
                     border-radius: 20px;
                     padding: 8px 12px;
                     font-size: 18px;
                     font-weight: 400;
                 }
                 QPushButton:hover {
-                    background-color: #ffffff;
+                    background-color: #f0f4ff;
+                    border-color: #0d6efd;
                 }
                 QPushButton:pressed {
-                    background-color: #DADFE4;
+                    background-color: #e0e7ff;
+                    border-color: #0A51E0;
                 }
                 QPushButton:disabled {
                     background-color: #ffffff;
                     color: #DADFE4;
+                    border-color: #DADFE4;
                 }
             """)
     
@@ -455,9 +479,27 @@ class CustomButton(QPushButton):
         self.update_style()
         self.resizeEvent(None)  # 触发resizeEvent，更新圆角半径
     
+    def _render_icon(self):
+        """
+        渲染SVG图标为QPixmap
+        调用项目中已开发的SVG渲染组件进行图标渲染
+        """
+        try:
+            if self._icon_path and os.path.exists(self._icon_path):
+                # 计算合适的图标大小，确保图标不会超出按钮范围
+                icon_size = min(self.width(), self.height()) * 0.6
+                # 使用项目中已有的SvgRenderer渲染SVG图标
+                self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size))
+            else:
+                self._icon_pixmap = None
+        except Exception as e:
+            print(f"渲染SVG图标失败: {e}")
+            self._icon_pixmap = None
+    
     def resizeEvent(self, event):
         """
         大小变化事件，动态调整圆角半径为最短边的一半
+        如果是图标模式，重新渲染图标
         """
         super().resizeEvent(event)
         
@@ -483,6 +525,35 @@ class CustomButton(QPushButton):
             new_style = new_style[:start_idx] + f'\n                    border-radius: {radius}px;' + new_style[start_idx:]
         
         self.setStyleSheet(new_style)
+        
+        # 如果是图标模式，重新渲染图标以适应新尺寸
+        if self._display_mode == "icon":
+            self._render_icon()
+    
+    def paintEvent(self, event):
+        """
+        绘制按钮
+        如果是图标模式，绘制图标；否则调用父类绘制文字
+        """
+        if self._display_mode == "icon" and self._icon_pixmap:
+            # 图标模式，绘制图标
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # 获取按钮中心位置
+            center_x = self.width() // 2
+            center_y = self.height() // 2
+            
+            # 计算图标绘制位置（居中）
+            icon_rect = self._icon_pixmap.rect()
+            icon_rect.moveCenter(self.rect().center())
+            
+            # 绘制图标
+            painter.drawPixmap(icon_rect, self._icon_pixmap)
+            painter.end()
+        else:
+            # 文字模式或图标渲染失败，调用父类绘制文字
+            super().paintEvent(event)
 
 
 class CustomProgressBar(QWidget):
@@ -494,13 +565,23 @@ class CustomProgressBar(QWidget):
     - 使用SVG图标作为滑块
     - 支持悬停和点击状态变化
     - 提供丰富的信号机制
+    - 支持横向和纵向布局
     """
     valueChanged = pyqtSignal(int)  # 值变化信号
     userInteracting = pyqtSignal()  # 用户开始交互信号
     userInteractionEnded = pyqtSignal()  # 用户结束交互信号
     
+    # 方向常量
+    Horizontal = 0
+    Vertical = 1
+    
     def __init__(self, parent=None, is_interactive=True):
         super().__init__(parent)
+        
+        # 方向属性
+        self._orientation = self.Horizontal
+        
+        # 设置默认尺寸
         self.setMinimumSize(400, 28)
         self.setMaximumHeight(28)
         
@@ -537,6 +618,35 @@ class CustomProgressBar(QWidget):
         self._handle_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, self._handle_radius * 2)
         self._head_pixmap = SvgRenderer.render_svg_to_pixmap(self._head_icon_path, self._handle_radius * 2)
         # 条顶中 SVG 会在绘制时根据需要直接渲染，这里只保存路径
+    
+    def setOrientation(self, orientation):
+        """
+        设置进度条方向
+        
+        Args:
+            orientation: 方向常量，Horizontal 或 Vertical
+        """
+        if self._orientation != orientation:
+            self._orientation = orientation
+            
+            # 根据新方向更新尺寸限制
+            if orientation == self.Horizontal:
+                self.setMinimumSize(400, 28)
+                self.setMaximumHeight(28)
+            else:  # Vertical
+                self.setMinimumSize(28, 400)
+                self.setMaximumWidth(28)
+            
+            self.update()
+    
+    def orientation(self):
+        """
+        获取进度条方向
+        
+        Returns:
+            int: 方向常量
+        """
+        return self._orientation
     
     def setRange(self, minimum, maximum):
         """
@@ -601,18 +711,25 @@ class CustomProgressBar(QWidget):
         """
         if self._is_interactive and event.button() == Qt.LeftButton:
             self._is_pressed = True
-            self._last_pos = event.pos().x()
+            if self._orientation == self.Horizontal:
+                self._last_pos = event.pos().x()
+                self._update_value_from_pos(self._last_pos)
+            else:  # Vertical
+                self._last_pos = event.pos().y()
+                self._update_value_from_pos(self._last_pos)
             self.userInteracting.emit()
-            # 计算点击位置对应的进度值
-            self._update_value_from_pos(event.pos().x())
     
     def mouseMoveEvent(self, event):
         """
         鼠标移动事件，处理拖拽交互
         """
         if self._is_interactive and self._is_pressed:
-            self._last_pos = event.pos().x()
-            self._update_value_from_pos(event.pos().x())
+            if self._orientation == self.Horizontal:
+                self._last_pos = event.pos().x()
+                self._update_value_from_pos(self._last_pos)
+            else:  # Vertical
+                self._last_pos = event.pos().y()
+                self._update_value_from_pos(self._last_pos)
     
     def mouseReleaseEvent(self, event):
         """
@@ -622,25 +739,48 @@ class CustomProgressBar(QWidget):
             self._is_pressed = False
             self.userInteractionEnded.emit()
     
-    def _update_value_from_pos(self, x_pos):
+    def _update_value_from_pos(self, pos):
         """
         根据鼠标位置更新进度值
         
         Args:
-            x_pos (int): 鼠标X坐标
+            pos (int): 鼠标坐标（横向为X坐标，纵向为Y坐标）
         """
-        # 计算进度条总宽度
-        bar_width = self.width() - (self._handle_radius * 2)
-        # 计算鼠标在进度条上的相对位置
-        relative_x = x_pos - self._handle_radius
-        if relative_x < 0:
-            relative_x = 0
-        elif relative_x > bar_width:
-            relative_x = bar_width
+        if self._orientation == self.Horizontal:
+            # 横向处理
+            # 计算进度条总宽度
+            bar_length = self.width() - (self._handle_radius * 2)
+            # 计算鼠标在进度条上的相对位置
+            relative_pos = pos - self._handle_radius
+            if relative_pos < 0:
+                relative_pos = 0
+            elif relative_pos > bar_length:
+                relative_pos = bar_length
+            
+            # 计算对应的进度值
+            if bar_length > 0:
+                ratio = relative_pos / bar_length
+            else:
+                ratio = 0.0
+            value = int(self._minimum + ratio * (self._maximum - self._minimum))
+        else:  # Vertical
+            # 纵向处理 - 滑动方向修正：向上滑动数值增加，向下滑动数值减少
+            # 计算进度条总高度
+            bar_length = self.height() - (self._handle_radius * 2)
+            # 计算鼠标在进度条上的相对位置
+            relative_pos = pos - self._handle_radius
+            if relative_pos < 0:
+                relative_pos = 0
+            elif relative_pos > bar_length:
+                relative_pos = bar_length
+            
+            # 计算对应的进度值 - 反向映射：relative_pos越大，值越小
+            if bar_length > 0:
+                ratio = 1.0 - (relative_pos / bar_length)
+            else:
+                ratio = 0.0
+            value = int(self._minimum + ratio * (self._maximum - self._minimum))
         
-        # 计算对应的进度值
-        ratio = relative_x / bar_width
-        value = int(self._minimum + ratio * (self._maximum - self._minimum))
         self.setValue(value)
     
     def paintEvent(self, event):
@@ -652,140 +792,252 @@ class CustomProgressBar(QWidget):
         
         rect = self.rect()
         
-        # 计算进度条参数
-        bar_y = (rect.height() - self._bar_height) // 2
-        bar_width = rect.width() - 2 * self._handle_radius
-        
-        # 绘制背景
-        bg_rect = QRect(
-            self._handle_radius, bar_y, 
-            bar_width, self._bar_height
-        )
-        
-        painter.setBrush(QBrush(self._bg_color))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
-        
-        # 计算已完成部分宽度
-        progress_width = int(bar_width * (self._value - self._minimum) / (self._maximum - self._minimum))
-        
-        if progress_width > 0:
-            try:
-                from PyQt5.QtSvg import QSvgRenderer
-                from PyQt5.QtCore import Qt as QtCore
-                from PyQt5.QtGui import QTransform
-                
-                # 计算垂直居中位置
-                middle_y = (rect.height() - self._handle_radius * 2) // 2
-                
-                if self._is_interactive:
-                    # 可交互进度条 - 原有样式
-                    # 使用条顶中 SVG 图形填充已播放部分
-                    svg_renderer = QSvgRenderer(self._middle_icon_path)
-                    # 使用与头和尾相同的尺寸
-                    icon_size = self._handle_radius * 2
-                    temp_pixmap = QPixmap(icon_size, icon_size)
-                    temp_pixmap.fill(QtCore.transparent)
-                    painter_temp = QPainter(temp_pixmap)
-                    svg_renderer.render(painter_temp)
-                    painter_temp.end()
+        if self._orientation == self.Horizontal:
+            # 横向绘制
+            # 计算进度条参数
+            bar_y = (rect.height() - self._bar_height) // 2
+            bar_width = rect.width() - 2 * self._handle_radius
+            
+            # 绘制背景
+            bg_rect = QRect(
+                self._handle_radius, bar_y, 
+                bar_width, self._bar_height
+            )
+            
+            painter.setBrush(QBrush(self._bg_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+            
+            # 计算已完成部分宽度
+            progress_width = int(bar_width * (self._value - self._minimum) / (self._maximum - self._minimum))
+            
+            if progress_width > 0:
+                try:
+                    from PyQt5.QtCore import Qt as QtCore
+                    from PyQt5.QtGui import QTransform
                     
-                    # 将临时 pixmap 旋转 90 度
-                    transform = QTransform()
-                    transform.rotate(90)
-                    rotated_pixmap = temp_pixmap.transformed(transform, QtCore.SmoothTransformation)
+                    # 计算垂直居中位置
+                    middle_y = (rect.height() - self._handle_radius * 2) // 2
                     
-                    # 计算中间矩形
-                    middle_rect = QRect(
-                        self._handle_radius, middle_y, 
-                        progress_width, self._handle_radius * 2
-                    )
-                    
-                    # 拉伸渲染旋转后的 pixmap 到中间矩形
-                    painter.drawPixmap(middle_rect, rotated_pixmap)
-                    
-                    # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标（逆时针旋转90度）
-                    head_x = -self._handle_radius // 2  # 向左偏移一点
-                    
-                    if not self._head_pixmap.isNull():
-                        # 保存当前画家状态
-                        painter.save()
+                    if self._is_interactive:
+                        # 可交互进度条 - 原有样式
+                        # 使用条顶中 SVG 图形填充已播放部分
+                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap
+                        icon_size = self._handle_radius * 2
+                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size)
                         
-                        # 计算旋转中心
-                        center_x = head_x + self._handle_radius
-                        center_y = middle_y + self._handle_radius
+                        # 将临时 pixmap 旋转 90 度
+                        transform = QTransform()
+                        transform.rotate(90)
+                        rotated_pixmap = temp_pixmap.transformed(transform, QtCore.SmoothTransformation)
                         
-                        # 移动坐标原点到旋转中心
-                        painter.translate(center_x, center_y)
+                        # 计算中间矩形
+                        middle_rect = QRect(
+                            self._handle_radius, middle_y, 
+                            progress_width, self._handle_radius * 2
+                        )
                         
-                        # 逆时针旋转90度
-                        painter.rotate(-90)
+                        # 拉伸渲染旋转后的 pixmap 到中间矩形
+                        painter.drawPixmap(middle_rect, rotated_pixmap)
                         
-                        # 绘制旋转后的图标
-                        painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
+                        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标（逆时针旋转90度）
+                        head_x = -self._handle_radius // 2  # 向左偏移一点
                         
-                        # 恢复画家状态
-                        painter.restore()
-                    
-                    # 绘制滑块 - 使用 SVG 图标（逆时针旋转90度）
-                    handle_x = self._handle_radius + progress_width
-                    # 确保滑块不会超出进度条范围
-                    handle_x = min(handle_x, self.width() - self._handle_radius * 2)
-                    
-                    # 确保图标已正确加载
-                    if not self._handle_pixmap.isNull():
-                        # 保存当前画家状态
-                        painter.save()
+                        if not self._head_pixmap.isNull():
+                            # 保存当前画家状态
+                            painter.save()
+                            
+                            # 计算旋转中心
+                            center_x = head_x + self._handle_radius
+                            center_y = middle_y + self._handle_radius
+                            
+                            # 移动坐标原点到旋转中心
+                            painter.translate(center_x, center_y)
+                            
+                            # 逆时针旋转90度
+                            painter.rotate(-90)
+                            
+                            # 绘制旋转后的图标
+                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
+                            
+                            # 恢复画家状态
+                            painter.restore()
                         
-                        # 计算旋转中心
-                        center_x = handle_x + self._handle_radius
-                        center_y = middle_y + self._handle_radius
+                        # 绘制滑块 - 使用 SVG 图标（逆时针旋转90度）
+                        handle_x = self._handle_radius + progress_width
+                        # 确保滑块不会超出进度条范围
+                        handle_x = min(handle_x, self.width() - self._handle_radius * 2)
                         
-                        # 移动坐标原点到旋转中心
-                        painter.translate(center_x, center_y)
-                        
-                        # 逆时针旋转90度
-                        painter.rotate(-90)
-                        
-                        # 绘制旋转后的图标
-                        painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
-                        
-                        # 恢复画家状态
-                        painter.restore()
+                        # 确保图标已正确加载
+                        if not self._handle_pixmap.isNull():
+                            # 保存当前画家状态
+                            painter.save()
+                            
+                            # 计算旋转中心
+                            center_x = handle_x + self._handle_radius
+                            center_y = middle_y + self._handle_radius
+                            
+                            # 移动坐标原点到旋转中心
+                            painter.translate(center_x, center_y)
+                            
+                            # 逆时针旋转90度
+                            painter.rotate(-90)
+                            
+                            # 绘制旋转后的图标
+                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+                            
+                            # 恢复画家状态
+                            painter.restore()
+                        else:
+                            # 备用方案：如果 SVG 加载失败，绘制圆形滑块
+                            painter.setBrush(QBrush(
+                                self._handle_pressed_color if self._is_pressed else 
+                                self._handle_hover_color if self.underMouse() else 
+                                self._handle_color
+                            ))
+                            painter.setPen(Qt.NoPen)  # 去除滑块边框
+                            painter.drawEllipse(handle_x, middle_y, self._handle_radius * 2, self._handle_radius * 2)
                     else:
-                        # 备用方案：如果 SVG 加载失败，绘制圆形滑块
-                        painter.setBrush(QBrush(
-                            self._handle_pressed_color if self._is_pressed else 
-                            self._handle_hover_color if self.underMouse() else 
-                            self._handle_color
-                        ))
-                        painter.setPen(Qt.NoPen)  # 去除滑块边框
-                        painter.drawEllipse(handle_x, middle_y, self._handle_radius * 2, self._handle_radius * 2)
-                else:
-                    # 不可交互进度条 - 简化的样式，避免裁切问题
-                    # 直接绘制圆角矩形，确保显示正常
-                    
-                    # 计算进度条参数
-                    bar_y = (rect.height() - self._bar_height) // 2
-                    
-                    # 绘制已完成部分
+                        # 不可交互进度条 - 简化的样式，避免裁切问题
+                        # 直接绘制圆角矩形，确保显示正常
+                        
+                        # 计算进度条参数
+                        bar_y = (rect.height() - self._bar_height) // 2
+                        
+                        # 绘制已完成部分
+                        progress_rect = QRect(
+                            self._handle_radius, bar_y, 
+                            progress_width, self._bar_height
+                        )
+                        
+                        painter.setBrush(QBrush(self._progress_color))
+                        painter.setPen(Qt.NoPen)
+                        painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+                except Exception as e:
+                    print(f"渲染 SVG 失败: {e}")
+                    # 备用方案：使用纯色填充
                     progress_rect = QRect(
                         self._handle_radius, bar_y, 
                         progress_width, self._bar_height
                     )
-                    
                     painter.setBrush(QBrush(self._progress_color))
-                    painter.setPen(Qt.NoPen)
                     painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
-            except Exception as e:
-                print(f"渲染 SVG 失败: {e}")
-                # 备用方案：使用纯色填充
-                progress_rect = QRect(
-                    self._handle_radius, bar_y, 
-                    progress_width, self._bar_height
-                )
-                painter.setBrush(QBrush(self._progress_color))
-                painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+        else:  # Vertical
+            # 纵向绘制
+            # 计算进度条参数
+            bar_x = (rect.width() - self._bar_height) // 2
+            bar_height = rect.height() - 2 * self._handle_radius
+            
+            # 绘制背景
+            bg_rect = QRect(
+                bar_x, self._handle_radius, 
+                self._bar_height, bar_height
+            )
+            
+            painter.setBrush(QBrush(self._bg_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+            
+            # 计算已完成部分高度
+            progress_height = int(bar_height * (self._value - self._minimum) / (self._maximum - self._minimum))
+            
+            if progress_height > 0:
+                try:
+                    from PyQt5.QtCore import Qt as QtCore
+                    from PyQt5.QtGui import QTransform
+                    
+                    # 计算水平居中位置
+                    middle_x = (rect.width() - self._handle_radius * 2) // 2
+                    
+                    if self._is_interactive:
+                        # 可交互进度条 - 纵向样式
+                        # 使用条顶中 SVG 图形填充已播放部分
+                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap
+                        icon_size = self._handle_radius * 2
+                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size)
+                        
+                        # 计算中间矩形 - 从顶部开始向下延伸
+                        middle_rect = QRect(
+                            middle_x, self._handle_radius, 
+                            self._handle_radius * 2, progress_height
+                        )
+                        
+                        # 拉伸渲染 pixmap 到中间矩形
+                        painter.drawPixmap(middle_rect, temp_pixmap)
+                        
+                        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标
+                        head_y = -self._handle_radius // 2  # 向上偏移一点
+                        
+                        if not self._head_pixmap.isNull():
+                            # 保存当前画家状态
+                            painter.save()
+                            
+                            # 计算旋转中心
+                            center_x = middle_x + self._handle_radius
+                            center_y = head_y + self._handle_radius
+                            
+                            # 移动坐标原点到旋转中心
+                            painter.translate(center_x, center_y)
+                            
+                            # 绘制图标（不需要旋转）
+                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
+                            
+                            # 恢复画家状态
+                            painter.restore()
+                        
+                        # 绘制滑块 - 使用 SVG 图标
+                        handle_y = self._handle_radius + progress_height
+                        # 确保滑块不会超出进度条范围
+                        handle_y = min(handle_y, self.height() - self._handle_radius * 2)
+                        
+                        # 确保图标已正确加载
+                        if not self._handle_pixmap.isNull():
+                            # 保存当前画家状态
+                            painter.save()
+                            
+                            # 计算旋转中心
+                            center_x = middle_x + self._handle_radius
+                            center_y = handle_y + self._handle_radius
+                            
+                            # 移动坐标原点到旋转中心
+                            painter.translate(center_x, center_y)
+                            
+                            # 绘制旋转后的图标
+                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+                            
+                            # 恢复画家状态
+                            painter.restore()
+                        else:
+                            # 备用方案：如果 SVG 加载失败，绘制圆形滑块
+                            painter.setBrush(QBrush(
+                                self._handle_pressed_color if self._is_pressed else 
+                                self._handle_hover_color if self.underMouse() else 
+                                self._handle_color
+                            ))
+                            painter.setPen(Qt.NoPen)  # 去除滑块边框
+                            painter.drawEllipse(middle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+                    else:
+                        # 不可交互进度条 - 简化的样式，避免裁切问题
+                        # 直接绘制圆角矩形，确保显示正常
+                        
+                        # 绘制已完成部分 - 从顶部开始向下延伸
+                        progress_rect = QRect(
+                            bar_x, self._handle_radius, 
+                            self._bar_height, progress_height
+                        )
+                        
+                        painter.setBrush(QBrush(self._progress_color))
+                        painter.setPen(Qt.NoPen)
+                        painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+                except Exception as e:
+                    print(f"渲染 SVG 失败: {e}")
+                    # 备用方案：使用纯色填充
+                    progress_rect = QRect(
+                        bar_x, self._handle_radius, 
+                        self._bar_height, progress_height
+                    )
+                    painter.setBrush(QBrush(self._progress_color))
+                    painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
         
         painter.end()
     
@@ -858,15 +1110,15 @@ class CustomMessageBox(QDialog):
             QWidget {
                 background-color: #ffffff;
                 border-radius: 12px;
-                border: none;
+                border: 1px solid #e9ecef;
             }
         """)
         
         # 添加阴影效果
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(15)
-        shadow.setOffset(0, 5)
-        shadow.setColor(QColor(0, 0, 0, 50))
+        shadow.setBlurRadius(20)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(0, 0, 0, 60))
         self.window_body.setGraphicsEffect(shadow)
         
         # 窗口主体布局 - 正确的纵向排列顺序

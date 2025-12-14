@@ -60,13 +60,45 @@ class SvgRenderer:
             
             def rgba_to_hex(match):
                 rgba_values = match.group(1).split(',')
-                # 去除空格并转换为浮点数
-                r = float(rgba_values[0].strip())
-                g = float(rgba_values[1].strip())
-                b = float(rgba_values[2].strip())
-                a = float(rgba_values[3].strip())
+                # 去除空格并处理不同格式的rgba值
+                r = rgba_values[0].strip()
+                g = rgba_values[1].strip()
+                b = rgba_values[2].strip()
+                a = rgba_values[3].strip()
+                
+                # 处理百分比值
+                if '%' in r:
+                    r = float(r.replace('%', '')) * 2.55
+                else:
+                    r = float(r)
+                
+                if '%' in g:
+                    g = float(g.replace('%', '')) * 2.55
+                else:
+                    g = float(g)
+                
+                if '%' in b:
+                    b = float(b.replace('%', '')) * 2.55
+                else:
+                    b = float(b)
+                
+                # 处理alpha值（可能是0-1范围或0-100%范围）
+                if '%' in a:
+                    a = float(a.replace('%', '')) / 100
+                else:
+                    a = float(a)
+                
+                # 确保RGB值在0-255范围内
+                r = max(0, min(255, r))
+                g = max(0, min(255, g))
+                b = max(0, min(255, b))
+                
+                # 确保alpha值在0-1范围内
+                a = max(0, min(1, a))
+                
                 # 将alpha值转换为十六进制（0-255）
                 a = int(a * 255)
+                
                 # 转换为十六进制格式，使用小写字母，不足两位补零
                 return f'#{int(r):02x}{int(g):02x}{int(b):02x}{a:02x}'
             
@@ -229,13 +261,45 @@ class SvgRenderer:
             
             def rgba_to_hex(match):
                 rgba_values = match.group(1).split(',')
-                # 去除空格并转换为浮点数
-                r = float(rgba_values[0].strip())
-                g = float(rgba_values[1].strip())
-                b = float(rgba_values[2].strip())
-                a = float(rgba_values[3].strip())
+                # 去除空格并处理不同格式的rgba值
+                r = rgba_values[0].strip()
+                g = rgba_values[1].strip()
+                b = rgba_values[2].strip()
+                a = rgba_values[3].strip()
+                
+                # 处理百分比值
+                if '%' in r:
+                    r = float(r.replace('%', '')) * 2.55
+                else:
+                    r = float(r)
+                
+                if '%' in g:
+                    g = float(g.replace('%', '')) * 2.55
+                else:
+                    g = float(g)
+                
+                if '%' in b:
+                    b = float(b.replace('%', '')) * 2.55
+                else:
+                    b = float(b)
+                
+                # 处理alpha值（可能是0-1范围或0-100%范围）
+                if '%' in a:
+                    a = float(a.replace('%', '')) / 100
+                else:
+                    a = float(a)
+                
+                # 确保RGB值在0-255范围内
+                r = max(0, min(255, r))
+                g = max(0, min(255, g))
+                b = max(0, min(255, b))
+                
+                # 确保alpha值在0-1范围内
+                a = max(0, min(1, a))
+                
                 # 将alpha值转换为十六进制（0-255）
                 a = int(a * 255)
+                
                 # 转换为十六进制格式，使用小写字母，不足两位补零
                 return f'#{int(r):02x}{int(g):02x}{int(b):02x}{a:02x}'
             
