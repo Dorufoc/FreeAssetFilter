@@ -103,7 +103,7 @@ class FreeAssetFilterApp(QMainWindow):
         """
         # 创建中央部件
         central_widget = QWidget()
-        central_widget.setStyleSheet("background-color: #ffffff;")
+        central_widget.setStyleSheet("background-color: #f1f3f5;")
         self.setCentralWidget(central_widget)
         
         # 创建主布局：标题 + 三列
@@ -120,7 +120,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 左侧列：文件选择器A
         left_column = QWidget()
         left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        left_column.setStyleSheet("background-color: #ffffff; border: 1px solid #ccc; border-radius: 8px;")
+        left_column.setStyleSheet("background-color: #f1f3f5; border: 1px solid #ccc; border-radius: 8px;")
         left_layout = QVBoxLayout(left_column)
         
 
@@ -132,7 +132,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 中间列：文件临时存储池
         middle_column = QWidget()
         middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        middle_column.setStyleSheet("background-color: #ffffff; border: 1px solid #ccc; border-radius: 8px;")
+        middle_column.setStyleSheet("background-color: #f1f3f5; border: 1px solid #ccc; border-radius: 8px;")
         middle_layout = QVBoxLayout(middle_column)
         
         # 添加文件临时存储池组件
@@ -142,7 +142,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 右侧列：统一文件预览器
         right_column = QWidget()
         right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        right_column.setStyleSheet("background-color: #ffffff; border: 1px solid #ccc; border-radius: 8px;")
+        right_column.setStyleSheet("background-color: #f1f3f5; border: 1px solid #ccc; border-radius: 8px;")
         right_layout = QVBoxLayout(right_column)
         
 
@@ -299,7 +299,7 @@ class FreeAssetFilterApp(QMainWindow):
                         widget.is_selected = False
                         widget.setStyleSheet("""
                             QWidget#FileCard {
-                                background-color: #ffffff;
+                                background-color: #f1f3f5;
                                 border: 2px solid #e0e0e0;
                                 border-radius: 8px;
                                 padding: 8px;

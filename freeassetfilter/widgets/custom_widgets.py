@@ -7,7 +7,7 @@ FreeAssetFilter 自定义控件库
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-    QLabel, QSizePolicy, QApplication, QDialog
+    QLabel, QSizePolicy, QApplication, QDialog, QLineEdit
 )
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
@@ -120,7 +120,7 @@ class CustomWindow(QWidget):
         self.close_button.setFixedSize(24, 24)
         self.close_button.setStyleSheet("""
             QPushButton {
-                background-color: #2B81B7;
+                background-color: #0a59f7;
                 border: none;
                 border-radius: 12px;
                 color: #ffffff;
@@ -128,7 +128,7 @@ class CustomWindow(QWidget):
                 font-weight: 400;
             }
             QPushButton:hover {
-                background-color: #2B81B7;
+                background-color: #0a59f7;
             }
             QPushButton:pressed {
                 background-color: #0062A0;
@@ -358,16 +358,16 @@ class CustomButton(QPushButton):
         """
         # 添加阴影效果
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(10)
-        shadow.setOffset(0, 3)
-        shadow.setColor(QColor(0, 0, 0, 40))
+        shadow.setBlurRadius(0)
+        shadow.setOffset(0, 0)
+        shadow.setColor(QColor(0, 0, 0, 0))
         self.setGraphicsEffect(shadow)
         
         if self.button_type == "primary":
             # 强调色方案
             self.setStyleSheet("""
                 QPushButton {
-                    background-color: #2B81B7;
+                    background-color: #0a59f7;
                     color: #ffffff;
                     border: none;
                     border-radius: 20px;
@@ -376,22 +376,22 @@ class CustomButton(QPushButton):
                     font-weight: 400;
                 }
                 QPushButton:hover {
-                    background-color: #0F689F;
+                    background-color: #0a59f7;
                 }
                 QPushButton:pressed {
-                    background-color: #004977;
+                    background-color: #0A51E0;
                 }
                 QPushButton:disabled {
-                    background-color: #dfe4ea;
-                    color: #747d8c;
+                    background-color: #88A9EB;
+                    color: #FFFFFF;
                 }
             """)
         elif self.button_type == "secondary":
             # 次选色方案
             self.setStyleSheet("""
                 QPushButton {
-                    background-color: #7C7C7C;
-                    color: #ffffff;
+                    background-color: #e5e7e9;
+                    color: #0a59f7;
                     border: none;
                     border-radius: 20px;
                     padding: 8px 12px;
@@ -399,14 +399,14 @@ class CustomButton(QPushButton):
                     font-weight: 400;
                 }
                 QPushButton:hover {
-                    background-color: #747474;
+                    background-color: #e5e7e9;
                 }
                 QPushButton:pressed {
-                    background-color: #3B3B3B;
+                    background-color: #DADFE4;
                 }
                 QPushButton:disabled {
-                    background-color: #dfe4ea;
-                    color: #747d8c;
+                    background-color: #C7CBD0;
+                    color: #515151;
                 }
             """)
         else:  # normal
@@ -414,7 +414,7 @@ class CustomButton(QPushButton):
             self.setStyleSheet("""
                 QPushButton {
                     background-color: #ffffff;
-                    color: #000000;
+                    color: #0a59f7;
                     border: 1px solid #e0e0e0;
                     border-radius: 20px;
                     padding: 8px 12px;
@@ -422,14 +422,14 @@ class CustomButton(QPushButton):
                     font-weight: 400;
                 }
                 QPushButton:hover {
-                    background-color: #f5f5f5;
+                    background-color: #ffffff;
                 }
                 QPushButton:pressed {
-                    background-color: #e0e0e0;
+                    background-color: #DADFE4;
                 }
                 QPushButton:disabled {
-                    background-color: #f8f9fa;
-                    color: #6c757d;
+                    background-color: #ffffff;
+                    color: #DADFE4;
                 }
             """)
     
@@ -518,8 +518,8 @@ class CustomProgressBar(QWidget):
         self._is_interactive = is_interactive  # 新增：控制是否可交互
         
         # 外观属性
-        self._bg_color = QColor(99, 99, 99)  # 进度条背景颜色
-        self._progress_color = QColor(0, 120, 212)  # #0078d4
+        self._bg_color = QColor(229, 231, 233)  # 进度条背景颜色
+        self._progress_color = QColor(10, 89, 247)  # #0a59f7
         self._handle_color = QColor(0, 120, 212)  # #0078d4
         self._handle_hover_color = QColor(16, 110, 190)  # #106ebe
         self._handle_pressed_color = QColor(0, 90, 158)  # #005a9e
@@ -1158,3 +1158,414 @@ class CustomMessageBox(QDialog):
                 screen_rect.center().x() - self.width() // 2,
                 screen_rect.center().y() - self.height() // 2
             )
+
+
+class CustomInputBox(QWidget):
+    """
+    自定义输入框控件
+    特点：
+    - 支持默认显示文本（占位符）
+    - 点击激活功能
+    - 清晰的视觉反馈（激活/未激活状态、有内容/无内容状态）
+    - 支持传入初始文本
+    - 提供内容传出机制
+    - 可自定义样式（边框、圆角、背景色、尺寸等）
+    """
+    
+    # 内容变化信号，当输入内容改变时发出
+    textChanged = pyqtSignal(str)
+    # 焦点变化信号，当控件获得或失去焦点时发出
+    focusChanged = pyqtSignal(bool)
+    # 编辑完成信号，当用户按下回车键或失去焦点时发出
+    editingFinished = pyqtSignal(str)
+    
+    def __init__(self, 
+                 parent=None, 
+                 placeholder_text="", 
+                 initial_text="", 
+                 width=None, 
+                 height=40,
+                 border_radius=20,
+                 border_color="#e5e7e9",
+                 background_color="#ffffff",
+                 text_color="#000000",
+                 placeholder_color="#CCCCCC",
+                 active_border_color="#e5e7e9",
+                 active_background_color="#ffffff"):
+        """
+        初始化自定义输入框
+        
+        Args:
+            parent (QWidget): 父控件
+            placeholder_text (str): 默认显示文本（占位符）
+            initial_text (str): 初始输入文本
+            width (int): 控件宽度
+            height (int): 控件高度
+            border_radius (int): 边框圆角半径
+            border_color (str): 边框颜色
+            background_color (str): 背景颜色
+            text_color (str): 文本颜色
+            placeholder_color (str): 占位符文本颜色
+            active_border_color (str): 激活状态下的边框颜色
+            active_background_color (str): 激活状态下的背景颜色
+        """
+        super().__init__(parent)
+        
+        # 设置基本属性
+        self.placeholder_text = placeholder_text
+        self._is_active = False
+        self._has_content = False
+        
+        # 样式参数
+        self._width = width
+        self._height = height
+        self._border_radius = border_radius
+        self._border_color = QColor(border_color)
+        self._background_color = QColor(background_color)
+        self._text_color = QColor(text_color)
+        self._placeholder_color = QColor(placeholder_color)
+        self._active_border_color = QColor(active_border_color)
+        self._active_background_color = QColor(active_background_color)
+        
+        # 获取全局字体
+        app = QApplication.instance()
+        self.global_font = getattr(app, 'global_font', QFont())
+        
+        # 初始化UI
+        self.init_ui()
+        
+        # 设置初始文本
+        if initial_text:
+            self.line_edit.setText(initial_text)
+            self._has_content = True
+    
+    def init_ui(self):
+        """
+        初始化UI组件
+        """
+        # 设置主布局
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # 创建QLineEdit作为实际输入控件
+        self.line_edit = QLineEdit()
+        self.line_edit.setFont(self.global_font)
+        self.line_edit.setPlaceholderText(self.placeholder_text)
+        self.line_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: transparent;
+                border: none;
+                padding: 8px 12px;
+                color: %s;
+                font-size: 14px;
+                selection-background-color: #0a59f7;
+                selection-color: white;
+            }
+            QLineEdit::placeholder {
+                color: %s;
+            }
+        """ % (self._text_color.name(), self._placeholder_color.name()))
+        
+        # 连接信号
+        self.line_edit.textChanged.connect(self._on_text_changed)
+        self.line_edit.focusInEvent = self._on_focus_in
+        self.line_edit.focusOutEvent = self._on_focus_out
+        self.line_edit.returnPressed.connect(self._on_return_pressed)
+        
+        # 添加到布局
+        main_layout.addWidget(self.line_edit)
+        
+        # 设置控件大小
+        if self._width is not None:
+            self.setFixedWidth(self._width)
+            self.line_edit.setFixedWidth(self._width)
+        else:
+            # 支持自适应宽度
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.line_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        
+        if self._height is not None:
+            self.setFixedHeight(self._height)
+            self.line_edit.setFixedHeight(self._height)
+        else:
+            # 支持自适应高度
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.line_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    
+    def _on_text_changed(self, text):
+        """
+        文本变化事件处理
+        """
+        self._has_content = bool(text.strip())
+        self.textChanged.emit(text)
+        self.update()  # 更新绘制
+    
+    def _on_focus_in(self, event):
+        """
+        获得焦点事件处理
+        """
+        self._is_active = True
+        self.focusChanged.emit(True)
+        self.update()  # 更新绘制
+        # 调用原始的focusInEvent
+        QLineEdit.focusInEvent(self.line_edit, event)
+    
+    def _on_focus_out(self, event):
+        """
+        失去焦点事件处理
+        """
+        self._is_active = False
+        self.focusChanged.emit(False)
+        self.editingFinished.emit(self.line_edit.text())
+        self.update()  # 更新绘制
+        # 调用原始的focusOutEvent
+        QLineEdit.focusOutEvent(self.line_edit, event)
+    
+    def _on_return_pressed(self):
+        """
+        回车键按下事件处理
+        """
+        self.editingFinished.emit(self.line_edit.text())
+    
+    def paintEvent(self, event):
+        """
+        绘制控件外观
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)  # 抗锯齿
+        
+        rect = self.rect()
+        
+        # 确定当前样式
+        if self._is_active:
+            border_color = self._active_border_color
+            background_color = self._active_background_color
+            border_width = 2
+        else:
+            border_color = self._border_color
+            background_color = self._background_color
+            border_width = 1
+        
+        # 绘制背景
+        painter.setBrush(QBrush(background_color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(rect, self._border_radius, self._border_radius)
+        
+        # 绘制边框
+        painter.setPen(QPen(border_color, border_width))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, self._border_radius, self._border_radius)
+        
+        painter.end()
+    
+    def text(self):
+        """
+        获取当前输入的文本
+        
+        Returns:
+            str: 当前输入的文本
+        """
+        return self.line_edit.text()
+    
+    def setText(self, text):
+        """
+        设置输入文本
+        
+        Args:
+            text (str): 要设置的文本
+        """
+        self.line_edit.setText(text)
+        self._has_content = bool(text.strip())
+        self.update()
+    
+    def setPlaceholderText(self, text):
+        """
+        设置占位符文本
+        
+        Args:
+            text (str): 要设置的占位符文本
+        """
+        self.placeholder_text = text
+        self.line_edit.setPlaceholderText(text)
+    
+    def clear(self):
+        """
+        清空输入文本
+        """
+        self.line_edit.clear()
+        self._has_content = False
+        self.update()
+    
+    def setFocus(self):
+        """
+        设置控件获得焦点
+        """
+        self.line_edit.setFocus()
+    
+    def clearFocus(self):
+        """
+        清除控件焦点
+        """
+        self.line_edit.clearFocus()
+    
+    def set_enabled(self, enabled):
+        """
+        设置控件是否可用
+        
+        Args:
+            enabled (bool): 是否可用
+        """
+        self.line_edit.setEnabled(enabled)
+        self.setEnabled(enabled)
+    
+    def is_enabled(self):
+        """
+        检查控件是否可用
+        
+        Returns:
+            bool: 是否可用
+        """
+        return self.line_edit.isEnabled()
+    
+    def is_active(self):
+        """
+        检查控件是否处于激活状态
+        
+        Returns:
+            bool: 是否激活
+        """
+        return self._is_active
+    
+    def has_content(self):
+        """
+        检查控件是否有输入内容
+        
+        Returns:
+            bool: 是否有内容
+        """
+        return self._has_content
+    
+    def set_width(self, width):
+        """
+        设置控件宽度
+        
+        Args:
+            width (int): 控件宽度
+        """
+        self._width = width
+        self.setFixedSize(self._width, self._height)
+        self.line_edit.setFixedSize(self._width, self._height)
+        self.update()
+    
+    def set_height(self, height):
+        """
+        设置控件高度
+        
+        Args:
+            height (int): 控件高度
+        """
+        self._height = height
+        self.setFixedSize(self._width, self._height)
+        self.line_edit.setFixedSize(self._width, self._height)
+        self.update()
+    
+    def set_border_radius(self, radius):
+        """
+        设置边框圆角半径
+        
+        Args:
+            radius (int): 圆角半径
+        """
+        self._border_radius = radius
+        self.update()
+    
+    def set_border_color(self, color):
+        """
+        设置边框颜色
+        
+        Args:
+            color (str or QColor): 边框颜色
+        """
+        self._border_color = QColor(color)
+        self.update()
+    
+    def set_background_color(self, color):
+        """
+        设置背景颜色
+        
+        Args:
+            color (str or QColor): 背景颜色
+        """
+        self._background_color = QColor(color)
+        self.update()
+    
+    def set_text_color(self, color):
+        """
+        设置文本颜色
+        
+        Args:
+            color (str or QColor): 文本颜色
+        """
+        self._text_color = QColor(color)
+        # 更新样式表
+        self.line_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: transparent;
+                border: none;
+                padding: 8px 12px;
+                color: %s;
+                font-size: 14px;
+                selection-background-color: #0a59f7;
+                selection-color: white;
+            }
+            QLineEdit::placeholder {
+                color: %s;
+            }
+        """ % (self._text_color.name(), self._placeholder_color.name()))
+    
+    def set_placeholder_color(self, color):
+        """
+        设置占位符文本颜色
+        
+        Args:
+            color (str or QColor): 占位符文本颜色
+        """
+        self._placeholder_color = QColor(color)
+        # 更新样式表
+        self.line_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: transparent;
+                border: none;
+                padding: 8px 12px;
+                color: %s;
+                font-size: 14px;
+                selection-background-color: #0a59f7;
+                selection-color: white;
+            }
+            QLineEdit::placeholder {
+                color: %s;
+            }
+        """ % (self._text_color.name(), self._placeholder_color.name()))
+    
+    def set_active_border_color(self, color):
+        """
+        设置激活状态下的边框颜色
+        
+        Args:
+            color (str or QColor): 激活状态下的边框颜色
+        """
+        self._active_border_color = QColor(color)
+        if self._is_active:
+            self.update()
+    
+    def set_active_background_color(self, color):
+        """
+        设置激活状态下的背景颜色
+        
+        Args:
+            color (str or QColor): 激活状态下的背景颜色
+        """
+        self._active_background_color = QColor(color)
+        if self._is_active:
+            self.update()

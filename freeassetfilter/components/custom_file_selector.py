@@ -41,7 +41,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from freeassetfilter.utils.svg_renderer import SvgRenderer
-from freeassetfilter.widgets.custom_widgets import CustomButton
+from freeassetfilter.widgets.custom_widgets import CustomButton, CustomInputBox
 
 
 class CustomFileSelector(QWidget):
@@ -141,7 +141,7 @@ class CustomFileSelector(QWidget):
         """
         # 创建主布局
         main_layout = QVBoxLayout(self)
-        self.setStyleSheet("background-color: #ffffff;")
+        self.setStyleSheet("background-color: #f1f3f5;")
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(10, 10, 10, 10)
         
@@ -162,7 +162,10 @@ class CustomFileSelector(QWidget):
         创建控制面板
         """
         panel = QGroupBox()
+        
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 隐藏边框
+        panel.setStyleSheet("QGroupBox { border: none; }")
         
         # 使用垂直布局来容纳多行控件
         main_layout = QVBoxLayout(panel)
@@ -183,23 +186,25 @@ class CustomFileSelector(QWidget):
         dir_layout.addWidget(self.drive_combo)
         
         # 目录显示区域（可编辑）
-        self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("输入路径")
-        self.path_edit.returnPressed.connect(self.go_to_path)
+        self.path_edit = CustomInputBox(
+            placeholder_text="输入路径",
+            height=30
+        )
+        self.path_edit.line_edit.returnPressed.connect(self.go_to_path)
         dir_layout.addWidget(self.path_edit, 1)
         
         # 前往按钮
-        go_btn = CustomButton("前往", button_type="normal")
+        go_btn = CustomButton("前往", button_type="primary")
         go_btn.clicked.connect(self.go_to_path)
         dir_layout.addWidget(go_btn)
         
         # 收藏夹按钮
-        self.favorites_btn = CustomButton("收藏夹", button_type="normal")
+        self.favorites_btn = CustomButton("收藏夹", button_type="secondary")
         self.favorites_btn.clicked.connect(self._show_favorites_dialog)
         dir_layout.addWidget(self.favorites_btn)
         
         # 返回上一次退出所在目录按钮
-        self.last_path_btn = CustomButton("上次目录", button_type="normal")
+        self.last_path_btn = CustomButton("上次目录", button_type="secondary")
         self.last_path_btn.clicked.connect(self._go_to_last_path)
         dir_layout.addWidget(self.last_path_btn)
         
@@ -210,12 +215,12 @@ class CustomFileSelector(QWidget):
         nav_layout.setSpacing(5)
         
         # 返回上级文件夹按钮
-        self.parent_btn = CustomButton("返回上级文件夹", button_type="normal")
+        self.parent_btn = CustomButton("返回上级文件夹", button_type="primary")
         self.parent_btn.clicked.connect(self.go_to_parent)
         nav_layout.addWidget(self.parent_btn)
         
         # 刷新按钮
-        refresh_btn = CustomButton("刷新", button_type="normal")
+        refresh_btn = CustomButton("刷新", button_type="primary")
         refresh_btn.clicked.connect(self.refresh_files)
         nav_layout.addWidget(refresh_btn)
         
@@ -229,13 +234,15 @@ class CustomFileSelector(QWidget):
         filter_sort_layout.setSpacing(5)
         
         # 文件筛选功能（正则表达式）
-        self.filter_edit = QLineEdit()
-        self.filter_edit.setPlaceholderText("正则表达式筛选")
-        self.filter_edit.returnPressed.connect(self.apply_filter)
+        self.filter_edit = CustomInputBox(
+            placeholder_text="正则表达式筛选",
+            height=30
+        )
+        self.filter_edit.line_edit.returnPressed.connect(self.apply_filter)
         filter_sort_layout.addWidget(self.filter_edit, 1)
         
         # 筛选按钮
-        self.filter_btn = CustomButton("筛选", button_type="normal")
+        self.filter_btn = CustomButton("筛选", button_type="primary")
         self.filter_btn.clicked.connect(self.apply_filter)
         filter_sort_layout.addWidget(self.filter_btn)
         
@@ -258,14 +265,16 @@ class CustomFileSelector(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 关闭水平滚动条
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 垂直滚动条按需显示
-        
+        # 设置 QScrollArea 背景色
+        #scroll_area.setStyleSheet("QScrollArea { border: 0px solid #e0e0e0; background-color: #ffffff; }")
         # 创建文件容器
         self.files_container = QWidget()
         self.files_layout = QGridLayout(self.files_container)
+        self.files_container.setStyleSheet("QWidget { border: 0px solid #e0e0e0; }")# 控制文件容器边框
         self.files_layout.setSpacing(10)  # 卡片间距
         self.files_layout.setContentsMargins(10, 10, 10, 10)
-        # 左对齐，以便填充整个宽度
-        self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        # 中对齐，以便填充整个宽度
+        self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignCenter)
         
         scroll_area.setWidget(self.files_container)
         
@@ -283,7 +292,8 @@ class CustomFileSelector(QWidget):
         status_bar = QFrame()
         status_bar.setFrameShape(QFrame.HLine)
         status_bar.setFrameShadow(QFrame.Sunken)
-        
+        # 隐藏边框
+        status_bar.setStyleSheet("QFrame { border: none; }")
         layout = QHBoxLayout(status_bar)
         
 
@@ -1588,7 +1598,7 @@ class CustomFileSelector(QWidget):
         # 设置卡片样式
         card.setStyleSheet("""
             QWidget#FileCard {
-                background-color: #ffffff;
+                background-color: #f1f3f5;
                 border: 2px solid #e0e0e0;
                 border-radius: 8px;
                 padding: 8px;
@@ -1698,7 +1708,7 @@ class CustomFileSelector(QWidget):
         else:
             card.setStyleSheet("""
                 QWidget#FileCard {
-                    background-color: #ffffff;
+                    background-color: #f1f3f5;
                     border: 2px solid #e0e0e0;
                     border-radius: 8px;
                     padding: 8px;
@@ -2105,7 +2115,7 @@ class CustomFileSelector(QWidget):
             # 更新样式
             card.setStyleSheet("""
                 QWidget#FileCard {
-                    background-color: #ffffff;
+                    background-color: #f1f3f5;
                     border: 2px solid #e0e0e0;
                     border-radius: 8px;
                     padding: 8px;
