@@ -1,4 +1,4 @@
 @echo off
 cd /d %~dp0
-python finder.py
+python -m freeassetfilter.core.finder
 pause

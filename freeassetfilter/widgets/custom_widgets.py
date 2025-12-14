@@ -14,7 +14,7 @@ from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
 # 用于SVG渲染
-from freeassetfilter.utils.svg_renderer import SvgRenderer
+from freeassetfilter.core.svg_renderer import SvgRenderer
 import os
 
 
