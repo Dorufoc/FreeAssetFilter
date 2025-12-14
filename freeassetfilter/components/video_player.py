@@ -17,6 +17,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import sys
 import os
+from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel,
     QFileDialog, QStyle, QMessageBox, QGraphicsBlurEffect
@@ -1862,7 +1863,7 @@ class VideoPlayer(QWidget):
         
         try:
             # 配置文件路径
-            config_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
+            config_dir = get_app_data_path()
             config_file = os.path.join(config_dir, 'player_config.json')
             
             # 确保配置目录存在
@@ -1914,7 +1915,7 @@ class VideoPlayer(QWidget):
         """
         try:
             # 图标路径
-            icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
+            icon_dir = get_resource_path('freeassetfilter/icons')
             
             # 固定图标大小
             fixed_icon_size = 32

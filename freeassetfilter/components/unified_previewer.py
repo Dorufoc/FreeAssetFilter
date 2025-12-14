@@ -17,6 +17,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import sys
 import os
+from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox
@@ -486,7 +487,7 @@ class UnifiedPreviewer(QWidget):
             import cv2
             
             # 生成缩略图文件路径
-            thumb_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'thumbnails')
+            thumb_dir = os.path.join(get_app_data_path(), 'thumbnails')
             os.makedirs(thumb_dir, exist_ok=True)
             file_hash = hash(file_path)
             thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")

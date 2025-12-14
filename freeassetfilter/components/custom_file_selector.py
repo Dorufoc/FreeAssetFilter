@@ -20,6 +20,7 @@ import os
 import re
 import json
 from datetime import datetime
+from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -81,10 +82,10 @@ class CustomFileSelector(QWidget):
         self.view_mode = "card"  # 默认卡片视图
         
         # 保存当前路径到文件
-        self.save_path_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "last_path.json")
+        self.save_path_file = os.path.join(get_app_data_path(), "last_path.json")
         
         # 收藏夹配置文件
-        self.favorites_file = os.path.join(os.path.dirname(__file__), "..", "..", "config", "favorites.json")
+        self.favorites_file = os.path.join(get_config_path(), "favorites.json")
         self.favorites = self._load_favorites()
         
         # 确保数据目录存在
@@ -465,7 +466,7 @@ class CustomFileSelector(QWidget):
         if is_confirmed:
             try:
                 # 获取缩略图存储目录
-                thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+                thumb_dir = os.path.join(get_app_data_path(), "thumbnails")
                 
                 # 检查目录是否存在
                 if os.path.exists(thumb_dir):
@@ -1786,7 +1787,7 @@ class CustomFileSelector(QWidget):
         
         # 确定要使用的SVG图标
         icon_path = None
-        icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
+        icon_dir = get_resource_path("freeassetfilter/icons")
         
         if file_info["is_dir"]:
             # 文件夹使用文件夹图标
@@ -1866,7 +1867,7 @@ class CustomFileSelector(QWidget):
                     suffix = "FILE"
                 
                 # 加载指定字体
-                font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
+                font_path = get_resource_path("freeassetfilter/icons/庞门正道标题体.ttf")
                 font = QFont()
                 
                 # 尝试加载字体文件，如果失败则使用默认字体
@@ -1962,7 +1963,7 @@ class CustomFileSelector(QWidget):
         
         # 确定要使用的SVG图标
         icon_path = None
-        icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
+        icon_dir = get_resource_path("freeassetfilter/icons")
         
         if file_info["is_dir"]:
             # 文件夹使用文件夹图标
@@ -2014,7 +2015,7 @@ class CustomFileSelector(QWidget):
         获取文件的缩略图路径
         """
         # 缩略图存储在临时目录
-        thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+        thumb_dir = os.path.join(get_app_data_path(), "thumbnails")
         os.makedirs(thumb_dir, exist_ok=True)
         
         # 使用更稳定的哈希算法，确保在不同进程中生成相同的哈希值
