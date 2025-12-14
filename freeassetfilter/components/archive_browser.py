@@ -473,9 +473,13 @@ class ArchiveBrowser(QWidget):
                 # 获取文件路径
                 file_path = info.filename
                 
-                # 如果是目录，添加到目录集合
-                if info.isdir():
-                    dirs.add(file_path)
+                # 检查是否是目录（使用多种方式确保准确性）
+                is_dir = info.isdir() or file_path.endswith('/') or file_path.endswith('\\')
+                
+                if is_dir:
+                    # 确保目录路径格式统一
+                    dir_path = file_path.rstrip('/\\')
+                    dirs.add(dir_path)
                     continue
                 
                 # 检查文件是否在当前路径下
@@ -488,22 +492,51 @@ class ArchiveBrowser(QWidget):
                     rel_path = file_path
                 
                 # 检查是否是当前路径下的直接子项
-                if '/' in rel_path:
+                if '/' in rel_path or '\\' in rel_path:
                     # 是子目录下的文件，只添加目录
-                    sub_dir = rel_path.split('/')[0]
+                    # 处理不同的路径分隔符
+                    sub_dir = rel_path.split('/')[0] if '/' in rel_path else rel_path.split('\\')[0]
                     if sub_dir:  # 确保子目录名不为空
-                        dirs.add(sub_dir if not self.current_path else f"{self.current_path}/{sub_dir}")
+                        # 构建完整的目录路径
+                        full_sub_dir = sub_dir if not self.current_path else f"{self.current_path}/{sub_dir}"
+                        dirs.add(full_sub_dir)
                 else:
                     # 是当前目录下的文件
-                    # 使用getattr函数获取属性，避免AttributeError
-                    file_size = getattr(info, 'file_size', 0)
+                    # 使用正确的属性名称获取文件大小和修改时间
+                    file_size = getattr(info, 'size', 0)
                     file_mtime = getattr(info, 'mtime', 0)
+                    
+                    # 处理修改时间，确保是整数时间戳
+                    try:
+                        # 尝试将修改时间转换为整数时间戳
+                        if isinstance(file_mtime, (int, float)):
+                            # 已经是时间戳格式
+                            timestamp = file_mtime
+                        else:
+                            # 尝试从datetime对象或其他格式转换
+                            import time
+                            # 检查是否有timestamp方法
+                            if hasattr(file_mtime, 'timestamp'):
+                                timestamp = file_mtime.timestamp()
+                            # 检查是否有struct_time属性
+                            elif hasattr(file_mtime, 'timetuple'):
+                                timestamp = time.mktime(file_mtime.timetuple())
+                            else:
+                                # 无法转换，使用当前时间
+                                timestamp = time.time()
+                        
+                        modified_time = datetime.fromtimestamp(timestamp).isoformat()
+                    except Exception as e:
+                        # 转换失败，使用空字符串
+                        print(f"[DEBUG] 转换RAR文件修改时间失败: {e}, 文件: {rel_path}")
+                        modified_time = ""
+                    
                     files.append({
                         "name": rel_path,
                         "path": file_path,
                         "is_dir": False,
                         "size": file_size,
-                        "modified": datetime.fromtimestamp(file_mtime).isoformat() if file_mtime else "",
+                        "modified": modified_time,
                         "suffix": os.path.splitext(rel_path)[1].lower()[1:] if '.' in rel_path else ''
                     })
         
@@ -512,10 +545,14 @@ class ArchiveBrowser(QWidget):
             if self.current_path:
                 if not dir_name.startswith(self.current_path + '/'):
                     continue
-                rel_dir = dir_name[len(self.current_path) + 1:].rstrip('/')
-                if '/' in rel_dir:
+                # 获取相对目录路径
+                rel_dir = dir_name[len(self.current_path) + 1:]
+                # 检查是否是直接子目录
+                if '/' in rel_dir or '\\' in rel_dir:
                     # 只添加直接子目录
-                    rel_dir = rel_dir.split('/')[0]
+                    # 处理不同的路径分隔符
+                    rel_dir = rel_dir.split('/')[0] if '/' in rel_dir else rel_dir.split('\\')[0]
+                    # 确保该目录尚未添加
                     if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
                         files.append({
                             "name": rel_dir,
@@ -526,18 +563,22 @@ class ArchiveBrowser(QWidget):
                             "suffix": ""
                         })
                 else:
+                    # 直接子目录，直接添加
                     files.append({
                         "name": rel_dir,
-                        "path": dir_name.rstrip('/'),
+                        "path": dir_name,
                         "is_dir": True,
                         "size": 0,
                         "modified": "",
                         "suffix": ""
                     })
             else:
-                if '/' in dir_name:
-                    # 只添加根目录下的直接子目录
-                    rel_dir = dir_name.split('/')[0]
+                # 根目录下的目录
+                if '/' in dir_name or '\\' in dir_name:
+                    # 只添加直接子目录
+                    # 处理不同的路径分隔符
+                    rel_dir = dir_name.split('/')[0] if '/' in dir_name else dir_name.split('\\')[0]
+                    # 确保该目录尚未添加
                     if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
                         files.append({
                             "name": rel_dir,
@@ -548,9 +589,10 @@ class ArchiveBrowser(QWidget):
                             "suffix": ""
                         })
                 else:
+                    # 直接子目录，直接添加
                     files.append({
-                        "name": dir_name.rstrip('/'),
-                        "path": dir_name.rstrip('/'),
+                        "name": dir_name,
+                        "path": dir_name,
                         "is_dir": True,
                         "size": 0,
                         "modified": "",
