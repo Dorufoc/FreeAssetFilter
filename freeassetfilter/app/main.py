@@ -23,7 +23,6 @@ FreeAssetFilter 主程序
 
 import sys
 import os
-from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
@@ -58,7 +57,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
         
         # 设置程序图标
-        icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
+        icon_path = os.path.join(os.path.dirname(__file__), 'freeassetfilter', 'icons', 'FAF-main.ico')
         self.setWindowIcon(QIcon(icon_path))
         
         # 用于生成唯一的文件选择器实例ID
@@ -326,7 +325,7 @@ class FreeAssetFilterApp(QMainWindow):
         import json
         
         # 备份文件路径
-        backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
+        backup_file = os.path.join(os.path.dirname(__file__), 'data', 'staging_pool_backup.json')
         
         # 检查备份文件是否存在
         if os.path.exists(backup_file):
@@ -429,7 +428,7 @@ def main():
     app = QApplication(sys.argv)
     
     # 设置应用程序图标，用于任务栏显示
-    icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
+    icon_path = os.path.join(os.path.dirname(__file__), '../icons', 'FAF-main.ico')
     app.setWindowIcon(QIcon(icon_path))
     
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
