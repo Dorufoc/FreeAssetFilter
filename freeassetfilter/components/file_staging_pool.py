@@ -689,14 +689,25 @@ class FileStagingPool(QWidget):
                 obj.rename_btn.setVisible(False)
         return super().eventFilter(obj, event)
     
-    def save_backup(self):
+    def save_backup(self, last_path='All'):
         """
         保存当前文件列表到备份文件
+        
+        Args:
+            last_path (str): 文件选择器的当前路径
         """
         import json
         try:
+            # 构建备份数据，包含文件列表和选择器状态
+            backup_data = {
+                'items': self.items,
+                'selector_state': {
+                    'last_path': last_path
+                }
+            }
             with open(self.backup_file, 'w', encoding='utf-8') as f:
-                json.dump(self.items, f, ensure_ascii=False, indent=2)
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            print(f"[DEBUG] 保存备份成功，路径: {self.backup_file}, 项目数: {len(self.items)}, 最后路径: {last_path}")
         except Exception as e:
             print(f"保存文件列表备份失败: {e}")
     
