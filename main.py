@@ -3,7 +3,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FreeAssetFilter v0.1.0
+FreeAssetFilter v1.0.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
