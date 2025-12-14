@@ -17,6 +17,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import os
 import tempfile
+from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QScrollArea, QGroupBox, QListWidget, QListWidgetItem, 
@@ -66,7 +67,7 @@ class FileStagingPool(QWidget):
         self.items = []  # 存储所有添加的文件/文件夹项目
         
         # 备份文件路径
-        self.backup_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'staging_pool_backup.json')
+        self.backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
         # 确保数据目录存在
         os.makedirs(os.path.dirname(self.backup_file), exist_ok=True)
         
