@@ -1,0 +1,15 @@
+PyQt5>=5.15.0
+PyQtWebEngine>=5.15.0
+chardet>=5.0.0
+mutagen>=1.46.0
+Pillow>=10.0.0
+PyMuPDF>=1.24.0
+python-vlc>=3.0.0
+importlib-metadata>=6.0.0
+markdown>=3.4.0
+pygments>=2.15.0
+rarfile>=4.0.0
+py7zr>=0.21.0
+pycdlib>=1.14.0
+opencv-python>=4.0.0
+numpy>=1.19.0

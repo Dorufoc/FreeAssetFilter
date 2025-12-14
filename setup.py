@@ -32,7 +32,7 @@ setup(
     install_requires=read_file("requirements.txt").splitlines(),
     entry_points={
         "console_scripts": [
-            "freeassetfilter = main:main",
+            "freeassetfilter = freeassetfilter.app.main:main",
         ],
     },
     classifiers=[

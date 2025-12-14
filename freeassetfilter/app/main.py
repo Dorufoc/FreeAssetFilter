@@ -410,8 +410,10 @@ class FreeAssetFilterApp(QMainWindow):
         # 简单的信息显示，使用状态标签
         self.status_label.setText(f"{title}: {message}")
 
-# 主程序入口
-if __name__ == "__main__":
+def main():
+    """
+    主程序入口函数
+    """
     print("=== FreeAssetFilter 主程序 ===")
     
     # 修改sys.argv[0]以确保Windows任务栏显示正确图标
@@ -426,7 +428,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     
     # 设置应用程序图标，用于任务栏显示
-    icon_path = os.path.join(os.path.dirname(__file__), 'freeassetfilter', 'icons', 'FAF-main.ico')
+    icon_path = os.path.join(os.path.dirname(__file__), '../icons', 'FAF-main.ico')
     app.setWindowIcon(QIcon(icon_path))
     
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
@@ -459,3 +461,7 @@ if __name__ == "__main__":
     # 窗口显示后再检查并恢复文件列表，确保主面板先显示
     window.check_and_restore_backup()
     sys.exit(app.exec_())
+
+# 主程序入口
+if __name__ == "__main__":
+    main()
