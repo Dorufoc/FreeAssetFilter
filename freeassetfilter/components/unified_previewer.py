@@ -75,7 +75,7 @@ class UnifiedPreviewer(QWidget):
         """
         # 创建主布局
         main_layout = QVBoxLayout(self)
-        self.setStyleSheet("background-color: #ffffff;")
+        self.setStyleSheet("background-color: #f1f3f5;")
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(10, 10, 10, 10)
         
