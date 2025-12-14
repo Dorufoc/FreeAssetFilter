@@ -334,7 +334,7 @@ class CustomButton(QPushButton):
     - 支持文字和图标两种显示模式
     """
     
-    def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text"):
+    def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text", height=40):
         """
         初始化自定义按钮
         
@@ -345,9 +345,11 @@ class CustomButton(QPushButton):
             display_mode (str): 显示模式，可选值："text"（文字显示）、"icon"（图标显示）
                               当未传入该参数或参数为空时，默认启用文字显示功能
                               当传入该参数且参数不为空时，启用图标显示功能
+            height (int): 按钮高度，默认为40px，与CustomInputBox保持一致
         """
         super().__init__(text, parent)
         self.button_type = button_type
+        self._height = height
         
         # 显示模式：text（文字）或icon（图标）
         self._display_mode = display_mode
@@ -377,6 +379,9 @@ class CustomButton(QPushButton):
         shadow.setOffset(0, 2)
         shadow.setColor(QColor(0, 0, 0, 15))
         self.setGraphicsEffect(shadow)
+        
+        # 设置固定高度，与CustomInputBox保持一致
+        self.setFixedHeight(self._height)
         
         if self.button_type == "primary":
             # 强调色方案
@@ -1510,7 +1515,7 @@ class CustomInputBox(QWidget):
                 border: none;
                 padding: 8px 12px;
                 color: %s;
-                font-size: 14px;
+                font-size: 18px;
                 selection-background-color: #0a59f7;
                 selection-color: white;
             }

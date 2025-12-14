@@ -214,6 +214,18 @@ class PlayerCore:
             print(f"[PlayerCore] 错误: 设置媒体失败 - {e}")
             return False
     
+    def load_media(self, file_path):
+        """
+        加载媒体文件（兼容FFPlayerCore接口）
+        
+        Args:
+            file_path (str): 媒体文件路径
+            
+        Returns:
+            bool: 加载成功返回 True，否则返回 False
+        """
+        return self.set_media(file_path)
+    
     def play(self):
         """
         开始播放媒体
@@ -285,6 +297,42 @@ class PlayerCore:
             # 确保位置在有效范围内
             position = max(0.0, min(1.0, position))
             self._player.set_position(position)
+        except Exception:
+            pass
+    
+    def set_speed(self, speed):
+        """
+        设置播放速度
+        
+        Args:
+            speed (float): 播放速度，范围 0.1 到 10.0
+        """
+        try:
+            # 检查VLC播放器是否初始化成功
+            if not self._player:
+                return
+                
+            # 确保速度在有效范围内
+            speed = max(0.1, min(10.0, speed))
+            self._player.set_rate(speed)
+        except Exception:
+            pass
+    
+    def set_volume(self, volume):
+        """
+        设置音量
+        
+        Args:
+            volume (int): 音量值，范围 0 到 100
+        """
+        try:
+            # 检查VLC播放器是否初始化成功
+            if not self._player:
+                return
+                
+            # 确保音量在有效范围内
+            volume = max(0, min(100, volume))
+            self._player.audio_set_volume(volume)
         except Exception:
             pass
     

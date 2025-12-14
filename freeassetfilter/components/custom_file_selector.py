@@ -188,7 +188,7 @@ class CustomFileSelector(QWidget):
         # 目录显示区域（可编辑）
         self.path_edit = CustomInputBox(
             placeholder_text="输入路径",
-            height=30
+            height=40
         )
         self.path_edit.line_edit.returnPressed.connect(self.go_to_path)
         dir_layout.addWidget(self.path_edit, 1)
@@ -236,7 +236,7 @@ class CustomFileSelector(QWidget):
         # 文件筛选功能（正则表达式）
         self.filter_edit = CustomInputBox(
             placeholder_text="正则表达式筛选",
-            height=30
+            height=40
         )
         self.filter_edit.line_edit.returnPressed.connect(self.apply_filter)
         filter_sort_layout.addWidget(self.filter_edit, 1)

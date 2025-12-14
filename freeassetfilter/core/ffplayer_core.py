@@ -19,6 +19,7 @@ import os
 import threading
 import time
 import queue
+import subprocess
 import ffmpeg
 import numpy as np
 import cv2
@@ -38,6 +39,9 @@ class FFPlayerCore(QObject):
     SUPPORTED_AUDIO_FORMATS = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', 
                               '.m4a', '.aiff', '.ape', '.opus']
     
+    # 硬件加速类型优先级顺序
+    HARDWARE_ACCEL_TYPES = ['cuda', 'dxva2', 'd3d11va', 'qsv', 'vaapi', 'vdpau', 'none']
+    
     # 信号定义
     frame_available = pyqtSignal(np.ndarray)  # 新视频帧可用
     
@@ -55,12 +59,19 @@ class FFPlayerCore(QObject):
         self._duration = 0
         self._position = 0.0
         self._file_path = ""
+        self._speed = 1.0  # 播放速度
+        self._volume = 50  # 音量，范围0-100
         
         # 视频参数
         self._video_width = 0
         self._video_height = 0
         self._fps = 0
+        self._video_codec = ""
         self._frame_queue = queue.Queue(maxsize=30)
+        
+        # 音频参数
+        self._audio_stream = None
+        self._audio_codec = None
         
         # 解码线程
         self._decode_thread = None
@@ -72,6 +83,10 @@ class FFPlayerCore(QObject):
         self._lut_enabled = False
         self._lut_data = None
         self._lut_path = ""
+        
+        # 硬件加速
+        self._hardware_accel = self._detect_hardware_accel()
+        print(f"[FFPlayerCore] 检测到硬件加速: {self._hardware_accel}")
         
     def __del__(self):
         """
@@ -154,7 +169,34 @@ class FFPlayerCore(QObject):
             # 获取视频参数
             self._video_width = int(video_stream['width'])
             self._video_height = int(video_stream['height'])
-            self._fps = eval(video_stream['r_frame_rate'])
+            
+            # 安全解析帧率，避免使用eval()
+            frame_rate_str = video_stream.get('r_frame_rate', '0/1')
+            try:
+                if '/' in frame_rate_str:
+                    numerator, denominator = map(int, frame_rate_str.split('/'))
+                    if denominator != 0:
+                        self._fps = numerator / denominator
+                    else:
+                        self._fps = 0.0
+                else:
+                    self._fps = float(frame_rate_str)
+            except (ValueError, ZeroDivisionError):
+                print(f"[FFPlayerCore] 警告: 无法解析帧率 '{frame_rate_str}'，使用默认值 24.0")
+                self._fps = 24.0
+            
+            # 获取视频编码格式
+            self._video_codec = video_stream.get('codec_name', 'unknown')
+            print(f"[FFPlayerCore] 检测到视频编码: {self._video_codec}")
+            
+            # 获取音频流（如果有）
+            self._audio_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'audio'), None)
+            if self._audio_stream:
+                self._audio_codec = self._audio_stream.get('codec_name', 'unknown')
+                print(f"[FFPlayerCore] 检测到音频编码: {self._audio_codec}")
+            else:
+                self._audio_codec = None
+                print(f"[FFPlayerCore] 未检测到音频流")
             
             # 获取总时长
             if 'duration' in probe['format']:
@@ -294,6 +336,92 @@ class FFPlayerCore(QObject):
             print(f"[FFPlayerCore] 设置播放位置失败: {e}")
             return False
     
+    def set_speed(self, speed: float) -> bool:
+        """
+        设置播放速度
+        
+        Args:
+            speed (float): 播放速度，范围 0.1 到 10.0
+            
+        Returns:
+            bool: 设置成功返回 True，否则返回 False
+        """
+        try:
+            # 确保速度在有效范围内
+            self._speed = max(0.1, min(10.0, speed))
+            return True
+        except Exception as e:
+            print(f"[FFPlayerCore] 设置播放速度失败: {e}")
+            return False
+    
+    def set_volume(self, volume: int) -> bool:
+        """
+        设置音量
+        
+        Args:
+            volume (int): 音量值，范围 0 到 100
+            
+        Returns:
+            bool: 设置成功返回 True，否则返回 False
+        """
+        try:
+            # 确保音量在有效范围内
+            self._volume = max(0, min(100, volume))
+            return True
+        except Exception as e:
+            print(f"[FFPlayerCore] 设置音量失败: {e}")
+            return False
+    
+    def _detect_hardware_accel(self):
+        """
+        检测可用的硬件加速
+        
+        Returns:
+            str: 可用的硬件加速类型，如'cuda', 'dxva2', 'none'等
+        """
+        # 首先获取所有可用的硬件加速类型
+        available_accels = []
+        try:
+            cmd = "ffmpeg -hide_banner -hwaccels"
+            process = subprocess.Popen(
+                cmd, 
+                shell=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                universal_newlines=True
+            )
+            stdout, _ = process.communicate(timeout=5)
+            
+            # 解析输出，提取硬件加速类型
+            for line in stdout.strip().split('\n'):
+                line = line.strip()
+                if line and not line.startswith('--'):
+                    available_accels.append(line.lower())
+        except (subprocess.TimeoutExpired, Exception):
+            available_accels = []
+        
+        # 按照优先级顺序检查可用的硬件加速
+        for accel_type in self.HARDWARE_ACCEL_TYPES:
+            if accel_type == 'none':
+                return accel_type
+            
+            if accel_type.lower() in available_accels:
+                # 进一步验证该加速类型是否可用
+                try:
+                    test_cmd = f"ffmpeg -hide_banner -f lavfi -i color=c=red:size=16x16:rate=1 -c:v libx264 -hwaccel {accel_type} -t 1 -f null -"
+                    process = subprocess.Popen(
+                        test_cmd, 
+                        shell=True, 
+                        stdout=subprocess.PIPE, 
+                        stderr=subprocess.PIPE
+                    )
+                    _, stderr = process.communicate(timeout=5)
+                    if process.returncode == 0:
+                        return accel_type
+                except (subprocess.TimeoutExpired, Exception):
+                    continue
+        return 'none'
+    
     def _decode_loop(self):
         """
         视频解码循环
@@ -309,25 +437,53 @@ class FFPlayerCore(QObject):
                     self._seek_event.clear()
                 
                 # 创建ffmpeg输入流
+                input_kwargs = {}
+                
+                # MXF文件特定处理
+                if self._file_path.lower().endswith('.mxf'):
+                    input_kwargs['format'] = 'mxf'
+                    input_kwargs['probe_size'] = '2G'  # 增大探测大小以处理大型MXF文件
+                    input_kwargs['analyzeduration'] = '100M'  # 增加分析时长
+                
                 if seek_time is not None:
                     # 带seek的输入流
-                    stream = ffmpeg.input(self._file_path, ss=seek_time)
+                    stream = ffmpeg.input(self._file_path, ss=seek_time, **input_kwargs)
                 else:
                     # 正常输入流
-                    stream = ffmpeg.input(self._file_path)
+                    stream = ffmpeg.input(self._file_path, **input_kwargs)
                 
                 # 只解码视频流
                 stream = stream.video
                 
                 # 输出原始视频帧
+                output_kwargs = {
+                    'format': 'rawvideo',
+                    'pix_fmt': 'bgr24',
+                    'threads': 'auto',
+                    'strict': 'experimental',
+                    'max_muxing_queue_size': 4096,
+                    'vsync': '0',
+                    'hwaccel_output_format': 'cuda' if self._hardware_accel == 'cuda' else None
+                }
+                
+                # 移除None值的参数
+                output_kwargs = {k: v for k, v in output_kwargs.items() if v is not None}
+                
+                # 设置硬件加速
+                if self._hardware_accel != 'none':
+                    stream = stream.global_args('-hwaccel', self._hardware_accel)
+                    
+                    # 根据不同的硬件加速类型添加特定参数
+                    if self._hardware_accel in ['dxva2', 'd3d11va']:
+                        stream = stream.global_args('-hwaccel_device', '0')
+                    elif self._hardware_accel == 'qsv':
+                        stream = stream.global_args('-qsv_device', 'auto')
+                
+                # 输出原始视频帧
                 stream = ffmpeg.output(
                     stream,
                     'pipe:',
-                    format='rawvideo',
-                    pix_fmt='bgr24',
-                    threads='auto',
-                    strict='experimental',
-                    max_muxing_queue_size=4096
+                    **output_kwargs
                 )
                 
                 # 运行ffmpeg进程
@@ -400,7 +556,7 @@ class FFPlayerCore(QObject):
                     
                     # 控制播放速度
                     frame_index += 1
-                    expected_time = frame_index / self._fps
+                    expected_time = frame_index / (self._fps * self._speed)
                     actual_time = time.time() - start_time
                     if actual_time < expected_time:
                         time.sleep(expected_time - actual_time)

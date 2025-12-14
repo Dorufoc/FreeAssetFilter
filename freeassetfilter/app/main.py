@@ -23,10 +23,11 @@ FreeAssetFilter 主程序
 
 import sys
 import os
-from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 
 # 添加父目录到Python路径，确保包能被正确导入
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
