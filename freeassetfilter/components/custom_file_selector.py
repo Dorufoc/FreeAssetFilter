@@ -40,7 +40,7 @@ from PyQt5.QtGui import (
     QBrush, QPainter, QPen, QPalette, QImage, QFontDatabase
 )
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
-from freeassetfilter.utils.svg_renderer import SvgRenderer
+from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets.custom_widgets import CustomButton, CustomInputBox
 
 

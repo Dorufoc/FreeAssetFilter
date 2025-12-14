@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage
-from freeassetfilter.utils.svg_renderer import SvgRenderer
+from freeassetfilter.core.svg_renderer import SvgRenderer
 
 # 用于读取音频文件封面
 from mutagen.id3 import ID3
@@ -2206,7 +2206,7 @@ class VideoPlayer(QWidget):
                 icon_path = os.path.join(icon_dir, '音量.svg')
             
             # 渲染SVG图标为QPixmap
-            from freeassetfilter.utils.svg_renderer import SvgRenderer
+            from freeassetfilter.core.svg_renderer import SvgRenderer
             pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, fixed_icon_size)
             
             # 设置按钮图标
