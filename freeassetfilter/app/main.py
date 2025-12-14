@@ -23,6 +23,10 @@ FreeAssetFilter 主程序
 
 import sys
 import os
+
+# 添加父目录到Python路径，确保包能被正确导入
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
@@ -57,7 +61,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
         
         # 设置程序图标
-        icon_path = os.path.join(os.path.dirname(__file__), 'freeassetfilter', 'icons', 'FAF-main.ico')
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'FAF-main.ico')
         self.setWindowIcon(QIcon(icon_path))
         
         # 用于生成唯一的文件选择器实例ID
