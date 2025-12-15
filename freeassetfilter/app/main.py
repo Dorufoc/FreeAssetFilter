@@ -4,7 +4,7 @@
 # -*- coding: utf-8 -*-
 """
 FreeAssetFilter v1.0.0
-
+master
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 协议说明：本软件基于 MIT 协议开源
