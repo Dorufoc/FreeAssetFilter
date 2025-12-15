@@ -66,6 +66,9 @@ class UnifiedPreviewer(QWidget):
         self.progress_dialog = None
         self.is_cancelled = False
         
+        # 初始化临时PDF文件路径，用于文档预览
+        self.temp_pdf_path = None
+        
         # 初始化UI
         self.init_ui()
     
@@ -193,6 +196,8 @@ class UnifiedPreviewer(QWidget):
             preview_type = "text"
         elif file_type in ["zip", "rar", "tar", "gz", "tgz", "bz2", "xz", "7z", "iso"]:
             preview_type = "archive"
+        elif file_type in ["doc", "docx", "xls", "xlsx", "ppt", "pptx"]:
+            preview_type = "document"  # 新增文档类型
         else:
             preview_type = "unknown"
         
@@ -340,6 +345,22 @@ class UnifiedPreviewer(QWidget):
                 if widget is not None:
                     widget.deleteLater()
         
+        # 删除临时PDF文件（如果存在）
+        print("=== 进入_clear_preview方法 ===")
+        print(f"hasattr(temp_pdf_path): {hasattr(self, 'temp_pdf_path')}")
+        if hasattr(self, 'temp_pdf_path'):
+            print(f"temp_pdf_path值: {self.temp_pdf_path}")
+            print(f"temp_pdf_path存在: {os.path.exists(self.temp_pdf_path) if self.temp_pdf_path else False}")
+            if self.temp_pdf_path and os.path.exists(self.temp_pdf_path):
+                try:
+                    os.remove(self.temp_pdf_path)
+                    print(f"已删除临时PDF文件: {self.temp_pdf_path}")
+                except Exception as e:
+                    print(f"删除临时PDF文件失败: {e}")
+            self.temp_pdf_path = None
+            print("已重置temp_pdf_path为None")
+        print("=== 退出_clear_preview方法 ===")
+        
         # 重置当前预览组件和类型
         self.current_preview_widget = None
         self.current_preview_type = None
@@ -357,6 +378,22 @@ class UnifiedPreviewer(QWidget):
             return
         
         try:
+            # 如果是文档类型预览，先清理旧的临时PDF文件
+            if preview_type == "document":
+                # 清理旧的临时PDF文件
+                if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path and os.path.exists(self.temp_pdf_path):
+                    try:
+                        os.remove(self.temp_pdf_path)
+                        print(f"已删除旧临时PDF文件: {self.temp_pdf_path}")
+                    except Exception as e:
+                        print(f"删除旧临时PDF文件失败: {e}")
+                    finally:
+                        self.temp_pdf_path = None
+                # 对于文档类型，需要重新转换
+                self._clear_preview()
+                self._show_preview()
+                return
+            
             # 确保组件处于正确状态
             if preview_type in ["video", "audio"]:
                 # 视频和音频组件都有load_media方法
@@ -560,7 +597,7 @@ class UnifiedPreviewer(QWidget):
     def _show_pdf_preview(self, file_path):
         """
         显示PDF预览
-        进度条已在_show_preview中显示并在_on_preview_created中关闭
+        进度条已在_show_preview中显示，将在PDF渲染完成后关闭
         
         Args:
             file_path (str): PDF文件路径
@@ -571,6 +608,11 @@ class UnifiedPreviewer(QWidget):
             
             # 创建PDF预览器
             pdf_previewer = PDFPreviewer()
+            
+            # 连接PDF渲染完成信号
+            pdf_previewer.pdf_render_finished.connect(self._on_pdf_render_finished)
+            
+            # 加载PDF文件，开始渲染
             pdf_previewer.load_file_from_path(file_path)
             
             self.preview_layout.addWidget(pdf_previewer)
@@ -580,6 +622,8 @@ class UnifiedPreviewer(QWidget):
             error_label.setAlignment(Qt.AlignCenter)
             self.preview_layout.addWidget(error_label)
             self.current_preview_widget = error_label
+            # 发生错误时也关闭进度条弹窗
+            self._on_file_read_finished()
     
     def _show_progress_dialog(self, title, message):
         """
@@ -666,6 +710,13 @@ class UnifiedPreviewer(QWidget):
             self._progress_timer.deleteLater()
             delattr(self, '_progress_timer')
     
+    def _on_pdf_render_finished(self):
+        """
+        PDF渲染完成，关闭进度条弹窗
+        """
+        print("[DEBUG] PDF渲染完成，关闭进度条弹窗")
+        self._on_file_read_finished()
+    
     def _on_preview_created(self, preview_widget, preview_type):
         """
         预览准备完成，在主线程中创建预览组件并添加到布局中
@@ -675,8 +726,10 @@ class UnifiedPreviewer(QWidget):
             preview_type (str): 预览类型
         """
         try:
-            # 关闭进度条弹窗
-            self._on_file_read_finished()
+            # 注意：对于文档类型，我们不在这里关闭进度条弹窗，而是在转换完成后关闭
+            if preview_type != "document":
+                # 关闭进度条弹窗
+                self._on_file_read_finished()
             
             # 获取文件路径
             file_path = self.current_file_info["path"]
@@ -714,6 +767,10 @@ class UnifiedPreviewer(QWidget):
                 from freeassetfilter.components.archive_browser import ArchiveBrowser
                 created_widget = ArchiveBrowser()
                 created_widget.set_archive_path(file_path)
+            elif preview_type == "document":
+                # 文档预览：转换为PDF后预览
+                self._show_document_preview(file_path)
+                return  # _show_document_preview已经处理了组件添加
             
             # 添加创建的组件到布局
             if created_widget:
@@ -787,7 +844,7 @@ class UnifiedPreviewer(QWidget):
                 # 实际的UI组件创建将在主线程中完成
                 
                 # 对于不同的预览类型，执行不同的预处理逻辑
-                if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir"]:
+                if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir", "document"]:
                     # 模拟进度更新，确保UI能响应
                     import time
                     for i in range(20, 100, 10):
@@ -857,6 +914,117 @@ class UnifiedPreviewer(QWidget):
         except Exception as e:
             error_label = QLabel(f"文本预览失败: {str(e)}")
             error_label.setAlignment(Qt.AlignCenter)
+            self.preview_layout.addWidget(error_label)
+            self.current_preview_widget = error_label
+    
+    def _show_document_preview(self, file_path):
+        """
+        显示文档预览，先将文档转换为PDF，然后使用PDF预览器显示
+        
+        Args:
+            file_path (str): 文档文件路径
+        """
+        try:
+            import subprocess
+            import tempfile
+            import os
+            
+            # 生成临时PDF文件路径 - 使用程序data/temp文件夹
+            # 计算项目根目录：freeassetfilter/components/unified_previewer.py -> freeassetfilter/components -> freeassetfilter -> 项目根目录
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            temp_dir = os.path.join(project_root, "data", "temp")
+            # 确保temp文件夹存在
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
+                print(f"创建了临时文件夹: {temp_dir}")
+            
+            file_name = os.path.basename(file_path)
+            base_name = os.path.splitext(file_name)[0]
+            temp_pdf_name = f"{base_name}_temp.pdf"
+            self.temp_pdf_path = os.path.join(temp_dir, temp_pdf_name)
+            print(f"临时PDF路径: {self.temp_pdf_path}")
+            
+            print(f"正在将文档转换为PDF: {file_path} -> {self.temp_pdf_path}")
+            
+            # 找到便携版LibreOffice的路径
+            # __file__ = freeassetfilter/components/unified_previewer.py
+            # 三个dirname：freeassetfilter/components → freeassetfilter → 项目根目录
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            libreoffice_exe = os.path.join(project_root, "data", "LibreOfficePortable", "App", "LibreOffice", "program", "soffice.exe")
+            
+            if not os.path.exists(libreoffice_exe):
+                error_label = QLabel(f"未找到LibreOffice便携版: {libreoffice_exe}")
+                error_label.setAlignment(Qt.AlignCenter)
+                error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+                self.preview_layout.addWidget(error_label)
+                self.current_preview_widget = error_label
+                return
+            
+            # 使用LibreOffice将文档转换为PDF
+            cmd = [
+                libreoffice_exe,
+                "--headless",
+                "--convert-to", "pdf:writer_pdf_Export",
+                "--outdir", temp_dir,
+                file_path
+            ]
+            
+            print(f"执行命令: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                error_msg = f"文档转换失败: {result.stderr}" if result.stderr else f"文档转换失败，返回码: {result.returncode}"
+                error_label = QLabel(error_msg)
+                error_label.setAlignment(Qt.AlignCenter)
+                error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+                self.preview_layout.addWidget(error_label)
+                self.current_preview_widget = error_label
+                return
+            
+            # 检查PDF文件是否生成
+            # 先获取所有可能的生成文件
+            import glob
+            generated_pdfs = glob.glob(os.path.join(temp_dir, f"{base_name}*.pdf"))
+            
+            if generated_pdfs:
+                # 找到所有生成的PDF文件
+                for pdf_path in generated_pdfs:
+                    print(f"找到生成的PDF: {pdf_path}")
+                    # 如果不是我们想要的临时文件名，重命名为临时文件名
+                    if pdf_path != self.temp_pdf_path:
+                        try:
+                            # 删除已存在的临时文件（如果有）
+                            if os.path.exists(self.temp_pdf_path):
+                                os.remove(self.temp_pdf_path)
+                            # 重命名为临时文件名
+                            os.rename(pdf_path, self.temp_pdf_path)
+                            print(f"将PDF重命名为: {self.temp_pdf_path}")
+                        except Exception as e:
+                            print(f"重命名PDF失败: {e}")
+                            # 如果重命名失败，直接使用生成的PDF路径
+                            self.temp_pdf_path = pdf_path
+                            break
+            elif not os.path.exists(self.temp_pdf_path):
+                # 没有找到任何生成的PDF文件
+                error_label = QLabel(f"PDF生成失败，未找到预期的PDF文件")
+                error_label.setAlignment(Qt.AlignCenter)
+                error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+                self.preview_layout.addWidget(error_label)
+                self.current_preview_widget = error_label
+                return
+            
+            print(f"文档转换成功: {self.temp_pdf_path}")
+            
+            print(f"文档转换成功: {self.temp_pdf_path}")
+            
+            # 使用现有的PDF预览方法显示转换后的PDF
+            # 注意：这里不再立即关闭进度条弹窗，而是等待PDF渲染完成后关闭
+            self._show_pdf_preview(self.temp_pdf_path)
+        except Exception as e:
+            import traceback
+            error_label = QLabel(f"文档预览失败: {str(e)}\n\n详细错误:\n{traceback.format_exc()}")
+            error_label.setAlignment(Qt.AlignCenter)
+            error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
             self.preview_layout.addWidget(error_label)
             self.current_preview_widget = error_label
 
