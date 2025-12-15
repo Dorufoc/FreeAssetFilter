@@ -8,6 +8,7 @@ __pycache__/
 
 # Data directories
 data/thumbnails/
+data/LibreOfficePortable/
 *.png
 *.jpg
 *.jpeg
