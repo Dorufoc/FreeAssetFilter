@@ -26,7 +26,7 @@ from PyQt5.QtGui import (
     QFont, QIcon, QPixmap, QImage
 )
 from PyQt5.QtCore import (
-    Qt, QSize, QEvent
+    Qt, QSize, QEvent, pyqtSignal
 )
 
 # 尝试导入PyMuPDF (fitz)库，作为PDF渲染引擎
@@ -41,7 +41,8 @@ class PDFPreviewWidget(QWidget):
     """
     PDF预览部件，使用PyMuPDF (fitz)库进行PDF渲染
     """
-    
+    # 添加PDF渲染完成信号
+    pdf_render_finished = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -363,8 +364,12 @@ class PDFPreviewWidget(QWidget):
             
             for page_num in range(self.total_pages):
                 self.render_page(page_num)
+            # 所有页面渲染完成，发出信号
+            self.pdf_render_finished.emit()
         except Exception as e:
             print(f"渲染所有页面时出错: {e}")
+            # 即使出错也发出信号，避免UI卡住
+            self.pdf_render_finished.emit()
     
     def render_page(self, page_num):
         """
@@ -505,7 +510,9 @@ class PDFPreviewer(QWidget):
     PDF预览器组件
     提供PDF文件的预览功能
     """
-    
+    # 添加PDF渲染完成信号，转发自PDFPreviewWidget
+    pdf_render_finished = pyqtSignal()
+
     def __init__(self, parent=None):
         """
         初始化PDF预览器
@@ -557,6 +564,8 @@ class PDFPreviewer(QWidget):
         
         # PDF预览区域
         self.pdf_widget = PDFPreviewWidget()
+         # 连接PDF渲染完成信号，转发到上层
+        self.pdf_widget.pdf_render_finished.connect(self.pdf_render_finished.emit)
         main_layout.addWidget(self.pdf_widget)
     
     def open_file(self):

@@ -121,6 +121,23 @@ class FreeAssetFilterApp(QMainWindow):
         # 保存文件存储池状态，传递文件选择器的当前路径
         if hasattr(self, 'file_staging_pool'):
             self.file_staging_pool.save_backup(last_path)
+
+        # 清理统一预览器中的临时PDF文件
+        if hasattr(self, 'unified_previewer'):
+            self.unified_previewer._clear_preview()
+        
+        # 统一清理：删除整个temp文件夹
+        import shutil
+        import os
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        temp_dir = os.path.join(project_root, "data", "temp")
+        if os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"已删除临时文件夹: {temp_dir}")
+            except Exception as e:
+                print(f"删除临时文件夹失败: {e}")
+        
         # 调用父类的closeEvent
         super().closeEvent(event)
     
