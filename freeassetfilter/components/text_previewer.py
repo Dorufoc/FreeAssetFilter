@@ -202,11 +202,12 @@ class TextPreviewWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # 获取全局字体
+        # 获取全局字体和DPI缩放因子
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         #print(f"[DEBUG] TextPreviewWidget获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
@@ -230,39 +231,48 @@ class TextPreviewWidget(QWidget):
         初始化预览部件UI
         """
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        
+        # 应用DPI缩放因子到布局参数
+        scaled_margin = int(20 * self.dpi_scale)
+        scaled_spacing = int(15 * self.dpi_scale)
+        layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        layout.setSpacing(scaled_spacing)
         
         # 设置背景�?
         self.setStyleSheet("background-color: #f5f5f5;")
         
         # 预览模式选择
         mode_layout = QHBoxLayout()
-        mode_layout.setSpacing(10)
+        mode_layout.setSpacing(int(10 * self.dpi_scale))
         
         mode_label = QLabel("预览模式:")
         mode_label.setFont(self.global_font)
-        mode_label.setStyleSheet("font-size: 14px; color: #333; font-weight: 500;")
+        scaled_font_size = int(14 * self.dpi_scale)
+        mode_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
         
         self.mode_selector = QComboBox()
         self.mode_selector.addItems(["自动检测", "纯文本", "Markdown", "代码高亮"])
         self.mode_selector.currentTextChanged.connect(self.change_preview_mode)
         self.mode_selector.setFont(self.global_font)
-        self.mode_selector.setStyleSheet('''.QComboBox {
+        scaled_padding_v = int(8 * self.dpi_scale)
+        scaled_padding_h = int(12 * self.dpi_scale)
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_combo_font_size = int(14 * self.dpi_scale)
+        self.mode_selector.setStyleSheet(f'''.QComboBox {{
             background-color: white;
             border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 8px 12px;
-            font-size: 14px;
+            border-radius: {scaled_border_radius}px;
+            padding: {scaled_padding_v}px {scaled_padding_h}px;
+            font-size: {scaled_combo_font_size}px;
             color: #333;
-        }
-        .QComboBox:hover {
+        }}
+        .QComboBox:hover {{
             border-color: #1976d2;
-        }
-        .QComboBox:focus {
+        }}
+        .QComboBox:focus {{
             border-color: #1976d2;
             outline: none;
-        }''')
+        }}''')
         
         mode_layout.addWidget(mode_label)
         mode_layout.addWidget(self.mode_selector)
@@ -271,8 +281,9 @@ class TextPreviewWidget(QWidget):
         
         # 预览区域
         self.web_view = QWebEngineView()
-        self.web_view.setMinimumHeight(500)
-        self.web_view.setStyleSheet("background-color: white; border: 1px solid #e0e0e0; border-radius: 8px;")
+        scaled_min_height = int(500 * self.dpi_scale)
+        self.web_view.setMinimumHeight(scaled_min_height)
+        self.web_view.setStyleSheet(f"background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px;")
         # 为WebView添加自定义上下文菜单
         self.web_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.web_view.customContextMenuRequested.connect(self.show_context_menu)
@@ -678,15 +689,23 @@ class TextPreviewer(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("文本预览器")
-        self.setGeometry(100, 100, 1000, 800)
         
-        # 获取全局字体
+        # 获取全局字体和DPI缩放因子
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         #print(f"[DEBUG] TextPreviewer获取到的全局字体: {self.global_font.family()}")
+        
+        # 设置窗口属性
+        self.setWindowTitle("文本预览器")
+        
+        # 使用DPI缩放因子调整窗口大小
+        scaled_min_width = int(1000 * self.dpi_scale)
+        scaled_min_height = int(800 * self.dpi_scale)
+        self.setGeometry(100, 100, scaled_min_width, scaled_min_height)
+        self.setMinimumSize(scaled_min_width, scaled_min_height)
         
         # 设置窗口字体
         self.setFont(self.global_font)

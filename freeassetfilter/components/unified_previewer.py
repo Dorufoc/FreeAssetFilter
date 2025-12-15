@@ -42,10 +42,11 @@ class UnifiedPreviewer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # 获取全局字体
+        # 获取应用实例和DPI缩放因子
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(app, 'global_font', QFont())
         #print(f"[DEBUG] UnifiedPreviewer获取到的全局字体: {self.global_font.family()}")
         
@@ -73,16 +74,22 @@ class UnifiedPreviewer(QWidget):
         """
         初始化用户界面
         """
+        # 应用DPI缩放因子到布局参数
+        scaled_spacing = int(10 * self.dpi_scale)
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_font_size = int(12 * self.dpi_scale)
+        scaled_control_margin = int(5 * self.dpi_scale)
+        
         # 创建主布局
         main_layout = QVBoxLayout(self)
         self.setStyleSheet("background-color: #f1f3f5;")
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(scaled_spacing)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
         # 创建标题
         #title_label = QLabel("统一文件预览器")
         # 只设置字体大小和粗细，不指定字体名称，使用全局字体
-        font = QFont("", 12, QFont.Bold)
+        font = QFont("", scaled_font_size, QFont.Bold)
         #title_label.setFont(font)
         #main_layout.addWidget(title_label)
         
@@ -92,7 +99,7 @@ class UnifiedPreviewer(QWidget):
         
         # 创建预览控制栏（右上角按钮）- 放在预览组件上方
         self.control_layout = QHBoxLayout()
-        self.control_layout.setContentsMargins(0, 0, 0, 5)  # 底部添加5px间距
+        self.control_layout.setContentsMargins(0, 0, 0, scaled_control_margin)  # 底部添加间距，应用DPI缩放
         self.control_layout.setAlignment(Qt.AlignRight)
         
         # 创建"使用系统默认方式打开"按钮
@@ -452,12 +459,15 @@ class UnifiedPreviewer(QWidget):
             # 创建VideoPlayer视频播放器
             video_player = VideoPlayer()
             
-            # 加载视频文件
-            video_player.load_media(file_path)
-            
             # 添加到布局
             self.preview_layout.addWidget(video_player)
             self.current_preview_widget = video_player
+            
+            # 加载并播放视频文件
+            video_player.load_media(file_path)
+            video_player.play()
+            
+            print(f"[DEBUG] 视频预览组件已创建并开始播放: {file_path}")
         except Exception as e:
             import traceback
             # 打印详细错误信息到控制台

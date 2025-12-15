@@ -47,10 +47,15 @@ class CustomWindow(QWidget):
         self.resize_start_pos = QPoint()
         self.resize_start_size = None
         self.resize_start_geometry = None
-        self.border_size = 15  # 增加边框宽度，便于用户抓住边缘和角落
+        
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 增加边框宽度，便于用户抓住边缘和角落，并应用DPI缩放
+        self.border_size = int(15 * self.dpi_scale)
         
         # 获取全局字体
-        app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
@@ -61,25 +66,32 @@ class CustomWindow(QWidget):
         """
         初始化自定义窗口UI
         """
+        # 应用DPI缩放因子
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_radius = int(12 * self.dpi_scale)
+        scaled_title_height = int(40 * self.dpi_scale)
+        scaled_shadow_radius = int(20 * self.dpi_scale)
+        scaled_shadow_offset = int(8 * self.dpi_scale)
+        
         # 主布局（用于容纳内容和装饰）
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(0)
         
         # 创建窗口主体（带圆角）
         self.window_body = QWidget()
-        self.window_body.setStyleSheet("""
-            QWidget {
+        self.window_body.setStyleSheet(f"""
+            QWidget {{
                 background-color: #ffffff;
-                border-radius: 12px;
+                border-radius: {scaled_radius}px;
                 border: 1px solid #e9ecef;
-            }
+            }}
         """)
         
         # 添加阴影效果
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
-        shadow.setOffset(0, 8)
+        shadow.setBlurRadius(scaled_shadow_radius)
+        shadow.setOffset(0, scaled_shadow_offset)
         shadow.setColor(QColor(0, 0, 0, 60))
         self.window_body.setGraphicsEffect(shadow)
         
@@ -91,8 +103,8 @@ class CustomWindow(QWidget):
         # 标题栏
         title_bar = QWidget()
         title_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        title_bar.setMinimumHeight(40)
-        title_bar.setMaximumHeight(40)
+        title_bar.setMinimumHeight(scaled_title_height)
+        title_bar.setMaximumHeight(scaled_title_height)
         title_bar.setStyleSheet("""
             QWidget {
                 background-color: transparent;
@@ -100,8 +112,12 @@ class CustomWindow(QWidget):
         """)
         
         title_layout = QHBoxLayout(title_bar)
-        title_layout.setContentsMargins(16, 0, 8, 0)
-        title_layout.setSpacing(8)
+        # 应用DPI缩放因子到边距和间距
+        scaled_left_margin = int(16 * self.dpi_scale)
+        scaled_right_margin = int(8 * self.dpi_scale)
+        scaled_spacing = int(8 * self.dpi_scale)
+        title_layout.setContentsMargins(scaled_left_margin, 0, scaled_right_margin, 0)
+        title_layout.setSpacing(scaled_spacing)
         
         # 标题标签
         title_label = QLabel(self.title)
@@ -117,22 +133,26 @@ class CustomWindow(QWidget):
         
         # 关闭按钮
         self.close_button = QPushButton()
-        self.close_button.setFixedSize(24, 24)
-        self.close_button.setStyleSheet("""
-            QPushButton {
+        # 应用DPI缩放因子到关闭按钮
+        scaled_button_size = int(24 * self.dpi_scale)
+        scaled_border_radius = int(12 * self.dpi_scale)
+        scaled_font_size = int(18 * self.dpi_scale)
+        self.close_button.setFixedSize(scaled_button_size, scaled_button_size)
+        self.close_button.setStyleSheet(f"""
+            QPushButton {{
                 background-color: #0a59f7;
                 border: none;
-                border-radius: 12px;
+                border-radius: {scaled_border_radius}px;
                 color: #ffffff;
-                font-size: 18px;
+                font-size: {scaled_font_size}px;
                 font-weight: 400;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: #0a59f7;
-            }
-            QPushButton:pressed {
+            }}
+            QPushButton:pressed {{
                 background-color: #0062A0;
-            }
+            }}
         """)
         self.close_button.setText("×")
         self.close_button.clicked.connect(self.close)
@@ -147,8 +167,12 @@ class CustomWindow(QWidget):
         """)
         
         self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(16, 8, 16, 16)
-        self.content_layout.setSpacing(12)
+        # 应用DPI缩放因子到内容区域边距和间距
+        scaled_content_margin = int(16 * self.dpi_scale)
+        scaled_content_top_margin = int(8 * self.dpi_scale)
+        scaled_content_spacing = int(12 * self.dpi_scale)
+        self.content_layout.setContentsMargins(scaled_content_margin, scaled_content_top_margin, scaled_content_margin, scaled_content_margin)
+        self.content_layout.setSpacing(scaled_content_spacing)
         
         # 将标题栏和内容区域添加到窗口主体布局
         body_layout.addWidget(title_bar)
@@ -349,7 +373,13 @@ class CustomButton(QPushButton):
         """
         super().__init__(text, parent)
         self.button_type = button_type
-        self._height = height
+        
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 应用DPI缩放因子到按钮高度
+        self._height = int(height * self.dpi_scale)
         
         # 显示模式：text（文字）或icon（图标）
         self._display_mode = display_mode
@@ -359,107 +389,117 @@ class CustomButton(QPushButton):
         self._icon_pixmap = None
         
         # 获取全局字体
-        app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
-        # 如果是图标模式，渲染图标
-        if self._display_mode == "icon":
-            self._render_icon()
-        
         self.update_style()
+        
+        # 延迟渲染图标，确保按钮尺寸已确定
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self._render_icon)
     
     def update_style(self):
         """
         更新按钮样式
         """
-        # 添加阴影效果
+        # 添加阴影效果，应用DPI缩放
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(2)
-        shadow.setOffset(0, 2)
+        shadow.setBlurRadius(int(2 * self.dpi_scale))
+        shadow.setOffset(0, int(2 * self.dpi_scale))
         shadow.setColor(QColor(0, 0, 0, 15))
         self.setGraphicsEffect(shadow)
         
         # 设置固定高度，与CustomInputBox保持一致
         self.setFixedHeight(self._height)
         
+        # 如果是图标模式，设置固定宽度等于高度，保持正方形
+        if self._display_mode == "icon":
+            self.setFixedWidth(self._height)
+        
+        # 应用DPI缩放因子到按钮样式参数
+        scaled_border_radius = int(20 * self.dpi_scale)
+        scaled_padding = f"{int(8 * self.dpi_scale)}px {int(12 * self.dpi_scale)}px"
+        scaled_font_size = int(18 * self.dpi_scale)
+        scaled_border_width = int(2 * self.dpi_scale)  # 边框宽度随DPI缩放
+        scaled_primary_border_width = int(1 * self.dpi_scale)  # 主要按钮边框宽度随DPI缩放
+        
         if self.button_type == "primary":
             # 强调色方案
-            self.setStyleSheet("""
-                QPushButton {
+            self.setStyleSheet(f"""
+                QPushButton {{
                     background-color: #0a59f7;
                     color: #ffffff;
-                    border: 1px solid #0a59f7;
-                    border-radius: 20px;
-                    padding: 8px 12px;
-                    font-size: 18px;
-                    font-weight: 400;
-                }
-                QPushButton:hover {
-                    background-color: #0d6efd;
-                    border-color: #0d6efd;
-                }
-                QPushButton:pressed {
-                    background-color: #0A51E0;
-                    border-color: #0A51E0;
-                }
-                QPushButton:disabled {
+                    border: {scaled_primary_border_width}px solid #0a59f7;
+                    border-radius: {scaled_border_radius}px;
+                    padding: {scaled_padding};
+                    font-size: {scaled_font_size}px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background-color: #0c5bf9;
+                    border-color: #0c5bf9;
+                }}
+                QPushButton:pressed {{
+                    background-color: #0e5dfb;
+                    border-color: #0e5dfb;
+                }}
+                QPushButton:disabled {{
                     background-color: #88A9EB;
                     color: #FFFFFF;
                     border-color: #88A9EB;
-                }
+                }}
             """)
-        elif self.button_type == "secondary":
-            # 次选色方案
-            self.setStyleSheet("""
-                QPushButton {
+        elif self.button_type == "normal":
+            # 普通方案
+            self.setStyleSheet(f"""
+                QPushButton {{
                     background-color: #f8f9fa;
                     color: #0a59f7;
-                    border: 1px solid #dee2e6;
-                    border-radius: 20px;
-                    padding: 8px 12px;
-                    font-size: 18px;
-                    font-weight: 400;
-                }
-                QPushButton:hover {
+                    border: {scaled_primary_border_width}px solid #dee2e6;
+                    border-radius: {scaled_border_radius}px;
+                    padding: {scaled_padding};
+                    font-size: {scaled_font_size}px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
                     background-color: #e9ecef;
                     border-color: #adb5bd;
-                }
-                QPushButton:pressed {
-                    background-color: #DADFE4;
+                }}
+                QPushButton:pressed {{
+                    background-color: #dee2e6;
                     border-color: #ced4da;
-                }
-                QPushButton:disabled {
-                    background-color: #C7CBD0;
-                    color: #515151;
-                    border-color: #C7CBD0;
-                }
+                }}
+                QPushButton:disabled {{
+                    background-color: #f8f9fa;
+                    color: #adb5bd;
+                    border-color: #dee2e6;
+                }}
             """)
-        else:  # normal
-            # 普通按钮方案：确保在白色背景下可见
-            self.setStyleSheet("""
-                QPushButton {
+        else:  # secondary
+            # 次选按钮方案：确保在白色背景下可见
+            self.setStyleSheet(f"""
+                QPushButton {{
                     background-color: #ffffff;
                     color: #0a59f7;
-                    border: 2px solid #0a59f7;
-                    border-radius: 20px;
-                    padding: 8px 12px;
-                    font-size: 18px;
-                    font-weight: 400;
-                }
-                QPushButton:hover {
+                    border: {scaled_border_width}px solid #0a59f7;
+                    border-radius: {scaled_border_radius}px;
+                    padding: {scaled_padding};
+                    font-size: {scaled_font_size}px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
                     background-color: #f0f4ff;
                     border-color: #0d6efd;
-                }
-                QPushButton:pressed {
+                }}
+                QPushButton:pressed {{
                     background-color: #e0e7ff;
                     border-color: #0A51E0;
-                }
-                QPushButton:disabled {
+                }}
+                QPushButton:disabled {{
                     background-color: #ffffff;
                     color: #DADFE4;
                     border-color: #DADFE4;
-                }
+                }}
             """)
     
     def set_primary(self, is_primary):
@@ -492,9 +532,12 @@ class CustomButton(QPushButton):
         try:
             if self._icon_path and os.path.exists(self._icon_path):
                 # 计算合适的图标大小，确保图标不会超出按钮范围
-                icon_size = min(self.width(), self.height()) * 0.6
-                # 使用项目中已有的SvgRenderer渲染SVG图标
-                self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size))
+                # 先获取按钮的实际尺寸，考虑DPI缩放
+                button_size = min(self.width(), self.height())
+                # 图标大小为按钮尺寸的60%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
+                icon_size = button_size * 0.6
+                # 使用项目中已有的SvgRenderer渲染SVG图标，传递DPI缩放因子
+                self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size), self.dpi_scale)
             else:
                 self._icon_pixmap = None
         except Exception as e:
@@ -538,26 +581,26 @@ class CustomButton(QPushButton):
     def paintEvent(self, event):
         """
         绘制按钮
-        如果是图标模式，绘制图标；否则调用父类绘制文字
+        如果是图标模式，先调用父类绘制按钮样式，再绘制图标；否则调用父类绘制文字
         """
-        if self._display_mode == "icon" and self._icon_pixmap:
-            # 图标模式，绘制图标
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
+        if self._display_mode == "icon":
+            # 图标模式，先绘制按钮样式（背景色、边框、圆角等）
+            super().paintEvent(event)
             
-            # 获取按钮中心位置
-            center_x = self.width() // 2
-            center_y = self.height() // 2
-            
-            # 计算图标绘制位置（居中）
-            icon_rect = self._icon_pixmap.rect()
-            icon_rect.moveCenter(self.rect().center())
-            
-            # 绘制图标
-            painter.drawPixmap(icon_rect, self._icon_pixmap)
-            painter.end()
+            # 如果图标渲染成功，绘制图标
+            if self._icon_pixmap:
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                # 计算图标绘制位置（居中）
+                icon_rect = self._icon_pixmap.rect()
+                icon_rect.moveCenter(self.rect().center())
+                
+                # 绘制图标
+                painter.drawPixmap(icon_rect, self._icon_pixmap)
+                painter.end()
         else:
-            # 文字模式或图标渲染失败，调用父类绘制文字
+            # 文字模式，调用父类绘制文字
             super().paintEvent(event)
 
 
@@ -583,15 +626,20 @@ class CustomProgressBar(QWidget):
     def __init__(self, parent=None, is_interactive=True):
         super().__init__(parent)
         
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
         # 方向属性
         self._orientation = self.Horizontal
         
-        # 设置默认尺寸
-        self.setMinimumSize(400, 28)
-        self.setMaximumHeight(28)
+        # 设置默认尺寸，应用DPI缩放
+        scaled_min_width = int(400 * self.dpi_scale)
+        scaled_min_height = int(28 * self.dpi_scale)
+        self.setMinimumSize(scaled_min_width, scaled_min_height)
+        self.setMaximumHeight(scaled_min_height)
         
         # 获取全局字体
-        app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
@@ -603,15 +651,15 @@ class CustomProgressBar(QWidget):
         self._last_pos = 0
         self._is_interactive = is_interactive  # 新增：控制是否可交互
         
-        # 外观属性
+        # 外观属性，应用DPI缩放
         self._bg_color = QColor(229, 231, 233)  # 进度条背景颜色
         self._progress_color = QColor(10, 89, 247)  # #0a59f7
         self._handle_color = QColor(0, 120, 212)  # #0078d4
         self._handle_hover_color = QColor(16, 110, 190)  # #106ebe
         self._handle_pressed_color = QColor(0, 90, 158)  # #005a9e
-        self._handle_radius = 12
-        self._bar_height = 6
-        self._bar_radius = 3
+        self._handle_radius = int(12 * self.dpi_scale)
+        self._bar_height = int(6 * self.dpi_scale)
+        self._bar_radius = int(3 * self.dpi_scale)
         
         # SVG 图标路径
         icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
@@ -619,9 +667,9 @@ class CustomProgressBar(QWidget):
         self._head_icon_path = os.path.join(icon_dir, '条-顶-头.svg')
         self._middle_icon_path = os.path.join(icon_dir, '条-顶-中.svg')
         
-        # 渲染 SVG 图标为 QPixmap
-        self._handle_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, self._handle_radius * 2)
-        self._head_pixmap = SvgRenderer.render_svg_to_pixmap(self._head_icon_path, self._handle_radius * 2)
+        # 渲染 SVG 图标为 QPixmap，传递DPI缩放因子
+        self._handle_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, self._handle_radius * 2, self.dpi_scale)
+        self._head_pixmap = SvgRenderer.render_svg_to_pixmap(self._head_icon_path, self._handle_radius * 2, self.dpi_scale)
         # 条顶中 SVG 会在绘制时根据需要直接渲染，这里只保存路径
     
     def setOrientation(self, orientation):
@@ -634,13 +682,18 @@ class CustomProgressBar(QWidget):
         if self._orientation != orientation:
             self._orientation = orientation
             
+            # 应用DPI缩放因子到尺寸限制
+            scaled_min_width = int(400 * self.dpi_scale)
+            scaled_min_height = int(28 * self.dpi_scale)
+            scaled_square_dim = int(28 * self.dpi_scale)
+            
             # 根据新方向更新尺寸限制
             if orientation == self.Horizontal:
-                self.setMinimumSize(400, 28)
-                self.setMaximumHeight(28)
+                self.setMinimumSize(scaled_min_width, scaled_min_height)
+                self.setMaximumHeight(scaled_min_height)
             else:  # Vertical
-                self.setMinimumSize(28, 400)
-                self.setMaximumWidth(28)
+                self.setMinimumSize(scaled_square_dim, scaled_min_width)
+                self.setMaximumWidth(scaled_square_dim)
             
             self.update()
     
@@ -827,9 +880,9 @@ class CustomProgressBar(QWidget):
                     if self._is_interactive:
                         # 可交互进度条 - 原有样式
                         # 使用条顶中 SVG 图形填充已播放部分
-                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap
+                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
                         icon_size = self._handle_radius * 2
-                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size)
+                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
                         
                         # 将临时 pixmap 旋转 90 度
                         transform = QTransform()
@@ -903,21 +956,77 @@ class CustomProgressBar(QWidget):
                             painter.setPen(Qt.NoPen)  # 去除滑块边框
                             painter.drawEllipse(handle_x, middle_y, self._handle_radius * 2, self._handle_radius * 2)
                     else:
-                        # 不可交互进度条 - 简化的样式，避免裁切问题
-                        # 直接绘制圆角矩形，确保显示正常
+                        # 不可交互进度条 - 使用SVG贴图渲染头、中、尾
+                        from PyQt5.QtCore import Qt as QtCore
+                        from PyQt5.QtGui import QTransform
                         
-                        # 计算进度条参数
-                        bar_y = (rect.height() - self._bar_height) // 2
+                        # 计算垂直居中位置
+                        middle_y = (rect.height() - self._handle_radius * 2) // 2
                         
-                        # 绘制已完成部分
-                        progress_rect = QRect(
-                            self._handle_radius, bar_y, 
-                            progress_width, self._bar_height
+                        # 使用条顶中 SVG 图形填充已播放部分
+                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
+                        icon_size = self._handle_radius * 2
+                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
+                        
+                        # 将临时 pixmap 旋转 90 度
+                        transform = QTransform()
+                        transform.rotate(90)
+                        rotated_pixmap = temp_pixmap.transformed(transform, QtCore.SmoothTransformation)
+                        
+                        # 计算中间矩形
+                        middle_rect = QRect(
+                            self._handle_radius, middle_y, 
+                            progress_width, self._handle_radius * 2
                         )
                         
-                        painter.setBrush(QBrush(self._progress_color))
-                        painter.setPen(Qt.NoPen)
-                        painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+                        # 拉伸渲染旋转后的 pixmap 到中间矩形
+                        painter.drawPixmap(middle_rect, rotated_pixmap)
+                        
+                        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标（逆时针旋转90度）
+                        head_x = -self._handle_radius // 2  # 向左偏移一点
+                        
+                        if not self._head_pixmap.isNull():
+                            # 保存当前画家状态
+                            painter.save()
+                            
+                            # 计算旋转中心
+                            center_x = head_x + self._handle_radius
+                            center_y = middle_y + self._handle_radius
+                            
+                            # 移动坐标原点到旋转中心
+                            painter.translate(center_x, center_y)
+                            
+                            # 逆时针旋转90度
+                            painter.rotate(-90)
+                            
+                            # 绘制旋转后的图标
+                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
+                            
+                            # 恢复画家状态
+                            painter.restore()
+                        
+                        # 绘制已完成区域的结束点 - 使用条-顶-尾.svg图标（逆时针旋转90度）
+                        tail_x = self._handle_radius + progress_width - self._handle_radius
+                        
+                        if not self._handle_pixmap.isNull():
+                            # 保存当前画家状态
+                            painter.save()
+                            
+                            # 计算旋转中心
+                            center_x = tail_x + self._handle_radius
+                            center_y = middle_y + self._handle_radius
+                            
+                            # 移动坐标原点到旋转中心
+                            painter.translate(center_x, center_y)
+                            
+                            # 逆时针旋转90度
+                            painter.rotate(-90)
+                            
+                            # 绘制旋转后的图标
+                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+                            
+                            # 恢复画家状态
+                            painter.restore()
                 except Exception as e:
                     print(f"渲染 SVG 失败: {e}")
                     # 备用方案：使用纯色填充
@@ -957,9 +1066,9 @@ class CustomProgressBar(QWidget):
                     if self._is_interactive:
                         # 可交互进度条 - 纵向样式
                         # 使用条顶中 SVG 图形填充已播放部分
-                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap
+                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
                         icon_size = self._handle_radius * 2
-                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size)
+                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
                         
                         # 计算中间矩形 - 从顶部开始向下延伸
                         middle_rect = QRect(
@@ -1022,18 +1131,66 @@ class CustomProgressBar(QWidget):
                             painter.setPen(Qt.NoPen)  # 去除滑块边框
                             painter.drawEllipse(middle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
                     else:
-                        # 不可交互进度条 - 简化的样式，避免裁切问题
-                        # 直接绘制圆角矩形，确保显示正常
+                        # 不可交互进度条 - 使用SVG贴图渲染头、中、尾
+                        from PyQt5.QtCore import Qt as QtCore
+                        from PyQt5.QtGui import QTransform
                         
-                        # 绘制已完成部分 - 从顶部开始向下延伸
-                        progress_rect = QRect(
-                            bar_x, self._handle_radius, 
-                            self._bar_height, progress_height
+                        # 计算水平居中位置
+                        middle_x = (rect.width() - self._handle_radius * 2) // 2
+                        
+                        # 使用条顶中 SVG 图形填充已播放部分
+                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
+                        icon_size = self._handle_radius * 2
+                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
+                        
+                        # 计算中间矩形 - 从顶部开始向下延伸
+                        middle_rect = QRect(
+                            middle_x, self._handle_radius, 
+                            self._handle_radius * 2, progress_height
                         )
                         
-                        painter.setBrush(QBrush(self._progress_color))
-                        painter.setPen(Qt.NoPen)
-                        painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+                        # 拉伸渲染 pixmap 到中间矩形
+                        painter.drawPixmap(middle_rect, temp_pixmap)
+                        
+                        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标
+                        head_y = -self._handle_radius // 2  # 向上偏移一点
+                        
+                        if not self._head_pixmap.isNull():
+                            # 保存当前画家状态
+                            painter.save()
+                            
+                            # 计算旋转中心
+                            center_x = middle_x + self._handle_radius
+                            center_y = head_y + self._handle_radius
+                            
+                            # 移动坐标原点到旋转中心
+                            painter.translate(center_x, center_y)
+                            
+                            # 绘制图标（不需要旋转）
+                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
+                            
+                            # 恢复画家状态
+                            painter.restore()
+                        
+                        # 绘制已完成区域的结束点 - 使用条-顶-尾.svg图标
+                        tail_y = self._handle_radius + progress_height - self._handle_radius
+                        
+                        if not self._handle_pixmap.isNull():
+                            # 保存当前画家状态
+                            painter.save()
+                            
+                            # 计算旋转中心
+                            center_x = middle_x + self._handle_radius
+                            center_y = tail_y + self._handle_radius
+                            
+                            # 移动坐标原点到旋转中心
+                            painter.translate(center_x, center_y)
+                            
+                            # 绘制图标（不需要旋转）
+                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+                            
+                            # 恢复画家状态
+                            painter.restore()
                 except Exception as e:
                     print(f"渲染 SVG 失败: {e}")
                     # 备用方案：使用纯色填充
@@ -1043,6 +1200,556 @@ class CustomProgressBar(QWidget):
                     )
                     painter.setBrush(QBrush(self._progress_color))
                     painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+        
+        painter.end()
+    
+    def enterEvent(self, event):
+        """
+        鼠标进入事件
+        """
+        self.update()
+    
+    def leaveEvent(self, event):
+        """
+        鼠标离开事件
+        """
+        self.update()
+
+
+class CustomValueBar(QWidget):
+    """
+    自定义数值控制条组件
+    支持横向和竖向两种显示方式，滑块为圆形设计
+    """
+    valueChanged = pyqtSignal(int)  # 值变化信号
+    userInteracting = pyqtSignal()  # 用户开始交互信号
+    userInteractionEnded = pyqtSignal()  # 用户结束交互信号
+    
+    # 方向常量
+    Horizontal = 0
+    Vertical = 1
+    
+    def __init__(self, parent=None, orientation=Horizontal, interactive=True):
+        super().__init__(parent)
+        
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 方向属性
+        self._orientation = orientation
+        
+        # 交互属性
+        self._interactive = interactive
+        
+        # 应用DPI缩放因子到尺寸
+        scaled_min_width = int(200 * self.dpi_scale)
+        scaled_min_height = int(28 * self.dpi_scale)
+        scaled_square_dim = int(28 * self.dpi_scale)
+        
+        # 根据方向设置最小和最大尺寸，应用DPI缩放
+        if self._orientation == self.Horizontal:
+            self.setMinimumSize(scaled_min_width, scaled_min_height)
+            self.setMaximumHeight(scaled_min_height)
+        else:  # Vertical
+            self.setMinimumSize(scaled_square_dim, scaled_min_width)
+            self.setMaximumWidth(scaled_square_dim)
+        
+        # 进度条属性
+        self._minimum = 0
+        self._maximum = 1000
+        self._value = 0
+        self._is_pressed = False
+        self._last_pos = 0
+        
+        # 外观属性，应用DPI缩放
+        self._bg_color = QColor(99, 99, 99)  # 进度条背景颜色
+        self._progress_color = QColor(0, 120, 212)  # 已完成区域颜色（蓝色，与不可交互进度条一致）
+        self._handle_radius = int(12 * self.dpi_scale)
+        self._bar_size = int(6 * self.dpi_scale)  # 横向时为高度，竖向时为宽度
+        self._bar_radius = int(3 * self.dpi_scale)
+        
+        # 圆形滑块颜色属性
+        self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
+        self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
+        self._handle_border_width = int(2 * self.dpi_scale)  # 边框宽度，响应DPI缩放
+    
+    def setRange(self, minimum, maximum):
+        """
+        设置数值条范围
+        """
+        self._minimum = minimum
+        self._maximum = maximum
+        self.update()
+    
+    def setValue(self, value):
+        """
+        设置数值条值
+        """
+        if value < self._minimum:
+            value = self._minimum
+        elif value > self._maximum:
+            value = self._maximum
+        
+        if self._value != value:
+            self._value = value
+            self.update()
+            self.valueChanged.emit(value)
+    
+    def value(self):
+        """
+        获取当前数值
+        """
+        return self._value
+    
+    def setOrientation(self, orientation):
+        """
+        设置数值条方向
+        
+        Args:
+            orientation: 方向常量，Horizontal 或 Vertical
+        """
+        if self._orientation != orientation:
+            self._orientation = orientation
+            
+            # 应用DPI缩放因子到尺寸
+            scaled_min_width = int(200 * self.dpi_scale)
+            scaled_min_height = int(28 * self.dpi_scale)
+            scaled_square_dim = int(28 * self.dpi_scale)
+            
+            # 根据新方向更新尺寸限制，应用DPI缩放
+            if orientation == self.Horizontal:
+                self.setMinimumSize(scaled_min_width, scaled_min_height)
+                self.setMaximumHeight(scaled_min_height)
+            else:  # Vertical
+                self.setMinimumSize(scaled_square_dim, scaled_min_width)
+                self.setMaximumWidth(scaled_square_dim)
+            
+            self.update()
+    
+    def mousePressEvent(self, event):
+        """
+        鼠标按下事件
+        """
+        if self._interactive and event.button() == Qt.LeftButton:
+            self._is_pressed = True
+            if self._orientation == self.Horizontal:
+                self._last_pos = event.pos().x()
+                self._update_value_from_pos(self._last_pos)
+            else:  # Vertical
+                self._last_pos = event.pos().y()
+                self._update_value_from_pos(self._last_pos)
+            self.userInteracting.emit()
+        else:
+            # 不可交互时，调用父类实现
+            super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """
+        鼠标移动事件
+        """
+        if self._interactive and self._is_pressed:
+            if self._orientation == self.Horizontal:
+                self._last_pos = event.pos().x()
+                self._update_value_from_pos(self._last_pos)
+            else:  # Vertical
+                self._last_pos = event.pos().y()
+                self._update_value_from_pos(self._last_pos)
+        else:
+            # 不可交互时，调用父类实现
+            super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """
+        鼠标释放事件
+        """
+        if self._interactive and self._is_pressed and event.button() == Qt.LeftButton:
+            self._is_pressed = False
+            self.userInteractionEnded.emit()
+        else:
+            # 不可交互时，调用父类实现
+            super().mouseReleaseEvent(event)
+    
+    def setInteractive(self, interactive):
+        """
+        设置数值条是否可交互
+        
+        Args:
+            interactive: 是否可交互
+        """
+        self._interactive = interactive
+        self.update()
+    
+    def _update_value_from_pos(self, pos):
+        """
+        根据鼠标位置更新数值
+        
+        Args:
+            pos: 鼠标位置（横向为x坐标，竖向为y坐标）
+        """
+        if self._orientation == self.Horizontal:
+            # 横向处理
+            # 计算数值条总宽度
+            bar_length = self.width() - (self._handle_radius * 2)
+            # 计算鼠标在数值条上的相对位置
+            relative_pos = pos - self._handle_radius
+            if relative_pos < 0:
+                relative_pos = 0
+            elif relative_pos > bar_length:
+                relative_pos = bar_length
+                
+            # 计算对应的值
+            if bar_length > 0:
+                ratio = relative_pos / bar_length
+            else:
+                ratio = 0.0
+            value = int(self._minimum + ratio * (self._maximum - self._minimum))
+        else:  # Vertical
+            # 竖向处理 - 滑动方向修正：向上滑动数值增加，向下滑动数值减少
+            # 计算数值条总高度
+            bar_length = self.height() - (self._handle_radius * 2)
+            # 计算鼠标在数值条上的相对位置
+            relative_pos = pos - self._handle_radius
+            if relative_pos < 0:
+                relative_pos = 0
+            elif relative_pos > bar_length:
+                relative_pos = bar_length
+                
+            # 计算对应的值 - 反向映射：relative_pos越大，值越小
+            if bar_length > 0:
+                ratio = 1.0 - (relative_pos / bar_length)
+            else:
+                ratio = 0.0
+            value = int(self._minimum + ratio * (self._maximum - self._minimum))
+        
+        self.setValue(value)
+    
+    def paintEvent(self, event):
+        """
+        绘制数值控制条
+        """
+        # 确保Qt已导入
+        from PyQt5.QtCore import Qt
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        rect = self.rect()
+        
+        if self._orientation == self.Horizontal:
+            # 横向绘制
+            # 计算数值条参数
+            bar_y = (rect.height() - self._bar_size) // 2
+            bar_length = rect.width() - 2 * self._handle_radius
+            
+            # 绘制背景
+            bg_rect = QRect(
+                self._handle_radius, bar_y, 
+                bar_length, self._bar_size
+            )
+            
+            painter.setBrush(QBrush(self._bg_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+            
+            # 绘制已完成部分
+            if (self._maximum - self._minimum) > 0:
+                progress_ratio = (self._value - self._minimum) / (self._maximum - self._minimum)
+            else:
+                progress_ratio = 0.0
+            progress_length = int(bar_length * progress_ratio)
+            progress_rect = QRect(
+                self._handle_radius, bar_y, 
+                progress_length, self._bar_size
+            )
+            
+            painter.setBrush(QBrush(self._progress_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+            
+            # 绘制圆形滑块
+            handle_x = self._handle_radius + progress_length
+            # 确保滑块不会超出数值条范围
+            handle_x = min(handle_x, self.width() - self._handle_radius * 2)
+            # 精确计算滑块Y坐标，使其与数值控制条的中线对齐
+            handle_y = (rect.height() - self._handle_radius * 2) // 2
+            
+            # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
+            # 绘制外圆（边框）
+            painter.setBrush(Qt.NoBrush)  # 无边框填充
+            painter.setPen(QPen(self._handle_border_color, self._handle_border_width))
+            painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+            
+            # 绘制内圆（填充）
+            inner_radius = self._handle_radius - self._handle_border_width
+            inner_x = handle_x + self._handle_border_width
+            inner_y = handle_y + self._handle_border_width
+            painter.setBrush(QBrush(self._handle_fill_color))
+            painter.setPen(Qt.NoPen)  # 无填充边框
+            painter.drawEllipse(inner_x, inner_y, inner_radius * 2, inner_radius * 2)
+        else:  # Vertical
+            # 竖向绘制
+            # 计算数值条参数
+            bar_x = (rect.width() - self._bar_size) // 2
+            bar_length = rect.height() - 2 * self._handle_radius
+            
+            # 绘制背景
+            bg_rect = QRect(
+                bar_x, self._handle_radius, 
+                self._bar_size, bar_length
+            )
+            
+            painter.setBrush(QBrush(self._bg_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+            
+            # 绘制已完成部分
+            if (self._maximum - self._minimum) > 0:
+                progress_ratio = (self._value - self._minimum) / (self._maximum - self._minimum)
+            else:
+                progress_ratio = 0.0
+            progress_length = int(bar_length * progress_ratio)
+            
+            # 只有当progress_length > 0时才绘制已完成部分，避免值为0时的视觉偏移
+            if progress_length > 0:
+                # 竖向进度条：已完成部分从底部开始向上延伸
+                progress_rect = QRect(
+                    bar_x, 
+                    self._handle_radius + (bar_length - progress_length),  # 底部对齐
+                    self._bar_size, 
+                    progress_length
+                )
+                
+                painter.setBrush(QBrush(self._progress_color))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+            
+            # 绘制圆形滑块 - 修正位置计算：值越大，滑块越靠上
+            handle_y = self._handle_radius + (bar_length - progress_length)
+            # 确保滑块不会超出数值条范围
+            handle_y = max(handle_y, self._handle_radius)
+            handle_y = min(handle_y, rect.height() - self._handle_radius * 2)
+            # 精确计算滑块X坐标，使其与数值控制条的中线对齐
+            handle_x = (rect.width() - self._handle_radius * 2) // 2
+            
+            # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
+            # 绘制外圆（边框）
+            painter.setBrush(Qt.NoBrush)  # 无边框填充
+            painter.setPen(QPen(self._handle_border_color, self._handle_border_width))
+            painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+            
+            # 绘制内圆（填充）
+            inner_radius = self._handle_radius - self._handle_border_width
+            inner_x = handle_x + self._handle_border_width
+            inner_y = handle_y + self._handle_border_width
+            painter.setBrush(QBrush(self._handle_fill_color))
+            painter.setPen(Qt.NoPen)  # 无填充边框
+            painter.drawEllipse(inner_x, inner_y, inner_radius * 2, inner_radius * 2)
+        
+        painter.end()
+    
+    def enterEvent(self, event):
+        """
+        鼠标进入事件
+        """
+        self.update()
+    
+    def leaveEvent(self, event):
+        """
+        鼠标离开事件
+        """
+        self.update()
+
+
+class CustomVolumeBar(QWidget):
+    """
+    自定义音量控制条
+    支持点击任意位置调整音量和拖拽功能
+    """
+    valueChanged = pyqtSignal(int)  # 值变化信号
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._handle_radius = 12
+        # 设置最小尺寸为滑块直径加上一定余量，确保滑块始终可见
+        min_width = self._handle_radius * 3  # 滑块直径 + 两侧余量
+        self.setMinimumSize(min_width, 28)
+        self.setMaximumHeight(28)
+        
+        # 音量条属性
+        self._minimum = 0
+        self._maximum = 100
+        self._value = 50  # 默认音量50%
+        self._is_pressed = False
+        self._last_pos = 0
+        
+        # 外观属性
+        self._bg_color = QColor(99, 99, 99)  # 音量条背景颜色
+        self._progress_color = QColor(0, 120, 212)  # #0078d4
+        self._bar_height = 6
+        self._bar_radius = 3
+        
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 应用DPI缩放因子到尺寸
+        self._handle_radius = int(12 * self.dpi_scale)
+        self._bar_height = int(6 * self.dpi_scale)
+        self._bar_radius = int(3 * self.dpi_scale)
+        
+        # 设置最小尺寸为滑块直径加上一定余量，确保滑块始终可见
+        scaled_min_width = int(self._handle_radius * 3)  # 滑块直径 + 两侧余量
+        scaled_height = int(28 * self.dpi_scale)
+        self.setMinimumSize(scaled_min_width, scaled_height)
+        self.setMaximumHeight(scaled_height)
+        
+        # 圆形滑块颜色属性
+        self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
+        self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
+        self._handle_border_width = int(2 * self.dpi_scale)  # 边框宽度，响应DPI缩放
+    
+    def setRange(self, minimum, maximum):
+        """
+        设置音量条范围
+        """
+        self._minimum = minimum
+        self._maximum = maximum
+        self.update()
+    
+    def setValue(self, value):
+        """
+        设置音量条值
+        """
+        if value < self._minimum:
+            value = self._minimum
+        elif value > self._maximum:
+            value = self._maximum
+        
+        if self._value != value:
+            self._value = value
+            self.update()
+            self.valueChanged.emit(value)
+    
+    def value(self):
+        """
+        获取当前音量值
+        """
+        return self._value
+    
+    def mousePressEvent(self, event):
+        """
+        鼠标按下事件
+        """
+        if event.button() == Qt.LeftButton:
+            self._is_pressed = True
+            self._last_pos = event.pos().x()
+            # 计算点击位置对应的音量值
+            self._update_value_from_pos(event.pos().x())
+    
+    def mouseMoveEvent(self, event):
+        """
+        鼠标移动事件
+        """
+        if self._is_pressed:
+            self._last_pos = event.pos().x()
+            self._update_value_from_pos(event.pos().x())
+    
+    def mouseReleaseEvent(self, event):
+        """
+        鼠标释放事件
+        """
+        if self._is_pressed and event.button() == Qt.LeftButton:
+            self._is_pressed = False
+    
+    def _update_value_from_pos(self, x_pos):
+        """
+        根据鼠标位置更新音量值
+        """
+        # 计算音量条总宽度，确保不小于0
+        effective_width = max(0, self.width() - (self._handle_radius * 2))
+        bar_width = effective_width
+        # 计算鼠标在音量条上的相对位置
+        relative_x = x_pos - self._handle_radius
+        if relative_x < 0:
+            relative_x = 0
+        elif relative_x > bar_width:
+            relative_x = bar_width
+        
+        # 计算对应的音量值，避免除以0
+        if bar_width > 0:
+            ratio = relative_x / bar_width
+        else:
+            ratio = 0.0
+        value = int(self._minimum + ratio * (self._maximum - self._minimum))
+        self.setValue(value)
+    
+    def paintEvent(self, event):
+        """
+        绘制音量条
+        """
+        # 确保Qt已导入
+        from PyQt5.QtCore import Qt
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        rect = self.rect()
+        
+        # 计算音量条参数
+        bar_y = (rect.height() - self._bar_height) // 2
+        # 确保bar_width不小于0
+        bar_width = max(0, rect.width() - 2 * self._handle_radius)
+        
+        # 绘制背景 - 确保背景矩形宽度不小于0
+        bg_rect = QRect(
+            self._handle_radius, bar_y, 
+            bar_width, self._bar_height
+        )
+        
+        painter.setBrush(QBrush(self._bg_color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+        
+        # 绘制已音量部分 - 使用纯色填充，不使用其他SVG图标
+        # 确保分母不为0
+        if (self._maximum - self._minimum) > 0:
+            progress_ratio = (self._value - self._minimum) / (self._maximum - self._minimum)
+        else:
+            progress_ratio = 0.0
+        progress_width = int(bar_width * progress_ratio)
+        progress_rect = QRect(
+            self._handle_radius, bar_y, 
+            progress_width, self._bar_height
+        )
+        
+        painter.setBrush(QBrush(self._progress_color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
+        
+        # 绘制滑块 - 使用圆形滑块
+        handle_x = self._handle_radius + progress_width
+        # 确保滑块不会超出音量条范围，考虑实际窗口宽度
+        max_handle_x = max(self._handle_radius, self.width() - self._handle_radius * 2)
+        handle_x = min(handle_x, max_handle_x)
+        # 确保滑块不会小于最小值
+        handle_x = max(handle_x, self._handle_radius)
+        # 精确计算滑块Y坐标，使其与音量条的中线对齐
+        handle_y = (rect.height() - self._handle_radius * 2) // 2
+        
+        # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
+        # 绘制外圆（边框）
+        painter.setBrush(Qt.NoBrush)  # 无边框填充
+        painter.setPen(QPen(self._handle_border_color, self._handle_border_width))
+        painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+        
+        # 绘制内圆（填充）
+        inner_radius = self._handle_radius - self._handle_border_width
+        inner_x = handle_x + self._handle_border_width
+        inner_y = handle_y + self._handle_border_width
+        painter.setBrush(QBrush(self._handle_fill_color))
+        painter.setPen(Qt.NoPen)  # 无填充边框
+        painter.drawEllipse(inner_x, inner_y, inner_radius * 2, inner_radius * 2)
         
         painter.end()
     
@@ -1078,14 +1785,17 @@ class CustomMessageBox(QDialog):
         # 即使有parent，也要确保是独立窗口
         super().__init__(parent)
         # 设置窗口标志为顶级窗口，确保独立显示
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         # 确保窗口不被父窗口裁剪
         self.setWindowFlag(Qt.WindowTransparentForInput, False)  # 允许接收输入
         self.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # 保持在最顶层
         
-        # 获取全局字体
+        # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
@@ -1104,45 +1814,59 @@ class CustomMessageBox(QDialog):
         """
         初始化自定义提示窗口UI
         """
+        # 应用DPI缩放因子到UI参数
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_radius = int(12 * self.dpi_scale)
+        scaled_shadow_radius = int(20 * self.dpi_scale)
+        scaled_shadow_offset = int(8 * self.dpi_scale)
+        scaled_body_margin = int(20 * self.dpi_scale)
+        scaled_body_spacing = int(16 * self.dpi_scale)
+        scaled_title_font_size = int(24 * self.dpi_scale)
+        scaled_title_padding = f"{int(24 * self.dpi_scale)}px {int(30 * self.dpi_scale)}px 0 {int(30 * self.dpi_scale)}px"
+        scaled_text_font_size = int(16 * self.dpi_scale)
+        scaled_min_width = int(400 * self.dpi_scale)
+        scaled_button_margin = int(8 * self.dpi_scale)
+        scaled_button_spacing = int(12 * self.dpi_scale)
+        
         # 主布局（用于容纳内容和装饰）
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(0)
         
         # 创建窗口主体（带圆角）
         self.window_body = QWidget()
-        self.window_body.setStyleSheet("""
-            QWidget {
+        self.window_body.setStyleSheet(f"""
+            QWidget {{
                 background-color: #ffffff;
-                border-radius: 12px;
+                border-radius: {scaled_radius}px;
                 border: 1px solid #e9ecef;
-            }
+            }}
         """)
         
         # 添加阴影效果
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(20)
-        shadow.setOffset(0, 8)
+        shadow.setBlurRadius(scaled_shadow_radius)
+        shadow.setOffset(0, scaled_shadow_offset)
         shadow.setColor(QColor(0, 0, 0, 60))
         self.window_body.setGraphicsEffect(shadow)
         
         # 窗口主体布局 - 正确的纵向排列顺序
         self.body_layout = QVBoxLayout(self.window_body)
-        self.body_layout.setContentsMargins(20, 20, 20, 20)
-        self.body_layout.setSpacing(16)  # 合理的纵向间距
+        self.body_layout.setContentsMargins(scaled_body_margin, scaled_body_margin, scaled_body_margin, scaled_body_margin)
+        self.body_layout.setSpacing(scaled_body_spacing)  # 合理的纵向间距
         
         # 1. 标题区
         self.title_label = QLabel()
         self.title_label.setFont(self.global_font)
-        self.title_label.setStyleSheet("""
-            QLabel {
-                font-size: 24px;
+        self.title_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: {scaled_title_font_size}px;
                 font-weight: 400;
                 color: #000000;
                 background-color: transparent;
-                padding: 24px 30px 0 30px;
+                padding: {scaled_title_padding};
                 margin: 0;
-            }
+            }}
         """)
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1158,20 +1882,20 @@ class CustomMessageBox(QDialog):
         # 3. 文本区
         self.text_label = QLabel()
         self.text_label.setFont(self.global_font)
-        self.text_label.setStyleSheet("""
-            QLabel {
-                font-size: 16px;
+        self.text_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: {scaled_text_font_size}px;
                 color: #333333;
                 background-color: transparent;
                 padding: 0;
                 margin: 0;
-            }
+            }}
         """)
         self.text_label.setWordWrap(True)
         self.text_label.setAlignment(Qt.AlignCenter)
         self.text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # 设置文字区默认最小宽度为400px
-        self.text_label.setMinimumWidth(400)
+        # 设置文字区默认最小宽度，应用DPI缩放
+        self.text_label.setMinimumWidth(scaled_min_width)
         self.body_layout.addWidget(self.text_label)
         
         # 4. 进度条区
@@ -1188,8 +1912,8 @@ class CustomMessageBox(QDialog):
         self.button_widget.setStyleSheet("background-color: transparent;")
         # 默认使用纵向布局
         self.button_layout = QVBoxLayout(self.button_widget)
-        self.button_layout.setContentsMargins(0, 8, 0, 0)  # 顶部添加8px间距
-        self.button_layout.setSpacing(12)  # 按钮之间的合理间距
+        self.button_layout.setContentsMargins(0, scaled_button_margin, 0, 0)  # 顶部添加间距，应用DPI缩放
+        self.button_layout.setSpacing(scaled_button_spacing)  # 按钮之间的合理间距，应用DPI缩放
         self.button_layout.setAlignment(Qt.AlignCenter)
         self.button_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # 确保按钮区在body_layout中居中显示
@@ -1297,10 +2021,15 @@ class CustomMessageBox(QDialog):
             if widget:
                 widget.setParent(None)
         
-        # 设置布局属性，左右边距和进度条一样为30px
-        # 底部添加16px边距，确保最后一个按钮的阴影不会被切掉
-        self.button_layout.setContentsMargins(30, 8, 30, 16)  # 顶部8px，左右30px，底部16px边距
-        self.button_layout.setSpacing(16)  # 增加按钮之间的间距，确保阴影不重叠
+        # 设置布局属性，应用DPI缩放
+        # 左右边距和进度条一样，底部添加边距确保最后一个按钮的阴影不会被切掉
+        scaled_left_right_margin = int(30 * self.dpi_scale)
+        scaled_top_margin = int(8 * self.dpi_scale)
+        scaled_bottom_margin = int(16 * self.dpi_scale)
+        scaled_button_spacing = int(16 * self.dpi_scale)
+        
+        self.button_layout.setContentsMargins(scaled_left_right_margin, scaled_top_margin, scaled_left_right_margin, scaled_bottom_margin)
+        self.button_layout.setSpacing(scaled_button_spacing)  # 增加按钮之间的间距，确保阴影不重叠
         
         # 设置布局对齐方式
         self.button_layout.setAlignment(Qt.AlignCenter)
@@ -1468,15 +2197,19 @@ class CustomInputBox(QWidget):
         """
         super().__init__(parent)
         
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
         # 设置基本属性
         self.placeholder_text = placeholder_text
         self._is_active = False
         self._has_content = False
         
-        # 样式参数
-        self._width = width
-        self._height = height
-        self._border_radius = border_radius
+        # 样式参数，应用DPI缩放
+        self._width = int(width * self.dpi_scale) if width else None
+        self._height = int(height * self.dpi_scale)
+        self._border_radius = int(border_radius * self.dpi_scale)
         self._border_color = QColor(border_color)
         self._background_color = QColor(background_color)
         self._text_color = QColor(text_color)
@@ -1485,7 +2218,6 @@ class CustomInputBox(QWidget):
         self._active_background_color = QColor(active_background_color)
         
         # 获取全局字体
-        app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         
         # 初始化UI
@@ -1505,23 +2237,27 @@ class CustomInputBox(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
+        # 应用DPI缩放因子到输入框样式
+        scaled_padding = f"{int(8 * self.dpi_scale)}px {int(12 * self.dpi_scale)}px"
+        scaled_font_size = int(18 * self.dpi_scale)
+        
         # 创建QLineEdit作为实际输入控件
         self.line_edit = QLineEdit()
         self.line_edit.setFont(self.global_font)
         self.line_edit.setPlaceholderText(self.placeholder_text)
-        self.line_edit.setStyleSheet("""
-            QLineEdit {
+        self.line_edit.setStyleSheet(f"""
+            QLineEdit {{
                 background-color: transparent;
                 border: none;
-                padding: 8px 12px;
+                padding: {scaled_padding};
                 color: %s;
-                font-size: 18px;
+                font-size: {scaled_font_size}px;
                 selection-background-color: #0a59f7;
                 selection-color: white;
-            }
-            QLineEdit::placeholder {
+            }}
+            QLineEdit::placeholder {{
                 color: %s;
-            }
+            }}
         """ % (self._text_color.name(), self._placeholder_color.name()))
         
         # 连接信号

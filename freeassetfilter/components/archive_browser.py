@@ -66,9 +66,10 @@ class ArchiveBrowser(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # 获取全局字体
+        # 获取全局字体和DPI缩放因子
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -92,8 +93,10 @@ class ArchiveBrowser(QWidget):
         """
         # 创建主布局
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        scaled_spacing = int(10 * self.dpi_scale)
+        scaled_margin = int(10 * self.dpi_scale)
+        main_layout.setSpacing(scaled_spacing)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
         # 创建顶部控制面板
         control_panel = self._create_control_panel()
@@ -116,21 +119,27 @@ class ArchiveBrowser(QWidget):
         
         # 使用垂直布局
         main_layout = QVBoxLayout(panel)
-        main_layout.setSpacing(5)
-        main_layout.setContentsMargins(5, 5, 5, 5)
+        scaled_spacing = int(5 * self.dpi_scale)
+        scaled_margin = int(5 * self.dpi_scale)
+        main_layout.setSpacing(scaled_spacing)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
         # 第一行：路径显示和返回按钮
         path_layout = QHBoxLayout()
-        path_layout.setSpacing(5)
+        path_layout.setSpacing(scaled_spacing)
         
         # 返回上一级按钮
         self.back_btn = QPushButton("返回上一级")
+        # 应用DPI缩放因子到按钮样式
+        scaled_font_size = int(14 * self.dpi_scale)
+        self.back_btn.setStyleSheet(f"font-size: {scaled_font_size}px;")
         self.back_btn.clicked.connect(self.go_to_parent)
         self.back_btn.setEnabled(False)  # 初始禁用
         path_layout.addWidget(self.back_btn)
         
         # 当前路径显示
         self.path_edit = QLineEdit()
+        self.path_edit.setStyleSheet(f"font-size: {scaled_font_size}px;")
         self.path_edit.setReadOnly(True)
         path_layout.addWidget(self.path_edit, 1)
         
@@ -138,14 +147,16 @@ class ArchiveBrowser(QWidget):
         
         # 第二行：压缩包信息
         info_layout = QHBoxLayout()
-        info_layout.setSpacing(5)
+        info_layout.setSpacing(scaled_spacing)
         
         # 压缩包类型显示
         self.type_label = QLabel("压缩包类型: ")
+        self.type_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
         info_layout.addWidget(self.type_label)
         
         # 加密状态显示
         self.encryption_label = QLabel("加密状态: 未加密")
+        self.encryption_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
         info_layout.addWidget(self.encryption_label)
         
         info_layout.addStretch(1)
@@ -185,6 +196,9 @@ class ArchiveBrowser(QWidget):
         
         # 文件计数显示
         self.file_count_label = QLabel("文件数量: 0")
+        # 应用DPI缩放因子到标签样式
+        scaled_font_size = int(14 * self.dpi_scale)
+        self.file_count_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
         layout.addWidget(self.file_count_label)
         
         layout.addStretch(1)

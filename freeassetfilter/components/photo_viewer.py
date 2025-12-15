@@ -487,12 +487,16 @@ class PhotoViewer(QWidget):
         """
         super().__init__(parent)
         
-        # 获取全局字体
+        # 获取应用实例
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
+        
+        # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
-        #print(f"[DEBUG] PhotoViewer获取到的全局字体: {self.global_font.family()}")
+        
+        # 获取DPI缩放因子
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -503,7 +507,11 @@ class PhotoViewer(QWidget):
         
         # 设置窗口属性
         self.setWindowTitle("照片查看器")
-        self.setMinimumSize(800, 600)
+        
+        # 使用DPI缩放因子调整窗口大小
+        scaled_min_width = int(800 * self.dpi_scale)
+        scaled_min_height = int(600 * self.dpi_scale)
+        self.setMinimumSize(scaled_min_width, scaled_min_height)
         
         # 创建UI组件
         self.init_ui()

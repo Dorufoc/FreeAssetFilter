@@ -52,10 +52,13 @@ class FileStagingPool(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # 获取全局字体
+        # 获取应用实例和DPI缩放因子
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
         #print(f"[DEBUG] FileStagingPool获取到的全局字体: {self.global_font.family()}")
         
@@ -81,11 +84,15 @@ class FileStagingPool(QWidget):
         """
         初始化用户界面
         """
+        # 应用DPI缩放因子到布局参数
+        scaled_spacing = int(10 * self.dpi_scale)
+        scaled_margin = int(10 * self.dpi_scale)
+        
         # 创建主布局
         main_layout = QVBoxLayout(self)
         self.setStyleSheet("background-color: #ffffff;")
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(scaled_spacing)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
         # 创建标题和控制区
         title_layout = QHBoxLayout()

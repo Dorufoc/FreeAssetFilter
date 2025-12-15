@@ -85,11 +85,12 @@ class FileInfoBrowser:
         self.file_info = {}
         self.custom_tags = {}
         
-        # 获取全局字体
+        # 获取全局字体和DPI缩放因子
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
         self.init_ui()
     
@@ -123,25 +124,35 @@ class FileInfoBrowser:
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
+        # 应用DPI缩放因子到布局参数
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_spacing = int(10 * self.dpi_scale)
+        scaled_group_margin = int(10 * self.dpi_scale)
+        scaled_group_top_margin = int(40 * self.dpi_scale)
+        scaled_group_right_margin = int(15 * self.dpi_scale)
+        scaled_group_bottom_margin = int(15 * self.dpi_scale)
+        scaled_info_spacing = int(8 * self.dpi_scale)
+        scaled_title_left = int(12 * self.dpi_scale)
+        
         # 创建主widget
         main_widget = QWidget()
         main_widget.setFont(self.global_font)
         main_widget.setStyleSheet("background-color: #ffffff;")
         main_layout = QVBoxLayout(main_widget)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        main_layout.setSpacing(scaled_spacing)
         
         # 创建统一的信息组，包含所有信息
         self.info_group = QGroupBox("文件信息")
         self.info_group.setFont(self.global_font)
         self.info_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # 设置组框标题左对齐
-        self.info_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; }")
+        # 设置组框标题左对齐，应用DPI缩放
+        self.info_group.setStyleSheet(f"QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {scaled_title_left}px; }}")
         
         # 使用QFormLayout替代QGridLayout，更适合表单布局
         self.info_layout = QFormLayout(self.info_group)
-        self.info_layout.setContentsMargins(10, 40, 15, 15)  # 左边距减少5px，让标签左移
-        self.info_layout.setSpacing(8)  # 调整间距，适合左对齐布局
+        self.info_layout.setContentsMargins(scaled_group_margin, scaled_group_top_margin, scaled_group_right_margin, scaled_group_bottom_margin)  # 左边距减少5px，让标签左移
+        self.info_layout.setSpacing(scaled_info_spacing)  # 调整间距，适合左对齐布局
         self.info_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # 标签左对齐
         self.info_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)  # 表单左对齐
         
@@ -232,15 +243,27 @@ class FileInfoBrowser:
         custom_group = QGroupBox("自定义标签")
         custom_group.setFont(self.global_font)
         custom_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # 设置组框标题左对齐，与框内文本左端对齐
-        custom_group.setStyleSheet("QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 12px; }")
+        
+        # 设置组框标题左对齐，应用DPI缩放
+        scaled_title_left = int(12 * self.dpi_scale)
+        custom_group.setStyleSheet(f"QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {scaled_title_left}px; }}")
+        
         custom_layout = QVBoxLayout(custom_group)
-        custom_layout.setContentsMargins(10, 35, 15, 15)  # 调整左边距与文件信息框一致，避免内容盖住标题
+        
+        # 应用DPI缩放因子到布局参数
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_top_margin = int(35 * self.dpi_scale)
+        scaled_right_margin = int(15 * self.dpi_scale)
+        custom_layout.setContentsMargins(scaled_margin, scaled_top_margin, scaled_right_margin, scaled_margin)  # 调整左边距与文件信息框一致，避免内容盖住标题
         
         self.custom_tags_browser = QTextBrowser()
         self.custom_tags_browser.setFont(self.global_font)
         self.custom_tags_browser.setPlainText("当前功能暂未开发完成，敬请期待！")
-        self.custom_tags_browser.setMinimumHeight(80)  # 设置最小高度
+        
+        # 应用DPI缩放因子到最小高度
+        scaled_min_height = int(80 * self.dpi_scale)
+        self.custom_tags_browser.setMinimumHeight(scaled_min_height)  # 设置最小高度
+        
         custom_layout.addWidget(self.custom_tags_browser)
         
         main_layout.addWidget(custom_group)
@@ -1167,7 +1190,8 @@ class FileInfoBrowser:
                 value_widget = QLabel(str(value))
                 value_widget.setWordWrap(True)
                 value_widget.setFont(self.global_font)
-                value_widget.setMinimumWidth(300)  # 足够的最小宽度
+                scaled_min_width = int(300 * self.dpi_scale)  # 足够的最小宽度，应用DPI缩放
+                value_widget.setMinimumWidth(scaled_min_width)
                 value_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 宽度扩展，高度自适应
                 value_widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
                 value_widget.setContextMenuPolicy(Qt.CustomContextMenu)

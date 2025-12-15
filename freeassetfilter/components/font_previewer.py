@@ -48,6 +48,11 @@ class FontPreviewWidget(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         
+        # 获取应用实例和DPI缩放因子
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
         # 字体数据
         self.current_font_path = ""
         self.current_font_id = -1
@@ -73,7 +78,12 @@ class FontPreviewWidget(QWidget):
         初始化预览部件UI
         """
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # 应用DPI缩放因子到边距和间距
+        scaled_margin = int(20 * self.dpi_scale)
+        scaled_spacing = int(10 * self.dpi_scale)
+        layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        layout.setSpacing(scaled_spacing)
         
         # 示例文本选择
         self.sample_selector = QComboBox()
@@ -83,6 +93,7 @@ class FontPreviewWidget(QWidget):
         
         # 字体大小滑块
         size_layout = QHBoxLayout()
+        size_layout.setSpacing(scaled_spacing)
         size_label = QLabel("字体大小:")
         self.size_value_label = QLabel(str(self.font_size))
         self.size_slider = QSlider(Qt.Horizontal)
@@ -100,7 +111,8 @@ class FontPreviewWidget(QWidget):
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
         self.preview_text.setStyleSheet("background-color: white; color: black; font-family: Arial;")
-        self.preview_text.setMinimumHeight(400)
+        scaled_min_height = int(400 * self.dpi_scale)
+        self.preview_text.setMinimumHeight(scaled_min_height)
         self.preview_text.setPlainText(self.sample_texts[self.current_sample_type])
         layout.addWidget(self.preview_text)
     
@@ -188,8 +200,18 @@ class FontPreviewer(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        
+        # 获取应用实例和DPI缩放因子
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
         self.setWindowTitle("字体预览器")
-        self.setGeometry(100, 100, 1000, 800)
+        
+        # 应用DPI缩放因子到窗口大小
+        scaled_width = int(1000 * self.dpi_scale)
+        scaled_height = int(800 * self.dpi_scale)
+        self.setGeometry(100, 100, scaled_width, scaled_height)
         
         # 创建UI
         self.init_ui()
@@ -202,10 +224,18 @@ class FontPreviewer(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
+        # 应用DPI缩放因子到布局参数
+        scaled_margin = int(20 * self.dpi_scale)
+        scaled_spacing = int(20 * self.dpi_scale)
+        scaled_small_spacing = int(10 * self.dpi_scale)
+        scaled_panel_min_width = int(280 * self.dpi_scale)
+        scaled_radius = int(12 * self.dpi_scale)
+        scaled_padding = int(20 * self.dpi_scale)
+        
         # 创建主布局
         main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        main_layout.setSpacing(scaled_spacing)
         
         # 设置窗口背景�?
         self.setStyleSheet("background-color: #f5f5f5;")
@@ -231,45 +261,61 @@ class FontPreviewer(QMainWindow):
         
         # 2. 信息和控制面�?
         control_panel = QWidget()
-        control_panel.setMinimumWidth(280)
-        control_panel.setStyleSheet("background-color: white; border-radius: 12px; padding: 20px;")
+        control_panel.setMinimumWidth(scaled_panel_min_width)
+        control_panel.setStyleSheet(f"background-color: white; border-radius: {scaled_radius}px; padding: {scaled_padding}px;")
         control_layout = QVBoxLayout(control_panel)
-        control_layout.setSpacing(20)
+        control_layout.setSpacing(scaled_spacing)
         
         # 文件操作区域
         file_group = QGroupBox("文件操作")
-        file_group.setStyleSheet("""
+        
+        # 应用DPI缩放因子到组框样式
+        scaled_group_font_size = int(16 * self.dpi_scale)
+        scaled_group_border_radius = int(8 * self.dpi_scale)
+        scaled_group_padding = int(15 * self.dpi_scale)
+        scaled_group_title_left = int(15 * self.dpi_scale)
+        scaled_group_title_top = int(10 * self.dpi_scale)
+        scaled_group_title_padding = int(8 * self.dpi_scale)
+        
+        file_group.setStyleSheet(f"""
         .QGroupBox {
-            font-size: 16px;
+            font-size: {scaled_group_font_size}px;
             font-weight: bold;
             color: #333;
             border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 15px;
+            border-radius: {scaled_group_border_radius}px;
+            padding: {scaled_group_padding}px;
             background-color: #fafafa;
         }
         .QGroupBox::title {
             subcontrol-origin: margin;
             subcontrol-position: top left;
-            left: 15px;
-            top: -10px;
-            padding: 0 8px;
+            left: {scaled_group_title_left}px;
+            top: -{scaled_group_title_top}px;
+            padding: 0 {scaled_group_title_padding}px;
             background-color: #fafafa;
         }
         """)
         file_layout = QVBoxLayout()
-        file_layout.setSpacing(10)
+        file_layout.setSpacing(scaled_small_spacing)
         
         self.open_button = QPushButton("打开字体文件")
         self.open_button.clicked.connect(self.open_file)
-        self.open_button.setStyleSheet("""
+        
+        # 应用DPI缩放因子到按钮样式
+        scaled_button_radius = int(8 * self.dpi_scale)
+        scaled_button_padding_v = int(12 * self.dpi_scale)
+        scaled_button_padding_h = int(20 * self.dpi_scale)
+        scaled_button_font_size = int(14 * self.dpi_scale)
+        
+        self.open_button.setStyleSheet(f"""
         .QPushButton {
             background-color: #1976d2;
             color: white;
             border: none;
-            border-radius: 8px;
-            padding: 12px 20px;
-            font-size: 14px;
+            border-radius: {scaled_button_radius}px;
+            padding: {scaled_button_padding_v}px {scaled_button_padding_h}px;
+            font-size: {scaled_button_font_size}px;
             font-weight: 500;
         }
         .QPushButton:hover {
@@ -283,14 +329,14 @@ class FontPreviewer(QMainWindow):
         
         self.clear_button = QPushButton("清除字体")
         self.clear_button.clicked.connect(self.clear_font)
-        self.clear_button.setStyleSheet("""
+        self.clear_button.setStyleSheet(f"""
         .QPushButton {
             background-color: #f5f5f5;
             color: #333;
             border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 12px 20px;
-            font-size: 14px;
+            border-radius: {scaled_button_radius}px;
+            padding: {scaled_button_padding_v}px {scaled_button_padding_h}px;
+            font-size: {scaled_button_font_size}px;
             font-weight: 500;
         }
         .QPushButton:hover {
@@ -307,27 +353,27 @@ class FontPreviewer(QMainWindow):
         
         # 字体信息区域
         info_group = QGroupBox("字体信息")
-        info_group.setStyleSheet("""
+        info_group.setStyleSheet(f"""
         .QGroupBox {
-            font-size: 16px;
+            font-size: {scaled_group_font_size}px;
             font-weight: bold;
             color: #333;
             border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 15px;
+            border-radius: {scaled_group_border_radius}px;
+            padding: {scaled_group_padding}px;
             background-color: #fafafa;
         }
         .QGroupBox::title {
             subcontrol-origin: margin;
             subcontrol-position: top left;
-            left: 15px;
-            top: -10px;
-            padding: 0 8px;
+            left: {scaled_group_title_left}px;
+            top: -{scaled_group_title_top}px;
+            padding: 0 {scaled_group_title_padding}px;
             background-color: #fafafa;
         }
         """)
         self.info_layout = QGridLayout()
-        self.info_layout.setSpacing(10)
+        self.info_layout.setSpacing(scaled_small_spacing)
         
         # 初始化字体信息显�?
         self.font_info_labels = {
@@ -338,13 +384,18 @@ class FontPreviewer(QMainWindow):
             "文件路径": QLabel("-"),
         }
         
+        # 应用DPI缩放因子到标签样式
+        scaled_label_font_size = int(13 * self.dpi_scale)
+        scaled_label_radius = int(4 * self.dpi_scale)
+        scaled_label_padding = int(6 * self.dpi_scale)
+        
         row = 0
         for key, label in self.font_info_labels.items():
             key_label = QLabel(key + ":")
             key_label.setStyleSheet("font-weight: bold; color: #555;")
             self.info_layout.addWidget(key_label, row, 0)
             label.setWordWrap(True)
-            label.setStyleSheet("color: #333; background-color: white; border: 1px solid #e0e0e0; border-radius: 4px; padding: 6px; font-size: 13px;")
+            label.setStyleSheet(f"color: #333; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_label_radius}px; padding: {scaled_label_padding}px; font-size: {scaled_label_font_size}px;")
             self.info_layout.addWidget(label, row, 1)
             row += 1
         
@@ -353,22 +404,22 @@ class FontPreviewer(QMainWindow):
         
         # 使用说明区域
         help_group = QGroupBox("使用说明")
-        help_group.setStyleSheet("""
+        help_group.setStyleSheet(f"""
         .QGroupBox {
-            font-size: 16px;
+            font-size: {scaled_group_font_size}px;
             font-weight: bold;
             color: #333;
             border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 15px;
+            border-radius: {scaled_group_border_radius}px;
+            padding: {scaled_group_padding}px;
             background-color: #fafafa;
         }
         .QGroupBox::title {
             subcontrol-origin: margin;
             subcontrol-position: top left;
-            left: 15px;
-            top: -10px;
-            padding: 0 8px;
+            left: {scaled_group_title_left}px;
+            top: -{scaled_group_title_top}px;
+            padding: 0 {scaled_group_title_padding}px;
             background-color: #fafafa;
         }
         """)
@@ -381,7 +432,7 @@ class FontPreviewer(QMainWindow):
             "• 支持TTF、OTF等常见字体格式\n"
         )
         help_text.setWordWrap(True)
-        help_text.setStyleSheet("color: #555; font-size: 13px; line-height: 1.5;")
+        help_text.setStyleSheet(f"color: #555; font-size: {scaled_label_font_size}px; line-height: 1.5;")
         help_layout.addWidget(help_text)
         
         help_group.setLayout(help_layout)

@@ -58,19 +58,24 @@ class CustomFileSelector(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # 获取全局字体
+        # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
         #print(f"[DEBUG] CustomFileSelector获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
         self.setFont(self.global_font)
         
-        # 设置最小宽度，确保能容纳3列卡片
+        # 设置最小宽度，确保能容纳3列卡片，并应用DPI缩放
         # 计算方式：基于_calculate_max_columns方法的逻辑
         # 3个卡片实际宽度(150*3) + 左右边距(20) = 450 + 20 = 470
         # 卡片实际宽度=卡片宽度(140)+右侧间距(10)
-        self.setMinimumWidth(520)
+        base_min_width = 520
+        scaled_min_width = int(base_min_width * self.dpi_scale)
+        self.setMinimumWidth(scaled_min_width)
         
         # 初始化配置
         self.current_path = "All"  # 默认路径为"All"
@@ -178,8 +183,9 @@ class CustomFileSelector(QWidget):
         
         # 盘符选择器
         self.drive_combo = QComboBox()
-        # 设置固定宽度，增加盘符选择器的宽度
-        self.drive_combo.setFixedWidth(80)
+        # 设置固定宽度，增加盘符选择器的宽度，应用DPI缩放
+        scaled_drive_width = int(80 * self.dpi_scale)
+        self.drive_combo.setFixedWidth(scaled_drive_width)
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
         self.drive_combo.activated.connect(self._on_drive_changed)
@@ -249,6 +255,9 @@ class CustomFileSelector(QWidget):
         # 排序形式选择
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["名称升序", "名称降序", "大小升序", "大小降序", "创建时间升序", "创建时间降序"])
+        # 应用DPI缩放因子到排序下拉栏宽度
+        scaled_sort_width = int(150 * self.dpi_scale)
+        self.sort_combo.setMinimumWidth(scaled_sort_width)
         self.sort_combo.currentIndexChanged.connect(self.change_sort)
         filter_sort_layout.addWidget(self.sort_combo)
         
@@ -271,8 +280,11 @@ class CustomFileSelector(QWidget):
         self.files_container = QWidget()
         self.files_layout = QGridLayout(self.files_container)
         self.files_container.setStyleSheet("QWidget { border: 0px solid #e0e0e0; }")# 控制文件容器边框
-        self.files_layout.setSpacing(10)  # 卡片间距
-        self.files_layout.setContentsMargins(10, 10, 10, 10)
+        # 应用DPI缩放因子到卡片间距和边距
+        scaled_card_spacing = int(10 * self.dpi_scale)
+        scaled_card_margin = int(10 * self.dpi_scale)
+        self.files_layout.setSpacing(scaled_card_spacing)  # 卡片间距随DPI调整
+        self.files_layout.setContentsMargins(scaled_card_margin, scaled_card_margin, scaled_card_margin, scaled_card_margin)  # 卡片边距随DPI调整
         # 中对齐，以便填充整个宽度
         self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignCenter)
         
@@ -304,7 +316,10 @@ class CustomFileSelector(QWidget):
         layout.addWidget(self.generate_thumbnails_btn)
         
         # 清理缩略图缓存按钮
-        self.clear_thumbnails_btn = CustomButton("清理缩略图缓存", button_type="secondary")
+        # 使用clean.svg图标替换文字
+        import os
+        clean_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "clean.svg")
+        self.clear_thumbnails_btn = CustomButton(clean_icon_path, button_type="secondary", display_mode="icon")
         self.clear_thumbnails_btn.clicked.connect(self._clear_thumbnail_cache)
         layout.addWidget(self.clear_thumbnails_btn)
         
@@ -879,13 +894,22 @@ class CustomFileSelector(QWidget):
         """
         显示收藏夹对话框
         """
+        # 应用DPI缩放因子到对话框尺寸
+        scaled_min_width = int(400 * self.dpi_scale)
+        scaled_min_height = int(300 * self.dpi_scale)
+        scaled_font_size = int(8 * self.dpi_scale)
+        
         # 创建对话框
         dialog = QDialog(self)
         dialog.setWindowTitle("收藏夹")
-        dialog.setMinimumSize(400, 300)
+        dialog.setMinimumSize(scaled_min_width, scaled_min_height)
         
-        # 创建布局
+        # 创建布局，应用DPI缩放
         layout = QVBoxLayout(dialog)
+        scaled_spacing = int(10 * self.dpi_scale)
+        layout.setSpacing(scaled_spacing)
+        scaled_margin = int(10 * self.dpi_scale)
+        layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
         # 创建收藏夹列表
         favorites_list = QListWidget()
@@ -903,11 +927,12 @@ class CustomFileSelector(QWidget):
         
         # 创建底部按钮布局
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(scaled_spacing)
         
         # 添加当前路径到收藏夹按钮
         add_btn = QPushButton("添加当前路径到收藏夹")
         font = add_btn.font()
-        font.setPointSize(8)
+        font.setPointSize(scaled_font_size)
         add_btn.setFont(font)
         add_btn.clicked.connect(lambda: self._add_current_path_to_favorites(dialog, favorites_list))
         btn_layout.addWidget(add_btn)
@@ -915,7 +940,7 @@ class CustomFileSelector(QWidget):
         # 关闭按钮
         close_btn = QPushButton("关闭")
         font = close_btn.font()
-        font.setPointSize(8)
+        font.setPointSize(scaled_font_size)
         close_btn.setFont(font)
         close_btn.clicked.connect(dialog.accept)
         btn_layout.addWidget(close_btn)
@@ -1534,10 +1559,10 @@ class CustomFileSelector(QWidget):
         scroll_area = self.files_container.parent().parent()  # 获取滚动区域
         viewport_width = scroll_area.viewport().width()
         
-        # 定义卡片属性
-        card_width = 140  # 卡片固定宽度
-        spacing = 10  # 卡片之间的间距
-        margin = 20  # 左右边距总和（10*2）
+        # 定义卡片属性，应用DPI缩放
+        card_width = int(140 * self.dpi_scale)  # 卡片固定宽度，考虑DPI缩放
+        spacing = int(10 * self.dpi_scale)  # 卡片之间的间距，考虑DPI缩放
+        margin = int(20 * self.dpi_scale)  # 左右边距总和，考虑DPI缩放
         
         # 可用宽度 = 视口宽度 - 左右边距
         available_width = viewport_width - margin
@@ -1588,26 +1613,33 @@ class CustomFileSelector(QWidget):
         """
         创建单个文件卡片
         """
+        # 应用DPI缩放因子到卡片尺寸和样式
+        scaled_card_width = int(140 * self.dpi_scale)
+        scaled_card_height = int(180 * self.dpi_scale)
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_border_width = int(2 * self.dpi_scale)
+        scaled_padding = int(8 * self.dpi_scale)
+        
         # 创建卡片容器
         card = QWidget()
         card.setObjectName("FileCard")
         card.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        card.setMinimumSize(140, 180)
-        card.setMaximumSize(140, 180)
+        card.setMinimumSize(scaled_card_width, scaled_card_height)
+        card.setMaximumSize(scaled_card_width, scaled_card_height)
         
         # 设置卡片样式
-        card.setStyleSheet("""
-            QWidget#FileCard {
+        card.setStyleSheet(f"""
+            QWidget#FileCard {{
                 background-color: #f1f3f5;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                padding: 8px;
+                border: {scaled_border_width}px solid #e0e0e0;
+                border-radius: {scaled_border_radius}px;
+                padding: {scaled_padding}px;
                 text-align: center;
-            }
-            QWidget#FileCard:hover {
+            }}
+            QWidget#FileCard:hover {{
                 border-color: #4a7abc;
                 background-color: #f0f8ff;
-            }
+            }}
         """)
         
         # 保存文件信息到卡片
@@ -1621,16 +1653,23 @@ class CustomFileSelector(QWidget):
         if file_dir in self.selected_files and file_path in self.selected_files[file_dir]:
             card.is_selected = True
         
+        # 应用DPI缩放因子到卡片内部元素
+        scaled_spacing = int(5 * self.dpi_scale)
+        scaled_margin = int(5 * self.dpi_scale)
+        scaled_icon_size = int(120 * self.dpi_scale)
+        scaled_font_size = int(9 * self.dpi_scale)
+        scaled_max_width = int(110 * self.dpi_scale)
+        
         # 创建卡片布局
         layout = QVBoxLayout(card)
-        layout.setSpacing(5)
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(scaled_spacing)
+        layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         layout.setAlignment(Qt.AlignCenter)
         
         # 设置图标或缩略图
         icon_display = self._set_file_icon(file_info)
-        # 设置固定大小
-        icon_display.setFixedSize(120, 120)
+        # 设置固定大小，应用DPI缩放
+        icon_display.setFixedSize(scaled_icon_size, scaled_icon_size)
         # 确保标签透明，仅显示图标或缩略图
         if hasattr(icon_display, 'setStyleSheet'):
             icon_display.setStyleSheet('background: transparent; border: none;')
@@ -1643,15 +1682,15 @@ class CustomFileSelector(QWidget):
         text = file_info["name"]
         # 使用全局字体计算文本宽度
         temp_font = QFont(self.global_font)  # 复制全局字体
-        temp_font.setPointSize(9)  # 设置字体大小
+        temp_font.setPointSize(scaled_font_size)  # 设置字体大小，应用DPI缩放
         font_metrics = QFontMetrics(temp_font)
-        # 限制文本宽度，根据卡片宽度调整
-        max_width = 110  # 最大宽度，考虑到卡片宽度
-        elided_text = font_metrics.elidedText(text, Qt.ElideRight, max_width)
+        # 限制文本宽度，根据卡片宽度调整，应用DPI缩放
+        elided_text = font_metrics.elidedText(text, Qt.ElideRight, scaled_max_width)
         name_label.setText(elided_text)
         name_label.setAlignment(Qt.AlignCenter)
         name_label.setWordWrap(False)
-        name_label.setMaximumHeight(20)
+        # 应用DPI缩放因子到最大高度
+        name_label.setMaximumHeight(int(20 * self.dpi_scale))
         # 使用全局字体，并设置字体大小
         name_label.setFont(temp_font)
         #print(f"[DEBUG] 文件卡片文件名标签设置字体: {name_label.font().family()}, 大小: {name_label.font().pointSize()}")
@@ -1666,9 +1705,10 @@ class CustomFileSelector(QWidget):
         else:
             size_label.setText(self._format_size(file_info["size"]))
         size_label.setAlignment(Qt.AlignCenter)
-        # 使用全局字体，并设置字体大小
+        # 使用全局字体，并设置字体大小，应用DPI缩放
         temp_font = QFont(self.global_font)
-        temp_font.setPointSize(8)
+        scaled_size_font_size = int(8 * self.dpi_scale)
+        temp_font.setPointSize(scaled_size_font_size)
         size_label.setFont(temp_font)
         #print(f"[DEBUG] 文件卡片大小标签设置字体: {size_label.font().family()}, 大小: {size_label.font().pointSize()}")
         # 确保标签透明，仅显示文本
@@ -1680,9 +1720,10 @@ class CustomFileSelector(QWidget):
         modified_time = QDateTime.fromString(file_info["modified"], Qt.ISODate)
         modified_label.setText(modified_time.toString("yyyy-MM-dd"))
         modified_label.setAlignment(Qt.AlignCenter)
-        # 使用全局字体，并设置字体大小
+        # 使用全局字体，并设置字体大小，应用DPI缩放
         temp_font = QFont(self.global_font)
-        temp_font.setPointSize(7)
+        scaled_modified_font_size = int(7 * self.dpi_scale)
+        temp_font.setPointSize(scaled_modified_font_size)
         modified_label.setFont(temp_font)
         #print(f"[DEBUG] 文件卡片修改时间标签设置字体: {modified_label.font().family()}, 大小: {modified_label.font().pointSize()}")
         # 确保标签透明，仅显示文本
@@ -1695,29 +1736,33 @@ class CustomFileSelector(QWidget):
         card.modified_label = modified_label
         card.icon_display = icon_display
         
-        # 根据is_selected属性设置初始样式
+        # 根据is_selected属性设置初始样式，应用DPI缩放
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_border_width = int(2 * self.dpi_scale)
+        scaled_padding = int(8 * self.dpi_scale)
         if card.is_selected:
-            card.setStyleSheet("""
-                QWidget#FileCard {
+            card.setStyleSheet(f"""
+                QWidget#FileCard {{
                     background-color: #e6f7ff;
-                    border: 2px solid #1890ff;
-                    border-radius: 8px;
-                    padding: 8px;
-                }
+                    border: {scaled_border_width}px solid #1890ff;
+                    border-radius: {scaled_border_radius}px;
+                    padding: {scaled_padding}px;
+                    text-align: center;
+                }}
             """)
         else:
-            card.setStyleSheet("""
-                QWidget#FileCard {
+            card.setStyleSheet(f"""
+                QWidget#FileCard {{
                     background-color: #f1f3f5;
-                    border: 2px solid #e0e0e0;
-                    border-radius: 8px;
-                    padding: 8px;
+                    border: {scaled_border_width}px solid #e0e0e0;
+                    border-radius: {scaled_border_radius}px;
+                    padding: {scaled_padding}px;
                     text-align: center;
-                }
-                QWidget#FileCard:hover {
+                }}
+                QWidget#FileCard:hover {{
                     border-color: #4a7abc;
                     background-color: #f0f8ff;
-                }
+                }}
             """)
         
         # 安装事件过滤器，用于处理鼠标事件
@@ -1732,37 +1777,42 @@ class CustomFileSelector(QWidget):
         # 首先尝试显示缩略图（如果存在）
         thumbnail_path = self._get_thumbnail_path(file_info["path"])
         if os.path.exists(thumbnail_path):
+            # 应用DPI缩放因子到图标大小
+            scaled_icon_size = int(120 * self.dpi_scale)
+            
             # 创建标签显示缩略图
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
+            label.setFixedSize(scaled_icon_size, scaled_icon_size)
             
             # 加载缩略图
             pixmap = QPixmap(thumbnail_path)
-            # 缩放缩略图以适应120x120的大小
-            scaled_pixmap = pixmap.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # 缩放缩略图以适应scaled_icon_size的大小
+            scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
             # 创建一个新的Pixmap，用于绘制叠加图标
-            combined_pixmap = QPixmap(120, 120)
+            combined_pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
             combined_pixmap.fill(Qt.transparent)
             
             # 创建画家
             painter = QPainter(combined_pixmap)
             
             # 绘制缩略图
-            painter.drawPixmap((120 - scaled_pixmap.width()) // 2, (120 - scaled_pixmap.height()) // 2, scaled_pixmap)
+            painter.drawPixmap((scaled_icon_size - scaled_pixmap.width()) // 2, (scaled_icon_size - scaled_pixmap.height()) // 2, scaled_pixmap)
             
             # 加载并绘制对应的文件类型图标
             try:
-                # 使用现有的_get_file_type_pixmap方法获取文件类型图标
-                file_type_pixmap = self._get_file_type_pixmap(file_info, icon_size=24)
+                # 应用DPI缩放因子到叠加图标大小
+                scaled_overlay_icon_size = int(24 * self.dpi_scale)
+                scaled_margin = int(4 * self.dpi_scale)
+                
+                # 使用现有的_get_file_type_pixmap方法获取文件类型图标，传递缩放后的图标大小
+                file_type_pixmap = self._get_file_type_pixmap(file_info, icon_size=scaled_overlay_icon_size)
                 
                 # 绘制缩小的图标在右下角
-                icon_size = 24  # 图标大小
-                margin = 4  # 边距
-                
                 # 计算绘制位置，右下角对齐
-                x = 120 - icon_size - margin
-                y = 120 - icon_size - margin
+                x = scaled_icon_size - scaled_overlay_icon_size - scaled_margin
+                y = scaled_icon_size - scaled_overlay_icon_size - scaled_margin
                 
                 # 绘制文件类型图标
                 painter.drawPixmap(x, y, file_type_pixmap)
@@ -1832,29 +1882,11 @@ class CustomFileSelector(QWidget):
         
         # 加载并显示SVG图标
         if icon_path and os.path.exists(icon_path):
-            # 创建一个透明的QLabel
-            label = QLabel()
-            label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(120, 120)
+            # 应用DPI缩放因子到图标大小
+            scaled_icon_size = int(120 * self.dpi_scale)
             
-            # 使用改进的QSvgRenderer实现
-            svg_renderer = QSvgRenderer(icon_path)
-            
-            # 创建一个QImage，使用ARGB32_Premultiplied格式以支持正确的透明度
-            image = QImage(120, 120, QImage.Format_ARGB32_Premultiplied)
-            image.fill(Qt.transparent)  # 使用透明背景
-            
-            # 创建画家
-            painter = QPainter(image)
-            
-            # 设置最高质量的渲染提示
-            painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            painter.setRenderHint(QPainter.TextAntialiasing, True)
-            painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
-            
-            # 渲染SVG图标
-            svg_renderer.render(painter)
+            # 使用SvgRenderer工具渲染SVG图标，传递DPI缩放因子
+            base_pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, 120, self.dpi_scale)
             
             # 如果是未知文件类型或压缩文件类型，在图标上显示后缀名
             if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
@@ -1868,6 +1900,12 @@ class CustomFileSelector(QWidget):
                     if len(suffix) > 6:
                         suffix = "FILE"
                 
+                # 创建一个新的QPixmap，用于绘制叠加文本
+                final_pixmap = QPixmap(base_pixmap)
+                
+                # 创建画家
+                painter = QPainter(final_pixmap)
+                
                 # 加载指定字体
                 font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
                 font = QFont()
@@ -1879,19 +1917,20 @@ class CustomFileSelector(QWidget):
                         font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
                         font.setFamily(font_family)
                 
-                # 设置字体大小，初始值为40
-                font_size = 40
+                # 设置字体大小，应用DPI缩放
+                font_size = int(40 * self.dpi_scale)
                 font.setPointSize(font_size)
                 font.setBold(True)
                 
                 # 自适应调整字体大小，确保文字不超出图标边界
                 font_metrics = QFontMetrics(font)
                 text_width = font_metrics.width(suffix)
-                text_height = font_metrics.height()
                 
-                # 调整字体大小，确保文字在图标内居中显示
-                max_text_width = 60  # 最大文本宽度
-                while text_width > max_text_width and font_size > 10:
+                # 应用DPI缩放因子到最大文本宽度和最小字体大小
+                max_text_width = int(60 * self.dpi_scale)
+                min_font_size = int(10 * self.dpi_scale)
+                
+                while text_width > max_text_width and font_size > min_font_size:
                     font_size -= 1
                     font.setPointSize(font_size)
                     font_metrics = QFontMetrics(font)
@@ -1907,42 +1946,38 @@ class CustomFileSelector(QWidget):
                     painter.setPen(QPen(QColor(0, 0, 0), 1, Qt.SolidLine))
                 
                 # 计算文字位置，确保整个文本在图标正中心显示
-                x = (120 - text_width) // 2
+                x = (scaled_icon_size - text_width) // 2
                 
                 # 获取字体的ascent和descent，用于准确计算垂直居中位置
                 ascent = font_metrics.ascent()
                 descent = font_metrics.descent()
                 
-                # 计算文本的实际高度（ascent + descent）
-                actual_text_height = ascent + descent
-                
                 # 计算y坐标，确保整个文本块在图标中心
-                # y坐标是基线位置，所以需要调整为：(图标高度 + ascent - descent) // 2
-                y = (120 + ascent - descent) // 2
+                y = (scaled_icon_size + ascent - descent) // 2
                 
                 # 绘制文字
                 painter.drawText(x, y, suffix)
-            
-            painter.end()
-            
-            # 将QImage转换为QPixmap，确保透明度正确
-            pixmap = QPixmap.fromImage(image)
-            
-            if not pixmap.isNull():
-                label.setPixmap(pixmap)
+                
+                # 结束绘画
+                painter.end()
             else:
-                # 如果加载失败，创建一个默认的透明图标
-                pixmap = QPixmap(120, 120)
-                pixmap.fill(Qt.transparent)
-                label.setPixmap(pixmap)
+                # 使用原始pixmap
+                final_pixmap = base_pixmap
+            
+            # 创建一个透明的QLabel
+            label = QLabel()
+            label.setAlignment(Qt.AlignCenter)
+            label.setFixedSize(scaled_icon_size, scaled_icon_size)
+            label.setPixmap(final_pixmap)
             
             return label
         else:
             # 如果没有对应的SVG图标，创建一个默认的透明图标
+            scaled_icon_size = int(120 * self.dpi_scale)
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(120, 120)
-            pixmap = QPixmap(120, 120)
+            label.setFixedSize(scaled_icon_size, scaled_icon_size)
+            pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
             pixmap.fill(Qt.transparent)
             label.setPixmap(pixmap)
             return label
@@ -2012,8 +2047,8 @@ class CustomFileSelector(QWidget):
                 # 未知文件类型使用未知底板图标
                 icon_path = os.path.join(icon_dir, "未知底板.svg")
 
-        # 使用SvgRenderer工具渲染SVG图标为QPixmap
-        return SvgRenderer.render_svg_to_pixmap(icon_path, icon_size)
+        # 使用SvgRenderer工具渲染SVG图标为QPixmap，传递DPI缩放因子
+        return SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, self.dpi_scale)
     
     def _get_thumbnail_path(self, file_path):
         """
@@ -2113,23 +2148,29 @@ class CustomFileSelector(QWidget):
         if file_dir not in self.selected_files:
             self.selected_files[file_dir] = set()
         
+        # 应用DPI缩放因子到样式值
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_border_width = int(2 * self.dpi_scale)
+        scaled_padding = int(8 * self.dpi_scale)
+        
         # 切换选中状态
         if file_path in self.selected_files[file_dir]:
             # 取消选中
             self.selected_files[file_dir].discard(file_path)
             card.is_selected = False
             # 更新样式
-            card.setStyleSheet("""
-                QWidget#FileCard {
+            card.setStyleSheet(f"""
+                QWidget#FileCard {{
                     background-color: #f1f3f5;
-                    border: 2px solid #e0e0e0;
-                    border-radius: 8px;
-                    padding: 8px;
-                }
-                QWidget#FileCard:hover {
+                    border: {scaled_border_width}px solid #e0e0e0;
+                    border-radius: {scaled_border_radius}px;
+                    padding: {scaled_padding}px;
+                    text-align: center;
+                }}
+                QWidget#FileCard:hover {{
                     border-color: #4a7abc;
                     background-color: #f0f8ff;
-                }
+                }}
             """)
             # 发出选择状态改变信号
             self.file_selection_changed.emit(card.file_info, False)
@@ -2138,13 +2179,14 @@ class CustomFileSelector(QWidget):
             self.selected_files[file_dir].add(file_path)
             card.is_selected = True
             # 更新样式
-            card.setStyleSheet("""
-                QWidget#FileCard {
+            card.setStyleSheet(f"""
+                QWidget#FileCard {{
                     background-color: #e6f7ff;
-                    border: 2px solid #1890ff;
-                    border-radius: 8px;
-                    padding: 8px;
-                }
+                    border: {scaled_border_width}px solid #1890ff;
+                    border-radius: {scaled_border_radius}px;
+                    padding: {scaled_padding}px;
+                    text-align: center;
+                }}
             """)
             # 发出选择信号（仅当emit_preview为True时）
             if emit_preview:

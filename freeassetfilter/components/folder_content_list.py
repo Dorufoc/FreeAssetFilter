@@ -44,6 +44,11 @@ class FolderContentList(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
+        # 获取应用实例和DPI缩放因子
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
         # 初始化配置
         self.current_path = os.path.expanduser("~")  # 默认路径为用户主目录
         
@@ -60,13 +65,18 @@ class FolderContentList(QWidget):
         """
         初始化用户界面
         """
+        # 应用DPI缩放因子到布局参数
+        scaled_spacing = int(10 * self.dpi_scale)
+        scaled_margin = int(10 * self.dpi_scale)
+        
         # 创建主布局
         main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(scaled_spacing)
+        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
         # 创建顶部路径栏
         path_layout = QHBoxLayout()
+        path_layout.setSpacing(scaled_spacing)
         
         # 路径标签
         self.path_label = QLabel(f"当前路径: {self.current_path}")

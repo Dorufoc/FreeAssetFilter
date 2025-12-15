@@ -95,8 +95,11 @@ class PlayerCore:
             return
             
         try:
-            # 简化VLC实例初始化，只使用必要的选项
-            self._instance = vlc.Instance()
+            # 初始化VLC实例，禁用硬件解码以解决H.264解码错误
+            self._instance = vlc.Instance([
+                '--lua-config=lut_filter{lut_file=""}',
+                '--avcodec-hw=none'
+            ])
             
             # 检查VLC实例是否创建成功
             if not self._instance:
@@ -421,6 +424,150 @@ class PlayerCore:
                 self._instance = None
         except Exception:
             pass
+    
+    def video_set_filter(self, filter_name, filter_param=None):
+        """
+        设置或移除VLC视频滤镜
+        
+        Args:
+            filter_name (str): 滤镜名称，如"cube"或"lut_filter"
+            filter_param (str, optional): 滤镜参数，如"file=path/to/cube.cube"。如果为None或空字符串，则移除滤镜
+        """
+        try:
+            if not self._player:
+                return
+            
+            # 获取媒体对象
+            media = self._player.get_media()
+            if not media:
+                return
+            
+            # 停止当前播放
+            self._player.stop()
+            
+            # 获取当前媒体路径
+            current_mrl = media.get_mrl()
+            if not current_mrl:
+                return
+            
+            # 创建新的媒体对象
+            new_media = self._instance.media_new(current_mrl)
+            
+            # 处理滤镜设置
+            if filter_param and filter_name in ["cube", "lut_filter"]:
+                # 处理cube或lut_filter滤镜
+                cube_path = filter_param.split('=')[1] if '=' in filter_param else filter_param
+                lua_config = f'lut_filter{{lut_file="{cube_path}"}}'
+                new_media.add_option(':video-filter=lut_filter')
+                new_media.add_option(f':lua-config={lua_config}')
+                # 更新标志位
+                self._cube_filter_enabled = True
+            elif not filter_param:
+                # 移除滤镜
+                new_media.add_option(':video-filter=')
+                # 更新标志位
+                if hasattr(self, '_cube_filter_enabled'):
+                    self._cube_filter_enabled = False
+            
+            # 设置新的媒体到播放器
+            self._player.set_media(new_media)
+        except Exception as e:
+            print(f"[PlayerCore] 错误: 设置滤镜失败 - {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def enable_cube_filter(self, cube_path):
+        """
+        启用Cube色彩映射滤镜
+        
+        Args:
+            cube_path (str): Cube文件的绝对路径
+        """
+        try:
+            if not self._player or not cube_path:
+                return False
+            
+            # 停止当前播放
+            self._player.stop()
+            
+            # 获取媒体对象
+            current_media = self._player.get_media()
+            if not current_media:
+                return False
+            
+            # 使用Lua滤镜，更新滤镜配置
+            lua_config = f'lut_filter{{lut_file="{cube_path}"}}'
+            
+            # 重新设置媒体并添加滤镜选项
+            current_mrl = current_media.get_mrl()
+            new_media = self._instance.media_new(current_mrl)
+            new_media.add_option(':video-filter=lut_filter')
+            new_media.add_option(f':lua-config={lua_config}')
+            
+            # 设置新的媒体到播放器
+            self._player.set_media(new_media)
+            
+            # 设置标志位，表示Cube滤镜已启用
+            self._cube_filter_enabled = True
+            return True
+        except Exception as e:
+            print(f"[PlayerCore] 错误: 启用Cube滤镜失败 - {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def disable_cube_filter(self):
+        """
+        禁用Cube色彩映射滤镜
+        """
+        try:
+            if not self._player:
+                return
+            
+            # 停止当前播放
+            self._player.stop()
+            
+            # 获取媒体对象
+            current_media = self._player.get_media()
+            if not current_media:
+                return
+            
+            # 重新创建媒体对象，不添加滤镜选项
+            current_mrl = current_media.get_mrl()
+            new_media = self._instance.media_new(current_mrl)
+            new_media.add_option(':video-filter=')
+            
+            # 设置新的媒体到播放器
+            self._player.set_media(new_media)
+            
+            # 重置标志位，表示Cube滤镜已禁用
+            self._cube_filter_enabled = False
+        except Exception as e:
+            print(f"[PlayerCore] 错误: 禁用Cube滤镜失败 - {e}")
+            import traceback
+            traceback.print_exc()
+    
+    @property
+    def is_cube_filter_enabled(self):
+        """
+        检查Cube滤镜是否已启用
+        
+        Returns:
+            bool: Cube滤镜是否已启用
+        """
+        # VLC Python绑定没有直接检查滤镜状态的方法
+        # 我们通过尝试获取滤镜列表来判断
+        try:
+            if not self._player:
+                return False
+            
+            # 注意：VLC Python绑定可能不支持直接获取滤镜列表
+            # 这里我们通过检查当前使用的滤镜参数来判断
+            # 由于无法直接获取，我们使用一个简单的标志位来跟踪
+            # 注意：这是一个简化实现，实际项目中可能需要更复杂的状态管理
+            return hasattr(self, '_cube_filter_enabled') and self._cube_filter_enabled
+        except Exception:
+            return False
     
     def __del__(self):
         """

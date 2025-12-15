@@ -45,12 +45,16 @@ class PDFPreviewWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # 获取全局字体
+        # 获取应用实例
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
+        
+        # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
-        #print(f"[DEBUG] PDFPreviewWidget获取到的全局字体: {self.global_font.family()}")
+        
+        # 获取DPI缩放因子
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -78,21 +82,26 @@ class PDFPreviewWidget(QWidget):
         初始化预览部件UI
         """
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
+        
+        # 使用DPI缩放因子调整边距和间距
+        scaled_margin = int(20 * self.dpi_scale)
+        scaled_spacing = int(15 * self.dpi_scale)
+        layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        layout.setSpacing(scaled_spacing)
         
         # 设置背景色
         self.setStyleSheet("background-color: #f5f5f5;")
         
         # 工具栏
         toolbar_layout = QHBoxLayout()
-        toolbar_layout.setSpacing(15)
+        toolbar_layout.setSpacing(scaled_spacing)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         
         # 页面信息
         self.page_label = QLabel("页数: 0")
         self.page_label.setFont(self.global_font)
-        self.page_label.setStyleSheet("font-size: 14px; color: #333; font-weight: 500;")
+        scaled_font_size = int(14 * self.dpi_scale)
+        self.page_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
         toolbar_layout.addWidget(self.page_label)
         
         toolbar_layout.addStretch()
@@ -100,7 +109,7 @@ class PDFPreviewWidget(QWidget):
         # 缩放控制
         zoom_label = QLabel("缩放:")
         zoom_label.setFont(self.global_font)
-        zoom_label.setStyleSheet("font-size: 14px; color: #333; font-weight: 500;")
+        zoom_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
         toolbar_layout.addWidget(zoom_label)
         
         self.zoom_slider = QSlider(Qt.Horizontal)
@@ -110,34 +119,42 @@ class PDFPreviewWidget(QWidget):
         self.zoom_slider.setTickInterval(50)
         self.zoom_slider.setTickPosition(QSlider.TicksBelow)
         self.zoom_slider.valueChanged.connect(self.change_zoom)
-        self.zoom_slider.setStyleSheet('''.QSlider::groove:horizontal {
-            height: 8px;
+        
+        # 使用DPI缩放因子调整滑块样式
+        scaled_groove_height = int(8 * self.dpi_scale)
+        scaled_handle_size = int(20 * self.dpi_scale)
+        scaled_handle_radius = int(10 * self.dpi_scale)
+        scaled_handle_margin = int(6 * self.dpi_scale)
+        scaled_border_radius = int(4 * self.dpi_scale)
+        
+        self.zoom_slider.setStyleSheet(f'''.QSlider::groove:horizontal {{
+            height: {scaled_groove_height}px;
             background: #e0e0e0;
-            border-radius: 4px;
-        }
-        .QSlider::handle:horizontal {
+            border-radius: {scaled_border_radius}px;
+        }}
+        .QSlider::handle:horizontal {{
             background: #1976d2;
             border: none;
-            width: 20px;
-            height: 20px;
-            border-radius: 10px;
-            margin: -6px 0;
-        }
-        .QSlider::handle:horizontal:hover {
+            width: {scaled_handle_size}px;
+            height: {scaled_handle_size}px;
+            border-radius: {scaled_handle_radius}px;
+            margin: -{scaled_handle_margin}px 0;
+        }}
+        .QSlider::handle:horizontal:hover {{
             background: #1565c0;
-        }
-        .QSlider::handle:horizontal:pressed {
+        }}
+        .QSlider::handle:horizontal:pressed {{
             background: #0d47a1;
-        }
-        .QSlider::sub-page:horizontal {
+        }}
+        .QSlider::sub-page:horizontal {{
             background: #1976d2;
-            border-radius: 4px;
-        }''')
+            border-radius: {scaled_border_radius}px;
+        }}''')
         toolbar_layout.addWidget(self.zoom_slider)
         
         self.zoom_value_label = QLabel("100%")
         self.zoom_value_label.setFont(self.global_font)
-        self.zoom_value_label.setStyleSheet("font-size: 14px; color: #1976d2; font-weight: bold; min-width: 50px; text-align: center;")
+        self.zoom_value_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #1976d2; font-weight: bold; min-width: 50px; text-align: center;")
         toolbar_layout.addWidget(self.zoom_value_label)
         
         layout.addLayout(toolbar_layout)
@@ -145,7 +162,8 @@ class PDFPreviewWidget(QWidget):
         # 预览区域
         self.preview_container = QScrollArea()
         self.preview_container.setWidgetResizable(True)
-        self.preview_container.setMinimumHeight(500)
+        scaled_min_height = int(500 * self.dpi_scale)
+        self.preview_container.setMinimumHeight(scaled_min_height)
         self.preview_container.setStyleSheet('''.QScrollArea {
             background-color: transparent;
             border: none;
@@ -158,7 +176,7 @@ class PDFPreviewWidget(QWidget):
         self.pages_container = QWidget()
         self.pages_layout = QVBoxLayout(self.pages_container)
         self.pages_layout.setAlignment(Qt.AlignTop)
-        self.pages_layout.setSpacing(15)
+        self.pages_layout.setSpacing(scaled_spacing)
         self.pages_layout.setContentsMargins(0, 0, 0, 0)
         self.pages_container.setStyleSheet("background-color: transparent;")
         
@@ -167,60 +185,66 @@ class PDFPreviewWidget(QWidget):
         
         # 页面控制按钮
         page_control_layout = QHBoxLayout()
-        page_control_layout.setSpacing(10)
+        scaled_button_spacing = int(10 * self.dpi_scale)
+        page_control_layout.setSpacing(scaled_button_spacing)
+        
+        # 按钮样式
+        scaled_button_border_radius = int(8 * self.dpi_scale)
+        scaled_button_padding_v = int(12 * self.dpi_scale)
+        scaled_button_padding_h = int(24 * self.dpi_scale)
         
         self.prev_button = QPushButton("上一页")
         self.prev_button.setFont(self.global_font)
         self.prev_button.clicked.connect(self.prev_page)
         self.prev_button.setEnabled(False)
-        self.prev_button.setStyleSheet('''.QPushButton {
+        self.prev_button.setStyleSheet(f'''.QPushButton {{
             background-color: white;
             color: #333;
             border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 12px 24px;
-            font-size: 14px;
+            border-radius: {scaled_button_border_radius}px;
+            padding: {scaled_button_padding_v}px {scaled_button_padding_h}px;
+            font-size: {scaled_font_size}px;
             font-weight: 500;
-        }
-        .QPushButton:hover {
+        }}
+        .QPushButton:hover {{
             background-color: #f0f4f8;
             border-color: #1976d2;
-        }
-        .QPushButton:pressed {
+        }}
+        .QPushButton:pressed {{
             background-color: #e3f2fd;
-        }
-        .QPushButton:disabled {
+        }}
+        .QPushButton:disabled {{
             background-color: #f5f5f5;
             color: #9e9e9e;
             border-color: #e0e0e0;
-        }''')
+        }}''')
         page_control_layout.addWidget(self.prev_button)
         
         self.next_button = QPushButton("下一页")
         self.next_button.setFont(self.global_font)
         self.next_button.clicked.connect(self.next_page)
         self.next_button.setEnabled(False)
-        self.next_button.setStyleSheet('''.QPushButton {
+        self.next_button.setStyleSheet(f'''.QPushButton {{
             background-color: white;
             color: #333;
             border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 12px 24px;
-            font-size: 14px;
+            border-radius: {scaled_button_border_radius}px;
+            padding: {scaled_button_padding_v}px {scaled_button_padding_h}px;
+            font-size: {scaled_font_size}px;
             font-weight: 500;
-        }
-        .QPushButton:hover {
+        }}
+        .QPushButton:hover {{
             background-color: #f0f4f8;
             border-color: #1976d2;
-        }
-        .QPushButton:pressed {
+        }}
+        .QPushButton:pressed {{
             background-color: #e3f2fd;
-        }
-        .QPushButton:disabled {
+        }}
+        .QPushButton:disabled {{
             background-color: #f5f5f5;
             color: #9e9e9e;
             border-color: #e0e0e0;
-        }''')
+        }}''')
         page_control_layout.addWidget(self.next_button)
         
         page_control_layout.addStretch()
@@ -275,7 +299,10 @@ class PDFPreviewWidget(QWidget):
             
             if not FITZ_AVAILABLE:
                 error_label = QLabel("错误：PyMuPDF (fitz)库未安装\n请运行 pip install PyMuPDF 安装")
-                error_label.setStyleSheet("color: #d32f2f; font-size: 16px; background-color: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px;")
+                scaled_font_size = int(16 * self.dpi_scale)
+                scaled_border_radius = int(8 * self.dpi_scale)
+                scaled_padding = int(20 * self.dpi_scale)
+                error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
                 self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
                 return False
             
@@ -298,14 +325,20 @@ class PDFPreviewWidget(QWidget):
                     return True
                 except Exception as e:
                     error_label = QLabel(f"错误：无法打开PDF文件\n{str(e)}")
-                    error_label.setStyleSheet("color: #d32f2f; font-size: 16px; background-color: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px;")
+                    scaled_font_size = int(16 * self.dpi_scale)
+                    scaled_border_radius = int(8 * self.dpi_scale)
+                    scaled_padding = int(20 * self.dpi_scale)
+                    error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
                     self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
                     return False
             return False
         except Exception as e:
             print(f"设置PDF文件时出错: {e}")
             error_label = QLabel(f"错误：无法处理PDF文件\n{str(e)}")
-            error_label.setStyleSheet("color: #d32f2f; font-size: 16px; background-color: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px;")
+            scaled_font_size = int(16 * self.dpi_scale)
+            scaled_border_radius = int(8 * self.dpi_scale)
+            scaled_padding = int(20 * self.dpi_scale)
+            error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
             self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
             return False
     
@@ -358,14 +391,21 @@ class PDFPreviewWidget(QWidget):
             page_label = QLabel()
             page_label.setPixmap(pixmap)
             page_label.setAlignment(Qt.AlignCenter)
-            page_label.setStyleSheet("background-color: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px;")
+            
+            # 使用DPI缩放因子调整页面样式
+            scaled_border_radius = int(8 * self.dpi_scale)
+            scaled_padding = int(20 * self.dpi_scale)
+            page_label.setStyleSheet(f"background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
             
             self.pages_layout.addWidget(page_label, alignment=Qt.AlignCenter)
             self.rendered_pages.append(page_label)
             
         except Exception as e:
             error_label = QLabel(f"错误：无法渲染页 {page_num + 1}\n{str(e)}")
-            error_label.setStyleSheet("color: #d32f2f; font-size: 14px; background-color: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px;")
+            scaled_font_size = int(14 * self.dpi_scale)
+            scaled_border_radius = int(8 * self.dpi_scale)
+            scaled_padding = int(20 * self.dpi_scale)
+            error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
             self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
             self.rendered_pages.append(error_label)
     
@@ -427,7 +467,8 @@ class PDFPreviewWidget(QWidget):
             current_pos = scroll_bar.value()
             page_height = 0
             if self.rendered_pages:
-                page_height = self.rendered_pages[0].height() + 35  # 页面高度 + 间距
+                scaled_spacing = int(15 * self.dpi_scale)  # 与布局间距保持一致
+                page_height = self.rendered_pages[0].height() + scaled_spacing  # 页面高度 + 间距
             scroll_bar.setValue(max(0, current_pos - page_height))
         except Exception as e:
             print(f"上一页操作时出错: {e}")
@@ -442,7 +483,8 @@ class PDFPreviewWidget(QWidget):
             current_pos = scroll_bar.value()
             page_height = 0
             if self.rendered_pages:
-                page_height = self.rendered_pages[0].height() + 35  # 页面高度 + 间距
+                scaled_spacing = int(15 * self.dpi_scale)  # 与布局间距保持一致
+                page_height = self.rendered_pages[0].height() + scaled_spacing  # 页面高度 + 间距
             scroll_bar.setValue(current_pos + page_height)
         except Exception as e:
             print(f"下一页操作时出错: {e}")
@@ -473,12 +515,16 @@ class PDFPreviewer(QWidget):
         """
         super().__init__(parent)
         
-        # 获取全局字体
+        # 获取应用实例
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
+        
+        # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
-        #print(f"[DEBUG] PDFPreviewer获取到的全局字体: {self.global_font.family()}")
+        
+        # 获取DPI缩放因子
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -488,7 +534,11 @@ class PDFPreviewer(QWidget):
         
         # 设置窗口属性
         self.setWindowTitle("PDF预览器")
-        self.setMinimumSize(1000, 800)
+        
+        # 使用DPI缩放因子调整窗口大小
+        scaled_min_width = int(1000 * self.dpi_scale)
+        scaled_min_height = int(800 * self.dpi_scale)
+        self.setMinimumSize(scaled_min_width, scaled_min_height)
         
         # 创建UI组件
         self.init_ui()
