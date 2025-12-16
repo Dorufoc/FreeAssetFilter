@@ -51,7 +51,7 @@ class CustomControlMenu(QWidget):
         
         # 外观属性，应用DPI缩放
         self._bg_color = QColor(255, 255, 255)  # 白色背景
-        self._shadow_color = QColor(0, 0, 0, 25)  # 阴影颜色，透明度25/255
+        self._shadow_color = QColor(0, 0, 0, 0)  # 阴影颜色，透明度25/255
         self._shadow_radius = int(4 * self.dpi_scale)  # 阴影半径
         self._border_radius = int(8 * self.dpi_scale)  # 圆角半径
         self._padding = int(10 * self.dpi_scale)  # 内边距
@@ -186,7 +186,7 @@ class CustomControlMenu(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # 绘制阴影
+        # 绘制阴影（透明）
         shadow_path = QPainterPath()
         shadow_rect = QRectF(
             self._shadow_radius,
@@ -195,7 +195,7 @@ class CustomControlMenu(QWidget):
             self.height() - 2 * self._shadow_radius
         )
         shadow_path.addRoundedRect(shadow_rect, self._border_radius, self._border_radius)
-        painter.fillPath(shadow_path, QBrush(self._shadow_color))
+        # 阴影颜色已设置为透明，不需要绘制边框
         
         # 绘制背景
         bg_path = QPainterPath()

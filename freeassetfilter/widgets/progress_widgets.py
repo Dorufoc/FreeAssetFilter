@@ -285,171 +285,97 @@ class CustomProgressBar(QWidget):
             progress_width = int(bar_width * (self._value - self._minimum) / (self._maximum - self._minimum))
             
             if progress_width > 0:
-                try:
+                if self._is_interactive:
+                    # 可交互进度条 - 原有样式
+                    # 使用条顶中 SVG 图形填充已播放部分
+                    # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
+                    icon_size = self._handle_radius * 2
+                    temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
+                    
+                    # 将临时 pixmap 旋转 90 度
                     from PyQt5.QtCore import Qt as QtCore
                     from PyQt5.QtGui import QTransform
+                    transform = QTransform()
+                    transform.rotate(90)
+                    rotated_pixmap = temp_pixmap.transformed(transform, QtCore.SmoothTransformation)
                     
                     # 计算垂直居中位置
                     middle_y = (rect.height() - self._handle_radius * 2) // 2
                     
-                    if self._is_interactive:
-                        # 可交互进度条 - 原有样式
-                        # 使用条顶中 SVG 图形填充已播放部分
-                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
-                        icon_size = self._handle_radius * 2
-                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
+                    # 计算中间矩形
+                    middle_rect = QRect(
+                        self._handle_radius, middle_y, 
+                        progress_width, self._handle_radius * 2
+                    )
+                    
+                    # 拉伸渲染旋转后的 pixmap 到中间矩形
+                    painter.drawPixmap(middle_rect, rotated_pixmap)
+                    
+                    # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标（逆时针旋转90度）
+                    head_x = -self._handle_radius // 2  # 向左偏移一点
+                    
+                    if not self._head_pixmap.isNull():
+                        # 保存当前画家状态
+                        painter.save()
                         
-                        # 将临时 pixmap 旋转 90 度
-                        transform = QTransform()
-                        transform.rotate(90)
-                        rotated_pixmap = temp_pixmap.transformed(transform, QtCore.SmoothTransformation)
+                        # 计算旋转中心
+                        center_x = head_x + self._handle_radius
+                        center_y = middle_y + self._handle_radius
                         
-                        # 计算中间矩形
-                        middle_rect = QRect(
-                            self._handle_radius, middle_y, 
-                            progress_width, self._handle_radius * 2
-                        )
+                        # 移动坐标原点到旋转中心
+                        painter.translate(center_x, center_y)
                         
-                        # 拉伸渲染旋转后的 pixmap 到中间矩形
-                        painter.drawPixmap(middle_rect, rotated_pixmap)
+                        # 逆时针旋转90度
+                        painter.rotate(-90)
                         
-                        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标（逆时针旋转90度）
-                        head_x = -self._handle_radius // 2  # 向左偏移一点
+                        # 绘制旋转后的图标
+                        painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
                         
-                        if not self._head_pixmap.isNull():
-                            # 保存当前画家状态
-                            painter.save()
-                            
-                            # 计算旋转中心
-                            center_x = head_x + self._handle_radius
-                            center_y = middle_y + self._handle_radius
-                            
-                            # 移动坐标原点到旋转中心
-                            painter.translate(center_x, center_y)
-                            
-                            # 逆时针旋转90度
-                            painter.rotate(-90)
-                            
-                            # 绘制旋转后的图标
-                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
-                            
-                            # 恢复画家状态
-                            painter.restore()
+                        # 恢复画家状态
+                        painter.restore()
+                    
+                    # 绘制滑块 - 使用 SVG 图标（逆时针旋转90度）
+                    handle_x = self._handle_radius + progress_width
+                    # 确保滑块不会超出进度条范围
+                    handle_x = min(handle_x, self.width() - self._handle_radius * 2)
+                    
+                    # 确保图标已正确加载
+                    if not self._handle_pixmap.isNull():
+                        # 保存当前画家状态
+                        painter.save()
                         
-                        # 绘制滑块 - 使用 SVG 图标（逆时针旋转90度）
-                        handle_x = self._handle_radius + progress_width
-                        # 确保滑块不会超出进度条范围
-                        handle_x = min(handle_x, self.width() - self._handle_radius * 2)
+                        # 计算旋转中心
+                        center_x = handle_x + self._handle_radius
+                        center_y = middle_y + self._handle_radius
                         
-                        # 确保图标已正确加载
-                        if not self._handle_pixmap.isNull():
-                            # 保存当前画家状态
-                            painter.save()
-                            
-                            # 计算旋转中心
-                            center_x = handle_x + self._handle_radius
-                            center_y = middle_y + self._handle_radius
-                            
-                            # 移动坐标原点到旋转中心
-                            painter.translate(center_x, center_y)
-                            
-                            # 逆时针旋转90度
-                            painter.rotate(-90)
-                            
-                            # 绘制旋转后的图标
-                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
-                            
-                            # 恢复画家状态
-                            painter.restore()
-                        else:
-                            # 备用方案：如果 SVG 加载失败，绘制圆形滑块
-                            painter.setBrush(QBrush(
-                                self._handle_pressed_color if self._is_pressed else 
-                                self._handle_hover_color if self.underMouse() else 
-                                self._handle_color
-                            ))
-                            painter.setPen(Qt.NoPen)  # 去除滑块边框
-                            painter.drawEllipse(handle_x, middle_y, self._handle_radius * 2, self._handle_radius * 2)
+                        # 移动坐标原点到旋转中心
+                        painter.translate(center_x, center_y)
+                        
+                        # 逆时针旋转90度
+                        painter.rotate(-90)
+                        
+                        # 绘制旋转后的图标
+                        painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+                        
+                        # 恢复画家状态
+                        painter.restore()
                     else:
-                        # 不可交互进度条 - 使用SVG贴图渲染头、中、尾
-                        from PyQt5.QtCore import Qt as QtCore
-                        from PyQt5.QtGui import QTransform
-                        
-                        # 计算垂直居中位置
-                        middle_y = (rect.height() - self._handle_radius * 2) // 2
-                        
-                        # 使用条顶中 SVG 图形填充已播放部分
-                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
-                        icon_size = self._handle_radius * 2
-                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
-                        
-                        # 将临时 pixmap 旋转 90 度
-                        transform = QTransform()
-                        transform.rotate(90)
-                        rotated_pixmap = temp_pixmap.transformed(transform, QtCore.SmoothTransformation)
-                        
-                        # 计算中间矩形
-                        middle_rect = QRect(
-                            self._handle_radius, middle_y, 
-                            progress_width, self._handle_radius * 2
-                        )
-                        
-                        # 拉伸渲染旋转后的 pixmap 到中间矩形
-                        painter.drawPixmap(middle_rect, rotated_pixmap)
-                        
-                        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标（逆时针旋转90度）
-                        head_x = -self._handle_radius // 2  # 向左偏移一点
-                        
-                        if not self._head_pixmap.isNull():
-                            # 保存当前画家状态
-                            painter.save()
-                            
-                            # 计算旋转中心
-                            center_x = head_x + self._handle_radius
-                            center_y = middle_y + self._handle_radius
-                            
-                            # 移动坐标原点到旋转中心
-                            painter.translate(center_x, center_y)
-                            
-                            # 逆时针旋转90度
-                            painter.rotate(-90)
-                            
-                            # 绘制旋转后的图标
-                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
-                            
-                            # 恢复画家状态
-                            painter.restore()
-                        
-                        # 绘制已完成区域的结束点 - 使用条-顶-尾.svg图标（逆时针旋转90度）
-                        tail_x = self._handle_radius + progress_width - self._handle_radius
-                        
-                        if not self._handle_pixmap.isNull():
-                            # 保存当前画家状态
-                            painter.save()
-                            
-                            # 计算旋转中心
-                            center_x = tail_x + self._handle_radius
-                            center_y = middle_y + self._handle_radius
-                            
-                            # 移动坐标原点到旋转中心
-                            painter.translate(center_x, center_y)
-                            
-                            # 逆时针旋转90度
-                            painter.rotate(-90)
-                            
-                            # 绘制旋转后的图标
-                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
-                            
-                            # 恢复画家状态
-                            painter.restore()
-                except Exception as e:
-                    print(f"渲染 SVG 失败: {e}")
-                    # 备用方案：使用纯色填充
+                        # 备用方案：如果 SVG 加载失败，绘制圆形滑块
+                        painter.setBrush(QBrush(
+                            self._handle_pressed_color if self._is_pressed else 
+                            self._handle_hover_color if self.underMouse() else 
+                            self._handle_color
+                        ))
+                        painter.setPen(Qt.NoPen)  # 去除滑块边框
+                        painter.drawEllipse(handle_x, middle_y, self._handle_radius * 2, self._handle_radius * 2)
+                else:
+                    # 不可交互进度条 - 使用纯色填充，类似CustomValueBar
                     progress_rect = QRect(
                         self._handle_radius, bar_y, 
                         progress_width, self._bar_height
                     )
                     painter.setBrush(QBrush(self._progress_color))
+                    painter.setPen(Qt.NoPen)
                     painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
         else:  # Vertical
             # 纵向绘制
@@ -471,149 +397,84 @@ class CustomProgressBar(QWidget):
             progress_height = int(bar_height * (self._value - self._minimum) / (self._maximum - self._minimum))
             
             if progress_height > 0:
-                try:
-                    from PyQt5.QtCore import Qt as QtCore
-                    from PyQt5.QtGui import QTransform
+                if self._is_interactive:
+                    # 可交互进度条 - 纵向样式
+                    # 使用条顶中 SVG 图形填充已播放部分
+                    # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
+                    icon_size = self._handle_radius * 2
+                    temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
                     
                     # 计算水平居中位置
                     middle_x = (rect.width() - self._handle_radius * 2) // 2
                     
-                    if self._is_interactive:
-                        # 可交互进度条 - 纵向样式
-                        # 使用条顶中 SVG 图形填充已播放部分
-                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
-                        icon_size = self._handle_radius * 2
-                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
+                    # 计算中间矩形 - 从顶部开始向下延伸
+                    middle_rect = QRect(
+                        middle_x, self._handle_radius, 
+                        self._handle_radius * 2, progress_height
+                    )
+                    
+                    # 拉伸渲染 pixmap 到中间矩形
+                    painter.drawPixmap(middle_rect, temp_pixmap)
+                    
+                    # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标
+                    head_y = -self._handle_radius // 2  # 向上偏移一点
+                    
+                    if not self._head_pixmap.isNull():
+                        # 保存当前画家状态
+                        painter.save()
                         
-                        # 计算中间矩形 - 从顶部开始向下延伸
-                        middle_rect = QRect(
-                            middle_x, self._handle_radius, 
-                            self._handle_radius * 2, progress_height
-                        )
+                        # 计算旋转中心
+                        center_x = middle_x + self._handle_radius
+                        center_y = head_y + self._handle_radius
                         
-                        # 拉伸渲染 pixmap 到中间矩形
-                        painter.drawPixmap(middle_rect, temp_pixmap)
+                        # 移动坐标原点到旋转中心
+                        painter.translate(center_x, center_y)
                         
-                        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标
-                        head_y = -self._handle_radius // 2  # 向上偏移一点
+                        # 绘制图标（不需要旋转）
+                        painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
                         
-                        if not self._head_pixmap.isNull():
-                            # 保存当前画家状态
-                            painter.save()
-                            
-                            # 计算旋转中心
-                            center_x = middle_x + self._handle_radius
-                            center_y = head_y + self._handle_radius
-                            
-                            # 移动坐标原点到旋转中心
-                            painter.translate(center_x, center_y)
-                            
-                            # 绘制图标（不需要旋转）
-                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
-                            
-                            # 恢复画家状态
-                            painter.restore()
+                        # 恢复画家状态
+                        painter.restore()
+                    
+                    # 绘制滑块 - 使用 SVG 图标
+                    handle_y = self._handle_radius + progress_height
+                    # 确保滑块不会超出进度条范围
+                    handle_y = min(handle_y, self.height() - self._handle_radius * 2)
+                    
+                    # 确保图标已正确加载
+                    if not self._handle_pixmap.isNull():
+                        # 保存当前画家状态
+                        painter.save()
                         
-                        # 绘制滑块 - 使用 SVG 图标
-                        handle_y = self._handle_radius + progress_height
-                        # 确保滑块不会超出进度条范围
-                        handle_y = min(handle_y, self.height() - self._handle_radius * 2)
+                        # 计算旋转中心
+                        center_x = middle_x + self._handle_radius
+                        center_y = handle_y + self._handle_radius
                         
-                        # 确保图标已正确加载
-                        if not self._handle_pixmap.isNull():
-                            # 保存当前画家状态
-                            painter.save()
-                            
-                            # 计算旋转中心
-                            center_x = middle_x + self._handle_radius
-                            center_y = handle_y + self._handle_radius
-                            
-                            # 移动坐标原点到旋转中心
-                            painter.translate(center_x, center_y)
-                            
-                            # 绘制旋转后的图标
-                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
-                            
-                            # 恢复画家状态
-                            painter.restore()
-                        else:
-                            # 备用方案：如果 SVG 加载失败，绘制圆形滑块
-                            painter.setBrush(QBrush(
-                                self._handle_pressed_color if self._is_pressed else 
-                                self._handle_hover_color if self.underMouse() else 
-                                self._handle_color
-                            ))
-                            painter.setPen(Qt.NoPen)  # 去除滑块边框
-                            painter.drawEllipse(middle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+                        # 移动坐标原点到旋转中心
+                        painter.translate(center_x, center_y)
+                        
+                        # 绘制旋转后的图标
+                        painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
+                        
+                        # 恢复画家状态
+                        painter.restore()
                     else:
-                        # 不可交互进度条 - 使用SVG贴图渲染头、中、尾
-                        from PyQt5.QtCore import Qt as QtCore
-                        from PyQt5.QtGui import QTransform
-                        
-                        # 计算水平居中位置
-                        middle_x = (rect.width() - self._handle_radius * 2) // 2
-                        
-                        # 使用条顶中 SVG 图形填充已播放部分
-                        # 使用修复过的 SvgRenderer 方法渲染 SVG 到临时 QPixmap，传递DPI缩放因子
-                        icon_size = self._handle_radius * 2
-                        temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
-                        
-                        # 计算中间矩形 - 从顶部开始向下延伸
-                        middle_rect = QRect(
-                            middle_x, self._handle_radius, 
-                            self._handle_radius * 2, progress_height
-                        )
-                        
-                        # 拉伸渲染 pixmap 到中间矩形
-                        painter.drawPixmap(middle_rect, temp_pixmap)
-                        
-                        # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标
-                        head_y = -self._handle_radius // 2  # 向上偏移一点
-                        
-                        if not self._head_pixmap.isNull():
-                            # 保存当前画家状态
-                            painter.save()
-                            
-                            # 计算旋转中心
-                            center_x = middle_x + self._handle_radius
-                            center_y = head_y + self._handle_radius
-                            
-                            # 移动坐标原点到旋转中心
-                            painter.translate(center_x, center_y)
-                            
-                            # 绘制图标（不需要旋转）
-                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._head_pixmap)
-                            
-                            # 恢复画家状态
-                            painter.restore()
-                        
-                        # 绘制已完成区域的结束点 - 使用条-顶-尾.svg图标
-                        tail_y = self._handle_radius + progress_height - self._handle_radius
-                        
-                        if not self._handle_pixmap.isNull():
-                            # 保存当前画家状态
-                            painter.save()
-                            
-                            # 计算旋转中心
-                            center_x = middle_x + self._handle_radius
-                            center_y = tail_y + self._handle_radius
-                            
-                            # 移动坐标原点到旋转中心
-                            painter.translate(center_x, center_y)
-                            
-                            # 绘制图标（不需要旋转）
-                            painter.drawPixmap(-self._handle_radius, -self._handle_radius, self._handle_pixmap)
-                            
-                            # 恢复画家状态
-                            painter.restore()
-                except Exception as e:
-                    print(f"渲染 SVG 失败: {e}")
-                    # 备用方案：使用纯色填充
+                        # 备用方案：如果 SVG 加载失败，绘制圆形滑块
+                        painter.setBrush(QBrush(
+                            self._handle_pressed_color if self._is_pressed else 
+                            self._handle_hover_color if self.underMouse() else 
+                            self._handle_color
+                        ))
+                        painter.setPen(Qt.NoPen)  # 去除滑块边框
+                        painter.drawEllipse(middle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+                else:
+                    # 不可交互进度条 - 使用纯色填充，类似CustomValueBar
                     progress_rect = QRect(
                         bar_x, self._handle_radius, 
                         self._bar_height, progress_height
                     )
                     painter.setBrush(QBrush(self._progress_color))
+                    painter.setPen(Qt.NoPen)
                     painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
         
         painter.end()

@@ -198,8 +198,8 @@ class CustomInputBox(QWidget):
         else:
             border_color = self._border_color.name()
         
-        # 应用DPI缩放的边框宽度
-        scaled_border_width = int(1 * self.dpi_scale)
+        # 应用DPI缩放的边框宽度，与次选按钮保持一致
+        scaled_border_width = int(2 * self.dpi_scale)
         
         # 简化样式设置，直接应用到当前控件
         style = f"""

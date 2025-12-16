@@ -49,9 +49,9 @@ class CustomSelectListItem(QWidget):
         初始化列表项UI
         """
         # 应用DPI缩放
-        scaled_padding = int(10 * self.dpi_scale)
         scaled_icon_size = int(24 * self.dpi_scale)
-        scaled_margin = int(8 * self.dpi_scale)
+        scaled_margin = int(8 * self.dpi_scale)  # 外部边距
+        text_margin = int(6 * self.dpi_scale)  # 6dx文本边距
         
         # 主布局
         main_layout = QHBoxLayout(self)
@@ -64,14 +64,32 @@ class CustomSelectListItem(QWidget):
         self.icon_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.icon_label)
         
+        # 文本容器 - 用于实现6dx边距
+        text_container = QWidget()
+        text_container.setObjectName("textContainer")
+        text_container_layout = QVBoxLayout(text_container)
+        # 设置6dx固定边距，应用缩放因子
+        text_container_layout.setContentsMargins(text_margin, text_margin, text_margin, text_margin)
+        text_container_layout.setSpacing(0)
+        
         # 文本标签
         self.text_label = QLabel(self.text)
         self.text_label.setFont(self.global_font)
         self.text_label.setAlignment(Qt.AlignVCenter)
-        main_layout.addWidget(self.text_label, 1)
+        self.text_label.setWordWrap(True)  # 允许文本换行
+        self.text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        text_container_layout.addWidget(self.text_label)
+        
+        main_layout.addWidget(text_container, 1)
         
         # 设置样式
-        self.setFixedHeight(int(40 * self.dpi_scale))
+        # 计算合适的高度：考虑字体高度、边距和图标大小
+        font_metrics = self.text_label.fontMetrics()
+        font_height = font_metrics.height()
+        # 高度 = 图标大小（24px） + 上下边距（2*8px） + 文本边距（2*6px） + 额外空间
+        min_height = int(max(font_height + 2 * (scaled_margin + text_margin), scaled_icon_size + 2 * scaled_margin) * self.dpi_scale)
+        self.setMinimumHeight(min_height)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.update_style()
         
         # 加载图标

@@ -914,14 +914,16 @@ class VideoPlayer(QWidget):
         volume_layout = QVBoxLayout(volume_content)
         volume_layout.setContentsMargins(0, 0, 0, 0)
         volume_layout.setSpacing(int(10 * self.dpi_scale))
+        # 设置水平和垂直居中对齐
+        volume_layout.setAlignment(Qt.AlignCenter)
         
         # 创建音量值显示标签
         self.volume_menu_label = QLabel(f"{initial_volume}%")
         font_size = int(14 * self.dpi_scale)
         self.volume_menu_label.setStyleSheet(
             "QLabel {" +
-            f"color: #333;" +
-            "font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;" +
+            #f"color: #333;" +
+            #"font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;" +
             f"font-size: {font_size}px;" +
             "text-align: center;" +
             "background-color: transparent;" +
@@ -932,6 +934,11 @@ class VideoPlayer(QWidget):
         self.volume_menu_slider = CustomValueBar(orientation=CustomValueBar.Vertical)
         self.volume_menu_slider.setRange(0, 100)
         self.volume_menu_slider.setValue(initial_volume)
+        # 设置音量条样式，与横向音量条保持一致
+        self.volume_menu_slider._bg_color = QColor(99, 99, 99)
+        self.volume_menu_slider._progress_color = QColor(0, 120, 212)
+        self.volume_menu_slider._handle_fill_color = QColor(255, 255, 255)
+        self.volume_menu_slider._handle_border_color = QColor(0, 120, 212)
         
         # 设置纵向滑块尺寸
         scaled_width = int(40 * self.dpi_scale)
@@ -967,19 +974,7 @@ class VideoPlayer(QWidget):
         if not self.volume_menu:
             return
         
-        # 计算菜单位置
-        button_rect = self.volume_button.geometry()
-        button_global_pos = self.volume_button.mapToGlobal(button_rect.topLeft())
-        
-        # 菜单显示在按钮上方，居中对齐
-        menu_width = self.volume_menu.width()
-        menu_height = self.volume_menu.height()
-        
-        x = button_global_pos.x() + (button_rect.width() - menu_width) // 2
-        y = button_global_pos.y() - menu_height - 10  # 10px 间距
-        
-        # 显示菜单
-        self.volume_menu.move(x, y)
+        # 直接调用菜单的show()方法，让其内部处理位置计算
         self.volume_menu.show()
         self.is_volume_menu_visible = True
     

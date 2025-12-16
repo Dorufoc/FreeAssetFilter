@@ -83,7 +83,8 @@ class FreeAssetFilterApp(QMainWindow):
         # 使用DPI缩放因子调整窗口大小，但不超过屏幕可用尺寸
         # 调整为更合理的基础宽度，确保有足够空间显示3列卡片，同时避免出现过多空白区域
         window_width = int(1700 * self.dpi_scale)
-        window_height = int(800 * self.dpi_scale)
+        # 计算16:10比例的高度，保持宽度不变
+        window_height = int(window_width * (10/16))
         
         # 确保窗口大小不超过屏幕可用尺寸
         window_width = min(window_width, available_width - 20)  # 留20px边距
@@ -596,7 +597,7 @@ def main():
     font_families = font_db.families()
     
     # 定义统一的默认字体大小（基准大小）
-    DEFAULT_FONT_SIZE = 18  # 基础字体大小，可统一调整
+    DEFAULT_FONT_SIZE = 16  # 基础字体大小，可统一调整
     
     # 检查系统是否包含微软雅黑字体（支持Microsoft YaHei和Microsoft YaHei UI两种名称）
     yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]

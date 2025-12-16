@@ -399,5 +399,5 @@ if __name__ == "__main__":
         # 4. 环境检查通过，启动主程序
         print("\n4. 环境检查通过，正在启动主程序...")
         import subprocess
-        # 启动main.py
-        subprocess.Popen([sys.executable, "main.py"])
+        # 启动实际的主程序
+        subprocess.Popen([sys.executable, "-m", "freeassetfilter.app.main"])

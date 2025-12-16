@@ -14,6 +14,9 @@ from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
+# 导入自定义列表组件
+from .list_widgets import CustomSelectList
+
 
 class CustomWindow(QWidget):
     """
@@ -50,7 +53,7 @@ class CustomWindow(QWidget):
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
         # 增加边框宽度，便于用户抓住边缘和角落，并应用DPI缩放
-        self.border_size = int(15 * self.dpi_scale)
+        self.border_size = 0
         
         # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
@@ -85,7 +88,7 @@ class CustomWindow(QWidget):
             QWidget {{
                 background-color: #ffffff;
                 border-radius: {scaled_radius}px;
-                border: 1px solid #e9ecef;
+                border: 1px solid #ffffff;
             }}
         """)
         
@@ -396,6 +399,11 @@ class CustomMessageBox(QDialog):
         self._buttons = []
         self._button_orientation = Qt.Vertical  # 默认按钮使用纵向排列
         
+        # 列表相关属性
+        self._list = None
+        self._list_selection_mode = "single"  # 默认单选模式
+        self._list_items = []
+        
         # 初始化UI
         self.init_ui()
     
@@ -428,7 +436,7 @@ class CustomMessageBox(QDialog):
             QWidget {{
                 background-color: #ffffff;
                 border-radius: {scaled_radius}px;
-                border: 1px solid #e9ecef;
+                border: 1px solid #ffffff;
             }}
         """)
         
@@ -487,7 +495,16 @@ class CustomMessageBox(QDialog):
         self.text_label.setMinimumWidth(scaled_min_width)
         self.body_layout.addWidget(self.text_label)
         
-        # 4. 进度条区
+        # 4. 列表区
+        self.list_widget = QWidget()
+        self.list_widget.setStyleSheet("background-color: transparent;")
+        self.list_layout = QVBoxLayout(self.list_widget)
+        self.list_layout.setContentsMargins(0, 0, 0, 0)
+        self.list_layout.setSpacing(0)
+        self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.body_layout.addWidget(self.list_widget)
+        
+        # 5. 进度条区
         self.progress_widget = QWidget()
         self.progress_widget.setStyleSheet("background-color: transparent;")
         self.progress_layout = QVBoxLayout(self.progress_widget)
@@ -515,6 +532,7 @@ class CustomMessageBox(QDialog):
         self.title_label.hide()
         self.image_label.hide()
         self.text_label.hide()
+        self.list_widget.hide()
         self.progress_widget.hide()
         self.button_widget.hide()
     
@@ -590,6 +608,112 @@ class CustomMessageBox(QDialog):
             self.progress_layout.setContentsMargins(0, 0, 0, 0)
             self.progress_widget.hide()
         self.adjust_size()
+    
+    def set_list(self, items, selection_mode="single", default_width=370, default_height=200, min_width=300, min_height=150):
+        """
+        设置列表内容
+        
+        Args:
+            items (list): 列表项数据，每个元素可以是字符串或字典
+                        字符串格式：仅文本
+                        字典格式：{"text": "文本", "icon_path": "图标路径"}
+            selection_mode (str): 选择模式，可选值："single"（单选）、"multiple"（多选）
+            default_width (int): 列表默认宽度
+            default_height (int): 列表默认高度
+            min_width (int): 列表最小宽度
+            min_height (int): 列表最小高度
+        """
+        # 清空现有列表
+        self.clear_list()
+        
+        # 创建新的列表实例
+        self._list = CustomSelectList(
+            parent=self,
+            default_width=default_width,
+            default_height=default_height,
+            min_width=min_width,
+            min_height=min_height,
+            selection_mode=selection_mode
+        )
+        
+        # 设置选择模式
+        self._list_selection_mode = selection_mode
+        
+        # 添加列表项
+        self._list.add_items(items)
+        self._list_items = items
+        
+        # 添加列表到布局
+        self.list_layout.addWidget(self._list)
+        self.list_widget.show()
+        
+        # 调整窗口大小
+        self.adjust_size()
+    
+    def add_list_item(self, item):
+        """
+        添加单个列表项
+        
+        Args:
+            item (str or dict): 列表项数据，可以是字符串或字典
+        """
+        if not self._list:
+            # 如果列表不存在，创建默认列表
+            self.set_list([], self._list_selection_mode)
+        
+        # 添加列表项
+        self._list.add_item(item if isinstance(item, str) else item.get("text", ""), 
+                           item.get("icon_path", "") if isinstance(item, dict) else "")
+        self._list_items.append(item)
+        
+        # 调整窗口大小
+        self.adjust_size()
+    
+    def add_list_items(self, items):
+        """
+        批量添加列表项
+        
+        Args:
+            items (list): 列表项数据列表
+        """
+        if not self._list:
+            # 如果列表不存在，创建默认列表
+            self.set_list([], self._list_selection_mode)
+        
+        # 添加列表项
+        self._list.add_items(items)
+        self._list_items.extend(items)
+        
+        # 调整窗口大小
+        self.adjust_size()
+    
+    def clear_list(self):
+        """
+        清空列表
+        """
+        # 清空现有列表
+        for i in reversed(range(self.list_layout.count())):
+            widget = self.list_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+        
+        self._list = None
+        self._list_items = []
+        self.list_widget.hide()
+        
+        # 调整窗口大小
+        self.adjust_size()
+    
+    def get_selected_list_items(self):
+        """
+        获取选中的列表项
+        
+        Returns:
+            list: 选中的列表项索引列表
+        """
+        if self._list:
+            return self._list.get_selected_indices()
+        return []
     
     def set_buttons(self, button_texts, orientations=Qt.Vertical, button_types=None):
         """

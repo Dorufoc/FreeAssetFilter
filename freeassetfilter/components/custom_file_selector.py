@@ -41,7 +41,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.widgets.custom_widgets import CustomButton, CustomInputBox, CustomWindow
+from freeassetfilter.widgets.custom_widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 
 
@@ -927,39 +927,21 @@ class CustomFileSelector(QWidget):
         default_font_size = getattr(app, 'default_font_size', 18)
         scaled_font_size = int(default_font_size * self.dpi_scale)
         
-        # 创建自定义窗口
-        dialog = CustomWindow("收藏夹", self)
+        # 创建自定义提示窗
+        dialog = CustomMessageBox(self)
+        dialog.set_title("收藏夹")
         
-        # 创建自定义选择列表
-        favorites_list = CustomSelectList(
-            parent=dialog,
-            default_width=370,
-            default_height=200,
-            min_width=300,
-            min_height=150,
-            selection_mode="single"
-        )
-        
-        # 设置窗口大小，确保能容纳列表和按钮
-        # 计算合适的窗口大小：列表大小 + 边距 + 标题栏 + 按钮区域
-        list_width = favorites_list.default_width
-        list_height = favorites_list.default_height
-        # 应用DPI缩放的边距和按钮区域高度
-        margin = int(30 * self.dpi_scale)
-        title_bar_height = int(40 * self.dpi_scale)
-        button_area_height = int(60 * self.dpi_scale)
-        
-        # 计算窗口大小
-        window_width = list_width + margin * 2
-        window_height = title_bar_height + list_height + button_area_height + margin * 2
-        
-        # 设置窗口大小
-        dialog.setFixedSize(window_width, window_height)
-        
-        # 添加收藏夹项
+        # 准备列表项
+        list_items = []
         for favorite in self.favorites:
             text = favorite['name'] + ' - ' + favorite['path']
-            favorites_list.add_item(text)
+            list_items.append(text)
+        
+        # 设置列表
+        dialog.set_list(list_items, selection_mode="single", default_width=370, default_height=200)
+        
+        # 获取列表实例
+        favorites_list = dialog._list
         
         # 双击列表项跳转到对应路径
         favorites_list.itemDoubleClicked.connect(lambda index: self._on_favorite_double_clicked_custom(index, favorites_list, dialog))
@@ -968,27 +950,20 @@ class CustomFileSelector(QWidget):
         favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
         favorites_list.customContextMenuRequested.connect(lambda pos: self._show_favorite_context_menu_custom(pos, favorites_list, dialog))
         
-        # 添加到内容布局
-        dialog.content_layout.addWidget(favorites_list)
+        # 添加按钮
+        dialog.set_buttons(["添加当前路径到收藏夹", "关闭"], Qt.Horizontal, ["primary", "secondary"])
         
-        # 创建底部按钮布局
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(int(10 * self.dpi_scale))
+        # 连接按钮点击信号
+        def on_button_clicked(button_index):
+            if button_index == 0:  # 添加当前路径到收藏夹
+                self._add_current_path_to_favorites_custom(dialog, favorites_list)
+            elif button_index == 1:  # 关闭
+                dialog.close()
         
-        # 添加当前路径到收藏夹按钮
-        add_btn = CustomButton("添加当前路径到收藏夹", button_type="primary")
-        add_btn.clicked.connect(lambda: self._add_current_path_to_favorites_custom(dialog, favorites_list))
-        btn_layout.addWidget(add_btn)
-        
-        # 关闭按钮
-        close_btn = CustomButton("关闭", button_type="secondary")
-        close_btn.clicked.connect(dialog.close)
-        btn_layout.addWidget(close_btn)
-        
-        dialog.content_layout.addLayout(btn_layout)
+        dialog.buttonClicked.connect(on_button_clicked)
         
         # 显示窗口
-        dialog.show()
+        dialog.exec_()
         
     def _on_favorite_double_clicked_custom(self, index, favorites_list, dialog):
         """
@@ -1952,7 +1927,7 @@ class CustomFileSelector(QWidget):
         # 使用全局默认字体大小
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 18)
-        scaled_size_font_size = int(default_font_size * self.dpi_scale)
+        scaled_size_font_size = int(default_font_size * self.dpi_scale // 1.3)
         temp_font.setPointSize(scaled_size_font_size)
         size_label.setFont(temp_font)
         #print(f"[DEBUG] 文件卡片大小标签设置字体: {size_label.font().family()}, 大小: {size_label.font().pointSize()}")
@@ -1970,7 +1945,7 @@ class CustomFileSelector(QWidget):
         # 使用全局默认字体大小
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 18)
-        scaled_modified_font_size = int(default_font_size * self.dpi_scale)
+        scaled_modified_font_size = int(default_font_size * self.dpi_scale // 1.3)
         temp_font.setPointSize(scaled_modified_font_size)
         modified_label.setFont(temp_font)
         #print(f"[DEBUG] 文件卡片修改时间标签设置字体: {modified_label.font().family()}, 大小: {modified_label.font().pointSize()}")
