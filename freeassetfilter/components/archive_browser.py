@@ -20,16 +20,21 @@ import os
 import re
 import json
 from datetime import datetime
+import chardet
 
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QApplication,
-    QPushButton, QLabel, QLineEdit, QScrollArea,
+    QLabel, QScrollArea,
     QGroupBox, QListWidget, QListWidgetItem, QMessageBox,
     QFrame, QSizePolicy, QFileIconProvider
 )
+
+# 导入自定义控件
+from freeassetfilter.widgets.button_widgets import CustomButton
+from freeassetfilter.widgets.input_widgets import CustomInputBox
 from PyQt5.QtCore import Qt, pyqtSignal, QFileInfo
 from PyQt5.QtGui import QFont, QIcon
 
@@ -84,6 +89,15 @@ class ArchiveBrowser(QWidget):
         # 初始化文件图标提供者
         self.icon_provider = QFileIconProvider()
         
+        # 初始化编码相关属性
+        self.auto_detect_encoding = True  # 是否自动检测编码
+        self.detected_encoding = None  # 检测到的编码
+        self.manual_encoding = None  # 手动选择的编码
+        self.supported_encodings = [
+            "utf-8", "gbk", "gb2312", "iso-8859-1", 
+            "ascii", "utf-16", "utf-16le", "utf-16be"
+        ]  # 支持的编码列表
+        
         # 初始化UI
         self.init_ui()
     
@@ -124,23 +138,30 @@ class ArchiveBrowser(QWidget):
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
+        # 从app对象获取全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        
+        # 应用DPI缩放因子到字体和按钮高度
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        # 使用统一的按钮高度（与文件选择器保持一致）
+        button_height = 40
+        scaled_button_height = int(button_height * self.dpi_scale)
+        
         # 第一行：路径显示和返回按钮
         path_layout = QHBoxLayout()
         path_layout.setSpacing(scaled_spacing)
         
         # 返回上一级按钮
-        self.back_btn = QPushButton("返回上一级")
-        # 应用DPI缩放因子到按钮样式
-        scaled_font_size = int(14 * self.dpi_scale)
-        self.back_btn.setStyleSheet(f"font-size: {scaled_font_size}px;")
+        self.back_btn = CustomButton("返回上一级", button_type="secondary", height=button_height)
         self.back_btn.clicked.connect(self.go_to_parent)
         self.back_btn.setEnabled(False)  # 初始禁用
         path_layout.addWidget(self.back_btn)
         
         # 当前路径显示
-        self.path_edit = QLineEdit()
-        self.path_edit.setStyleSheet(f"font-size: {scaled_font_size}px;")
-        self.path_edit.setReadOnly(True)
+        self.path_edit = CustomInputBox(height=button_height)
+        self.path_edit.line_edit.setReadOnly(True)
+        self.path_edit.set_text("无压缩包路径")
         path_layout.addWidget(self.path_edit, 1)
         
         main_layout.addLayout(path_layout)
@@ -151,17 +172,64 @@ class ArchiveBrowser(QWidget):
         
         # 压缩包类型显示
         self.type_label = QLabel("压缩包类型: ")
-        self.type_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
+        self.type_label.setFont(self.global_font)
+        self.type_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
         info_layout.addWidget(self.type_label)
         
         # 加密状态显示
         self.encryption_label = QLabel("加密状态: 未加密")
-        self.encryption_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
+        self.encryption_label.setFont(self.global_font)
+        self.encryption_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
         info_layout.addWidget(self.encryption_label)
         
         info_layout.addStretch(1)
         
         main_layout.addLayout(info_layout)
+        
+        # 第三行：编码选择
+        encoding_layout = QHBoxLayout()
+        encoding_layout.setSpacing(scaled_spacing)
+        
+        # 编码自动检测复选框
+        from PyQt5.QtWidgets import QCheckBox, QComboBox
+        self.auto_encoding_check = QCheckBox("自动检测编码")
+        self.auto_encoding_check.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
+        self.auto_encoding_check.setChecked(self.auto_detect_encoding)
+        self.auto_encoding_check.stateChanged.connect(self._on_auto_encoding_changed)
+        encoding_layout.addWidget(self.auto_encoding_check)
+        
+        # 编码选择下拉框
+        encoding_label = QLabel("编码: ")
+        encoding_label.setFont(self.global_font)
+        encoding_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
+        encoding_layout.addWidget(encoding_label)
+        self.encoding_combo = QComboBox()
+        
+        # 应用与文件选择器一致的尺寸设置方法
+        # 设置最小宽度，应用DPI缩放
+        scaled_combo_width = int(150 * self.dpi_scale)
+        self.encoding_combo.setMinimumWidth(scaled_combo_width)
+        
+        # 设置字体，与文件选择器的设置方法一致
+        combo_font = QFont(self.global_font)
+        combo_font.setPointSize(scaled_font_size)
+        self.encoding_combo.setFont(combo_font)
+        
+        # 添加支持的编码
+        for enc in self.supported_encodings:
+            self.encoding_combo.addItem(enc.upper(), enc)
+        # 设置默认选择
+        self.encoding_combo.setCurrentText("UTF-8")
+        # 连接选择变化信号
+        self.encoding_combo.currentIndexChanged.connect(self._on_encoding_changed)
+        encoding_layout.addWidget(self.encoding_combo)
+        
+        # 应用编码按钮
+        self.apply_encoding_btn = CustomButton("应用", button_type="primary", height=button_height)
+        self.apply_encoding_btn.clicked.connect(self._on_apply_encoding)
+        encoding_layout.addWidget(self.apply_encoding_btn)
+        
+        main_layout.addLayout(encoding_layout)
         
         return panel
     
@@ -180,6 +248,20 @@ class ArchiveBrowser(QWidget):
         self.files_list.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.files_list.itemClicked.connect(self.on_item_clicked)
         
+        # 从app对象获取全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        
+        # 应用DPI缩放因子到列表项字体
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        list_font = QFont()
+        list_font.setPointSize(scaled_font_size)
+        self.files_list.setFont(list_font)
+        
+        # 设置列表项高度
+        scaled_item_height = int(30 * self.dpi_scale)
+        self.files_list.setStyleSheet(f"QListWidget::item {{ height: {scaled_item_height}px; }}")
+        
         scroll_area.setWidget(self.files_list)
         
         return scroll_area
@@ -194,16 +276,99 @@ class ArchiveBrowser(QWidget):
         
         layout = QHBoxLayout(status_bar)
         
+        # 从app对象获取全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        
+        # 应用DPI缩放因子到状态栏
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        scaled_height = int(30 * self.dpi_scale)
+        
         # 文件计数显示
         self.file_count_label = QLabel("文件数量: 0")
-        # 应用DPI缩放因子到标签样式
-        scaled_font_size = int(14 * self.dpi_scale)
-        self.file_count_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
+        self.file_count_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_height}px; padding: 5px;")
         layout.addWidget(self.file_count_label)
         
         layout.addStretch(1)
         
+        # 设置状态栏高度
+        status_bar.setFixedHeight(scaled_height)
+        
         return status_bar
+    
+    def _detect_encoding(self, filename_bytes):
+        """
+        检测文件名的编码
+        
+        Args:
+            filename_bytes (bytes): 文件名的字节流
+            
+        Returns:
+            str: 检测到的编码
+        """
+        if not filename_bytes:
+            return "utf-8"
+        
+        # 使用chardet检测编码
+        result = chardet.detect(filename_bytes)
+        encoding = result["encoding"]
+        confidence = result["confidence"]
+        
+        # 如果检测到的编码不在支持列表中，或者置信度低于0.7，尝试常见编码
+        if encoding not in self.supported_encodings or confidence < 0.7:
+            # 尝试常见编码
+            for enc in ["utf-8", "gbk", "gb2312", "iso-8859-1"]:
+                try:
+                    # 尝试解码
+                    filename_bytes.decode(enc)
+                    return enc
+                except UnicodeDecodeError:
+                    continue
+            # 如果所有尝试都失败，返回utf-8（使用replace模式处理错误）
+            return "utf-8"
+        
+        return encoding
+    
+    def _decode_filename(self, filename):
+        """
+        解码文件名，根据检测到的编码或手动选择的编码
+        
+        Args:
+            filename (str or bytes): 文件名
+            
+        Returns:
+            str: 解码后的文件名
+        """
+        # 如果已经是字符串，直接返回
+        if isinstance(filename, str):
+            return filename
+        
+        # 尝试使用手动选择的编码
+        if self.manual_encoding:
+            try:
+                return filename.decode(self.manual_encoding)
+            except UnicodeDecodeError:
+                pass
+        
+        # 尝试使用自动检测的编码
+        if self.detected_encoding:
+            try:
+                return filename.decode(self.detected_encoding)
+            except UnicodeDecodeError:
+                pass
+        
+        # 自动检测编码
+        encoding = self._detect_encoding(filename)
+        
+        # 如果是第一次检测，保存检测结果
+        if not self.detected_encoding:
+            self.detected_encoding = encoding
+        
+        try:
+            return filename.decode(encoding)
+        except UnicodeDecodeError:
+            # 如果解码失败，尝试使用replace模式
+            return filename.decode(encoding, errors="replace")
     
     def set_archive_path(self, path):
         """
@@ -217,9 +382,47 @@ class ArchiveBrowser(QWidget):
             self._detect_archive_type()
             self._detect_encryption()
             self.current_path = ""
+            # 重置编码检测结果
+            self.detected_encoding = None
+            self.manual_encoding = None
             self.refresh()
         else:
             QMessageBox.warning(self, "警告", "无效的压缩包路径")
+    
+    def _on_auto_encoding_changed(self, state):
+        """
+        自动编码检测状态变化
+        """
+        self.auto_detect_encoding = state == Qt.Checked
+        # 如果启用自动检测，清除手动选择的编码
+        if self.auto_detect_encoding:
+            self.manual_encoding = None
+            self.detected_encoding = None
+            self.refresh()
+    
+    def _on_encoding_changed(self, index):
+        """
+        编码选择变化
+        """
+        # 如果启用了自动检测，不允许手动选择
+        if self.auto_detect_encoding:
+            return
+        
+        # 获取选择的编码
+        self.manual_encoding = self.encoding_combo.currentData()
+    
+    def _on_apply_encoding(self):
+        """
+        应用编码设置
+        """
+        if not self.auto_detect_encoding:
+            self.manual_encoding = self.encoding_combo.currentData()
+        else:
+            self.manual_encoding = None
+            self.detected_encoding = None
+        
+        # 刷新文件列表
+        self.refresh()
     
     def _detect_archive_type(self):
         """
@@ -274,7 +477,7 @@ class ArchiveBrowser(QWidget):
             return
         
         # 更新路径显示
-        self.path_edit.setText(f"{os.path.basename(self.archive_path)}{'/' + self.current_path if self.current_path else ''}")
+        self.path_edit.set_text(f"{os.path.basename(self.archive_path)}{'/' + self.current_path if self.current_path else ''}")
         
         # 清空文件列表
         self.files_list.clear()
@@ -376,12 +579,14 @@ class ArchiveBrowser(QWidget):
         
         with zipfile.ZipFile(self.archive_path, 'r') as zf:
             for info in zf.infolist():
-                # 跳过隐藏文件
-                if os.path.basename(info.filename).startswith('.'):
-                    continue
+                # 获取原始文件名（bytes）
+                filename_bytes = info.orig_filename.encode('latin-1') if isinstance(info.orig_filename, str) else info.orig_filename
+                # 解码文件名
+                file_path = self._decode_filename(filename_bytes)
                 
-                # 获取文件路径
-                file_path = info.filename
+                # 跳过隐藏文件
+                if os.path.basename(file_path).startswith('.'):
+                    continue
                 
                 # 如果是目录，添加到目录集合
                 if file_path.endswith('/'):
@@ -480,21 +685,32 @@ class ArchiveBrowser(QWidget):
         
         with rarfile.RarFile(self.archive_path, 'r') as rf:
             for info in rf.infolist():
-                # 跳过隐藏文件
-                if os.path.basename(info.filename).startswith('.'):
-                    continue
-                
-                # 获取文件路径
+                # 获取原始文件名
                 file_path = info.filename
                 
+                # 如果是bytes类型，直接解码；否则先转换为bytes再解码
+                if isinstance(file_path, bytes):
+                    decoded_path = self._decode_filename(file_path)
+                else:
+                    # 对于字符串类型，先转换为bytes再解码
+                    filename_bytes = file_path.encode('latin-1')
+                    decoded_path = self._decode_filename(filename_bytes)
+                
+                # 跳过隐藏文件
+                if os.path.basename(decoded_path).startswith('.'):
+                    continue
+                
                 # 检查是否是目录（使用多种方式确保准确性）
-                is_dir = info.isdir() or file_path.endswith('/') or file_path.endswith('\\')
+                is_dir = info.isdir() or decoded_path.endswith('/') or decoded_path.endswith('\\')
                 
                 if is_dir:
                     # 确保目录路径格式统一
-                    dir_path = file_path.rstrip('/\\')
+                    dir_path = decoded_path.rstrip('/\\')
                     dirs.add(dir_path)
                     continue
+                
+                # 更新file_path为解码后的路径
+                file_path = decoded_path
                 
                 # 检查文件是否在当前路径下
                 if self.current_path:
@@ -629,17 +845,28 @@ class ArchiveBrowser(QWidget):
         
         with tarfile.open(self.archive_path, 'r') as tf:
             for info in tf.getmembers():
-                # 跳过隐藏文件
-                if os.path.basename(info.name).startswith('.'):
-                    continue
-                
-                # 获取文件路径
+                # 获取原始文件名
                 file_path = info.name
+                
+                # 如果是bytes类型，直接解码；否则先转换为bytes再解码
+                if isinstance(file_path, bytes):
+                    decoded_path = self._decode_filename(file_path)
+                else:
+                    # 对于字符串类型，先转换为bytes再解码
+                    filename_bytes = file_path.encode('latin-1')
+                    decoded_path = self._decode_filename(filename_bytes)
+                
+                # 跳过隐藏文件
+                if os.path.basename(decoded_path).startswith('.'):
+                    continue
                 
                 # 如果是目录，添加到目录集合
                 if info.isdir():
-                    dirs.add(file_path)
+                    dirs.add(decoded_path)
                     continue
+                
+                # 更新file_path为解码后的路径
+                file_path = decoded_path
                 
                 # 检查文件是否在当前路径下
                 if self.current_path:
@@ -733,17 +960,28 @@ class ArchiveBrowser(QWidget):
         
         with py7zr.SevenZipFile(self.archive_path, mode='r') as zf:
             for info in zf.list():
-                # 跳过隐藏文件
-                if os.path.basename(info.filename).startswith('.'):
-                    continue
-                
-                # 获取文件路径
+                # 获取原始文件名
                 file_path = info.filename
                 
-                # 如果是目录，添加到目录集合
-                if file_path.endswith('/'):
-                    dirs.add(file_path)
+                # 如果是bytes类型，直接解码；否则先转换为bytes再解码
+                if isinstance(file_path, bytes):
+                    decoded_path = self._decode_filename(file_path)
+                else:
+                    # 对于字符串类型，先转换为bytes再解码
+                    filename_bytes = file_path.encode('latin-1')
+                    decoded_path = self._decode_filename(filename_bytes)
+                
+                # 跳过隐藏文件
+                if os.path.basename(decoded_path).startswith('.'):
                     continue
+                
+                # 如果是目录，添加到目录集合
+                if decoded_path.endswith('/'):
+                    dirs.add(decoded_path)
+                    continue
+                
+                # 更新file_path为解码后的路径
+                file_path = decoded_path
                 
                 # 检查文件是否在当前路径下
                 if self.current_path:

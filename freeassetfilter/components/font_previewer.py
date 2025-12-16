@@ -270,7 +270,10 @@ class FontPreviewer(QMainWindow):
         file_group = QGroupBox("文件操作")
         
         # 应用DPI缩放因子到组框样式
-        scaled_group_font_size = int(16 * self.dpi_scale)
+        # 使用全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_group_font_size = int(default_font_size * self.dpi_scale)
         scaled_group_border_radius = int(8 * self.dpi_scale)
         scaled_group_padding = int(15 * self.dpi_scale)
         scaled_group_title_left = int(15 * self.dpi_scale)
@@ -306,7 +309,10 @@ class FontPreviewer(QMainWindow):
         scaled_button_radius = int(8 * self.dpi_scale)
         scaled_button_padding_v = int(12 * self.dpi_scale)
         scaled_button_padding_h = int(20 * self.dpi_scale)
-        scaled_button_font_size = int(14 * self.dpi_scale)
+        # 使用全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_button_font_size = int(default_font_size * self.dpi_scale)
         
         self.open_button.setStyleSheet(f"""
         .QPushButton {
@@ -385,7 +391,10 @@ class FontPreviewer(QMainWindow):
         }
         
         # 应用DPI缩放因子到标签样式
-        scaled_label_font_size = int(13 * self.dpi_scale)
+        # 使用全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_label_font_size = int(default_font_size * self.dpi_scale)
         scaled_label_radius = int(4 * self.dpi_scale)
         scaled_label_padding = int(6 * self.dpi_scale)
         

@@ -20,7 +20,7 @@ import tempfile
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QScrollArea, QGroupBox, QListWidget, QListWidgetItem, 
-    QSizePolicy, QCheckBox, QMenu, QAction, QProgressBar, QFileDialog
+    QSizePolicy, QCheckBox, QMenu, QAction, QProgressBar, QFileDialog, QApplication
 )
 
 # 导入自定义控件
@@ -149,6 +149,11 @@ class FileStagingPool(QWidget):
         # 创建统计信息
         self.stats_label = QLabel("当前项目数: 0")
         self.stats_label.setAlignment(Qt.AlignRight)
+        # 设置字体大小，使用全局默认字体大小和DPI缩放
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        self.stats_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
         main_layout.addWidget(self.stats_label)
     
     def add_file(self, file_info):
@@ -366,7 +371,12 @@ class FileStagingPool(QWidget):
         
         # 文件路径（仅显示部分）
         path_label = QLabel(file_info["path"])
-        path_label.setStyleSheet("font-size: 8pt; color: #666;")
+        # 使用全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        scaled_font_size = int(default_font_size * dpi_scale)
+        path_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #666;")
         path_label.setWordWrap(True)
         info_layout.addWidget(path_label)
         

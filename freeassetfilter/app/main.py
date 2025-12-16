@@ -595,6 +595,9 @@ def main():
     font_db = QFontDatabase()
     font_families = font_db.families()
     
+    # 定义统一的默认字体大小（基准大小）
+    DEFAULT_FONT_SIZE = 18  # 基础字体大小，可统一调整
+    
     # 检查系统是否包含微软雅黑字体（支持Microsoft YaHei和Microsoft YaHei UI两种名称）
     yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
     selected_font = None
@@ -605,12 +608,16 @@ def main():
     
     if selected_font:
         # 设置全局字体为微软雅黑
-        app.setFont(QFont(selected_font))
+        app.setFont(QFont(selected_font, DEFAULT_FONT_SIZE))
         # 设置全局字体变量
-        global_font = QFont(selected_font)
+        global_font = QFont(selected_font, DEFAULT_FONT_SIZE)
     else:
         # 使用系统默认字体
         global_font = QFont()
+        global_font.setPointSize(DEFAULT_FONT_SIZE)
+    
+    # 将默认字体大小存储到app对象中，方便其他组件访问
+    app.default_font_size = DEFAULT_FONT_SIZE
     
     # 计算DPI缩放因子
     def calculate_dpi_scale_factor():

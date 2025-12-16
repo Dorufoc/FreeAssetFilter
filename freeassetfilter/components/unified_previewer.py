@@ -19,7 +19,7 @@ import sys
 import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox
+    QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox, QApplication
 )
 
 # 导入自定义按钮
@@ -116,7 +116,14 @@ class UnifiedPreviewer(QWidget):
         # 添加默认提示信息
         self.default_label = QLabel("请选择一个文件进行预览")
         self.default_label.setAlignment(Qt.AlignCenter)
-        self.default_label.setStyleSheet("font-size: 14pt; color: #999;")
+        
+        # 从app对象获取全局默认字体大小和DPI缩放因子
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        scaled_font_size = int(default_font_size * dpi_scale)
+        
+        self.default_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999;")
         self.preview_layout.addWidget(self.default_label)
         
         main_layout.addWidget(self.preview_area, 2)

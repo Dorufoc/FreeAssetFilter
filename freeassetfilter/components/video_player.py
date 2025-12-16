@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel,
     QFileDialog, QStyle, QMessageBox, QGraphicsBlurEffect
 )
+from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage, QCursor
 from freeassetfilter.core.svg_renderer import SvgRenderer
@@ -81,6 +82,13 @@ class VideoPlayer(QWidget):
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
+        # 获取全局默认字体大小和字体
+        self.default_font_size = getattr(app, 'default_font_size', 10)
+        self.global_font = getattr(app, 'global_font', QFont())
+        
+        # 设置组件字体
+        self.setFont(self.global_font)
+        
         # 作为子组件，不设置窗口标题和最小尺寸，而是由父容器控制
         # 移除窗口属性，避免作为独立窗口弹出
         self.setStyleSheet("background-color: transparent;")
@@ -126,9 +134,10 @@ class VideoPlayer(QWidget):
         self.audio_stacked_widget = QWidget()
         self.background_label = QLabel()
         self.overlay_widget = QWidget()
-        self.cover_label = QLabel()
         self.audio_info_label = QLabel()
         self.audio_container = QWidget()
+        self.song_name_label = QLabel()
+        self.artist_name_label = QLabel()
         
         # 控制组件
         self.progress_slider = CustomValueBar(interactive=False)  # 视频进度条仅用于显示，不允许交互
@@ -217,7 +226,7 @@ class VideoPlayer(QWidget):
         audio_layout.setSpacing(0)
         
         # 音频背景设置
-        self.background_label.setStyleSheet("background-color: #1a1a1a;")
+        self.background_label.setStyleSheet("background-color: black;")
         self.background_label.setScaledContents(True)
         self.background_label.setAlignment(Qt.AlignCenter)
         self.background_label.setMinimumSize(400, 300)
@@ -230,30 +239,39 @@ class VideoPlayer(QWidget):
         # 背景遮罩
         self.overlay_widget.setStyleSheet("background-color: rgba(0, 0, 0, 0.5);")
         
-        # 封面图显示
-        self.cover_label.setStyleSheet("""
-            background-color: #2d2d2d;
-            border-radius: 15px;
-            border: none;
-            color: white;
-            font-size: 100px;
-        """)
-        self.cover_label.setAlignment(Qt.AlignCenter)
-        self.cover_label.setMinimumSize(200, 200)
-        self.cover_label.setMaximumSize(300, 300)
-        self.cover_label.setScaledContents(True)
+        # 从app对象获取全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 10)
         
-        # 音频信息标签
-        self.audio_info_label.setText("正在播放音频")
-        self.audio_info_label.setStyleSheet("""
+        # 歌曲名称标签
+        self.song_name_label = QLabel("歌曲名")
+        # 应用DPI缩放因子到字体大小
+        scaled_song_font_size = int(default_font_size * 2.4 * self.dpi_scale)  # 2.4倍于默认大小
+        self.song_name_label.setFont(self.global_font)
+        self.song_name_label.setStyleSheet(f"""
             color: white;
-            font-size: 18px;
-            font-weight: bold;
+            font-size: {scaled_song_font_size}px;
+            font-weight: 600;
             background-color: transparent;
-            padding: 15px 0;
+            padding: 5px 0;
         """)
-        self.audio_info_label.setAlignment(Qt.AlignCenter)
-        self.audio_info_label.setWordWrap(True)
+        self.song_name_label.setAlignment(Qt.AlignCenter)
+        self.song_name_label.setWordWrap(True)
+        
+        # 作者名称标签
+        self.artist_name_label = QLabel("作者名")
+        # 应用DPI缩放因子到字体大小
+        scaled_artist_font_size = int(default_font_size * 1.8 * self.dpi_scale)  # 1.8倍于默认大小
+        self.artist_name_label.setFont(self.global_font)
+        self.artist_name_label.setStyleSheet(f"""
+            color: white;
+            font-size: {scaled_artist_font_size}px;
+            font-weight: 400;
+            background-color: transparent;
+            padding: 5px 0;
+        """)
+        self.artist_name_label.setAlignment(Qt.AlignCenter)
+        self.artist_name_label.setWordWrap(True)
         
         # 音频显示容器
         audio_container_layout = QVBoxLayout(self.audio_container)
@@ -261,9 +279,9 @@ class VideoPlayer(QWidget):
         audio_container_layout.setSpacing(15)
         audio_container_layout.setAlignment(Qt.AlignCenter)
         
-        # 添加封面图和文件名到容器
-        audio_container_layout.addWidget(self.cover_label)
-        audio_container_layout.addWidget(self.audio_info_label)
+        # 添加歌曲信息到容器
+        audio_container_layout.addWidget(self.song_name_label)
+        audio_container_layout.addWidget(self.artist_name_label)
         
         # 设置音频容器样式
         self.audio_container.setStyleSheet("background-color: transparent;")
@@ -1172,6 +1190,109 @@ class VideoPlayer(QWidget):
             self.player_core.play()
             # 更新播放按钮状态
             self._update_play_button_icon()
+            
+            # 检测文件类型，显示对应的界面
+            file_ext = os.path.splitext(file_path)[1].lower()
+            audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.aiff', '.ape', '.opus']
+            
+            if file_ext in audio_extensions:
+                # 显示音频界面
+                self.video_frame.hide()
+                self.audio_stacked_widget.show()
+                # 提取并显示音频元数据和封面
+                self.extract_audio_metadata(file_path)
+            else:
+                # 显示视频界面
+                self.video_frame.show()
+                self.audio_stacked_widget.hide()
+    
+    def extract_audio_metadata(self, file_path):
+        """
+        从音频文件中提取元数据
+        
+        Args:
+            file_path: 音频文件路径
+        """
+        # 初始化默认值
+        song_name = os.path.basename(file_path)
+        artist_name = "未知艺术家"
+        
+        try:
+            # 根据文件扩展名选择不同的提取方法
+            file_ext = os.path.splitext(file_path)[1].lower()
+            
+            if file_ext == '.mp3':
+                # MP3文件处理
+                audio = ID3(file_path)
+                # 获取元数据
+                if 'TIT2' in audio:
+                    song_name = audio['TIT2'].text[0]
+                if 'TPE1' in audio:
+                    artist_name = audio['TPE1'].text[0]
+            
+            elif file_ext in ['.m4a', '.mp4']:
+                # M4A/MP4文件处理
+                audio = MP4(file_path)
+                # 获取元数据
+                if '\xa9nam' in audio:
+                    song_name = audio['\xa9nam'][0]
+                if '\xa9ART' in audio:
+                    artist_name = audio['\xa9ART'][0]
+            
+            elif file_ext == '.flac':
+                # FLAC文件处理
+                audio = FLAC(file_path)
+                # 获取元数据
+                if 'title' in audio:
+                    song_name = audio['title'][0]
+                if 'artist' in audio:
+                    artist_name = audio['artist'][0]
+            
+            elif file_ext == '.ogg':
+                # OGG文件处理
+                audio = OggVorbis(file_path)
+                # 获取元数据
+                if 'title' in audio:
+                    song_name = audio['title'][0]
+                if 'artist' in audio:
+                    artist_name = audio['artist'][0]
+            
+            elif file_ext == '.wav':
+                # WAV文件处理
+                audio = WAVE(file_path)
+                # WAV文件通常没有内置元数据，使用文件名作为歌曲名
+                song_name = os.path.basename(file_path).replace('.wav', '')
+            
+            elif file_ext == '.aiff':
+                # AIFF文件处理
+                audio = AIFF(file_path)
+                if 'title' in audio:
+                    song_name = audio['title'][0]
+                if 'artist' in audio:
+                    artist_name = audio['artist'][0]
+            
+            elif file_ext == '.ape':
+                # APE文件处理
+                audio = APEv2(file_path)
+                if 'Title' in audio:
+                    song_name = audio['Title'][0]
+                if 'Artist' in audio:
+                    artist_name = audio['Artist'][0]
+            
+            elif file_ext == '.wma':
+                # WMA文件处理
+                audio = ASF(file_path)
+                if 'Title' in audio:
+                    song_name = audio['Title']
+                if 'Author' in audio:
+                    artist_name = audio['Author']
+        
+        except Exception as e:
+            print(f"[VideoPlayer] 提取音频元数据失败: {e}")
+        
+        # 更新UI显示
+        self.song_name_label.setText(song_name)
+        self.artist_name_label.setText(artist_name)
     
     def play(self):
         """

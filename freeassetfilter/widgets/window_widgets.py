@@ -70,6 +70,10 @@ class CustomWindow(QWidget):
         scaled_shadow_radius = int(20 * self.dpi_scale)
         scaled_shadow_offset = int(8 * self.dpi_scale)
         
+        # 设置默认大小，应用DPI缩放
+        self.setMinimumSize(400, 300)
+        self.resize(400, 300)
+        
         # 主布局（用于容纳内容和装饰）
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
@@ -118,13 +122,17 @@ class CustomWindow(QWidget):
         
         # 标题标签
         title_label = QLabel(self.title)
+        # 从app对象获取全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
         title_label.setFont(self.global_font)
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: 18px;
+        title_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: {scaled_font_size}px;
                 font-weight: 500;
                 color: #000000;
-            }
+            }}
         """)
         title_layout.addWidget(title_label, 1)
         
@@ -133,7 +141,10 @@ class CustomWindow(QWidget):
         # 应用DPI缩放因子到关闭按钮
         scaled_button_size = int(24 * self.dpi_scale)
         scaled_border_radius = int(12 * self.dpi_scale)
-        scaled_font_size = int(18 * self.dpi_scale)
+        # 从app对象获取全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
         self.close_button.setFixedSize(scaled_button_size, scaled_button_size)
         self.close_button.setStyleSheet(f"""
             QPushButton {{

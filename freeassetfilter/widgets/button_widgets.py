@@ -86,10 +86,14 @@ class CustomButton(QPushButton):
         if self._display_mode == "icon":
             self.setFixedWidth(self._height)
         
+        # 从app对象获取全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        
         # 应用DPI缩放因子到按钮样式参数
         scaled_border_radius = int(20 * self.dpi_scale)
         scaled_padding = f"{int(8 * self.dpi_scale)}px {int(12 * self.dpi_scale)}px"
-        scaled_font_size = int(18 * self.dpi_scale)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
         scaled_border_width = int(2 * self.dpi_scale)  # 边框宽度随DPI缩放
         scaled_primary_border_width = int(1 * self.dpi_scale)  # 主要按钮边框宽度随DPI缩放
         

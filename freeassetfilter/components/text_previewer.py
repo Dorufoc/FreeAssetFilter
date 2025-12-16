@@ -247,7 +247,10 @@ class TextPreviewWidget(QWidget):
         
         mode_label = QLabel("预览模式:")
         mode_label.setFont(self.global_font)
-        scaled_font_size = int(14 * self.dpi_scale)
+        # 使用全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
         mode_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
         
         self.mode_selector = QComboBox()
@@ -257,7 +260,7 @@ class TextPreviewWidget(QWidget):
         scaled_padding_v = int(8 * self.dpi_scale)
         scaled_padding_h = int(12 * self.dpi_scale)
         scaled_border_radius = int(8 * self.dpi_scale)
-        scaled_combo_font_size = int(14 * self.dpi_scale)
+        scaled_combo_font_size = int(default_font_size * self.dpi_scale)
         self.mode_selector.setStyleSheet(f'''.QComboBox {{
             background-color: white;
             border: 1px solid #e0e0e0;
@@ -473,7 +476,7 @@ class TextPreviewWidget(QWidget):
             <style>
                 body {
                     font-family: Arial, sans-serif;
-                    font-size: 14px;
+                    font-size: 100%;
                     line-height: 1.6;
                     color: #333;
                     margin: 20px;
@@ -523,7 +526,7 @@ class TextPreviewWidget(QWidget):
             <style>
                 body {
                     font-family: Arial, sans-serif;
-                    font-size: 16px;
+                    font-size: 100%;
                     line-height: 1.8;
                     color: #333;
                     margin: 20px;
@@ -637,7 +640,7 @@ class TextPreviewWidget(QWidget):
         """ + css + """
                 body {
                     font-family: Arial, sans-serif;
-                    font-size: 14px;
+                    font-size: 100%;
                     line-height: 1.6;
                     color: #333;
                     margin: 20px;
@@ -668,7 +671,7 @@ class TextPreviewWidget(QWidget):
                 }
                 .highlight code {
                     font-family: Consolas, Monaco, 'Andale Mono', monospace;
-                    font-size: 13px;
+                    font-size: 90%;
                     word-wrap: break-word;
                 }
             </style>
