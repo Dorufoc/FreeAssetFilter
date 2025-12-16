@@ -17,7 +17,6 @@ data/LibreOfficePortable/
 *.avi
 *.mkv
 *.pdf
-*.cube
 
 # Configuration files
 config/
@@ -38,3 +37,4 @@ tests/
 # OS files
 .DS_Store
 Thumbs.db
+data/lut.cube
