@@ -69,13 +69,26 @@ class CustomFileSelector(QWidget):
         # 设置组件字体
         self.setFont(self.global_font)
         
-        # 设置最小宽度，确保能容纳3列卡片，并应用DPI缩放
-        # 计算方式：基于_calculate_max_columns方法的逻辑
-        # 3个卡片实际宽度(150*3) + 左右边距(20) = 450 + 20 = 470
-        # 卡片实际宽度=卡片宽度(140)+右侧间距(10)
-        base_min_width = 520
-        scaled_min_width = int(base_min_width * self.dpi_scale)
-        self.setMinimumWidth(scaled_min_width)
+        # 设置最小宽度，确保能容纳3列卡片并有空间放下滚动条，并应用DPI缩放
+        # 计算方式：3列卡片宽度 + 间距 + 左右边距 + 滚动条宽度
+        card_width = int(140 * self.dpi_scale)  # 卡片宽度
+        spacing = int(10 * self.dpi_scale)  # 卡片间距
+        margin = int(10 * self.dpi_scale)  # 单边边距
+        scrollbar_width = int(20 * self.dpi_scale)  # 滚动条宽度估计值
+        
+        # 3列卡片总宽度 = 3*卡片宽度 + 2*间距（因为3列只有2个间距）
+        cards_total_width = 3 * card_width + 2 * spacing
+        # 左右边距总和
+        margins_total = 2 * margin
+        # 总最小宽度 = 卡片总宽度 + 边距总和 + 滚动条宽度
+        total_min_width = cards_total_width + margins_total + scrollbar_width
+        
+        # 强制设置文件选择器的最小宽度，确保能显示3列卡片
+        # 3列所需宽度：3*140px + 2*10px + 2*10px + 20px = 420px + 20px + 20px + 20px = 480px
+        min_three_columns_width = int(480 * self.dpi_scale)  # 确保有足够宽度显示3列
+        
+        # 直接设置固定的最小宽度，不进行复杂计算
+        self.setMinimumWidth(min_three_columns_width)
         
         # 初始化配置
         self.current_path = "All"  # 默认路径为"All"
@@ -1594,11 +1607,21 @@ class CustomFileSelector(QWidget):
                 # 总宽度超过可用宽度，退出循环
                 break
         
+        # 确保至少有1列，并且如果接近3列的宽度，强制使用3列
+        # 当可用宽度 >= 3列总宽度 - 10px（容错范围）时，强制使用3列
+        three_columns_width = 3 * card_width + 2 * spacing
+        if available_width >= three_columns_width - 10:
+            max_possible_columns = max(max_possible_columns, 3)
+        
         # 确保至少有1列
         max_possible_columns = max(1, max_possible_columns)
         
         # 打印调试信息，便于监控计算过程
-        #print(f"视口宽度: {viewport_width}px, 可用宽度: {available_width}px, 最大列数: {max_possible_columns}")
+        #print(f"[DEBUG] 文件选择器 - 视口宽度: {viewport_width}px, 可用宽度: {available_width}px, 最大列数: {max_possible_columns}")
+        #print(f"[DEBUG] 文件选择器 - 卡片宽度: {card_width}px, 间距: {spacing}px, 边距总和: {margin}px")
+        #print(f"[DEBUG] 文件选择器 - 3列总宽度: {3*card_width + 2*spacing}px, 2列总宽度: {2*card_width + 1*spacing}px")
+        #print(f"[DEBUG] 文件选择器 - DPI缩放因子: {self.dpi_scale}")
+        #print(f"[DEBUG] 文件选择器 - 3列所需最小宽度: {3*card_width + 2*spacing + margin}px")
         
         return max_possible_columns
     

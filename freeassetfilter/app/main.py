@@ -81,8 +81,8 @@ class FreeAssetFilterApp(QMainWindow):
         available_height = available_geometry.height()
         
         # 使用DPI缩放因子调整窗口大小，但不超过屏幕可用尺寸
-        # 使用更小的基础尺寸，确保三个组件能完全显示
-        window_width = int(1200 * self.dpi_scale)
+        # 调整为更合理的基础宽度，确保有足够空间显示3列卡片，同时避免出现过多空白区域
+        window_width = int(1700 * self.dpi_scale)
         window_height = int(800 * self.dpi_scale)
         
         # 确保窗口大小不超过屏幕可用尺寸
@@ -230,8 +230,11 @@ class FreeAssetFilterApp(QMainWindow):
         splitter.addWidget(middle_column)
         splitter.addWidget(right_column)
         
-        # 使用DPI缩放因子调整分割器初始大小
-        scaled_sizes = [int(300 * self.dpi_scale), int(300 * self.dpi_scale), int(600 * self.dpi_scale)]
+        # 使用DPI缩放因子调整分割器初始大小，确保文件选择器有足够宽度显示3列卡片
+        # 确保文件选择器的初始宽度足够显示3列卡片
+        # 中间临时存储池：适中大小
+        # 右侧预览器：较大宽度，适合预览
+        scaled_sizes = [int(400 * self.dpi_scale), int(300 * self.dpi_scale), int(600 * self.dpi_scale)]
         splitter.setSizes(scaled_sizes)
         
         # 连接文件选择器的信号到预览器
