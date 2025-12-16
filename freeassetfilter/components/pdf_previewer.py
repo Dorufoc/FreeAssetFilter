@@ -101,7 +101,10 @@ class PDFPreviewWidget(QWidget):
         # 页面信息
         self.page_label = QLabel("页数: 0")
         self.page_label.setFont(self.global_font)
-        scaled_font_size = int(14 * self.dpi_scale)
+        # 使用全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
         self.page_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
         toolbar_layout.addWidget(self.page_label)
         
@@ -300,7 +303,10 @@ class PDFPreviewWidget(QWidget):
             
             if not FITZ_AVAILABLE:
                 error_label = QLabel("错误：PyMuPDF (fitz)库未安装\n请运行 pip install PyMuPDF 安装")
-                scaled_font_size = int(16 * self.dpi_scale)
+                # 使用全局默认字体大小
+                app = QApplication.instance()
+                default_font_size = getattr(app, 'default_font_size', 18)
+                scaled_font_size = int(default_font_size * self.dpi_scale)
                 scaled_border_radius = int(8 * self.dpi_scale)
                 scaled_padding = int(20 * self.dpi_scale)
                 error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
@@ -326,7 +332,10 @@ class PDFPreviewWidget(QWidget):
                     return True
                 except Exception as e:
                     error_label = QLabel(f"错误：无法打开PDF文件\n{str(e)}")
-                    scaled_font_size = int(16 * self.dpi_scale)
+                    # 使用全局默认字体大小
+                    app = QApplication.instance()
+                    default_font_size = getattr(app, 'default_font_size', 18)
+                    scaled_font_size = int(default_font_size * self.dpi_scale)
                     scaled_border_radius = int(8 * self.dpi_scale)
                     scaled_padding = int(20 * self.dpi_scale)
                     error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
@@ -336,7 +345,10 @@ class PDFPreviewWidget(QWidget):
         except Exception as e:
             print(f"设置PDF文件时出错: {e}")
             error_label = QLabel(f"错误：无法处理PDF文件\n{str(e)}")
-            scaled_font_size = int(16 * self.dpi_scale)
+            # 使用全局默认字体大小
+            app = QApplication.instance()
+            default_font_size = getattr(app, 'default_font_size', 18)
+            scaled_font_size = int(default_font_size * self.dpi_scale)
             scaled_border_radius = int(8 * self.dpi_scale)
             scaled_padding = int(20 * self.dpi_scale)
             error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")

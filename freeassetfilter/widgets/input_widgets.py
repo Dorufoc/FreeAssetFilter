@@ -107,9 +107,13 @@ class CustomInputBox(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
+        # 从app对象获取全局默认字体大小
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 18)
+        
         # 应用DPI缩放因子到输入框样式
         scaled_padding = f"{int(8 * self.dpi_scale)}px {int(12 * self.dpi_scale)}px"
-        scaled_font_size = int(18 * self.dpi_scale)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
         
         # 创建QLineEdit作为实际输入控件
         self.line_edit = QLineEdit()

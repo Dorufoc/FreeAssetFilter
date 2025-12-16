@@ -167,9 +167,9 @@ class FileInfoBrowser:
             "权限": QLabel("-"),
             "所有者": QLabel("-"),
             "组": QLabel("-"),
-            "MD5": QLabel("-"),
-            "SHA1": QLabel("-"),
-            "SHA256": QLabel("-")
+            "MD5": QLabel("点击查看"),
+            "SHA1": QLabel("点击查看"),
+            "SHA256": QLabel("点击查看")
         }
         
         # 存储详细信息标签，用于动态添加和删除
@@ -233,6 +233,9 @@ class FileInfoBrowser:
                 "label": label_widget,
                 "value": widget
             }
+        
+        # 移除了"点击加载"按钮，因为详细信息已在set_file方法中自动提取
+        # 存储基本信息的行数，用于后续添加详细信息
         
         # 存储基本信息的行数，用于后续添加详细信息
         self.basic_info_row_count = len(basic_info_order)
@@ -1051,6 +1054,213 @@ class FileInfoBrowser:
             pass
         
         return info
+    
+    def _load_detailed_info(self):
+        """
+        加载详细信息，包括校验码和详细文件信息
+        """
+        if not self.current_file:
+            return
+        
+        file_path = self.current_file["path"]
+        
+        # 先检查缓存
+        cached_info = self._get_cached_info(file_path)
+        if cached_info:
+            self.file_info["basic"].update(cached_info["basic"])
+            self.file_info["details"].update(cached_info["details"])
+            self.update_ui()
+            return
+        
+        # 显示加载状态
+        self._show_loading_dialog()
+        
+        # 使用线程加载详细信息
+        from PyQt5.QtCore import QThread, pyqtSignal
+        
+        class LoadThread(QThread):
+            finished = pyqtSignal(dict)
+            error = pyqtSignal(str)
+            
+            def __init__(self, file_path, file_info):
+                super().__init__()
+                self.file_path = file_path
+                self.file_info = file_info
+            
+            def run(self):
+                try:
+                    # 计算校验码
+                    basic_info = {}
+                    basic_info["MD5"] = self._get_file_hash(self.file_path, hashlib.md5)
+                    basic_info["SHA1"] = self._get_file_hash(self.file_path, hashlib.sha1)
+                    basic_info["SHA256"] = self._get_file_hash(self.file_path, hashlib.sha256)
+                    
+                    # 获取详细信息
+                    details = {}
+                    if not self.file_info["basic"]["文件类型"] == "目录":
+                        file_ext = os.path.splitext(self.file_path)[1].lower()[1:]  # 移除点
+                        
+                        # 根据文件类型获取详细信息
+                        if file_ext in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]:
+                            details.update(self._get_image_info(self.file_path))
+                            details.update(self._get_image_advanced_info(self.file_path))
+                        elif file_ext in ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb", "m2ts", "ts", "mts"]:
+                            details.update(self._get_video_info(self.file_path))
+                            details.update(self._get_video_advanced_info(self.file_path))
+                        elif file_ext in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
+                            details.update(self._get_audio_info(self.file_path))
+                            details.update(self._get_audio_advanced_info(self.file_path))
+                        elif file_ext in ["txt", "md", "rst", "py", "java", "cpp", "js", "html", "css", "php", "c", "h", "cs", "go", "rb", "swift", "kt", "yml", "yaml", "json", "xml"]:
+                            details.update(self._get_text_info(self.file_path))
+                            details.update(self._get_text_advanced_info(self.file_path))
+                        elif file_ext in ["zip", "rar", "tar", "gz", "tgz", "bz2", "xz", "7z", "iso"]:
+                            details.update(self._get_archive_info(self.file_path))
+                            details.update(self._get_archive_advanced_info(self.file_path))
+                        elif file_ext in ["pdf"]:
+                            details.update(self._get_pdf_info(self.file_path))
+                            details.update(self._get_pdf_advanced_info(self.file_path))
+                        elif file_ext in ["ttf", "otf", "woff", "woff2"]:
+                            details.update(self._get_font_info(self.file_path))
+                            details.update(self._get_font_advanced_info(self.file_path))
+                    
+                    self.finished.emit({"basic": basic_info, "details": details})
+                except Exception as e:
+                    self.error.emit(str(e))
+        
+        # 创建并启动线程
+        self.load_thread = LoadThread(file_path, self.file_info)
+        self.load_thread.finished.connect(self._on_loading_finished)
+        self.load_thread.error.connect(self._on_loading_error)
+        self.load_thread.start()
+    
+    def _show_loading_dialog(self):
+        """
+        显示加载状态对话框
+        """
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel
+        from PyQt5.QtCore import Qt
+        from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+        
+        # 创建对话框
+        self.loading_dialog = QDialog()
+        self.loading_dialog.setWindowTitle("加载中")
+        self.loading_dialog.setModal(True)
+        self.loading_dialog.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
+        
+        # 设置对话框大小
+        scaled_width = int(400 * self.dpi_scale)
+        scaled_height = int(150 * self.dpi_scale)
+        self.loading_dialog.resize(scaled_width, scaled_height)
+        
+        # 创建布局
+        layout = QVBoxLayout(self.loading_dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(20)
+        
+        # 添加提示标签
+        label = QLabel("正在计算校验码和获取详细信息...")
+        label.setFont(self.global_font)
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        
+        # 添加不可交互进度条
+        self.progress_bar = CustomProgressBar(is_interactive=False)
+        self.progress_bar.setValue(50)  # 显示中间状态
+        layout.addWidget(self.progress_bar)
+        
+        # 显示对话框
+        self.loading_dialog.show()
+    
+    def _on_loading_finished(self, result):
+        """
+        加载完成后的处理
+        """
+        # 关闭加载对话框
+        if hasattr(self, 'loading_dialog'):
+            self.loading_dialog.close()
+        
+        # 更新文件信息
+        self.file_info["basic"].update(result["basic"])
+        self.file_info["details"].update(result["details"])
+        
+        # 保存到缓存
+        self._save_to_cache(self.current_file["path"], result)
+        
+        # 更新UI
+        self.update_ui()
+    
+    def _on_loading_error(self, error_msg):
+        """
+        加载出错时的处理
+        """
+        # 关闭加载对话框
+        if hasattr(self, 'loading_dialog'):
+            self.loading_dialog.close()
+        
+        # 显示错误提示
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.warning(None, "错误", f"加载详细信息失败: {error_msg}")
+    
+    def _get_cache_dir(self):
+        """
+        获取缓存目录路径
+        """
+        import os
+        cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+        return cache_dir
+    
+    def _get_cached_info(self, file_path):
+        """
+        从缓存中获取信息
+        """
+        import os
+        import json
+        
+        try:
+            # 创建缓存文件路径
+            cache_file = os.path.join(self._get_cache_dir(), "file_info_cache.json")
+            if not os.path.exists(cache_file):
+                return None
+            
+            # 读取缓存文件
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cache_data = json.load(f)
+            
+            # 检查文件是否在缓存中
+            if file_path in cache_data:
+                return cache_data[file_path]
+        except Exception:
+            pass
+        
+        return None
+    
+    def _save_to_cache(self, file_path, info):
+        """
+        保存信息到缓存
+        """
+        import os
+        import json
+        
+        try:
+            # 创建缓存文件路径
+            cache_file = os.path.join(self._get_cache_dir(), "file_info_cache.json")
+            
+            # 读取现有缓存
+            cache_data = {}
+            if os.path.exists(cache_file):
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    cache_data = json.load(f)
+            
+            # 更新缓存
+            cache_data[file_path] = info
+            
+            # 保存到文件
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存缓存失败: {e}")
     
     def _format_size(self, size: int) -> str:
         """
