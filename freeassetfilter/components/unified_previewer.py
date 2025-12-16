@@ -192,7 +192,7 @@ class UnifiedPreviewer(QWidget):
             preview_type = "dir"
         elif file_type in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]:
             preview_type = "image"
-        elif file_type in ["mp4", "avi", "mov", "mkv", "m4v", "flac", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb"]:
+        elif file_type in ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb", "m2ts", "ts", "mts"]:
             preview_type = "video"
         elif file_type in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
             preview_type = "audio"

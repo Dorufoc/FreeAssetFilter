@@ -41,11 +41,11 @@ class CustomInputBox(QWidget):
                  width=None, 
                  height=40,
                  border_radius=20,
-                 border_color="#e5e7e9",
+                 border_color="#cccccc",
                  background_color="#ffffff",
                  text_color="#000000",
                  placeholder_color="#CCCCCC",
-                 active_border_color="#e5e7e9",
+                 active_border_color="#0078d4",
                  active_background_color="#ffffff"):
         """
         初始化自定义输入框
@@ -103,6 +103,7 @@ class CustomInputBox(QWidget):
         """
         # 设置主布局
         main_layout = QVBoxLayout(self)
+        # 设置布局边距，确保边框能显示
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
@@ -114,18 +115,20 @@ class CustomInputBox(QWidget):
         self.line_edit = QLineEdit()
         self.line_edit.setFont(self.global_font)
         self.line_edit.setPlaceholderText(self.placeholder_text)
-        self.line_edit.setStyleSheet(f"""
-            QLineEdit {{
+        # 为line_edit添加内部边距，确保不会覆盖父控件的边框
+        self.line_edit.setStyleSheet("""
+            QLineEdit {
                 background-color: transparent;
                 border: none;
                 color: #000000;
-                font-size: {scaled_font_size}px;
-                padding: {scaled_padding};
-            }}
-            QLineEdit:focus {{
+                font-size: %dpx;
+                padding: %s;
+                margin: 0px;
+            }
+            QLineEdit:focus {
                 outline: none;
-            }}
-        """)
+            }
+        """ % (scaled_font_size, scaled_padding))
         
         # 连接信号
         self.line_edit.textChanged.connect(self._on_text_changed)
@@ -133,16 +136,17 @@ class CustomInputBox(QWidget):
         self.line_edit.focusOutEvent = lambda event: self._on_focus_out(event)
         self.line_edit.returnPressed.connect(self._on_return_pressed)
         
-        # 设置尺寸
+        # 设置当前控件尺寸
         if self._width:
-            self.line_edit.setFixedWidth(self._width)
-        self.line_edit.setFixedHeight(self._height)
+            self.setFixedWidth(self._width)
+        self.setFixedHeight(self._height)
         
-        # 添加到布局
+        # 添加到布局，通过布局管理line_edit大小
         main_layout.addWidget(self.line_edit)
         
-        # 更新样式
+        # 强制更新样式，确保边框显示
         self.update_style()
+        self.repaint()
     
     def _on_text_changed(self, text):
         """
@@ -186,20 +190,22 @@ class CustomInputBox(QWidget):
         """
         # 根据状态选择样式
         if self._is_active:
-            border_color = self._active_border_color
-            background_color = self._active_background_color
+            border_color = self._active_border_color.name()
         else:
-            border_color = self._border_color
-            background_color = self._background_color
+            border_color = self._border_color.name()
         
-        # 设置输入框容器的样式
-        self.setStyleSheet(f"""
-            QWidget {{
-                background-color: {background_color.name() if hasattr(background_color, 'name') else background_color};
-                border: 1px solid {border_color.name() if hasattr(border_color, 'name') else border_color};
-                border-radius: {self._border_radius}px;
-            }}
-        """)
+        # 应用DPI缩放的边框宽度
+        scaled_border_width = int(1 * self.dpi_scale)
+        
+        # 简化样式设置，直接应用到当前控件
+        style = f"""
+            border: {scaled_border_width}px solid {border_color};
+            border-radius: {self._border_radius}px;
+            background-color: #ffffff;
+        """
+        
+        # 直接设置样式到当前控件
+        self.setStyleSheet(style)
     
     def set_text(self, text):
         """

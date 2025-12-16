@@ -1851,7 +1851,7 @@ class CustomFileSelector(QWidget):
         
         # 定义文件类型映射
         image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
-        video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts"]
+        video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
         font_formats = ["ttf", "otf", "woff", "woff2", "eot", "svg"]
@@ -2018,7 +2018,7 @@ class CustomFileSelector(QWidget):
         """
         # 定义文件类型映射
         image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
-        video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts"]
+        video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
         font_formats = ["ttf", "otf", "woff", "woff2", "eot", "svg"]

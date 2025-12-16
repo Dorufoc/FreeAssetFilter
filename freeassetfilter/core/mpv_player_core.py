@@ -187,7 +187,7 @@ class MPVPlayerCore(QObject):
     # 支持的视频和音频格式（与VLC保持一致）
     SUPPORTED_VIDEO_FORMATS = ['.mp4', '.mov', '.m4v', '.flv', '.mxf', '.3gp', 
                               '.mpg', '.avi', '.wmv', '.mkv', '.webm', '.vob', 
-                              '.ogv', '.rmvb']
+                              '.ogv', '.rmvb', '.m2ts', '.ts', '.mts']
     SUPPORTED_AUDIO_FORMATS = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', 
                               '.m4a', '.aiff', '.ape', '.opus']
     
