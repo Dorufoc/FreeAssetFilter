@@ -958,11 +958,20 @@ class UnifiedPreviewer(QWidget):
             libreoffice_exe = os.path.join(project_root, "data", "LibreOfficePortable", "App", "LibreOffice", "program", "soffice.exe")
             
             if not os.path.exists(libreoffice_exe):
-                error_label = QLabel(f"未找到LibreOffice便携版: {libreoffice_exe}")
-                error_label.setAlignment(Qt.AlignCenter)
-                error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
-                self.preview_layout.addWidget(error_label)
-                self.current_preview_widget = error_label
+                # 关闭进度条弹窗
+                self._on_file_read_finished()
+                # 弹窗提示用户需要安装LibreOffice组件
+                QMessageBox.information(
+                    self,
+                    "LibreOffice组件缺失",
+                    "预览Office类文件需要LibreOffice组件支持。\n\n请将LibreOfficePortable解压后放置于:\nFreeassetfilter/data文件夹内\n\n文件夹结构应为：\nFreeAssetFliter/data/LibreOfficePortable/...",
+                    QMessageBox.Ok
+                )
+                # 显示默认提示
+                self.default_label.setText("Office文件预览需要LibreOffice组件支持")
+                self.preview_layout.addWidget(self.default_label)
+                self.default_label.show()
+                self.current_preview_widget = self.default_label
                 return
             
             # 使用LibreOffice将文档转换为PDF
