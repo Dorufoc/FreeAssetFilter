@@ -69,11 +69,16 @@ class FreeAssetFilterApp(QMainWindow):
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
-        # 获取屏幕可用尺寸
+        # 获取屏幕尺寸
         screen = QApplication.primaryScreen()
-        screen_geometry = screen.availableGeometry()
-        screen_width = screen_geometry.width()
-        screen_height = screen_geometry.height()
+        # 获取整个屏幕尺寸用于居中计算
+        full_geometry = screen.geometry()
+        full_screen_width = full_geometry.width()
+        full_screen_height = full_geometry.height()
+        # 获取可用屏幕尺寸用于限制窗口大小
+        available_geometry = screen.availableGeometry()
+        available_width = available_geometry.width()
+        available_height = available_geometry.height()
         
         # 使用DPI缩放因子调整窗口大小，但不超过屏幕可用尺寸
         # 使用更小的基础尺寸，确保三个组件能完全显示
@@ -81,11 +86,21 @@ class FreeAssetFilterApp(QMainWindow):
         window_height = int(800 * self.dpi_scale)
         
         # 确保窗口大小不超过屏幕可用尺寸
-        window_width = min(window_width, screen_width - 20)  # 留20px边距
-        window_height = min(window_height, screen_height - 20)  # 留20px边距
+        window_width = min(window_width, available_width - 20)  # 留20px边距
+        window_height = min(window_height, available_height - 20)  # 留20px边距
+        
+        # 计算窗口居中位置（使用整个屏幕尺寸）
+        x = (full_screen_width - window_width) // 2
+        y = (full_screen_height - window_height) // 2
+        
+        # 确保窗口不会超出可用区域
+        x = max(x, available_geometry.left())
+        y = max(y, available_geometry.top())
+        x = min(x, available_width - window_width - 10)  # 留10px右边距
+        y = min(y, available_height - window_height - 10)  # 留10px底边距
         
         self.setWindowTitle("FreeAssetFilter")
-        self.setGeometry(10, 10, window_width, window_height)
+        self.setGeometry(x, y, window_width, window_height)
         
         # 设置程序图标
         icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'FAF-main.ico')
@@ -521,6 +536,57 @@ def main():
     icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
     app.setWindowIcon(QIcon(icon_path))
     
+    # 设置全局滚动条样式，应用到所有滚动条
+    app.setStyleSheet("""
+        /* 滚动区域样式 */
+        QScrollArea {
+            background-color: #ffffff;
+            border: none;
+        }
+        
+        /* 垂直滚动条样式 */
+        QScrollBar:vertical {
+            width: 8px;
+            background: #f0f0f0;
+            border-radius: 3px;
+        }
+        
+        QScrollBar::handle:vertical {
+            background: #c0c0c0;
+            border-radius: 3px;
+        }
+        
+        QScrollBar::handle:vertical:hover {
+            background: #a0a0a0;
+        }
+        
+        QScrollBar::sub-line:vertical,
+        QScrollBar::add-line:vertical {
+            height: 0px;
+        }
+        
+        /* 水平滚动条样式 */
+        QScrollBar:horizontal {
+            height: 8px;
+            background: #f0f0f0;
+            border-radius: 3px;
+        }
+        
+        QScrollBar::handle:horizontal {
+            background: #c0c0c0;
+            border-radius: 3px;
+        }
+        
+        QScrollBar::handle:horizontal:hover {
+            background: #a0a0a0;
+        }
+        
+        QScrollBar::sub-line:horizontal,
+        QScrollBar::add-line:horizontal {
+            width: 0px;
+        }
+    """)
+    
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
     from PyQt5.QtGui import QFontDatabase, QFont
     font_db = QFontDatabase()
@@ -546,30 +612,31 @@ def main():
     # 计算DPI缩放因子
     def calculate_dpi_scale_factor():
         """
-        计算DPI缩放因子，基于当前屏幕分辨率与基础分辨率1920x1080的比例
-        基础分辨率1920x1080视为100%，1440P约对应140%
+        计算DPI缩放因子，基于当前屏幕分辨率与基础分辨率2560x1600的比例
+        基础分辨率2560x1600视为100%
+        同时考虑Windows系统实际DPI设置
         """
         screen = QApplication.primaryScreen()
         if screen:
-            # 获取当前屏幕的分辨率
-            screen_geometry = screen.availableGeometry()
+            # 获取当前屏幕的完整分辨率
+            screen_geometry = screen.geometry()
             current_width = screen_geometry.width()
             current_height = screen_geometry.height()
             
-            # 基础分辨率
-            base_width = 1920
-            base_height = 1080
+            # 项目基准分辨率
+            base_width = 2560
+            base_height = 1600
             
             # 基于高度和宽度的平均值计算缩放因子
             width_scale = current_width / base_width
             height_scale = current_height / base_height
             
-            # 使用高度缩放作为主要参考，因为用户提到1080P到1440P（高度1440）
+            # 使用高度缩放作为主要参考
             scale_factor = height_scale
             
             # 输出调试信息
             print(f"[DEBUG] 当前分辨率: {current_width}x{current_height}")
-            print(f"[DEBUG] 基础分辨率: {base_width}x{base_height}")
+            print(f"[DEBUG] 基准分辨率: {base_width}x{base_height}")
             print(f"[DEBUG] 宽度缩放: {width_scale:.2f}, 高度缩放: {height_scale:.2f}")
             
             return scale_factor

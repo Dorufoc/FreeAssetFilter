@@ -16,7 +16,7 @@ from PyQt5.QtCore import Qt, QTimer, QRect, QSize, QPoint
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage, QCursor, QDoubleValidator
 
 # 导入CustomProgressBar组件
-from freeassetfilter.components.video_player import CustomProgressBar
+from freeassetfilter.widgets.progress_widgets import CustomProgressBar
 
 class ProgressBarTestApp(QWidget):
     """

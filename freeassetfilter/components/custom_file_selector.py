@@ -285,8 +285,8 @@ class CustomFileSelector(QWidget):
         scaled_card_margin = int(10 * self.dpi_scale)
         self.files_layout.setSpacing(scaled_card_spacing)  # 卡片间距随DPI调整
         self.files_layout.setContentsMargins(scaled_card_margin, scaled_card_margin, scaled_card_margin, scaled_card_margin)  # 卡片边距随DPI调整
-        # 中对齐，以便填充整个宽度
-        self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignCenter)
+        # 左对齐，按用户要求调整
+        self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         
         scroll_area.setWidget(self.files_container)
         
@@ -1554,30 +1554,53 @@ class CustomFileSelector(QWidget):
         实时捕获窗口宽度，通过数值运算确定卡片数量
         完全基于视口宽度动态计算，没有固定限制
         """
-        # 使用滚动区域的视口宽度而非文件容器宽度，确保计算准确
-        # 滚动区域是父级容器，其宽度不会因内容变化而改变
-        scroll_area = self.files_container.parent().parent()  # 获取滚动区域
+        # 更可靠地获取滚动区域
+        scroll_area = None
+        parent_widget = self.files_container.parent()
+        while parent_widget and not isinstance(parent_widget, QScrollArea):
+            parent_widget = parent_widget.parent()
+        if parent_widget:
+            scroll_area = parent_widget
+        else:
+            # 如果无法获取滚动区域，返回默认值
+            return 3
+        
         viewport_width = scroll_area.viewport().width()
         
         # 定义卡片属性，应用DPI缩放
         card_width = int(140 * self.dpi_scale)  # 卡片固定宽度，考虑DPI缩放
         spacing = int(10 * self.dpi_scale)  # 卡片之间的间距，考虑DPI缩放
-        margin = int(20 * self.dpi_scale)  # 左右边距总和，考虑DPI缩放
+        actual_margin = int(10 * self.dpi_scale)  # 单边实际边距，与布局设置一致
+        margin = actual_margin * 2  # 左右边距总和
         
         # 可用宽度 = 视口宽度 - 左右边距
         available_width = viewport_width - margin
         
-        # 计算单张卡片占用的实际宽度（卡片宽度 + 右侧间距）
-        card_actual_width = card_width + spacing
+        # 初始列数计算：从1列开始尝试
+        columns = 1
+        max_possible_columns = 0
         
-        # 完全基于可用宽度和卡片实际宽度计算列数
-        # 不设置任何固定限制，确保最小为1列
-        columns = max(1, available_width // card_actual_width)
+        # 循环计算最大可能的列数
+        # 总宽度公式：列数 * 卡片宽度 + (列数 - 1) * 间距
+        while True:
+            # 计算当前列数下的总宽度
+            total_width = columns * card_width + (columns - 1) * spacing
+            
+            # 如果总宽度不超过可用宽度，尝试增加列数
+            if total_width <= available_width:
+                max_possible_columns = columns
+                columns += 1
+            else:
+                # 总宽度超过可用宽度，退出循环
+                break
+        
+        # 确保至少有1列
+        max_possible_columns = max(1, max_possible_columns)
         
         # 打印调试信息，便于监控计算过程
-        #print(f"视口宽度: {viewport_width}px, 可用宽度: {available_width}px, 卡片实际宽度: {card_actual_width}px, 计算列数: {columns}")
+        #print(f"视口宽度: {viewport_width}px, 可用宽度: {available_width}px, 最大列数: {max_possible_columns}")
         
-        return columns
+        return max_possible_columns
     
     def _create_file_cards(self, files):
         """

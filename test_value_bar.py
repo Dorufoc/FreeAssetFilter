@@ -16,7 +16,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon, QDoubleValidator
 
 # 导入CustomValueBar组件
-from freeassetfilter.components.video_player import CustomValueBar
+from freeassetfilter.widgets.progress_widgets import CustomValueBar
 
 class ValueBarTestApp(QWidget):
     """
