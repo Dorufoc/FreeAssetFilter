@@ -56,6 +56,30 @@ Windows系统可以使用项目提供的启动脚本：
 start "FreeAssetFilter" "scripts\start.bat"
 ```
 
+### 2.4 依赖库说明
+
+项目依赖以下Python库，每个库的功能说明如下：
+
+| 库名称 | 版本要求 | 功能说明 |
+|-------|---------|---------|
+| PyQt5 | >=5.15.0 | GUI框架，用于创建应用程序界面 |
+| PyQtWebEngine | >=5.15.0 | Web浏览器引擎，用于在应用中显示网页内容 |
+| chardet | >=5.0.0 | 字符编码检测库，用于自动识别文件编码 |
+| mutagen | >=1.46.0 | 音频元数据处理库，用于读取和修改音频文件的元数据 |
+| Pillow | >=10.0.0 | 图像处理库，用于图片预览和处理 |
+| PyMuPDF | >=1.24.0 | PDF处理库，用于PDF文件的预览和处理 |
+| python-vlc | >=3.0.0 | VLC媒体播放器绑定，用于视频和音频播放 |
+| importlib-metadata | >=6.0.0 | 元数据管理库，用于处理Python包的元数据 |
+| markdown | >=3.4.0 | Markdown解析库，用于将Markdown文本转换为HTML |
+| pygments | >=2.15.0 | 代码语法高亮库，用于在文本预览中高亮显示代码 |
+| rarfile | >=4.0.0 | RAR压缩文件处理库，用于读取RAR压缩文件 |
+| py7zr | >=0.21.0 | 7z压缩文件处理库，用于读取7z压缩文件 |
+| pycdlib | >=1.14.0 | ISO镜像文件处理库，用于读取ISO文件 |
+| opencv-python | >=4.0.0 | 计算机视觉库，用于视频处理和分析 |
+| numpy | >=1.19.0 | 数值计算库，用于处理图像和视频数据 |
+| ffmpeg-python | >=0.2.0 | FFmpeg绑定，用于视频和音频处理 |
+| python-mpv | >=1.0.0 | MPV媒体播放器绑定，用于视频和音频播放，支持Cube LUT色彩校正 |
+
 ## 3. 使用说明
 
 ### 3.1 基本操作流程
@@ -80,7 +104,7 @@ start "FreeAssetFilter" "scripts\start.bat"
 
 #### 3.2.2 文件预览
 - **图片预览**：支持JPG、PNG、GIF等多种图片格式的实时预览
-- **视频播放**：集成MPV播放器，支持多种视频格式的播放，包括MP4、MOV、MXF等
+- **视频播放**：集成MPV播放器，支持多种视频格式的播放，包括MP4、MOV、MXF等，支持Cube LUT色彩校正
 - **音频播放**：支持MP3、WAV等音频格式，显示音频信息
 - **PDF预览**：支持PDF文件的快速预览
 - **文档查看**：支持TXT、MD等文本文件的查看
@@ -189,6 +213,7 @@ FreeAssetFilter项目依赖以下开源项目，在此表示感谢：
 | opencv-python | >=4.0.0 | Apache 2.0 | https://opencv.org/ |
 | numpy | >=1.19.0 | BSD License | https://numpy.org/ |
 | ffmpeg-python | >=0.2.0 | Apache 2.0 | https://github.com/kkroening/ffmpeg-python |
+| python-mpv | >=1.0.0 | GPL v2.0 | https://github.com/jaseg/python-mpv |
 
 ## 6. 许可证
 
