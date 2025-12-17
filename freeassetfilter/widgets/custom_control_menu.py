@@ -51,7 +51,7 @@ class CustomControlMenu(QWidget):
         
         # 外观属性，应用DPI缩放
         self._bg_color = QColor(255, 255, 255)  # 白色背景
-        self._shadow_color = QColor(0, 0, 0, 0)  # 阴影颜色，透明度25/255
+        self._shadow_color = QColor(0, 0, 0, 25)  # 阴影颜色，透明度25/255
         self._shadow_radius = int(4 * self.dpi_scale)  # 阴影半径
         self._border_radius = int(8 * self.dpi_scale)  # 圆角半径
         self._padding = int(10 * self.dpi_scale)  # 内边距
@@ -147,15 +147,24 @@ class CustomControlMenu(QWidget):
             return
         
         # 获取目标按钮的全局位置和尺寸
-        button_rect = self._target_button.geometry()
+        # 使用frameGeometry()获取包含边框的几何信息，更可靠
+        button_frame = self._target_button.frameGeometry()
+        # 获取按钮的全局位置
         button_global_pos = self._target_button.mapToGlobal(QPoint(0, 0))
         
         # 计算菜单位置
         menu_width = self.width()
         menu_height = self.height()
         
-        # 水平居中：按钮中心点与菜单中心点对齐
-        x = button_global_pos.x() + (button_rect.width() - menu_width) // 2
+        # 获取内容区域的实际宽度（不包括阴影）
+        content_width = menu_width - 2 * self._shadow_radius
+        
+        # 水平居中：按钮中心点与内容区域中心点对齐
+        # 按钮中心点x坐标：button_global_pos.x() + button_frame.width() // 2
+        # 内容区域中心点x坐标：x + self._shadow_radius + content_width // 2
+        button_center_x = button_global_pos.x() + button_frame.width() // 2
+        content_center_x = button_center_x
+        x = content_center_x - (self._shadow_radius + content_width // 2)
         
         # 垂直位置：菜单底部距离按钮顶部10px
         y = button_global_pos.y() - menu_height - int(10 * self.dpi_scale)

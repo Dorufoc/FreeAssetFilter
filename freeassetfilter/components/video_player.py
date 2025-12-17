@@ -19,7 +19,7 @@ import sys
 import os
 import shutil
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QSlider, QLabel,
     QFileDialog, QStyle, QMessageBox, QGraphicsBlurEffect
 )
 from PyQt5.QtGui import QFont
@@ -29,6 +29,7 @@ from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets.custom_widgets import CustomValueBar
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.widgets.custom_control_menu import CustomControlMenu
+from freeassetfilter.widgets.volume_slider_menu import VolumeSliderMenu
 
 # 用于读取音频文件封面
 from mutagen.id3 import ID3
@@ -138,13 +139,12 @@ class VideoPlayer(QWidget):
         self.audio_container = QWidget()
         self.song_name_label = QLabel()
         self.artist_name_label = QLabel()
+        self.cover_label = QLabel()  # 歌曲封面显示标签
         
         # 控制组件
         self.progress_slider = CustomValueBar(interactive=False)  # 视频进度条仅用于显示，不允许交互
         self.time_label = QLabel("00:00 / 00:00")
         self.play_button = QPushButton()
-        self.volume_slider = CustomValueBar()  # 音量控制条使用数值控制条
-        self.volume_button = QPushButton()  # 音量图标按钮，替换文字描述
         
         # 倍速控制组件
         self.speed_button = QPushButton("1.0x")
@@ -153,12 +153,8 @@ class VideoPlayer(QWidget):
         self.is_speed_menu_visible = False
         self.speed_menu_timer = None  # 菜单关闭定时器
         
-        # 音量菜单组件
-        self.volume_menu = None  # 音量菜单
-        self.is_volume_menu_visible = False
-        self.volume_menu_timer = None  # 音量菜单关闭定时器
-        self.volume_menu_slider = None  # 音量菜单中的纵向音量条
-        self.volume_menu_label = None  # 音量菜单中的音量值显示
+        # 使用自定义音量条浮动菜单
+        self.volume_slider_menu = None  # 音量条浮动菜单组件
         
         # 状态标志
         self._user_interacting = False
@@ -220,8 +216,8 @@ class VideoPlayer(QWidget):
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(0)
         
-        # 音频显示区域设置
-        audio_layout = QVBoxLayout(self.audio_stacked_widget)
+        # 音频显示区域设置 - 使用QGridLayout实现叠加效果
+        audio_layout = QGridLayout(self.audio_stacked_widget)
         audio_layout.setContentsMargins(0, 0, 0, 0)
         audio_layout.setSpacing(0)
         
@@ -279,7 +275,20 @@ class VideoPlayer(QWidget):
         audio_container_layout.setSpacing(15)
         audio_container_layout.setAlignment(Qt.AlignCenter)
         
-        # 添加歌曲信息到容器
+        # 歌曲封面设置
+        # 计算缩放后的封面大小（100dpx正方形）
+        scaled_cover_size = int(100 * self.dpi_scale)
+        self.cover_label.setFixedSize(scaled_cover_size, scaled_cover_size)
+        self.cover_label.setAlignment(Qt.AlignCenter)
+        # 设置封面的圆角矩形遮罩
+        self.cover_label.setStyleSheet(f"""
+            background-color: #333333;
+            border-radius: {int(scaled_cover_size * 0.1)}px;
+            border: {int(2 * self.dpi_scale)}px solid rgba(255, 255, 255, 0.3);
+        """)
+        
+        # 添加歌曲信息到容器（封面在最上面）
+        audio_container_layout.addWidget(self.cover_label)
         audio_container_layout.addWidget(self.song_name_label)
         audio_container_layout.addWidget(self.artist_name_label)
         
@@ -287,10 +296,10 @@ class VideoPlayer(QWidget):
         self.audio_container.setStyleSheet("background-color: transparent;")
         self.audio_container.setMinimumSize(400, 300)
         
-        # 构建音频堆叠布局
-        audio_layout.addWidget(self.background_label)
-        audio_layout.addWidget(self.overlay_widget)
-        audio_layout.addWidget(self.audio_container)
+        # 构建音频叠加布局 - 将所有部件放在同一网格位置
+        audio_layout.addWidget(self.background_label, 0, 0)
+        audio_layout.addWidget(self.overlay_widget, 0, 0)
+        audio_layout.addWidget(self.audio_container, 0, 0)
         
         # 媒体布局
         media_layout = QVBoxLayout(self.media_frame)
@@ -397,47 +406,22 @@ class VideoPlayer(QWidget):
         bottom_layout.addStretch(1)
         
         # 音量图标按钮设置，应用DPI缩放
-        scaled_padding = int(5 * self.dpi_scale)
-        scaled_min_width = int(20 * self.dpi_scale)
-        scaled_max_height = int(20 * self.dpi_scale)
-        self.volume_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #FFFFFF;
-                color: #000000;
-                border: 1px solid #FFFFFF;
-                padding: {scaled_padding}px;
-                border-radius: 0px;
-                min-width: {scaled_min_width}px;
-                max-width: {scaled_min_width}px;
-                max-height: {scaled_max_height}px;
-            }}
-            QPushButton:hover {{
-                background-color: #f0f0f0;
-            }}
-            QPushButton:pressed {{
-                background-color: #e0e0e0;
-            }}
-        """)
-        # 设置鼠标指针为手型，表示可点击
-        self.volume_button.setCursor(Qt.PointingHandCursor)
-        # 添加点击事件，实现显示/隐藏音量菜单
-        self.volume_button.clicked.connect(self.toggle_volume_menu)
-        bottom_layout.addWidget(self.volume_button)
-        # 初始化音量图标
-        self.update_volume_icon()
-        
-        # 音量按钮悬停显示音量菜单
-        self.volume_button.enterEvent = self.show_volume_menu
-        self.volume_button.leaveEvent = lambda event: self._handle_volume_button_leave(event)
+        # 创建音量条浮动菜单组件
+        self.volume_slider_menu = VolumeSliderMenu(self)
         
         # 加载保存的音量设置
         saved_volume = self.load_volume_setting()
         # 设置初始音量
         self._current_volume = saved_volume
         self._previous_volume = saved_volume
+        self.volume_slider_menu.set_volume(saved_volume)
         
-        # 初始化音量菜单
-        self._init_volume_menu(saved_volume)
+        # 设置音量条浮动菜单的信号连接
+        self.volume_slider_menu.valueChanged.connect(self.set_volume)
+        self.volume_slider_menu.mutedChanged.connect(self._on_muted_changed)
+        
+        # 添加音量条浮动菜单到布局
+        bottom_layout.addWidget(self.volume_slider_menu)
         
         # 添加倍速控制按钮，应用DPI缩放
         scaled_padding = int(5 * self.dpi_scale)
@@ -997,11 +981,24 @@ class VideoPlayer(QWidget):
         处理音量滑块值变化事件
         """
         # 更新音量显示标签
-        if self.volume_menu_label:
+        if hasattr(self, 'volume_menu_label') and self.volume_menu_label:
             self.volume_menu_label.setText(f"{value}%")
         
         # 更新音量
         self.set_volume(value)
+        
+    def _on_muted_changed(self, muted):
+        """
+        处理静音状态变化事件
+        """
+        self._is_muted = muted
+        if muted:
+            # 保存当前音量并设置为0
+            self._previous_volume = self._current_volume
+            self.player_core.set_volume(0)
+        else:
+            # 恢复之前的音量
+            self.player_core.set_volume(self._previous_volume)
     
     def load_volume_setting(self):
         """
@@ -1088,12 +1085,22 @@ class VideoPlayer(QWidget):
             # 创建左侧原始视频区域
             self.original_video_frame = QWidget()
             self.original_video_frame.setStyleSheet("background-color: black;")
-            self.original_video_frame.setMinimumSize(200, 200)
             
             # 创建右侧滤镜视频区域
             self.filtered_video_frame = QWidget()
             self.filtered_video_frame.setStyleSheet("background-color: black;")
-            self.filtered_video_frame.setMinimumSize(200, 200)
+            
+            # 检查当前媒体类型，如果是音频则将对比预览窗口大小设置为0×0
+            file_ext = os.path.splitext(self._current_file_path)[1].lower()
+            audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.aiff', '.ape', '.opus']
+            if file_ext in audio_extensions:
+                self.original_video_frame.setMinimumSize(0, 0)
+                self.original_video_frame.resize(0, 0)
+                self.filtered_video_frame.setMinimumSize(0, 0)
+                self.filtered_video_frame.resize(0, 0)
+            else:
+                self.original_video_frame.setMinimumSize(200, 200)
+                self.filtered_video_frame.setMinimumSize(200, 200)
             
             # 添加到对比布局
             self.comparison_layout.addWidget(self.original_video_frame)
@@ -1132,7 +1139,7 @@ class VideoPlayer(QWidget):
             # 移除对比布局
             while self.comparison_layout.count() > 0:
                 widget = self.comparison_layout.itemAt(0).widget()
-                if widget:
+                if widget is not None:
                     self.comparison_layout.removeWidget(widget)
                     widget.hide()
             
@@ -1155,6 +1162,14 @@ class VideoPlayer(QWidget):
                 self.original_player_core.stop()
                 self.original_player_core.cleanup()
                 delattr(self, 'original_player_core')
+            
+            # 删除对比预览相关属性
+            if hasattr(self, 'original_video_frame'):
+                delattr(self, 'original_video_frame')
+            if hasattr(self, 'filtered_video_frame'):
+                delattr(self, 'filtered_video_frame')
+            if hasattr(self, 'comparison_layout'):
+                delattr(self, 'comparison_layout')
     
     def _connect_core_signals(self):
         """
@@ -1190,16 +1205,49 @@ class VideoPlayer(QWidget):
             file_ext = os.path.splitext(file_path)[1].lower()
             audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.aiff', '.ape', '.opus']
             
+            # 获取媒体布局
+            media_layout = self.media_frame.layout()
+            
             if file_ext in audio_extensions:
-                # 显示音频界面
-                self.video_frame.hide()
+                # 播放音频时，确保只有audio_stacked_widget在布局中
+                # 先清空布局
+                while media_layout.count() > 0:
+                    item = media_layout.takeAt(0)
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.hide()
+                
+                # 隐藏对比预览模式下的视频区域
+                if hasattr(self, 'original_video_frame') and self.original_video_frame is not None:
+                    self.original_video_frame.hide()
+                if hasattr(self, 'filtered_video_frame') and self.filtered_video_frame is not None:
+                    self.filtered_video_frame.hide()
+                
+                # 确保audio_stacked_widget在布局中并显示
+                media_layout.addWidget(self.audio_stacked_widget)
                 self.audio_stacked_widget.show()
+                
                 # 提取并显示音频元数据和封面
                 self.extract_audio_metadata(file_path)
             else:
-                # 显示视频界面
+                # 播放视频时，确保只有video_frame在布局中
+                # 先清空布局
+                while media_layout.count() > 0:
+                    item = media_layout.takeAt(0)
+                    widget = item.widget()
+                    if widget is not None:
+                        widget.hide()
+                
+                # 确保video_frame在布局中并显示
+                media_layout.addWidget(self.video_frame)
+                self.video_frame.setMinimumSize(400, 300)
                 self.video_frame.show()
-                self.audio_stacked_widget.hide()
+                
+                # 显示对比预览模式下的视频区域
+                if hasattr(self, 'original_video_frame') and self.original_video_frame is not None:
+                    self.original_video_frame.show()
+                if hasattr(self, 'filtered_video_frame') and self.filtered_video_frame is not None:
+                    self.filtered_video_frame.show()
     
     def extract_audio_metadata(self, file_path):
         """
@@ -1211,6 +1259,7 @@ class VideoPlayer(QWidget):
         # 初始化默认值
         song_name = os.path.basename(file_path)
         artist_name = "未知艺术家"
+        cover_data = None  # 封面数据
         
         try:
             # 根据文件扩展名选择不同的提取方法
@@ -1224,6 +1273,11 @@ class VideoPlayer(QWidget):
                     song_name = audio['TIT2'].text[0]
                 if 'TPE1' in audio:
                     artist_name = audio['TPE1'].text[0]
+                # 提取封面
+                if 'APIC:' in audio:
+                    cover_data = audio['APIC:'].data
+                elif 'APIC' in audio:
+                    cover_data = audio['APIC'].data
             
             elif file_ext in ['.m4a', '.mp4']:
                 # M4A/MP4文件处理
@@ -1233,6 +1287,9 @@ class VideoPlayer(QWidget):
                     song_name = audio['\xa9nam'][0]
                 if '\xa9ART' in audio:
                     artist_name = audio['\xa9ART'][0]
+                # 提取封面
+                if 'covr' in audio:
+                    cover_data = audio['covr'][0]
             
             elif file_ext == '.flac':
                 # FLAC文件处理
@@ -1242,6 +1299,11 @@ class VideoPlayer(QWidget):
                     song_name = audio['title'][0]
                 if 'artist' in audio:
                     artist_name = audio['artist'][0]
+                # 提取封面
+                for picture in audio.pictures:
+                    if picture.type == 3:  # 封面图片
+                        cover_data = picture.data
+                        break
             
             elif file_ext == '.ogg':
                 # OGG文件处理
@@ -1251,12 +1313,14 @@ class VideoPlayer(QWidget):
                     song_name = audio['title'][0]
                 if 'artist' in audio:
                     artist_name = audio['artist'][0]
+                # OGG文件通常没有内置封面
             
             elif file_ext == '.wav':
                 # WAV文件处理
                 audio = WAVE(file_path)
                 # WAV文件通常没有内置元数据，使用文件名作为歌曲名
                 song_name = os.path.basename(file_path).replace('.wav', '')
+                # WAV文件通常没有内置封面
             
             elif file_ext == '.aiff':
                 # AIFF文件处理
@@ -1265,6 +1329,7 @@ class VideoPlayer(QWidget):
                     song_name = audio['title'][0]
                 if 'artist' in audio:
                     artist_name = audio['artist'][0]
+                # AIFF文件通常没有内置封面
             
             elif file_ext == '.ape':
                 # APE文件处理
@@ -1273,6 +1338,7 @@ class VideoPlayer(QWidget):
                     song_name = audio['Title'][0]
                 if 'Artist' in audio:
                     artist_name = audio['Artist'][0]
+                # 提取封面（APE文件封面处理可能需要额外库支持，这里简化处理）
             
             elif file_ext == '.wma':
                 # WMA文件处理
@@ -1281,13 +1347,111 @@ class VideoPlayer(QWidget):
                     song_name = audio['Title']
                 if 'Author' in audio:
                     artist_name = audio['Author']
+                # WMA文件封面处理复杂，这里简化处理
         
         except Exception as e:
             print(f"[VideoPlayer] 提取音频元数据失败: {e}")
         
+        # 更新封面显示
+        self._update_cover(cover_data)
+        
         # 更新UI显示
         self.song_name_label.setText(song_name)
         self.artist_name_label.setText(artist_name)
+    
+    def _update_cover(self, cover_data):
+        """
+        更新封面显示
+        
+        Args:
+            cover_data: 封面数据（字节）
+        """
+        # 计算缩放后的封面大小（100dpx正方形）
+        scaled_cover_size = int(100 * self.dpi_scale)
+        
+        if cover_data:
+            try:
+                # 从字节数据创建PIL Image
+                pil_image = Image.open(io.BytesIO(cover_data))
+                
+                # 调整图像大小
+                pil_image = pil_image.resize((scaled_cover_size, scaled_cover_size), Image.Resampling.LANCZOS)
+                
+                # 创建QPixmap
+                image_data = io.BytesIO()
+                pil_image.save(image_data, format='PNG')
+                image_data.seek(0)
+                pixmap = QPixmap()
+                pixmap.loadFromData(image_data.read())
+                
+                # 应用圆角矩形遮罩
+                rounded_pixmap = QPixmap(scaled_cover_size, scaled_cover_size)
+                rounded_pixmap.fill(Qt.transparent)
+                
+                painter = QPainter(rounded_pixmap)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                # 创建圆角矩形路径
+                radius = int(scaled_cover_size * 0.1)
+                rect = QRect(0, 0, scaled_cover_size, scaled_cover_size)
+                painter.setClipPath(self._get_rounded_rect_path(rect, radius))
+                
+                # 绘制图像
+                painter.drawPixmap(rect, pixmap)
+                painter.end()
+                
+                # 设置封面
+                self.cover_label.setPixmap(rounded_pixmap)
+                
+            except Exception as e:
+                print(f"[VideoPlayer] 处理封面失败: {e}")
+                # 显示默认背景
+                self._show_default_cover(scaled_cover_size)
+        else:
+            # 显示默认背景
+            self._show_default_cover(scaled_cover_size)
+    
+    def _get_rounded_rect_path(self, rect, radius):
+        """
+        创建圆角矩形路径
+        
+        Args:
+            rect: QRect对象
+            radius: 圆角半径
+        
+        Returns:
+            QPainterPath: 圆角矩形路径
+        """
+        from PyQt5.QtGui import QPainterPath
+        path = QPainterPath()
+        
+        # 绘制圆角矩形
+        path.moveTo(rect.left() + radius, rect.top())
+        path.lineTo(rect.right() - radius, rect.top())
+        path.arcTo(rect.right() - 2 * radius, rect.top(), 2 * radius, 2 * radius, 90, -90)
+        path.lineTo(rect.right(), rect.bottom() - radius)
+        path.arcTo(rect.right() - 2 * radius, rect.bottom() - 2 * radius, 2 * radius, 2 * radius, 0, -90)
+        path.lineTo(rect.left() + radius, rect.bottom())
+        path.arcTo(rect.left(), rect.bottom() - 2 * radius, 2 * radius, 2 * radius, 270, -90)
+        path.lineTo(rect.left(), rect.top() + radius)
+        path.arcTo(rect.left(), rect.top(), 2 * radius, 2 * radius, 180, -90)
+        path.closeSubpath()
+        
+        return path
+    
+    def _show_default_cover(self, size):
+        """
+        显示默认封面
+        
+        Args:
+            size: 封面大小
+        """
+        # 创建默认背景
+        default_pixmap = QPixmap(size, size)
+        default_pixmap.fill(QColor(51, 51, 51))  # 深灰色背景
+        
+        # 设置到封面标签
+        self.cover_label.setPixmap(default_pixmap)
     
     def play(self):
         """
@@ -1341,12 +1505,30 @@ class VideoPlayer(QWidget):
         Args:
             volume: 音量值（0-100）
         """
+        if volume < 0:
+            volume = 0
+        elif volume > 100:
+            volume = 100
+            
         if self.player_core:
             self.player_core.set_volume(volume)
             self._current_volume = volume
             self._previous_volume = volume
-            self.update_volume_icon()
             self.save_volume_setting(volume)
+            
+        # 更新音量条浮动菜单的状态
+        if hasattr(self, 'volume_slider_menu') and self.volume_slider_menu:
+            self.volume_slider_menu.set_volume(volume)
+            
+        # 更新静音状态
+        if volume == 0:
+            self._is_muted = True
+            if hasattr(self, 'volume_slider_menu') and self.volume_slider_menu:
+                self.volume_slider_menu.set_muted(True)
+        else:
+            self._is_muted = False
+            if hasattr(self, 'volume_slider_menu') and self.volume_slider_menu:
+                self.volume_slider_menu.set_muted(False)
     
     def set_speed(self, speed):
         """

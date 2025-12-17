@@ -442,6 +442,40 @@ class UnifiedPreviewer(QWidget):
             self._clear_preview()
             self._show_preview()
     
+    def _show_error_with_copy_button(self, error_message):
+        """
+        显示带有复制按钮的错误信息
+        
+        Args:
+            error_message (str): 错误信息
+        """
+        # 创建错误信息容器
+        error_container = QWidget()
+        error_container.setStyleSheet("background-color: transparent;")
+        error_layout = QVBoxLayout(error_container)
+        error_layout.setSpacing(10)
+        error_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 显示错误信息
+        error_label = QLabel(error_message)
+        error_label.setAlignment(Qt.AlignCenter)
+        error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+        error_layout.addWidget(error_label)
+        
+        # 添加复制按钮
+        copy_button = CustomButton("复制错误信息", button_type="secondary")
+        copy_button.setFixedWidth(int(120 * self.dpi_scale))
+        copy_button.clicked.connect(lambda: self._copy_to_clipboard(error_message))
+        copy_button_layout = QHBoxLayout()
+        copy_button_layout.addStretch()
+        copy_button_layout.addWidget(copy_button)
+        copy_button_layout.addStretch()
+        error_layout.addLayout(copy_button_layout)
+        
+        self.preview_layout.addWidget(error_container)
+        self.current_preview_widget = error_container
+        self.current_preview_type = "error"
+    
     def _show_image_preview(self, file_path):
         """
         显示图片预览
@@ -480,10 +514,8 @@ class UnifiedPreviewer(QWidget):
                 self.preview_layout.addWidget(scroll_area)
                 self.current_preview_widget = scroll_area
             except Exception as simple_e:
-                error_label = QLabel(f"图片预览失败: {str(simple_e)}")
-                error_label.setAlignment(Qt.AlignCenter)
-                self.preview_layout.addWidget(error_label)
-                self.current_preview_widget = error_label
+                error_message = f"图片预览失败: {str(simple_e)}"
+                self._show_error_with_copy_button(error_message)
     
     def _show_video_preview(self, file_path):
         """
@@ -515,12 +547,8 @@ class UnifiedPreviewer(QWidget):
             print(f"[ERROR] 视频预览失败: {str(e)}")
             traceback.print_exc()
             # 显示友好的错误信息到界面
-            error_label = QLabel(f"视频预览失败: {str(e)}")
-            error_label.setAlignment(Qt.AlignCenter)
-            error_label.setStyleSheet("color: red; font-weight: bold;")
-            error_label.setWordWrap(True)
-            self.preview_layout.addWidget(error_label)
-            self.current_preview_widget = error_label
+            error_message = f"视频预览失败: {str(e)}"
+            self._show_error_with_copy_button(error_message)
     
     def _get_video_thumbnail(self, file_path):
         """
@@ -603,10 +631,8 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(audio_player)
             self.current_preview_widget = audio_player
         except Exception as e:
-            error_label = QLabel(f"音频预览失败: {str(e)}")
-            error_label.setAlignment(Qt.AlignCenter)
-            self.preview_layout.addWidget(error_label)
-            self.current_preview_widget = error_label
+            error_message = f"音频预览失败: {str(e)}"
+            self._show_error_with_copy_button(error_message)
     
     def _show_pdf_preview(self, file_path):
         """
@@ -631,10 +657,8 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(pdf_previewer)
             self.current_preview_widget = pdf_previewer
         except Exception as e:
-            error_label = QLabel(f"PDF预览失败: {str(e)}")
-            error_label.setAlignment(Qt.AlignCenter)
-            self.preview_layout.addWidget(error_label)
-            self.current_preview_widget = error_label
+            error_message = f"PDF预览失败: {str(e)}"
+            self._show_error_with_copy_button(error_message)
             # 发生错误时也关闭进度条弹窗
             self._on_file_read_finished()
     
@@ -730,6 +754,16 @@ class UnifiedPreviewer(QWidget):
         print("[DEBUG] PDF渲染完成，关闭进度条弹窗")
         self._on_file_read_finished()
     
+    def _copy_to_clipboard(self, text):
+        """
+        将文本复制到剪贴板
+        
+        Args:
+            text (str): 要复制的文本
+        """
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+    
     def _on_preview_created(self, preview_widget, preview_type):
         """
         预览准备完成，在主线程中创建预览组件并添加到布局中
@@ -793,11 +827,32 @@ class UnifiedPreviewer(QWidget):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            error_label = QLabel(f"创建预览组件失败: {str(e)}")
+            # 创建错误信息容器
+            error_container = QWidget()
+            error_container.setStyleSheet("background-color: transparent;")
+            error_layout = QVBoxLayout(error_container)
+            error_layout.setSpacing(10)
+            error_layout.setContentsMargins(0, 0, 0, 0)
+            
+            # 显示错误信息
+            full_error_message = f"创建预览组件失败: {str(e)}"
+            error_label = QLabel(full_error_message)
             error_label.setAlignment(Qt.AlignCenter)
             error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
-            self.preview_layout.addWidget(error_label)
-            self.current_preview_widget = error_label
+            error_layout.addWidget(error_label)
+            
+            # 添加复制按钮
+            copy_button = CustomButton("复制错误信息", button_type="secondary")
+            copy_button.setFixedWidth(int(120 * self.dpi_scale))
+            copy_button.clicked.connect(lambda: self._copy_to_clipboard(full_error_message))
+            copy_button_layout = QHBoxLayout()
+            copy_button_layout.addStretch()
+            copy_button_layout.addWidget(copy_button)
+            copy_button_layout.addStretch()
+            error_layout.addLayout(copy_button_layout)
+            
+            self.preview_layout.addWidget(error_container)
+            self.current_preview_widget = error_container
             self.current_preview_type = "error"
         
         # 清理线程资源
@@ -815,12 +870,32 @@ class UnifiedPreviewer(QWidget):
         # 关闭进度条弹窗
         self._on_file_read_finished()
         
+        # 创建错误信息容器
+        error_container = QWidget()
+        error_container.setStyleSheet("background-color: transparent;")
+        error_layout = QVBoxLayout(error_container)
+        error_layout.setSpacing(10)
+        error_layout.setContentsMargins(0, 0, 0, 0)
+        
         # 显示错误信息
-        error_label = QLabel(f"预览失败: {error_message}")
+        full_error_message = f"预览失败: {error_message}"
+        error_label = QLabel(full_error_message)
         error_label.setAlignment(Qt.AlignCenter)
         error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
-        self.preview_layout.addWidget(error_label)
-        self.current_preview_widget = error_label
+        error_layout.addWidget(error_label)
+        
+        # 添加复制按钮
+        copy_button = CustomButton("复制错误信息", button_type="secondary")
+        copy_button.setFixedWidth(int(120 * self.dpi_scale))
+        copy_button.clicked.connect(lambda: self._copy_to_clipboard(full_error_message))
+        copy_button_layout = QHBoxLayout()
+        copy_button_layout.addStretch()
+        copy_button_layout.addWidget(copy_button)
+        copy_button_layout.addStretch()
+        error_layout.addLayout(copy_button_layout)
+        
+        self.preview_layout.addWidget(error_container)
+        self.current_preview_widget = error_container
         self.current_preview_type = "error"
         
         # 清理线程资源
@@ -925,10 +1000,8 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(text_previewer)
             self.current_preview_widget = text_previewer
         except Exception as e:
-            error_label = QLabel(f"文本预览失败: {str(e)}")
-            error_label.setAlignment(Qt.AlignCenter)
-            self.preview_layout.addWidget(error_label)
-            self.current_preview_widget = error_label
+            error_message = f"文本预览失败: {str(e)}"
+            self._show_error_with_copy_button(error_message)
     def _show_document_preview(self, file_path):
         """
         显示文档预览，先将文档转换为PDF，然后使用PDF预览器显示
@@ -995,11 +1068,7 @@ class UnifiedPreviewer(QWidget):
             
             if result.returncode != 0:
                 error_msg = f"文档转换失败: {result.stderr}" if result.stderr else f"文档转换失败，返回码: {result.returncode}"
-                error_label = QLabel(error_msg)
-                error_label.setAlignment(Qt.AlignCenter)
-                error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
-                self.preview_layout.addWidget(error_label)
-                self.current_preview_widget = error_label
+                self._show_error_with_copy_button(error_msg)
                 return
             
             # 检查PDF文件是否生成
@@ -1027,11 +1096,8 @@ class UnifiedPreviewer(QWidget):
                             break
             elif not os.path.exists(self.temp_pdf_path):
                 # 没有找到任何生成的PDF文件
-                error_label = QLabel(f"PDF生成失败，未找到预期的PDF文件")
-                error_label.setAlignment(Qt.AlignCenter)
-                error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
-                self.preview_layout.addWidget(error_label)
-                self.current_preview_widget = error_label
+                error_msg = f"PDF生成失败，未找到预期的PDF文件"
+                self._show_error_with_copy_button(error_msg)
                 return
             
             print(f"文档转换成功: {self.temp_pdf_path}")
