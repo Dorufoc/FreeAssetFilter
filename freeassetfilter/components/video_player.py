@@ -147,7 +147,7 @@ class VideoPlayer(QWidget):
         # 控制组件
         self.progress_slider = CustomValueBar(interactive=False)  # 视频进度条仅用于显示，不允许交互
         self.time_label = QLabel("00:00 / 00:00")
-        self.play_button = QPushButton()
+        self.play_button = None
         
         # 倍速控制组件
         self.speed_button = None  # 将在init_ui中使用CustomButton初始化
@@ -329,30 +329,13 @@ class VideoPlayer(QWidget):
         self.control_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         self.control_layout.setSpacing(scaled_spacing)
         
-        # 播放/暂停按钮 - 更新为白色背景和边框，应用DPI缩放
-        # 应用DPI缩放因子到按钮样式
-        scaled_padding = int(12 * self.dpi_scale)
-        scaled_min_width = int(40 * self.dpi_scale)
-        scaled_min_height = int(40 * self.dpi_scale)
-        self.play_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #FFFFFF;
-                color: #000000;
-                border: 1px solid #FFFFFF;
-                padding: {scaled_padding}px {scaled_padding}px;
-                border-radius: 0px;
-                min-width: {scaled_min_width}px;
-                max-width: {scaled_min_width}px;
-                min-height: {scaled_min_height}px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #FFFFFF;
-            }}
-            QPushButton:pressed {{
-                background-color: #FFFFFF;
-            }}
-        """)
+        # 播放/暂停按钮 - 使用CustomButton组件，确保与文件选择器按钮大小一致
+        self.play_button = CustomButton(
+            text="",
+            parent=self,
+            button_type="normal",
+            display_mode="icon"
+        )
         
         # 初始化鼠标悬停状态变量
         self._is_mouse_over_play_button = False
@@ -624,11 +607,6 @@ class VideoPlayer(QWidget):
         更新播放/暂停按钮的SVG图标
         """
         try:
-            # 确保已导入所有必要的模块
-            from PyQt5.QtGui import QPixmap, QIcon, QPainter
-            from PyQt5.QtCore import Qt, QSize
-            from PyQt5.QtSvg import QSvgRenderer
-            
             # 获取图标路径
             current_dir = os.path.dirname(os.path.abspath(__file__))
             icons_path = os.path.join(current_dir, '..', 'icons')
@@ -640,65 +618,23 @@ class VideoPlayer(QWidget):
             else:
                 icon_name = "播放时.svg"
             
-            # 加载图标
+            # 构建完整图标路径
             icon_path = os.path.join(icons_path, icon_name)
             
             # 检查文件是否存在
             if not os.path.exists(icon_path):
                 print(f"[VideoPlayer] 图标文件不存在: {icon_path}")
-                # 使用文字代替图标
-                self.play_button.setText("▶" if not (self.player_core and self.player_core.is_playing) else "⏸")
                 return
             
-            # 尝试加载和缩放图标
-            pixmap = QPixmap(icon_path)
-            if pixmap.isNull():
-                print(f"[VideoPlayer] 无法加载图标文件: {icon_path}")
-                # 使用文字代替图标
-                self.play_button.setText("▶" if not (self.player_core and self.player_core.is_playing) else "⏸")
-                return
-            
-            # 设置按钮大小为40*dpi_scale
-            button_size = int(40 * self.dpi_scale)
-            self.play_button.setFixedSize(button_size, button_size)
-            
-            # 让图标大小与按钮大小一致，确保填满整个按钮区域
-            self.play_button.setIconSize(QSize(button_size, button_size))
-            
-            # 使用QSvgRenderer直接将SVG渲染为目标尺寸，避免二次缩放导致的像素化
-            # 创建目标尺寸的pixmap
-            target_pixmap = QPixmap(button_size, button_size)
-            target_pixmap.fill(Qt.transparent)  # 透明背景
-            
-            # 使用QSvgRenderer直接渲染SVG到目标尺寸
-            renderer = QSvgRenderer(icon_path)
-            
-            # 创建painter并绘制
-            painter = QPainter()
-            painter.begin(target_pixmap)
-            
-            # 转换QRect为QRectF，因为QSvgRenderer.render()需要QRectF
-            from PyQt5.QtCore import QRectF
-            
-            # 使用正确的参数调用render方法
-            # 方法1：只传递painter，让renderer自动填充整个painter区域
-            renderer.render(painter)
-            
-            # 结束绘制
-            painter.end()
-            
-            # 设置按钮图标
-            self.play_button.setIcon(QIcon(target_pixmap))
-            # 清除文字
-            self.play_button.setText("")
+            # 更新CustomButton的图标
+            self.play_button._icon_path = icon_path
+            self.play_button._display_mode = "icon"
+            self.play_button._render_icon()
+            self.play_button.update()
         except Exception as e:
             print(f"[VideoPlayer] 更新播放按钮图标失败: {e}")
             import traceback
             traceback.print_exc()
-            # 使用文字代替图标作为备选方案
-            self.play_button.setText("▶" if not (self.player_core and self.player_core.is_playing) else "⏸")
-            scaled_size = int(40 * self.dpi_scale)
-            self.play_button.setFixedSize(scaled_size, scaled_size)
     
     def _update_mouse_hover_state(self, is_hovering):
         """

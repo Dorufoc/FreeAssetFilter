@@ -501,18 +501,26 @@ class FreeAssetFilterApp(QMainWindow):
         if unlinked_files:
             self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
         
-        # 恢复文件选择器的目录
-        last_path = selector_state.get('last_path', 'All')
-        if last_path and (last_path == 'All' or os.path.exists(last_path)):
-            self.file_selector_a.current_path = last_path
-            # 刷新文件列表，显示恢复的目录内容
-            self.file_selector_a.refresh_files()
-        else:
-            # 如果恢复的目录不存在，刷新当前目录的文件显示，确保选中状态正确
-            if hasattr(self.file_selector_a, 'current_path'):
-                # 调用refresh_files方法，使用异步方式刷新文件列表
-                # 这将确保文件选择器使用后台线程读取文件，避免阻塞主线程
+        # 检查设置是否允许恢复上次路径
+        app = QApplication.instance()
+        settings_manager = getattr(app, 'settings_manager')
+        if settings_manager.get_setting("file_selector.restore_last_path", True):
+            # 恢复文件选择器的目录
+            last_path = selector_state.get('last_path', 'All')
+            if last_path and (last_path == 'All' or os.path.exists(last_path)):
+                self.file_selector_a.current_path = last_path
+                # 刷新文件列表，显示恢复的目录内容
                 self.file_selector_a.refresh_files()
+            else:
+                # 如果恢复的目录不存在，刷新当前目录的文件显示，确保选中状态正确
+                if hasattr(self.file_selector_a, 'current_path'):
+                    # 调用refresh_files方法，使用异步方式刷新文件列表
+                    # 这将确保文件选择器使用后台线程读取文件，避免阻塞主线程
+                    self.file_selector_a.refresh_files()
+        else:
+            # 如果设置不允许恢复上次路径，确保显示All界面
+            self.file_selector_a.current_path = "All"
+            self.file_selector_a.refresh_files()
     
     def show_info(self, title, message):
         """

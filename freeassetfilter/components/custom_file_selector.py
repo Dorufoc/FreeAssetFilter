@@ -119,8 +119,19 @@ class CustomFileSelector(QWidget):
         # 初始化UI
         self.init_ui()
         
-        # 无论上次保存的路径是什么，都默认显示"All"界面
-        self.current_path = "All"
+        # 获取应用实例
+        app = QApplication.instance()
+        # 初始化设置管理器
+        from freeassetfilter.core.settings_manager import SettingsManager
+        settings_manager = getattr(app, 'settings_manager', SettingsManager())
+        
+        # 根据设置决定是否加载上次的路径
+        if settings_manager.get_setting("file_selector.restore_last_path", True):
+            # 加载上次保存的路径
+            self.load_last_path()
+        else:
+            # 默认显示"All"界面
+            self.current_path = "All"
         
         # 初始化文件列表
         self.refresh_files()
@@ -2128,10 +2139,7 @@ class CustomFileSelector(QWidget):
             # 应用DPI缩放因子到图标大小
             scaled_icon_size = int(120 * self.dpi_scale)
             
-            # 使用SvgRenderer工具渲染SVG图标，传递DPI缩放因子
-            base_pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, 120, self.dpi_scale)
-            
-            # 如果是未知文件类型或压缩文件类型，在图标上显示后缀名
+            # 如果是未知文件类型或压缩文件类型，需要在图标上显示后缀名，使用QWidget + QSvgWidget + QLabel组合
             if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
                 # 获取后缀名，压缩文件显示带点的后缀名（如".zip"），未知文件显示大写后缀名
                 if icon_path.endswith("压缩文件.svg"):
@@ -2143,13 +2151,30 @@ class CustomFileSelector(QWidget):
                     if len(suffix) > 6:
                         suffix = "FILE"
                 
-                # 创建一个新的QPixmap，用于绘制叠加文本
-                final_pixmap = QPixmap(base_pixmap)
+                # 使用QWidget作为容器，包含QSvgWidget和QLabel
+                container = QWidget()
+                container.setFixedSize(scaled_icon_size, scaled_icon_size)
+                container.setStyleSheet('background: transparent; border: none;')
                 
-                # 创建画家
-                painter = QPainter(final_pixmap)
+                # 创建布局
+                layout = QVBoxLayout(container)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(0)
+                layout.setAlignment(Qt.AlignCenter)
                 
-                # 加载指定字体
+                # 添加QSvgWidget显示SVG图标
+                from PyQt5.QtSvg import QSvgWidget
+                svg_widget = QSvgWidget()
+                svg_widget.load(icon_path)
+                svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+                svg_widget.setStyleSheet('background: transparent; border: none;')
+                
+                # 创建标签显示文字
+                text_label = QLabel(suffix)
+                text_label.setAlignment(Qt.AlignCenter)
+                text_label.setStyleSheet('background: transparent; border: none;')
+                
+                # 设置字体
                 font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
                 font = QFont()
                 
@@ -2179,41 +2204,45 @@ class CustomFileSelector(QWidget):
                     font_metrics = QFontMetrics(font)
                     text_width = font_metrics.width(suffix)
                 
-                # 设置字体
-                painter.setFont(font)
+                text_label.setFont(font)
                 
                 # 设置文字颜色：压缩文件使用白色，未知文件使用黑色
                 if icon_path.endswith("压缩文件.svg"):
-                    painter.setPen(QPen(QColor(255, 255, 255), 1, Qt.SolidLine))
+                    text_label.setStyleSheet('background: transparent; border: none; color: white;')
                 else:
-                    painter.setPen(QPen(QColor(0, 0, 0), 1, Qt.SolidLine))
+                    text_label.setStyleSheet('background: transparent; border: none; color: black;')
                 
-                # 计算文字位置，确保整个文本在图标正中心显示
-                x = (scaled_icon_size - text_width) // 2
+                # 将QSvgWidget添加到布局
+                layout.addWidget(svg_widget)
                 
-                # 获取字体的ascent和descent，用于准确计算垂直居中位置
-                ascent = font_metrics.ascent()
-                descent = font_metrics.descent()
+                # 将文字标签添加到布局，覆盖在QSvgWidget上方
+                text_label.setGeometry(0, 0, scaled_icon_size, scaled_icon_size)
+                text_label.setParent(container)
                 
-                # 计算y坐标，确保整个文本块在图标中心
-                y = (scaled_icon_size + ascent - descent) // 2
-                
-                # 绘制文字
-                painter.drawText(x, y, suffix)
-                
-                # 结束绘画
-                painter.end()
+                return container
             else:
-                # 使用原始pixmap
-                final_pixmap = base_pixmap
-            
-            # 创建一个透明的QLabel
-            label = QLabel()
-            label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(scaled_icon_size, scaled_icon_size)
-            label.setPixmap(final_pixmap)
-            
-            return label
+                # 普通文件类型，优先使用QSvgWidget直接渲染SVG
+                try:
+                    from PyQt5.QtSvg import QSvgWidget
+                    
+                    # 使用QSvgWidget直接渲染SVG，保持矢量图清晰度
+                    svg_widget = QSvgWidget()
+                    svg_widget.load(icon_path)
+                    svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+                    svg_widget.setStyleSheet('background: transparent; border: none;')
+                    return svg_widget
+                except Exception as svg_e:
+                    print(f"使用QSvgWidget渲染SVG图标失败: {svg_e}")
+                    # 如果QSvgWidget渲染失败，回退到使用SvgRenderer生成高质量位图
+                    base_pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, 120, self.dpi_scale)
+                    
+                    # 创建一个透明的QLabel
+                    label = QLabel()
+                    label.setAlignment(Qt.AlignCenter)
+                    label.setFixedSize(scaled_icon_size, scaled_icon_size)
+                    label.setPixmap(base_pixmap)
+                    
+                    return label
         else:
             # 如果没有对应的SVG图标，创建一个默认的透明图标
             scaled_icon_size = int(120 * self.dpi_scale)

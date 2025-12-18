@@ -249,7 +249,7 @@ class CustomButton(QPushButton):
                 # 先获取按钮的实际尺寸，考虑DPI缩放
                 button_size = min(self.width(), self.height())
                 # 图标大小为按钮尺寸的90%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
-                icon_size = button_size * 0.9
+                icon_size = button_size * 0.6
                 # 使用项目中已有的SvgRenderer渲染SVG图标，传递DPI缩放因子
                 self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size), self.dpi_scale)
             else:
@@ -295,23 +295,53 @@ class CustomButton(QPushButton):
     def paintEvent(self, event):
         """
         绘制按钮
-        如果是图标模式，先调用父类绘制按钮样式，再绘制图标；否则调用父类绘制文字
+        如果是图标模式，先调用父类绘制按钮样式，再直接渲染SVG；否则调用父类绘制文字
         """
         if self._display_mode == "icon":
             # 图标模式，先绘制按钮样式（背景色、边框、圆角等）
             super().paintEvent(event)
             
-            # 如果图标渲染成功，绘制图标
-            if self._icon_pixmap:
+            # 如果有图标路径，直接使用QSvgRenderer渲染SVG
+            if self._icon_path and os.path.exists(self._icon_path):
                 painter = QPainter(self)
                 painter.setRenderHint(QPainter.Antialiasing)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                painter.setRenderHint(QPainter.TextAntialiasing, True)
+                painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
                 
-                # 计算图标绘制位置（居中）
-                icon_rect = self._icon_pixmap.rect()
-                icon_rect.moveCenter(self.rect().center())
+                try:
+                    from PyQt5.QtSvg import QSvgRenderer
+                    from PyQt5.QtCore import QRectF
+                    
+                    # 使用QSvgRenderer直接渲染SVG，不转换为位图
+                    svg_renderer = QSvgRenderer(self._icon_path)
+                    
+                    # 计算合适的图标大小，确保图标不会超出按钮范围
+                    button_size = min(self.width(), self.height())
+                    icon_size = button_size * 0.6
+                    
+                    # 计算图标绘制位置（居中）
+                    icon_rect = painter.window()
+                    icon_rect.setWidth(int(icon_size))
+                    icon_rect.setHeight(int(icon_size))
+                    icon_rect.moveCenter(painter.window().center())
+                    
+                    # 将QRect转换为QRectF，因为QSvgRenderer.render方法期望第二个参数是QRectF类型
+                    icon_rectf = QRectF(icon_rect)
+                    
+                    # 直接渲染SVG到按钮上
+                    svg_renderer.render(painter, icon_rectf)
+                except Exception as e:
+                    print(f"直接渲染SVG图标失败: {e}")
+                    # 如果直接渲染失败，回退到使用位图
+                    if self._icon_pixmap:
+                        # 计算图标绘制位置（居中）
+                        icon_rect = self._icon_pixmap.rect()
+                        icon_rect.moveCenter(painter.window().center())
+                        
+                        # 绘制图标
+                        painter.drawPixmap(icon_rect, self._icon_pixmap)
                 
-                # 绘制图标
-                painter.drawPixmap(icon_rect, self._icon_pixmap)
                 painter.end()
         else:
             # 文字模式，调用父类绘制文字
