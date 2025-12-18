@@ -591,13 +591,19 @@ def main():
         }
     """)
     
+    # 导入设置管理器
+    from freeassetfilter.core.settings_manager import SettingsManager
+    
     # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
     from PyQt5.QtGui import QFontDatabase, QFont
     font_db = QFontDatabase()
     font_families = font_db.families()
     
-    # 定义统一的默认字体大小（基准大小）
-    DEFAULT_FONT_SIZE = 16  # 基础字体大小，可统一调整
+    # 初始化设置管理器
+    settings_manager = SettingsManager()
+    
+    # 从设置管理器中获取字体大小，而不是使用硬编码的值
+    DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 20)  # 基础字体大小，可统一调整
     
     # 检查系统是否包含微软雅黑字体（支持Microsoft YaHei和Microsoft YaHei UI两种名称）
     yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
@@ -621,11 +627,12 @@ def main():
     app.default_font_size = DEFAULT_FONT_SIZE
     
     # 计算DPI缩放因子
+    
     def calculate_dpi_scale_factor():
         """
         计算DPI缩放因子，基于当前屏幕分辨率与基础分辨率2560x1600的比例
         基础分辨率2560x1600视为100%
-        同时考虑Windows系统实际DPI设置
+        同时考虑Windows系统实际DPI设置和用户自定义全局DPI系数
         """
         screen = QApplication.primaryScreen()
         if screen:
@@ -645,10 +652,16 @@ def main():
             # 使用高度缩放作为主要参考
             scale_factor = height_scale
             
+            # 添加用户自定义全局DPI系数
+            global_dpi_scale = settings_manager.get_setting("dpi.global_scale_factor", 1.0)
+            scale_factor *= global_dpi_scale
+            
             # 输出调试信息
             print(f"[DEBUG] 当前分辨率: {current_width}x{current_height}")
             print(f"[DEBUG] 基准分辨率: {base_width}x{base_height}")
             print(f"[DEBUG] 宽度缩放: {width_scale:.2f}, 高度缩放: {height_scale:.2f}")
+            print(f"[DEBUG] 全局DPI系数: {global_dpi_scale:.2f}")
+            print(f"[DEBUG] 最终DPI缩放因子: {scale_factor:.2f}")
             
             return scale_factor
         return 1.0
@@ -657,6 +670,9 @@ def main():
     app.dpi_scale_factor = calculate_dpi_scale_factor()
     # 输出调试信息
     print(f"[DEBUG] 当前DPI缩放因子: {app.dpi_scale_factor:.2f}")
+    
+    # 将设置管理器存储到app对象中，方便其他组件访问
+    app.settings_manager = settings_manager
     
     # 将全局字体存储到app对象中，方便其他组件访问
     app.global_font = global_font

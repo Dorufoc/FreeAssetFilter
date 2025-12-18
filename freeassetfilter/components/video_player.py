@@ -746,13 +746,20 @@ class VideoPlayer(QWidget):
         切换播放状态（支持播放和暂停）
         """
         try:
+            # 主播放器控制
             if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
                 if not self.player_core.is_playing:
                     print("[VideoPlayer] 开始播放媒体...")
                     self.player_core.play()
+                    # 同时控制原始视频播放器
+                    if hasattr(self, 'original_player_core') and self.original_player_core:
+                        self.original_player_core.play()
                 else:
                     print("[VideoPlayer] 暂停播放媒体...")
                     self.player_core.pause()
+                    # 同时控制原始视频播放器
+                    if hasattr(self, 'original_player_core') and self.original_player_core:
+                        self.original_player_core.pause()
             # 更新播放按钮图标
             self._update_play_button_icon()
         except Exception as e:
@@ -1016,32 +1023,45 @@ class VideoPlayer(QWidget):
     
     def load_cube_file(self):
         """
-        加载Cube文件
+        加载或移除Cube文件
+        - 如果已有LUT应用，移除LUT并恢复按钮样式
+        - 如果没有LUT应用，触发LUT文件导入
         """
         try:
-            # 打开文件选择对话框
-            cube_file, _ = QFileDialog.getOpenFileName(
-                self, 
-                "选择Cube文件", 
-                "", 
-                "Cube文件 (*.cube);;所有文件 (*.*)"
-            )
-            
-            if cube_file:
-                # 获取应用数据目录
-                data_dir = get_app_data_path()
-                # 构建目标Cube文件路径
-                target_cube_path = os.path.join(data_dir, "lut.cube")
+            # 检查当前是否有LUT应用
+            if self.cube_loaded and self.cube_path:
+                # 已有LUT应用，移除LUT效果
+                print("[VideoPlayer] 移除LUT效果...")
+                self.clear_cube_file()
+                # 恢复按钮为白底黑字状态
+                self._update_lut_button_style(False)
+            else:
+                # 没有LUT应用，触发LUT文件导入
+                # 打开文件选择对话框
+                cube_file, _ = QFileDialog.getOpenFileName(
+                    self, 
+                    "选择Cube文件", 
+                    "", 
+                    "Cube文件 (*.cube);;所有文件 (*.*)"
+                )
                 
-                # 复制用户选择的Cube文件到data目录，并重命名为lut.cube
-                shutil.copy2(cube_file, target_cube_path)
-                print(f"[VideoPlayer] 已将Cube文件复制到: {target_cube_path}")
-                
-                # 使用复制后的Cube文件
-                self.set_cube_file(target_cube_path)
-                print(f"[VideoPlayer] 成功加载Cube文件: {cube_file}")
+                if cube_file:
+                    # 获取应用数据目录
+                    data_dir = get_app_data_path()
+                    # 构建目标Cube文件路径
+                    target_cube_path = os.path.join(data_dir, "lut.cube")
+                    
+                    # 复制用户选择的Cube文件到data目录，并重命名为lut.cube
+                    shutil.copy2(cube_file, target_cube_path)
+                    print(f"[VideoPlayer] 已将Cube文件复制到: {target_cube_path}")
+                    
+                    # 使用复制后的Cube文件
+                    self.set_cube_file(target_cube_path)
+                    print(f"[VideoPlayer] 成功加载Cube文件: {cube_file}")
+                    # 更新按钮为蓝底白字状态
+                    self._update_lut_button_style(True)
         except Exception as e:
-            print(f"[VideoPlayer] 加载Cube文件失败: {e}")
+            print(f"[VideoPlayer] LUT操作失败: {e}")
             import traceback
             traceback.print_exc()
     
@@ -1193,15 +1213,14 @@ class VideoPlayer(QWidget):
         if self.player_core:
             # 停止当前播放
             self.player_core.stop()
+            # 同时停止原始视频播放器（如果存在）
+            if hasattr(self, 'original_player_core') and self.original_player_core:
+                self.original_player_core.stop()
+            
             # 设置新的媒体路径
             self._current_file_path = file_path
-            self.player_core.set_media(file_path)
-            # 开始播放新视频
-            self.player_core.play()
-            # 更新播放按钮状态
-            self._update_play_button_icon()
             
-            # 检测文件类型，显示对应的界面
+            # 检测文件类型
             file_ext = os.path.splitext(file_path)[1].lower()
             audio_extensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.aiff', '.ape', '.opus']
             
@@ -1227,27 +1246,55 @@ class VideoPlayer(QWidget):
                 media_layout.addWidget(self.audio_stacked_widget)
                 self.audio_stacked_widget.show()
                 
+                # 主播放器加载并播放音频
+                self.player_core.set_media(file_path)
+                self.player_core.play()
+                
                 # 提取并显示音频元数据和封面
                 self.extract_audio_metadata(file_path)
             else:
-                # 播放视频时，确保只有video_frame在布局中
-                # 先清空布局
-                while media_layout.count() > 0:
-                    item = media_layout.takeAt(0)
-                    widget = item.widget()
-                    if widget is not None:
-                        widget.hide()
+                # 检查是否处于对比预览模式
+                is_comparison_mode = hasattr(self, 'comparison_mode') and self.comparison_mode
                 
-                # 确保video_frame在布局中并显示
-                media_layout.addWidget(self.video_frame)
-                self.video_frame.setMinimumSize(400, 300)
-                self.video_frame.show()
-                
-                # 显示对比预览模式下的视频区域
-                if hasattr(self, 'original_video_frame') and self.original_video_frame is not None:
-                    self.original_video_frame.show()
-                if hasattr(self, 'filtered_video_frame') and self.filtered_video_frame is not None:
-                    self.filtered_video_frame.show()
+                if is_comparison_mode and hasattr(self, 'original_player_core') and self.original_player_core:
+                    # 对比预览模式：保持对比布局
+                    # 主播放器（右侧带滤镜）加载并播放视频
+                    self.player_core.set_media(file_path)
+                    if self.cube_path and self.cube_loaded:
+                        self.player_core.enable_cube_filter(self.cube_path)
+                    self.player_core.play()
+                    
+                    # 原始播放器（左侧无滤镜）加载并播放视频
+                    self.original_player_core.set_media(file_path)
+                    self.original_player_core.play()
+                    
+                    # 确保对比预览区域可见
+                    if hasattr(self, 'original_video_frame') and self.original_video_frame is not None:
+                        self.original_video_frame.show()
+                    if hasattr(self, 'filtered_video_frame') and self.filtered_video_frame is not None:
+                        self.filtered_video_frame.show()
+                else:
+                    # 非对比预览模式：使用单个视频框架
+                    # 先清空布局
+                    while media_layout.count() > 0:
+                        item = media_layout.takeAt(0)
+                        widget = item.widget()
+                        if widget is not None:
+                            widget.hide()
+                    
+                    # 确保video_frame在布局中并显示
+                    media_layout.addWidget(self.video_frame)
+                    self.video_frame.setMinimumSize(400, 300)
+                    self.video_frame.show()
+                    
+                    # 主播放器加载并播放视频
+                    self.player_core.set_media(file_path)
+                    if self.cube_path and self.cube_loaded:
+                        self.player_core.enable_cube_filter(self.cube_path)
+                    self.player_core.play()
+            
+            # 更新播放按钮状态
+            self._update_play_button_icon()
     
     def extract_audio_metadata(self, file_path):
         """
@@ -1457,9 +1504,13 @@ class VideoPlayer(QWidget):
         """
         播放媒体
         """
+        result = False
         if self.player_core:
-            return self.player_core.play()
-        return False
+            result = self.player_core.play()
+            # 同时控制原始视频播放器
+            if hasattr(self, 'original_player_core') and self.original_player_core:
+                self.original_player_core.play()
+        return result
     
     def pause(self):
         """
@@ -1469,6 +1520,9 @@ class VideoPlayer(QWidget):
             if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
                 print("[VideoPlayer] 暂停播放媒体...")
                 self.player_core.pause()
+                # 同时控制原始视频播放器
+                if hasattr(self, 'original_player_core') and self.original_player_core:
+                    self.original_player_core.pause()
                 # 更新播放按钮图标
                 self._update_play_button_icon()
         except Exception as e:
@@ -1482,6 +1536,9 @@ class VideoPlayer(QWidget):
         """
         if self.player_core:
             self.player_core.stop()
+            # 同时控制原始视频播放器
+            if hasattr(self, 'original_player_core') and self.original_player_core:
+                self.original_player_core.stop()
     
     def seek(self, position):
         """
@@ -1497,6 +1554,9 @@ class VideoPlayer(QWidget):
                 if duration > 0:
                     normalized_position = position / duration
                     self.player_core.set_position(normalized_position)
+                    # 同时控制原始视频播放器
+                    if hasattr(self, 'original_player_core') and self.original_player_core:
+                        self.original_player_core.set_position(normalized_position)
     
     def set_volume(self, volume):
         """
@@ -1512,6 +1572,10 @@ class VideoPlayer(QWidget):
             
         if self.player_core:
             self.player_core.set_volume(volume)
+            # 同时控制原始视频播放器
+            if hasattr(self, 'original_player_core') and self.original_player_core:
+                self.original_player_core.set_volume(volume)
+            
             self._current_volume = volume
             self._previous_volume = volume
             self.save_volume_setting(volume)
@@ -1539,8 +1603,66 @@ class VideoPlayer(QWidget):
         """
         if self.player_core:
             self.player_core.set_speed(speed)
+            # 同时控制原始视频播放器
+            if hasattr(self, 'original_player_core') and self.original_player_core:
+                self.original_player_core.set_speed(speed)
             self._current_speed = speed
             self.speed_button.setText(f"{speed}x")
+    
+    def _update_lut_button_style(self, is_active):
+        """
+        更新LUT按钮样式
+        
+        Args:
+            is_active: 是否激活状态（蓝底白字）
+        """
+        if not self.load_cube_button:
+            return
+        
+        # 获取缩放参数
+        scaled_border = int(1 * self.dpi_scale)
+        scaled_padding = int(5 * self.dpi_scale)
+        scaled_padding_right = int(10 * self.dpi_scale)
+        scaled_border_radius = int(5 * self.dpi_scale)
+        scaled_min_width = int(80 * self.dpi_scale)
+        scaled_font_size = int(16 * self.dpi_scale)
+        
+        if is_active:
+            # 激活状态：蓝底白字
+            self.load_cube_button.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #0078d4;
+                    color: white;
+                    border: {scaled_border}px solid #0078d4;
+                    padding: {scaled_padding}px {scaled_padding_right}px;
+                    border-radius: {scaled_border_radius}px;
+                    min-width: {scaled_min_width}px;
+                    max-width: {scaled_min_width}px;
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    font-size: {scaled_font_size}px;
+                }}
+                QPushButton:hover {{
+                    background-color: #005a9e;
+                }}
+            """)
+        else:
+            # 非激活状态：白底黑字
+            self.load_cube_button.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #FFFFFF;
+                    color: #000000;
+                    border: {scaled_border}px solid #FFFFFF;
+                    padding: {scaled_padding}px {scaled_padding_right}px;
+                    border-radius: {scaled_border_radius}px;
+                    min-width: {scaled_min_width}px;
+                    max-width: {scaled_min_width}px;
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    font-size: {scaled_font_size}px;
+                }}
+                QPushButton:hover {{
+                    background-color: #f0f0f0;
+                }}
+            """)
     
     def set_cube_file(self, cube_path):
         """
@@ -1552,6 +1674,9 @@ class VideoPlayer(QWidget):
         if self.player_core:
             self.cube_path = cube_path
             self.cube_loaded = self.player_core.enable_cube_filter(cube_path)
+            # 如果成功加载LUT，更新按钮样式
+            if self.cube_loaded:
+                self._update_lut_button_style(True)
     
     def clear_cube_file(self):
         """
@@ -1561,6 +1686,8 @@ class VideoPlayer(QWidget):
             self.player_core.disable_cube_filter()
             self.cube_path = None
             self.cube_loaded = False
+            # 更新按钮样式为白底黑字
+            self._update_lut_button_style(False)
     
     def closeEvent(self, event):
         """

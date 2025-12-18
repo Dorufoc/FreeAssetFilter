@@ -104,12 +104,18 @@ class UnifiedPreviewer(QWidget):
         self.control_layout.setContentsMargins(0, 0, 0, scaled_control_margin)  # 底部添加间距，应用DPI缩放
         self.control_layout.setAlignment(Qt.AlignRight)
         
+        # 创建"全局设置"按钮
+        self.global_settings_button = CustomButton("全局设置", button_type="emphasis")
+        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.global_settings_button.clicked.connect(self._open_global_settings)
+        
         # 创建"使用系统默认方式打开"按钮
         self.open_with_system_button = CustomButton("使用系统默认方式打开", button_type="normal")
         self.open_with_system_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.open_with_system_button.clicked.connect(self._open_file_with_system)
         self.open_with_system_button.hide()  # 默认隐藏
         
+        self.control_layout.addWidget(self.global_settings_button)
         self.control_layout.addWidget(self.open_with_system_button)
         self.preview_layout.addLayout(self.control_layout)  # 控制栏放在最上方
         
@@ -763,6 +769,480 @@ class UnifiedPreviewer(QWidget):
         """
         clipboard = QApplication.clipboard()
         clipboard.setText(text)
+    
+    def _open_global_settings(self):
+        """
+        打开全局设置窗口
+        """
+        # 创建全局设置窗口
+        from freeassetfilter.widgets.custom_widgets import CustomWindow
+        from freeassetfilter.widgets.setting_widgets import CustomSettingItem
+        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout, QGroupBox, QWidget, QMessageBox
+        
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 初始化设置管理器
+        from freeassetfilter.core.settings_manager import SettingsManager
+        settings_manager = getattr(app, 'settings_manager', SettingsManager())
+        
+        # 创建自定义窗口，确保它是独立的顶级窗口
+        self.settings_window = CustomWindow("全局设置", None)
+        # 设置窗口标志，确保它是一个独立的顶级窗口
+        self.settings_window.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.settings_window.setAttribute(Qt.WA_TranslucentBackground)
+        self.settings_window.setGeometry(100, 100, int(800 * dpi_scale), int(600 * dpi_scale))
+        
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("background-color: #f1f3f5;")
+        
+        # 创建滚动内容容器
+        scroll_content = QWidget()
+        scroll_content.setStyleSheet("background-color: #f1f3f5;")
+        scroll_layout = QVBoxLayout(scroll_content)
+        
+        # 获取主程序的全局常量和用户设置
+        default_font_size = getattr(app, 'default_font_size', 20)
+        # 从设置管理器获取全局DPI系数，而不是直接使用当前的dpi_scale_factor
+        global_dpi_scale = settings_manager.get_setting("dpi.global_scale_factor", 1.0)
+        
+        # 主程序设置项组
+        main_program_group = QGroupBox("主程序设置")
+        # 设置分组标题字体大小，使用合适的大小，避免过大
+        group_font = QFont()
+        group_font.setPointSize(int(14 * dpi_scale))
+        group_font.setBold(True)
+        main_program_group.setFont(group_font)
+        main_program_group.setStyleSheet("background-color: #f1f3f5;")
+        main_program_layout = QVBoxLayout(main_program_group)
+        # 添加适当的间距，避免分组标题与子项重叠
+        main_program_layout.setContentsMargins(int(10 * dpi_scale), int(20 * dpi_scale), int(10 * dpi_scale), int(10 * dpi_scale))
+        main_program_layout.setSpacing(int(10 * dpi_scale))
+        
+        # DPI设置
+        dpi_setting = CustomSettingItem(
+            text="DPI设置",
+            secondary_text="调整界面元素的DPI缩放比例",
+            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
+            placeholder="输入DPI缩放值",
+            initial_text=str(global_dpi_scale),
+            button_text="应用"
+        )
+        # 连接DPI设置的应用按钮信号
+        def on_dpi_applied(text):
+            try:
+                # 尝试将输入转换为浮点数
+                new_dpi_scale = float(text)
+                if new_dpi_scale > 0:
+                    # 获取当前应用实例
+                    app = QApplication.instance()
+                    
+                    # 保存原始DPI系数，用于回退
+                    original_dpi_scale = settings_manager.get_setting("dpi.global_scale_factor", 1.0)
+                    
+                    # 临时应用新的DPI系数
+                    settings_manager.set_setting("dpi.global_scale_factor", new_dpi_scale)
+                    
+                    # 创建带有倒计时功能的自定义提示窗
+                    from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                    from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+                    from PyQt5.QtCore import QTimer, Qt
+                    
+                    # 创建进度条
+                    progress_bar = CustomProgressBar(is_interactive=False)
+                    progress_bar.setRange(0, 100)
+                    progress_bar.setValue(0)
+                    
+                    # 创建自定义提示窗
+                    confirm_box = CustomMessageBox(self)
+                    confirm_box.set_title("DPI设置预览")
+                    confirm_box.set_text("DPI设置已临时应用，10秒后将自动回退，点击保存更改以保留设置")
+                    confirm_box.set_progress(progress_bar)
+                    confirm_box.set_buttons(["保存更改", "放弃"], orientations=Qt.Horizontal)
+                    
+                    # 倒计时变量
+                    countdown = 10
+                    
+                    # 更新进度条的函数
+                    def update_progress():
+                        nonlocal countdown
+                        countdown -= 0.1
+                        progress = int((10 - countdown) * 10)
+                        progress_bar.setValue(progress)
+                        if countdown <= 0:
+                            # 倒计时结束，回退到原始DPI系数
+                            settings_manager.set_setting("dpi.global_scale_factor", original_dpi_scale)
+                            confirm_box.close()
+                            QMessageBox.information(self, "提示", "DPI设置已自动回退")
+                            # 更新设置项的显示值
+                            dpi_setting.set_input_text(str(original_dpi_scale))
+                            timer.stop()
+                    
+                    # 创建定时器，每100毫秒更新一次进度条
+                    timer = QTimer()
+                    timer.timeout.connect(update_progress)
+                    timer.start(100)
+                    
+                    # 按钮点击处理函数
+                    def on_button_clicked(button_index):
+                        timer.stop()
+                        if button_index == 0:  # 保存更改
+                            # 保存设置
+                            settings_manager.save_settings()
+                            confirm_box.close()
+                            QMessageBox.information(self, "成功", "DPI设置已保存")
+                        else:  # 放弃
+                            # 回退到原始DPI系数
+                            settings_manager.set_setting("dpi.global_scale_factor", original_dpi_scale)
+                            confirm_box.close()
+                            QMessageBox.information(self, "提示", "DPI设置已回退")
+                            # 更新设置项的显示值
+                            dpi_setting.set_input_text(str(original_dpi_scale))
+                    
+                    # 连接按钮点击信号
+                    confirm_box.buttonClicked.connect(on_button_clicked)
+                    
+                    # 显示提示窗
+                    confirm_box.show()
+                else:
+                    QMessageBox.warning(self, "错误", "DPI缩放值必须大于0")
+            except ValueError:
+                QMessageBox.warning(self, "错误", "请输入有效的数字")
+        dpi_setting.input_submitted.connect(on_dpi_applied)
+        main_program_layout.addWidget(dpi_setting)
+        
+        # 字体大小设置
+        font_size_setting = CustomSettingItem(
+            text="字体大小设置",
+            secondary_text="调整界面全局字体大小",
+            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
+            placeholder="输入字体大小",
+            initial_text=str(settings_manager.get_setting("font.size", default_font_size)),
+            button_text="应用"
+        )
+        # 连接字体大小设置的应用按钮信号
+        def on_font_size_applied(text):
+            try:
+                # 尝试将输入转换为整数
+                new_font_size = int(text)
+                if new_font_size > 0:
+                    # 获取当前应用实例
+                    app = QApplication.instance()
+                    
+                    # 保存原始字体大小，用于回退
+                    original_font_size = settings_manager.get_setting("font.size", default_font_size)
+                    
+                    # 临时应用新的字体大小
+                    settings_manager.set_setting("font.size", new_font_size)
+                    
+                    # 创建带有倒计时功能的自定义提示窗
+                    from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                    from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+                    from PyQt5.QtCore import QTimer, Qt
+                    
+                    # 创建进度条
+                    progress_bar = CustomProgressBar(is_interactive=False)
+                    progress_bar.setRange(0, 100)
+                    progress_bar.setValue(0)
+                    
+                    # 创建自定义提示窗
+                    confirm_box = CustomMessageBox(self)
+                    confirm_box.set_title("字体大小设置预览")
+                    confirm_box.set_text("字体大小已临时应用，10秒后将自动回退，点击保存更改以保留设置")
+                    confirm_box.set_progress(progress_bar)
+                    confirm_box.set_buttons(["保存更改", "放弃"], orientations=Qt.Horizontal)
+                    
+                    # 倒计时变量
+                    countdown = 10
+                    
+                    # 更新进度条的函数
+                    def update_progress():
+                        nonlocal countdown
+                        countdown -= 0.1
+                        progress = int((10 - countdown) * 10)
+                        progress_bar.setValue(progress)
+                        if countdown <= 0:
+                            # 倒计时结束，回退到原始字体大小
+                            settings_manager.set_setting("font.size", original_font_size)
+                            confirm_box.close()
+                            QMessageBox.information(self, "提示", "字体大小设置已自动回退")
+                            # 更新设置项的显示值
+                            font_size_setting.set_input_text(str(original_font_size))
+                            timer.stop()
+                    
+                    # 创建定时器，每100毫秒更新一次进度条
+                    timer = QTimer()
+                    timer.timeout.connect(update_progress)
+                    timer.start(100)
+                    
+                    # 按钮点击处理函数
+                    def on_button_clicked(button_index):
+                        timer.stop()
+                        if button_index == 0:  # 保存更改
+                            # 保存设置
+                            settings_manager.save_settings()
+                            confirm_box.close()
+                            QMessageBox.information(self, "成功", "字体大小设置已保存")
+                        else:  # 放弃
+                            # 回退到原始字体大小
+                            settings_manager.set_setting("font.size", original_font_size)
+                            confirm_box.close()
+                            QMessageBox.information(self, "提示", "字体大小设置已回退")
+                            # 更新设置项的显示值
+                            font_size_setting.set_input_text(str(original_font_size))
+                    
+                    # 连接按钮点击信号
+                    confirm_box.buttonClicked.connect(on_button_clicked)
+                    
+                    # 显示提示窗
+                    confirm_box.show()
+                else:
+                    QMessageBox.warning(self, "错误", "字体大小必须大于0")
+            except ValueError:
+                QMessageBox.warning(self, "错误", "请输入有效的整数")
+        font_size_setting.input_submitted.connect(on_font_size_applied)
+        main_program_layout.addWidget(font_size_setting)
+        
+        # 字体样式设置
+        font_style_setting = CustomSettingItem(
+            text="字体样式设置",
+            secondary_text="调整界面全局字体样式",
+            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
+            placeholder="输入字体样式",
+            initial_text=settings_manager.get_setting("font.style", "Microsoft YaHei"),
+            button_text="应用"
+        )
+        # 连接字体样式设置的应用按钮信号
+        def on_font_style_applied(text):
+            if text:
+                # 获取当前应用实例
+                app = QApplication.instance()
+                
+                # 保存原始字体样式，用于回退
+                original_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
+                
+                # 临时应用新的字体样式
+                settings_manager.set_setting("font.style", text)
+                
+                # 创建带有倒计时功能的自定义提示窗
+                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+                from PyQt5.QtCore import QTimer, Qt
+                
+                # 创建进度条
+                progress_bar = CustomProgressBar(is_interactive=False)
+                progress_bar.setRange(0, 100)
+                progress_bar.setValue(0)
+                
+                # 创建自定义提示窗
+                confirm_box = CustomMessageBox(self)
+                confirm_box.set_title("字体样式设置预览")
+                confirm_box.set_text("字体样式已临时应用，10秒后将自动回退，点击保存更改以保留设置")
+                confirm_box.set_progress(progress_bar)
+                confirm_box.set_buttons(["保存更改", "放弃"], orientations=Qt.Horizontal)
+                
+                # 倒计时变量
+                countdown = 10
+                
+                # 更新进度条的函数
+                def update_progress():
+                    nonlocal countdown
+                    countdown -= 0.1
+                    progress = int((10 - countdown) * 10)
+                    progress_bar.setValue(progress)
+                    if countdown <= 0:
+                        # 倒计时结束，回退到原始字体样式
+                        settings_manager.set_setting("font.style", original_font_style)
+                        confirm_box.close()
+                        QMessageBox.information(self, "提示", "字体样式设置已自动回退")
+                        # 更新设置项的显示值
+                        font_style_setting.set_input_text(original_font_style)
+                        timer.stop()
+                
+                # 创建定时器，每100毫秒更新一次进度条
+                timer = QTimer()
+                timer.timeout.connect(update_progress)
+                timer.start(100)
+                
+                # 按钮点击处理函数
+                def on_button_clicked(button_index):
+                    timer.stop()
+                    if button_index == 0:  # 保存更改
+                        # 保存设置
+                        settings_manager.save_settings()
+                        confirm_box.close()
+                        QMessageBox.information(self, "成功", "字体样式设置已保存")
+                    else:  # 放弃
+                        # 回退到原始字体样式
+                        settings_manager.set_setting("font.style", original_font_style)
+                        confirm_box.close()
+                        QMessageBox.information(self, "提示", "字体样式设置已回退")
+                        # 更新设置项的显示值
+                        font_style_setting.set_input_text(original_font_style)
+                
+                # 连接按钮点击信号
+                confirm_box.buttonClicked.connect(on_button_clicked)
+                
+                # 显示提示窗
+                confirm_box.show()
+            else:
+                QMessageBox.warning(self, "错误", "字体样式不能为空")
+        font_style_setting.input_submitted.connect(on_font_style_applied)
+        main_program_layout.addWidget(font_style_setting)
+        
+        # 主题设置
+        theme_setting = CustomSettingItem(
+            text="主题设置",
+            secondary_text="调整应用主题样式",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": "设计器", "type": "primary"}]
+        )
+        main_program_layout.addWidget(theme_setting)
+        
+        # 文件选择器设置项组
+        file_selector_group = QGroupBox("文件选择器")
+        # 设置分组标题字体大小，使用合适的大小，避免过大
+        file_selector_group.setFont(group_font)
+        file_selector_group.setStyleSheet("background-color: #f1f3f5;")
+        file_selector_layout = QVBoxLayout(file_selector_group)
+        # 添加适当的间距，避免分组标题与子项重叠
+        file_selector_layout.setContentsMargins(int(10 * dpi_scale), int(20 * dpi_scale), int(10 * dpi_scale), int(10 * dpi_scale))
+        file_selector_layout.setSpacing(int(10 * dpi_scale))
+        
+        # 缩略图缓存自动清理
+        thumbnail_cache_setting = CustomSettingItem(
+            text="缩略图缓存自动清理",
+            secondary_text="是否自动清理缩略图缓存",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True)
+        )
+        # 连接开关信号
+        def on_thumbnail_cache_toggled(checked):
+            settings_manager.set_setting("file_selector.auto_clear_thumbnail_cache", checked)
+            settings_manager.save_settings()
+        thumbnail_cache_setting.switch_toggled.connect(on_thumbnail_cache_toggled)
+        file_selector_layout.addWidget(thumbnail_cache_setting)
+        
+        # 启动时恢复上次退出路径
+        restore_path_setting = CustomSettingItem(
+            text="启动时恢复上次退出路径",
+            secondary_text="是否在启动时恢复上次退出时的路径",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=settings_manager.get_setting("file_selector.restore_last_path", True)
+        )
+        # 连接开关信号
+        def on_restore_path_toggled(checked):
+            settings_manager.set_setting("file_selector.restore_last_path", checked)
+            settings_manager.save_settings()
+        restore_path_setting.switch_toggled.connect(on_restore_path_toggled)
+        file_selector_layout.addWidget(restore_path_setting)
+        
+        # 返回上级鼠标快捷键
+        return_shortcut_setting = CustomSettingItem(
+            text="返回上级鼠标快捷键",
+            secondary_text="设置返回上级目录的鼠标快捷键",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": "设置", "type": "primary"}]
+        )
+        file_selector_layout.addWidget(return_shortcut_setting)
+        
+        # 默认布局
+        default_layout_setting = CustomSettingItem(
+            text="默认布局",
+            secondary_text="设置文件选择器的默认布局",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": "卡片布局", "type": "normal"}, {"text": "列表布局", "type": "normal"}]
+        )
+        file_selector_layout.addWidget(default_layout_setting)
+        
+        # 文件存储池设置项组
+        file_staging_group = QGroupBox("文件存储池")
+        # 设置分组标题字体大小，使用合适的大小，避免过大
+        file_staging_group.setFont(group_font)
+        file_staging_group.setStyleSheet("background-color: #f1f3f5;")
+        file_staging_layout = QVBoxLayout(file_staging_group)
+        # 添加适当的间距，避免分组标题与子项重叠
+        file_staging_layout.setContentsMargins(int(10 * dpi_scale), int(20 * dpi_scale), int(10 * dpi_scale), int(10 * dpi_scale))
+        file_staging_layout.setSpacing(int(10 * dpi_scale))
+        
+        # 上次记录自动恢复
+        restore_records_setting = CustomSettingItem(
+            text="上次记录自动恢复",
+            secondary_text="是否自动恢复上次的文件存储池记录",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=settings_manager.get_setting("file_staging.auto_restore_records", True)
+        )
+        # 连接开关信号
+        def on_restore_records_toggled(checked):
+            settings_manager.set_setting("file_staging.auto_restore_records", checked)
+            settings_manager.save_settings()
+        restore_records_setting.switch_toggled.connect(on_restore_records_toggled)
+        file_staging_layout.addWidget(restore_records_setting)
+        
+        # 默认导出数据路径
+        export_data_path_setting = CustomSettingItem(
+            text="默认导出数据路径",
+            secondary_text="设置默认的数据导出路径",
+            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
+            placeholder="输入导出数据路径",
+            initial_text=settings_manager.get_setting("file_staging.default_export_data_path", ""),
+            button_text="应用"
+        )
+        # 连接数据导出路径设置的应用按钮信号
+        def on_export_data_path_applied(text):
+            settings_manager.set_setting("file_staging.default_export_data_path", text)
+            settings_manager.save_settings()
+            QMessageBox.information(self, "成功", "默认导出数据路径已保存")
+        export_data_path_setting.input_submitted.connect(on_export_data_path_applied)
+        file_staging_layout.addWidget(export_data_path_setting)
+        
+        # 默认导出文件路径
+        export_file_path_setting = CustomSettingItem(
+            text="默认导出文件路径",
+            secondary_text="设置默认的文件导出路径",
+            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
+            placeholder="输入导出文件路径",
+            initial_text=settings_manager.get_setting("file_staging.default_export_file_path", ""),
+            button_text="应用"
+        )
+        # 连接文件导出路径设置的应用按钮信号
+        def on_export_file_path_applied(text):
+            settings_manager.set_setting("file_staging.default_export_file_path", text)
+            settings_manager.save_settings()
+            QMessageBox.information(self, "成功", "默认导出文件路径已保存")
+        export_file_path_setting.input_submitted.connect(on_export_file_path_applied)
+        file_staging_layout.addWidget(export_file_path_setting)
+        
+        # 导出后删除原始文件
+        delete_original_setting = CustomSettingItem(
+            text="导出后删除原始文件",
+            secondary_text="导出文件后是否删除原始文件",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=settings_manager.get_setting("file_staging.delete_original_after_export", False)
+        )
+        # 连接开关信号
+        def on_delete_original_toggled(checked):
+            settings_manager.set_setting("file_staging.delete_original_after_export", checked)
+            settings_manager.save_settings()
+        delete_original_setting.switch_toggled.connect(on_delete_original_toggled)
+        file_staging_layout.addWidget(delete_original_setting)
+        
+        # 将所有设置组添加到滚动布局
+        scroll_layout.addWidget(main_program_group)
+        scroll_layout.addWidget(file_selector_group)
+        scroll_layout.addWidget(file_staging_group)
+        
+        # 设置滚动区域内容
+        scroll_area.setWidget(scroll_content)
+        
+        # 添加滚动区域到窗口
+        self.settings_window.add_widget(scroll_area)
+        
+        # 显示窗口
+        self.settings_window.show()
     
     def _on_preview_created(self, preview_widget, preview_type):
         """

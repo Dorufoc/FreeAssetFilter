@@ -69,7 +69,7 @@ class CustomWindow(QWidget):
         # 应用DPI缩放因子
         scaled_margin = int(10 * self.dpi_scale)
         scaled_radius = int(12 * self.dpi_scale)
-        scaled_title_height = int(40 * self.dpi_scale)
+        self.scaled_title_height = int(40 * self.dpi_scale)
         scaled_shadow_radius = int(20 * self.dpi_scale)
         scaled_shadow_offset = int(8 * self.dpi_scale)
         
@@ -107,8 +107,8 @@ class CustomWindow(QWidget):
         # 标题栏
         title_bar = QWidget()
         title_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        title_bar.setMinimumHeight(scaled_title_height)
-        title_bar.setMaximumHeight(scaled_title_height)
+        title_bar.setMinimumHeight(self.scaled_title_height)
+        title_bar.setMaximumHeight(self.scaled_title_height)
         title_bar.setStyleSheet("""
             QWidget {
                 background-color: transparent;
@@ -251,18 +251,18 @@ class CustomWindow(QWidget):
                 self.resize_start_size = self.size()
                 self.resize_start_geometry = self.geometry()
                 event.accept()
-            elif pos.y() < 40:  # 标题栏区域
+            elif pos.y() < self.scaled_title_height:  # 标题栏区域，使用缩放后的高度
                 # 开始拖动
                 self.dragging = True
-                self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+                # 使用鼠标全局位置减去窗口左上角位置，避免频繁调用frameGeometry()
+                self.drag_position = event.globalPos() - self.pos()
                 event.accept()
     
     def mouseMoveEvent(self, event):
         """
         鼠标移动事件，用于实现窗口拖拽和调整大小
+        优化：减少重绘次数，提高拖动流畅度
         """
-        pos = event.pos()
-        
         if self.resizing:
             # 处理调整大小
             delta = event.globalPos() - self.resize_start_pos
@@ -301,20 +301,21 @@ class CustomWindow(QWidget):
                 if "left" in self.resize_direction:
                     # 左侧调整达到最小值，固定左侧位置
                     new_x = orig_x + orig_width - min_width
-                # 右侧调整达到最小值，不需要调整位置
             
             if new_height == min_height:
                 if "top" in self.resize_direction:
                     # 顶部调整达到最小值，固定顶部位置
                     new_y = orig_y + orig_height - min_height
-                # 底部调整达到最小值，不需要调整位置
             
             # 更新窗口几何形状
             self.setGeometry(new_x, new_y, new_width, new_height)
             event.accept()
         elif self.dragging:
             # 处理拖动
-            self.move(event.globalPos() - self.drag_position)
+            # 直接计算新位置，避免频繁调用frameGeometry()
+            new_pos = event.globalPos() - self.drag_position
+            # 使用move方法移动窗口，这是最高效的方式
+            self.move(new_pos)
             event.accept()
     
     def mouseReleaseEvent(self, event):

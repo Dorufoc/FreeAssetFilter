@@ -76,15 +76,12 @@ class CustomButton(QPushButton):
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(int(2 * self.dpi_scale))
         shadow.setOffset(0, int(2 * self.dpi_scale))
+        # 正确设置阴影颜色：黑色，带有适当的透明度
         shadow.setColor(QColor(0, 0, 0, 15))
         self.setGraphicsEffect(shadow)
         
         # 设置固定高度，与CustomInputBox保持一致
         self.setFixedHeight(self._height)
-        
-        # 如果是图标模式，设置固定宽度等于高度，保持正方形
-        if self._display_mode == "icon":
-            self.setFixedWidth(self._height)
         
         # 从app对象获取全局默认字体大小
         app = QApplication.instance()
@@ -96,6 +93,23 @@ class CustomButton(QPushButton):
         scaled_font_size = int(default_font_size * self.dpi_scale)
         scaled_border_width = int(2 * self.dpi_scale)  # 边框宽度随DPI缩放
         scaled_primary_border_width = int(1 * self.dpi_scale)  # 主要按钮边框宽度随DPI缩放
+        
+        # 更新全局字体大小，确保文字显示正确
+        self.global_font = getattr(app, 'global_font', QFont())
+        self.setFont(self.global_font)
+        
+        # 设置大小策略，允许按钮根据内容调整宽度
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        
+        # 如果是图标模式，设置固定宽度等于高度，保持正方形
+        if self._display_mode == "icon":
+            self.setFixedWidth(self._height)
+        else:
+            # 文字模式，先应用样式，再计算合适的宽度
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            # 移除固定宽度限制，允许按钮根据内容调整宽度
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
         
         if self.button_type == "primary":
             # 强调色方案
@@ -208,8 +222,8 @@ class CustomButton(QPushButton):
                 # 计算合适的图标大小，确保图标不会超出按钮范围
                 # 先获取按钮的实际尺寸，考虑DPI缩放
                 button_size = min(self.width(), self.height())
-                # 图标大小为按钮尺寸的60%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
-                icon_size = button_size * 0.6
+                # 图标大小为按钮尺寸的80%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
+                icon_size = button_size * 0.8
                 # 使用项目中已有的SvgRenderer渲染SVG图标，传递DPI缩放因子
                 self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size), self.dpi_scale)
             else:

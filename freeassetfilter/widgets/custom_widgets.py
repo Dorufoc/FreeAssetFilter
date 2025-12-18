@@ -12,10 +12,11 @@ from .progress_widgets import CustomProgressBar, CustomValueBar, CustomVolumeBar
 from .list_widgets import CustomSelectListItem, CustomSelectList
 from .input_widgets import CustomInputBox
 from .custom_control_menu import CustomControlMenu
+from .setting_widgets import CustomSettingItem
 
 # Re-export all widgets
 __all__ = [
     'CustomWindow', 'CustomButton', 'CustomProgressBar', 'CustomSelectListItem',
     'CustomSelectList', 'CustomValueBar', 'CustomVolumeBar', 'CustomMessageBox',
-    'CustomInputBox', 'CustomControlMenu'
+    'CustomInputBox', 'CustomControlMenu', 'CustomSettingItem'
 ]
