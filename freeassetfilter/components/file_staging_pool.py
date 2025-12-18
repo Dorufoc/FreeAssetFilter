@@ -132,23 +132,32 @@ class FileStagingPool(QWidget):
         # 存储卡片对象
         self.cards = []
         
+        # 创建统计信息
+        self.stats_label = QLabel("当前项目数: 0")
+        self.stats_label.setAlignment(Qt.AlignRight)
+        # 使用全局字体，不单独设置过大的字体大小
+        self.stats_label.setFont(self.global_font)
+        main_layout.addWidget(self.stats_label)
+        
         # 创建导出功能区
         export_layout = QHBoxLayout()
         
-        # 控制按钮
-        clear_btn = CustomButton("清空所有", button_type="secondary")
-        clear_btn.clicked.connect(self.clear_all)
-        export_layout.addWidget(clear_btn)
+        # 导入/导出数据按钮
+        self.import_export_btn = CustomButton("导入/导出数据", button_type="normal")
+        self.import_export_btn.clicked.connect(self.show_import_export_dialog)
+        export_layout.addWidget(self.import_export_btn)
         
         # 导出按钮
         self.export_btn = CustomButton("导出文件", button_type="primary")
         self.export_btn.clicked.connect(self.export_selected_files)
         export_layout.addWidget(self.export_btn)
         
-        # 导入/导出数据按钮
-        self.import_export_btn = CustomButton("导入/导出数据", button_type="normal")
-        self.import_export_btn.clicked.connect(self.show_import_export_dialog)
-        export_layout.addWidget(self.import_export_btn)
+        # 控制按钮
+        import os
+        trash_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "trash.svg")
+        clear_btn = CustomButton(trash_icon_path, button_type="normal", display_mode="icon")
+        clear_btn.clicked.connect(self.clear_all)
+        export_layout.addWidget(clear_btn)
         
         # 进度条
         self.progress_bar = CustomProgressBar()
@@ -158,13 +167,6 @@ class FileStagingPool(QWidget):
         export_layout.addWidget(self.progress_bar, 1)
         
         main_layout.addLayout(export_layout)
-        
-        # 创建统计信息
-        self.stats_label = QLabel("当前项目数: 0")
-        self.stats_label.setAlignment(Qt.AlignRight)
-        # 使用全局字体，不单独设置过大的字体大小
-        self.stats_label.setFont(self.global_font)
-        main_layout.addWidget(self.stats_label)
     
     def add_file(self, file_info):
         """
@@ -312,12 +314,49 @@ class FileStagingPool(QWidget):
     
 
     
+    def _format_file_size(self, size_bytes):
+        """
+        将文件大小转换为自适应单位(B、KB、MB、GB、TB)
+        
+        Args:
+            size_bytes (int): 文件大小，单位字节
+            
+        Returns:
+            str: 格式化后的文件大小字符串
+        """
+        if size_bytes == 0:
+            return "0 B"
+        
+        # 定义单位顺序和转换因子
+        units = ["B", "KB", "MB", "GB", "TB"]
+        index = 0
+        size = float(size_bytes)
+        
+        # 转换到合适的单位
+        while size >= 1024 and index < len(units) - 1:
+            size /= 1024
+            index += 1
+        
+        # 格式化输出，保留两位小数
+        if index == 0:
+            return f"{int(size)} {units[index]}"
+        else:
+            return f"{size:.2f} {units[index]}"
+    
     def update_stats(self):
         """
         更新统计信息
         """
         total_items = len(self.items)
-        self.stats_label.setText(f"当前项目数: {total_items}")
+        
+        # 计算所有文件大小总和
+        total_size = 0
+        for item in self.items:
+            if "size" in item and item["size"] is not None:
+                total_size += item["size"]
+        
+        formatted_size = self._format_file_size(total_size)
+        self.stats_label.setText(f"当前项目数: {total_items} | 总计大小: {formatted_size}")
     
     def on_card_clicked(self, path, card, file_info):
         """

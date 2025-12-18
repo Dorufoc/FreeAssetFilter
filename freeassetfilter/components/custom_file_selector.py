@@ -229,7 +229,9 @@ class CustomFileSelector(QWidget):
         dir_layout.addWidget(go_btn)
         
         # 收藏夹按钮
-        self.favorites_btn = CustomButton("收藏夹", button_type="secondary")
+        import os
+        star_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "star.svg")
+        self.favorites_btn = CustomButton(star_icon_path, button_type="normal", display_mode="icon")
         self.favorites_btn.clicked.connect(self._show_favorites_dialog)
         dir_layout.addWidget(self.favorites_btn)
         

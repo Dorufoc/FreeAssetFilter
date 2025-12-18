@@ -504,6 +504,8 @@ class VideoPlayer(QWidget):
         self.comparison_button.setCheckable(True)
         self.comparison_button.clicked.connect(self.toggle_comparison_mode)
         bottom_layout.addWidget(self.comparison_button)
+        # 默认隐藏对比预览按钮
+        self.comparison_button.hide()
         
         # 将底部布局添加到进度时间布局
         progress_time_layout.addLayout(bottom_layout)
@@ -1674,9 +1676,10 @@ class VideoPlayer(QWidget):
         if self.player_core:
             self.cube_path = cube_path
             self.cube_loaded = self.player_core.enable_cube_filter(cube_path)
-            # 如果成功加载LUT，更新按钮样式
+            # 如果成功加载LUT，更新按钮样式并显示对比预览按钮
             if self.cube_loaded:
                 self._update_lut_button_style(True)
+                self.comparison_button.show()
     
     def clear_cube_file(self):
         """
@@ -1686,8 +1689,9 @@ class VideoPlayer(QWidget):
             self.player_core.disable_cube_filter()
             self.cube_path = None
             self.cube_loaded = False
-            # 更新按钮样式为白底黑字
+            # 更新按钮样式为白底黑字并隐藏对比预览按钮
             self._update_lut_button_style(False)
+            self.comparison_button.hide()
     
     def closeEvent(self, event):
         """
