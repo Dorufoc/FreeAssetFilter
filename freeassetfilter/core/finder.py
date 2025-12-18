@@ -333,19 +333,19 @@ def show_dependency_error(missing_deps, version_issues):
     print(message)
     print("="*50 + "\n")
 
-    # 尝试使用PyQt5消息框显示错误
+    # 尝试使用自定义消息框显示错误
     try:
-        from PyQt5.QtWidgets import QApplication, QMessageBox
+        from PyQt5.QtWidgets import QApplication
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
         app = QApplication.instance()
         if app:
-            QMessageBox.warning(
-                None,
-                "依赖警告",
-                message,
-                QMessageBox.Ok
-            )
+            msg_box = CustomMessageBox(None)
+            msg_box.set_title("依赖警告")
+            msg_box.set_text(message)
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
     except Exception:
-        # 如果PyQt5不可用，只使用print输出
+        # 如果PyQt5或自定义消息框不可用，只使用print输出
         pass
 
     # 不要强制退出，让应用程序继续运行

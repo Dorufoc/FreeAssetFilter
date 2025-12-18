@@ -34,7 +34,7 @@ class CustomButton(QPushButton):
         Args:
             text (str): 按钮文本或SVG图标路径
             parent (QWidget): 父控件
-            button_type (str): 按钮类型，可选值："primary"（强调色）、"secondary"（次选色）、"normal"（普通样式）
+            button_type (str): 按钮类型，可选值："primary"（强调色）、"secondary"（次选色）、"normal"（普通样式）、"warning"（警告样式）
             display_mode (str): 显示模式，可选值："text"（文字显示）、"icon"（图标显示）
                               当未传入该参数或参数为空时，默认启用文字显示功能
                               当传入该参数且参数不为空时，启用图标显示功能
@@ -77,7 +77,7 @@ class CustomButton(QPushButton):
         shadow.setBlurRadius(int(2 * self.dpi_scale))
         shadow.setOffset(0, int(2 * self.dpi_scale))
         # 正确设置阴影颜色：黑色，带有适当的透明度
-        shadow.setColor(QColor(0, 0, 0, 15))
+        shadow.setColor(QColor(255, 255, 255, 15))
         self.setGraphicsEffect(shadow)
         
         # 设置固定高度，与CustomInputBox保持一致
@@ -163,6 +163,32 @@ class CustomButton(QPushButton):
                     border-color: #dee2e6;
                 }}
             """)
+        elif self.button_type == "warning":
+            # 警告按钮方案
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #ff0000;
+                    color: #ffffff;
+                    border: {scaled_primary_border_width}px solid #ff0000;
+                    border-radius: {scaled_border_radius}px;
+                    padding: {scaled_padding};
+                    font-size: {scaled_font_size}px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background-color: #e60000;
+                    border-color: #e60000;
+                }}
+                QPushButton:pressed {{
+                    background-color: #cc0000;
+                    border-color: #cc0000;
+                }}
+                QPushButton:disabled {{
+                    background-color: #ff8080;
+                    color: #FFFFFF;
+                    border-color: #ff8080;
+                }}
+            """)
         else:  # secondary
             # 次选按钮方案：确保在白色背景下可见
             self.setStyleSheet(f"""
@@ -206,7 +232,7 @@ class CustomButton(QPushButton):
         设置按钮类型
         
         Args:
-            button_type (str): 按钮类型，可选值："primary"、"secondary"、"normal"
+            button_type (str): 按钮类型，可选值："primary"、"secondary"、"normal"、"warning"
         """
         self.button_type = button_type
         self.update_style()
@@ -222,8 +248,8 @@ class CustomButton(QPushButton):
                 # 计算合适的图标大小，确保图标不会超出按钮范围
                 # 先获取按钮的实际尺寸，考虑DPI缩放
                 button_size = min(self.width(), self.height())
-                # 图标大小为按钮尺寸的80%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
-                icon_size = button_size * 0.8
+                # 图标大小为按钮尺寸的90%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
+                icon_size = button_size * 0.9
                 # 使用项目中已有的SvgRenderer渲染SVG图标，传递DPI缩放因子
                 self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size), self.dpi_scale)
             else:

@@ -354,7 +354,12 @@ class ComponentLauncher(QMainWindow):
                     self._log(f"已启动组件", component=component_name, level="INFO")
                 else:
                     self._log(f"启动失败", component=component_name, level="ERROR")
-                    QMessageBox.warning(self, "启动失败", f"无法启动组件: {component_name}")
+                    from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                    msg_box = CustomMessageBox(self)
+                    msg_box.set_title("启动失败")
+                    msg_box.set_text(f"无法启动组件: {component_name}")
+                    msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                    msg_box.exec_()
             except Exception as e:
                 # 解析错误信息
                 error_info = self._parse_error(str(e))
@@ -368,7 +373,12 @@ class ComponentLauncher(QMainWindow):
                     )
                 else:
                     self._log(f"启动错误: {str(e)}", component=component_name, level="ERROR")
-                QMessageBox.critical(self, "启动错误", f"启动组件时发生错误: {component_name}\n{str(e)}")
+                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                msg_box = CustomMessageBox(self)
+                msg_box.set_title("启动错误")
+                msg_box.set_text(f"启动组件时发生错误: {component_name}\n{str(e)}")
+                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                msg_box.exec_()
     
     def _read_process_output(self, process, component_name):
         """读取进程输出"""
@@ -451,10 +461,20 @@ class ComponentLauncher(QMainWindow):
                 f.write('\n'.join(logs) + '\n')
             
             self._log(f"组件日志已保存到 {log_path}", component=component_name, level="INFO")
-            QMessageBox.information(self, "保存成功", f"日志已成功保存到:\n{log_path}")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("保存成功")
+            msg_box.set_text(f"日志已成功保存到:\n{log_path}")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
         except Exception as e:
             self._log(f"保存日志失败: {str(e)}", component=component_name, level="ERROR")
-            QMessageBox.critical(self, "保存失败", f"保存日志时发生错误:\n{str(e)}")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("保存失败")
+            msg_box.set_text(f"保存日志时发生错误:\n{str(e)}")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
     
     def _copy_recent_logs(self):
         """复制最近一次启动的日志"""
@@ -477,11 +497,21 @@ class ComponentLauncher(QMainWindow):
             clipboard.setText(recent_logs)
             
             # 显示成功消息
-            QMessageBox.information(self, "复制成功", "最近一次启动的日志已复制到剪贴板！")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("复制成功")
+            msg_box.set_text("最近一次启动的日志已复制到剪贴板！")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
             self._log("已复制最近一次启动的日志", level="INFO")
         except Exception as e:
             self._log(f"复制日志失败: {str(e)}", level="ERROR")
-            QMessageBox.critical(self, "复制失败", f"复制日志时发生错误:\n{str(e)}")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("复制失败")
+            msg_box.set_text(f"复制日志时发生错误:\n{str(e)}")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
     
     def _log(self, message, level="INFO", component="Launcher", file="", line=""):
         """添加日志信息"""
@@ -636,13 +666,24 @@ class ComponentLauncher(QMainWindow):
         """窗口关闭事件，停止所有运行中的进程"""
         if self.running_processes:
             count = len(self.running_processes)
-            reply = QMessageBox.question(
-                self, "确认关闭", 
-                f"还有 {count} 个组件正在运行，确定要关闭启动器并停止所有组件吗？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            confirm_msg = CustomMessageBox(self)
+            confirm_msg.set_title("确认关闭")
+            confirm_msg.set_text(f"还有 {count} 个组件正在运行，确定要关闭启动器并停止所有组件吗？")
+            confirm_msg.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
             
-            if reply == QMessageBox.Yes:
+            # 记录确认结果
+            is_confirmed = False
+            
+            def on_confirm_clicked(button_index):
+                nonlocal is_confirmed
+                is_confirmed = (button_index == 0)  # 0表示确定按钮
+                confirm_msg.close()
+            
+            confirm_msg.buttonClicked.connect(on_confirm_clicked)
+            confirm_msg.exec_()
+            
+            if is_confirmed:
                 # 停止所有进程
                 for name, process in list(self.running_processes.items()):
                     process.terminate()

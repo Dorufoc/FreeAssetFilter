@@ -413,7 +413,8 @@ class FreeAssetFilterApp(QMainWindow):
         """
         检查是否存在备份文件，并询问用户是否要恢复上次的文件列表和文件选择器目录
         """
-        from PyQt5.QtWidgets import QMessageBox
+        # 导入自定义消息框
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
         import os
         import json
         
@@ -432,14 +433,24 @@ class FreeAssetFilterApp(QMainWindow):
             selector_state = backup_data.get('selector_state', {}) if isinstance(backup_data, dict) else {}
             
             if items:
-                # 询问用户是否恢复
-                reply = QMessageBox.question(
-                    self, "恢复文件列表和目录", 
-                    f"检测到上次有 {len(items)} 个文件在文件存储池中，是否要恢复文件列表和上次打开的目录？",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-                )
+                # 使用自定义消息框询问用户是否恢复
+                confirm_msg = CustomMessageBox(self)
+                confirm_msg.set_title("恢复文件列表和目录")
+                confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否要恢复文件列表和上次打开的目录？")
+                confirm_msg.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
                 
-                if reply == QMessageBox.Yes:
+                # 记录确认结果
+                is_confirmed = False
+                
+                def on_confirm_clicked(button_index):
+                    nonlocal is_confirmed
+                    is_confirmed = (button_index == 0)  # 0表示确定按钮
+                    confirm_msg.close()
+                
+                confirm_msg.buttonClicked.connect(on_confirm_clicked)
+                confirm_msg.exec_()
+                
+                if is_confirmed:
                     self.restore_backup(backup_data)
     
     def restore_backup(self, backup_data):

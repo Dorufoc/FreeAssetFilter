@@ -25,6 +25,7 @@ from PyQt5.QtWidgets import (
 
 # 导入自定义控件
 from freeassetfilter.widgets.custom_widgets import CustomButton, CustomMessageBox, CustomProgressBar
+from freeassetfilter.widgets.custom_file_horizontal_card import CustomFileHorizontalCard
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo
 )
@@ -106,18 +107,30 @@ class FileStagingPool(QWidget):
         
         main_layout.addLayout(title_layout)
         
-        # 创建项目列表
-        self.items_list = QListWidget()
-        self.items_list.setSelectionMode(QListWidget.ExtendedSelection)
-        self.items_list.itemDoubleClicked.connect(self.on_item_double_clicked)
-        # 设置列表为可调整大小，使其能随父容器变化
-        self.items_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # 隐藏水平滚动条，避免出现水平滑块
-        self.items_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # 连接窗口大小变化事件，更新列表项宽度
-        self.resizeEvent = self.on_resize
+        # 创建滚动区域
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
-        main_layout.addWidget(self.items_list, 1)
+        # 创建卡片容器和布局
+        self.cards_container = QWidget()
+        self.cards_layout = QVBoxLayout(self.cards_container)
+        self.cards_layout.setSpacing(int(10 * self.dpi_scale))
+        self.cards_layout.setContentsMargins(0, 0, 0, 0)
+        # 设置布局上对齐
+        self.cards_layout.setAlignment(Qt.AlignTop)
+        # 添加拉伸因子，确保卡片上对齐且不被拉伸
+        self.cards_layout.addStretch(1)
+        
+        # 将卡片容器放入滚动区域
+        self.scroll_area.setWidget(self.cards_container)
+        
+        # 添加到主布局
+        main_layout.addWidget(self.scroll_area, 1)
+        
+        # 存储卡片对象
+        self.cards = []
         
         # 创建导出功能区
         export_layout = QHBoxLayout()
@@ -149,11 +162,8 @@ class FileStagingPool(QWidget):
         # 创建统计信息
         self.stats_label = QLabel("当前项目数: 0")
         self.stats_label.setAlignment(Qt.AlignRight)
-        # 设置字体大小，使用全局默认字体大小和DPI缩放
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        self.stats_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
+        # 使用全局字体，不单独设置过大的字体大小
+        self.stats_label.setFont(self.global_font)
         main_layout.addWidget(self.stats_label)
     
     def add_file(self, file_info):
@@ -178,21 +188,29 @@ class FileStagingPool(QWidget):
         # 添加到项目列表
         self.items.append(file_info)
         
-        # 创建列表项
-        list_item = QListWidgetItem()
-        list_item.setData(Qt.UserRole, file_info)
+        # 创建横向卡片，传递display_name
+        card = CustomFileHorizontalCard(file_info["path"], display_name=file_info["display_name"])
         
-        # 创建自定义widget
-        item_widget = self.create_item_widget(file_info)
-        # 设置列表项大小
-        list_item.setSizeHint(item_widget.sizeHint())
+        # 连接信号
+        card.clicked.connect(lambda path: self.on_card_clicked(path, card, file_info))
+        card.doubleClicked.connect(lambda path: self.on_item_double_clicked(path))
+        card.selectionChanged.connect(lambda selected, path: self.on_card_selection_changed(selected, path, file_info))
+        card.renameRequested.connect(lambda path: self.on_card_rename_requested(path, file_info))
+        card.deleteRequested.connect(lambda path: self.on_card_delete_requested(path, file_info))
         
-        # 添加到列表
-        self.items_list.addItem(list_item)
-        self.items_list.setItemWidget(list_item, item_widget)
+        # 在拉伸因子之前添加卡片，确保拉伸因子始终在最后
+        # 先移除拉伸因子
+        if self.cards_layout.count() > 0 and self.cards_layout.itemAt(self.cards_layout.count() - 1).spacerItem():
+            self.cards_layout.takeAt(self.cards_layout.count() - 1)
         
-        # 更新列表项宽度
-        self.update_list_item_widths()
+        # 添加到卡片布局
+        self.cards_layout.addWidget(card)
+        
+        # 重新添加拉伸因子
+        self.cards_layout.addStretch(1)
+        
+        # 存储卡片对象
+        self.cards.append((card, file_info))
         
         # 更新统计信息
         self.update_stats()
@@ -200,51 +218,7 @@ class FileStagingPool(QWidget):
         # 实时保存备份
         self.save_backup()
     
-    def on_resize(self, event):
-        """
-        处理窗口大小变化事件，更新所有列表项的宽度
-        
-        Args:
-            event (QResizeEvent): 窗口大小变化事件
-        """
-        # 更新所有列表项的宽度
-        self.update_list_item_widths()
-        # 调用父类的resizeEvent
-        super().resizeEvent(event)
-    
-    def update_list_item_widths(self):
-        """
-        更新所有列表项的宽度，使其适应列表宽度
-        """
-        # 获取列表的可见宽度，减去滚动条和边距
-        list_width = self.items_list.width()
-        
-        # 遍历所有列表项，更新它们的大小
-        for i in range(self.items_list.count()):
-            list_item = self.items_list.item(i)
-            if list_item:
-                item_widget = self.items_list.itemWidget(list_item)
-                if item_widget:
-                    # 获取widget的布局
-                    layout = item_widget.layout()
-                    if layout:
-                        # 重新设置widget的最小和最大宽度
-                        item_widget.setMinimumWidth(list_width - 20)
-                        item_widget.setMaximumWidth(list_width - 20)
-                        
-                        # 调整布局中的各个部件
-                        for j in range(layout.count()):
-                            widget = layout.itemAt(j).widget()
-                            if widget:
-                                # 对于信息布局中的标签，确保它们能够自动换行
-                                if isinstance(widget, QLabel):
-                                    widget.setWordWrap(True)
-                        
-                        # 强制布局更新
-                        item_widget.updateGeometry()
-                        
-                    # 更新列表项的大小提示
-                    list_item.setSizeHint(item_widget.sizeHint())
+
     
     def remove_file(self, file_path):
         """
@@ -254,18 +228,29 @@ class FileStagingPool(QWidget):
             file_path (str): 文件路径
         """
         # 查找并移除项目
-        for i, item in enumerate(self.items):
-            if item["path"] == file_path:
+        for i, (card, file_info) in enumerate(self.cards):
+            if file_info["path"] == file_path:
                 # 保存文件信息用于发出信号
-                removed_file = item
+                removed_file = file_info
+                
+                # 从项目列表中移除
                 self.items.pop(i)
-                # 从列表中移除对应的项
-                list_item = self.items_list.item(i)
-                if list_item:
-                    self.items_list.takeItem(i)
+                
+                # 从卡片布局中移除
+                self.cards_layout.removeWidget(card)
+                card.deleteLater()
+                
+                # 从卡片列表中移除
+                self.cards.pop(i)
+                
                 # 发出信号通知文件选择器取消选中
                 self.remove_from_selector.emit(removed_file)
                 break
+        
+        # 确保拉伸因子存在
+        has_stretch = any(self.cards_layout.itemAt(i).spacerItem() for i in range(self.cards_layout.count()))
+        if not has_stretch:
+            self.cards_layout.addStretch(1)
         
         # 更新统计信息
         self.update_stats()
@@ -298,123 +283,34 @@ class FileStagingPool(QWidget):
             # 保存当前项目列表的副本，因为清空操作会修改原列表
             items_to_remove = self.items.copy()
             
+            # 移除所有卡片，但保留拉伸因子
+            while self.cards_layout.count() > 0:
+                item = self.cards_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+                elif item.spacerItem():
+                    # 保留拉伸因子，将其重新添加回布局
+                    self.cards_layout.addItem(item)
+                    break
+            
             # 发出信号通知文件选择器取消所有选中
             for item in items_to_remove:
                 self.remove_from_selector.emit(item)
             
             # 清空列表
             self.items.clear()
-            self.items_list.clear()
+            self.cards.clear()
             # 更新统计信息
             self.update_stats()
+            
+            # 确保拉伸因子存在
+            if not any(self.cards_layout.itemAt(i).spacerItem() for i in range(self.cards_layout.count())):
+                self.cards_layout.addStretch(1)
             
             # 实时保存备份
             self.save_backup()
     
-    def create_item_widget(self, file_info):
-        """
-        创建项目widget
-        
-        Args:
-            file_info (dict): 文件信息字典
-        
-        Returns:
-            QWidget: 项目widget
-        """
-        # 创建widget和布局
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setSpacing(8)
-        layout.setContentsMargins(5, 5, 5, 5)
-        
-        # 添加图标
-        icon_label = QLabel()
-        icon_label.setFixedSize(32, 32)
-        
-        # 设置图标
-        is_dir = file_info.get("is_dir", False)
-        if is_dir:
-            icon = QIcon.fromTheme("folder")
-            icon_label.setPixmap(icon.pixmap(24, 24))
-        else:
-            # 为不同类型的文件设置不同的图标
-            suffix = file_info.get("suffix", "")
-            if suffix in ["jpg", "jpeg", "png", "gif", "bmp"]:
-                icon = QIcon.fromTheme("image")
-            elif suffix in ["mp4", "avi", "mov", "mkv"]:
-                icon = QIcon.fromTheme("video")
-            elif suffix in ["mp3", "wav", "flac", "ogg"]:
-                icon = QIcon.fromTheme("audio")
-            elif suffix in ["pdf"]:
-                icon = QIcon.fromTheme("application-pdf")
-            elif suffix in ["txt", "md", "rst"]:
-                icon = QIcon.fromTheme("text")
-            elif suffix in ["py", "java", "cpp", "js"]:
-                icon = QIcon.fromTheme("code")
-            else:
-                icon = QIcon.fromTheme("application")
-            
-            icon_label.setPixmap(icon.pixmap(24, 24))
-        
-        layout.addWidget(icon_label)
-        
-        # 添加文件信息
-        info_layout = QVBoxLayout()
-        
-        # 文件名 - 使用前端显示文件名
-        name_label = QLabel(file_info["display_name"])
-        name_label.setStyleSheet("font-weight: bold;")
-        name_label.setWordWrap(True)
-        # 存储label引用，方便后续更新
-        name_label.setObjectName("name_label")
-        info_layout.addWidget(name_label)
-        
-        # 文件路径（仅显示部分）
-        path_label = QLabel(file_info["path"])
-        # 使用全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        scaled_font_size = int(default_font_size * dpi_scale)
-        path_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #666;")
-        path_label.setWordWrap(True)
-        info_layout.addWidget(path_label)
-        
-        layout.addLayout(info_layout, 1)
-        
-        # 创建按钮布局
-        buttons_layout = QVBoxLayout()
-        buttons_layout.setSpacing(4)
-        
-        # 添加重命名按钮
-        rename_btn = QPushButton("重命名")
-        rename_btn.setFixedWidth(60)
-        rename_btn.setStyleSheet("background-color: #4488ff; color: white; border: none; border-radius: 4px;")
-        rename_btn.clicked.connect(lambda _, fi=file_info, w=widget: self.rename_file(fi, w))
-        # 默认隐藏重命名按钮
-        rename_btn.setVisible(False)
-        buttons_layout.addWidget(rename_btn)
-        
-        # 添加删除按钮
-        delete_btn = QPushButton("删除")
-        delete_btn.setFixedWidth(60)
-        delete_btn.setStyleSheet("background-color: #ff4444; color: white; border: none; border-radius: 4px;")
-        delete_btn.clicked.connect(lambda _, fi=file_info: self.remove_file(fi["path"]))
-        # 默认隐藏删除按钮
-        delete_btn.setVisible(False)
-        buttons_layout.addWidget(delete_btn)
-        
-        layout.addLayout(buttons_layout)
-        
-        # 添加事件过滤器，监听鼠标进入和离开事件
-        widget.setMouseTracking(True)
-        widget.installEventFilter(self)
-        # 存储按钮引用到widget上，方便事件处理
-        widget.delete_btn = delete_btn
-        widget.rename_btn = rename_btn
-        widget.file_info = file_info
-        
-        return widget
+
     
     def update_stats(self):
         """
@@ -423,26 +319,76 @@ class FileStagingPool(QWidget):
         total_items = len(self.items)
         self.stats_label.setText(f"当前项目数: {total_items}")
     
-    def on_item_double_clicked(self, item):
+    def on_card_clicked(self, path, card, file_info):
+        """
+        处理卡片点击事件
+        
+        Args:
+            path: 文件路径
+            card: 卡片对象
+            file_info: 文件信息字典
+        """
+        # 可以在这里添加卡片点击后的处理逻辑
+        pass
+    
+    def on_card_selection_changed(self, selected, path, file_info):
+        """
+        处理卡片选中状态变化事件
+        
+        Args:
+            selected: 是否选中
+            path: 文件路径
+            file_info: 文件信息字典
+        """
+        # 可以在这里添加选中状态变化后的处理逻辑
+        pass
+    
+    def on_card_rename_requested(self, path, file_info):
+        """
+        处理卡片重命名请求
+        
+        Args:
+            path: 文件路径
+            file_info: 文件信息字典
+        """
+        # 调用现有的重命名方法
+        # 由于重命名方法需要widget参数，我们可以传入None或者修改重命名方法
+        # 这里我们修改重命名方法来适应新的调用方式
+        self.rename_file(file_info, None)
+    
+    def on_card_delete_requested(self, path, file_info):
+        """
+        处理卡片删除请求
+        
+        Args:
+            path: 文件路径
+            file_info: 文件信息字典
+        """
+        # 调用现有的删除方法
+        self.remove_file(path)
+    
+    def on_item_double_clicked(self, path):
         """
         双击项目事件处理
         
         Args:
-            item (QListWidgetItem): 双击的项目
+            path: 文件路径
         """
-        file_info = item.data(Qt.UserRole)
-        if file_info:
-            self.open_file(file_info)
+        # 查找对应的文件信息
+        for file_info in self.items:
+            if file_info["path"] == path:
+                self.open_file(file_info)
+                break
     
-    def rename_file(self, file_info, widget):
+    def rename_file(self, file_info, widget=None):
         """
         重命名文件（仅修改前端显示名称，保持原始后缀名）
         
         Args:
             file_info (dict): 文件信息字典
-            widget (QWidget): 文件卡片widget
+            widget (QWidget): 不再使用，保留参数以保持向后兼容
         """
-        from PyQt5.QtWidgets import QInputDialog
+        from freeassetfilter.widgets.custom_widgets import CustomInputBox
         
         # 获取当前显示名称
         current_name = file_info["display_name"]
@@ -462,11 +408,25 @@ class FileStagingPool(QWidget):
         illegal_chars = '<>:"/\\|?*' + ''.join([chr(c) for c in range(32)])
         
         while True:
-            # 弹出输入对话框，只显示和允许修改文件名主体
-            new_name_input, ok = QInputDialog.getText(
-                self, "重命名", "请输入新的文件名：",
-                text=name_base
-            )
+            # 弹出自定义输入对话框，只显示和允许修改文件名主体
+            input_box = CustomMessageBox(self)
+            input_box.set_title("重命名")
+            input_box.set_text("请输入新的文件名：")
+            input_box.set_input(name_base)
+            input_box.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
+            
+            # 连接按钮点击信号
+            button_clicked = None
+            def on_button_clicked(index):
+                nonlocal button_clicked
+                button_clicked = index
+                input_box.close()
+            
+            input_box.buttonClicked.connect(on_button_clicked)
+            input_box.exec_()
+            
+            ok = button_clicked == 0
+            new_name_input = input_box.get_input() if ok else ""
             
             if not ok:
                 # 用户取消操作
@@ -523,16 +483,13 @@ class FileStagingPool(QWidget):
             # 更新文件信息中的显示名称
             file_info["display_name"] = new_name
             
-            # 更新UI上的显示
-            name_label = widget.findChild(QLabel, "name_label")
-            if name_label:
-                name_label.setText(new_name)
-            
-            # 更新列表项的数据
-            for i in range(self.items_list.count()):
-                item = self.items_list.item(i)
-                if item.data(Qt.UserRole)["path"] == file_info["path"]:
-                    item.setData(Qt.UserRole, file_info)
+            # 更新卡片的显示
+            for card, card_file_info in self.cards:
+                if card_file_info["path"] == file_info["path"]:
+                    # 更新卡片的文件信息
+                    card_file_info["display_name"] = new_name
+                    # 更新卡片的显示，传递新的display_name
+                    card.set_file_path(file_info["path"], display_name=new_name)
                     break
             
             # 实时保存备份
@@ -1285,15 +1242,29 @@ class FileStagingPool(QWidget):
         # 保存当前项目列表的副本，因为清空操作会修改原列表
         items_to_remove = self.items.copy()
         
+        # 移除所有卡片，但保留拉伸因子
+        while self.cards_layout.count() > 0:
+            item = self.cards_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.spacerItem():
+                # 保留拉伸因子，将其重新添加回布局
+                self.cards_layout.addItem(item)
+                break
+        
         # 发出信号通知文件选择器取消所有选中
         for item in items_to_remove:
             self.remove_from_selector.emit(item)
         
         # 清空列表
         self.items.clear()
-        self.items_list.clear()
+        self.cards.clear()
         # 更新统计信息
         self.update_stats()
+        
+        # 确保拉伸因子存在
+        if not any(self.cards_layout.itemAt(i).spacerItem() for i in range(self.cards_layout.count())):
+            self.cards_layout.addStretch(1)
         
         # 实时保存备份
         self.save_backup()

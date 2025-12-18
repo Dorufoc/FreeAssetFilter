@@ -467,7 +467,12 @@ class FontPreviewer(QMainWindow):
                 self.setWindowTitle(f"字体预览�?- {file_name}")
             else:
                 # 字体加载失败
-                QMessageBox.warning(self, "错误", "无法加载字体文件")
+                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                msg_box = CustomMessageBox(self)
+                msg_box.set_title("错误")
+                msg_box.set_text("无法加载字体文件")
+                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                msg_box.exec_()
     
     def clear_font(self):
         """

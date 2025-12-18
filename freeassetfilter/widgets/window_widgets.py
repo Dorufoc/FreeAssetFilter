@@ -505,7 +505,38 @@ class CustomMessageBox(QDialog):
         self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.body_layout.addWidget(self.list_widget)
         
-        # 5. 进度条区
+        # 5. 输入框区
+        self.input_widget = QWidget()
+        self.input_widget.setStyleSheet("background-color: transparent;")
+        self.input_layout = QVBoxLayout(self.input_widget)
+        self.input_layout.setContentsMargins(0, 0, 0, 0)
+        self.input_layout.setSpacing(0)
+        self.input_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        
+        # 输入框
+        self.input_line_edit = QLineEdit()
+        self.input_line_edit.setFont(self.global_font)
+        # 使用正确的大括号转义方式
+        style_sheet = """
+            QLineEdit {{
+                font-size: {0}px;
+                color: #333333;
+                background-color: #f5f5f5;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                padding: 8px 12px;
+                margin: 0;
+            }}
+            QLineEdit:focus {{
+                border-color: #1890ff;
+                background-color: #ffffff;
+            }}
+        """.format(scaled_text_font_size)
+        self.input_line_edit.setStyleSheet(style_sheet)
+        self.input_layout.addWidget(self.input_line_edit)
+        self.body_layout.addWidget(self.input_widget)
+        
+        # 6. 进度条区
         self.progress_widget = QWidget()
         self.progress_widget.setStyleSheet("background-color: transparent;")
         self.progress_layout = QVBoxLayout(self.progress_widget)
@@ -534,6 +565,7 @@ class CustomMessageBox(QDialog):
         self.image_label.hide()
         self.text_label.hide()
         self.list_widget.hide()
+        self.input_widget.hide()
         self.progress_widget.hide()
         self.button_widget.hide()
     
@@ -715,6 +747,40 @@ class CustomMessageBox(QDialog):
         if self._list:
             return self._list.get_selected_indices()
         return []
+    
+    def set_input(self, text="", placeholder=""):
+        """
+        设置输入框内容和占位符
+        
+        Args:
+            text (str): 输入框初始内容
+            placeholder (str): 输入框占位符
+        """
+        self.input_line_edit.setText(text)
+        self.input_line_edit.setPlaceholderText(placeholder)
+        if text or placeholder:
+            self.input_widget.show()
+        else:
+            self.input_widget.hide()
+        self.adjust_size()
+    
+    def get_input(self):
+        """
+        获取输入框内容
+        
+        Returns:
+            str: 输入框内容
+        """
+        return self.input_line_edit.text()
+    
+    def clear_input(self):
+        """
+        清空输入框并隐藏
+        """
+        self.input_line_edit.clear()
+        self.input_line_edit.setPlaceholderText("")
+        self.input_widget.hide()
+        self.adjust_size()
     
     def set_buttons(self, button_texts, orientations=Qt.Vertical, button_types=None):
         """

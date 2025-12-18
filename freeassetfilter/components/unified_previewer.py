@@ -307,7 +307,12 @@ class UnifiedPreviewer(QWidget):
         
         # 检查文件是否存在
         if not os.path.exists(file_path):
-            QMessageBox.warning(self, "错误", f"文件不存在: {file_path}")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("错误")
+            msg_box.set_text(f"文件不存在: {file_path}")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
             return
         
         try:
@@ -321,7 +326,12 @@ class UnifiedPreviewer(QWidget):
                 # Linux系统
                 os.system(f"xdg-open \"{file_path}\"")
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"无法打开文件: {str(e)}")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("错误")
+            msg_box.set_text(f"无法打开文件: {str(e)}")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
     
     def _clear_preview(self):
         """
@@ -777,7 +787,8 @@ class UnifiedPreviewer(QWidget):
         # 创建全局设置窗口
         from freeassetfilter.widgets.custom_widgets import CustomWindow
         from freeassetfilter.widgets.setting_widgets import CustomSettingItem
-        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout, QGroupBox, QWidget, QMessageBox
+        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout, QGroupBox, QWidget
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
         
         # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
@@ -876,7 +887,11 @@ class UnifiedPreviewer(QWidget):
                             # 倒计时结束，回退到原始DPI系数
                             settings_manager.set_setting("dpi.global_scale_factor", original_dpi_scale)
                             confirm_box.close()
-                            QMessageBox.information(self, "提示", "DPI设置已自动回退")
+                            msg_box = CustomMessageBox(self)
+                            msg_box.set_title("提示")
+                            msg_box.set_text("DPI设置已自动回退")
+                            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                            msg_box.exec_()
                             # 更新设置项的显示值
                             dpi_setting.set_input_text(str(original_dpi_scale))
                             timer.stop()
@@ -893,12 +908,20 @@ class UnifiedPreviewer(QWidget):
                             # 保存设置
                             settings_manager.save_settings()
                             confirm_box.close()
-                            QMessageBox.information(self, "成功", "DPI设置已保存")
+                            msg_box = CustomMessageBox(self)
+                            msg_box.set_title("成功")
+                            msg_box.set_text("DPI设置已保存")
+                            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                            msg_box.exec_()
                         else:  # 放弃
                             # 回退到原始DPI系数
                             settings_manager.set_setting("dpi.global_scale_factor", original_dpi_scale)
                             confirm_box.close()
-                            QMessageBox.information(self, "提示", "DPI设置已回退")
+                            msg_box = CustomMessageBox(self)
+                            msg_box.set_title("提示")
+                            msg_box.set_text("DPI设置已回退")
+                            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                            msg_box.exec_()
                             # 更新设置项的显示值
                             dpi_setting.set_input_text(str(original_dpi_scale))
                     
@@ -908,9 +931,17 @@ class UnifiedPreviewer(QWidget):
                     # 显示提示窗
                     confirm_box.show()
                 else:
-                    QMessageBox.warning(self, "错误", "DPI缩放值必须大于0")
+                    msg_box = CustomMessageBox(self)
+                    msg_box.set_title("错误")
+                    msg_box.set_text("DPI缩放值必须大于0")
+                    msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                    msg_box.exec_()
             except ValueError:
-                QMessageBox.warning(self, "错误", "请输入有效的数字")
+                msg_box = CustomMessageBox(self)
+                msg_box.set_title("错误")
+                msg_box.set_text("请输入有效的数字")
+                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                msg_box.exec_()
         dpi_setting.input_submitted.connect(on_dpi_applied)
         main_program_layout.addWidget(dpi_setting)
         
@@ -968,7 +999,11 @@ class UnifiedPreviewer(QWidget):
                             # 倒计时结束，回退到原始字体大小
                             settings_manager.set_setting("font.size", original_font_size)
                             confirm_box.close()
-                            QMessageBox.information(self, "提示", "字体大小设置已自动回退")
+                            msg_box = CustomMessageBox(self)
+                            msg_box.set_title("提示")
+                            msg_box.set_text("字体大小设置已自动回退")
+                            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                            msg_box.exec_()
                             # 更新设置项的显示值
                             font_size_setting.set_input_text(str(original_font_size))
                             timer.stop()
@@ -985,12 +1020,20 @@ class UnifiedPreviewer(QWidget):
                             # 保存设置
                             settings_manager.save_settings()
                             confirm_box.close()
-                            QMessageBox.information(self, "成功", "字体大小设置已保存")
+                            msg_box = CustomMessageBox(self)
+                            msg_box.set_title("成功")
+                            msg_box.set_text("字体大小设置已保存")
+                            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                            msg_box.exec_()
                         else:  # 放弃
                             # 回退到原始字体大小
                             settings_manager.set_setting("font.size", original_font_size)
                             confirm_box.close()
-                            QMessageBox.information(self, "提示", "字体大小设置已回退")
+                            msg_box = CustomMessageBox(self)
+                            msg_box.set_title("提示")
+                            msg_box.set_text("字体大小设置已回退")
+                            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                            msg_box.exec_()
                             # 更新设置项的显示值
                             font_size_setting.set_input_text(str(original_font_size))
                     
@@ -1000,9 +1043,17 @@ class UnifiedPreviewer(QWidget):
                     # 显示提示窗
                     confirm_box.show()
                 else:
-                    QMessageBox.warning(self, "错误", "字体大小必须大于0")
+                    msg_box = CustomMessageBox(self)
+                    msg_box.set_title("错误")
+                    msg_box.set_text("字体大小必须大于0")
+                    msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                    msg_box.exec_()
             except ValueError:
-                QMessageBox.warning(self, "错误", "请输入有效的整数")
+                msg_box = CustomMessageBox(self)
+                msg_box.set_title("错误")
+                msg_box.set_text("请输入有效的整数")
+                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                msg_box.exec_()
         font_size_setting.input_submitted.connect(on_font_size_applied)
         main_program_layout.addWidget(font_size_setting)
         
@@ -1057,7 +1108,11 @@ class UnifiedPreviewer(QWidget):
                         # 倒计时结束，回退到原始字体样式
                         settings_manager.set_setting("font.style", original_font_style)
                         confirm_box.close()
-                        QMessageBox.information(self, "提示", "字体样式设置已自动回退")
+                        msg_box = CustomMessageBox(self)
+                        msg_box.set_title("提示")
+                        msg_box.set_text("字体样式设置已自动回退")
+                        msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                        msg_box.exec_()
                         # 更新设置项的显示值
                         font_style_setting.set_input_text(original_font_style)
                         timer.stop()
@@ -1074,12 +1129,20 @@ class UnifiedPreviewer(QWidget):
                         # 保存设置
                         settings_manager.save_settings()
                         confirm_box.close()
-                        QMessageBox.information(self, "成功", "字体样式设置已保存")
+                        msg_box = CustomMessageBox(self)
+                        msg_box.set_title("成功")
+                        msg_box.set_text("字体样式设置已保存")
+                        msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                        msg_box.exec_()
                     else:  # 放弃
                         # 回退到原始字体样式
                         settings_manager.set_setting("font.style", original_font_style)
                         confirm_box.close()
-                        QMessageBox.information(self, "提示", "字体样式设置已回退")
+                        msg_box = CustomMessageBox(self)
+                        msg_box.set_title("提示")
+                        msg_box.set_text("字体样式设置已回退")
+                        msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                        msg_box.exec_()
                         # 更新设置项的显示值
                         font_style_setting.set_input_text(original_font_style)
                 
@@ -1089,7 +1152,11 @@ class UnifiedPreviewer(QWidget):
                 # 显示提示窗
                 confirm_box.show()
             else:
-                QMessageBox.warning(self, "错误", "字体样式不能为空")
+                msg_box = CustomMessageBox(self)
+                msg_box.set_title("错误")
+                msg_box.set_text("字体样式不能为空")
+                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                msg_box.exec_()
         font_style_setting.input_submitted.connect(on_font_style_applied)
         main_program_layout.addWidget(font_style_setting)
         
@@ -1195,7 +1262,12 @@ class UnifiedPreviewer(QWidget):
         def on_export_data_path_applied(text):
             settings_manager.set_setting("file_staging.default_export_data_path", text)
             settings_manager.save_settings()
-            QMessageBox.information(self, "成功", "默认导出数据路径已保存")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("成功")
+            msg_box.set_text("默认导出数据路径已保存")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
         export_data_path_setting.input_submitted.connect(on_export_data_path_applied)
         file_staging_layout.addWidget(export_data_path_setting)
         
@@ -1212,7 +1284,12 @@ class UnifiedPreviewer(QWidget):
         def on_export_file_path_applied(text):
             settings_manager.set_setting("file_staging.default_export_file_path", text)
             settings_manager.save_settings()
-            QMessageBox.information(self, "成功", "默认导出文件路径已保存")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("成功")
+            msg_box.set_text("默认导出文件路径已保存")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
         export_file_path_setting.input_submitted.connect(on_export_file_path_applied)
         file_staging_layout.addWidget(export_file_path_setting)
         

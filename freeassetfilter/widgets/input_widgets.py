@@ -40,7 +40,7 @@ class CustomInputBox(QWidget):
                  initial_text="", 
                  width=None, 
                  height=40,
-                 border_radius=20,
+                 border_radius=10,
                  border_color="#cccccc",
                  background_color="#ffffff",
                  text_color="#000000",
@@ -199,7 +199,7 @@ class CustomInputBox(QWidget):
             border_color = self._border_color.name()
         
         # 应用DPI缩放的边框宽度，与次选按钮保持一致
-        scaled_border_width = int(2 * self.dpi_scale)
+        scaled_border_width = 3 + int(2 * self.dpi_scale)
         
         # 简化样式设置，直接应用到当前控件
         style = f"""

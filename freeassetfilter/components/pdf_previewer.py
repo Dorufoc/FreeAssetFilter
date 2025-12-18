@@ -594,7 +594,12 @@ class PDFPreviewer(QWidget):
                 self.load_file_from_path(file_path)
         except Exception as e:
             print(f"打开文件时出错: {e}")
-            QMessageBox.warning(self, "错误", f"打开文件时出错: {str(e)}")
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("错误")
+            msg_box.set_text(f"打开文件时出错: {str(e)}")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
     
     def load_file_from_path(self, file_path):
         """

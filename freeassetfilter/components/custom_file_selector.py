@@ -347,7 +347,7 @@ class CustomFileSelector(QWidget):
         # 使用clean.svg图标替换文字
         import os
         clean_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "clean.svg")
-        self.clear_thumbnails_btn = CustomButton(clean_icon_path, button_type="secondary", display_mode="icon")
+        self.clear_thumbnails_btn = CustomButton(clean_icon_path, button_type="normal", display_mode="icon")
         self.clear_thumbnails_btn.clicked.connect(self._clear_thumbnail_cache)
         layout.addWidget(self.clear_thumbnails_btn)
         
@@ -1011,13 +1011,15 @@ class CustomFileSelector(QWidget):
         if 0 <= index < len(self.favorites):
             favorite = self.favorites[index]
             
-            # 使用QInputDialog获取新名称
-            new_name, ok = QInputDialog.getText(
-                self,
-                "重命名收藏夹",
-                "请输入新名称:",
-                text=favorite['name']
+            # 使用CustomInputBox获取新名称
+            from freeassetfilter.widgets.custom_widgets import CustomInputBox
+            input_box = CustomInputBox(
+                title="重命名收藏夹",
+                label="请输入新名称:",
+                default_text=favorite['name']
             )
+            ok = input_box.exec_()
+            new_name = input_box.get_text() if ok else ""
             
             if ok and new_name.strip():
                 # 更新收藏夹列表
@@ -1091,13 +1093,15 @@ class CustomFileSelector(QWidget):
         # 获取当前目录名称作为默认名称
         default_name = os.path.basename(current_path) or current_path
         
-        # 使用QInputDialog获取收藏夹名称
-        name, ok = QInputDialog.getText(
-            self,
-            "添加到收藏夹",
-            "请输入收藏名称:",
-            text=default_name
+        # 使用CustomInputBox获取收藏夹名称
+        from freeassetfilter.widgets.custom_widgets import CustomInputBox
+        input_box = CustomInputBox(
+            title="添加到收藏夹",
+            label="请输入收藏名称:",
+            default_text=default_name
         )
+        ok = input_box.exec_()
+        name = input_box.get_text() if ok else ""
         
         if ok and name.strip():
             # 添加到收藏夹列表
@@ -1162,7 +1166,14 @@ class CustomFileSelector(QWidget):
             for i, favorite in enumerate(self.favorites):
                 if favorite['path'] == path and favorite['name'] == old_name:
                     # 弹出输入框获取新名称
-                    new_name, ok = QInputDialog.getText(self, "重命名", "请输入新名称:", text=old_name)
+                    from freeassetfilter.widgets.custom_widgets import CustomInputBox
+                    input_box = CustomInputBox(
+                        title="重命名",
+                        label="请输入新名称:",
+                        default_text=old_name
+                    )
+                    ok = input_box.exec_()
+                    new_name = input_box.get_text() if ok else ""
                     if ok and new_name:
                         self.favorites[i]['name'] = new_name
                         self._save_favorites()
@@ -1228,7 +1239,14 @@ class CustomFileSelector(QWidget):
                 return
         
         # 弹出输入框获取名称
-        name, ok = QInputDialog.getText(self, "添加到收藏夹", "请输入收藏名称:", text=default_name)
+        from freeassetfilter.widgets.custom_widgets import CustomInputBox
+        input_box = CustomInputBox(
+            title="添加到收藏夹",
+            label="请输入收藏名称:",
+            default_text=default_name
+        )
+        ok = input_box.exec_()
+        name = input_box.get_text() if ok else ""
         if ok and name:
             # 添加到收藏夹
             self.favorites.append({

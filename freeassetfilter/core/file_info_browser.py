@@ -1198,8 +1198,12 @@ class FileInfoBrowser:
             self.loading_dialog.close()
         
         # 显示错误提示
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.warning(None, "错误", f"加载详细信息失败: {error_msg}")
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        msg_box = CustomMessageBox(None)
+        msg_box.set_title("错误")
+        msg_box.set_text(f"加载详细信息失败: {error_msg}")
+        msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+        msg_box.exec_()
     
     def _get_cache_dir(self):
         """
