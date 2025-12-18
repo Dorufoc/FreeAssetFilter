@@ -26,7 +26,7 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage, QCursor
 from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.widgets.custom_widgets import CustomValueBar
+from freeassetfilter.widgets.custom_widgets import CustomValueBar, CustomButton
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.widgets.custom_control_menu import CustomControlMenu
 from freeassetfilter.widgets.volume_slider_menu import VolumeSliderMenu
@@ -114,6 +114,9 @@ class VideoPlayer(QWidget):
                 print("[VideoPlayer] 绑定MPV播放器到video_frame窗口...")
                 self.player_core.set_window(self.video_frame.winId())
         
+        # 检查是否有LUT文件需要应用
+        self.check_and_apply_lut_file()
+        
         # 创建定时器用于更新进度
         self.timer = QTimer(self)
         self.timer.setInterval(100)  # 100ms更新一次，确保进度显示延迟不超过200ms
@@ -147,7 +150,7 @@ class VideoPlayer(QWidget):
         self.play_button = QPushButton()
         
         # 倍速控制组件
-        self.speed_button = QPushButton("1.0x")
+        self.speed_button = None  # 将在init_ui中使用CustomButton初始化
         self.speed_menu = None  # 将在init_ui中初始化
         self.speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
         self.is_speed_menu_visible = False
@@ -429,22 +432,12 @@ class VideoPlayer(QWidget):
         scaled_border_radius = int(5 * self.dpi_scale)
         scaled_min_width = int(60 * self.dpi_scale)
         scaled_font_size = int(16 * self.dpi_scale)
-        self.speed_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #FFFFFF;
-                color: #000000;
-                border: 1px solid #FFFFFF;
-                padding: {scaled_padding}px {scaled_padding_right}px;
-                border-radius: {scaled_border_radius}px;
-                min-width: {scaled_min_width}px;
-                max-width: {scaled_min_width}px;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                font-size: {scaled_font_size}px;
-            }}
-            QPushButton:hover {{
-                background-color: #f0f0f0;
-            }}
-        """)
+        # 初始化倍速按钮为CustomButton
+        self.speed_button = CustomButton(
+            text=f"{self._current_speed}x",
+            button_type="normal",
+            display_mode="text"
+        )
         # 添加点击事件，实现显示/隐藏倍速菜单
         self.speed_button.clicked.connect(self.toggle_speed_menu)
         bottom_layout.addWidget(self.speed_button)
@@ -459,48 +452,20 @@ class VideoPlayer(QWidget):
         
         # 添加Cube色彩映射控件
         # 创建Cube文件选择按钮
-        self.load_cube_button = QPushButton("加载LUT")
-        self.load_cube_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #FFFFFF;
-                color: #000000;
-                border: {scaled_border}px solid #FFFFFF;
-                padding: {scaled_padding}px {scaled_padding_right}px;
-                border-radius: {scaled_border_radius}px;
-                min-width: {scaled_min_width}px;
-                max-width: {scaled_min_width}px;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                font-size: {scaled_font_size}px;
-            }}
-            QPushButton:hover {{
-                background-color: #f0f0f0;
-            }}
-        """)
+        self.load_cube_button = CustomButton(
+            text="加载LUT",
+            button_type="normal",
+            display_mode="text"
+        )
         self.load_cube_button.clicked.connect(self.load_cube_file)
         bottom_layout.addWidget(self.load_cube_button)
         
         # 添加对比预览模式切换按钮
-        self.comparison_button = QPushButton("对比预览")
-        self.comparison_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #FFFFFF;
-                color: #000000;
-                border: {scaled_border}px solid #FFFFFF;
-                padding: {scaled_padding}px {scaled_padding_right}px;
-                border-radius: {scaled_border_radius}px;
-                min-width: {scaled_min_width}px;
-                max-width: {scaled_min_width}px;
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                font-size: {scaled_font_size}px;
-            }}
-            QPushButton:hover {{
-                background-color: #f0f0f0;
-            }}
-            QPushButton:checked {{
-                background-color: #0078d4;
-                color: white;
-            }}
-        """)
+        self.comparison_button = CustomButton(
+            text="对比预览",
+            button_type="normal",
+            display_mode="text"
+        )
         self.comparison_button.setCheckable(True)
         self.comparison_button.clicked.connect(self.toggle_comparison_mode)
         bottom_layout.addWidget(self.comparison_button)
@@ -1035,8 +1000,8 @@ class VideoPlayer(QWidget):
                 # 已有LUT应用，移除LUT效果
                 print("[VideoPlayer] 移除LUT效果...")
                 self.clear_cube_file()
-                # 恢复按钮为白底黑字状态
-                self._update_lut_button_style(False)
+                # 恢复按钮为普通样式
+                self.load_cube_button.set_button_type("normal")
             else:
                 # 没有LUT应用，触发LUT文件导入
                 # 打开文件选择对话框
@@ -1060,8 +1025,8 @@ class VideoPlayer(QWidget):
                     # 使用复制后的Cube文件
                     self.set_cube_file(target_cube_path)
                     print(f"[VideoPlayer] 成功加载Cube文件: {cube_file}")
-                    # 更新按钮为蓝底白字状态
-                    self._update_lut_button_style(True)
+                    # 更新按钮为强调样式状态
+                self.load_cube_button.set_button_type("primary")
         except Exception as e:
             print(f"[VideoPlayer] LUT操作失败: {e}")
             import traceback
@@ -1077,10 +1042,14 @@ class VideoPlayer(QWidget):
                 print("[VideoPlayer] 启用对比预览模式")
                 # 实现对比预览逻辑
                 self._enable_comparison_mode()
+                # 激活状态使用强调样式
+                self.comparison_button.set_button_type("primary")
             else:
                 print("[VideoPlayer] 禁用对比预览模式")
                 # 恢复正常预览模式
                 self._disable_comparison_mode()
+                # 未激活状态使用普通样式
+                self.comparison_button.set_button_type("normal")
         except Exception as e:
             print(f"[VideoPlayer] 切换对比预览模式失败: {e}")
             import traceback
@@ -1090,8 +1059,8 @@ class VideoPlayer(QWidget):
         """
         启用对比预览模式
         - 创建两个视频播放区域
-        - 左侧：原始视频
-        - 右侧：应用了Cube滤镜的视频
+        - 左侧：原始视频（音量受音量条控制）
+        - 右侧：应用了Cube滤镜的视频（音量静音，不受音量条控制）
         """
         # 检查是否已经初始化对比预览布局
         if not self.comparison_layout:
@@ -1142,20 +1111,36 @@ class VideoPlayer(QWidget):
         
         # 加载当前视频到两个播放器
         if self._current_file_path:
-            # 主播放器加载视频（带滤镜）
+            # 保存当前播放状态
+            current_playing = self.player_core.is_playing
+            
+            # 1. 主播放器加载视频（带滤镜，音量静音）
             self.player_core.set_media(self._current_file_path)
             if self.cube_path and self.cube_loaded:
                 self.player_core.enable_cube_filter(self.cube_path)
-            self.player_core.play()
+            # 设置主播放器从头开始播放
+            self.player_core.pause()
+            self.player_core.set_position(0)  # 设置为0秒
+            if current_playing:
+                self.player_core.play()
+            # 主播放器（带滤镜）音量设置为0（静音）
+            self.player_core.set_volume(0)
             
-            # 原始播放器加载视频（不带滤镜）
+            # 2. 原始播放器加载视频（不带滤镜，音量受控制）
             self.original_player_core.set_media(self._current_file_path)
-            self.original_player_core.play()
+            # 设置原始播放器从头开始播放
+            self.original_player_core.pause()
+            self.original_player_core.set_position(0)  # 设置为0秒
+            if current_playing:
+                self.original_player_core.play()
+            # 原始播放器使用当前音量设置
+            self.original_player_core.set_volume(self._current_volume)
     
     def _disable_comparison_mode(self):
         """
         禁用对比预览模式
         - 恢复单一视频播放区域
+        - 恢复套用LUT的视频的声音音量，受到音量条控制
         """
         if self.comparison_layout:
             # 移除对比布局
@@ -1174,10 +1159,18 @@ class VideoPlayer(QWidget):
             
             # 恢复视频播放
             if self._current_file_path:
+                print("[VideoPlayer] 关闭对比预览，重新加载视频到单个播放区域")
+                # 先停止当前播放
+                self.player_core.stop()
+                # 重新加载媒体
                 self.player_core.set_media(self._current_file_path)
+                # 继续应用LUT效果
                 if self.cube_path and self.cube_loaded:
                     self.player_core.enable_cube_filter(self.cube_path)
+                # 恢复播放
                 self.player_core.play()
+                # 继承当前音量
+                self.player_core.set_volume(self._current_volume)
             
             # 停止并清理原始播放器
             if hasattr(self, 'original_player_core'):
@@ -1185,13 +1178,13 @@ class VideoPlayer(QWidget):
                 self.original_player_core.cleanup()
                 delattr(self, 'original_player_core')
             
-            # 删除对比预览相关属性
-            if hasattr(self, 'original_video_frame'):
-                delattr(self, 'original_video_frame')
-            if hasattr(self, 'filtered_video_frame'):
-                delattr(self, 'filtered_video_frame')
-            if hasattr(self, 'comparison_layout'):
-                delattr(self, 'comparison_layout')
+            # 重置对比预览相关属性
+            self.original_video_frame = None
+            self.filtered_video_frame = None
+            self.comparison_layout = None
+            # 清理原始播放器引用
+            if hasattr(self, 'original_player_core'):
+                delattr(self, 'original_player_core')
     
     def _connect_core_signals(self):
         """
@@ -1260,17 +1253,29 @@ class VideoPlayer(QWidget):
                 
                 if is_comparison_mode and hasattr(self, 'original_player_core') and self.original_player_core:
                     # 对比预览模式：保持对比布局
-                    # 主播放器（右侧带滤镜）加载并播放视频
+                    print("[VideoPlayer] 处于对比预览模式，加载视频到两个播放区域")
+                    
+                    # 1. 主播放器（右侧带滤镜）加载视频
                     self.player_core.set_media(file_path)
                     if self.cube_path and self.cube_loaded:
                         self.player_core.enable_cube_filter(self.cube_path)
-                    self.player_core.play()
+                    # 右侧带滤镜视频使用当前音量
+                    self.player_core.set_volume(self._current_volume)
                     
-                    # 原始播放器（左侧无滤镜）加载并播放视频
+                    # 2. 原始播放器（左侧无滤镜）加载视频
                     self.original_player_core.set_media(file_path)
+                    # 左侧原始视频静音
+                    self.original_player_core.set_volume(0)
+                    
+                    # 3. 两个视频都从头开始播放
+                    self.player_core.pause()
+                    self.original_player_core.pause()
+                    self.player_core.set_position(0)
+                    self.original_player_core.set_position(0)
+                    self.player_core.play()
                     self.original_player_core.play()
                     
-                    # 确保对比预览区域可见
+                    # 4. 确保对比预览区域可见
                     if hasattr(self, 'original_video_frame') and self.original_video_frame is not None:
                         self.original_video_frame.show()
                     if hasattr(self, 'filtered_video_frame') and self.filtered_video_frame is not None:
@@ -1573,10 +1578,20 @@ class VideoPlayer(QWidget):
             volume = 100
             
         if self.player_core:
-            self.player_core.set_volume(volume)
-            # 同时控制原始视频播放器
-            if hasattr(self, 'original_player_core') and self.original_player_core:
-                self.original_player_core.set_volume(volume)
+            if self.comparison_mode:
+                # 对比预览模式下：
+                # - 只控制原始视频的音量（左侧）
+                # - 应用了LUT滤镜的视频保持静音（右侧）
+                if hasattr(self, 'original_player_core') and self.original_player_core:
+                    self.original_player_core.set_volume(volume)
+                # 主播放器（带滤镜）保持静音
+                self.player_core.set_volume(0)
+            else:
+                # 非对比预览模式下，控制所有播放器的音量
+                self.player_core.set_volume(volume)
+                # 同时控制原始视频播放器（如果存在）
+                if hasattr(self, 'original_player_core') and self.original_player_core:
+                    self.original_player_core.set_volume(volume)
             
             self._current_volume = volume
             self._previous_volume = volume
@@ -1685,13 +1700,80 @@ class VideoPlayer(QWidget):
         """
         清除Cube文件设置
         """
+        print("[VideoPlayer] 开始清除Cube文件设置")
+        
+        # 1. 首先确保对比预览模式已关闭
+        if self.comparison_mode:
+            print("[VideoPlayer] 移除LUT前，先关闭对比预览模式")
+            self.toggle_comparison_mode(False)
+        
+        # 2. 保存当前播放状态
+        is_playing = False
+        current_volume = self._current_volume
         if self.player_core:
+            is_playing = self.player_core.is_playing
+            print(f"[VideoPlayer] 保存当前播放状态: 正在播放={is_playing}, 音量={current_volume}")
+        
+        # 3. 移除data目录中的lut.cube文件
+        data_dir = get_app_data_path()
+        lut_path = os.path.join(data_dir, "lut.cube")
+        if os.path.exists(lut_path):
+            try:
+                os.remove(lut_path)
+                print(f"[VideoPlayer] 已删除LUT文件: {lut_path}")
+            except Exception as e:
+                print(f"[VideoPlayer] 删除LUT文件失败: {e}")
+        
+        # 4. 禁用LUT滤镜
+        print("[VideoPlayer] 禁用LUT滤镜")
+        if self.player_core:
+            # 使用player_core的disable_cube_filter方法移除滤镜
             self.player_core.disable_cube_filter()
+            # 确保音量正确
+            self.player_core.set_volume(current_volume)
+        
+        # 5. 重置LUT相关属性
+        self.cube_path = None
+        self.cube_loaded = False
+        
+        # 6. 更新按钮样式和状态
+        self._update_lut_button_style(False)
+        self.comparison_button.hide()
+        self.load_cube_button.setText("加载LUT")
+        
+        # 7. 确保播放状态正确恢复
+        if self.player_core and is_playing:
+            # 如果之前在播放，确保继续播放
+            if self.player_core._get_property_bool('pause'):
+                self.player_core._set_property_bool('pause', False)
+            print(f"[VideoPlayer] 已恢复播放状态")
+        
+        print("[VideoPlayer] Cube文件设置已清除")
+    
+    def check_and_apply_lut_file(self):
+        """
+        检查data目录中是否有lut.cube文件，如果有则应用它
+        """
+        print("[VideoPlayer] 检查是否有LUT文件需要应用")
+        
+        # 获取data目录路径
+        data_dir = get_app_data_path()
+        lut_path = os.path.join(data_dir, "lut.cube")
+        
+        # 检查lut.cube文件是否存在
+        if os.path.exists(lut_path):
+            print(f"[VideoPlayer] 发现LUT文件: {lut_path}")
+            # 应用LUT滤镜
+            self.set_cube_file(lut_path)
+        else:
+            print("[VideoPlayer] 未发现LUT文件")
+            # 确保LUT相关属性已重置
             self.cube_path = None
             self.cube_loaded = False
-            # 更新按钮样式为白底黑字并隐藏对比预览按钮
+            # 更新按钮样式和状态
             self._update_lut_button_style(False)
             self.comparison_button.hide()
+            self.load_cube_button.setText("加载LUT")
     
     def closeEvent(self, event):
         """

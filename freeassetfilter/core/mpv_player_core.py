@@ -1052,16 +1052,15 @@ class MPVPlayerCore(QObject):
                 print(f"[MPVPlayerCore] 警告: MPV实例未初始化或Cube路径为空")
                 return False
             
-            # 更新标志位和当前Cube路径
-            self._cube_filter_enabled = True
-            self._current_cube_path = cube_path
-            
-            print(f"[MPVPlayerCore] 尝试启用Cube滤镜，文件路径: {cube_path}")
-            
             # 检查文件是否存在
             if not os.path.exists(cube_path):
                 print(f"[MPVPlayerCore] 错误: Cube文件不存在: {cube_path}")
                 return False
+            
+            # 如果已经启用了相同的Cube滤镜，直接返回
+            if self._cube_filter_enabled and self._current_cube_path == cube_path:
+                print(f"[MPVPlayerCore] 已启用相同的Cube滤镜，无需重复添加")
+                return True
             
             # 检查文件内容，确保是有效的Cube文件
             try:
@@ -1072,11 +1071,14 @@ class MPVPlayerCore(QObject):
                 print(f"[MPVPlayerCore] 无法读取Cube文件: {e}")
                 return False
             
-            # 首先移除所有视频滤镜，避免冲突
-            if not self._execute_command(['vf', 'remove', 'all']):
-                print(f"[MPVPlayerCore] 移除所有视频滤镜失败")
-            else:
-                print(f"[MPVPlayerCore] 已移除所有视频滤镜")
+            # 先清除所有现有的Cube滤镜，避免重复添加
+            self.disable_cube_filter()
+            
+            # 更新标志位和当前Cube路径
+            self._cube_filter_enabled = True
+            self._current_cube_path = cube_path
+            
+            print(f"[MPVPlayerCore] 尝试启用Cube滤镜，文件路径: {cube_path}")
             
             # 处理Cube路径（中文/空格）
             processed_cube_path = self.process_chinese_path(cube_path)
@@ -1114,18 +1116,18 @@ class MPVPlayerCore(QObject):
                 import traceback
                 traceback.print_exc()
             
-            # 尝试使用glsl-shaders-append选项（适用于旧版本MPV）
+            # 尝试使用glsl-shaders选项（替换模式，避免重复添加）
             try:
-                print(f"[MPVPlayerCore] 尝试使用glsl-shaders-append选项")
-                # 使用mpv_set_option_string设置glsl-shaders-append选项
-                result = libmpv.mpv_set_option_string(self._mpv, b"glsl-shaders-append", processed_cube_path.encode('utf-8'))
+                print(f"[MPVPlayerCore] 尝试使用glsl-shaders选项（替换模式）")
+                # 使用mpv_set_option_string设置glsl-shaders选项（替换现有滤镜）
+                result = libmpv.mpv_set_option_string(self._mpv, b"glsl-shaders", processed_cube_path.encode('utf-8'))
                 if result == MPV_ERROR_SUCCESS:
-                    print(f"[MPVPlayerCore] 成功使用glsl-shaders-append选项加载滤镜")
+                    print(f"[MPVPlayerCore] 成功使用glsl-shaders选项加载滤镜")
                     return True
                 else:
-                    print(f"[MPVPlayerCore] glsl-shaders-append选项失败，错误码: {result}")
+                    print(f"[MPVPlayerCore] glsl-shaders选项失败，错误码: {result}")
             except Exception as e:
-                print(f"[MPVPlayerCore] glsl-shaders-append选项异常: {e}")
+                print(f"[MPVPlayerCore] glsl-shaders选项异常: {e}")
                 import traceback
                 traceback.print_exc()
             
@@ -1152,28 +1154,114 @@ class MPVPlayerCore(QObject):
             if not self._mpv:
                 return
             
-            # 尝试移除所有lut3d滤镜
-            if self._execute_command(['vf', 'remove', 'lut3d']):
-                print(f"[MPVPlayerCore] 成功移除lut3d滤镜")
-            else:
-                print(f"[MPVPlayerCore] 移除lut3d滤镜失败，尝试移除所有视频滤镜")
-                # 尝试移除所有视频滤镜
-                self._execute_command(['vf', 'remove', 'all'])
+            print(f"[MPVPlayerCore] 开始禁用Cube滤镜")
             
-            # 尝试清除glsl-shaders
+            # 1. 首先尝试移除所有lut3d滤镜（通过vf系统）
+            print(f"[MPVPlayerCore] 尝试移除所有lut3d滤镜")
+            # 使用多种方式尝试移除lut3d滤镜
+            filter_names = ['@lavfi/lut3d', 'lut3d', '3dlut', 'colorgrade']
+            for filter_name in filter_names:
+                try:
+                    self._execute_command(['vf', 'remove', filter_name])
+                    print(f"[MPVPlayerCore] 尝试移除滤镜: {filter_name}")
+                except Exception as e:
+                    print(f"[MPVPlayerCore] 移除滤镜 {filter_name} 失败: {e}")
+            
+            # 移除所有视频滤镜，确保彻底清除
             try:
-                self._execute_command(['load', 'glsl-shaders', ''])
-                print(f"[MPVPlayerCore] 成功清除glsl-shaders")
+                self._execute_command(['vf', 'remove', 'all'])
+                print(f"[MPVPlayerCore] 已移除所有视频滤镜")
             except Exception as e:
-                print(f"[MPVPlayerCore] 清除glsl-shaders失败: {e}")
+                print(f"[MPVPlayerCore] 移除所有视频滤镜失败: {e}")
             
-            # 更新标志位
+            # 2. 清除glsl-shaders（通过shader系统）
+            print(f"[MPVPlayerCore] 尝试清除glsl-shaders")
+            # 尝试多种方式清除glsl-shaders
+            shader_commands = [
+                ['glsl-shaders', 'clr'],
+                ['load', 'glsl-shaders', ''],
+                ['glsl-shaders', 'reload']
+            ]
+            for cmd in shader_commands:
+                try:
+                    self._execute_command(cmd)
+                    print(f"[MPVPlayerCore] 执行shader命令: {cmd}")
+                except Exception as e:
+                    print(f"[MPVPlayerCore] 执行shader命令 {cmd} 失败: {e}")
+            
+            # 方式3: 直接设置glsl-shaders选项为空
+            try:
+                libmpv.mpv_set_option_string(self._mpv, b"glsl-shaders", b"")
+                print(f"[MPVPlayerCore] 成功设置glsl-shaders选项为空")
+            except Exception as e:
+                print(f"[MPVPlayerCore] 设置glsl-shaders选项失败: {e}")
+            
+            # 3. 清除所有可能的LUT相关选项
+            print(f"[MPVPlayerCore] 清除LUT相关选项")
+            lut_options = [
+                b"video-output-levels",
+                b"colorspace",
+                b"color-primaries",
+                b"transfer",
+                b"hdr-compute-peak",
+                b"target-trc",
+                b"target-prim"
+            ]
+            for option in lut_options:
+                try:
+                    libmpv.mpv_set_option_string(self._mpv, option, b"")
+                except Exception as e:
+                    print(f"[MPVPlayerCore] 清除选项 {option.decode()} 失败: {e}")
+            
+            # 4. 强制刷新视频播放，确保滤镜效果立即移除
+            print(f"[MPVPlayerCore] 尝试刷新视频播放")
+            
+            # 保存当前状态
+            was_playing = self._is_playing
+            current_pos = 0.0
+            if was_playing:
+                current_pos = self._get_property_double('playback-time')
+                print(f"[MPVPlayerCore] 保存当前播放位置: {current_pos}s")
+            
+            # 尝试多种方式刷新视频
+            # 方式1: 暂停再播放（安全刷新方式）
+            self._set_property_bool('pause', True)
+            self._set_property_bool('pause', False)
+            
+            # 方式2: 强制视频重新配置（更安全的刷新方式）
+            try:
+                self._execute_command(['video-reconfig'])
+                print(f"[MPVPlayerCore] 强制视频重新配置")
+            except Exception as e:
+                print(f"[MPVPlayerCore] 强制视频重新配置失败: {e}")
+                
+            # 方式3: 如果视频输出有问题，尝试重置视频输出模块
+            try:
+                self._execute_command(['vo-reset'])
+                print(f"[MPVPlayerCore] 重置视频输出模块")
+            except Exception as e:
+                print(f"[MPVPlayerCore] 重置视频输出模块失败: {e}")
+            
+            # 方式4: 确保播放状态正确恢复
+            if was_playing and not self._get_property_bool('pause'):
+                print(f"[MPVPlayerCore] 播放状态已正确恢复")
+            elif was_playing:
+                # 如果需要，手动恢复播放
+                self._set_property_bool('pause', False)
+                print(f"[MPVPlayerCore] 手动恢复播放状态")
+            
+            # 5. 更新标志位
             self._cube_filter_enabled = False
             self._current_cube_path = ""
+            print(f"[MPVPlayerCore] Cube滤镜已成功禁用")
+            
         except Exception as e:
-            print(f"[MPVPlayerCore] 错误: 禁用Cube滤镜失败 - {e}")
+            print(f"[MPVPlayerCore] 禁用Cube滤镜失败: {e}")
             import traceback
             traceback.print_exc()
+            # 即使发生异常，也要更新标志位
+            self._cube_filter_enabled = False
+            self._current_cube_path = ""
     
     def video_set_filter(self, filter_name, filter_param=None):
         """

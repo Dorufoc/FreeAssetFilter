@@ -12,6 +12,7 @@ from PyQt5.QtGui import QIcon, QFont
 # 导入现有的自定义控件
 from .custom_control_menu import CustomControlMenu
 from .progress_widgets import CustomValueBar
+from .button_widgets import CustomButton
 from freeassetfilter.core.svg_renderer import SvgRenderer
 import os
 
@@ -45,8 +46,8 @@ class VolumeSliderMenu(QWidget):
         
         # 图标属性
         self._icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
-        self._volume_icon_path = os.path.join(self._icon_dir, 'volume.svg')
-        self._mute_icon_path = os.path.join(self._icon_dir, 'volume静音.svg')
+        self._volume_icon_path = os.path.join(self._icon_dir, 'speaker.svg')
+        self._mute_icon_path = os.path.join(self._icon_dir, 'speaker-slash.svg')
         
         # 初始化UI
         self.init_ui()
@@ -60,23 +61,13 @@ class VolumeSliderMenu(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # 创建音量按钮
-        self.volume_button = QPushButton(self)
-        self.volume_button.setFixedSize(int(36 * self.dpi_scale), int(36 * self.dpi_scale))
-        self.volume_button.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: rgba(0, 0, 0, 0.08);
-            }
-            QPushButton:pressed {
-                background-color: rgba(0, 0, 0, 0.12);
-            }
-        """)
-        
+        # 创建音量按钮，使用CustomButton
+        self.volume_button = CustomButton(
+            text=self._volume_icon_path,
+            button_type="normal",
+            display_mode="icon",
+            height=36
+        )
         # 设置音量图标
         self.update_volume_icon()
         
@@ -153,14 +144,14 @@ class VolumeSliderMenu(QWidget):
         """
         更新音量图标
         """
-        # 渲染SVG图标
-        icon_size = int(24 * self.dpi_scale)
+        # 获取当前图标路径
         icon_path = self._mute_icon_path if self._muted else self._volume_icon_path
-        icon_pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, self.dpi_scale)
         
-        # 设置按钮图标
-        self.volume_button.setIcon(QIcon(icon_pixmap))
-        self.volume_button.setIconSize(icon_pixmap.size())
+        # 更新CustomButton的图标
+        self.volume_button._icon_path = icon_path
+        self.volume_button._display_mode = "icon"
+        self.volume_button._render_icon()
+        self.volume_button.update()
         
     def toggle_mute(self):
         """

@@ -38,3 +38,4 @@ tests/
 .DS_Store
 Thumbs.db
 *.cube
+data/lut.cube
