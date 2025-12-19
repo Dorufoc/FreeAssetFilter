@@ -251,7 +251,10 @@ class CustomFileSelector(QWidget):
         dir_layout.addWidget(self.favorites_btn)
         
         # 返回上一次退出所在目录按钮
-        self.last_path_btn = CustomButton("上次目录", button_type="secondary")
+        # 使用arrow_counterclockwise_clock.svg图标替换文字，样式为普通样式
+        import os
+        last_path_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "arrow_counterclockwise_clock.svg")
+        self.last_path_btn = CustomButton(last_path_icon_path, button_type="normal", display_mode="icon")
         self.last_path_btn.clicked.connect(self._go_to_last_path)
         dir_layout.addWidget(self.last_path_btn)
         
@@ -920,7 +923,12 @@ class CustomFileSelector(QWidget):
         try:
             if os.path.exists(self.favorites_file):
                 with open(self.favorites_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    favorites_data = json.load(f)
+                    # 确保返回的数据是列表类型
+                    if isinstance(favorites_data, list):
+                        return favorites_data
+                    else:
+                        print(f"收藏夹数据格式错误，预期列表类型，实际为 {type(favorites_data).__name__}")
         except Exception as e:
             print(f"加载收藏夹失败: {e}")
         return []
@@ -1028,26 +1036,36 @@ class CustomFileSelector(QWidget):
         if 0 <= index < len(self.favorites):
             favorite = self.favorites[index]
             
-            # 使用CustomInputBox获取新名称
-            from freeassetfilter.widgets.custom_widgets import CustomInputBox
-            input_box = CustomInputBox(
-                title="重命名收藏夹",
-                label="请输入新名称:",
-                default_text=favorite['name']
-            )
-            ok = input_box.exec_()
-            new_name = input_box.get_text() if ok else ""
+            # 使用CustomMessageBox的输入模式获取新名称
+            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            input_dialog = CustomMessageBox(self)
+            input_dialog.set_title("重命名收藏夹")
+            input_dialog.set_text("请输入新名称:")
+            input_dialog.set_input(text=favorite['name'])
+            input_dialog.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
             
-            if ok and new_name.strip():
-                # 更新收藏夹列表
-                self.favorites[index]['name'] = new_name.strip()
-                self._save_favorites()
-                
-                # 更新列表显示
-                favorites_list.clear_items()
-                for favorite in self.favorites:
-                    text = favorite['name'] + ' - ' + favorite['path']
-                    favorites_list.add_item(text)
+            # 记录结果
+            result = None
+            def on_button_clicked(button_index):
+                nonlocal result
+                result = button_index
+                input_dialog.close()
+            
+            input_dialog.buttonClicked.connect(on_button_clicked)
+            input_dialog.exec_()
+            
+            if result == 0:  # 0表示确定按钮
+                new_name = input_dialog.get_input()
+                if new_name.strip():
+                    # 更新收藏夹列表
+                    self.favorites[index]['name'] = new_name.strip()
+                    self._save_favorites()
+                    
+                    # 更新列表显示
+                    favorites_list.clear_items()
+                    for favorite in self.favorites:
+                        text = favorite['name'] + ' - ' + favorite['path']
+                        favorites_list.add_item(text)
     
     def _delete_favorite_custom(self, index, favorites_list):
         """
@@ -1110,29 +1128,39 @@ class CustomFileSelector(QWidget):
         # 获取当前目录名称作为默认名称
         default_name = os.path.basename(current_path) or current_path
         
-        # 使用CustomInputBox获取收藏夹名称
-        from freeassetfilter.widgets.custom_widgets import CustomInputBox
-        input_box = CustomInputBox(
-            title="添加到收藏夹",
-            label="请输入收藏名称:",
-            default_text=default_name
-        )
-        ok = input_box.exec_()
-        name = input_box.get_text() if ok else ""
+        # 使用CustomMessageBox的输入模式获取收藏夹名称
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        input_dialog = CustomMessageBox(self)
+        input_dialog.set_title("添加到收藏夹")
+        input_dialog.set_text("请输入收藏名称:")
+        input_dialog.set_input(text=default_name)
+        input_dialog.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
         
-        if ok and name.strip():
-            # 添加到收藏夹列表
-            self.favorites.append({
-                'name': name.strip(),
-                'path': current_path
-            })
-            self._save_favorites()
-            
-            # 更新列表显示
-            favorites_list.clear_items()
-            for favorite in self.favorites:
-                text = favorite['name'] + ' - ' + favorite['path']
-                favorites_list.add_item(text)
+        # 记录结果
+        result = None
+        def on_button_clicked(button_index):
+            nonlocal result
+            result = button_index
+            input_dialog.close()
+        
+        input_dialog.buttonClicked.connect(on_button_clicked)
+        input_dialog.exec_()
+        
+        if result == 0:  # 0表示确定按钮
+            name = input_dialog.get_input()
+            if name.strip():
+                # 添加到收藏夹列表
+                self.favorites.append({
+                    'name': name.strip(),
+                    'path': current_path
+                })
+                self._save_favorites()
+                
+                # 更新列表显示
+                favorites_list.clear_items()
+                for favorite in self.favorites:
+                    text = favorite['name'] + ' - ' + favorite['path']
+                    favorites_list.add_item(text)
     
     def _on_favorite_double_clicked(self, item, dialog):
         """
@@ -1182,20 +1210,31 @@ class CustomFileSelector(QWidget):
             # 获取旧收藏夹项
             for i, favorite in enumerate(self.favorites):
                 if favorite['path'] == path and favorite['name'] == old_name:
-                    # 弹出输入框获取新名称
-                    from freeassetfilter.widgets.custom_widgets import CustomInputBox
-                    input_box = CustomInputBox(
-                        title="重命名",
-                        label="请输入新名称:",
-                        default_text=old_name
-                    )
-                    ok = input_box.exec_()
-                    new_name = input_box.get_text() if ok else ""
-                    if ok and new_name:
-                        self.favorites[i]['name'] = new_name
-                        self._save_favorites()
-                        # 更新列表
-                        item.setText(new_name + ' - ' + path)
+                    # 使用CustomMessageBox的输入模式获取新名称
+                    from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                    input_dialog = CustomMessageBox(self)
+                    input_dialog.set_title("重命名")
+                    input_dialog.set_text("请输入新名称:")
+                    input_dialog.set_input(text=old_name)
+                    input_dialog.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
+                    
+                    # 记录结果
+                    result = None
+                    def on_button_clicked(button_index):
+                        nonlocal result
+                        result = button_index
+                        input_dialog.close()
+                    
+                    input_dialog.buttonClicked.connect(on_button_clicked)
+                    input_dialog.exec_()
+                    
+                    if result == 0:  # 0表示确定按钮
+                        new_name = input_dialog.get_input()
+                        if new_name:
+                            self.favorites[i]['name'] = new_name
+                            self._save_favorites()
+                            # 更新列表
+                            item.setText(new_name + ' - ' + path)
                     break
     
     def _delete_favorite(self, item, favorites_list):
@@ -1255,26 +1294,37 @@ class CustomFileSelector(QWidget):
                 info_msg.exec_()
                 return
         
-        # 弹出输入框获取名称
-        from freeassetfilter.widgets.custom_widgets import CustomInputBox
-        input_box = CustomInputBox(
-            title="添加到收藏夹",
-            label="请输入收藏名称:",
-            default_text=default_name
-        )
-        ok = input_box.exec_()
-        name = input_box.get_text() if ok else ""
-        if ok and name:
-            # 添加到收藏夹
-            self.favorites.append({
-                'name': name,
-                'path': current_path,
-                'added_time': datetime.now().isoformat()
-            })
-            self._save_favorites()
-            
-            # 更新列表
-            favorites_list.addItem(name + ' - ' + current_path)
+        # 使用CustomMessageBox的输入模式获取收藏夹名称
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        input_dialog = CustomMessageBox(self)
+        input_dialog.set_title("添加到收藏夹")
+        input_dialog.set_text("请输入收藏名称:")
+        input_dialog.set_input(text=default_name)
+        input_dialog.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
+        
+        # 记录结果
+        result = None
+        def on_button_clicked(button_index):
+            nonlocal result
+            result = button_index
+            input_dialog.close()
+        
+        input_dialog.buttonClicked.connect(on_button_clicked)
+        input_dialog.exec_()
+        
+        if result == 0:  # 0表示确定按钮
+            name = input_dialog.get_input()
+            if name:
+                # 添加到收藏夹
+                self.favorites.append({
+                    'name': name,
+                    'path': current_path,
+                    'added_time': datetime.now().isoformat()
+                })
+                self._save_favorites()
+                
+                # 更新列表
+                favorites_list.addItem(name + ' - ' + current_path)
     
     def _go_to_last_path(self):
         """
@@ -2114,6 +2164,34 @@ class CustomFileSelector(QWidget):
         font_formats = ["ttf", "otf", "woff", "woff2", "eot", "svg"]
         archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "tar.gz", "tar.bz2", "tar.xz", "tar.lzma", "iso", "cab", "arj", "lzh", "ace", "z"]
         
+        # 首先处理lnk和exe文件，使用它们自身的图标
+        if not file_info["is_dir"]:
+            suffix = file_info["suffix"].lower()
+            if suffix in ["lnk", "exe"]:
+                # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
+                base_icon_size = int(120 * self.dpi_scale)
+                scaled_icon_size = int(base_icon_size * 0.8)
+                
+                # 创建标签显示图标
+                label = QLabel()
+                label.setAlignment(Qt.AlignCenter)
+                label.setFixedSize(base_icon_size, base_icon_size)
+                
+                # 直接从文件路径获取图标
+                file_path = file_info["path"]
+                
+                # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
+                from PyQt5.QtWidgets import QFileIconProvider
+                icon_provider = QFileIconProvider()
+                file_info_qt = QFileInfo(file_path)
+                icon = icon_provider.icon(file_info_qt)
+                pixmap = icon.pixmap(scaled_icon_size, scaled_icon_size)
+                
+                # 检查是否获取到有效图标
+                if not pixmap.isNull():
+                    label.setPixmap(pixmap)
+                    return label
+        
         # 确定要使用的SVG图标
         icon_path = None
         icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
@@ -2308,6 +2386,19 @@ class CustomFileSelector(QWidget):
             icon_path = os.path.join(icon_dir, "文件夹.svg")
         else:
             suffix = file_info["suffix"]
+            
+            suffix = suffix.lower()
+            if suffix in ["lnk", "exe"]:
+                # 对于lnk和exe文件，使用QFileIconProvider获取图标
+                from PyQt5.QtWidgets import QFileIconProvider
+                icon_provider = QFileIconProvider()
+                file_info_qt = QFileInfo(file_info['path'])
+                icon = icon_provider.icon(file_info_qt)
+                pixmap = icon.pixmap(icon_size, icon_size)
+                
+                # 如果获取到有效图标，直接返回
+                if not pixmap.isNull():
+                    return pixmap
             
             if suffix in video_formats:
                 # 视频文件使用视频图标

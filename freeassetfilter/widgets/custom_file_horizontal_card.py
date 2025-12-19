@@ -354,6 +354,25 @@ class CustomFileHorizontalCard(QWidget):
             file_info = QFileInfo(self._file_path)
             # 根据文件类型设置图标
             suffix = file_info.suffix().lower()
+            
+            # 首先处理lnk和exe文件，使用它们自身的图标
+            if suffix in ["lnk", "exe"]:
+                # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
+                base_icon_size = int(40 * self.dpi_scale)
+                scaled_icon_size = int(base_icon_size * 0.8)
+                
+                # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
+                from PyQt5.QtWidgets import QFileIconProvider
+                icon_provider = QFileIconProvider()
+                icon = icon_provider.icon(file_info)
+                pixmap = icon.pixmap(scaled_icon_size, scaled_icon_size)
+                
+                # 检查是否获取到有效图标
+                if not pixmap.isNull():
+                    self.icon_display.setPixmap(pixmap)
+                    return
+            
+            # 对于其他文件类型，使用原有的图标处理逻辑
             icon_path = self._get_file_icon_path(suffix, file_info.isDir())
             if icon_path and os.path.exists(icon_path):
                 # 使用SvgRenderer渲染SVG图标

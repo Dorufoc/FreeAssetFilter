@@ -1062,15 +1062,6 @@ class MPVPlayerCore(QObject):
                 print(f"[MPVPlayerCore] 已启用相同的Cube滤镜，无需重复添加")
                 return True
             
-            # 检查文件内容，确保是有效的Cube文件
-            try:
-                with open(cube_path, 'r') as f:
-                    content = f.read()
-                print(f"[MPVPlayerCore] Cube文件内容前500字符: {content[:500]}")
-            except Exception as e:
-                print(f"[MPVPlayerCore] 无法读取Cube文件: {e}")
-                return False
-            
             # 先清除所有现有的Cube滤镜，避免重复添加
             self.disable_cube_filter()
             

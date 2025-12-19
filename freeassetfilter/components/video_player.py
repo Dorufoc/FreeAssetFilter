@@ -30,6 +30,7 @@ from freeassetfilter.widgets.custom_widgets import CustomValueBar, CustomButton
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.widgets.custom_control_menu import CustomControlMenu
 from freeassetfilter.widgets.volume_slider_menu import VolumeSliderMenu
+from freeassetfilter.core.settings_manager import SettingsManager
 
 # 用于读取音频文件封面
 from mutagen.id3 import ID3
@@ -97,9 +98,6 @@ class VideoPlayer(QWidget):
         # 初始化所有属性
         self.init_attributes()
         
-        # 创建UI组件
-        self.init_ui()
-        
         # 初始化播放器核心 - 默认使用MPV内核
         print("[VideoPlayer] 初始化MPV播放器核心...")
         self.player_core = MPVPlayerCore()
@@ -109,13 +107,14 @@ class VideoPlayer(QWidget):
             print("[VideoPlayer] 警告: MPV内核初始化失败，将使用简化模式")
         else:
             print("[VideoPlayer] MPV内核初始化成功")
-            # 将MPV播放器绑定到video_frame窗口
-            if self.video_frame:
-                print("[VideoPlayer] 绑定MPV播放器到video_frame窗口...")
-                self.player_core.set_window(self.video_frame.winId())
         
-        # 检查是否有LUT文件需要应用
-        self.check_and_apply_lut_file()
+        # 创建UI组件
+        self.init_ui()
+        
+        # 将MPV播放器绑定到video_frame窗口
+        if self.video_frame:
+            print("[VideoPlayer] 绑定MPV播放器到video_frame窗口...")
+            self.player_core.set_window(self.video_frame.winId())
         
         # 创建定时器用于更新进度
         self.timer = QTimer(self)
@@ -127,6 +126,9 @@ class VideoPlayer(QWidget):
         
         # 初始化定时器
         self.timer.start()
+        
+        # 延迟检查是否有LUT文件需要应用，避免启动过慢
+        QTimer.singleShot(100, self.check_and_apply_lut_file)
     
     def init_attributes(self):
         """
@@ -401,6 +403,8 @@ class VideoPlayer(QWidget):
         self._current_volume = saved_volume
         self._previous_volume = saved_volume
         self.volume_slider_menu.set_volume(saved_volume)
+        # 将音量设置到播放器核心
+        self.set_volume(saved_volume)
         
         # 设置音量条浮动菜单的信号连接
         self.volume_slider_menu.valueChanged.connect(self.set_volume)
@@ -914,15 +918,18 @@ class VideoPlayer(QWidget):
         """
         加载保存的音量设置
         """
-        # 简化实现，返回默认音量50
-        return 50
+        # 使用SettingsManager加载音量设置，默认音量为100
+        settings_manager = SettingsManager()
+        return settings_manager.get_setting('player.volume', 100)
     
     def save_volume_setting(self, volume):
         """
         保存音量设置
         """
-        # 简化实现，实际项目中可以保存到配置文件
-        pass
+        # 使用SettingsManager保存音量设置
+        settings_manager = SettingsManager()
+        settings_manager.set_setting('player.volume', volume)
+        settings_manager.save_settings()
     
     def load_cube_file(self):
         """
@@ -962,7 +969,7 @@ class VideoPlayer(QWidget):
                     self.set_cube_file(target_cube_path)
                     print(f"[VideoPlayer] 成功加载Cube文件: {cube_file}")
                     # 更新按钮为强调样式状态
-                self.load_cube_button.set_button_type("primary")
+                    self.load_cube_button.set_button_type("primary")
         except Exception as e:
             print(f"[VideoPlayer] LUT操作失败: {e}")
             import traceback
@@ -1183,7 +1190,15 @@ class VideoPlayer(QWidget):
                 
                 # 提取并显示音频元数据和封面
                 self.extract_audio_metadata(file_path)
+                
+                # 隐藏LUT按钮，因为音频没有画面需要应用LUT
+                self.load_cube_button.hide()
+                self.comparison_button.hide()
             else:
+                # 显示LUT按钮，因为视频有画面需要应用LUT
+                self.load_cube_button.show()
+                self.comparison_button.show()
+                
                 # 检查是否处于对比预览模式
                 is_comparison_mode = hasattr(self, 'comparison_mode') and self.comparison_mode
                 
@@ -1602,42 +1617,13 @@ class VideoPlayer(QWidget):
         scaled_min_width = int(80 * self.dpi_scale)
         scaled_font_size = int(16 * self.dpi_scale)
         
+        # 使用CustomButton的set_button_type方法更新样式，保持一致性
         if is_active:
-            # 激活状态：蓝底白字
-            self.load_cube_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: #0078d4;
-                    color: white;
-                    border: {scaled_border}px solid #0078d4;
-                    padding: {scaled_padding}px {scaled_padding_right}px;
-                    border-radius: {scaled_border_radius}px;
-                    min-width: {scaled_min_width}px;
-                    max-width: {scaled_min_width}px;
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    font-size: {scaled_font_size}px;
-                }}
-                QPushButton:hover {{
-                    background-color: #005a9e;
-                }}
-            """)
+            # 激活状态使用primary类型（蓝底白字）
+            self.load_cube_button.set_button_type("primary")
         else:
-            # 非激活状态：白底黑字
-            self.load_cube_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: #FFFFFF;
-                    color: #000000;
-                    border: {scaled_border}px solid #FFFFFF;
-                    padding: {scaled_padding}px {scaled_padding_right}px;
-                    border-radius: {scaled_border_radius}px;
-                    min-width: {scaled_min_width}px;
-                    max-width: {scaled_min_width}px;
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    font-size: {scaled_font_size}px;
-                }}
-                QPushButton:hover {{
-                    background-color: #f0f0f0;
-                }}
-            """)
+            # 非激活状态使用normal类型（普通样式）
+            self.load_cube_button.set_button_type("normal")
     
     def set_cube_file(self, cube_path):
         """

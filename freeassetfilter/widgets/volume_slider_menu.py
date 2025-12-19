@@ -40,14 +40,14 @@ class VolumeSliderMenu(QWidget):
         self.global_font = getattr(app, 'global_font', QFont())
         
         # 音量属性
-        self._volume = 50  # 默认音量50%
+        self._volume = 100  # 默认音量100%
         self._muted = False  # 默认不静音
         self._menu_visible = False  # 菜单是否可见
         
         # 图标属性
         self._icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
         self._volume_icon_path = os.path.join(self._icon_dir, 'speaker.svg')
-        self._mute_icon_path = os.path.join(self._icon_dir, 'speaker-slash.svg')
+        self._mute_icon_path = os.path.join(self._icon_dir, 'speaker_slash.svg')
         
         # 初始化UI
         self.init_ui()
@@ -136,16 +136,15 @@ class VolumeSliderMenu(QWidget):
         main_layout.addWidget(self.volume_button)
         
         # 连接信号和槽
-        self.volume_button.clicked.connect(self.toggle_mute)
-        self.volume_button.enterEvent = self._on_button_enter  # 重写鼠标进入事件
+        self.volume_button.clicked.connect(self.toggle_menu)
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
         
     def update_volume_icon(self):
         """
         更新音量图标
         """
-        # 获取当前图标路径
-        icon_path = self._mute_icon_path if self._muted else self._volume_icon_path
+        # 获取当前图标路径：静音或音量为0时显示静音图标，否则显示正常音量图标
+        icon_path = self._mute_icon_path if (self._muted or self._volume == 0) else self._volume_icon_path
         
         # 更新CustomButton的图标
         self.volume_button._icon_path = icon_path
@@ -204,8 +203,12 @@ class VolumeSliderMenu(QWidget):
                 self.volume_label.setText(f"{self._volume}%")
             
             # 如果音量不为0且当前静音，则取消静音
+            # 直接更新静音状态，不发出信号，避免无限递归
             if volume > 0 and self._muted:
-                self.set_muted(False)
+                self._muted = False
+            
+            # 更新音量图标，确保音量为0时显示静音图标
+            self.update_volume_icon()
         
     def volume(self):
         """
@@ -216,14 +219,15 @@ class VolumeSliderMenu(QWidget):
         """
         return self._volume
         
-    def _on_button_enter(self, event):
+    def toggle_menu(self):
         """
-        鼠标进入音量按钮事件，显示音量菜单
+        切换音量菜单显示/隐藏状态
         """
-        self.show_menu()
-        # 调用父类的enterEvent
-        super(QPushButton, self.volume_button).enterEvent(event)
-        
+        if self._menu_visible:
+            self.hide_menu()
+        else:
+            self.show_menu()
+            
     def show_menu(self):
         """
         显示音量菜单
@@ -236,6 +240,13 @@ class VolumeSliderMenu(QWidget):
             self._menu_visible = True
             # 连接菜单关闭信号
             self.volume_menu.closeEvent = self._on_menu_close
+            # 连接点击外部区域关闭菜单信号
+            self.volume_menu.mousePressEvent = self._on_menu_click
+            # 连接按钮的leaveEvent
+            self.volume_button.leaveEvent = self._on_button_leave
+            # 启动定时器，3秒后检查是否需要关闭菜单
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(3000, self._check_leave_and_close)
             
     def hide_menu(self):
         """
@@ -244,14 +255,39 @@ class VolumeSliderMenu(QWidget):
         if self._menu_visible:
             self.volume_menu.close()
             self._menu_visible = False
+            # 断开按钮的leaveEvent
+            self.volume_button.leaveEvent = None
             
     def _on_menu_close(self, event):
         """
         菜单关闭事件处理
         """
         self._menu_visible = False
+        # 断开按钮的leaveEvent
+        self.volume_button.leaveEvent = None
         # 调用原始的closeEvent
         super(CustomControlMenu, self.volume_menu).closeEvent(event)
+        
+    def _on_button_leave(self, event):
+        """
+        鼠标离开音量按钮事件
+        """
+        # 启动定时器，3秒后检查是否需要关闭菜单
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(3000, self._check_leave_and_close)
+        # 调用父类的leaveEvent
+        from PyQt5.QtWidgets import QPushButton
+        super(QPushButton, self.volume_button).leaveEvent(event)
+        
+    def _on_menu_click(self, event):
+        """
+        菜单点击事件，处理点击外部区域关闭菜单
+        """
+        # 如果点击的是菜单内部，不处理
+        if self.volume_menu.rect().contains(event.pos()):
+            return
+        # 否则关闭菜单
+        self.hide_menu()
         
     def _on_volume_changed(self, value):
         """
@@ -266,25 +302,41 @@ class VolumeSliderMenu(QWidget):
         """
         鼠标进入组件事件
         """
-        self.show_menu()
+        # 移除鼠标悬停显示菜单的逻辑，改为点击显示
         super().enterEvent(event)
         
     def leaveEvent(self, event):
         """
         鼠标离开组件事件
         """
-        # 延迟隐藏菜单，以便用户可以移动到菜单上
-        from PyQt5.QtCore import QTimer
-        QTimer.singleShot(200, self._check_leave)
+        # 移除鼠标离开时的延迟隐藏逻辑，改为点击关闭和3秒自动关闭
         super().leaveEvent(event)
         
-    def _check_leave(self):
+    def _check_leave_and_close(self):
         """
-        检查是否真正离开组件
+        检查是否真正离开组件，并在离开3秒后关闭菜单
         """
         # 检查鼠标是否在组件或菜单上
-        if not self.underMouse() and not self.volume_menu.underMouse():
-            self.hide_menu()
+        from PyQt5.QtCore import QPoint, QRect
+        from PyQt5.QtGui import QCursor
+        
+        # 获取全局鼠标位置，使用兼容Qt 5所有版本的QCursor.pos()
+        global_pos = QCursor.pos()
+        
+        # 检查鼠标是否在VolumeSliderMenu组件上
+        widget_rect = self.mapToGlobal(QPoint(0, 0))
+        widget_rect = QRect(widget_rect, self.size())
+        if widget_rect.contains(global_pos):
+            return
+        
+        # 检查鼠标是否在音量菜单上
+        menu_rect = self.volume_menu.mapToGlobal(QPoint(0, 0))
+        menu_rect = QRect(menu_rect, self.volume_menu.size())
+        if menu_rect.contains(global_pos):
+            return
+        
+        # 鼠标不在组件或菜单上，隐藏菜单
+        self.hide_menu()
             
     def mousePressEvent(self, event):
         """

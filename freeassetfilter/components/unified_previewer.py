@@ -68,6 +68,8 @@ class UnifiedPreviewer(QWidget):
         self.is_cancelled = False
         # 初始化临时PDF文件路径，用于文档预览
         self.temp_pdf_path = None
+        # 预览加载状态标志，防止快速点击导致多个预览组件同时运行
+        self.is_loading_preview = False
         
         # 初始化UI
         self.init_ui()
@@ -160,6 +162,11 @@ class UnifiedPreviewer(QWidget):
         
         debug(f"接收到file_selected信号，文件信息: {file_info}")
         
+        # 检查是否正在加载预览，如果是则忽略新的请求
+        if self.is_loading_preview:
+            debug("正在加载预览中，忽略新的预览请求")
+            return
+        
         self.current_file_info = file_info
         
         # 更新文件信息查看器
@@ -229,6 +236,9 @@ class UnifiedPreviewer(QWidget):
             debug(f"预览类型相同，直接更新组件: {preview_type}")
             self._update_preview_widget(file_path, preview_type)
         else:
+            # 设置加载状态为True，防止快速点击触发多个预览
+            self.is_loading_preview = True
+            
             # 对于所有预览类型，都使用后台线程加载，确保UI响应
             debug(f"预览类型不同，创建新组件: {preview_type}")
             
@@ -787,7 +797,7 @@ class UnifiedPreviewer(QWidget):
         # 创建全局设置窗口
         from freeassetfilter.widgets.custom_widgets import CustomWindow
         from freeassetfilter.widgets.setting_widgets import CustomSettingItem
-        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout, QGroupBox, QWidget
+        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout, QGroupBox, QWidget, QApplication
         from freeassetfilter.widgets.custom_widgets import CustomMessageBox
         
         # 获取应用实例和DPI缩放因子
@@ -1318,6 +1328,28 @@ class UnifiedPreviewer(QWidget):
         # 添加滚动区域到窗口
         self.settings_window.add_widget(scroll_area)
         
+        # 计算并设置窗口居中位置
+        from PyQt5.QtWidgets import QApplication
+        
+        # 优先相对于主窗口居中
+        main_window = None
+        for widget in QApplication.topLevelWidgets():
+            if hasattr(widget, 'windowTitle') and 'FreeAssetFilter' in widget.windowTitle():
+                main_window = widget
+                break
+        
+        if main_window:
+            # 获取主窗口和设置窗口的几何信息
+            main_rect = main_window.frameGeometry()
+            settings_rect = self.settings_window.frameGeometry()
+            
+            # 计算居中位置
+            x = (main_rect.center().x() - settings_rect.width() // 2)
+            y = (main_rect.center().y() - settings_rect.height() // 2)
+            
+            # 设置窗口位置
+            self.settings_window.move(x, y)
+        
         # 显示窗口
         self.settings_window.show()
     
@@ -1375,6 +1407,36 @@ class UnifiedPreviewer(QWidget):
                 # 文档预览：转换为PDF后预览
                 self._show_document_preview(file_path)
                 return  # _show_document_preview已经处理了组件添加
+            elif preview_type == "unknown":
+                # 不支持的文件类型，显示普通提示文字
+                # 创建普通信息容器
+                info_container = QWidget()
+                info_container.setStyleSheet("background-color: transparent;")
+                info_layout = QVBoxLayout(info_container)
+                info_layout.setSpacing(10)
+                info_layout.setContentsMargins(0, 0, 0, 0)
+                
+                # 显示普通信息
+                info_message = f"暂不支持预览该文件类型\n\n文件路径：{file_path}"
+                info_label = QLabel(info_message)
+                info_label.setAlignment(Qt.AlignCenter)
+                
+                # 启用自动换行，确保文本根据宽度调整
+                info_label.setWordWrap(True)
+                
+                # 使用全局统一字体大小，与LibreOffice提示样式保持一致
+                app = QApplication.instance()
+                default_font_size = getattr(app, 'default_font_size', 14)
+                dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+                scaled_font_size = int(default_font_size * dpi_scale)
+                info_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999; font-weight: normal; word-wrap: true;")
+                
+                info_layout.addWidget(info_label)
+                
+                self.preview_layout.addWidget(info_container)
+                self.current_preview_widget = info_container
+                self.current_preview_type = "info"
+                return
 
             # 添加创建的组件到布局
             if created_widget:
@@ -1411,11 +1473,14 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(error_container)
             self.current_preview_widget = error_container
             self.current_preview_type = "error"
-        
-        # 清理线程资源
-        if hasattr(self, '_preview_thread'):
-            self._preview_thread.deleteLater()
-            delattr(self, '_preview_thread')
+        finally:
+            # 无论成功还是失败，都将加载状态设置为False，恢复接收新的预览请求
+            self.is_loading_preview = False
+            
+            # 清理线程资源
+            if hasattr(self, '_preview_thread'):
+                self._preview_thread.deleteLater()
+                delattr(self, '_preview_thread')
     
     def _on_preview_error(self, error_message):
         """
@@ -1424,41 +1489,45 @@ class UnifiedPreviewer(QWidget):
         Args:
             error_message (str): 错误信息
         """
-        # 关闭进度条弹窗
-        self._on_file_read_finished()
-        
-        # 创建错误信息容器
-        error_container = QWidget()
-        error_container.setStyleSheet("background-color: transparent;")
-        error_layout = QVBoxLayout(error_container)
-        error_layout.setSpacing(10)
-        error_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 显示错误信息
-        full_error_message = f"预览失败: {error_message}"
-        error_label = QLabel(full_error_message)
-        error_label.setAlignment(Qt.AlignCenter)
-        error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
-        error_layout.addWidget(error_label)
-        
-        # 添加复制按钮
-        copy_button = CustomButton("复制错误信息", button_type="secondary")
-        copy_button.setFixedWidth(int(120 * self.dpi_scale))
-        copy_button.clicked.connect(lambda: self._copy_to_clipboard(full_error_message))
-        copy_button_layout = QHBoxLayout()
-        copy_button_layout.addStretch()
-        copy_button_layout.addWidget(copy_button)
-        copy_button_layout.addStretch()
-        error_layout.addLayout(copy_button_layout)
-        
-        self.preview_layout.addWidget(error_container)
-        self.current_preview_widget = error_container
-        self.current_preview_type = "error"
-        
-        # 清理线程资源
-        if hasattr(self, '_preview_thread'):
-            self._preview_thread.deleteLater()
-            delattr(self, '_preview_thread')
+        try:
+            # 关闭进度条弹窗
+            self._on_file_read_finished()
+            
+            # 创建错误信息容器
+            error_container = QWidget()
+            error_container.setStyleSheet("background-color: transparent;")
+            error_layout = QVBoxLayout(error_container)
+            error_layout.setSpacing(10)
+            error_layout.setContentsMargins(0, 0, 0, 0)
+            
+            # 显示错误信息
+            full_error_message = f"预览失败: {error_message}"
+            error_label = QLabel(full_error_message)
+            error_label.setAlignment(Qt.AlignCenter)
+            error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+            error_layout.addWidget(error_label)
+            
+            # 添加复制按钮
+            copy_button = CustomButton("复制错误信息", button_type="secondary")
+            copy_button.setFixedWidth(int(120 * self.dpi_scale))
+            copy_button.clicked.connect(lambda: self._copy_to_clipboard(full_error_message))
+            copy_button_layout = QHBoxLayout()
+            copy_button_layout.addStretch()
+            copy_button_layout.addWidget(copy_button)
+            copy_button_layout.addStretch()
+            error_layout.addLayout(copy_button_layout)
+            
+            self.preview_layout.addWidget(error_container)
+            self.current_preview_widget = error_container
+            self.current_preview_type = "error"
+        finally:
+            # 无论成功还是失败，都将加载状态设置为False，恢复接收新的预览请求
+            self.is_loading_preview = False
+            
+            # 清理线程资源
+            if hasattr(self, '_preview_thread'):
+                self._preview_thread.deleteLater()
+                delattr(self, '_preview_thread')
     
     class PreviewLoaderThread(QThread):
         """
@@ -1489,19 +1558,19 @@ class UnifiedPreviewer(QWidget):
                 # 实际的UI组件创建将在主线程中完成
                 
                 # 对于不同的预览类型，执行不同的预处理逻辑
-                if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir", "document"]:
+                if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir", "document", "unknown"]:
                     # 模拟进度更新，确保UI能响应
                     import time
                     for i in range(20, 100, 10):
                         if self.is_cancelled:
                             self.preview_error.emit("预览已取消")
                             return
-                        self.preview_progress.emit(i, f"正在加载{self.preview_type}文件...")
+                        self.preview_progress.emit(i, f"正在准备预览...")
                         # 短暂休眠，让主线程有机会处理事件
                         time.sleep(0.1)
                     
                     # 标记预览准备完成
-                    self.preview_progress.emit(100, f"{self.preview_type}文件准备完成")
+                    self.preview_progress.emit(100, "预览准备完成")
                     
                     # 发送信号，通知主线程创建预览组件
                     # 注意：我们不在后台线程中创建UI组件，而是让主线程创建
@@ -1597,18 +1666,36 @@ class UnifiedPreviewer(QWidget):
             if not os.path.exists(libreoffice_exe):
                 # 关闭进度条弹窗
                 self._on_file_read_finished()
-                # 弹窗提示用户需要安装LibreOffice组件
-                QMessageBox.information(
-                    self,
-                    "LibreOffice组件缺失",
-                    "预览Office类文件需要LibreOffice组件支持。\n\n请将LibreOfficePortable解压后放置于:\nFreeassetfilter/data文件夹内\n\n文件夹结构应为：\nFreeAssetFliter/data/LibreOfficePortable/...",
-                    QMessageBox.Ok
-                )
-                # 显示默认提示
-                self.default_label.setText("Office文件预览需要LibreOffice组件支持")
-                self.preview_layout.addWidget(self.default_label)
-                self.default_label.show()
-                self.current_preview_widget = self.default_label
+                # 在预览器窗口内显示LibreOffice缺失提示（普通信息样式）
+                self._clear_preview()
+                
+                # 创建普通信息容器
+                info_container = QWidget()
+                info_container.setStyleSheet("background-color: transparent;")
+                info_layout = QVBoxLayout(info_container)
+                info_layout.setSpacing(10)
+                info_layout.setContentsMargins(0, 0, 0, 0)
+                
+                # 显示普通信息
+                info_message = "LibreOffice组件缺失\n\n预览Office类文件需要LibreOffice组件支持。\n\n请将LibreOfficePortable解压后放置于:\nFreeassetfilter/data文件夹内\n\n文件夹结构应为：\nFreeAssetFliter/data/LibreOfficePortable/..."
+                info_label = QLabel(info_message)
+                info_label.setAlignment(Qt.AlignCenter)
+                
+                # 启用自动换行，确保文本根据宽度调整
+                info_label.setWordWrap(True)
+                
+                # 使用全局统一字体大小
+                app = QApplication.instance()
+                default_font_size = getattr(app, 'default_font_size', 14)
+                dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+                scaled_font_size = int(default_font_size * dpi_scale)
+                info_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999; font-weight: normal; word-wrap: true;")
+                
+                info_layout.addWidget(info_label)
+                
+                self.preview_layout.addWidget(info_container)
+                self.current_preview_widget = info_container
+                self.current_preview_type = "info"
                 return
             
             # 使用LibreOffice将文档转换为PDF

@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QApplication,
     QLabel, QScrollArea,
     QGroupBox, QListWidget, QListWidgetItem, QMessageBox,
-    QFrame, QSizePolicy, QFileIconProvider
+    QFrame, QSizePolicy, QFileIconProvider, QComboBox
 )
 
 # 导入自定义控件
@@ -90,9 +90,7 @@ class ArchiveBrowser(QWidget):
         self.icon_provider = QFileIconProvider()
         
         # 初始化编码相关属性
-        self.auto_detect_encoding = True  # 是否自动检测编码
-        self.detected_encoding = None  # 检测到的编码
-        self.manual_encoding = None  # 手动选择的编码
+        self.manual_encoding = "gbk"  # 默认使用GBK编码
         self.supported_encodings = [
             "utf-8", "gbk", "gb2312", "iso-8859-1", 
             "ascii", "utf-16", "utf-16le", "utf-16be"
@@ -190,14 +188,6 @@ class ArchiveBrowser(QWidget):
         encoding_layout = QHBoxLayout()
         encoding_layout.setSpacing(scaled_spacing)
         
-        # 编码自动检测复选框
-        from PyQt5.QtWidgets import QCheckBox, QComboBox
-        self.auto_encoding_check = QCheckBox("自动检测编码")
-        self.auto_encoding_check.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
-        self.auto_encoding_check.setChecked(self.auto_detect_encoding)
-        self.auto_encoding_check.stateChanged.connect(self._on_auto_encoding_changed)
-        encoding_layout.addWidget(self.auto_encoding_check)
-        
         # 编码选择下拉框
         encoding_label = QLabel("编码: ")
         encoding_label.setFont(self.global_font)
@@ -218,16 +208,11 @@ class ArchiveBrowser(QWidget):
         # 添加支持的编码
         for enc in self.supported_encodings:
             self.encoding_combo.addItem(enc.upper(), enc)
-        # 设置默认选择
-        self.encoding_combo.setCurrentText("UTF-8")
+        # 设置默认选择为GBK
+        self.encoding_combo.setCurrentText("GBK")
         # 连接选择变化信号
         self.encoding_combo.currentIndexChanged.connect(self._on_encoding_changed)
         encoding_layout.addWidget(self.encoding_combo)
-        
-        # 应用编码按钮
-        self.apply_encoding_btn = CustomButton("应用", button_type="primary", height=button_height)
-        self.apply_encoding_btn.clicked.connect(self._on_apply_encoding)
-        encoding_layout.addWidget(self.apply_encoding_btn)
         
         main_layout.addLayout(encoding_layout)
         
@@ -309,17 +294,28 @@ class ArchiveBrowser(QWidget):
         if not filename_bytes:
             return "utf-8"
         
-        # 使用chardet检测编码
+        # 优先尝试UTF-8和GBK，这两种编码覆盖了大部分中文文件名场景
+        # 默认使用GBK或UTF-8，根据检测结果选择
+        preferred_encodings = ["utf-8", "gbk"]
+        
+        # 先尝试直接解码，优先使用中文常见编码
+        for enc in preferred_encodings:
+            try:
+                filename_bytes.decode(enc)
+                return enc
+            except UnicodeDecodeError:
+                continue
+        
+        # 如果直接解码失败，使用chardet检测
         result = chardet.detect(filename_bytes)
         encoding = result["encoding"]
         confidence = result["confidence"]
         
-        # 如果检测到的编码不在支持列表中，或者置信度低于0.7，尝试常见编码
+        # 如果检测到的编码不在支持列表中，或者置信度低于0.7，尝试其他常见编码
         if encoding not in self.supported_encodings or confidence < 0.7:
-            # 尝试常见编码
-            for enc in ["utf-8", "gbk", "gb2312", "iso-8859-1"]:
+            # 尝试其他常见编码
+            for enc in ["gb2312", "iso-8859-1"]:
                 try:
-                    # 尝试解码
                     filename_bytes.decode(enc)
                     return enc
                 except UnicodeDecodeError:
@@ -331,7 +327,7 @@ class ArchiveBrowser(QWidget):
     
     def _decode_filename(self, filename):
         """
-        解码文件名，根据检测到的编码或手动选择的编码
+        解码文件名，使用手动选择的编码
         
         Args:
             filename (str or bytes): 文件名
@@ -343,32 +339,19 @@ class ArchiveBrowser(QWidget):
         if isinstance(filename, str):
             return filename
         
-        # 尝试使用手动选择的编码
+        # 只使用手动选择的编码
         if self.manual_encoding:
             try:
                 return filename.decode(self.manual_encoding)
             except UnicodeDecodeError:
-                pass
+                # 解码失败，使用replace模式
+                return filename.decode(self.manual_encoding, errors="replace")
         
-        # 尝试使用自动检测的编码
-        if self.detected_encoding:
-            try:
-                return filename.decode(self.detected_encoding)
-            except UnicodeDecodeError:
-                pass
-        
-        # 自动检测编码
-        encoding = self._detect_encoding(filename)
-        
-        # 如果是第一次检测，保存检测结果
-        if not self.detected_encoding:
-            self.detected_encoding = encoding
-        
+        # 默认为GBK编码
         try:
-            return filename.decode(encoding)
+            return filename.decode("gbk")
         except UnicodeDecodeError:
-            # 如果解码失败，尝试使用replace模式
-            return filename.decode(encoding, errors="replace")
+            return filename.decode("gbk", errors="replace")
     
     def set_archive_path(self, path):
         """
@@ -382,46 +365,21 @@ class ArchiveBrowser(QWidget):
             self._detect_archive_type()
             self._detect_encryption()
             self.current_path = ""
-            # 重置编码检测结果
-            self.detected_encoding = None
-            self.manual_encoding = None
+            # 重置编码为默认值GBK
+            self.manual_encoding = "gbk"
+            # 更新编码选择下拉框
+            self.encoding_combo.setCurrentText("GBK")
             self.refresh()
         else:
             QMessageBox.warning(self, "警告", "无效的压缩包路径")
-    
-    def _on_auto_encoding_changed(self, state):
-        """
-        自动编码检测状态变化
-        """
-        self.auto_detect_encoding = state == Qt.Checked
-        # 如果启用自动检测，清除手动选择的编码
-        if self.auto_detect_encoding:
-            self.manual_encoding = None
-            self.detected_encoding = None
-            self.refresh()
     
     def _on_encoding_changed(self, index):
         """
         编码选择变化
         """
-        # 如果启用了自动检测，不允许手动选择
-        if self.auto_detect_encoding:
-            return
-        
         # 获取选择的编码
         self.manual_encoding = self.encoding_combo.currentData()
-    
-    def _on_apply_encoding(self):
-        """
-        应用编码设置
-        """
-        if not self.auto_detect_encoding:
-            self.manual_encoding = self.encoding_combo.currentData()
-        else:
-            self.manual_encoding = None
-            self.detected_encoding = None
-        
-        # 刷新文件列表
+        # 立即刷新文件列表，应用新编码
         self.refresh()
     
     def _detect_archive_type(self):
@@ -579,10 +537,34 @@ class ArchiveBrowser(QWidget):
         
         with zipfile.ZipFile(self.archive_path, 'r') as zf:
             for info in zf.infolist():
-                # 获取原始文件名（bytes）
-                filename_bytes = info.orig_filename.encode('latin-1') if isinstance(info.orig_filename, str) else info.orig_filename
-                # 解码文件名
-                file_path = self._decode_filename(filename_bytes)
+                # 处理ZIP文件的特殊情况，获取原始bytes文件名
+                # 注意：Python 3.6+中，zipfile会尝试自动解码文件名，但可能不准确
+                # 使用filename属性获取系统默认编码解码的结果
+                # 使用orig_filename获取原始编码的字符串
+                # 对于ZIP文件，我们需要手动处理编码
+                try:
+                    # 尝试直接访问filename属性（Python 3.6+）
+                    filename_str = info.filename
+                    # 对于ZIP文件，我们需要获取原始bytes进行正确编码检测
+                    # 使用namelist()获取的是已经解码的字符串，所以我们需要特殊处理
+                    # 遍历namelist，找到匹配的项
+                    for name in zf.namelist():
+                        if name == filename_str:
+                            # 找到匹配项，尝试获取原始bytes
+                            # 注意：zipfile内部使用CP437编码解码文件名，所以我们需要重新编码
+                            # 然后使用我们的编码检测逻辑
+                            filename_bytes = name.encode('cp437')
+                            file_path = self._decode_filename(filename_bytes)
+                            break
+                    else:
+                        # 没有找到匹配项，直接使用filename_str
+                        file_path = filename_str
+                except Exception as e:
+                    # 处理异常，直接使用orig_filename
+                    if isinstance(info.orig_filename, str):
+                        file_path = info.orig_filename
+                    else:
+                        file_path = self._decode_filename(info.orig_filename)
                 
                 # 跳过隐藏文件
                 if os.path.basename(file_path).startswith('.'):
@@ -688,13 +670,12 @@ class ArchiveBrowser(QWidget):
                 # 获取原始文件名
                 file_path = info.filename
                 
-                # 如果是bytes类型，直接解码；否则先转换为bytes再解码
+                # 如果是bytes类型，直接解码；否则直接使用字符串
                 if isinstance(file_path, bytes):
                     decoded_path = self._decode_filename(file_path)
                 else:
-                    # 对于字符串类型，先转换为bytes再解码
-                    filename_bytes = file_path.encode('latin-1')
-                    decoded_path = self._decode_filename(filename_bytes)
+                    # 已经是字符串，直接使用
+                    decoded_path = file_path
                 
                 # 跳过隐藏文件
                 if os.path.basename(decoded_path).startswith('.'):
@@ -848,13 +829,12 @@ class ArchiveBrowser(QWidget):
                 # 获取原始文件名
                 file_path = info.name
                 
-                # 如果是bytes类型，直接解码；否则先转换为bytes再解码
+                # 如果是bytes类型，直接解码；否则直接使用字符串
                 if isinstance(file_path, bytes):
                     decoded_path = self._decode_filename(file_path)
                 else:
-                    # 对于字符串类型，先转换为bytes再解码
-                    filename_bytes = file_path.encode('latin-1')
-                    decoded_path = self._decode_filename(filename_bytes)
+                    # 已经是字符串，直接使用
+                    decoded_path = file_path
                 
                 # 跳过隐藏文件
                 if os.path.basename(decoded_path).startswith('.'):
@@ -963,13 +943,12 @@ class ArchiveBrowser(QWidget):
                 # 获取原始文件名
                 file_path = info.filename
                 
-                # 如果是bytes类型，直接解码；否则先转换为bytes再解码
+                # 如果是bytes类型，直接解码；否则直接使用字符串
                 if isinstance(file_path, bytes):
                     decoded_path = self._decode_filename(file_path)
                 else:
-                    # 对于字符串类型，先转换为bytes再解码
-                    filename_bytes = file_path.encode('latin-1')
-                    decoded_path = self._decode_filename(filename_bytes)
+                    # 已经是字符串，直接使用
+                    decoded_path = file_path
                 
                 # 跳过隐藏文件
                 if os.path.basename(decoded_path).startswith('.'):

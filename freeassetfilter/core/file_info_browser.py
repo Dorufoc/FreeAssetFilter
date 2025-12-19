@@ -1622,19 +1622,23 @@ class FileInfoBrowser:
             menu = QMenu(widget)
             
             # 设置右键菜单样式
-            menu.setStyleSheet("""
-                QMenu {
+            scaled_padding = int(8 * self.dpi_scale)
+            scaled_padding_right = int(30 * self.dpi_scale)
+            menu.setStyleSheet(f"""
+                QMenu {{
                     background-color: white;
                     color: black;
                     border: 1px solid #ccc;
-                }
-                QMenu::item {
-                    padding: 5px 20px;
-                }
-                QMenu::item:selected {
+                    font-size: {int(self.global_font.pointSize() * self.dpi_scale * 1.9)}px;
+                    font-family: '{self.global_font.family()}';
+                }}
+                QMenu::item {{
+                    padding: {scaled_padding}px {scaled_padding_right}px;
+                }}
+                QMenu::item:selected {{
                     background-color: #1E90FF; /* 蓝色背景 */
                     color: white; /* 白色文字 */
-                }
+                }}
             """)
             
             # 获取当前值
@@ -1670,19 +1674,23 @@ class FileInfoBrowser:
         menu = QMenu(widget)
         
         # 设置右键菜单样式，确保悬停时显示蓝色背景和白色文字
-        menu.setStyleSheet("""
-            QMenu {
+        scaled_padding = int(8 * self.dpi_scale)
+        scaled_padding_right = int(30 * self.dpi_scale)
+        menu.setStyleSheet(f"""
+            QMenu {{
                 background-color: white;
                 color: black;
                 border: 1px solid #ccc;
-            }
-            QMenu::item {
-                padding: 5px 20px;
-            }
-            QMenu::item:selected {
+                font-size: {int(self.global_font.pointSize() * self.dpi_scale)}px;
+                font-family: '{self.global_font.family()}';
+            }}
+            QMenu::item {{
+                padding: {scaled_padding}px {scaled_padding_right}px;
+            }}
+            QMenu::item:selected {{
                 background-color: #1E90FF; /* 蓝色背景 */
                 color: white; /* 白色文字 */
-            }
+            }}
         """)
         
         # 复制当前信息

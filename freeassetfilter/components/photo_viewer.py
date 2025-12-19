@@ -108,15 +108,26 @@ class ImageWidget(QWidget):
                 self.current_file_path = image_path
                 # 重置平移参数
                 self.pan_offset = QPoint()
-                # 计算自适应缩放因子
-                self.calculate_fit_scale()
-                self.update_image()
-                self.update()
+                
+                # 使用QTimer延迟执行自适应缩放，确保图片渲染完成且布局稳定
+                QTimer.singleShot(100, self._delayed_fit_scale)
                 return True
             return False
         except Exception as e:
             print(f"加载图片时出错: {e}")
             return False
+    
+    def _delayed_fit_scale(self):
+        """
+        延迟执行自适应缩放，确保图片渲染完成且布局稳定
+        """
+        try:
+            # 计算自适应缩放因子
+            self.calculate_fit_scale()
+            self.update_image()
+            self.update()
+        except Exception as e:
+            print(f"延迟自适应缩放时出错: {e}")
     
     def calculate_fit_scale(self):
         """
@@ -248,11 +259,13 @@ class ImageWidget(QWidget):
                 delta = event.pos() - self.last_mouse_pos
                 self.pan_offset += delta
                 self.last_mouse_pos = event.pos()
-                self.update()
             else:
                 # 更新像素信息
                 if self.is_valid_pixel_position(self.mouse_pos):
                     self.update_pixel_info(self.mouse_pos)
+            
+            # 实时刷新界面，确保十字线跟随鼠标移动
+            self.update()
         except Exception as e:
             print(f"处理鼠标移动事件时出错: {e}")
     
