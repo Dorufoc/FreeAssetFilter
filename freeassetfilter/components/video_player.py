@@ -1364,17 +1364,17 @@ class VideoPlayer(QWidget):
                 # 从字节数据创建PIL Image
                 pil_image = Image.open(io.BytesIO(cover_data))
                 
-                # 调整图像大小
-                pil_image = pil_image.resize((scaled_cover_size, scaled_cover_size), Image.Resampling.LANCZOS)
+                # 调整图像大小用于中央显示
+                pil_image_cover = pil_image.resize((scaled_cover_size, scaled_cover_size), Image.Resampling.LANCZOS)
                 
-                # 创建QPixmap
+                # 创建QPixmap用于中央显示
                 image_data = io.BytesIO()
-                pil_image.save(image_data, format='PNG')
+                pil_image_cover.save(image_data, format='PNG')
                 image_data.seek(0)
                 pixmap = QPixmap()
                 pixmap.loadFromData(image_data.read())
                 
-                # 应用圆角矩形遮罩
+                # 应用圆角矩形遮罩到中央封面
                 rounded_pixmap = QPixmap(scaled_cover_size, scaled_cover_size)
                 rounded_pixmap.fill(Qt.transparent)
                 
@@ -1390,8 +1390,26 @@ class VideoPlayer(QWidget):
                 painter.drawPixmap(rect, pixmap)
                 painter.end()
                 
-                # 设置封面
+                # 设置中央封面
                 self.cover_label.setPixmap(rounded_pixmap)
+                
+                # 创建背景封面（使用原始封面图调整大小并应用模糊效果）
+                # 获取background_label的当前大小
+                background_size = self.background_label.size()
+                
+                # 调整封面大小以适应背景，保持宽高比
+                pil_image_bg = pil_image.resize((background_size.width(), background_size.height()), Image.Resampling.LANCZOS)
+                
+                # 创建背景QPixmap
+                bg_image_data = io.BytesIO()
+                pil_image_bg.save(bg_image_data, format='PNG')
+                bg_image_data.seek(0)
+                bg_pixmap = QPixmap()
+                bg_pixmap.loadFromData(bg_image_data.read())
+                
+                # 设置背景封面并应用高斯模糊效果
+                self.background_label.setPixmap(bg_pixmap)
+                self.background_label.setScaledContents(True)
                 
             except Exception as e:
                 print(f"[VideoPlayer] 处理封面失败: {e}")
@@ -1442,6 +1460,10 @@ class VideoPlayer(QWidget):
         
         # 设置到封面标签
         self.cover_label.setPixmap(default_pixmap)
+        
+        # 设置背景标签为深灰色，与默认封面颜色保持一致
+        self.background_label.clear()
+        self.background_label.setStyleSheet("background-color: #333333;")
     
     def play(self):
         """

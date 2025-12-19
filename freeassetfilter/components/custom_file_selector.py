@@ -119,6 +119,10 @@ class CustomFileSelector(QWidget):
         # 初始化UI
         self.init_ui()
         
+        # 启用拖拽功能
+        self.setAcceptDrops(True)
+        self.files_container.setAcceptDrops(True)
+        
         # 获取应用实例
         app = QApplication.instance()
         # 初始化设置管理器
@@ -1562,33 +1566,55 @@ class CustomFileSelector(QWidget):
         if index != -1:
             self.drive_combo.setCurrentIndex(index)
     
-    def refresh_files(self):
+    def refresh_files(self, callback=None):
         """
         刷新文件列表
+        
+        Args:
+            callback (callable, optional): 文件卡片生成完成后的回调函数
         """
+        # 生成带时间戳的debug信息
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileSelector.refresh_files] {msg}")
+        
+        debug("开始刷新文件列表")
         # 更新路径输入框
         self.path_edit.setText(self.current_path)
+        debug(f"更新路径输入框为: {self.current_path}")
         
         # 更新盘符选择器
         self._update_drive_selector()
+        debug("更新盘符选择器")
         
         # 清空现有文件卡片
         self._clear_files_layout()
+        debug("清空现有文件卡片")
         
         # 获取文件列表
         files = self._get_files()
+        debug(f"获取到 {len(files)} 个文件")
         
         # 应用排序
         files = self._sort_files(files)
+        debug("应用排序")
         
         # 应用筛选
         files = self._filter_files(files)
+        debug(f"应用筛选后剩余 {len(files)} 个文件")
         
         # 创建文件卡片
         self._create_file_cards(files)
+        debug("创建文件卡片完成")
         
         # 更新选中文件计数
         #self._update_selected_count()
+        
+        # 调用回调函数
+        if callback:
+            debug(f"调用回调函数: {callback}")
+            callback()
     
     def _clear_files_layout(self):
         """
@@ -2564,8 +2590,210 @@ class CustomFileSelector(QWidget):
         # 显示对话框
         dialog.exec_()
     
-
-
+    def dragEnterEvent(self, event):
+        """
+        处理拖拽进入事件
+        
+        Args:
+            event (QDragEnterEvent): 拖拽进入事件
+        """
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            # 添加拖拽视觉反馈
+            self.setStyleSheet(f"background-color: #e8f4fc; border: 2px dashed #4a7abc; border-radius: {int(8 * self.dpi_scale)}px;")
+    
+    def dragMoveEvent(self, event):
+        """
+        处理拖拽移动事件
+        
+        Args:
+            event (QDragMoveEvent): 拖拽移动事件
+        """
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    
+    def dragLeaveEvent(self, event):
+        """
+        处理拖拽离开事件
+        
+        Args:
+            event (QDragLeaveEvent): 拖拽离开事件
+        """
+        # 恢复原始样式
+        self.setStyleSheet("background-color: #f1f3f5;")
+    
+    def dropEvent(self, event):
+        """
+        处理拖拽释放事件
+        
+        Args:
+            event (QDropEvent): 拖拽释放事件
+        """
+        # 生成带时间戳的debug信息
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileSelector.dropEvent] {msg}")
+        
+        debug("开始处理拖拽释放事件")
+        # 恢复原始样式
+        self.setStyleSheet("background-color: #f1f3f5;")
+        
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            debug(f"拖拽的URL数量: {len(urls)}")
+            
+            if len(urls) == 1:
+                # 单个文件或文件夹
+                url = urls[0]
+                file_path = url.toLocalFile()
+                debug(f"拖拽的文件路径: {file_path}")
+                
+                if os.path.isfile(file_path):
+                    # 单个文件：自动导航至该文件所在的目录路径，并在文件选择器中高亮选中该文件
+                    debug(f"文件类型: 文件")
+                    file_dir = os.path.dirname(file_path)
+                    debug(f"文件所在目录: {file_dir}")
+                    
+                    self.current_path = file_dir
+                    debug(f"设置当前路径为: {file_dir}")
+                    
+                    # 保存文件路径，用于回调函数
+                    dropped_file_path = file_path
+                    
+                    # 使用回调函数确保在文件卡片生成完成后再进行后续操作
+                    def on_files_refreshed():
+                        debug("文件卡片生成完成，开始后续操作")
+                        # 选中该文件
+                        if file_dir in self.selected_files:
+                            debug(f"目录 {file_dir} 已存在于selected_files中")
+                            self.selected_files[file_dir].add(dropped_file_path)
+                        else:
+                            debug(f"目录 {file_dir} 不存在于selected_files中，创建新条目")
+                            self.selected_files[file_dir] = {dropped_file_path}
+                        
+                        debug(f"selected_files内容: {self.selected_files}")
+                        
+                        # 更新UI显示选中状态
+                        self._update_file_selection_state()
+                        debug(f"调用_update_file_selection_state更新选中状态")
+                        
+                        # 同时实现两个功能：模拟右键选择和将文件添加到存储池
+                        self._handle_dropped_file(dropped_file_path)
+                        debug(f"调用_handle_dropped_file({dropped_file_path})")
+                    
+                    self.refresh_files(callback=on_files_refreshed)
+                    debug(f"调用refresh_files刷新文件列表，完成后调用回调函数")
+                elif os.path.isdir(file_path):
+                    # 单个文件夹：自动导航并展开至该文件夹内部路径
+                    debug(f"文件类型: 文件夹")
+                    self.current_path = file_path
+                    debug(f"设置当前路径为: {file_path}")
+                    self.refresh_files()
+                    debug(f"调用refresh_files刷新文件列表")
+            
+            event.acceptProposedAction()
+            debug(f"接受拖拽提议的操作")
+    
+    def _handle_dropped_file(self, file_path):
+        """
+        处理拖拽的文件，同时实现两个功能：
+        1. 将文件添加到存储池
+        2. 模拟右键选择行为
+        
+        Args:
+            file_path (str): 文件路径
+        """
+        # 生成带时间戳的debug信息
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileSelector._handle_dropped_file] {msg}")
+        
+        debug(f"开始处理拖拽的文件: {file_path}")
+        
+        # 直接创建文件信息，而不是在files_layout中查找
+        try:
+            file_stat = os.stat(file_path)
+            file_name = os.path.basename(file_path)
+            file_dir = os.path.dirname(file_path)
+            
+            # 创建文件信息字典
+            file_info = {
+                "name": file_name,
+                "path": file_path,
+                "is_dir": os.path.isdir(file_path),
+                "size": file_stat.st_size,
+                "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
+                "suffix": os.path.splitext(file_name)[1].lower()
+            }
+            
+            debug(f"创建的文件信息: {file_info}")
+            
+            # 1. 发出文件选择状态变化信号，将文件添加到存储池
+            debug(f"发出file_selection_changed信号，将文件添加到存储池")
+            self.file_selection_changed.emit(file_info, True)
+            
+            # 2. 发出文件右键点击信号，模拟右键选择行为
+            debug(f"发出file_right_clicked信号，模拟右键选择")
+            self.file_right_clicked.emit(file_info)
+            
+            debug(f"成功处理拖拽的文件: {file_path}")
+        except Exception as e:
+            debug(f"处理文件时出错: {e}")
+        
+        debug(f"完成处理拖拽的文件: {file_path}")
+    
+    def _update_file_selection_state(self):
+        """
+        更新文件选择状态，确保UI显示正确的选中状态
+        """
+        # 遍历当前目录显示的所有文件卡片，更新选中状态
+        for i in range(self.files_layout.count()):
+            widget = self.files_layout.itemAt(i).widget()
+            if widget is not None and hasattr(widget, 'file_info'):
+                file_path = widget.file_info['path']
+                # 检查文件是否被选中
+                is_selected = self.current_path in self.selected_files and file_path in self.selected_files[self.current_path]
+                widget.is_selected = is_selected
+                # 更新卡片样式
+                scaled_border_radius = int(8 * self.dpi_scale)
+                scaled_padding = int(8 * self.dpi_scale)
+                if is_selected:
+                    widget.setStyleSheet(f"QWidget#FileCard {{\n" \
+                        f"    background-color: #e8f4fc;\n" \
+                        f"    border: 2px solid #4a7abc;\n" \
+                        f"    border-radius: {scaled_border_radius}px;\n" \
+                        f"    padding: {scaled_padding}px;\n" \
+                        f"    text-align: center;\n" \
+                        f"}}\n" \
+                        f"QWidget#FileCard:hover {{\n" \
+                        f"    border-color: #4a7abc;\n" \
+                        f"    background-color: #e8f4fc;\n" \
+                        f"}}\n")
+                    # 更新标签样式
+                    widget.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
+                    widget.detail_label.setStyleSheet("background: transparent; border: none; color: #666666;")
+                    if hasattr(widget, 'modified_label'):
+                        widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
+                else:
+                    widget.setStyleSheet(f"QWidget#FileCard {{\n" \
+                        f"    background-color: #f1f3f5;\n" \
+                        f"    border: 2px solid #e0e0e0;\n" \
+                        f"    border-radius: {scaled_border_radius}px;\n" \
+                        f"    padding: {scaled_padding}px;\n" \
+                        f"    text-align: center;\n" \
+                        f"}}\n" \
+                        f"QWidget#FileCard:hover {{\n" \
+                        f"    border-color: #4a7abc;\n" \
+                        f"    background-color: #f0f8ff;\n" \
+                        f"}}\n")
+                    # 恢复标签样式
+                    widget.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
+                    widget.detail_label.setStyleSheet("background: transparent; border: none; color: #666666;")
+                    if hasattr(widget, 'modified_label'):
+                        widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
 
 # 测试代码
 if __name__ == "__main__":

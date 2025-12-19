@@ -77,6 +77,10 @@ class FileStagingPool(QWidget):
         # 初始化UI
         self.init_ui()
         
+        # 启用拖拽功能
+        self.setAcceptDrops(True)
+        self.cards_container.setAcceptDrops(True)
+        
         # 连接信号
         self.update_progress.connect(self.on_update_progress)
         self.export_finished.connect(self.on_export_finished)
@@ -1292,10 +1296,125 @@ class FileStagingPool(QWidget):
                 break
         
         # 发出信号通知文件选择器取消所有选中
-        for item in items_to_remove:
-            self.remove_from_selector.emit(item)
+    
+    def dragEnterEvent(self, event):
+        """
+        处理拖拽进入事件
         
-        # 清空列表
+        Args:
+            event (QDragEnterEvent): 拖拽进入事件
+        """
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            # 添加拖拽视觉反馈
+            self.setStyleSheet(f"background-color: #e8f4fc; border: 2px dashed #4a7abc; border-radius: {int(8 * self.dpi_scale)}px;")
+    
+    def dragMoveEvent(self, event):
+        """
+        处理拖拽移动事件
+        
+        Args:
+            event (QDragMoveEvent): 拖拽移动事件
+        """
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    
+    def dragLeaveEvent(self, event):
+        """
+        处理拖拽离开事件
+        
+        Args:
+            event (QDragLeaveEvent): 拖拽离开事件
+        """
+        # 恢复原始样式
+        self.setStyleSheet("background-color: #ffffff;")
+    
+    def dropEvent(self, event):
+        """
+        处理拖拽释放事件
+        
+        Args:
+            event (QDropEvent): 拖拽释放事件
+        """
+        # 恢复原始样式
+        self.setStyleSheet("background-color: #ffffff;")
+        
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            
+            # 处理每个拖拽的文件/文件夹
+            for url in urls:
+                file_path = url.toLocalFile()
+                
+                if os.path.exists(file_path):
+                    # 直接在储存池中导入该文件/文件夹
+                    self._add_dropped_item(file_path)
+            
+            event.acceptProposedAction()
+    
+    def _add_dropped_item(self, file_path):
+        """
+        添加拖拽的文件或文件夹到储存池
+        
+        Args:
+            file_path (str): 文件或文件夹路径
+        """
+        if os.path.isfile(file_path):
+            # 单个文件
+            file_info = self._get_file_info(file_path)
+            if file_info:
+                self.add_file(file_info)
+        elif os.path.isdir(file_path):
+            # 文件夹：递归添加所有文件
+            self._add_folder_contents(file_path)
+    
+    def _get_file_info(self, file_path):
+        """
+        获取文件信息
+        
+        Args:
+            file_path (str): 文件路径
+        
+        Returns:
+            dict: 文件信息字典
+        """
+        try:
+            file_stat = os.stat(file_path)
+            file_name = os.path.basename(file_path)
+            
+            file_info = {
+                "name": file_name,
+                "path": file_path,
+                "is_dir": False,
+                "size": file_stat.st_size,
+                "modified": datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "created": datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
+                "suffix": os.path.splitext(file_name)[1].lower(),
+                "display_name": file_name,
+                "original_name": file_name
+            }
+            
+            return file_info
+        except Exception as e:
+            print(f"获取文件信息失败: {e}")
+            return None
+    
+    def _add_folder_contents(self, folder_path):
+        """
+        递归添加文件夹中的所有文件到储存池
+        
+        Args:
+            folder_path (str): 文件夹路径
+        """
+        try:
+            for root, dirs, files in os.walk(folder_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    file_info = self._get_file_info(file_path)
+                    if file_info:
+                        self.add_file(file_info)
+        except Exception as e:
+            print(f"添加文件夹内容失败: {e}")
         self.items.clear()
         self.cards.clear()
         # 更新统计信息

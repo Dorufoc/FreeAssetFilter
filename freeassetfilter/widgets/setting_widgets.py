@@ -121,13 +121,21 @@ class CustomSettingItem(QWidget):
             }
         """ % (scaled_border_width, scaled_border_radius))
         
+        # 设置主控件大小策略，允许自适应内容
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        
         # 左侧文本区域
         self.text_widget = self._create_text_widget()
         main_layout.addWidget(self.text_widget, 1)  # 文本区域占主要空间
         
         # 右侧交互区域
         self.interaction_widget = self._create_interaction_widget()
+        # 设置交互区域的大小策略，确保它能获得足够的空间
+        self.interaction_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        # 使用更合适的布局权重，确保交互区域能获得足够的空间
         main_layout.addWidget(self.interaction_widget, 0, Qt.AlignRight | Qt.AlignVCenter)
+        # 确保布局能够正确计算最小尺寸
+        main_layout.activate()
         
     def _create_text_widget(self):
         """创建左侧文本区域"""
@@ -176,8 +184,6 @@ class CustomSettingItem(QWidget):
     
     def _create_interaction_widget(self):
         """创建右侧交互区域"""
-        widget = QWidget()
-        
         if self.interaction_type == self.SWITCH_TYPE:
             # 开关控件
             return self._create_switch_widget()
@@ -192,6 +198,8 @@ class CustomSettingItem(QWidget):
             return self._create_value_bar_widget()
         else:
             # 未知类型，返回空控件
+            widget = QWidget()
+            widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             return widget
     
     def _create_switch_widget(self):
@@ -199,6 +207,8 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        # 设置布局约束，允许完全自适应内容大小
+        layout.setSizeConstraint(layout.SetMinAndMaxSize)
         
         # 创建开关按钮
         self.switch_button = QPushButton()
@@ -222,6 +232,12 @@ class CustomSettingItem(QWidget):
         self.switch_button.toggled.connect(self._update_switch_icon)
         
         layout.addWidget(self.switch_button)
+        
+        # 设置容器大小策略，允许自适应内容
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 确保容器没有宽度限制，允许完全自适应内容
+        widget.setMinimumWidth(0)
+        widget.setMaximumWidth(16777215)
         return widget
     
     def _update_switch_icon(self):
@@ -275,6 +291,8 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        # 设置布局约束，允许完全自适应内容大小
+        layout.setSizeConstraint(layout.SetMinAndMaxSize)
         # 应用DPI缩放因子到按钮间距
         scaled_spacing = int(8 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
@@ -301,6 +319,11 @@ class CustomSettingItem(QWidget):
             layout.addWidget(btn)
             self.button_group.append(btn)
         
+        # 设置容器大小策略，允许自适应内容
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 确保容器没有宽度限制，允许完全自适应内容
+        widget.setMinimumWidth(0)
+        widget.setMaximumWidth(16777215)
         return widget
     
     def _on_button_clicked(self, button_index):
@@ -312,6 +335,8 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        # 设置布局约束，允许完全自适应内容大小
+        layout.setSizeConstraint(layout.SetMinAndMaxSize)
         # 应用DPI缩放因子到组件间距
         scaled_spacing = int(8 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
@@ -335,6 +360,11 @@ class CustomSettingItem(QWidget):
         layout.addWidget(self.input_box, 1)  # 输入框占主要空间
         layout.addWidget(self.submit_button, 0)  # 按钮占固定空间
         
+        # 设置容器大小策略，允许自适应内容
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 确保容器没有宽度限制，允许完全自适应内容
+        widget.setMinimumWidth(0)
+        widget.setMaximumWidth(16777215)
         return widget
     
     def _on_input_button_clicked(self):
@@ -347,6 +377,8 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        # 设置布局约束，允许完全自适应内容大小
+        layout.setSizeConstraint(layout.SetMinAndMaxSize)
         # 应用DPI缩放因子到组件间距
         scaled_spacing = int(8 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
@@ -379,6 +411,11 @@ class CustomSettingItem(QWidget):
         layout.addWidget(self.value_bar)
         layout.addWidget(self.value_label)
         
+        # 设置容器大小策略，允许自适应内容
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 确保容器没有宽度限制，允许完全自适应内容
+        widget.setMinimumWidth(0)
+        widget.setMaximumWidth(16777215)
         return widget
     
     def _on_value_changed(self, value):

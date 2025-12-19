@@ -244,7 +244,7 @@ class SvgRenderer:
             return label
     
     @staticmethod
-    def render_svg_to_pixmap(icon_path, icon_size=24, dpi_scale=1.0):
+    def render_svg_to_pixmap(icon_path, icon_size=24, dpi_scale=1.0, icon_width=None, icon_height=None):
         """
         将SVG文件渲染为QPixmap，支持透明背景和高质量渲染
         
@@ -252,17 +252,28 @@ class SvgRenderer:
         
         Args:
             icon_path (str): SVG文件路径
-            icon_size (int): 输出图标大小，默认24x24
+            icon_size (int): 输出图标大小，默认24x24（当未指定width和height时使用）
             dpi_scale (float): DPI缩放因子，默认1.0
+            icon_width (int, optional): 输出图标宽度，指定后按比例渲染
+            icon_height (int, optional): 输出图标高度，指定后按比例渲染
             
         Returns:
             QPixmap: 渲染后的QPixmap对象，如果渲染失败返回透明像素图
         """
         # 应用DPI缩放因子到图标大小
-        scaled_icon_size = int(icon_size * dpi_scale)
+        if icon_width is not None and icon_height is not None:
+            # 如果同时指定了宽度和高度，按照指定尺寸渲染
+            scaled_width = int(icon_width * dpi_scale)
+            scaled_height = int(icon_height * dpi_scale)
+        else:
+            # 否则使用1:1比例
+            scaled_size = int(icon_size * dpi_scale)
+            scaled_width = scaled_size
+            scaled_height = scaled_size
+        
         if not icon_path or not os.path.exists(icon_path):
             # 如果路径无效，返回透明像素图
-            pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
+            pixmap = QPixmap(scaled_width, scaled_height)
             pixmap.fill(Qt.transparent)
             return pixmap
         
@@ -310,7 +321,8 @@ class SvgRenderer:
             painter.end()
             
             # 然后缩放回目标大小，使用高质量缩放算法
-            final_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # 如果指定了宽度和高度，按指定比例缩放；否则保持1:1比例
+            final_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
             if not final_pixmap.isNull():
                 return final_pixmap
@@ -328,7 +340,7 @@ class SvgRenderer:
             pixmap = QPixmap(png_path)
             if not pixmap.isNull():
                 # 缩放PNG到合适大小，使用高质量缩放算法
-                scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                scaled_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 return scaled_pixmap
         
         # 检查icons文件夹内是否有同名PNG图片
@@ -349,11 +361,11 @@ class SvgRenderer:
             pixmap = QPixmap(icons_png_path)
             if not pixmap.isNull():
                 # 缩放PNG到合适大小，使用高质量缩放算法
-                scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                scaled_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 return scaled_pixmap
         
         # 如果所有方法都失败，返回透明像素图
-        pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
+        pixmap = QPixmap(scaled_width, scaled_height)
         pixmap.fill(Qt.transparent)
         return pixmap
     
