@@ -278,6 +278,16 @@ class MPVPlayerCore(QObject):
             # 设置视频输出模块为gpu-next，确保LUT滤镜正常工作
             set_option('vo', 'gpu-next')
             
+            # 视频缩放相关选项，确保视频渲染内容根据容器大小动态调整
+            set_option('video-unscaled', 'no')  # 允许视频缩放
+            set_option('keepaspect', 'yes')  # 保持视频原始宽高比
+            set_option('autofit-larger', '100%')  # 确保视频在窗口放大时在容器内自动调整大小
+            set_option('autofit-smaller', '100%')  # 确保视频在窗口缩小时也能正确适应容器大小，避免被裁切
+            set_option('correct-downscaling', 'yes')  # 确保视频在缩小时有更好的质量
+            set_option('linear-downscaling', 'yes')  # 确保视频在缩小时有更好的质量
+            set_option('fit-osd', 'yes')  # 确保OSD（如果启用）也能适应容器大小
+            set_option('osd-scale-by-window', 'yes')  # 确保OSD随窗口大小一起缩放
+            
             # 启用日志
             set_option('loglevel', 'info')
             

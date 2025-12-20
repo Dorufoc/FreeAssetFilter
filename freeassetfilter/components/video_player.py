@@ -91,6 +91,9 @@ class VideoPlayer(QWidget):
         # 设置组件字体
         self.setFont(self.global_font)
         
+        # 设置焦点策略，确保组件能够接收键盘事件
+        self.setFocusPolicy(Qt.StrongFocus)
+        
         # 作为子组件，不设置窗口标题和最小尺寸，而是由父容器控制
         # 移除窗口属性，避免作为独立窗口弹出
         self.setStyleSheet("background-color: transparent;")
@@ -210,11 +213,11 @@ class VideoPlayer(QWidget):
         
         # 媒体显示区域设置
         self.media_frame.setStyleSheet("background-color: black;")
-        self.media_frame.setMinimumSize(400, 300)
+        self.media_frame.setMinimumSize(300, 200)
         
         # 视频显示区域设置 - MPV将直接渲染到这个窗口
         self.video_frame.setStyleSheet("background-color: black;")
-        self.video_frame.setMinimumSize(400, 300)
+        self.video_frame.setMinimumSize(300, 200)
         
         # 设置视频显示区域的布局
         video_layout = QVBoxLayout(self.video_frame)
@@ -230,7 +233,7 @@ class VideoPlayer(QWidget):
         self.background_label.setStyleSheet("background-color: black;")
         self.background_label.setScaledContents(True)
         self.background_label.setAlignment(Qt.AlignCenter)
-        self.background_label.setMinimumSize(400, 300)
+        self.background_label.setMinimumSize(300, 200)
         
         # 添加模糊效果
         self.blur_effect = QGraphicsBlurEffect()
@@ -299,7 +302,7 @@ class VideoPlayer(QWidget):
         
         # 设置音频容器样式
         self.audio_container.setStyleSheet("background-color: transparent;")
-        self.audio_container.setMinimumSize(400, 300)
+        self.audio_container.setMinimumSize(300, 200)
         
         # 构建音频叠加布局 - 将所有部件放在同一网格位置
         audio_layout.addWidget(self.background_label, 0, 0)
@@ -310,8 +313,8 @@ class VideoPlayer(QWidget):
         media_layout = QVBoxLayout(self.media_frame)
         media_layout.setContentsMargins(0, 0, 0, 0)
         media_layout.setSpacing(0)
-        media_layout.addWidget(self.video_frame)
-        media_layout.addWidget(self.audio_stacked_widget)
+        media_layout.addWidget(self.video_frame, 1)  # 设置拉伸因子为1，确保视频帧填充整个可用空间
+        media_layout.addWidget(self.audio_stacked_widget, 1)  # 设置拉伸因子为1，确保音频界面也能填充整个可用空间
         
         # 音频界面默认隐藏
         self.audio_stacked_widget.hide()
@@ -409,6 +412,9 @@ class VideoPlayer(QWidget):
         # 设置音量条浮动菜单的信号连接
         self.volume_slider_menu.valueChanged.connect(self.set_volume)
         self.volume_slider_menu.mutedChanged.connect(self._on_muted_changed)
+        
+        # 连接音量条的用户交互结束信号，用于保存音量设置
+        self.volume_slider_menu.volume_slider.userInteractionEnded.connect(lambda: self.save_volume_setting(self._current_volume))
         
         # 添加音量条浮动菜单到布局
         bottom_layout.addWidget(self.volume_slider_menu)
@@ -910,9 +916,13 @@ class VideoPlayer(QWidget):
             # 保存当前音量并设置为0
             self._previous_volume = self._current_volume
             self.player_core.set_volume(0)
+            # 保存音量设置（保存静音前的音量）
+            self.save_volume_setting(self._previous_volume)
         else:
             # 恢复之前的音量
             self.player_core.set_volume(self._previous_volume)
+            # 保存音量设置（保存恢复后的音量）
+            self.save_volume_setting(self._previous_volume)
     
     def load_volume_setting(self):
         """
@@ -987,12 +997,20 @@ class VideoPlayer(QWidget):
                 self._enable_comparison_mode()
                 # 激活状态使用强调样式
                 self.comparison_button.set_button_type("primary")
+                # 发送视频重新配置命令，确保两个视频区域都能正确显示
+                if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
+                    self.player_core._execute_command(['video-reconfig'])
+                if hasattr(self, 'original_player_core') and self.original_player_core:
+                    self.original_player_core._execute_command(['video-reconfig'])
             else:
                 print("[VideoPlayer] 禁用对比预览模式")
                 # 恢复正常预览模式
                 self._disable_comparison_mode()
                 # 未激活状态使用普通样式
                 self.comparison_button.set_button_type("normal")
+                # 发送视频重新配置命令，确保恢复后视频能正确显示
+                if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
+                    self.player_core._execute_command(['video-reconfig'])
         except Exception as e:
             print(f"[VideoPlayer] 切换对比预览模式失败: {e}")
             import traceback
@@ -1033,8 +1051,8 @@ class VideoPlayer(QWidget):
                 self.filtered_video_frame.setMinimumSize(0, 0)
                 self.filtered_video_frame.resize(0, 0)
             else:
-                self.original_video_frame.setMinimumSize(200, 200)
-                self.filtered_video_frame.setMinimumSize(200, 200)
+                self.original_video_frame.setMinimumSize(150, 100)
+                self.filtered_video_frame.setMinimumSize(150, 100)
             
             # 添加到对比布局
             self.comparison_layout.addWidget(self.original_video_frame)
@@ -1140,6 +1158,33 @@ class VideoPlayer(QWidget):
         连接MPV内核信号
         """
         pass
+    
+    def keyPressEvent(self, event):
+        """
+        处理键盘按键事件
+        - 空格键：切换播放/暂停状态
+        """
+        if event.key() == Qt.Key_Space:
+            # 空格键按下，切换播放/暂停状态
+            self.toggle_play_pause()
+        else:
+            # 其他按键事件，交给父类处理
+            super().keyPressEvent(event)
+    
+    def focusInEvent(self, event):
+        """
+        处理焦点进入事件
+        - 确保组件获得焦点时能够接收键盘事件
+        """
+        super().focusInEvent(event)
+    
+    def mousePressEvent(self, event):
+        """
+        处理鼠标点击事件
+        - 点击组件时，确保获得焦点，以便接收键盘事件
+        """
+        self.setFocus()
+        super().mousePressEvent(event)
     
     def load_media(self, file_path):
         """
@@ -1568,7 +1613,6 @@ class VideoPlayer(QWidget):
             
             self._current_volume = volume
             self._previous_volume = volume
-            self.save_volume_setting(volume)
             
         # 更新音量条浮动菜单的状态
         if hasattr(self, 'volume_slider_menu') and self.volume_slider_menu:
@@ -1742,8 +1786,18 @@ class VideoPlayer(QWidget):
     def resizeEvent(self, event):
         """
         窗口大小变化事件
+        通知MPV播放器窗口大小已经改变，确保视频渲染区域正确跟随显示区域变化
         """
-        pass
+        super().resizeEvent(event)
+        
+        # 确保MPV内核已初始化
+        if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
+            try:
+                # 发送视频重新配置命令，让MPV重新检测窗口大小
+                self.player_core._execute_command(['video-reconfig'])
+                print(f"[VideoPlayer] resizeEvent: 视频窗口大小已调整，发送video-reconfig命令")
+            except Exception as e:
+                print(f"[VideoPlayer] resizeEvent: 发送video-reconfig命令失败 - {e}")
     
     def mouseDoubleClickEvent(self, event):
         """
@@ -1751,8 +1805,4 @@ class VideoPlayer(QWidget):
         """
         pass
     
-    def keyPressEvent(self, event):
-        """
-        键盘按键事件
-        """
-        pass
+    

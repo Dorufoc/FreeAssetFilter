@@ -40,14 +40,16 @@ class SvgRenderer:
             dpi_scale (float): DPI缩放因子，默认1.0
             
         Returns:
-            QWidget: 渲染后的QSvgWidget或QLabel对象，确保透明度正确
+            QWidget: 渲染后的QSvgWidget或QLabel对象，确保控件本身完全不可见
         """
         # 应用DPI缩放因子到图标大小
         scaled_icon_size = int(icon_size * dpi_scale)
         if not icon_path or not os.path.exists(icon_path):
-            # 如果路径无效，返回透明QLabel
+            # 如果路径无效，返回完全透明的QLabel
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
+            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            label.setAttribute(Qt.WA_TranslucentBackground, True)
             pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
             pixmap.fill(Qt.transparent)
             label.setPixmap(pixmap)
@@ -60,6 +62,9 @@ class SvgRenderer:
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
             label.setAlignment(Qt.AlignCenter)
+            # 确保QLabel完全透明，没有任何可见样式
+            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            label.setAttribute(Qt.WA_TranslucentBackground, True)
             pixmap = QPixmap(png_path)
             if not pixmap.isNull():
                 # 缩放PNG到合适大小
@@ -90,6 +95,9 @@ class SvgRenderer:
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
             label.setAlignment(Qt.AlignCenter)
+            # 确保QLabel完全透明，没有任何可见样式
+            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            label.setAttribute(Qt.WA_TranslucentBackground, True)
             pixmap = QPixmap(icons_png_path)
             if not pixmap.isNull():
                 # 缩放PNG到合适大小
@@ -162,17 +170,22 @@ class SvgRenderer:
             svg_widget = QSvgWidget()
             svg_widget.load(svg_content.encode('utf-8'))
             svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
-            svg_widget.setStyleSheet("background: transparent;")
+            # 确保QSvgWidget完全透明，没有任何可见样式
+            svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
             return svg_widget
         except Exception as e:
             print(f"使用QSvgWidget加载SVG图标失败: {e}")
             # 如果QSvgWidget失败，回退到使用超分辨率渲染的位图
             pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale)
             
-            # 将pixmap显示在QLabel中
+            # 将pixmap显示在完全透明的QLabel中
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
             label.setAlignment(Qt.AlignCenter)
+            # 确保QLabel完全透明，没有任何可见样式
+            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            label.setAttribute(Qt.WA_TranslucentBackground, True)
             label.setPixmap(pixmap)
             return label
     

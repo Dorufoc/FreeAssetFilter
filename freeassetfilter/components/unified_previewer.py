@@ -53,6 +53,9 @@ class UnifiedPreviewer(QWidget):
         # 设置组件字体
         self.setFont(self.global_font)
         
+        # 设置焦点策略，确保组件能够接收键盘事件
+        self.setFocusPolicy(Qt.StrongFocus)
+        
         # 初始化当前预览的文件信息
         self.current_file_info = None
         
@@ -575,6 +578,35 @@ class UnifiedPreviewer(QWidget):
             # 显示友好的错误信息到界面
             error_message = f"视频预览失败: {str(e)}"
             self._show_error_with_copy_button(error_message)
+    
+    def keyPressEvent(self, event):
+        """
+        处理键盘按键事件
+        - 空格键：如果当前预览组件是视频播放器，则切换播放/暂停状态
+        """
+        if event.key() == Qt.Key_Space:
+            # 检查当前预览组件是否是视频播放器
+            try:
+                from freeassetfilter.components.video_player import VideoPlayer
+                if isinstance(self.current_preview_widget, VideoPlayer):
+                    # 调用视频播放器的播放/暂停方法
+                    self.current_preview_widget.toggle_play_pause()
+                else:
+                    # 如果不是视频播放器，调用父类的默认处理
+                    super().keyPressEvent(event)
+            except ImportError:
+                # 如果无法导入VideoPlayer，调用父类的默认处理
+                super().keyPressEvent(event)
+        else:
+            # 其他按键事件，交给父类处理
+            super().keyPressEvent(event)
+    
+    def focusInEvent(self, event):
+        """
+        处理焦点进入事件
+        - 确保组件获得焦点时能够接收键盘事件
+        """
+        super().focusInEvent(event)
     
     def _get_video_thumbnail(self, file_path):
         """

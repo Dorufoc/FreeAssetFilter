@@ -1549,7 +1549,10 @@ class CustomFileSelector(QWidget):
         跳转到指定路径
         """
         path = self.path_edit.text().strip()
-        if path and os.path.exists(path):
+        if not path or path.lower() == "all":
+            self.current_path = "All"
+            self.refresh_files()
+        elif os.path.exists(path):
             self.current_path = path
             self.refresh_files()
         else:

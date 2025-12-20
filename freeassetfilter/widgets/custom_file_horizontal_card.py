@@ -21,7 +21,7 @@ from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo, QEvent, QPropertyAnimation, QEasingCurve
 )
 from PyQt5.QtGui import (
-    QFont, QFontMetrics
+    QFont, QFontMetrics, QPixmap
 )
 # 添加项目根目录到Python路径
 sys.path.insert(
@@ -129,7 +129,7 @@ class CustomFileHorizontalCard(QWidget):
         # 缩略图/图标显示组件
         self.icon_display = QLabel()
         self.icon_display.setAlignment(Qt.AlignCenter)
-        self.icon_display.setFixedSize(int(40 * self.dpi_scale), int(40 * self.dpi_scale))
+        self.icon_display.setFixedSize(int(80 * self.dpi_scale), int(80 * self.dpi_scale))
         self.icon_display.setStyleSheet('background: transparent; border: none;')
         card_content_layout.addWidget(self.icon_display, alignment=Qt.AlignVCenter)
         
@@ -205,7 +205,7 @@ class CustomFileHorizontalCard(QWidget):
         self.button2 = CustomButton(
             "删除",
             parent=self.overlay_widget,
-            button_type="danger",
+            button_type="warning",
             display_mode="text"
         )
         
@@ -358,7 +358,7 @@ class CustomFileHorizontalCard(QWidget):
             # 首先处理lnk和exe文件，使用它们自身的图标
             if suffix in ["lnk", "exe"]:
                 # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
-                base_icon_size = int(40 * self.dpi_scale)
+                base_icon_size = int(80 * self.dpi_scale)
                 scaled_icon_size = int(base_icon_size * 0.8)
                 
                 # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
@@ -372,18 +372,119 @@ class CustomFileHorizontalCard(QWidget):
                     self.icon_display.setPixmap(pixmap)
                     return
             
-            # 对于其他文件类型，使用原有的图标处理逻辑
+            # 检查是否存在已生成的缩略图
+            import hashlib
+            import os
+            # 缩略图存储路径与CustomFileSelector保持一致
+            # CustomFileSelector中使用的是：os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+            # 这里需要调整路径计算，确保指向相同的data目录
+            thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+            # 计算文件路径的MD5哈希值，并使用前16位作为文件名
+            md5_hash = hashlib.md5(self._file_path.encode('utf-8'))
+            file_hash = md5_hash.hexdigest()[:16]  # 使用前16位十六进制字符串
+            thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
+            
+            # 如果存在缩略图，使用缩略图作为图标
+            if os.path.exists(thumbnail_path):
+                scaled_icon_size = int(80 * self.dpi_scale)
+                pixmap = QPixmap(thumbnail_path)
+                # 调整缩略图大小以适应图标显示区域
+                pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.icon_display.setPixmap(pixmap)
+                return
+            
+            # 对于其他文件类型，使用图标处理逻辑
             icon_path = self._get_file_icon_path(suffix, file_info.isDir())
             if icon_path and os.path.exists(icon_path):
-                # 使用SvgRenderer渲染SVG图标
-                scaled_icon_size = int(40 * self.dpi_scale)
-                pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, scaled_icon_size, self.dpi_scale)
-                self.icon_display.setPixmap(pixmap)
+                # 应用DPI缩放因子到图标大小
+                scaled_icon_size = int(80 * self.dpi_scale)
+                
+                # 使用SvgRenderer.render_svg_to_widget直接渲染SVG图标，返回QSvgWidget对象
+                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, 80, self.dpi_scale)
+                svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+                # 确保QSvgWidget完全透明，没有任何可见样式
+                svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                
+                # 如果是未知文件类型或压缩文件类型，需要在图标上显示后缀名
+                if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
+                    # 获取后缀名，压缩文件显示带点的后缀名（如".zip"），未知文件显示大写后缀名
+                    if icon_path.endswith("压缩文件.svg"):
+                        display_suffix = "." + file_info.suffix()
+                    else:
+                        display_suffix = file_info.suffix().upper()
+                        
+                        # 限制未知文件后缀名长度，最多5个字符
+                        if len(display_suffix) > 5:
+                            display_suffix = "FILE"
+                    
+                    # 创建文字标签
+                    from PyQt5.QtWidgets import QLabel
+                    from PyQt5.QtGui import QFont, QFontMetrics, QFontDatabase
+                    
+                    text_label = QLabel(display_suffix)
+                    text_label.setAlignment(Qt.AlignCenter)
+                    # 确保文字标签完全透明，没有任何可见样式
+                    text_label.setStyleSheet('background: transparent; border: none; padding: 0; margin: 0;')
+                    text_label.setAttribute(Qt.WA_TranslucentBackground, True)
+                    
+                    # 设置字体
+                    font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
+                    font = QFont()
+                    
+                    # 尝试加载字体文件，如果失败则使用默认字体
+                    if os.path.exists(font_path):
+                        font_id = QFontDatabase.addApplicationFont(font_path)
+                        if font_id != -1:
+                            font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                            font.setFamily(font_family)
+                    
+                    # 设置字体大小，应用DPI缩放
+                    font_size = int(16 * self.dpi_scale)
+                    font.setPointSize(font_size)
+                    font.setBold(True)
+                    
+                    # 自适应调整字体大小，确保文字不超出图标边界
+                    font_metrics = QFontMetrics(font)
+                    text_width = font_metrics.width(display_suffix)
+                    
+                    # 应用DPI缩放因子到最大文本宽度和最小字体大小
+                    max_text_width = int(30 * self.dpi_scale)
+                    min_font_size = int(8 * self.dpi_scale)
+                    
+                    while text_width > max_text_width and font_size > min_font_size:
+                        font_size -= 1
+                        font.setPointSize(font_size)
+                        font_metrics = QFontMetrics(font)
+                        text_width = font_metrics.width(display_suffix)
+                    
+                    text_label.setFont(font)
+                    
+                    # 设置文字颜色：压缩文件使用白色，未知文件使用黑色
+                    if icon_path.endswith("压缩文件.svg"):
+                        text_label.setStyleSheet('background: transparent; border: none; color: white; padding: 0; margin: 0;')
+                    else:
+                        text_label.setStyleSheet('background: transparent; border: none; color: black; padding: 0; margin: 0;')
+                    
+                    # 将文字标签添加到svg_widget上方
+                    text_label.setGeometry(0, 0, scaled_icon_size, scaled_icon_size)
+                    text_label.setParent(svg_widget)
+                
+                # 替换QLabel为我们的QSvgWidget
+                # 首先移除原有的QLabel
+                self.card_container.layout().removeWidget(self.icon_display)
+                self.icon_display.deleteLater()
+                
+                # 保存新的图标显示组件
+                self.icon_display = svg_widget
+                
+                # 将新的QSvgWidget添加回卡片布局
+                self.card_container.layout().insertWidget(0, self.icon_display, alignment=Qt.AlignVCenter)
             else:
                 # 设置默认图标
                 self.icon_display.setText("📄")
                 font = QFont()
-                font.setPointSize(int(24 * self.dpi_scale))
+                font.setPointSize(int(48 * self.dpi_scale))
                 self.icon_display.setFont(font)
         except Exception as e:
             print(f"设置文件图标失败: {e}")
@@ -505,6 +606,11 @@ class CustomFileHorizontalCard(QWidget):
             # 鼠标进入卡片容器或覆盖层，直接显示按钮
             if not self._is_mouse_over:
                 self._is_mouse_over = True
+                # 确保覆盖层大小与卡片容器一致
+                self.on_card_container_resize(None)
+                # 强制刷新布局，确保按钮位置正确
+                self.overlay_widget.layout().invalidate()
+                self.overlay_widget.layout().activate()
                 self.overlay_widget.setWindowOpacity(1.0)
                 self.overlay_widget.show()
         elif event.type() == QEvent.Leave:

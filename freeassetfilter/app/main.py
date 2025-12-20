@@ -157,6 +157,40 @@ class FreeAssetFilterApp(QMainWindow):
         # 调用父类的closeEvent
         super().closeEvent(event)
     
+    def keyPressEvent(self, event):
+        """
+        主窗口键盘按键事件处理
+        - 空格键：控制视频播放/暂停，无论焦点在哪个组件
+        """
+        if event.key() == Qt.Key_Space:
+            # 检查是否存在统一预览器
+            if hasattr(self, 'unified_previewer'):
+                try:
+                    from freeassetfilter.components.video_player import VideoPlayer
+                    # 检查统一预览器的当前预览组件是否是视频播放器
+                    if isinstance(self.unified_previewer.current_preview_widget, VideoPlayer):
+                        # 调用视频播放器的播放/暂停方法
+                        self.unified_previewer.current_preview_widget.toggle_play_pause()
+                    else:
+                        # 如果不是视频播放器，调用父类的默认处理
+                        super().keyPressEvent(event)
+                except ImportError:
+                    # 如果无法导入VideoPlayer，调用父类的默认处理
+                    super().keyPressEvent(event)
+            else:
+                # 如果没有统一预览器，调用父类的默认处理
+                super().keyPressEvent(event)
+        else:
+            # 其他按键事件，交给父类处理
+            super().keyPressEvent(event)
+    
+    def focusInEvent(self, event):
+        """
+        处理焦点进入事件
+        - 确保组件获得焦点时能够接收键盘事件
+        """
+        super().focusInEvent(event)
+    
     def _create_file_selector_widget(self):
         """
         创建内嵌式文件选择器组件
