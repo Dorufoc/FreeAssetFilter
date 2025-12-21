@@ -282,6 +282,8 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 连接文件临时存储池的信号到预览器
         self.file_staging_pool.item_right_clicked.connect(self.unified_previewer.set_file)
+        # 添加左键点击信号连接，用于预览
+        self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
         
         # 连接文件临时存储池的信号到处理方法，用于从文件选择器中删除文件
         self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
@@ -423,11 +425,12 @@ class FreeAssetFilterApp(QMainWindow):
                         widget.is_selected = False
                         # 应用DPI缩放因子到文件卡片样式
                         scaled_border_radius = int(8 * self.dpi_scale)
+                        scaled_border_width = int(2 * self.dpi_scale)
                         scaled_padding = int(8 * self.dpi_scale)
                         widget.setStyleSheet(f"""
                             QWidget#FileCard {{
                                 background-color: #f1f3f5;
-                                border: 2px solid #e0e0e0;
+                                border: {scaled_border_width}px solid #e0e0e0;
                                 border-radius: {scaled_border_radius}px;
                                 padding: {scaled_padding}px;
                                 text-align: center;

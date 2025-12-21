@@ -55,61 +55,6 @@ class SvgRenderer:
             label.setPixmap(pixmap)
             return label
         
-        # 检查是否存在同名PNG图片
-        png_path = os.path.splitext(icon_path)[0] + '.png'
-        if os.path.exists(png_path):
-            # 如果存在同名PNG，直接使用QLabel加载PNG
-            label = QLabel()
-            label.setFixedSize(scaled_icon_size, scaled_icon_size)
-            label.setAlignment(Qt.AlignCenter)
-            # 确保QLabel完全透明，没有任何可见样式
-            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
-            label.setAttribute(Qt.WA_TranslucentBackground, True)
-            pixmap = QPixmap(png_path)
-            if not pixmap.isNull():
-                # 缩放PNG到合适大小
-                scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                label.setPixmap(scaled_pixmap)
-            else:
-                # 如果PNG加载失败，返回透明背景
-                pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
-                pixmap.fill(Qt.transparent)
-                label.setPixmap(pixmap)
-            return label
-        
-        # 检查icons文件夹内是否有同名PNG图片
-        # 获取图标文件名（不包括路径和扩展名）
-        icon_filename = os.path.basename(icon_path)
-        icon_name = os.path.splitext(icon_filename)[0]
-        
-        # 构造icons文件夹路径
-        # 确定当前文件所在目录，然后向上两级找到icons文件夹
-        current_dir = os.path.dirname(__file__)
-        icons_dir = os.path.join(current_dir, '..', 'icons')
-        icons_dir = os.path.abspath(icons_dir)
-        
-        # 构造icons文件夹内的PNG路径
-        icons_png_path = os.path.join(icons_dir, f'{icon_name}.png')
-        if os.path.exists(icons_png_path):
-            # 如果icons文件夹内存在同名PNG，直接加载PNG
-            label = QLabel()
-            label.setFixedSize(scaled_icon_size, scaled_icon_size)
-            label.setAlignment(Qt.AlignCenter)
-            # 确保QLabel完全透明，没有任何可见样式
-            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
-            label.setAttribute(Qt.WA_TranslucentBackground, True)
-            pixmap = QPixmap(icons_png_path)
-            if not pixmap.isNull():
-                # 缩放PNG到合适大小
-                scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                label.setPixmap(scaled_pixmap)
-            else:
-                # 如果PNG加载失败，返回透明背景
-                pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
-                pixmap.fill(Qt.transparent)
-                label.setPixmap(pixmap)
-            return label
-        
         try:
             # 读取SVG文件内容，预处理以确保兼容性
             with open(icon_path, 'r', encoding='utf-8') as f:
@@ -291,9 +236,8 @@ class SvgRenderer:
             return pixmap
         
         try:
-            # 优先使用SVG渲染，只有在SVG渲染失败时才考虑使用PNG
-            # 对于所有尺寸的图标，都使用高质量渲染
-            # 先使用QSvgRenderer创建一个足够大的pixmap（256x256），然后缩放
+            # 始终使用SVG渲染，不检查PNG文件
+            # 使用QSvgRenderer创建一个足够大的pixmap（256x256），然后缩放
             # 这确保了在高DPI屏幕上的清晰度，实现超分辨率渲染
             svg_renderer = QSvgRenderer(icon_path)
             
@@ -344,38 +288,6 @@ class SvgRenderer:
                 return pixmap
         except Exception as e:
             print(f"渲染SVG到QPixmap失败: {icon_path}, 错误: {e}")
-        
-        # 如果SVG渲染失败，再尝试使用PNG图片
-        # 检查是否存在同名PNG图片
-        png_path = os.path.splitext(icon_path)[0] + '.png'
-        if os.path.exists(png_path):
-            # 如果存在同名PNG，直接加载PNG
-            pixmap = QPixmap(png_path)
-            if not pixmap.isNull():
-                # 缩放PNG到合适大小，使用高质量缩放算法
-                scaled_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                return scaled_pixmap
-        
-        # 检查icons文件夹内是否有同名PNG图片
-        # 获取图标文件名（不包括路径和扩展名）
-        icon_filename = os.path.basename(icon_path)
-        icon_name = os.path.splitext(icon_filename)[0]
-        
-        # 构造icons文件夹路径
-        # 确定当前文件所在目录，然后向上两级找到icons文件夹
-        current_dir = os.path.dirname(__file__)
-        icons_dir = os.path.join(current_dir, '..', 'icons')
-        icons_dir = os.path.abspath(icons_dir)
-        
-        # 构造icons文件夹内的PNG路径
-        icons_png_path = os.path.join(icons_dir, f'{icon_name}.png')
-        if os.path.exists(icons_png_path):
-            # 如果icons文件夹内存在同名PNG，直接加载PNG
-            pixmap = QPixmap(icons_png_path)
-            if not pixmap.isNull():
-                # 缩放PNG到合适大小，使用高质量缩放算法
-                scaled_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                return scaled_pixmap
         
         # 如果所有方法都失败，返回透明像素图
         pixmap = QPixmap(scaled_width, scaled_height)

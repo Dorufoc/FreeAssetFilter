@@ -1287,7 +1287,7 @@ class VideoPlayer(QWidget):
                     
                     # 确保video_frame在布局中并显示
                     media_layout.addWidget(self.video_frame)
-                    self.video_frame.setMinimumSize(400, 300)
+                    self.video_frame.setMinimumSize(300, 200)
                     self.video_frame.show()
                     
                     # 主播放器加载并播放视频

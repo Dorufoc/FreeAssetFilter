@@ -384,8 +384,16 @@ class CustomFileHorizontalCard(QWidget):
             file_hash = md5_hash.hexdigest()[:16]  # 使用前16位十六进制字符串
             thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
             
-            # 如果存在缩略图，使用缩略图作为图标
-            if os.path.exists(thumbnail_path):
+            # 检查是否是照片或视频类型，这些类型可以使用缩略图
+            is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
+            is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
+            
+            # 只有照片和视频类型才使用缩略图，其余类型直接使用SVG图标
+            use_thumbnail = False
+            if (is_photo or is_video) and os.path.exists(thumbnail_path):
+                use_thumbnail = True
+            
+            if use_thumbnail:
                 scaled_icon_size = int(80 * self.dpi_scale)
                 pixmap = QPixmap(thumbnail_path)
                 # 调整缩略图大小以适应图标显示区域

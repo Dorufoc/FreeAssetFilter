@@ -2075,13 +2075,17 @@ class CustomFileSelector(QWidget):
         scaled_padding = int(8 * self.dpi_scale)
         if card.is_selected:
             card.setStyleSheet(f"""
-                QWidget#FileCard {{
+                QWidget#FileCard {
                     background-color: #e6f7ff;
                     border: {scaled_border_width}px solid #1890ff;
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding}px;
                     text-align: center;
-                }}
+                }
+                QWidget#FileCard:hover {
+                    background-color: #bae7ff;
+                    border-color: #40a9ff;
+                }
             """)
         else:
             card.setStyleSheet(f"""
@@ -2107,9 +2111,48 @@ class CustomFileSelector(QWidget):
         """
         设置文件图标或缩略图，返回一个QWidget
         """
-        # 首先尝试显示缩略图（如果存在）
+        # 首先处理lnk和exe文件，使用它们自身的图标
+        if not file_info["is_dir"]:
+            suffix = file_info["suffix"].lower()
+            if suffix in ["lnk", "exe"]:
+                # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
+                base_icon_size = int(120 * self.dpi_scale)
+                scaled_icon_size = int(base_icon_size * 0.8)
+                
+                # 创建标签显示图标
+                label = QLabel()
+                label.setAlignment(Qt.AlignCenter)
+                label.setFixedSize(base_icon_size, base_icon_size)
+                
+                # 直接从文件路径获取图标
+                file_path = file_info["path"]
+                
+                # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
+                from PyQt5.QtWidgets import QFileIconProvider
+                icon_provider = QFileIconProvider()
+                file_info_qt = QFileInfo(file_path)
+                icon = icon_provider.icon(file_info_qt)
+                pixmap = icon.pixmap(scaled_icon_size, scaled_icon_size)
+                
+                # 检查是否获取到有效图标
+                if not pixmap.isNull():
+                    label.setPixmap(pixmap)
+                    return label
+        
+        # 检查是否存在已生成的缩略图
         thumbnail_path = self._get_thumbnail_path(file_info["path"])
-        if os.path.exists(thumbnail_path):
+        
+        # 检查是否是照片或视频类型，这些类型可以使用缩略图
+        suffix = file_info["suffix"].lower() if not file_info["is_dir"] else ""
+        is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
+        is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
+        
+        # 只有照片和视频类型才使用缩略图，其余类型直接使用SVG图标
+        use_thumbnail = False
+        if (is_photo or is_video) and os.path.exists(thumbnail_path):
+            use_thumbnail = True
+        
+        if use_thumbnail:
             # 应用DPI缩放因子到图标大小
             scaled_icon_size = int(120 * self.dpi_scale)
             

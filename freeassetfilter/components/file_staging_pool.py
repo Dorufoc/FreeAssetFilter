@@ -46,6 +46,7 @@ class FileStagingPool(QWidget):
     
     # 定义信号
     item_right_clicked = pyqtSignal(dict)  # 当项目被右键点击时发出
+    item_left_clicked = pyqtSignal(dict)  # 当项目被左键点击时发出
     remove_from_selector = pyqtSignal(dict)  # 当需要从选择器中移除文件时发出
     update_progress = pyqtSignal(int)  # 更新进度条信号
     export_finished = pyqtSignal(int, int, list)  # 导出完成信号
@@ -371,8 +372,8 @@ class FileStagingPool(QWidget):
             card: 卡片对象
             file_info: 文件信息字典
         """
-        # 可以在这里添加卡片点击后的处理逻辑
-        pass
+        # 发出左键点击信号，用于调用统一预览器
+        self.item_left_clicked.emit(file_info)
     
     def on_card_selection_changed(self, selected, path, file_info):
         """
