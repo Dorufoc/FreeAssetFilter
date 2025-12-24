@@ -107,8 +107,8 @@ class CustomButton(QPushButton):
         else:
             # 文字模式，先应用样式，再计算合适的宽度
             self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            # 移除固定宽度限制，允许按钮根据内容调整宽度
-            self.setMinimumWidth(0)
+            # 设置最小宽度，确保短文字按钮不会太小，应用DPI缩放
+            self.setMinimumWidth(int(80 * self.dpi_scale))
             self.setMaximumWidth(16777215)
         
         if self.button_type == "primary":
