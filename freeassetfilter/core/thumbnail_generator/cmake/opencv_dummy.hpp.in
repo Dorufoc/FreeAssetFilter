@@ -1,0 +1,68 @@
+#ifndef OPENCV_DUMMY_HPP
+#define OPENCV_DUMMY_HPP
+
+#include <vector>
+#include <string>
+
+namespace cv {
+    /**
+     * @brief 简化的Mat类实现，用于替代OpenCV的cv::Mat
+     */
+    class Mat {
+    public:
+        Mat() = default;
+        Mat(const Mat&) = default;
+        ~Mat() = default;
+        
+        /**
+         * @brief 检查矩阵是否为空
+         * @return 始终返回true，因为这是一个虚拟实现
+         */
+        bool empty() const { return true; }
+        
+        // 图像尺寸属性
+        int cols = 0;
+        int rows = 0;
+    };
+    
+    /**
+     * @brief 简化的Size类实现，用于指定图像尺寸
+     */
+    struct Size {
+        Size(int w, int h) : width(w), height(h) {}
+        int width;
+        int height;
+    };
+    
+    // 常用常量定义
+    const int IMREAD_COLOR = 1;     // 读取彩色图像
+    const int INTER_AREA = 3;       // 区域插值法
+    const int IMWRITE_JPEG_QUALITY = 1;      // JPEG质量参数
+    const int IMWRITE_PNG_COMPRESSION = 16;  // PNG压缩参数
+    const int IMWRITE_WEBP_QUALITY = 6;      // WebP质量参数
+    
+    /**
+     * @brief 虚拟的imread函数实现
+     * @return 始终返回空Mat对象
+     */
+    inline Mat imread(const std::string&, int) {
+        return Mat();
+    }
+    
+    /**
+     * @brief 虚拟的imwrite函数实现
+     * @return 始终返回false，表示写入失败
+     */
+    inline bool imwrite(const std::string&, const Mat&, const std::vector<int>&) {
+        return false;
+    }
+    
+    /**
+     * @brief 虚拟的resize函数实现
+     */
+    inline void resize(const Mat&, Mat&, const Size&, double = 0, double = 0, int = 0) {
+        // 空实现，不执行任何操作
+    }
+};
+
+#endif // OPENCV_DUMMY_HPP
