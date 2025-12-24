@@ -50,6 +50,7 @@ class FileStagingPool(QWidget):
     remove_from_selector = pyqtSignal(dict)  # 当需要从选择器中移除文件时发出
     update_progress = pyqtSignal(int)  # 更新进度条信号
     export_finished = pyqtSignal(int, int, list)  # 导出完成信号
+    folder_size_calculated = pyqtSignal(dict)  # 文件夹体积计算完成信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -85,6 +86,7 @@ class FileStagingPool(QWidget):
         # 连接信号
         self.update_progress.connect(self.on_update_progress)
         self.export_finished.connect(self.on_export_finished)
+        self.folder_size_calculated.connect(self.on_folder_size_calculated)
     
     def init_ui(self):
         """
@@ -175,10 +177,10 @@ class FileStagingPool(QWidget):
     
     def add_file(self, file_info):
         """
-        添加文件到临时存储池
+        添加文件或文件夹到临时存储池
         
         Args:
-            file_info (dict): 文件信息字典
+            file_info (dict): 文件或文件夹信息字典
         """
         # 检查文件是否已存在
         for item in self.items:
@@ -218,6 +220,10 @@ class FileStagingPool(QWidget):
         
         # 存储卡片对象
         self.cards.append((card, file_info))
+        
+        # 如果是文件夹，启动线程计算体积
+        if file_info["is_dir"]:
+            self._calculate_folder_size(file_info["path"])
         
         # 更新统计信息
         self.update_stats()
@@ -599,6 +605,46 @@ class FileStagingPool(QWidget):
                 warning_msg.exec_()
                 return
         
+        # 计算待导出文件的总大小
+        total_file_size = self.calculate_total_file_size(all_files)
+        
+        # 获取目标目录的总容量和可用空间
+        total_space, free_space = self.get_directory_space(target_dir)
+        
+        if total_space is None or free_space is None:
+            # 获取空间信息失败，可能是网络存储或远程目录
+            warning_msg = CustomMessageBox(self)
+            warning_msg.set_title("警告")
+            warning_msg.set_text("无法获取目标目录的可用空间信息，可能是网络存储或远程目录。\n"
+                                "是否继续导出操作？")
+            warning_msg.set_buttons(["继续", "取消"], Qt.Horizontal, ["primary", "normal"])
+            
+            user_choice = -1
+            def on_button_clicked(button_index):
+                nonlocal user_choice
+                user_choice = button_index
+                warning_msg.close()
+            
+            warning_msg.buttonClicked.connect(on_button_clicked)
+            warning_msg.exec_()
+            
+            if user_choice != 0:  # 0表示继续
+                return
+        else:
+            # 检查可用空间是否足够
+            if free_space < total_file_size:
+                # 空间不足，显示错误提示
+                error_msg = CustomMessageBox(self)
+                error_msg.set_title("空间不足")
+                error_msg.set_text(f"目标目录可用空间不足！\n"
+                                f"待导出文件总大小：{self._format_file_size(total_file_size)}\n"
+                                f"目标目录可用空间：{self._format_file_size(free_space)}\n"
+                                f"所需额外空间：{self._format_file_size(total_file_size - free_space)}")
+                error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                error_msg.buttonClicked.connect(error_msg.close)
+                error_msg.exec_()
+                return
+        
         # 创建带进度条的自定义提示窗口
         progress_msg_box = CustomMessageBox(self)
         progress_msg_box.set_title("导出进度")
@@ -681,6 +727,25 @@ class FileStagingPool(QWidget):
         result_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
         result_msg.buttonClicked.connect(result_msg.close)
         result_msg.exec_()
+    
+    def on_folder_size_calculated(self, file_info):
+        """
+        处理文件夹体积计算完成信号
+        
+        Args:
+            file_info (dict): 计算完成的文件夹信息
+        """
+        # 更新UI显示
+        self.update_stats()
+        
+        # 更新卡片显示
+        for card, card_file_info in self.cards:
+            if card_file_info["path"] == file_info["path"]:
+                card.set_file_path(file_info["path"], display_name=file_info["display_name"])
+                break
+        
+        # 实时保存备份
+        self.save_backup()
     
     def eventFilter(self, obj, event):
         """
@@ -1235,7 +1300,6 @@ class FileStagingPool(QWidget):
         """
         from PyQt5.QtWidgets import QFileDialog
         import json
-        from datetime import datetime
         
         # 检查是否有数据可导出
         if not self.items:
@@ -1248,6 +1312,7 @@ class FileStagingPool(QWidget):
             return
         
         # 生成带时间戳的默认文件名
+        from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         default_filename = f"FAF_{current_time}.json"
         
@@ -1366,38 +1431,42 @@ class FileStagingPool(QWidget):
             if file_info:
                 self.add_file(file_info)
         elif os.path.isdir(file_path):
-            # 文件夹：递归添加所有文件
-            self._add_folder_contents(file_path)
+            # 文件夹：直接添加文件夹到存储池
+            file_info = self._get_file_info(file_path)
+            if file_info:
+                self.add_file(file_info)
     
     def _get_file_info(self, file_path):
         """
-        获取文件信息
+        获取文件或文件夹信息
         
         Args:
-            file_path (str): 文件路径
+            file_path (str): 文件或文件夹路径
         
         Returns:
-            dict: 文件信息字典
+            dict: 文件或文件夹信息字典
         """
+        from datetime import datetime
         try:
             file_stat = os.stat(file_path)
             file_name = os.path.basename(file_path)
+            is_dir = os.path.isdir(file_path)
             
             file_info = {
                 "name": file_name,
                 "path": file_path,
-                "is_dir": False,
-                "size": file_stat.st_size,
+                "is_dir": is_dir,
+                "size": None if is_dir else file_stat.st_size,
                 "modified": datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
                 "created": datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
-                "suffix": os.path.splitext(file_name)[1].lower(),
+                "suffix": os.path.splitext(file_name)[1].lower() if not is_dir else "",
                 "display_name": file_name,
                 "original_name": file_name
             }
             
             return file_info
         except Exception as e:
-            print(f"获取文件信息失败: {e}")
+            print(f"获取文件/文件夹信息失败: {e}")
             return None
     
     def _add_folder_contents(self, folder_path):
@@ -1443,6 +1512,101 @@ class FileStagingPool(QWidget):
         except Exception as e:
             print(f"加载文件列表备份失败: {e}")
         return []
+    
+    def get_directory_space(self, directory):
+        """
+        获取目录所在磁盘的总容量和可用空间
+        
+        Args:
+            directory (str): 目录路径
+            
+        Returns:
+            tuple: (总容量字节数, 可用空间字节数)，如果获取失败返回(None, None)
+        """
+        try:
+            if sys.platform == "win32":
+                # Windows系统
+                import ctypes
+                free_bytes = ctypes.c_ulonglong(0)
+                total_bytes = ctypes.c_ulonglong(0)
+                # 调用Windows API获取磁盘空间
+                ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(directory), None, ctypes.byref(total_bytes), ctypes.byref(free_bytes))
+                return total_bytes.value, free_bytes.value
+            else:
+                # Linux/macOS系统
+                statvfs = os.statvfs(directory)
+                total_bytes = statvfs.f_frsize * statvfs.f_blocks
+                free_bytes = statvfs.f_frsize * statvfs.f_bavail
+                return total_bytes, free_bytes
+        except Exception as e:
+            print(f"获取目录空间失败: {str(e)}")
+            return None, None
+    
+    def _calculate_folder_size(self, folder_path):
+        """
+        计算文件夹体积的线程函数
+        
+        Args:
+            folder_path (str): 文件夹路径
+        """
+        import threading
+        import os
+        
+        def calculate_size_thread():
+            """实际计算文件夹大小的线程函数"""
+            total_size = 0
+            try:
+                for root, dirs, files in os.walk(folder_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        try:
+                            total_size += os.path.getsize(file_path)
+                        except Exception as e:
+                            print(f"计算文件 {file_path} 大小失败: {str(e)}")
+            except Exception as e:
+                print(f"计算文件夹 {folder_path} 大小失败: {str(e)}")
+            
+            # 查找对应的文件信息并发送信号
+            for file_info in self.items:
+                if file_info["path"] == folder_path:
+                    file_info["size"] = total_size
+                    self.folder_size_calculated.emit(file_info)
+                    break
+        
+        # 启动线程
+        thread = threading.Thread(target=calculate_size_thread)
+        thread.daemon = True
+        thread.start()
+    
+    def calculate_total_file_size(self, files):
+        """
+        计算待导出文件的总大小
+        
+        Args:
+            files (list): 文件信息列表
+            
+        Returns:
+            int: 总大小字节数
+        """
+        total_size = 0
+        for file_info in files:
+            if "size" in file_info and file_info["size"] is not None:
+                total_size += file_info["size"]
+            else:
+                # 如果没有size信息，尝试获取
+                try:
+                    if os.path.isfile(file_info["path"]):
+                        file_size = os.path.getsize(file_info["path"])
+                        total_size += file_size
+                    elif os.path.isdir(file_info["path"]):
+                        # 递归计算目录大小
+                        for root, dirs, files_in_dir in os.walk(file_info["path"]):
+                            for file in files_in_dir:
+                                file_path = os.path.join(root, file)
+                                total_size += os.path.getsize(file_path)
+                except Exception as e:
+                    print(f"计算文件大小失败: {str(e)}")
+        return total_size
     
     def copy_files(self, files, target_dir):
         """

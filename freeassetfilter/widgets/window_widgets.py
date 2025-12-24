@@ -502,7 +502,7 @@ class CustomMessageBox(QDialog):
         self.list_layout = QVBoxLayout(self.list_widget)
         self.list_layout.setContentsMargins(0, 0, 0, 0)
         self.list_layout.setSpacing(0)
-        self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.body_layout.addWidget(self.list_widget)
         
         # 5. 输入框区

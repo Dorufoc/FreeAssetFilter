@@ -254,21 +254,57 @@ class CustomSelectList(QWidget):
         
         # 滚动区域
         self.scroll_area = QScrollArea(self)
-        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidgetResizable(True)  # 启用自动调整大小
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        main_layout.addWidget(self.scroll_area)
         
         # 滚动区域内容控件
         self.content_widget = QWidget()
         self.content_layout = QVBoxLayout(self.content_widget)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(0)
-        self.scroll_area.setWidget(self.content_widget)
         
-        # 设置默认尺寸和最小尺寸
+        # 将内容控件设置到滚动区域
+        self.scroll_area.setWidget(self.content_widget)
+        main_layout.addWidget(self.scroll_area)
+        
+        # 设置固定尺寸
         self.setFixedSize(self.default_width, self.default_height)
-        self.setMinimumSize(self.min_width, self.min_height)
+        
+        # 确保滚动条可见，将样式应用到滚动区域
+        self.scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+            }
+            QScrollBar:vertical {
+                width: 8px;
+                background: #f0f0f0;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0c0c0;
+                border-radius: 3px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #a0a0a0;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::up-arrow:vertical,
+            QScrollBar::down-arrow:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {
+                background: none;
+            }
+        """)
+        
+        # 确保滚动条总是显示，用于测试
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
     
     def add_item(self, text, icon_path=""):
         """

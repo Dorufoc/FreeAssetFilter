@@ -650,7 +650,7 @@ def main():
     # 导入设置管理器
     from freeassetfilter.core.settings_manager import SettingsManager
     
-    # 检测并设置全局字体为微软雅黑，如果系统不包含则使用默认字体
+    # 检测并设置全局字体
     from PyQt5.QtGui import QFontDatabase, QFont
     font_db = QFontDatabase()
     font_families = font_db.families()
@@ -658,19 +658,26 @@ def main():
     # 初始化设置管理器
     settings_manager = SettingsManager()
     
-    # 从设置管理器中获取字体大小，而不是使用硬编码的值
+    # 从设置管理器中获取字体设置
     DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 20)  # 基础字体大小，可统一调整
+    saved_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")  # 从设置中获取保存的字体样式
     
-    # 检查系统是否包含微软雅黑字体（支持Microsoft YaHei和Microsoft YaHei UI两种名称）
-    yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
-    selected_font = None
-    for font_name in yahei_fonts:
-        if font_name in font_families:
-            selected_font = font_name
-            break
+    # 检查保存的字体是否可用，如果不可用则回退到微软雅黑
+    selected_font = saved_font_style
+    if selected_font not in font_families:
+        # 保存的字体不可用，尝试使用微软雅黑
+        yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
+        for font_name in yahei_fonts:
+            if font_name in font_families:
+                selected_font = font_name
+                break
+        
+        # 如果微软雅黑也不可用，则使用系统默认字体
+        if selected_font not in font_families:
+            selected_font = None
     
     if selected_font:
-        # 设置全局字体为微软雅黑
+        # 设置全局字体
         app.setFont(QFont(selected_font, DEFAULT_FONT_SIZE))
         # 设置全局字体变量
         global_font = QFont(selected_font, DEFAULT_FONT_SIZE)

@@ -1103,103 +1103,219 @@ class UnifiedPreviewer(QWidget):
         font_style_setting = CustomSettingItem(
             text="字体样式设置",
             secondary_text="调整界面全局字体样式",
-            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
-            placeholder="输入字体样式",
-            initial_text=settings_manager.get_setting("font.style", "Microsoft YaHei"),
-            button_text="应用"
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": "选择字体", "type": "primary"}]
         )
-        # 连接字体样式设置的应用按钮信号
-        def on_font_style_applied(text):
-            if text:
+        # 连接字体样式设置的按钮点击信号
+        def on_font_style_button_clicked(button_index):
+            if button_index == 0:  # 选择字体按钮
                 # 获取当前应用实例
                 app = QApplication.instance()
                 
-                # 保存原始字体样式，用于回退
-                original_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
+                # 获取系统所有可用字体
+                from PyQt5.QtGui import QFontDatabase
+                font_db = QFontDatabase()
+                font_families = font_db.families()
+                font_families.sort()  # 按字母顺序排序
                 
-                # 临时应用新的字体样式
-                settings_manager.set_setting("font.style", text)
-                
-                # 创建带有倒计时功能的自定义提示窗
-                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
-                from freeassetfilter.widgets.progress_widgets import CustomProgressBar
-                from PyQt5.QtCore import QTimer, Qt
-                
-                # 创建进度条
-                progress_bar = CustomProgressBar(is_interactive=False)
-                progress_bar.setRange(0, 100)
-                progress_bar.setValue(0)
+                # 创建自定义提示窗，显示字体列表
+                from freeassetfilter.widgets.window_widgets import CustomMessageBox
+                from PyQt5.QtCore import Qt
                 
                 # 创建自定义提示窗
-                confirm_box = CustomMessageBox(self)
-                confirm_box.set_title("字体样式设置预览")
-                confirm_box.set_text("字体样式已临时应用，10秒后将自动回退，点击保存更改以保留设置")
-                confirm_box.set_progress(progress_bar)
-                confirm_box.set_buttons(["保存更改", "放弃"], orientations=Qt.Horizontal)
+                font_box = CustomMessageBox(self)
+                font_box.set_title("选择字体")
+                font_box.set_text("请选择要应用的字体样式")
                 
-                # 倒计时变量
-                countdown = 10
+                # 设置字体列表
+                font_box.set_list(font_families, selection_mode="single", default_width=400, default_height=300)
                 
-                # 更新进度条的函数
-                def update_progress():
-                    nonlocal countdown
-                    countdown -= 0.1
-                    progress = int((10 - countdown) * 10)
-                    progress_bar.setValue(progress)
-                    if countdown <= 0:
-                        # 倒计时结束，回退到原始字体样式
-                        settings_manager.set_setting("font.style", original_font_style)
-                        confirm_box.close()
-                        msg_box = CustomMessageBox(self)
-                        msg_box.set_title("提示")
-                        msg_box.set_text("字体样式设置已自动回退")
-                        msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                        msg_box.exec_()
-                        # 更新设置项的显示值
-                        font_style_setting.set_input_text(original_font_style)
-                        timer.stop()
-                
-                # 创建定时器，每100毫秒更新一次进度条
-                timer = QTimer()
-                timer.timeout.connect(update_progress)
-                timer.start(100)
-                
-                # 按钮点击处理函数
-                def on_button_clicked(button_index):
-                    timer.stop()
-                    if button_index == 0:  # 保存更改
-                        # 保存设置
-                        settings_manager.save_settings()
-                        confirm_box.close()
-                        msg_box = CustomMessageBox(self)
-                        msg_box.set_title("成功")
-                        msg_box.set_text("字体样式设置已保存")
-                        msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                        msg_box.exec_()
-                    else:  # 放弃
-                        # 回退到原始字体样式
-                        settings_manager.set_setting("font.style", original_font_style)
-                        confirm_box.close()
-                        msg_box = CustomMessageBox(self)
-                        msg_box.set_title("提示")
-                        msg_box.set_text("字体样式设置已回退")
-                        msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                        msg_box.exec_()
-                        # 更新设置项的显示值
-                        font_style_setting.set_input_text(original_font_style)
+                # 设置按钮
+                font_box.set_buttons(["确定", "取消", "还原默认字体"], orientations=Qt.Horizontal)
                 
                 # 连接按钮点击信号
-                confirm_box.buttonClicked.connect(on_button_clicked)
+                def on_font_select_button_clicked(button_index):
+                    if button_index == 0:  # 确定
+                        # 获取选中的字体
+                        selected_indices = font_box.get_selected_list_items()
+                        if selected_indices:
+                            selected_font = font_families[selected_indices[0]]
+                            
+                            # 保存原始字体样式，用于回退
+                            original_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
+                            
+                            # 临时应用新的字体样式
+                            settings_manager.set_setting("font.style", selected_font)
+                            
+                            # 创建带有倒计时功能的自定义提示窗
+                            from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+                            from PyQt5.QtCore import QTimer
+                            
+                            # 创建进度条
+                            progress_bar = CustomProgressBar(is_interactive=False)
+                            progress_bar.setRange(0, 100)
+                            progress_bar.setValue(0)
+                            
+                            # 创建确认提示窗
+                            confirm_box = CustomMessageBox(self)
+                            confirm_box.set_title("字体样式设置预览")
+                            confirm_box.set_text(f"字体样式 '{selected_font}' 已临时应用，10秒后将自动回退，点击保存更改以保留设置")
+                            confirm_box.set_progress(progress_bar)
+                            confirm_box.set_buttons(["保存更改", "放弃"], orientations=Qt.Horizontal)
+                            
+                            # 倒计时变量
+                            countdown = 10
+                            
+                            # 更新进度条的函数
+                            def update_progress():
+                                nonlocal countdown
+                                countdown -= 0.1
+                                progress = int((10 - countdown) * 10)
+                                progress_bar.setValue(progress)
+                                if countdown <= 0:
+                                    # 倒计时结束，回退到原始字体样式
+                                    settings_manager.set_setting("font.style", original_font_style)
+                                    confirm_box.close()
+                                    msg_box = CustomMessageBox(self)
+                                    msg_box.set_title("提示")
+                                    msg_box.set_text("字体样式设置已自动回退")
+                                    msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                                    msg_box.exec_()
+                                    timer.stop()
+                            
+                            # 创建定时器，每100毫秒更新一次进度条
+                            timer = QTimer()
+                            timer.timeout.connect(update_progress)
+                            timer.start(100)
+                            
+                            # 按钮点击处理函数
+                            def on_confirm_button_clicked(confirm_button_index):
+                                timer.stop()
+                                if confirm_button_index == 0:  # 保存更改
+                                    # 保存设置
+                                    settings_manager.save_settings()
+                                    confirm_box.close()
+                                    # 应用字体设置到整个应用
+                                    from PyQt5.QtGui import QFont
+                                    font = QFont(
+                                        settings_manager.get_setting("font.style", "Microsoft YaHei"),
+                                        settings_manager.get_setting("font.size", 14)
+                                    )
+                                    app.setFont(font)
+                                    app.global_font = font
+                                    msg_box = CustomMessageBox(self)
+                                    msg_box.set_title("成功")
+                                    msg_box.set_text("字体样式设置已保存")
+                                    msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                                    msg_box.exec_()
+                                else:  # 放弃
+                                    # 回退到原始字体样式
+                                    settings_manager.set_setting("font.style", original_font_style)
+                                    confirm_box.close()
+                                    msg_box = CustomMessageBox(self)
+                                    msg_box.set_title("提示")
+                                    msg_box.set_text("字体样式设置已回退")
+                                    msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                                    msg_box.exec_()
+                            
+                            # 连接按钮点击信号
+                            confirm_box.buttonClicked.connect(on_confirm_button_clicked)
+                            
+                            # 显示确认提示窗
+                            confirm_box.show()
+                    elif button_index == 2:  # 还原默认字体
+                        # 还原默认字体样式
+                        default_font = "Microsoft YaHei"
+                        
+                        # 保存原始字体样式，用于回退
+                        original_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
+                        
+                        # 临时应用默认字体样式
+                        settings_manager.set_setting("font.style", default_font)
+                        
+                        # 创建带有倒计时功能的自定义提示窗
+                        from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+                        from PyQt5.QtCore import QTimer
+                        
+                        # 创建进度条
+                        progress_bar = CustomProgressBar(is_interactive=False)
+                        progress_bar.setRange(0, 100)
+                        progress_bar.setValue(0)
+                        
+                        # 创建确认提示窗
+                        confirm_box = CustomMessageBox(self)
+                        confirm_box.set_title("字体样式设置预览")
+                        confirm_box.set_text(f"字体样式已临时还原为默认字体 '{default_font}'，10秒后将自动回退，点击保存更改以保留设置")
+                        confirm_box.set_progress(progress_bar)
+                        confirm_box.set_buttons(["保存更改", "放弃"], orientations=Qt.Horizontal)
+                        
+                        # 倒计时变量
+                        countdown = 10
+                        
+                        # 更新进度条的函数
+                        def update_progress():
+                            nonlocal countdown
+                            countdown -= 0.1
+                            progress = int((10 - countdown) * 10)
+                            progress_bar.setValue(progress)
+                            if countdown <= 0:
+                                # 倒计时结束，回退到原始字体样式
+                                settings_manager.set_setting("font.style", original_font_style)
+                                confirm_box.close()
+                                msg_box = CustomMessageBox(self)
+                                msg_box.set_title("提示")
+                                msg_box.set_text("字体样式设置已自动回退")
+                                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                                msg_box.exec_()
+                                timer.stop()
+                        
+                        # 创建定时器，每100毫秒更新一次进度条
+                        timer = QTimer()
+                        timer.timeout.connect(update_progress)
+                        timer.start(100)
+                        
+                        # 按钮点击处理函数
+                        def on_confirm_button_clicked(confirm_button_index):
+                            timer.stop()
+                            if confirm_button_index == 0:  # 保存更改
+                                # 保存设置
+                                settings_manager.save_settings()
+                                confirm_box.close()
+                                # 应用字体设置到整个应用
+                                from PyQt5.QtGui import QFont
+                                font = QFont(
+                                    settings_manager.get_setting("font.style", "Microsoft YaHei"),
+                                    settings_manager.get_setting("font.size", 14)
+                                )
+                                app.setFont(font)
+                                app.global_font = font
+                                msg_box = CustomMessageBox(self)
+                                msg_box.set_title("成功")
+                                msg_box.set_text(f"字体样式已成功还原为默认字体 '{default_font}'")
+                                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                                msg_box.exec_()
+                            else:  # 放弃
+                                # 回退到原始字体样式
+                                settings_manager.set_setting("font.style", original_font_style)
+                                confirm_box.close()
+                                msg_box = CustomMessageBox(self)
+                                msg_box.set_title("提示")
+                                msg_box.set_text("字体样式设置已回退")
+                                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                                msg_box.exec_()
+                        
+                        # 连接按钮点击信号
+                        confirm_box.buttonClicked.connect(on_confirm_button_clicked)
+                        
+                        # 显示确认提示窗
+                        confirm_box.show()
                 
-                # 显示提示窗
-                confirm_box.show()
-            else:
-                msg_box = CustomMessageBox(self)
-                msg_box.set_title("错误")
-                msg_box.set_text("字体样式不能为空")
-                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                msg_box.exec_()
-        font_style_setting.input_submitted.connect(on_font_style_applied)
+                font_box.buttonClicked.connect(on_font_select_button_clicked)
+                
+                # 显示字体选择窗
+                font_box.show()
+        
+        font_style_setting.button_clicked.connect(on_font_style_button_clicked)
         main_program_layout.addWidget(font_style_setting)
         
         # 主题设置

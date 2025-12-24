@@ -2075,17 +2075,17 @@ class CustomFileSelector(QWidget):
         scaled_padding = int(8 * self.dpi_scale)
         if card.is_selected:
             card.setStyleSheet(f"""
-                QWidget#FileCard {
+                QWidget#FileCard {{
                     background-color: #e6f7ff;
                     border: {scaled_border_width}px solid #1890ff;
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding}px;
                     text-align: center;
-                }
-                QWidget#FileCard:hover {
+                }}
+                QWidget#FileCard:hover {{
                     background-color: #bae7ff;
                     border-color: #40a9ff;
-                }
+                }}
             """)
         else:
             card.setStyleSheet(f"""
