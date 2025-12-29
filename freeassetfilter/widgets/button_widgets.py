@@ -45,12 +45,8 @@ class CustomButton(QPushButton):
         super().__init__(parent_text, parent)
         self.button_type = button_type
         
-        # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 应用DPI缩放因子到按钮高度
-        self._height = int(height * self.dpi_scale)
+        # 原始高度（未缩放），用于在DPI变化时重新计算
+        self._original_height = height
         
         # 显示模式：text（文字）或icon（图标）
         self._display_mode = display_mode
@@ -60,6 +56,7 @@ class CustomButton(QPushButton):
         self._icon_pixmap = None
         
         # 获取全局字体
+        app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
@@ -72,23 +69,35 @@ class CustomButton(QPushButton):
         """
         更新按钮样式
         """
-        # 添加阴影效果，应用DPI缩放
+        # 获取应用实例和最新的DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 使用最新的DPI缩放因子重新计算按钮高度
+        self._height = int(self._original_height * self.dpi_scale)
+        
+        # 添加阴影效果，应用最新的DPI缩放
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(int(2 * self.dpi_scale))
         shadow.setOffset(0, int(2 * self.dpi_scale))
         # 正确设置阴影颜色：黑色，带有适当的透明度
-        shadow.setColor(QColor(255, 255, 255, 15))
+        shadow.setColor(QColor(0, 0, 0, 20))  # 使用黑色阴影更明显
         self.setGraphicsEffect(shadow)
         
         # 设置固定高度，与CustomInputBox保持一致
         self.setFixedHeight(self._height)
         
         # 从app对象获取全局默认字体大小
-        app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 18)
         
-        # 应用DPI缩放因子到按钮样式参数
-        scaled_border_radius = int(20 * self.dpi_scale)
+        # 应用最新的DPI缩放因子到按钮样式参数
+        # 计算适合的圆角半径，确保在各种尺寸下都合适
+        # 对于图标按钮，使用高度的一半作为圆角半径
+        # 对于文字按钮，使用固定的圆角半径（20px）
+        if self._display_mode == "icon":
+            scaled_border_radius = self._height // 2
+        else:
+            scaled_border_radius = int(20 * self.dpi_scale)
         scaled_padding = f"{int(8 * self.dpi_scale)}px {int(12 * self.dpi_scale)}px"
         scaled_font_size = int(default_font_size * self.dpi_scale)
         scaled_border_width = int(2 * self.dpi_scale)  # 边框宽度随DPI缩放
@@ -105,11 +114,13 @@ class CustomButton(QPushButton):
         if self._display_mode == "icon":
             self.setFixedWidth(self._height)
         else:
-            # 文字模式，先应用样式，再计算合适的宽度
+            # 文字模式，确保按钮有足够的宽度
             self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             # 设置最小宽度，确保短文字按钮不会太小，应用DPI缩放
-            self.setMinimumWidth(int(80 * self.dpi_scale))
+            self.setMinimumWidth(int(100 * self.dpi_scale))
             self.setMaximumWidth(16777215)
+            # 确保按钮宽度能容纳文字内容
+            self.adjustSize()
         
         if self.button_type == "primary":
             # 强调色方案
@@ -260,33 +271,19 @@ class CustomButton(QPushButton):
     
     def resizeEvent(self, event):
         """
-        大小变化事件，动态调整圆角半径为最短边的一半
+        大小变化事件
         如果是图标模式，重新渲染图标
+        注意：不再动态修改样式表，而是在update_style()中一次性设置
         """
         super().resizeEvent(event)
         
-        # 计算最短边
-        min_size = min(self.width(), self.height())
-        radius = min_size // 2
+        # 检查DPI缩放因子是否变化
+        app = QApplication.instance()
+        new_dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
-        # 更新样式表中的圆角半径
-        current_style = self.styleSheet()
-        # 移除旧的border-radius属性
-        lines = current_style.split('\n')
-        new_lines = []
-        for line in lines:
-            if 'border-radius' not in line:
-                new_lines.append(line)
-        
-        # 在适当位置添加新的border-radius属性
-        new_style = '\n'.join(new_lines)
-        # 找到QPushButton { 块
-        if 'QPushButton {' in new_style:
-            start_idx = new_style.find('QPushButton {') + len('QPushButton {')
-            # 在QPushButton { 块中添加border-radius属性
-            new_style = new_style[:start_idx] + f'\n                    border-radius: {radius}px;' + new_style[start_idx:]
-        
-        self.setStyleSheet(new_style)
+        # 如果DPI缩放因子发生变化，更新按钮样式
+        if new_dpi_scale != self.dpi_scale:
+            self.update_style()
         
         # 如果是图标模式，重新渲染图标以适应新尺寸
         if self._display_mode == "icon":

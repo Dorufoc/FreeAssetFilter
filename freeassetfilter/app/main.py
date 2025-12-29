@@ -691,46 +691,8 @@ def main():
     
     # 计算DPI缩放因子
     
-    def calculate_dpi_scale_factor():
-        """
-        计算DPI缩放因子，基于当前屏幕分辨率与基础分辨率2560x1600的比例
-        基础分辨率2560x1600视为100%
-        同时考虑Windows系统实际DPI设置和用户自定义全局DPI系数
-        """
-        screen = QApplication.primaryScreen()
-        if screen:
-            # 获取当前屏幕的完整分辨率
-            screen_geometry = screen.geometry()
-            current_width = screen_geometry.width()
-            current_height = screen_geometry.height()
-            
-            # 项目基准分辨率
-            base_width = 2560
-            base_height = 1600
-            
-            # 基于高度和宽度的平均值计算缩放因子
-            width_scale = current_width / base_width
-            height_scale = current_height / base_height
-            
-            # 使用高度缩放作为主要参考
-            scale_factor = height_scale
-            
-            # 添加用户自定义全局DPI系数
-            global_dpi_scale = settings_manager.get_setting("dpi.global_scale_factor", 1.0)
-            scale_factor *= global_dpi_scale
-            
-            # 输出调试信息
-            print(f"[DEBUG] 当前分辨率: {current_width}x{current_height}")
-            print(f"[DEBUG] 基准分辨率: {base_width}x{base_height}")
-            print(f"[DEBUG] 宽度缩放: {width_scale:.2f}, 高度缩放: {height_scale:.2f}")
-            print(f"[DEBUG] 全局DPI系数: {global_dpi_scale:.2f}")
-            print(f"[DEBUG] 最终DPI缩放因子: {scale_factor:.2f}")
-            
-            return scale_factor
-        return 1.0
-    
-    # 计算并存储DPI缩放因子到app对象中
-    app.dpi_scale_factor = calculate_dpi_scale_factor()
+    # 固定DPI缩放因子为0.5，禁用根据屏幕分辨率自动识别的功能
+    app.dpi_scale_factor = 0.5
     # 输出调试信息
     print(f"[DEBUG] 当前DPI缩放因子: {app.dpi_scale_factor:.2f}")
     

@@ -140,32 +140,10 @@ class CustomWindow(QWidget):
         title_layout.addWidget(title_label, 1)
         
         # 关闭按钮
-        self.close_button = QPushButton()
-        # 应用DPI缩放因子到关闭按钮
-        scaled_button_size = int(24 * self.dpi_scale)
-        scaled_border_radius = int(12 * self.dpi_scale)
-        # 从app对象获取全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        self.close_button.setFixedSize(scaled_button_size, scaled_button_size)
-        self.close_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #0a59f7;
-                border: none;
-                border-radius: {scaled_border_radius}px;
-                color: #ffffff;
-                font-size: {scaled_font_size}px;
-                font-weight: 400;
-            }}
-            QPushButton:hover {{
-                background-color: #0a59f7;
-            }}
-            QPushButton:pressed {{
-                background-color: #0062A0;
-            }}
-        """)
-        self.close_button.setText("×")
+        # 使用CustomButton代替QPushButton以确保一致性和DPI缩放兼容性
+        from .button_widgets import CustomButton
+        self.close_button = CustomButton("×", button_type="primary", display_mode="text", height=24)
+        self.close_button.setFixedSize(int(24 * self.dpi_scale), int(24 * self.dpi_scale))
         self.close_button.clicked.connect(self.close)
         title_layout.addWidget(self.close_button)
         
@@ -324,6 +302,23 @@ class CustomWindow(QWidget):
         """
         self.dragging = False
         self.resizing = False
+
+    def resizeEvent(self, event):
+        """
+        窗口大小变化事件
+        当窗口大小变化时，检查是否需要更新DPI缩放因子
+        """
+        super().resizeEvent(event)
+        
+        # 获取应用实例和最新的DPI缩放因子
+        app = QApplication.instance()
+        new_dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 如果DPI缩放因子发生变化，更新窗口样式
+        if new_dpi_scale != self.dpi_scale:
+            self.dpi_scale = new_dpi_scale
+            # 重新初始化UI以应用新的DPI缩放因子
+            self.init_ui()
     
     def add_widget(self, widget):
         """
