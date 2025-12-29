@@ -705,6 +705,8 @@ class MPVPlayerCore(QObject):
                 
             # 使用stop命令停止播放
             self._execute_command(['stop'])
+            # 确保将pause属性设置为False，以便下次播放时能正确加载媒体
+            self._set_property_bool('pause', False)
             self._is_playing = False
             print("[MPVPlayerCore] 播放已停止")
         except Exception as e:
