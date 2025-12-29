@@ -1075,27 +1075,32 @@ class VideoPlayer(QWidget):
             # 保存当前播放状态
             current_playing = self.player_core.is_playing
             
-            # 1. 主播放器加载视频（带滤镜，音量静音）
+            # 1. 同时加载视频到两个播放器
             self.player_core.set_media(self._current_file_path)
+            self.original_player_core.set_media(self._current_file_path)
+            
+            # 2. 同时应用滤镜（仅主播放器）
             if self.cube_path and self.cube_loaded:
                 self.player_core.enable_cube_filter(self.cube_path)
-            # 设置主播放器从头开始播放
-            self.player_core.pause()
-            self.player_core.set_position(0)  # 设置为0秒
-            if current_playing:
-                self.player_core.play()
-            # 主播放器（带滤镜）音量设置为0（静音）
-            self.player_core.set_volume(0)
             
-            # 2. 原始播放器加载视频（不带滤镜，音量受控制）
-            self.original_player_core.set_media(self._current_file_path)
-            # 设置原始播放器从头开始播放
+            # 3. 同时设置音量
+            self.player_core.set_volume(0)  # 主播放器静音
+            self.original_player_core.set_volume(self._current_volume)  # 原始播放器使用当前音量
+            
+            # 4. 同时设置播放状态（暂停）
+            self.player_core.pause()
             self.original_player_core.pause()
-            self.original_player_core.set_position(0)  # 设置为0秒
+            
+            # 5. 同时设置初始位置（使用更精确的位置设置）
+            # 使用相同的精确位置值，确保两个视频完全同步
+            self.player_core.set_position(0)
+            self.original_player_core.set_position(0)
+            
+            # 6. 同时恢复播放状态（如果之前在播放）
             if current_playing:
+                # 使用更精确的播放控制，减少操作延迟
+                self.player_core.play()
                 self.original_player_core.play()
-            # 原始播放器使用当前音量设置
-            self.original_player_core.set_volume(self._current_volume)
     
     def _disable_comparison_mode(self):
         """
@@ -1572,16 +1577,25 @@ class VideoPlayer(QWidget):
         Args:
             position: 跳转位置（秒）
         """
-        if self.player_core:
+        if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
             # 转换为0-1范围的位置
-            if hasattr(self.player_core, 'duration'):
-                duration = self.player_core.duration / 1000  # 转换为秒
+            try:
+                duration = self.player_core.duration / 1000 if hasattr(self.player_core, 'duration') else 0
+                if duration <= 0:
+                    # 如果获取时长失败，尝试从播放器获取当前时长
+                    duration = self.player_core._get_property_double('duration') if hasattr(self.player_core, '_get_property_double') else 0
+                
                 if duration > 0:
                     normalized_position = position / duration
+                    # 确保位置在0-1范围内
+                    normalized_position = max(0.0, min(1.0, normalized_position))
+                    
+                    # 同时设置两个播放器的位置
                     self.player_core.set_position(normalized_position)
-                    # 同时控制原始视频播放器
-                    if hasattr(self, 'original_player_core') and self.original_player_core:
+                    if hasattr(self, 'original_player_core') and self.original_player_core and hasattr(self.original_player_core, '_mpv') and self.original_player_core._mpv is not None:
                         self.original_player_core.set_position(normalized_position)
+            except Exception as e:
+                print(f"[VideoPlayer] 跳转到指定位置失败: {e}")
     
     def set_volume(self, volume):
         """
@@ -1793,11 +1807,11 @@ class VideoPlayer(QWidget):
         # 确保MPV内核已初始化
         if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
             try:
-                # 发送视频重新配置命令，让MPV重新检测窗口大小
-                self.player_core._execute_command(['video-reconfig'])
-                print(f"[VideoPlayer] resizeEvent: 视频窗口大小已调整，发送video-reconfig命令")
+                # MPV会自动检测窗口大小变化，不需要显式发送video-reconfig命令
+                # 这个命令在新版本的MPV中可能已经不存在或名称已更改
+                print(f"[VideoPlayer] resizeEvent: 视频窗口大小已调整，MPV将自动适应新大小")
             except Exception as e:
-                print(f"[VideoPlayer] resizeEvent: 发送video-reconfig命令失败 - {e}")
+                print(f"[VideoPlayer] resizeEvent: 处理窗口大小变化失败 - {e}")
     
     def mouseDoubleClickEvent(self, event):
         """
