@@ -206,6 +206,9 @@ class MPVPlayerCore(QObject):
         # 播放状态标志
         self._is_playing = False
         
+        # 保护标志：防止在设置新媒体时循环播放逻辑干扰
+        self._media_changing = False
+        
         # 窗口句柄
         self._window_handle = None
         
@@ -221,6 +224,7 @@ class MPVPlayerCore(QObject):
         # Cube滤镜状态
         self._cube_filter_enabled = False
         self._current_cube_path = ""
+        self._pending_cube_apply = None  # 用于保存需要在FILE_LOADED事件中应用的LUT设置
         
         # MPV实例
         self._mpv = None
@@ -237,6 +241,14 @@ class MPVPlayerCore(QObject):
         
         # idle事件回调
         self._on_idle_callback = None
+        
+        # idle事件频率控制相关变量
+        self._idle_event_timestamps = []  # 记录idle事件发生的时间戳
+        self._idle_event_threshold = 5  # 5秒内允许的最大idle事件数
+        self._idle_event_window = 5.0  # 检查窗口（秒）
+        self._idle_events_ignored = False  # 是否暂时忽略idle事件
+        self._idle_ignore_until = 0.0  # 忽略idle事件直到这个时间戳
+        self._idle_event_last_processed = 0.0  # 上次处理idle事件的时间
         
         # 检查MPV库是否加载成功
         if not mpv_loaded:
@@ -383,6 +395,26 @@ class MPVPlayerCore(QObject):
                 # 获取事件类型（事件指针的第一个成员）
                 event_type = c_int.from_address(event).value
                 
+                # 1. 事件处理前检查：媒体切换状态过滤
+                if self._media_changing:
+                    # 只处理关键事件，其他事件暂时忽略
+                    # 扩展关键事件列表，确保更多重要事件能够被处理
+                    critical_events = [
+                        MPV_EVENT_SHUTDOWN,      # 播放器关闭
+                        MPV_EVENT_FILE_LOADED,   # 文件加载完成
+                        MPV_EVENT_END_FILE,      # 文件播放结束
+                        MPV_EVENT_VIDEO_RECONFIG, # 视频重新配置
+                        MPV_EVENT_AUDIO_RECONFIG, # 音频重新配置
+                        MPV_EVENT_TRACKS_CHANGED, # 音视频轨道变化
+                        MPV_EVENT_PLAYBACK_RESTART # 播放重新开始
+                    ]
+                    
+                    if event_type not in critical_events:
+                        event_name = libmpv.mpv_event_name(event_type)
+                        event_name_str = event_name.decode('utf-8') if event_name else f"未知事件({event_type})"
+                        print(f"[MPVPlayerCore] 媒体正在切换，忽略非关键事件: {event_name_str}")
+                        continue
+                
                 if event_type == MPV_EVENT_NONE:
                     # 没有事件，继续循环
                     continue
@@ -394,68 +426,212 @@ class MPVPlayerCore(QObject):
                     # 处理播放结束事件
                     print(f"[MPVPlayerCore] 收到播放结束事件")
                     
+                    # 媒体正在切换时，不执行循环播放
+                    if self._media_changing:
+                        print(f"[MPVPlayerCore] 媒体正在切换，跳过循环播放逻辑")
+                        self._is_playing = False
+                        try:
+                            self._set_property_bool('pause', True)
+                        except Exception as e:
+                            print(f"[MPVPlayerCore] 设置暂停状态失败: {e}")
+                        continue
+                    
                     # 实现循环播放：重新加载当前媒体文件
                     if self._media:
                         print(f"[MPVPlayerCore] 循环播放：重新加载媒体文件 {self._media}")
+                        
+                        # 保存当前的LUT设置，用于在FILE_LOADED事件中重新应用
+                        self._pending_cube_apply = {
+                            'enabled': self._cube_filter_enabled,
+                            'path': self._current_cube_path
+                        }
+                        print(f"[MPVPlayerCore] 循环播放：保存当前LUT设置 - enabled: {self._pending_cube_apply['enabled']}, path: {self._pending_cube_apply['path']}")
+                        
                         # 使用replace参数重新加载当前媒体文件
-                        self._execute_command(['loadfile', self._media, 'replace'])
-                        # 设置播放状态并开始播放
-                        self._is_playing = True
-                        try:
-                            self._set_property_bool('pause', False)
-                        except Exception as e:
-                            print(f"[MPVPlayerCore] 警告: 设置播放状态失败 - {e}")
+                        # 增加错误处理，确保命令执行成功
+                        # 这里增加一个额外的检查，确保在重新加载之前，_media_changing仍然为False
+                        if not self._media_changing:
+                            load_result = self._execute_command(['loadfile', self._media, 'replace'], timeout=5.0)
+                            if not load_result:
+                                print(f"[MPVPlayerCore] 循环播放：加载媒体失败")
+                                # 设置播放状态为停止，避免死循环
+                                self._is_playing = False
+                                try:
+                                    self._set_property_bool('pause', True)
+                                except Exception as e:
+                                    print(f"[MPVPlayerCore] 设置暂停状态失败: {e}")
+                            else:
+                                # 设置播放状态
+                                self._is_playing = True
+                                
+                                # 开始播放 - 在FILE_LOADED事件中处理，这里不立即设置
+                                # 这样可以确保媒体完全加载后再开始播放
+                                print(f"[MPVPlayerCore] 循环播放：媒体重新加载成功，将在FILE_LOADED事件中恢复播放")
+                                
+                                # 清除可能存在的idle事件忽略状态
+                                if self._idle_events_ignored:
+                                    print(f"[MPVPlayerCore] 循环播放：清除idle事件忽略状态")
+                                    self._idle_events_ignored = False
+                                    self._idle_ignore_until = 0.0
+                                    self._idle_event_timestamps.clear()
                     else:
                         # 如果没有媒体文件，就正常结束播放
                         self._is_playing = False
                         # 确保pause属性被设置为True
                         try:
                             self._set_property_bool('pause', True)
+                            print(f"[MPVPlayerCore] 播放结束状态设置完成")
                         except Exception as e:
                             print(f"[MPVPlayerCore] 警告: 设置播放结束状态失败 - {e}")
+                elif event_type == MPV_EVENT_FILE_LOADED:
+                    # 处理媒体文件加载完成事件
+                    print(f"[MPVPlayerCore] 收到FILE_LOADED事件")
+                    
+                    # 即使媒体正在改变，也不忽略此事件
+                    # 但需要特殊处理，避免与set_media方法冲突
+                    is_media_changing = self._media_changing
+                    print(f"[MPVPlayerCore] FILE_LOADED事件：媒体是否正在改变: {is_media_changing}")
+                    
+                    # 保存LUT设置，但不立即清除，因为可能需要在媒体切换完成后应用
+                    pending_lut = self._pending_cube_apply
+                    print(f"[MPVPlayerCore] FILE_LOADED事件：当前待处理LUT设置: {pending_lut}")
+                    
+                    # 检查是否有需要应用的LUT设置
+                    if pending_lut and not is_media_changing:
+                        print(f"[MPVPlayerCore] FILE_LOADED事件：应用待处理的LUT设置 - enabled: {pending_lut['enabled']}, path: {pending_lut['path']}")
+                        
+                        # 应用LUT设置
+                        if pending_lut['enabled'] and pending_lut['path']:
+                            try:
+                                self.enable_cube_filter(pending_lut['path'])
+                                print(f"[MPVPlayerCore] FILE_LOADED事件：LUT设置应用成功")
+                            except Exception as e:
+                                print(f"[MPVPlayerCore] FILE_LOADED事件：应用LUT设置失败 - {e}")
+                        
+                        # 清除待处理的LUT设置
+                        self._pending_cube_apply = None
+                    
+                    # 媒体加载完成后，检查并恢复播放状态
+                    try:
+                        # 如果媒体正在改变，不恢复播放状态
+                        if not is_media_changing:
+                            # 如果是循环播放触发的FILE_LOADED事件，确保继续播放
+                            if self._is_playing:
+                                print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复播放状态")
+                                # 多次尝试设置播放状态，提高成功率
+                                play_attempts = 0
+                                while play_attempts < 3:
+                                    play_attempts += 1
+                                    try:
+                                        self._set_property_bool('pause', False)
+                                        current_pause = self._get_property_bool('pause')
+                                        if not current_pause:
+                                            break
+                                    except Exception as e:
+                                        print(f"[MPVPlayerCore] FILE_LOADED事件：设置播放状态失败 - {e}")
+                                    time.sleep(0.1)
+                    except Exception as e:
+                        print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放状态时发生异常 - {e}")
+                    
+                    # 强制刷新视频，防止黑屏
+                    try:
+                        # 先设置播放速度为1.1，然后立即恢复为1.0
+                        # 这种方式可以触发视频刷新，同时避免在媒体刚加载时的错误
+                        self._execute_command(['set', 'speed', '1.1'])
+                        self._execute_command(['set', 'speed', '1.0'])
+                        print(f"[MPVPlayerCore] FILE_LOADED事件：通过调整播放速度刷新视频")
+                    except Exception as e:
+                        # 忽略刷新错误，因为这不会影响播放功能
+                        pass
+                    
+                    # 媒体加载完成后，确保idle事件处理恢复正常
+                    if self._idle_events_ignored:
+                        print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复idle事件处理")
+                        self._idle_events_ignored = False
+                        self._idle_ignore_until = 0.0
+                        self._idle_event_timestamps.clear()
                 elif event_type == MPV_EVENT_IDLE:
                     # 处理idle事件（播放结束后可能进入此状态）
-                    print(f"[MPVPlayerCore] 收到idle事件")
+                    current_time = time.time()
                     
-                    # 调用idle事件回调
+                    # 1. 媒体切换时直接忽略所有IDLE事件
+                    if self._media_changing:
+                        print(f"[MPVPlayerCore] 媒体切换中，忽略IDLE事件")
+                        continue
+                    
+                    # 2. 检查是否处于事件忽略期
+                    if self._idle_events_ignored and current_time < self._idle_ignore_until:
+                        print(f"[MPVPlayerCore] IDLE事件忽略期内，忽略事件")
+                        continue
+                    
+                    # 3. 恢复处理事件
+                    if self._idle_events_ignored:
+                        print(f"[MPVPlayerCore] 恢复处理IDLE事件")
+                        self._idle_events_ignored = False
+                        self._idle_ignore_until = 0.0
+                        self._idle_event_timestamps.clear()
+                    
+                    # 3. 更新事件时间戳并检查频率
+                    self._idle_event_timestamps.append(current_time)
+                    # 移除时间窗口外的旧时间戳
+                    window_start = current_time - self._idle_event_window
+                    self._idle_event_timestamps = [ts for ts in self._idle_event_timestamps if ts >= window_start]
+                    
+                    # 4. 检测异常事件频率
+                    if len(self._idle_event_timestamps) > self._idle_event_threshold:
+                        print(f"[ERROR] IDLE事件异常！{self._idle_event_window}秒内检测到{len(self._idle_event_timestamps)}个事件")
+                        # 进入事件忽略期
+                        self._idle_events_ignored = True
+                        self._idle_ignore_until = current_time + 3.0
+                        # 清空时间戳列表，避免重复触发
+                        self._idle_event_timestamps.clear()
+                        continue
+                    
+                    # 5. 限制处理频率
+                    if current_time - self._idle_event_last_processed < 0.5:
+                        continue
+                    self._idle_event_last_processed = current_time
+                    
+                    print(f"[MPVPlayerCore] 处理IDLE事件，时间: {current_time:.3f}")
+                    
+                    # 6. 执行回调（如果有）
                     if self._on_idle_callback:
                         try:
                             self._on_idle_callback()
                         except Exception as e:
-                            print(f"[MPVPlayerCore] 警告: 执行idle回调失败 - {e}")
+                            print(f"[MPVPlayerCore] IDLE回调执行失败 - {e}")
+                            # 对象删除时清除回调
+                            if "wrapped C/C++ object of type" in str(e) and "has been deleted" in str(e):
+                                self._on_idle_callback = None
                     
-                    # 常规idle事件处理
+                    # 7. 核心状态处理
                     try:
                         current_pause = self._get_property_bool('pause')
                         
-                        # 检查播放时间，如果接近0，说明可能是刚加载或刚开始播放
+                        # 获取播放时间，判断是否刚加载
+                        time_pos = 0.0
+                        is_recently_started = True
                         try:
                             time_pos = self._get_property_double('playback-time')
                             is_recently_started = time_pos < 0.5
                         except:
-                            is_recently_started = True  # 默认认为是刚开始
+                            pass  # 默认视为刚加载
                         
-                        print(f"[MPVPlayerCore] idle事件详情: pause={current_pause}, time_pos={time_pos if 'time_pos' in locals() else 'N/A'}, is_recently_started={is_recently_started}")
-                        
-                        # 如果当前不是暂停状态，但收到idle事件
+                        # 8. 状态决策
                         if not current_pause:
-                            # 如果是刚开始播放（播放时间很短），不要暂停，可能是加载延迟导致的idle
                             if is_recently_started:
-                                print(f"[MPVPlayerCore] idle事件：视频刚加载，忽略idle事件，保持播放状态")
-                                # 保持播放状态，不暂停
+                                # 刚加载时忽略IDLE，保持播放
+                                print(f"[MPVPlayerCore] IDLE: 视频刚加载({time_pos:.2f}s)，保持播放")
                                 self._is_playing = True
-                                self._set_property_bool('pause', False)  # 确保不暂停
+                                self._set_property_bool('pause', False)
                             else:
-                                print(f"[MPVPlayerCore] idle事件：播放结束后进入idle状态")
+                                # 正常播放结束，进入暂停
+                                print(f"[MPVPlayerCore] IDLE: 播放结束，进入暂停")
                                 self._is_playing = False
-                                # 确保pause属性被设置为True
                                 self._set_property_bool('pause', True)
-                        else:
-                            print(f"[MPVPlayerCore] idle事件：暂停时进入idle状态")
-                            # 暂停时的idle事件，保持当前状态不变
                     except Exception as e:
-                        print(f"[MPVPlayerCore] 警告: idle状态处理失败 - {e}")
-                        # 出现异常时，默认设置为暂停状态
+                        print(f"[MPVPlayerCore] IDLE事件处理异常 - {e}")
+                        # 异常时确保处于暂停状态
                         try:
                             self._set_property_bool('pause', True)
                             self._is_playing = False
@@ -481,13 +657,65 @@ class MPVPlayerCore(QObject):
         停止事件处理线程
         """
         try:
+            if not self._event_thread_running:
+                print("[MPVPlayerCore] 事件处理线程已停止")
+                return
+                
+            print("[MPVPlayerCore] 正在停止事件处理线程...")
+            
+            # 1. 设置停止标志
             self._event_thread_running = False
-            if self._event_thread:
-                self._event_thread.join(timeout=1.0)
+            
+            # 2. 唤醒MPV的事件循环，确保mpv_wait_event能够返回
+            if self._mpv:
+                try:
+                    # 使用非阻塞方式唤醒事件循环，避免在停止过程中阻塞
+                    import threading
+                    def wakeup_mpv():
+                        try:
+                            # 直接调用MPV API唤醒事件循环
+                            libmpv.mpv_wakeup(self._mpv)
+                            print("[MPVPlayerCore] 已直接调用mpv_wakeup唤醒事件循环")
+                        except Exception as e:
+                            print(f"[MPVPlayerCore] 直接唤醒MPV事件循环失败 - {e}")
+                    
+                    # 在单独线程中执行唤醒操作，避免阻塞主线程
+                    wakeup_thread = threading.Thread(target=wakeup_mpv, daemon=True)
+                    wakeup_thread.start()
+                    wakeup_thread.join(timeout=0.5)
+                except Exception as e:
+                    print(f"[MPVPlayerCore] 唤醒MPV事件循环失败 - {e}")
+            
+            # 3. 等待线程退出，最多等待3秒
+            start_wait_time = time.time()
+            while self._event_thread and self._event_thread.is_alive() and time.time() - start_wait_time < 3.0:
+                self._event_thread.join(timeout=0.1)
+                
+                # 定期再次尝试唤醒
+                if self._mpv and self._event_thread and self._event_thread.is_alive():
+                    try:
+                        libmpv.mpv_wakeup(self._mpv)
+                    except:
+                        pass
+            
+            # 4. 检查线程是否已退出
+            if self._event_thread and self._event_thread.is_alive():
+                print("[MPVPlayerCore] 事件处理线程未能及时退出")
+                print("[MPVPlayerCore] 警告: 事件处理线程未能在超时时间内退出")
+                print("[MPVPlayerCore] 线程是daemon线程，会在主程序退出时自动退出")
+            else:
+                print("[MPVPlayerCore] 事件处理线程已成功退出")
+                # 确保线程对象被正确重置
                 self._event_thread = None
-            print("[MPVPlayerCore] 事件处理线程已停止")
+            
+            print("[MPVPlayerCore] 事件处理线程停止完成")
         except Exception as e:
-            print(f"[MPVPlayerCore] 错误: 停止事件处理线程失败 - {e}")
+            print(f"[MPVPlayerCore] 停止事件处理线程失败 - {e}")
+            import traceback
+            traceback.print_exc()
+            # 确保状态被正确重置
+            self._event_thread_running = False
+            self._event_thread = None
     
     def observe_property(self, property_name, property_format):
         """
@@ -558,19 +786,9 @@ class MPVPlayerCore(QObject):
                 # 检查MPV是否处于idle状态
                 core_idle = self._get_property_bool('core-idle')
                 
-                # 考虑实际情况：如果暂停状态是False，但core处于idle，可能是因为
-                # 1. 媒体文件不存在
-                # 2. 播放刚结束
-                # 3. 媒体加载过程中
-                
-                # 对于测试环境和实际使用，我们需要平衡真实状态和预期行为
-                # 当pause=False时，即使core-idle=True，我们也应该认为是正在播放
-                # 因为这可能是由于媒体不存在或加载延迟导致的
-                if not current_pause:
-                    self._is_playing = True
-                else:
-                    # 如果确实处于暂停状态，再检查core-idle
-                    self._is_playing = False
+                # 考虑实际情况：如果pause=False但core处于idle，可能是因为媒体不存在、播放刚结束或加载过程中
+                # 只有当pause=False且core不处于idle状态时，才认为是真正在播放
+                self._is_playing = (not current_pause) and (not core_idle)
                     
                 # print(f"[MPVPlayerCore] 获取播放状态: pause={current_pause}, core-idle={core_idle}, is_playing={self._is_playing}")
         except Exception as e:
@@ -658,15 +876,163 @@ class MPVPlayerCore(QObject):
             if not self._mpv:
                 return False
                 
-            # 保存媒体路径
+            # 设置保护标志，防止在设置新媒体时循环播放逻辑干扰
+            self._media_changing = True
+            print(f"[MPVPlayerCore] 开始设置媒体文件: {file_path}")
+            
+            # 1. 停止所有可能的事件处理
+            # 暂停事件处理线程，确保媒体切换期间不会处理任何事件
+            old_event_thread_running = self._event_thread_running
+            if old_event_thread_running:
+                self._stop_event_thread()
+                print(f"[MPVPlayerCore] 已停止事件处理线程")
+            
+            # 暂时忽略idle事件，防止媒体切换过程中受到干扰
+            self._idle_events_ignored = True
+            self._idle_ignore_until = time.time() + 5.0  # 进一步延长忽略时间到5秒
+            self._idle_event_timestamps.clear()
+            self._idle_event_last_processed = 0.0
+            
+            # 2. 清除待处理的LUT设置，避免新视频继承之前的LUT设置
+            self._pending_cube_apply = None
+            
+            # 3. 保存旧媒体路径
+            old_media_path = self._media
+            
+            # 4. 停止当前播放的媒体，避免新老媒体操作冲突
+            # 在调用stop之前，先将_media设置为None，防止stop方法中使用错误的媒体路径
+            self._media = None
+            
+            # 彻底清理当前播放资源
+            for cleanup_cmd in [['stop'], ['playlist-clear'], ['osd-clear']]:
+                try:
+                    self._execute_command(cleanup_cmd, timeout=1.0)
+                except Exception as e:
+                    print(f"[MPVPlayerCore] 清理命令 {cleanup_cmd} 执行失败: {e}")
+                    # 继续执行其他清理命令，不中断
+            
+            # 5. 重置播放状态
+            self._is_playing = False
+            
+            # 6. 清除LUT滤镜
+            if self._cube_filter_enabled:
+                try:
+                    self.disable_cube_filter()
+                    self._cube_filter_enabled = False
+                    self._current_cube_path = ""
+                except Exception as e:
+                    print(f"[MPVPlayerCore] 清除LUT滤镜失败: {e}")
+            
+            # 7. 保存媒体路径
             self._media = file_path
             
-            # 重置时长缓存
+            # 8. 重置时长缓存
             self._duration = 0
+            self._current_time = 0
+            self._current_position = 0.0
+            
+            # 9. 确保MPV核心不处于idle状态
+            try:
+                # 先检查核心idle状态
+                core_idle = self._get_property_bool('core-idle')
+                print(f"[MPVPlayerCore] 设置媒体前，核心idle状态: {core_idle}")
+                
+                # 处理路径中的中文问题
+                processed_path = self.process_chinese_path(file_path)
+                
+                # 使用loadfile命令加载新媒体，replace参数确保替换当前播放
+                # 增加超时时间到5秒，确保媒体有足够时间加载
+                load_result = self._execute_command(['loadfile', processed_path, 'replace'], timeout=5.0)
+                if not load_result:
+                    print(f"[MPVPlayerCore] 加载媒体文件失败: {processed_path}")
+                    # 尝试另一种方式加载，不使用replace参数
+                    load_result = self._execute_command(['loadfile', processed_path], timeout=5.0)
+                
+                if load_result:
+                    # 立即暂停，确保不会自动开始播放
+                    time.sleep(0.2)  # 增加等待时间，确保状态稳定
+                    self._set_property_bool('pause', True)
+                    print(f"[MPVPlayerCore] 媒体文件加载成功，已暂停")
+                else:
+                    print(f"[MPVPlayerCore] 尝试多种方式加载媒体文件均失败")
+                    
+            except Exception as e:
+                print(f"[MPVPlayerCore] 预加载媒体失败 - {e}")
+                import traceback
+                traceback.print_exc()
+                
+                # 即使预加载失败，也要尝试恢复状态
+                try:
+                    self._set_property_bool('pause', True)
+                    self._is_playing = False
+                except:
+                    pass
+            
+            # 10. 恢复事件处理线程
+            if old_event_thread_running:
+                # 直接启动新的事件处理线程
+                self._start_event_thread()
+                print(f"[MPVPlayerCore] 已重新启动事件处理线程")
+                
+                # 等待事件处理线程真正开始运行（最多等待1秒）
+                wait_time = 0
+                while wait_time < 1.0 and self._event_thread and self._event_thread.is_alive():
+                    time.sleep(0.1)
+                    wait_time += 0.1
+                    if wait_time >= 0.5:
+                        # 0.5秒后仍未恢复，强制重新启动事件线程
+                        print(f"[MPVPlayerCore] 事件处理线程启动超时，强制重新启动")
+                        self._start_event_thread()
+                        break
+            
+            # 11. 恢复idle事件处理，但保持一定的缓冲时间
+            self._idle_ignore_until = time.time() + 2.0  # 增加缓冲时间到2秒，确保更稳定的状态
+            
+            # 12. 清除保护标志
+            self._media_changing = False
+            print(f"[MPVPlayerCore] 媒体文件设置完成: {file_path}")
             
             return True
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 设置媒体失败 - {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # 确保在异常情况下也能正确重置状态
+            try:
+                self._media_changing = False
+                self._media = None
+                self._idle_events_ignored = False
+                self._idle_ignore_until = 0.0
+                self._idle_event_timestamps.clear()
+                self._pending_cube_apply = None
+                self._is_playing = False
+                
+                # 恢复事件处理线程
+                self._event_thread_running = True
+                if not self._event_thread or not self._event_thread.is_alive():
+                    self._start_event_thread()
+                
+                # 尝试停止播放并清理资源
+                if self._mpv:
+                    for cleanup_cmd in [['stop'], ['playlist-clear'], ['osd-clear']]:
+                        try:
+                            self._execute_command(cleanup_cmd, timeout=1.0)
+                        except:
+                            pass
+                    self._set_property_bool('pause', True)
+                    
+                    # 清除LUT滤镜
+                    if self._cube_filter_enabled:
+                        try:
+                            self.disable_cube_filter()
+                            self._cube_filter_enabled = False
+                            self._current_cube_path = ""
+                        except:
+                            pass
+            except:
+                pass
+                
             return False
     
     def load_media(self, file_path):
@@ -681,42 +1047,145 @@ class MPVPlayerCore(QObject):
         """
         return self.set_media(file_path)
     
-    def _execute_command(self, command_list):
+    def _execute_command(self, command_list, timeout=2.0):
         """
-        执行MPV命令
-        
+        执行MPV命令，带有超时处理机制和状态保护
+
         Args:
             command_list (list): 命令列表，如 ['loadfile', 'path/to/file.mp4', 'replace']
-            
+            timeout (float): 超时时间（秒）
+
         Returns:
             bool: 执行成功返回 True，否则返回 False
         """
-        try:
-            if not self._mpv:
+        import threading
+        import time
+        
+        # 命令执行结果
+        result_value = None
+        exception_occurred = None
+        command_start_time = time.time()
+        
+        # 检查MPV实例是否存在
+        if not self._mpv:
+            print(f"[MPVPlayerCore] 错误: MPV实例不存在，无法执行命令: {command_list}")
+            return False
+        
+        # 检查命令是否需要在媒体切换期间执行
+        is_media_change_related = any(cmd in ['stop', 'playlist-clear', 'osd-clear', 'loadfile'] 
+                                    for cmd in command_list if isinstance(cmd, str))
+        
+        # 如果不是媒体切换相关命令，且正在切换媒体，则根据命令类型决定是否执行
+        if not is_media_change_related and self._media_changing:
+            command_name = command_list[0] if command_list else ""
+            
+            # 允许执行的命令类型列表
+            allowed_commands = [
+                # 查询类命令
+                'get_property', 'get_time_pos', 'get_duration',
+                # 状态查询命令
+                'get_pause', 'get_playback_time', 'get_position',
+                # 显示控制命令
+                'set_property', 'set_pause',
+                # 音量控制命令
+                'set_volume', 'get_volume',
+                # 视频控制命令
+                'seek', 'set_position'
+            ]
+            
+            if command_name in allowed_commands:
+                # 允许执行的命令
+                print(f"[MPVPlayerCore] 媒体正在切换，但允许执行命令: {command_list}")
+            else:
+                # 非关键命令延迟执行
+                print(f"[MPVPlayerCore] 警告: 正在切换媒体，跳过非关键命令: {command_list}")
                 return False
+        
+        def _execute_command_thread():
+            """在子线程中执行命令"""
+            nonlocal result_value, exception_occurred
+            thread_start_time = time.time()
             
-            # 转换命令列表为ctypes所需的格式
-            # 每个命令元素转换为bytes，最后添加None作为终止符
-            command_array = (c_char_p * (len(command_list) + 1))()
-            for i, cmd in enumerate(command_list):
-                if isinstance(cmd, str):
-                    command_array[i] = cmd.encode('utf-8')
-                else:
-                    command_array[i] = str(cmd).encode('utf-8')
-            command_array[len(command_list)] = None
-            
-            # 执行命令
-            result = libmpv.mpv_command(self._mpv, command_array)
-            if result != MPV_ERROR_SUCCESS:
-                print(f"[MPVPlayerCore] 错误: 执行命令 {command_list} 失败，错误码: {result}")
-                return False
-            
-            return True
-        except Exception as e:
-            print(f"[MPVPlayerCore] 错误: 执行命令 {command_list} 异常 - {e}")
+            try:
+                # 再次检查MPV实例和状态，确保线程执行时状态仍然有效
+                if not self._mpv:
+                    result_value = False
+                    return
+                
+                if self._media_changing and not is_media_change_related:
+                    result_value = False
+                    return
+                
+                # 转换命令列表为ctypes所需的格式
+                command_array = (c_char_p * (len(command_list) + 1))()
+                for i, cmd in enumerate(command_list):
+                    if isinstance(cmd, str):
+                        command_array[i] = cmd.encode('utf-8')
+                    else:
+                        command_array[i] = str(cmd).encode('utf-8')
+                command_array[len(command_list)] = None
+                
+                # 执行命令 - 添加额外的异常保护
+                try:
+                    result = libmpv.mpv_command(self._mpv, command_array)
+                    if result != MPV_ERROR_SUCCESS:
+                        print(f"[MPVPlayerCore] 错误: 执行命令 {command_list} 失败，错误码: {result}")
+                        result_value = False
+                    else:
+                        result_value = True
+                        print(f"[MPVPlayerCore] 命令执行成功: {command_list}")
+                except ctypes.ArgumentError as e:
+                    print(f"[MPVPlayerCore] 参数错误: 执行命令 {command_list} 失败 - {e}")
+                    result_value = False
+                except ctypes.AccessViolationError as e:
+                    print(f"[MPVPlayerCore] 访问违规: 执行命令 {command_list} 失败 - {e}")
+                    result_value = False
+                except Exception as e:
+                    # 其他未预期的异常
+                    raise e
+                    
+            except Exception as e:
+                exception_occurred = e
+                result_value = False
+                print(f"[MPVPlayerCore] 命令执行线程异常: {e}")
+            finally:
+                elapsed = time.time() - thread_start_time
+                if elapsed > timeout * 0.5:
+                    print(f"[MPVPlayerCore] 警告: 命令 {command_list} 执行时间较长 ({elapsed:.2f}秒)")
+        
+        # 创建并启动线程
+        thread = threading.Thread(target=_execute_command_thread, daemon=True)
+        thread.start()
+        
+        # 等待线程完成或超时
+        thread.join(timeout)
+        
+        # 计算总执行时间
+        total_elapsed = time.time() - command_start_time
+        
+        if thread.is_alive():
+            # 线程超时 - 这里我们无法强制终止线程，但可以记录警告
+            print(f"[MPVPlayerCore] 错误: 执行命令 {command_list} 超时（{total_elapsed:.2f}秒 > {timeout}秒）")
+            # 尝试唤醒MPV事件循环，可能有助于命令线程结束
+            try:
+                libmpv.mpv_wakeup(self._mpv)
+            except:
+                pass
+            return False
+        
+        if exception_occurred:
+            # 线程执行时发生异常
+            print(f"[MPVPlayerCore] 错误: 执行命令 {command_list} 异常 - {exception_occurred}")
             import traceback
             traceback.print_exc()
             return False
+        
+        if result_value is None:
+            # 这是一个不应该发生的情况
+            print(f"[MPVPlayerCore] 错误: 命令 {command_list} 执行结果未设置")
+            return False
+        
+        return result_value
     
     def play(self):
         """
@@ -731,6 +1200,11 @@ class MPVPlayerCore(QObject):
             # 检查MPV实例是否初始化成功
             if not self._mpv or not self._media:
                 print(f"[MPVPlayerCore] 播放失败: MPV实例未初始化或媒体未设置")
+                return False
+            
+            # 检查媒体是否正在改变
+            if self._media_changing:
+                print(f"[MPVPlayerCore] 播放失败: 媒体正在切换中")
                 return False
                 
             # 检查当前播放状态
@@ -800,7 +1274,7 @@ class MPVPlayerCore(QObject):
                             self._set_property_bool('pause', False)
                             
                             # 检查是否真的开始播放
-                            time.sleep(0.2)  # 给MPV更多时间响应
+                            time.sleep(0.1)  # 减少等待时间，给MPV更少但足够的响应时间
                             current_pause = self._get_property_bool('pause')
                             if not current_pause:
                                 self._is_playing = True
@@ -850,7 +1324,7 @@ class MPVPlayerCore(QObject):
                     
                     if not success and retry_count < max_retries:
                         print(f"[MPVPlayerCore] 重试重新播放...")
-                        time.sleep(0.5)  # 重试间隔500ms
+                        time.sleep(0.3)  # 减少重试间隔到300ms
                 
                 # 所有尝试都失败
                 if not success:
@@ -932,6 +1406,18 @@ class MPVPlayerCore(QObject):
                 self._is_playing = False
                 return
                 
+            # 如果当前处于暂停状态，先恢复播放再停止
+            # 这可以避免在暂停状态下直接停止导致的阻塞问题
+            try:
+                current_pause = self._get_property_bool('pause')
+                if current_pause:
+                    # 先恢复播放，等待一小段时间确保状态稳定
+                    self._set_property_bool('pause', False)
+                    time.sleep(0.1)  # 短暂等待，确保状态稳定
+            except Exception as e:
+                print(f"[MPVPlayerCore] 检查暂停状态失败 - {e}")
+                # 即使检查失败，仍继续尝试停止播放
+            
             # 使用stop命令停止播放
             self._execute_command(['stop'])
             # 停止播放后，媒体会被卸载，只需要设置本地状态即可
@@ -1063,6 +1549,31 @@ class MPVPlayerCore(QObject):
             
             value_double = c_double(value)
             result = libmpv.mpv_set_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_DOUBLE, byref(value_double))
+            if result != MPV_ERROR_SUCCESS:
+                print(f"[MPVPlayerCore] 警告: 设置属性 {property_name} 失败，错误码: {result}")
+                return False
+            
+            return True
+        except Exception as e:
+            print(f"[MPVPlayerCore] 错误: 设置属性 {property_name} 异常 - {e}")
+            return False
+    
+    def _set_property_string(self, property_name, value):
+        """
+        设置字符串类型属性
+        
+        Args:
+            property_name (str): 属性名称
+            value (str): 属性值
+            
+        Returns:
+            bool: 设置成功返回 True，否则返回 False
+        """
+        try:
+            if not self._mpv:
+                return False
+            
+            result = libmpv.mpv_set_property_string(self._mpv, property_name.encode('utf-8'), value.encode('utf-8'))
             if result != MPV_ERROR_SUCCESS:
                 print(f"[MPVPlayerCore] 警告: 设置属性 {property_name} 失败，错误码: {result}")
                 return False
@@ -1223,6 +1734,11 @@ class MPVPlayerCore(QObject):
             # 停止播放
             self.stop()
             
+            # 清除所有回调函数，防止访问已删除的对象
+            self._on_idle_callback = None
+            self._wakeup_callback = None
+            print("[MPVPlayerCore] 已清除所有回调函数")
+            
             # 停止事件处理线程
             self._stop_event_thread()
             
@@ -1247,6 +1763,7 @@ class MPVPlayerCore(QObject):
         处理带中文/空格的路径：
         1. 确保路径使用正斜杠，避免MPV解析问题
         2. 确保路径编码正确，避免中文乱码问题
+        3. 处理包含空格的路径，为vf系统的滤镜参数添加引号
         
         Args:
             raw_path (str): 原始路径
@@ -1256,9 +1773,6 @@ class MPVPlayerCore(QObject):
         """
         # 步骤1：确保路径使用正斜杠，避免MPV解析问题
         normalized_path = raw_path.replace('\\', '/')
-        
-        # 注意：不需要添加双引号，因为在execute_command中会将命令参数正确编码为bytes类型
-        # 双引号会被当作路径的一部分，导致MPV无法正确识别
         
         return normalized_path
     
@@ -1315,9 +1829,13 @@ class MPVPlayerCore(QObject):
             try:
                 print(f"[MPVPlayerCore] 尝试使用vf add命令添加lut3d滤镜")
                 # 确保路径格式正确，处理中文和空格
-                normalized_path = cube_path.replace('\\', '/')
+                normalized_path = processed_cube_path
                 # 使用绝对路径，确保能找到文件
-                filter_arg = f'lut3d=file={normalized_path}'
+                # 为包含空格的路径添加单引号，避免MPV解析错误
+                if ' ' in normalized_path:
+                    filter_arg = f"lut3d=file='{normalized_path}'"
+                else:
+                    filter_arg = f'lut3d=file={normalized_path}'
                 print(f"[MPVPlayerCore] 尝试添加滤镜: {filter_arg}")
                 
                 if self._execute_command(['vf', 'add', filter_arg]):
@@ -1347,15 +1865,35 @@ class MPVPlayerCore(QObject):
             # 尝试使用glsl-shaders选项（替换模式，避免重复添加）
             try:
                 print(f"[MPVPlayerCore] 尝试使用glsl-shaders选项（替换模式）")
-                # 使用mpv_set_option_string设置glsl-shaders选项（替换现有滤镜）
-                result = libmpv.mpv_set_option_string(self._mpv, b"glsl-shaders", processed_cube_path.encode('utf-8'))
-                if result == MPV_ERROR_SUCCESS:
+                
+                # glsl-shaders属性需要的是一个shader列表，格式为["shader1", "shader2", ...]
+                # 对于单个shader，需要格式化为["path/to/shader"]
+                shader_list = f'["{processed_cube_path}"]'
+                
+                # 使用_execute_command执行glsl-shaders选项命令
+                # 使用set_property命令替代直接调用libmpv函数，以获得超时保护
+                if self._execute_command(['set', 'glsl-shaders', shader_list]):
                     print(f"[MPVPlayerCore] 成功使用glsl-shaders选项加载滤镜")
                     return True
                 else:
-                    print(f"[MPVPlayerCore] glsl-shaders选项失败，错误码: {result}")
+                    print(f"[MPVPlayerCore] glsl-shaders选项失败")
             except Exception as e:
                 print(f"[MPVPlayerCore] glsl-shaders选项异常: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # 尝试使用set_property_double方法设置glsl-shaders（最后手段）
+            try:
+                print(f"[MPVPlayerCore] 尝试使用set_property方法设置glsl-shaders")
+                # 对于单个shader，使用列表格式
+                shader_list = f'["{processed_cube_path}"]'
+                if self._set_property_string('glsl-shaders', shader_list):
+                    print(f"[MPVPlayerCore] 成功使用set_property方法设置glsl-shaders")
+                    return True
+                else:
+                    print(f"[MPVPlayerCore] set_property方法设置glsl-shaders失败")
+            except Exception as e:
+                print(f"[MPVPlayerCore] set_property方法设置glsl-shaders异常: {e}")
                 import traceback
                 traceback.print_exc()
             
@@ -1382,103 +1920,68 @@ class MPVPlayerCore(QObject):
             if not self._mpv:
                 return
             
+            # 如果没有启用Cube滤镜，直接返回，避免不必要的操作
+            if not self._cube_filter_enabled:
+                print(f"[MPVPlayerCore] Cube滤镜未启用，无需禁用")
+                self._current_cube_path = ""
+                return
+            
             print(f"[MPVPlayerCore] 开始禁用Cube滤镜")
             
-            # 1. 首先尝试移除所有lut3d滤镜（通过vf系统）
+            # 1. 移除所有lut3d滤镜（通过vf系统）
             print(f"[MPVPlayerCore] 尝试移除所有lut3d滤镜")
-            # 使用多种方式尝试移除lut3d滤镜
-            filter_names = ['@lavfi/lut3d', 'lut3d', '3dlut', 'colorgrade']
-            for filter_name in filter_names:
-                try:
-                    self._execute_command(['vf', 'remove', filter_name])
-                    print(f"[MPVPlayerCore] 尝试移除滤镜: {filter_name}")
-                except Exception as e:
-                    print(f"[MPVPlayerCore] 移除滤镜 {filter_name} 失败: {e}")
-            
-            # 移除所有视频滤镜，确保彻底清除
             try:
-                self._execute_command(['vf', 'remove', 'all'])
-                print(f"[MPVPlayerCore] 已移除所有视频滤镜")
+                # 先尝试移除所有已知的lut3d相关滤镜
+                filter_names = ['@lavfi/lut3d', 'lut3d']
+                for filter_name in filter_names:
+                    try:
+                        self._execute_command(['vf', 'remove', filter_name])
+                        print(f"[MPVPlayerCore] 成功移除滤镜: {filter_name}")
+                    except Exception as e:
+                        print(f"[MPVPlayerCore] 移除滤镜 {filter_name} 失败: {e}")
+                
+                # 只在确实有滤镜时才移除所有滤镜
+                if self._execute_command(['vf', 'get']):
+                    self._execute_command(['vf', 'remove', 'all'])
+                    print(f"[MPVPlayerCore] 已移除所有视频滤镜")
             except Exception as e:
-                print(f"[MPVPlayerCore] 移除所有视频滤镜失败: {e}")
+                print(f"[MPVPlayerCore] 滤镜移除操作失败: {e}")
             
             # 2. 清除glsl-shaders（通过shader系统）
             print(f"[MPVPlayerCore] 尝试清除glsl-shaders")
-            # 尝试多种方式清除glsl-shaders
-            shader_commands = [
-                ['glsl-shaders', 'clr'],
-                ['load', 'glsl-shaders', ''],
-                ['glsl-shaders', 'reload']
-            ]
-            for cmd in shader_commands:
-                try:
-                    self._execute_command(cmd)
-                    print(f"[MPVPlayerCore] 执行shader命令: {cmd}")
-                except Exception as e:
-                    print(f"[MPVPlayerCore] 执行shader命令 {cmd} 失败: {e}")
-            
-            # 方式3: 直接设置glsl-shaders选项为空
             try:
-                libmpv.mpv_set_option_string(self._mpv, b"glsl-shaders", b"")
-                print(f"[MPVPlayerCore] 成功设置glsl-shaders选项为空")
+                # 使用最基本的清除方式
+                self._execute_command(['glsl-shaders', 'clr'])
+                print(f"[MPVPlayerCore] 成功清除glsl-shaders")
             except Exception as e:
-                print(f"[MPVPlayerCore] 设置glsl-shaders选项失败: {e}")
+                print(f"[MPVPlayerCore] 清除glsl-shaders失败: {e}")
             
-            # 3. 清除所有可能的LUT相关选项
-            print(f"[MPVPlayerCore] 清除LUT相关选项")
-            lut_options = [
-                b"video-output-levels",
-                b"colorspace",
-                b"color-primaries",
-                b"transfer",
-                b"hdr-compute-peak",
-                b"target-trc",
-                b"target-prim"
-            ]
-            for option in lut_options:
-                try:
-                    libmpv.mpv_set_option_string(self._mpv, option, b"")
-                except Exception as e:
-                    print(f"[MPVPlayerCore] 清除选项 {option.decode()} 失败: {e}")
-            
-            # 4. 强制刷新视频播放，确保滤镜效果立即移除
+            # 3. 强制刷新视频播放，确保滤镜效果立即移除
             print(f"[MPVPlayerCore] 尝试刷新视频播放")
             
-            # 保存当前状态
-            was_playing = self._is_playing
-            current_pos = 0.0
-            if was_playing:
-                current_pos = self._get_property_double('playback-time')
-                print(f"[MPVPlayerCore] 保存当前播放位置: {current_pos}s")
-            
-            # 尝试多种方式刷新视频
-            # 方式1: 暂停再播放（安全刷新方式）
-            self._set_property_bool('pause', True)
-            self._set_property_bool('pause', False)
-            
-            # 方式2: 强制视频重新配置（更安全的刷新方式）
             try:
+                # 保存当前状态
+                was_playing = self._is_playing
+                current_pos = 0.0
+                if was_playing:
+                    current_pos = self._get_property_double('playback-time')
+                    print(f"[MPVPlayerCore] 保存当前播放位置: {current_pos}s")
+                
+                # 使用最安全的刷新方式：视频重新配置
                 self._execute_command(['video-reconfig'])
                 print(f"[MPVPlayerCore] 强制视频重新配置")
-            except Exception as e:
-                print(f"[MPVPlayerCore] 强制视频重新配置失败: {e}")
                 
-            # 方式3: 如果视频输出有问题，尝试重置视频输出模块
-            try:
-                self._execute_command(['vo-reset'])
-                print(f"[MPVPlayerCore] 重置视频输出模块")
+                # 如果正在播放，使用seek到当前位置来确保画面刷新
+                if was_playing:
+                    try:
+                        self._set_property_double('time-pos', current_pos)
+                        print(f"[MPVPlayerCore] 视频seek到当前位置 {current_pos}s，强制刷新画面")
+                    except Exception as e:
+                        print(f"[MPVPlayerCore] 视频seek失败: {e}")
             except Exception as e:
-                print(f"[MPVPlayerCore] 重置视频输出模块失败: {e}")
+                print(f"[MPVPlayerCore] 视频刷新操作失败: {e}")
             
-            # 方式4: 确保播放状态正确恢复
-            if was_playing and not self._get_property_bool('pause'):
-                print(f"[MPVPlayerCore] 播放状态已正确恢复")
-            elif was_playing:
-                # 如果需要，手动恢复播放
-                self._set_property_bool('pause', False)
-                print(f"[MPVPlayerCore] 手动恢复播放状态")
-            
-            # 5. 更新标志位
+            # 4. 更新标志位
             self._cube_filter_enabled = False
             self._current_cube_path = ""
             print(f"[MPVPlayerCore] Cube滤镜已成功禁用")

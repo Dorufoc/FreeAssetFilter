@@ -382,6 +382,12 @@ class UnifiedPreviewer(QWidget):
             try:
                 from freeassetfilter.components.video_player import VideoPlayer
                 if isinstance(self.current_preview_widget, VideoPlayer):
+                    # 先禁用滤镜资源
+                    if hasattr(self.current_preview_widget.player_core, 'disable_cube_filter'):
+                        self.current_preview_widget.player_core.disable_cube_filter()
+                    if hasattr(self.current_preview_widget, 'original_player_core'):
+                        self.current_preview_widget.original_player_core.disable_cube_filter()
+                    
                     # 显式停止并清理播放器核心
                     self.current_preview_widget.player_core.stop()
                     # 调用cleanup方法彻底释放资源

@@ -30,6 +30,7 @@ from freeassetfilter.widgets.custom_widgets import CustomValueBar, CustomButton
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.widgets.custom_control_menu import CustomControlMenu
 from freeassetfilter.widgets.volume_slider_menu import VolumeSliderMenu
+from freeassetfilter.widgets.custom_dropdown_menu import CustomDropdownMenu
 from freeassetfilter.core.settings_manager import SettingsManager
 
 # 用于读取音频文件封面
@@ -161,8 +162,7 @@ class VideoPlayer(QWidget):
         self.play_button = None
         
         # 倍速控制组件
-        self.speed_button = None  # 将在init_ui中使用CustomButton初始化
-        self.speed_menu = None  # 将在init_ui中初始化
+        self.speed_dropdown = None  # 将在init_ui中使用CustomDropdownMenu初始化
         self.speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
         self.is_speed_menu_visible = False
         self.speed_menu_timer = None  # 菜单关闭定时器
@@ -425,21 +425,15 @@ class VideoPlayer(QWidget):
         # 添加音量条浮动菜单到布局
         bottom_layout.addWidget(self.volume_slider_menu)
         
-        # 添加倍速控制按钮，应用DPI缩放
-        scaled_padding = int(5 * self.dpi_scale)
-        scaled_padding_right = int(10 * self.dpi_scale)
-        scaled_border_radius = int(5 * self.dpi_scale)
-        scaled_min_width = int(60 * self.dpi_scale)
-        scaled_font_size = int(16 * self.dpi_scale)
-        # 初始化倍速按钮为CustomButton
-        self.speed_button = CustomButton(
-            text=f"{self._current_speed}x",
-            button_type="normal",
-            display_mode="text"
-        )
-        # 添加点击事件，实现显示/隐藏倍速菜单
-        self.speed_button.clicked.connect(self.toggle_speed_menu)
-        bottom_layout.addWidget(self.speed_button)
+        # 添加倍速控制下拉菜单，应用DPI缩放
+        self.speed_dropdown = CustomDropdownMenu(self)
+        scaled_min_width = int(100 * self.dpi_scale)  # 增加宽度以确保文本可见
+        self.speed_dropdown.set_fixed_width(scaled_min_width)
+        # 设置倍速选项和默认值
+        self.speed_dropdown.set_items([f"{speed}x" for speed in self.speed_options], default_item=f"{self._current_speed}x")
+        # 连接倍速选择信号
+        self.speed_dropdown.itemClicked.connect(self._on_speed_selected)
+        bottom_layout.addWidget(self.speed_dropdown)
         
         # 应用DPI缩放因子到按钮样式（用于Cube按钮）
         scaled_padding = int(5 * self.dpi_scale)
@@ -480,90 +474,7 @@ class VideoPlayer(QWidget):
         # 添加控制区域到主布局
         main_layout.addWidget(control_container)
         
-        # 初始化倍速菜单
-        self._init_speed_menu()
-    
-    def _init_speed_menu(self):
-        """
-        初始化倍速菜单
-        """
-        # 创建自定义控制菜单
-        self.speed_menu = CustomControlMenu(self)
-        
-        # 创建倍速菜单内容部件
-        speed_content = QWidget()
-        speed_content.setStyleSheet("background-color: transparent;")
-        
-        # 创建纵向布局
-        speed_layout = QVBoxLayout(speed_content)
-        speed_layout.setContentsMargins(0, 0, 0, 0)
-        speed_layout.setSpacing(0)
-        
-        # 倍速选项列表
-        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
-        self.speed_buttons = []
-        
-        for speed in speed_options:
-            # 创建倍速按钮
-            speed_button = QPushButton(f"{speed}x")
-            
-            # 设置按钮样式
-            font_size = int(14 * self.dpi_scale)
-            padding = int(10 * self.dpi_scale)
-            
-            # 检查是否为当前选中项
-            is_selected = abs(speed - self._current_speed) < 0.01
-            
-            # 设置选中/未选中样式
-            border_radius = int(6 * self.dpi_scale)
-            if is_selected:
-                speed_button.setStyleSheet(
-                    "QPushButton {" +
-                    f"color: #0078d4;" +
-                    "font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;" +
-                    f"font-size: {font_size}px;" +
-                    "font-weight: bold;" +
-                    "background-color: transparent;" +
-                    "text-align: center;" +
-                    f"padding: {padding}px;" +
-                    "border: none;" +
-                    f"border-radius: {border_radius}px;" +
-                    "}" +
-                    "QPushButton:hover {" +
-                    "background-color: #f0f0f0;" +
-                    "}"
-                )
-            else:
-                speed_button.setStyleSheet(
-                    "QPushButton {" +
-                    "color: #333;" +
-                    "font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;" +
-                    f"font-size: {font_size}px;" +
-                    "background-color: transparent;" +
-                    "text-align: center;" +
-                    f"padding: {padding}px;" +
-                    "border: none;" +
-                    f"border-radius: {border_radius}px;" +
-                    "}" +
-                    "QPushButton:hover {" +
-                    "background-color: #f0f0f0;" +
-                    "}"
-                )
-            
-            # 连接点击事件
-            speed_button.clicked.connect(lambda checked, s=speed: self._on_speed_selected(s))
-            
-            # 添加到布局
-            speed_layout.addWidget(speed_button)
-            
-            # 保存按钮引用
-            self.speed_buttons.append((speed, speed_button))
-        
-        # 设置菜单内容
-        self.speed_menu.set_content(speed_content)
-        
-        # 设置目标按钮
-        self.speed_menu.set_target_button(self.speed_button)
+        # 倍速控制菜单已通过CustomDropdownMenu实现，无需额外初始化
     
     def toggle_speed_menu(self):
         """
@@ -571,9 +482,6 @@ class VideoPlayer(QWidget):
         """
         if not hasattr(self, 'speed_menu') or self.speed_menu is None:
             self._init_speed_menu()
-        
-        if self.speed_menu.isVisible():
-            self.hide_speed_menu()
         else:
             self.show_speed_menu()
     
@@ -603,20 +511,17 @@ class VideoPlayer(QWidget):
         """
         处理倍速选择
         """
+        # 将字符串类型的速度值转换为浮点数
+        if isinstance(speed, str):
+            speed = float(speed.replace('x', ''))
+        
         # 设置播放速度
         self.set_speed(speed)
         
-        # 更新倍速按钮文本
-        self.speed_button.setText(f"{speed}x")
-        
-        # 隐藏菜单
-        self.hide_speed_menu()
+        # 更新倍速下拉菜单
+        self.speed_dropdown.set_current_item(f"{speed}x")
     
-    def _handle_speed_button_leave(self, event):
-        """
-        处理倍速按钮鼠标离开事件
-        """
-        pass
+
     
     def _update_play_button_icon(self):
         """
@@ -1205,6 +1110,8 @@ class VideoPlayer(QWidget):
                 print("[VideoPlayer] 关闭对比预览，重新加载视频到单个播放区域")
                 # 先停止当前播放
                 self.player_core.stop()
+                # 清理滤镜资源
+                self.player_core.disable_cube_filter()
                 # 重新加载媒体
                 self.player_core.set_media(self._current_file_path)
                 # 继续应用LUT效果
@@ -1218,6 +1125,7 @@ class VideoPlayer(QWidget):
             # 停止并清理原始播放器
             if hasattr(self, 'original_player_core'):
                 self.original_player_core.stop()
+                self.original_player_core.disable_cube_filter()
                 self.original_player_core.cleanup()
                 delattr(self, 'original_player_core')
             
@@ -1225,9 +1133,12 @@ class VideoPlayer(QWidget):
             self.original_video_frame = None
             self.filtered_video_frame = None
             self.comparison_layout = None
-            # 清理原始播放器引用
+            # 确保原始播放器引用已被清理
             if hasattr(self, 'original_player_core'):
                 delattr(self, 'original_player_core')
+            
+            # 重置对比模式标志
+            self.comparison_mode = False
     
     def _connect_core_signals(self):
         """
@@ -1287,6 +1198,11 @@ class VideoPlayer(QWidget):
             # 同时停止原始视频播放器（如果存在）
             if hasattr(self, 'original_player_core') and self.original_player_core:
                 self.original_player_core.stop()
+            
+            # 清理滤镜资源
+            self.player_core.disable_cube_filter()
+            if hasattr(self, 'original_player_core') and self.original_player_core:
+                self.original_player_core.disable_cube_filter()
             
             # 设置新的媒体路径
             self._current_file_path = file_path
@@ -1348,7 +1264,7 @@ class VideoPlayer(QWidget):
                     self.original_player_core.set_media(file_path)
                     
                     # 2. 应用滤镜（仅主播放器）
-                    if self.cube_path and self.cube_loaded:
+                    if self.cube_path and os.path.exists(self.cube_path) and self.cube_loaded:
                         self.player_core.enable_cube_filter(self.cube_path)
                     
                     # 3. 同时设置音量
@@ -1388,7 +1304,7 @@ class VideoPlayer(QWidget):
                     
                     # 主播放器加载并播放视频
                     self.player_core.set_media(file_path)
-                    if self.cube_path and self.cube_loaded:
+                    if self.cube_path and os.path.exists(self.cube_path) and self.cube_loaded:
                         self.player_core.enable_cube_filter(self.cube_path)
                     self.player_core.play()
             
@@ -1757,7 +1673,7 @@ class VideoPlayer(QWidget):
             if hasattr(self, 'original_player_core') and self.original_player_core:
                 self.original_player_core.set_speed(speed)
             self._current_speed = speed
-            self.speed_button.setText(f"{speed}x")
+            self.speed_dropdown.set_current_item(f"{speed}x")
     
     def _update_lut_button_style(self, is_active):
         """

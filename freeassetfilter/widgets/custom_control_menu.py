@@ -181,7 +181,7 @@ class CustomControlMenu(QWidget):
         
         # 垂直边界检查
         if y < 0:
-            y = button_global_pos.y() + button_rect.height() + int(10 * self.dpi_scale)
+            y = button_global_pos.y() + button_frame.height() + int(10 * self.dpi_scale)
         
         # 设置菜单位置
         self.move(x, y)

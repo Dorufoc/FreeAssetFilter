@@ -213,6 +213,17 @@ class FileInfoBrowser:
             widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
             widget.setContextMenuPolicy(Qt.CustomContextMenu)
             
+            # 为MD5、SHA1、SHA256添加点击事件（仅当值为"点击查看"时）
+            if key in ["MD5", "SHA1", "SHA256"]:
+                if widget.text() == "点击查看":
+                    widget.setCursor(QCursor(Qt.PointingHandCursor))
+                    widget.setStyleSheet("color: #1a73e8; text-decoration: underline;")
+                    widget.mousePressEvent = lambda event, key=key: self._load_detailed_info()
+                else:
+                    # 如果已经有值，则使用普通样式
+                    widget.setCursor(QCursor(Qt.ArrowCursor))
+                    widget.setStyleSheet("")
+            
             # 创建标签文本
             label_widget = QLabel(key + ":")
             label_widget.setFont(self.global_font)
@@ -343,9 +354,9 @@ class FileInfoBrowser:
                 "所有者": "无法获取",
                 "组": "无法获取",
                 "文件类型": "目录" if os.path.isdir(file_path) else "文件",
-                "MD5": "不计算",
-                "SHA1": "不计算",
-                "SHA256": "不计算"
+                "MD5": "点击查看",
+                "SHA1": "点击查看",
+                "SHA256": "点击查看"
             }
         
         # 移除文件哈希计算，避免阻塞主线程
@@ -359,9 +370,9 @@ class FileInfoBrowser:
             "所有者": f"{stat.st_uid}",
             "组": f"{stat.st_gid}",
             "文件类型": "目录" if os.path.isdir(file_path) else "文件",
-            "MD5": "不计算",  # 移除文件哈希计算，避免阻塞
-            "SHA1": "不计算",  # 移除文件哈希计算，避免阻塞
-            "SHA256": "不计算"  # 移除文件哈希计算，避免阻塞
+            "MD5": "点击查看",  # 移除文件哈希计算，避免阻塞
+            "SHA1": "点击查看",  # 移除文件哈希计算，避免阻塞
+            "SHA256": "点击查看"  # 移除文件哈希计算，避免阻塞
         }
     
     def _get_file_hash(self, file_path: str, hash_func) -> str:
@@ -1082,18 +1093,19 @@ class FileInfoBrowser:
             finished = pyqtSignal(dict)
             error = pyqtSignal(str)
             
-            def __init__(self, file_path, file_info):
+            def __init__(self, file_path, file_info, parent):
                 super().__init__()
                 self.file_path = file_path
                 self.file_info = file_info
+                self.parent = parent  # 保存外部类的实例
             
             def run(self):
                 try:
                     # 计算校验码
                     basic_info = {}
-                    basic_info["MD5"] = self._get_file_hash(self.file_path, hashlib.md5)
-                    basic_info["SHA1"] = self._get_file_hash(self.file_path, hashlib.sha1)
-                    basic_info["SHA256"] = self._get_file_hash(self.file_path, hashlib.sha256)
+                    basic_info["MD5"] = self.parent._get_file_hash(self.file_path, hashlib.md5)
+                    basic_info["SHA1"] = self.parent._get_file_hash(self.file_path, hashlib.sha1)
+                    basic_info["SHA256"] = self.parent._get_file_hash(self.file_path, hashlib.sha256)
                     
                     # 获取详细信息
                     details = {}
@@ -1102,71 +1114,57 @@ class FileInfoBrowser:
                         
                         # 根据文件类型获取详细信息
                         if file_ext in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]:
-                            details.update(self._get_image_info(self.file_path))
-                            details.update(self._get_image_advanced_info(self.file_path))
+                            details.update(self.parent._get_image_info(self.file_path))
+                            details.update(self.parent._get_image_advanced_info(self.file_path))
                         elif file_ext in ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb", "m2ts", "ts", "mts"]:
-                            details.update(self._get_video_info(self.file_path))
-                            details.update(self._get_video_advanced_info(self.file_path))
+                            details.update(self.parent._get_video_info(self.file_path))
+                            details.update(self.parent._get_video_advanced_info(self.file_path))
                         elif file_ext in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
-                            details.update(self._get_audio_info(self.file_path))
-                            details.update(self._get_audio_advanced_info(self.file_path))
+                            details.update(self.parent._get_audio_info(self.file_path))
+                            details.update(self.parent._get_audio_advanced_info(self.file_path))
                         elif file_ext in ["txt", "md", "rst", "py", "java", "cpp", "js", "html", "css", "php", "c", "h", "cs", "go", "rb", "swift", "kt", "yml", "yaml", "json", "xml"]:
-                            details.update(self._get_text_info(self.file_path))
-                            details.update(self._get_text_advanced_info(self.file_path))
+                            details.update(self.parent._get_text_info(self.file_path))
+                            details.update(self.parent._get_text_advanced_info(self.file_path))
                         elif file_ext in ["zip", "rar", "tar", "gz", "tgz", "bz2", "xz", "7z", "iso"]:
-                            details.update(self._get_archive_info(self.file_path))
-                            details.update(self._get_archive_advanced_info(self.file_path))
+                            details.update(self.parent._get_archive_info(self.file_path))
+                            details.update(self.parent._get_archive_advanced_info(self.file_path))
                         elif file_ext in ["pdf"]:
-                            details.update(self._get_pdf_info(self.file_path))
-                            details.update(self._get_pdf_advanced_info(self.file_path))
+                            details.update(self.parent._get_pdf_info(self.file_path))
+                            details.update(self.parent._get_pdf_advanced_info(self.file_path))
                         elif file_ext in ["ttf", "otf", "woff", "woff2"]:
-                            details.update(self._get_font_info(self.file_path))
-                            details.update(self._get_font_advanced_info(self.file_path))
+                            details.update(self.parent._get_font_info(self.file_path))
+                            details.update(self.parent._get_font_advanced_info(self.file_path))
                     
                     self.finished.emit({"basic": basic_info, "details": details})
                 except Exception as e:
                     self.error.emit(str(e))
         
         # 创建并启动线程
-        self.load_thread = LoadThread(file_path, self.file_info)
+        self.load_thread = LoadThread(file_path, self.file_info, self)
         self.load_thread.finished.connect(self._on_loading_finished)
         self.load_thread.error.connect(self._on_loading_error)
         self.load_thread.start()
     
     def _show_loading_dialog(self):
         """
-        显示加载状态对话框
+        显示加载状态对话框（使用自定义提示弹窗）
         """
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel
-        from PyQt5.QtCore import Qt
+        from freeassetfilter.widgets.window_widgets import CustomMessageBox
         from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+        from PyQt5.QtCore import Qt
         
-        # 创建对话框
-        self.loading_dialog = QDialog()
-        self.loading_dialog.setWindowTitle("加载中")
+        # 创建自定义提示弹窗
+        self.loading_dialog = CustomMessageBox()
         self.loading_dialog.setModal(True)
-        self.loading_dialog.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
         
-        # 设置对话框大小
-        scaled_width = int(400 * self.dpi_scale)
-        scaled_height = int(150 * self.dpi_scale)
-        self.loading_dialog.resize(scaled_width, scaled_height)
-        
-        # 创建布局
-        layout = QVBoxLayout(self.loading_dialog)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
-        
-        # 添加提示标签
-        label = QLabel("正在计算校验码和获取详细信息...")
-        label.setFont(self.global_font)
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
+        # 设置标题和文本
+        self.loading_dialog.set_title("加载中")
+        self.loading_dialog.set_text("正在计算校验码和获取详细信息...")
         
         # 添加不可交互进度条
         self.progress_bar = CustomProgressBar(is_interactive=False)
         self.progress_bar.setValue(50)  # 显示中间状态
-        layout.addWidget(self.progress_bar)
+        self.loading_dialog.set_progress(self.progress_bar)
         
         # 显示对话框
         self.loading_dialog.show()
@@ -1337,28 +1335,47 @@ class FileInfoBrowser:
         # 更新基本信息
         if "basic" in self.file_info:
             for key, value in self.file_info["basic"].items():
-                if key in self.basic_info_labels:
+                if hasattr(self, 'basic_info_labels') and key in self.basic_info_labels:
                     self.basic_info_labels[key].setText(str(value))
+                    
+                    # 如果是哈希值字段，根据值的状态设置不同样式
+                    if key in ["MD5", "SHA1", "SHA256"]:
+                        from PyQt5.QtCore import Qt
+                        from PyQt5.QtGui import QCursor
+                        if str(value) == "点击查看":
+                            # 设置为可点击的蓝色链接样式
+                            self.basic_info_labels[key].setCursor(QCursor(Qt.PointingHandCursor))
+                            self.basic_info_labels[key].setStyleSheet("color: #1a73e8; text-decoration: underline;")
+                            # 重新绑定点击事件
+                            self.basic_info_labels[key].mousePressEvent = lambda event, key=key: self._load_detailed_info()
+                        else:
+                            # 如果已经有值，则使用普通样式
+                            self.basic_info_labels[key].setCursor(QCursor(Qt.ArrowCursor))
+                            self.basic_info_labels[key].setStyleSheet("")
+                            # 移除点击事件
+                            self.basic_info_labels[key].mousePressEvent = lambda event: super(type(self.basic_info_labels[key]), self.basic_info_labels[key]).mousePressEvent(event)
         
         # 更新自定义标签
-        if self.custom_tags:
-            tags_text = "\n".join([f"{k}: {v}" for k, v in self.custom_tags.items()])
-            self.custom_tags_browser.setText(tags_text)
-        else:
-            self.custom_tags_browser.setText("无自定义标签")
+        if hasattr(self, 'custom_tags_browser'):
+            if self.custom_tags:
+                tags_text = "\n".join([f"{k}: {v}" for k, v in self.custom_tags.items()])
+                self.custom_tags_browser.setText(tags_text)
+            else:
+                self.custom_tags_browser.setText("无自定义标签")
         
         # 清空之前的详细信息标签
-        for widget_pair in self.details_info_widgets:
-            label_widget, value_widget = widget_pair
-            # 从布局中移除并删除组件
-            label_widget.hide()
-            value_widget.hide()
-            label_widget.deleteLater()
-            value_widget.deleteLater()
-        self.details_info_widgets.clear()
+        if hasattr(self, 'details_info_widgets'):
+            for widget_pair in self.details_info_widgets:
+                label_widget, value_widget = widget_pair
+                # 从布局中移除并删除组件
+                label_widget.hide()
+                value_widget.hide()
+                label_widget.deleteLater()
+                value_widget.deleteLater()
+            self.details_info_widgets.clear()
         
         # 在表单布局中添加详细信息
-        if "details" in self.file_info and self.file_info["details"]:
+        if hasattr(self, 'info_layout') and "details" in self.file_info and self.file_info["details"]:
             # 导入需要的PyQt组件
             from PyQt5.QtWidgets import QLabel, QSizePolicy
             from PyQt5.QtCore import Qt

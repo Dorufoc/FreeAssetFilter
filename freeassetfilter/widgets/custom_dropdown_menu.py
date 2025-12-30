@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+FreeAssetFilter 自定义下拉菜单组件
+用于提供类似视频倍速调整的列表选择功能
+支持自适应文字显示、固定宽度和滚动布局
+"""
+
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QScrollArea, QLabel
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QSize, QRect
+from PyQt5.QtGui import QFont, QFontMetrics
+
+# 导入现有的自定义控件
+from .custom_control_menu import CustomControlMenu
+from .button_widgets import CustomButton
+import os
+
+
+class CustomDropdownMenu(QWidget):
+    """
+    自定义下拉菜单组件
+    包含一个按钮和可弹出的列表菜单
+    支持自适应文字显示和滚动布局
+    """
+    itemClicked = pyqtSignal(object)  # 列表项点击信号，传递选中项数据
+    
+    def __init__(self, parent=None):
+        """
+        初始化下拉菜单
+        
+        Args:
+            parent: 父窗口部件
+        """
+        super().__init__(parent)
+        
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        self.global_font = getattr(app, 'global_font', QFont())
+        
+        # 核心属性
+        self._items = []  # 列表项数据
+        self._current_item = None  # 当前选中项
+        self._menu_visible = False  # 菜单是否可见
+        self._fixed_width = None  # 固定宽度
+        self._max_height = int(200 * self.dpi_scale)  # 最大高度
+        
+        # 初始化UI
+        self.init_ui()
+        
+    def init_ui(self):
+        """
+        初始化UI组件
+        """
+        # 设置布局
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # 创建主按钮，使用CustomButton，与load_cube_button保持相同高度（默认40px）
+        self.main_button = CustomButton(
+            text="",
+            button_type="normal",
+            display_mode="text"
+        )
+        
+        # 创建下拉菜单
+        self.dropdown_menu = CustomControlMenu(self)
+        
+        # 调整菜单内边距
+        self.dropdown_menu._padding = 0
+        
+        # 设置阴影半径
+        self.dropdown_menu._shadow_radius = 0
+        
+        # 设置菜单样式
+        self.dropdown_menu.setStyleSheet("QWidget { border: none; background-color: transparent; }")
+        
+        # 创建滚动区域
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setStyleSheet(
+            "QScrollArea { border: none; background-color: transparent; }"+
+            "QScrollBar:vertical { background-color: transparent; width: 8px; }"+
+            "QScrollBar::handle:vertical { background-color: #e0e0e0; border-radius: 4px; }"
+        )
+        
+        # 创建列表容器
+        self.list_container = QWidget()
+        self.list_layout = QVBoxLayout(self.list_container)
+        self.list_layout.setContentsMargins(0, 0, 0, 0)
+        self.list_layout.setSpacing(0)
+        
+        # 将列表容器设置到滚动区域
+        self.scroll_area.setWidget(self.list_container)
+        
+        # 将滚动区域设置为菜单的内容
+        self.dropdown_menu.set_content(self.scroll_area)
+        
+        # 强制调整菜单大小
+        self.dropdown_menu.adjustSize()
+        
+        # 将按钮添加到主布局
+        main_layout.addWidget(self.main_button)
+        
+        # 连接信号和槽
+        self.main_button.clicked.connect(self.toggle_menu)
+        
+    def set_items(self, items, default_item=None):
+        """
+        设置下拉菜单的列表项
+        
+        Args:
+            items (list): 列表项，可以是字符串列表或字典列表
+            default_item: 默认选中项
+        """
+        # 清空现有列表项
+        for i in reversed(range(self.list_layout.count())):
+            widget = self.list_layout.itemAt(i).widget()
+            if widget:
+                widget.deleteLater()
+        
+        # 保存列表项
+        self._items = items
+        
+        # 创建新的列表项
+        for item in items:
+            # 处理字符串和字典两种格式
+            if isinstance(item, dict):
+                text = item.get('text', '')
+                data = item.get('data', text)
+            else:
+                text = str(item)
+                data = item
+            
+            # 创建列表项按钮（使用QPushButton替代QLabel以支持cursor属性）
+            item_button = QPushButton(text)
+            item_button.setFont(self.global_font)
+            item_button.setFlat(True)  # 设置为平面样式
+            item_button.setCursor(Qt.PointingHandCursor)  # 设置鼠标指针为手型
+            
+            # 设置样式
+            font_size = int(14 * self.dpi_scale)
+            item_button.setStyleSheet(f"""
+                QPushButton {{ 
+                    font-size: {font_size}px;
+                    color: #333333;
+                    padding: 8px 12px;
+                    background-color: transparent;
+                    border: none;
+                    text-align: left;
+                    vertical-align: center;
+                }}
+                QPushButton:hover {{ 
+                    background-color: #f0f0f0;
+                }}
+            """)
+            
+            # 设置点击事件
+            item_button.clicked.connect(lambda checked, d=data: self._on_item_clicked(d))
+            
+            # 添加到布局
+            self.list_layout.addWidget(item_button)
+        
+        # 设置默认选中项
+        if default_item is not None:
+            self.set_current_item(default_item)
+        elif items:
+            self.set_current_item(items[0])
+        
+        # 调整菜单大小
+        self._adjust_menu_size()
+        
+    def set_current_item(self, item):
+        """
+        设置当前选中项
+        
+        Args:
+            item: 要选中的项
+        """
+        if not self._items:
+            return
+        
+        # 找到对应的项
+        for i, menu_item in enumerate(self._items):
+            if isinstance(menu_item, dict):
+                if menu_item.get('data', menu_item.get('text')) == item:
+                    self._current_item = menu_item
+                    break
+                if menu_item.get('text') == item:
+                    self._current_item = menu_item
+                    break
+            else:
+                if menu_item == item:
+                    self._current_item = menu_item
+                    break
+        
+        # 更新按钮显示
+        self._update_button_text()
+        
+    def current_item(self):
+        """
+        获取当前选中项
+        
+        Returns:
+            当前选中项
+        """
+        return self._current_item
+    
+    def set_fixed_width(self, width):
+        """
+        设置固定宽度
+        
+        Args:
+            width (int): 固定宽度值
+        """
+        self._fixed_width = width
+        self.main_button.setFixedWidth(width)
+        self._adjust_menu_size()
+    
+    def set_max_height(self, height):
+        """
+        设置最大高度
+        
+        Args:
+            height (int): 最大高度值
+        """
+        self._max_height = height
+        self._adjust_menu_size()
+    
+    def _update_button_text(self):
+        """
+        更新按钮显示的文本
+        """
+        if not self._current_item:
+            return
+        
+        if isinstance(self._current_item, dict):
+            text = self._current_item.get('text', '')
+        else:
+            text = str(self._current_item)
+        
+        # 自适应文字显示
+        if self._fixed_width:
+            font_metrics = QFontMetrics(self.main_button.font())
+            # 减小内边距以显示更多文本，并增加可用宽度
+            elided_text = font_metrics.elidedText(text, Qt.ElideRight, self._fixed_width - 4)
+            self.main_button.setText(elided_text)
+        else:
+            self.main_button.setText(text)
+        
+        self.main_button.update()
+    
+    def _adjust_menu_size(self):
+        """
+        调整菜单大小
+        """
+        # 计算列表容器的理想大小
+        self.list_container.adjustSize()
+        
+        # 设置滚动区域的最大高度
+        scroll_height = min(self.list_container.height(), self._max_height)
+        self.scroll_area.setFixedHeight(scroll_height)
+        
+        # 获取滚动条宽度
+        scroll_bar_width = self.scroll_area.verticalScrollBar().sizeHint().width()
+        
+        # 设置宽度
+        if self._fixed_width:
+            self.scroll_area.setFixedWidth(self._fixed_width)
+            # 列表容器宽度减去滚动条宽度，避免文字被遮挡
+            self.list_container.setFixedWidth(self._fixed_width - scroll_bar_width)
+        else:
+            # 自适应宽度
+            button_width = self.main_button.width()
+            self.scroll_area.setFixedWidth(button_width)
+            # 列表容器宽度减去滚动条宽度，避免文字被遮挡
+            self.list_container.setFixedWidth(button_width - scroll_bar_width)
+        
+        # 调整菜单大小
+        self.dropdown_menu.adjustSize()
+    
+    def toggle_menu(self):
+        """
+        切换菜单显示/隐藏状态
+        """
+        if self._menu_visible:
+            self.hide_menu()
+        else:
+            self.show_menu()
+            
+    def show_menu(self):
+        """
+        显示菜单
+        """
+        if not self._menu_visible:
+            # 设置目标按钮
+            self.dropdown_menu.set_target_button(self.main_button)
+            # 显示菜单
+            self.dropdown_menu.show()
+            self._menu_visible = True
+            # 连接菜单关闭信号
+            self.dropdown_menu.closeEvent = self._on_menu_close
+            # 连接点击外部区域关闭菜单信号
+            self.dropdown_menu.mousePressEvent = self._on_menu_click
+            # 连接按钮的leaveEvent
+            self.main_button.leaveEvent = self._on_button_leave
+            # 启动定时器，3秒后检查是否需要关闭菜单
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(3000, self._check_leave_and_close)
+            
+    def hide_menu(self):
+        """
+        隐藏菜单
+        """
+        if self._menu_visible:
+            self.dropdown_menu.close()
+            self._menu_visible = False
+            # 断开按钮的leaveEvent
+            self.main_button.leaveEvent = None
+            
+    def _on_menu_close(self, event):
+        """
+        菜单关闭事件处理
+        """
+        self._menu_visible = False
+        # 断开按钮的leaveEvent
+        self.main_button.leaveEvent = None
+        # 调用原始的closeEvent
+        super(CustomControlMenu, self.dropdown_menu).closeEvent(event)
+        
+    def _on_button_leave(self, event):
+        """
+        鼠标离开按钮事件
+        """
+        # 启动定时器，3秒后检查是否需要关闭菜单
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(3000, self._check_leave_and_close)
+        # 调用父类的leaveEvent
+        super(QPushButton, self.main_button).leaveEvent(event)
+        
+    def _on_menu_click(self, event):
+        """
+        菜单点击事件，处理点击外部区域关闭菜单
+        """
+        # 如果点击的是菜单内部，不处理
+        if self.dropdown_menu.rect().contains(event.pos()):
+            return
+        # 否则关闭菜单
+        self.hide_menu()
+    
+    def _on_item_clicked(self, item_data):
+        """
+        列表项点击事件处理
+        
+        Args:
+            item_data: 点击的列表项数据
+        """
+        # 设置当前选中项
+        self.set_current_item(item_data)
+        # 触发信号
+        self.itemClicked.emit(item_data)
+        # 关闭菜单
+        self.hide_menu()
+    
+    def _check_leave_and_close(self):
+        """
+        检查是否真正离开组件，并在离开3秒后关闭菜单
+        """
+        from PyQt5.QtGui import QCursor
+        
+        # 获取全局鼠标位置
+        global_pos = QCursor.pos()
+        
+        # 检查鼠标是否在CustomDropdownMenu组件上
+        widget_pos = self.mapToGlobal(QPoint(0, 0))
+        widget_rect = QRect(widget_pos, self.size())
+        if widget_rect.contains(global_pos):
+            return
+        
+        # 检查鼠标是否在菜单上
+        menu_pos = self.dropdown_menu.mapToGlobal(QPoint(0, 0))
+        menu_rect = QRect(menu_pos, self.dropdown_menu.size())
+        if menu_rect.contains(global_pos):
+            return
+        
+        # 鼠标不在组件或菜单上，隐藏菜单
+        self.hide_menu()
+            
+    def enterEvent(self, event):
+        """
+        鼠标进入组件事件
+        """
+        super().enterEvent(event)
+        
+    def leaveEvent(self, event):
+        """
+        鼠标离开组件事件
+        """
+        super().leaveEvent(event)
+        
+    def mousePressEvent(self, event):
+        """
+        鼠标按下事件
+        """
+        super().mousePressEvent(event)
+        
+    def resizeEvent(self, event):
+        """
+        窗口大小变化事件
+        """
+        super().resizeEvent(event)
+        self._adjust_menu_size()
+        
+    def setStyleSheet(self, styleSheet):
+        """
+        设置样式表
+        
+        Args:
+            styleSheet: 样式表字符串
+        """
+        # 只设置下拉菜单的样式表，不覆盖按钮自身的样式
+        super().setStyleSheet(styleSheet)
+        # 注意：不将样式表应用到main_button，保持其原有样式（如normal）
