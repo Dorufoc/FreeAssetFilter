@@ -25,10 +25,10 @@ import os
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QFileDialog, QLabel, QScrollArea, QGroupBox, QGridLayout,
-    QTextEdit, QComboBox, QMenu, QAction
+    QTextEdit, QComboBox, QMenu, QAction, QSpinBox
 )
 from PyQt5.QtGui import (
-    QFont, QIcon
+    QFont, QIcon, QFontDatabase
 )
 from PyQt5.QtCore import (
     Qt, QUrl, QThread, pyqtSignal
@@ -191,6 +191,11 @@ class TextPreviewWidget(QWidget):
         # 预览模式
         self.preview_mode = "auto"  # auto, text, markdown, code
         
+        # 字体设置
+        self.current_font = "Arial"  # 默认字体
+        self.font_scale = 1.0  # 默认100%
+        self.font_size = 16  # 默认字体大小(px)
+        
         # 文件读取线程
         self.read_thread = None
         
@@ -213,25 +218,31 @@ class TextPreviewWidget(QWidget):
         self.setStyleSheet("background-color: #f5f5f5;")
         
         # 预览模式选择
-        mode_layout = QHBoxLayout()
+        mode_layout = QGridLayout()
         mode_layout.setSpacing(int(10 * self.dpi_scale))
+        mode_layout.setColumnStretch(4, 1)  # 最后一列添加拉伸
         
-        mode_label = QLabel("预览模式:")
-        mode_label.setFont(self.global_font)
         # 使用全局默认字体大小
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 18)
         scaled_font_size = int(default_font_size * self.dpi_scale)
+        scaled_padding_v = int(8 * self.dpi_scale)
+        scaled_padding_h = int(12 * self.dpi_scale)
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_combo_font_size = int(default_font_size * self.dpi_scale)
+        scaled_max_width = int(200 * self.dpi_scale)  # 下拉框最大宽度
+        
+        # 第一行：预览模式
+        mode_label = QLabel("预览模式:")
+        mode_label.setFont(self.global_font)
         mode_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
+        mode_layout.addWidget(mode_label, 0, 0)
         
         self.mode_selector = QComboBox()
         self.mode_selector.addItems(["自动检测", "纯文本", "Markdown", "代码高亮"])
         self.mode_selector.currentTextChanged.connect(self.change_preview_mode)
         self.mode_selector.setFont(self.global_font)
-        scaled_padding_v = int(8 * self.dpi_scale)
-        scaled_padding_h = int(12 * self.dpi_scale)
-        scaled_border_radius = int(8 * self.dpi_scale)
-        scaled_combo_font_size = int(default_font_size * self.dpi_scale)
+        self.mode_selector.setMaximumWidth(scaled_max_width)
         self.mode_selector.setStyleSheet(f'''.QComboBox {{
             background-color: white;
             border: 1px solid #e0e0e0;
@@ -247,10 +258,100 @@ class TextPreviewWidget(QWidget):
             border-color: #1976d2;
             outline: none;
         }}''')
+        mode_layout.addWidget(self.mode_selector, 0, 1)
         
-        mode_layout.addWidget(mode_label)
-        mode_layout.addWidget(self.mode_selector)
-        mode_layout.addStretch()
+        # 第一行：字体选择
+        font_label = QLabel("字体:")
+        font_label.setFont(self.global_font)
+        font_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
+        mode_layout.addWidget(font_label, 0, 2)
+        
+        self.font_selector = QComboBox()
+        # 获取系统中可用的字体列表
+        font_list = QFontDatabase().families()
+        self.font_selector.addItems(font_list)
+        # 设置默认字体
+        if "Arial" in font_list:
+            self.change_font("Arial")
+            self.font_selector.setCurrentText("Arial")
+        elif "SimHei" in font_list:
+            self.change_font("SimHei")
+            self.font_selector.setCurrentText("SimHei")
+        # 确保字体选择器和current_font一致
+        self.font_selector.setCurrentText(self.current_font)
+        self.font_selector.setFont(self.global_font)
+        self.font_selector.setMaximumWidth(scaled_max_width)
+        self.font_selector.setStyleSheet(f'''.QComboBox {{
+            background-color: white;
+            border: 1px solid #e0e0e0;
+            border-radius: {scaled_border_radius}px;
+            padding: {scaled_padding_v}px {scaled_padding_h}px;
+            font-size: {scaled_combo_font_size}px;
+            color: #333;
+        }}
+        .QComboBox:hover {{
+            border-color: #1976d2;
+        }}
+        .QComboBox:focus {{
+            border-color: #1976d2;
+            outline: none;
+        }}''')
+        mode_layout.addWidget(self.font_selector, 0, 3)
+        
+        # 第二行：字体大小
+        font_size_label = QLabel("字体大小:")
+        font_size_label.setFont(self.global_font)
+        font_size_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
+        mode_layout.addWidget(font_size_label, 1, 0)
+        
+        self.font_size_selector = QComboBox()
+        font_size_options = ["小", "标准", "大", "特大", "自定义"]
+        self.font_size_selector.addItems(font_size_options)
+        self.font_size_selector.setCurrentIndex(1)  # 默认选择"标准"
+        self.font_size_selector.setFont(self.global_font)
+        self.font_size_selector.setMaximumWidth(scaled_max_width)
+        self.font_size_selector.setStyleSheet(f'''.QComboBox {{
+            background-color: white;
+            border: 1px solid #e0e0e0;
+            border-radius: {scaled_border_radius}px;
+            padding: {scaled_padding_v}px {scaled_padding_h}px;
+            font-size: {scaled_combo_font_size}px;
+            color: #333;
+        }}
+        .QComboBox:hover {{
+            border-color: #1976d2;
+        }}
+        .QComboBox:focus {{
+            border-color: #1976d2;
+            outline: none;
+        }}''')
+        mode_layout.addWidget(self.font_size_selector, 1, 1)
+        
+        # 第二行：自定义字体大小输入框
+        self.custom_font_size_spinbox = QSpinBox()
+        self.custom_font_size_spinbox.setRange(8, 72)  # 字体大小范围8-72px
+        self.custom_font_size_spinbox.setValue(self.font_size)
+        self.custom_font_size_spinbox.setFont(self.global_font)
+        self.custom_font_size_spinbox.setMaximumWidth(int(100 * self.dpi_scale))  # 更小的最大宽度
+        self.custom_font_size_spinbox.setStyleSheet(f'''.QSpinBox {{
+            background-color: white;
+            border: 1px solid #e0e0e0;
+            border-radius: {scaled_border_radius}px;
+            padding: {scaled_padding_v}px {scaled_padding_h}px;
+            font-size: {scaled_combo_font_size}px;
+            color: #333;
+        }}
+        .QSpinBox:hover {{
+            border-color: #1976d2;
+        }}
+        .QSpinBox:focus {{
+            border-color: #1976d2;
+            outline: none;
+        }}''')
+        # 默认隐藏自定义字体大小输入框
+        self.custom_font_size_spinbox.hide()
+        mode_layout.addWidget(self.custom_font_size_spinbox, 1, 2, 1, 2)  # 跨两列
+        
         layout.addLayout(mode_layout)
         
         # 预览区域
@@ -262,6 +363,11 @@ class TextPreviewWidget(QWidget):
         self.web_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.web_view.customContextMenuRequested.connect(self.show_context_menu)
         layout.addWidget(self.web_view)
+        
+        # 连接信号槽
+        self.font_size_selector.currentTextChanged.connect(self.change_font_size)
+        self.font_selector.currentTextChanged.connect(self.change_font)
+        self.custom_font_size_spinbox.valueChanged.connect(self.change_custom_font_size)
     
     def set_file(self, file_path):
         """
@@ -336,6 +442,46 @@ class TextPreviewWidget(QWidget):
             "代码高亮": "code"
         }
         self.preview_mode = mode_map[mode_text]
+        self.update_preview()
+    
+    def change_font_size(self, size_text):
+        """
+        切换字体大小
+        """
+        if size_text == "自定义":
+            # 显示自定义字体大小输入框
+            self.custom_font_size_spinbox.show()
+            # 使用当前自定义字体大小
+            self.font_size = self.custom_font_size_spinbox.value()
+        else:
+            # 隐藏自定义字体大小输入框
+            self.custom_font_size_spinbox.hide()
+            # 使用预设的字体大小
+            size_map = {
+                "小": 12,     # 12px
+                "标准": 16,   # 16px
+                "大": 20,     # 20px
+                "特大": 24    # 24px
+            }
+            self.font_size = size_map[size_text]
+        
+        self.update_preview()
+        
+    def change_font(self, font_name):
+        """
+        切换字体
+        """
+        print(f"切换字体: {self.current_font} -> {font_name}")
+        self.current_font = font_name
+        if self.file_content:
+            print(f"更新预览，当前字体: {self.current_font}")
+            self.update_preview()
+        
+    def change_custom_font_size(self, size):
+        """
+        改变自定义字体大小
+        """
+        self.font_size = size
         self.update_preview()
     
     def update_preview(self):
@@ -417,8 +563,8 @@ class TextPreviewWidget(QWidget):
         # 替换换行符
         content = content.replace('\n', '<br>')
         
-        # 应用DPI缩放因子到字体大小
-        scaled_font_size = str(int(100 * self.dpi_scale)) + "%"
+        # 应用DPI缩放因子和字体大小
+        final_font_size = int(self.font_size * self.dpi_scale)
         
         # 使用普通字符串拼接，避免f-string中的大括号冲突
         html = "<!DOCTYPE html>\n"
@@ -426,9 +572,9 @@ class TextPreviewWidget(QWidget):
         html += "<head>\n"
         html += "    <meta charset=\"utf-8\">\n"
         html += "    <style>\n"
-        html += "        body {\n"
-        html += "            font-family: Arial, sans-serif;\n"
-        html += "            font-size: " + scaled_font_size + ";\n"
+        html += "        body, pre, code {\n"
+        html += "            font-family: '" + self.current_font + "', sans-serif !important;\n"
+        html += "            font-size: " + str(final_font_size) + "px;\n"
         html += "            line-height: 1.6;\n"
         html += "            color: #333;\n"
         html += "            margin: 20px;\n"
@@ -461,8 +607,8 @@ class TextPreviewWidget(QWidget):
             'markdown.extensions.toc'
         ])
         
-        # 应用DPI缩放因子到字体大小
-        scaled_font_size = str(int(100 * self.dpi_scale)) + "%"
+        # 应用DPI缩放因子和字体大小
+        final_font_size = int(self.font_size * self.dpi_scale)
         
         # 添加CSS样式
         html = "<!DOCTYPE html>\n"
@@ -471,8 +617,8 @@ class TextPreviewWidget(QWidget):
         html += "    <meta charset=\"utf-8\">\n"
         html += "    <style>\n"
         html += "        body {\n"
-        html += "            font-family: Arial, sans-serif;\n"
-        html += "            font-size: " + scaled_font_size + ";\n"
+        html += "            font-family: '" + self.current_font + "', sans-serif;\n"
+        html += "            font-size: " + str(final_font_size) + "px;\n"
         html += "            line-height: 1.8;\n"
         html += "            color: #333;\n"
         html += "            margin: 20px;\n"
@@ -491,7 +637,7 @@ class TextPreviewWidget(QWidget):
         html += "            background-color: #f0f0f0;\n"
         html += "            padding: 2px 4px;\n"
         html += "            border-radius: 3px;\n"
-        html += "            font-family: Consolas, Monaco, 'Andale Mono', monospace;\n"
+        html += "            font-family: '" + self.current_font + "', Consolas, Monaco, 'Andale Mono', monospace !important;\n"
         html += "            word-wrap: break-word;\n"
         html += "        }\n"
         html += "        pre {\n"
@@ -567,8 +713,8 @@ class TextPreviewWidget(QWidget):
         # 获取CSS样式
         css = formatter.get_style_defs('.highlight')
         
-        # 应用DPI缩放因子到字体大小
-        scaled_font_size = str(int(100 * self.dpi_scale)) + "%"
+        # 应用DPI缩放因子和字体大小
+        final_font_size = int(self.font_size * self.dpi_scale)
         
         # 创建完整HTML文档
         html = "<!DOCTYPE html>\n"
@@ -578,8 +724,8 @@ class TextPreviewWidget(QWidget):
         html += "    <style>\n"
         html += css + "\n"
         html += "        body {\n"
-        html += "            font-family: Arial, sans-serif;\n"
-        html += "            font-size: " + scaled_font_size + ";\n"
+        html += "            font-family: '" + self.current_font + "', sans-serif;\n"
+        html += "            font-size: " + str(final_font_size) + "px;\n"
         html += "            line-height: 1.6;\n"
         html += "            color: #333;\n"
         html += "            margin: 20px;\n"
@@ -609,7 +755,7 @@ class TextPreviewWidget(QWidget):
         html += "            word-wrap: break-word;\n"
         html += "        }\n"
         html += "        .highlight code {\n"
-        html += "            font-family: Consolas, Monaco, 'Andale Mono', monospace;\n"
+        html += "            font-family: '" + self.current_font + "', Consolas, Monaco, 'Andale Mono', monospace !important;\n"
         html += "            font-size: 90%;\n"
         html += "            word-wrap: break-word;\n"
         html += "        }\n"

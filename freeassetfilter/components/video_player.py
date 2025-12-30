@@ -55,6 +55,9 @@ class VideoPlayer(QWidget):
     提供完整的视频和音频播放功能和用户界面
     """
     
+    # 添加idle事件信号，用于异常检测
+    idle_event = pyqtSignal()
+    
     def __init__(self, parent=None):
         """
         初始化视频播放器组件
@@ -104,6 +107,9 @@ class VideoPlayer(QWidget):
         # 初始化播放器核心 - 默认使用MPV内核
         print("[VideoPlayer] 初始化MPV播放器核心...")
         self.player_core = MPVPlayerCore()
+        
+        # 设置idle事件回调，用于异常检测
+        self.player_core.set_on_idle_callback(self._on_idle_event)
         
         # 检查MPV内核是否初始化成功
         if not hasattr(self.player_core, '_mpv') or self.player_core._mpv is None:
@@ -669,10 +675,20 @@ class VideoPlayer(QWidget):
                         self.original_player_core.play()
                 else:
                     print("[VideoPlayer] 暂停播放媒体...")
+                    
+                    # 1. 先暂停主播放器
                     self.player_core.pause()
-                    # 同时控制原始视频播放器
+                    
+                    # 2. 获取主播放器的当前位置
+                    current_position = self.player_core.position
+                    
+                    # 3. 暂停原始视频播放器并同步位置
                     if hasattr(self, 'original_player_core') and self.original_player_core:
                         self.original_player_core.pause()
+                        # 同步原始播放器位置到主播放器位置，确保左右视频完全同步
+                        self.original_player_core.set_position(current_position)
+                    
+                    print(f"[VideoPlayer] toggle_play_pause 暂停并同步位置: {current_position}")
             # 更新播放按钮图标
             self._update_play_button_icon()
         except Exception as e:
@@ -704,6 +720,67 @@ class VideoPlayer(QWidget):
                         current_time_str = self._format_time(current_time / 1000)
                         duration_str = self._format_time(duration / 1000)
                         self.time_label.setText(f"{current_time_str} / {duration_str}")
+                
+                # 对比预览模式下同步左右播放器
+                if self.comparison_mode and hasattr(self, 'original_player_core') and self.original_player_core:
+                    try:
+                        # 检查播放器实例是否有效
+                        if not hasattr(self.player_core, '_mpv') or self.player_core._mpv is None:
+                            return
+                        if not hasattr(self.original_player_core, '_mpv') or self.original_player_core._mpv is None:
+                            return
+                            
+                        # 获取主播放器的播放状态和时间信息（主播放器是右侧应用LUT的）
+                        main_playing = self.player_core.is_playing
+                        main_time = self.player_core.time
+                        main_duration = self.player_core.duration
+                        
+                        # 获取原始播放器的信息（原始播放器是左侧的）
+                        original_playing = self.original_player_core.is_playing
+                        original_time = self.original_player_core.time
+                        original_duration = self.original_player_core.duration
+                        
+                        # 确保两个播放器都有有效时长
+                        if main_duration <= 0 or original_duration <= 0:
+                            return
+                        
+                        # 1. 检查缓冲状态 - 如果主播放器正在缓冲，暂停原始播放器以避免抽搐
+                        try:
+                            main_buffer_status = self.player_core._get_property('core-idle')
+                            if main_buffer_status is not None and main_buffer_status is True:
+                                # 主播放器正在缓冲，暂停原始播放器
+                                if original_playing:
+                                    self.original_player_core.pause()
+                                return
+                        except Exception:
+                            # 获取缓冲状态失败，继续执行
+                            pass
+                        
+                        # 2. 同步播放状态 - 只有在状态不同时才操作
+                        if main_playing != original_playing:
+                            if main_playing:
+                                self.original_player_core.play()
+                            else:
+                                self.original_player_core.pause()
+                        
+                        # 3. 计算进度差值（毫秒）
+                        time_diff = abs(main_time - original_time)
+                        
+                        # 4. 当差值大于2秒时，让左侧视频seek到右侧相同时间+1秒
+                        if time_diff > 2000:  # 2秒差异
+                            # 计算右侧时间+1秒的位置（毫秒）
+                            target_time = main_time + 1000  # 右侧时间+1秒
+                            # 确保目标时间不超过媒体时长
+                            if target_time < main_duration:
+                                # 计算目标位置百分比
+                                target_pos_percent = target_time / main_duration
+                                # 设置原始播放器位置
+                                self.original_player_core.set_position(target_pos_percent)
+                    except Exception as sync_error:
+                        # 同步错误不影响主播放器功能
+                        print(f"[VideoPlayer] 同步播放器时发生错误: {sync_error}")
+                        import traceback
+                        traceback.print_exc()
             except Exception as e:
                 pass
     
@@ -1087,20 +1164,20 @@ class VideoPlayer(QWidget):
             self.player_core.set_volume(0)  # 主播放器静音
             self.original_player_core.set_volume(self._current_volume)  # 原始播放器使用当前音量
             
-            # 4. 同时设置播放状态（暂停）
-            self.player_core.pause()
-            self.original_player_core.pause()
+            # 4. 开始播放媒体
+            self.player_core.play()
+            self.original_player_core.play()
             
-            # 5. 同时设置初始位置（使用更精确的位置设置）
-            # 使用相同的精确位置值，确保两个视频完全同步
+            # 5. 设置初始位置（使用更精确的位置设置）
+            # 立即设置初始位置，确保从相同位置开始播放
             self.player_core.set_position(0)
             self.original_player_core.set_position(0)
             
-            # 6. 同时恢复播放状态（如果之前在播放）
-            if current_playing:
-                # 使用更精确的播放控制，减少操作延迟
-                self.player_core.play()
-                self.original_player_core.play()
+            # 6. 根据需要设置播放状态
+            if not current_playing:
+                # 确保媒体已经开始加载后再设置暂停
+                self.player_core.pause()
+                self.original_player_core.pause()
     
     def _disable_comparison_mode(self):
         """
@@ -1157,6 +1234,12 @@ class VideoPlayer(QWidget):
         连接内核信号到适配层
         """
         pass
+    
+    def _on_idle_event(self):
+        """
+        处理MPVPlayerCore的idle事件回调，发射VideoPlayer的idle_event信号
+        """
+        self.idle_event.emit()
     
     def _connect_mpv_signals(self):
         """
@@ -1260,23 +1343,27 @@ class VideoPlayer(QWidget):
                     # 对比预览模式：保持对比布局
                     print("[VideoPlayer] 处于对比预览模式，加载视频到两个播放区域")
                     
-                    # 1. 主播放器（右侧带滤镜）加载视频
+                    # 1. 同时加载视频到两个播放器
                     self.player_core.set_media(file_path)
+                    self.original_player_core.set_media(file_path)
+                    
+                    # 2. 应用滤镜（仅主播放器）
                     if self.cube_path and self.cube_loaded:
                         self.player_core.enable_cube_filter(self.cube_path)
-                    # 右侧带滤镜视频使用当前音量
-                    self.player_core.set_volume(self._current_volume)
                     
-                    # 2. 原始播放器（左侧无滤镜）加载视频
-                    self.original_player_core.set_media(file_path)
-                    # 左侧原始视频静音
-                    self.original_player_core.set_volume(0)
+                    # 3. 同时设置音量
+                    self.player_core.set_volume(self._current_volume)  # 右侧带滤镜视频使用当前音量
+                    self.original_player_core.set_volume(0)  # 左侧原始视频静音
                     
-                    # 3. 两个视频都从头开始播放
+                    # 4. 同时设置初始状态（暂停）
                     self.player_core.pause()
                     self.original_player_core.pause()
+                    
+                    # 5. 同时设置初始位置
                     self.player_core.set_position(0)
                     self.original_player_core.set_position(0)
+                    
+                    # 6. 同时开始播放
                     self.player_core.play()
                     self.original_player_core.play()
                     
@@ -1553,12 +1640,23 @@ class VideoPlayer(QWidget):
         try:
             if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
                 print("[VideoPlayer] 暂停播放媒体...")
+                
+                # 1. 先暂停主播放器
                 self.player_core.pause()
-                # 同时控制原始视频播放器
+                
+                # 2. 获取主播放器的当前位置
+                current_position = self.player_core.position
+                
+                # 3. 暂停原始视频播放器并同步位置
                 if hasattr(self, 'original_player_core') and self.original_player_core:
                     self.original_player_core.pause()
-                # 更新播放按钮图标
+                    # 同步原始播放器位置到主播放器位置，确保左右视频完全同步
+                    self.original_player_core.set_position(current_position)
+                
+                # 4. 更新播放按钮图标
                 self._update_play_button_icon()
+                
+                print(f"[VideoPlayer] 暂停并同步位置: {current_position}")
         except Exception as e:
             print(f"[VideoPlayer] 暂停操作失败: {e}")
             import traceback

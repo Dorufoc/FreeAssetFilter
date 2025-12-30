@@ -74,6 +74,20 @@ class UnifiedPreviewer(QWidget):
         # 预览加载状态标志，防止快速点击导致多个预览组件同时运行
         self.is_loading_preview = False
         
+        # Idle事件异常检测相关属性
+        self.idle_events = []  # 用于存储idle事件的时间戳，实现滑动时间窗口
+        self.idle_event_window = 5000  # 滑动时间窗口大小，单位ms
+        self.idle_event_threshold = 5  # 时间窗口内允许的最大idle事件数
+        self.idle_detection_timer = None  # 用于定期清理过期事件的定时器
+        self.video_load_time = 0  # 视频加载时间，用于忽略刚加载时的idle事件
+        self.idle_detection_enabled = False  # 是否启用idle检测
+        
+        # 初始化idle检测定时器
+        from PyQt5.QtCore import QTimer
+        self.idle_detection_timer = QTimer(self)
+        self.idle_detection_timer.setInterval(1000)  # 每秒清理一次过期事件
+        self.idle_detection_timer.timeout.connect(self._cleanup_idle_events)
+        
         # 初始化UI
         self.init_ui()
     
@@ -364,6 +378,23 @@ class UnifiedPreviewer(QWidget):
                 except Exception as e:
                     print(f"停止预览组件时出错: {e}")
             
+            # 对于VideoPlayer组件，确保完全停止所有播放器核心
+            try:
+                from freeassetfilter.components.video_player import VideoPlayer
+                if isinstance(self.current_preview_widget, VideoPlayer):
+                    # 显式停止并清理播放器核心
+                    self.current_preview_widget.player_core.stop()
+                    # 调用cleanup方法彻底释放资源
+                    if hasattr(self.current_preview_widget.player_core, 'cleanup'):
+                        self.current_preview_widget.player_core.cleanup()
+                    # 同时处理比较模式下的原始播放器核心
+                    if hasattr(self.current_preview_widget, 'original_player_core'):
+                        self.current_preview_widget.original_player_core.stop()
+                        if hasattr(self.current_preview_widget.original_player_core, 'cleanup'):
+                            self.current_preview_widget.original_player_core.cleanup()
+            except Exception as e:
+                print(f"清理VideoPlayer组件时出错: {e}")
+            
             # 断开所有信号连接
             self.current_preview_widget.disconnect()
             
@@ -546,6 +577,101 @@ class UnifiedPreviewer(QWidget):
                 error_message = f"图片预览失败: {str(simple_e)}"
                 self._show_error_with_copy_button(error_message)
     
+    def _cleanup_idle_events(self):
+        """
+        清理过期的idle事件，保持滑动时间窗口的有效性
+        """
+        import time
+        current_time = time.time() * 1000  # 转换为ms
+        
+        # 过滤掉时间窗口外的事件
+        self.idle_events = [event for event in self.idle_events 
+                          if current_time - event < self.idle_event_window]
+    
+    def _on_video_idle_event(self):
+        """
+        处理视频播放器的idle事件，检测异常并在必要时重新加载
+        """
+        import time
+        current_time = time.time() * 1000  # 转换为ms
+        
+        # 如果刚加载视频（5秒内），忽略idle事件
+        if current_time - self.video_load_time < 5000:
+            print(f"[DEBUG] 视频刚加载，忽略idle事件")
+            return
+        
+        # 将当前idle事件添加到时间窗口
+        self.idle_events.append(current_time)
+        
+        # 检测idle事件异常
+        self._detect_idle_anomaly()
+    
+    def _detect_idle_anomaly(self):
+        """
+        检测idle事件是否异常：时间窗口内事件数量超过阈值
+        """
+        # 先清理过期事件
+        self._cleanup_idle_events()
+        
+        # 检查事件数量是否超过阈值
+        if len(self.idle_events) > self.idle_event_threshold:
+            print(f"[ERROR] Idle事件异常！{self.idle_event_window}ms内检测到{len(self.idle_events)}个事件，超过阈值{self.idle_event_threshold}")
+            
+            # 重新加载视频播放器
+            self._reload_video_player()
+    
+    def _reload_video_player(self):
+        """
+        重新加载视频播放器模块和当前视频
+        """
+        try:
+            print("[INFO] 开始重新加载视频播放器...")
+            
+            # 获取当前播放的文件路径
+            current_file_path = None
+            if hasattr(self, 'current_file_info') and self.current_file_info:
+                current_file_path = self.current_file_info.get("path")
+            
+            if not current_file_path:
+                print("[ERROR] 无法获取当前播放的文件路径")
+                return
+            
+            # 移除当前的视频播放器组件
+            if hasattr(self, 'current_preview_widget') and self.current_preview_widget:
+                from freeassetfilter.components.video_player import VideoPlayer
+                if isinstance(self.current_preview_widget, VideoPlayer):
+                    # 断开信号连接
+                    self.current_preview_widget.idle_event.disconnect(self._on_video_idle_event)
+                    
+                    # 停止播放并移除组件
+                    self.current_preview_widget.stop()
+                    self.preview_layout.removeWidget(self.current_preview_widget)
+                    self.current_preview_widget.deleteLater()
+                    self.current_preview_widget = None
+            
+            # 重置idle检测状态
+            self.idle_events.clear()
+            self.idle_detection_enabled = False
+            
+            # 重新加载视频播放器模块
+            import importlib
+            import freeassetfilter.components.video_player
+            import freeassetfilter.core.mpv_player_core
+            
+            # 重新导入模块
+            importlib.reload(freeassetfilter.core.mpv_player_core)
+            importlib.reload(freeassetfilter.components.video_player)
+            
+            print("[INFO] 视频播放器模块重新加载完成")
+            
+            # 重新创建视频播放器并加载视频
+            self._show_video_preview(current_file_path)
+            
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] 重新加载视频播放器失败: {str(e)}")
+            traceback.print_exc()
+    
     def _show_video_preview(self, file_path):
         """
         显示视频预览
@@ -561,13 +687,24 @@ class UnifiedPreviewer(QWidget):
             # 创建VideoPlayer视频播放器
             video_player = VideoPlayer()
             
+            # 连接idle事件信号，用于异常检测
+            video_player.idle_event.connect(self._on_video_idle_event)
+            
             # 添加到布局
             self.preview_layout.addWidget(video_player)
             self.current_preview_widget = video_player
             
+            # 记录视频加载时间
+            import time
+            self.video_load_time = time.time() * 1000  # 转换为ms
+            
             # 加载并播放视频文件
             video_player.load_media(file_path)
             video_player.play()
+            
+            # 启用idle检测
+            self.idle_detection_enabled = True
+            self.idle_detection_timer.start()
             
             print(f"[DEBUG] 视频预览组件已创建并开始播放: {file_path}")
         except Exception as e:

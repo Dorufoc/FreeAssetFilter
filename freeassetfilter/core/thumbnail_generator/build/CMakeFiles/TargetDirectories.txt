@@ -1,9 +1,0 @@
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/thumbnail_generator.dir
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/package.dir
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/package_source.dir
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/edit_cache.dir
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/rebuild_cache.dir
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/list_install_components.dir
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/install.dir
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/install/local.dir
-C:/Users/Dorufoc/Desktop/code/FreeAssetFilter/freeassetfilter/core/thumbnail_generator/build/CMakeFiles/install/strip.dir

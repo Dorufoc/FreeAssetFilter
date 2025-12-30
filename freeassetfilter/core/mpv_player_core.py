@@ -235,6 +235,9 @@ class MPVPlayerCore(QObject):
         self._wakeup_callback = None
         self._wakeup_context = None
         
+        # idle事件回调
+        self._on_idle_callback = None
+        
         # 检查MPV库是否加载成功
         if not mpv_loaded:
             print("[MPVPlayerCore] 警告: MPV库未加载成功，播放器功能不可用")
@@ -414,7 +417,14 @@ class MPVPlayerCore(QObject):
                     # 处理idle事件（播放结束后可能进入此状态）
                     print(f"[MPVPlayerCore] 收到idle事件")
                     
-                    # 检查当前暂停状态，判断idle原因
+                    # 调用idle事件回调
+                    if self._on_idle_callback:
+                        try:
+                            self._on_idle_callback()
+                        except Exception as e:
+                            print(f"[MPVPlayerCore] 警告: 执行idle回调失败 - {e}")
+                    
+                    # 常规idle事件处理
                     try:
                         current_pause = self._get_property_bool('pause')
                         
@@ -562,7 +572,7 @@ class MPVPlayerCore(QObject):
                     # 如果确实处于暂停状态，再检查core-idle
                     self._is_playing = False
                     
-                print(f"[MPVPlayerCore] 获取播放状态: pause={current_pause}, core-idle={core_idle}, is_playing={self._is_playing}")
+                # print(f"[MPVPlayerCore] 获取播放状态: pause={current_pause}, core-idle={core_idle}, is_playing={self._is_playing}")
         except Exception as e:
             print(f"[MPVPlayerCore] 警告: 获取播放状态失败 - {e}")
             # 失败时使用本地缓存的状态
@@ -1172,6 +1182,15 @@ class MPVPlayerCore(QObject):
             import traceback
             traceback.print_exc()
     
+    def set_on_idle_callback(self, callback):
+        """
+        设置idle事件的回调函数
+        
+        Args:
+            callback: idle事件的回调函数
+        """
+        self._on_idle_callback = callback
+
     def clear_window(self):
         """
         清除媒体播放器与窗口的绑定
