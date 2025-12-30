@@ -1247,7 +1247,11 @@ class VideoPlayer(QWidget):
             else:
                 # 显示LUT按钮，因为视频有画面需要应用LUT
                 self.load_cube_button.show()
-                self.comparison_button.show()
+                # 只有在已经加载LUT的情况下才显示对比预览按钮
+                if self.cube_loaded:
+                    self.comparison_button.show()
+                else:
+                    self.comparison_button.hide()
                 
                 # 检查是否处于对比预览模式
                 is_comparison_mode = hasattr(self, 'comparison_mode') and self.comparison_mode

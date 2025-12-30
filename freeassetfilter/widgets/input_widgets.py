@@ -40,10 +40,10 @@ class CustomInputBox(QWidget):
                  initial_text="", 
                  width=None, 
                  height=40,
-                 border_radius=10,
-                 border_color="#cccccc",
+                 border_radius=20,
+                 border_color="#9f9f9f",
                  background_color="#ffffff",
-                 text_color="#000000",
+                 text_color="#3f3f3f",
                  placeholder_color="#CCCCCC",
                  active_border_color="#0078d4",
                  active_background_color="#ffffff"):
@@ -192,24 +192,38 @@ class CustomInputBox(QWidget):
         """
         更新输入框样式
         """
-        # 根据状态选择样式
-        if self._is_active:
-            border_color = self._active_border_color.name()
-        else:
-            border_color = self._border_color.name()
-        
-        # 应用DPI缩放的边框宽度，与次选按钮保持一致
-        scaled_border_width = 3 + int(2 * self.dpi_scale)
-        
-        # 简化样式设置，直接应用到当前控件
-        style = f"""
-            border: {scaled_border_width}px solid {border_color};
-            border-radius: {self._border_radius}px;
-            background-color: #ffffff;
+        # 更新样式后触发重绘
+        self.update()
+    
+    def paintEvent(self, event):
         """
+        绘制控件外观
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)  # 启用抗锯齿
         
-        # 直接设置样式到当前控件
-        self.setStyleSheet(style)
+        # 根据状态选择颜色
+        if self._is_active:
+            border_color = self._active_border_color
+            background_color = self._active_background_color
+        else:
+            border_color = self._border_color
+            background_color = self._background_color
+        
+        # 边框宽度设置为1，应用DPI缩放
+        scaled_border_width = int(1 * self.dpi_scale)
+        
+        # 绘制背景矩形
+        rect = self.rect().adjusted(scaled_border_width, scaled_border_width, -scaled_border_width, -scaled_border_width)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(background_color))
+        painter.drawRoundedRect(rect, self._border_radius, self._border_radius)
+        
+        # 绘制边框
+        painter.setPen(QPen(border_color, scaled_border_width))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(self.rect().adjusted(scaled_border_width // 2, scaled_border_width // 2, -scaled_border_width // 2, -scaled_border_width // 2), 
+                               self._border_radius, self._border_radius)
     
     def set_text(self, text):
         """
