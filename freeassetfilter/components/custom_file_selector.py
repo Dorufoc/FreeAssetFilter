@@ -43,6 +43,7 @@ from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets.custom_widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
 from freeassetfilter.widgets.list_widgets import CustomSelectList
+from freeassetfilter.widgets.custom_dropdown_menu import CustomDropdownMenu
 
 
 class CustomFileSelector(QWidget):
@@ -214,13 +215,13 @@ class CustomFileSelector(QWidget):
         dir_layout.setSpacing(5)
         
         # 盘符选择器
-        self.drive_combo = QComboBox()
+        self.drive_combo = CustomDropdownMenu(self, position="bottom")
         # 设置固定宽度，增加盘符选择器的宽度，应用DPI缩放
         scaled_drive_width = int(80 * self.dpi_scale)
-        self.drive_combo.setFixedWidth(scaled_drive_width)
+        self.drive_combo.set_fixed_width(scaled_drive_width)
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
-        self.drive_combo.activated.connect(self._on_drive_changed)
+        self.drive_combo.itemClicked.connect(self._on_drive_changed)
         # 设置字体大小与全局默认字体大小一致
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 18)
@@ -297,12 +298,16 @@ class CustomFileSelector(QWidget):
         filter_sort_layout.addWidget(self.filter_btn)
         
         # 排序形式选择
-        self.sort_combo = QComboBox()
-        self.sort_combo.addItems(["名称升序", "名称降序", "大小升序", "大小降序", "创建时间升序", "创建时间降序"])
+        self.sort_combo = CustomDropdownMenu(self, position="bottom")
         # 应用DPI缩放因子到排序下拉栏宽度
         scaled_sort_width = int(150 * self.dpi_scale)
-        self.sort_combo.setMinimumWidth(scaled_sort_width)
-        self.sort_combo.currentIndexChanged.connect(self.change_sort)
+        self.sort_combo.set_fixed_width(scaled_sort_width)
+        # 设置排序选项
+        sort_items = ["名称升序", "名称降序", "大小升序", "大小降序", "创建时间升序", "创建时间降序"]
+        # 设置默认选中项（名称升序）
+        default_sort_item = "名称升序"
+        self.sort_combo.set_items(sort_items, default_item=default_sort_item)
+        self.sort_combo.itemClicked.connect(self.change_sort)
         # 设置字体大小与全局默认字体大小一致
         sort_combo_font = QFont(self.global_font)
         sort_combo_font.setPointSize(scaled_font_size)
@@ -1337,9 +1342,6 @@ class CustomFileSelector(QWidget):
         """
         动态获取当前系统存在的盘符列表和网络位置并更新到下拉框
         """
-        # 清空现有选项
-        self.drive_combo.clear()
-        
         local_drives = []
         network_locations = []
         if sys.platform == 'win32':
@@ -1400,12 +1402,12 @@ class CustomFileSelector(QWidget):
                             if res.lpLocalName and res.lpRemoteName:
                                 # 添加网络映射驱动器
                                 local_name = ctypes.wstring_at(res.lpLocalName)
-                                if local_name and local_name not in drives:
-                                    drives.append(local_name)  # 如 "Z:"
+                                if local_name and local_name not in local_drives:
+                                    local_drives.append(local_name)  # 如 "Z:"
                                 # 直接添加网络位置（UNC路径）
                                 remote_name = ctypes.wstring_at(res.lpRemoteName)
-                                if remote_name and remote_name not in drives:
-                                    drives.append(remote_name)  # 如 "\\server\share"
+                                if remote_name and remote_name not in network_locations:
+                                    network_locations.append(remote_name)  # 如 "\\server\share"
                         
                 # 关闭枚举句柄
                 mpr.WNetCloseEnum(hEnum)
@@ -1450,8 +1452,6 @@ class CustomFileSelector(QWidget):
         
         # 添加到下拉框
         if all_drives:
-            self.drive_combo.addItems(all_drives)
-            
             # 设置默认选中项为当前路径所在的盘符
             if sys.platform == 'win32':
                 # Windows系统：提取当前路径的盘符，如 "C:\path\to\dir" -> "C:"
@@ -1467,20 +1467,17 @@ class CustomFileSelector(QWidget):
                 # Linux/macOS系统：根目录
                 current_drive = '/'
             
-            # 在盘符列表中查找并设置默认选中项
-            index = self.drive_combo.findText(current_drive)
-            if index != -1:
-                self.drive_combo.setCurrentIndex(index)
+            # 设置列表项和默认选中项
+            self.drive_combo.set_items(all_drives, default_item=current_drive)
     
-    def _on_drive_changed(self, index):
+    def _on_drive_changed(self, drive):
         """
         当盘符选择改变时的处理
         
         Args:
-            index (int): 选中的盘符索引
+            drive (str): 选中的盘符文本
         """
-        # 获取选中的盘符文本
-        drive = self.drive_combo.itemText(index)
+        # 直接使用传递的盘符文本
         
         # 跳过分隔符选项
         if drive == "--- 网络位置 ---":
@@ -1572,21 +1569,21 @@ class CustomFileSelector(QWidget):
         self.filter_pattern = filter_pattern if filter_pattern else "*"
         self.refresh_files()
     
-    def change_sort(self, index):
+    def change_sort(self, sort_text):
         """
         改变排序方式
         """
-        # 排序选项映射，索引对应：0-名称升序，1-名称降序，2-大小升序，3-大小降序，4-创建时间升序，5-创建时间降序
-        sort_mapping = [
-            ("name", "asc"),
-            ("name", "desc"),
-            ("size", "asc"),
-            ("size", "desc"),
-            ("created", "asc"),
-            ("created", "desc")
-        ]
+        # 排序选项映射，文本对应排序方式
+        sort_mapping = {
+            "名称升序": ("name", "asc"),
+            "名称降序": ("name", "desc"),
+            "大小升序": ("size", "asc"),
+            "大小降序": ("size", "desc"),
+            "创建时间升序": ("created", "asc"),
+            "创建时间降序": ("created", "desc")
+        }
         
-        self.sort_by, self.sort_order = sort_mapping[index]
+        self.sort_by, self.sort_order = sort_mapping.get(sort_text, ("name", "asc"))
         self.refresh_files()
     
     def change_view_mode(self, index):
@@ -1604,20 +1601,17 @@ class CustomFileSelector(QWidget):
         # 检查当前是否处于"All"视图
         if self.current_path == "All":
             # 选中"All"选项
-            index = self.drive_combo.findText("All")
+            self.drive_combo.set_current_item("All")
         elif sys.platform == 'win32':
             # Windows系统：提取当前路径的盘符，如 "C:\path\to\dir" -> "C:"
             current_drive = os.path.splitdrive(self.current_path)[0]
-            # 在盘符列表中查找并设置默认选中项
-            index = self.drive_combo.findText(current_drive)
+            # 设置当前盘符为选中项
+            self.drive_combo.set_current_item(current_drive)
         else:
             # Linux/macOS系统：根目录
             current_drive = '/'
-            # 在盘符列表中查找并设置默认选中项
-            index = self.drive_combo.findText(current_drive)
-        
-        if index != -1:
-            self.drive_combo.setCurrentIndex(index)
+            # 设置当前盘符为选中项
+            self.drive_combo.set_current_item(current_drive)
     
     def refresh_files(self, callback=None):
         """

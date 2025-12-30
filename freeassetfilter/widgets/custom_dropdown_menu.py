@@ -24,12 +24,13 @@ class CustomDropdownMenu(QWidget):
     """
     itemClicked = pyqtSignal(object)  # 列表项点击信号，传递选中项数据
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, position="top"):
         """
         初始化下拉菜单
         
         Args:
             parent: 父窗口部件
+            position: 菜单位置，"top" 或 "bottom"，默认为上方
         """
         super().__init__(parent)
         
@@ -44,6 +45,7 @@ class CustomDropdownMenu(QWidget):
         self._menu_visible = False  # 菜单是否可见
         self._fixed_width = None  # 固定宽度
         self._max_height = int(200 * self.dpi_scale)  # 最大高度
+        self._position = position  # 菜单位置："top" 或 "bottom"
         
         # 初始化UI
         self.init_ui()
@@ -230,6 +232,16 @@ class CustomDropdownMenu(QWidget):
         self._max_height = height
         self._adjust_menu_size()
     
+    def set_position(self, position):
+        """
+        设置菜单位置
+        
+        Args:
+            position (str): 菜单位置，"top" 或 "bottom"
+        """
+        if position in ["top", "bottom"]:
+            self._position = position
+    
     def _update_button_text(self):
         """
         更新按钮显示的文本
@@ -298,6 +310,8 @@ class CustomDropdownMenu(QWidget):
         if not self._menu_visible:
             # 设置目标按钮
             self.dropdown_menu.set_target_button(self.main_button)
+            # 设置菜单位置
+            self.dropdown_menu.set_position(self._position)
             # 显示菜单
             self.dropdown_menu.show()
             self._menu_visible = True

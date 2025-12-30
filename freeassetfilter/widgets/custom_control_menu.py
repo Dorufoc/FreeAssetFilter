@@ -48,6 +48,7 @@ class CustomControlMenu(QWidget):
         # 基础属性
         self._parent_widget = parent
         self._target_button = None
+        self._position = "top"  # 菜单位置："top" 或 "bottom"，默认为上方
         
         # 外观属性，应用DPI缩放
         self._bg_color = QColor(255, 255, 255)  # 白色背景
@@ -119,6 +120,16 @@ class CustomControlMenu(QWidget):
         """
         self._target_button = button
     
+    def set_position(self, position):
+        """
+        设置菜单位置
+        
+        Args:
+            position (str): 菜单位置，"top" 或 "bottom"
+        """
+        if position in ["top", "bottom"]:
+            self._position = position
+    
     def show(self):
         """
         显示菜单
@@ -135,7 +146,7 @@ class CustomControlMenu(QWidget):
     
     def _calculate_position(self):
         """
-        计算菜单在目标按钮正上方水平居中的位置
+        计算菜单在目标按钮正上方或正下方水平居中的位置
         """
         if not self._target_button:
             # 如果没有目标按钮，默认显示在屏幕中心
@@ -166,8 +177,12 @@ class CustomControlMenu(QWidget):
         content_center_x = button_center_x
         x = content_center_x - (self._shadow_radius + content_width // 2)
         
-        # 垂直位置：菜单底部距离按钮顶部10px
+        # 垂直位置：根据position属性设置
         y = button_global_pos.y() - menu_height - int(10 * self.dpi_scale)
+        
+        # 如果设置为下方位置
+        if self._position == "bottom":
+            y = button_global_pos.y() + button_frame.height() + int(10 * self.dpi_scale)
         
         # 确保菜单在屏幕内
         screen = self.screen()
@@ -181,7 +196,11 @@ class CustomControlMenu(QWidget):
         
         # 垂直边界检查
         if y < 0:
+            # 如果位置在上方但顶部超出屏幕，则显示在下方
             y = button_global_pos.y() + button_frame.height() + int(10 * self.dpi_scale)
+        elif y + menu_height > screen_rect.height():
+            # 如果位置在下方但底部超出屏幕，则显示在上方
+            y = button_global_pos.y() - menu_height - int(10 * self.dpi_scale)
         
         # 设置菜单位置
         self.move(x, y)

@@ -410,8 +410,8 @@ class CustomMessageBox(QDialog):
         # 应用DPI缩放因子到UI参数
         scaled_margin = int(10 * self.dpi_scale)
         scaled_radius = int(12 * self.dpi_scale)
-        scaled_shadow_radius = int(20 * self.dpi_scale)
-        scaled_shadow_offset = int(8 * self.dpi_scale)
+        scaled_shadow_radius = int(60 * self.dpi_scale)
+        scaled_shadow_offset = int(4 * self.dpi_scale)
         scaled_body_margin = int(20 * self.dpi_scale)
         scaled_body_spacing = int(16 * self.dpi_scale)
         scaled_title_font_size = int(24 * self.dpi_scale)
@@ -440,7 +440,7 @@ class CustomMessageBox(QDialog):
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(scaled_shadow_radius)
         shadow.setOffset(0, scaled_shadow_offset)
-        shadow.setColor(QColor(0, 0, 0, 60))
+        shadow.setColor(QColor(0, 0, 0, 40))
         self.window_body.setGraphicsEffect(shadow)
         
         # 窗口主体布局 - 正确的纵向排列顺序
