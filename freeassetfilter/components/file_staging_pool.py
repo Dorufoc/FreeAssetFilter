@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 # 导入自定义控件
 from freeassetfilter.widgets.custom_widgets import CustomButton, CustomMessageBox, CustomProgressBar
 from freeassetfilter.widgets.custom_file_horizontal_card import CustomFileHorizontalCard
+from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo
 )
@@ -162,7 +163,7 @@ class FileStagingPool(QWidget):
         # 控制按钮
         import os
         trash_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "trash.svg")
-        clear_btn = CustomButton(trash_icon_path, button_type="normal", display_mode="icon")
+        clear_btn = CustomButton(trash_icon_path, button_type="normal", display_mode="icon", tooltip_text="清空所有项目")
         clear_btn.clicked.connect(self.clear_all)
         export_layout.addWidget(clear_btn)
         
@@ -174,6 +175,14 @@ class FileStagingPool(QWidget):
         export_layout.addWidget(self.progress_bar, 1)
         
         main_layout.addLayout(export_layout)
+        
+        # 初始化悬浮详细信息组件
+        self.hover_tooltip = HoverTooltip(self)
+        
+        # 将按钮添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.import_export_btn)
+        self.hover_tooltip.set_target_widget(self.export_btn)
+        self.hover_tooltip.set_target_widget(clear_btn)
     
     def add_file(self, file_info):
         """

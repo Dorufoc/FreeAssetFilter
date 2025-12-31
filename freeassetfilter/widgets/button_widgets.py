@@ -6,10 +6,11 @@ FreeAssetFilter 按钮类自定义控件
 """
 
 from PyQt5.QtWidgets import (
-    QPushButton, QWidget, QSizePolicy, QApplication
+    QPushButton, QWidget, QSizePolicy, QApplication, QStyleOptionButton
 )
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QTimer
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
+from PyQt5.QtWidgets import QStyle
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
 # 用于SVG渲染
@@ -27,7 +28,7 @@ class CustomButton(QPushButton):
     - 支持文字和图标两种显示模式
     """
     
-    def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text", height=40):
+    def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text", height=40, tooltip_text=""):
         """
         初始化自定义按钮
         
@@ -39,9 +40,10 @@ class CustomButton(QPushButton):
                               当未传入该参数或参数为空时，默认启用文字显示功能
                               当传入该参数且参数不为空时，启用图标显示功能
             height (int): 按钮高度，默认为40px，与CustomInputBox保持一致
+            tooltip_text (str): 用于悬浮信息显示的不可见文本
         """
-        # 图标模式下，向父类传递空文本，避免显示文字
-        parent_text = text if display_mode == "text" else ""
+        # 图标模式下，向父类传递tooltip_text或空文本
+        parent_text = text if display_mode == "text" else tooltip_text
         super().__init__(parent_text, parent)
         self.button_type = button_type
         
@@ -54,6 +56,8 @@ class CustomButton(QPushButton):
         self._icon_path = text if self._display_mode == "icon" else None
         # 渲染后的图标Pixmap
         self._icon_pixmap = None
+        # 悬浮信息文本
+        self._tooltip_text = tooltip_text
         
         # 获取全局字体
         app = QApplication.instance()
@@ -124,10 +128,12 @@ class CustomButton(QPushButton):
         
         if self.button_type == "primary":
             # 强调色方案
+            # 在图标模式下，强制文字颜色等于背景颜色
+            text_color = "#0a59f7" if self._display_mode == "icon" else "#ffffff"
             self.setStyleSheet(f"""
                 QPushButton {{
                     background-color: #0a59f7;
-                    color: #ffffff;
+                    color: {text_color};
                     border: {scaled_primary_border_width}px solid #0a59f7;
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
@@ -150,10 +156,12 @@ class CustomButton(QPushButton):
             """)
         elif self.button_type == "normal":
             # 普通方案
+            # 在图标模式下，强制文字颜色等于背景颜色
+            text_color = "#f8f9fa" if self._display_mode == "icon" else "#0a59f7"
             self.setStyleSheet(f"""
                 QPushButton {{
                     background-color: #f8f9fa;
-                    color: #0a59f7;
+                    color: {text_color};
                     border: {scaled_primary_border_width}px solid #dee2e6;
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
@@ -176,10 +184,12 @@ class CustomButton(QPushButton):
             """)
         elif self.button_type == "warning":
             # 警告按钮方案
+            # 在图标模式下，强制文字颜色等于背景颜色
+            text_color = "#ff0000" if self._display_mode == "icon" else "#ffffff"
             self.setStyleSheet(f"""
                 QPushButton {{
                     background-color: #ff0000;
-                    color: #ffffff;
+                    color: {text_color};
                     border: {scaled_primary_border_width}px solid #ff0000;
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
@@ -202,10 +212,12 @@ class CustomButton(QPushButton):
             """)
         else:  # secondary
             # 次选按钮方案：确保在白色背景下可见
+            # 在图标模式下，强制文字颜色等于背景颜色
+            text_color = "#ffffff" if self._display_mode == "icon" else "#0a59f7"
             self.setStyleSheet(f"""
                 QPushButton {{
                     background-color: #ffffff;
-                    color: #0a59f7;
+                    color: {text_color};
                     border: {scaled_border_width}px solid #0a59f7;
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
@@ -292,11 +304,27 @@ class CustomButton(QPushButton):
     def paintEvent(self, event):
         """
         绘制按钮
-        如果是图标模式，先调用父类绘制按钮样式，再直接渲染SVG；否则调用父类绘制文字
+        如果是图标模式，先调用父类绘制按钮样式但不绘制文字，再直接渲染SVG；否则调用父类绘制文字
         """
         if self._display_mode == "icon":
-            # 图标模式，先绘制按钮样式（背景色、边框、圆角等）
-            super().paintEvent(event)
+            # 获取当前绘制器
+            painter = QPainter(self)
+            
+            # 保存绘制器状态
+            painter.save()
+            
+            # 绘制按钮样式（背景、边框等）
+            # 我们不调用super().paintEvent(event)，因为它会绘制文字
+            # 而是直接绘制按钮的背景和边框
+            style_option = QStyleOptionButton()
+            self.initStyleOption(style_option)
+            
+            # 绘制按钮背景和边框
+            self.style().drawControl(QStyle.CE_PushButtonBevel, style_option, painter, self)
+            self.style().drawControl(QStyle.CE_PushButton, style_option, painter, self)
+            
+            # 恢复绘制器状态
+            painter.restore()
             
             # 如果有图标路径，直接使用QSvgRenderer渲染SVG
             if self._icon_path and os.path.exists(self._icon_path):

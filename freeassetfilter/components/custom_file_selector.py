@@ -118,6 +118,9 @@ class CustomFileSelector(QWidget):
         self.resize_timer.setInterval(150)  # 150毫秒延迟，平衡响应速度和刷新频率
         self.resize_timer.timeout.connect(self.refresh_files)  # 定时器超时后刷新
         
+        # 初始化悬浮详细信息组件
+        self.hover_tooltip = HoverTooltip(self)
+        
         # 初始化UI
         self.init_ui()
         
@@ -139,8 +142,6 @@ class CustomFileSelector(QWidget):
             # 默认显示"All"界面
             self.current_path = "All"
         
-        # 初始化悬浮详细信息组件
-        self.hover_tooltip = HoverTooltip(self)
         # 为路径输入框添加悬浮信息功能
         self.hover_tooltip.set_target_widget(self.path_edit)
         # 为筛选输入框添加悬浮信息功能
@@ -255,17 +256,21 @@ class CustomFileSelector(QWidget):
         # 收藏夹按钮
         import os
         star_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "star.svg")
-        self.favorites_btn = CustomButton(star_icon_path, button_type="normal", display_mode="icon")
+        self.favorites_btn = CustomButton(star_icon_path, button_type="normal", display_mode="icon", tooltip_text="收藏夹")
         self.favorites_btn.clicked.connect(self._show_favorites_dialog)
         dir_layout.addWidget(self.favorites_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.favorites_btn)
         
         # 返回上一次退出所在目录按钮
         # 使用arrow_counterclockwise_clock.svg图标替换文字，样式为普通样式
         import os
         last_path_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "arrow_counterclockwise_clock.svg")
-        self.last_path_btn = CustomButton(last_path_icon_path, button_type="normal", display_mode="icon")
+        self.last_path_btn = CustomButton(last_path_icon_path, button_type="normal", display_mode="icon", tooltip_text="返回上一次退出程序时的目录")
         self.last_path_btn.clicked.connect(self._go_to_last_path)
         dir_layout.addWidget(self.last_path_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.last_path_btn)
         
         main_layout.addLayout(dir_layout)
         
@@ -380,9 +385,11 @@ class CustomFileSelector(QWidget):
         # 使用clean.svg图标替换文字
         import os
         clean_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "clean.svg")
-        self.clear_thumbnails_btn = CustomButton(clean_icon_path, button_type="normal", display_mode="icon")
+        self.clear_thumbnails_btn = CustomButton(clean_icon_path, button_type="normal", display_mode="icon", tooltip_text="清理缩略图缓存")
         self.clear_thumbnails_btn.clicked.connect(self._clear_thumbnail_cache)
         layout.addWidget(self.clear_thumbnails_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.clear_thumbnails_btn)
         
         # 选中文件计数
         #self.selected_count_label = QLabel("当前目录: 0 个，所有目录: 0 个")

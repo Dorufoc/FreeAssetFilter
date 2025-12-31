@@ -37,13 +37,46 @@ class HoverTooltip(QWidget):
         from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
         
-        # 设置字体样式：使用全局字体
+        # 获取DPI缩放因子
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 设置字体样式：创建一个新的字体实例，确保不受调用组件字体影响
+        # 使用全局字体作为基础，大小为全局字体的0.8倍
+        font = QFont()
+        
+        # 优先使用应用的全局字体配置
         if hasattr(app, 'global_font'):
-            font = app.global_font
+            global_font = app.global_font
+            # 复制全局字体的所有属性
+            font.setFamily(global_font.family())
+            font.setStyle(global_font.style())
+            font.setWeight(global_font.weight())
+            
+            # 获取全局字体的原始大小
+            global_size = global_font.pointSizeF()
         else:
-            font = QFont()
+            # 如果没有全局字体，使用默认大小10
+            global_size = 10.0
+        
+        # 计算新的字体大小：全局大小 * 0.8 并取整
+        new_size = int(global_size * 0.8)
+        font.setPointSize(new_size)
+        
         self.label.setFont(font)
-        self.label.setStyleSheet("QLabel { color: #666666; background: transparent; padding: 8px; }")
+        
+        # 设置明确的样式表，覆盖全局样式
+        self.setStyleSheet("""
+            QWidget {
+                background: transparent;
+                border: none;
+            }
+            QLabel {
+                color: #666666;
+                background: transparent;
+                padding: 8px;
+                font-weight: 400;
+            }
+        """)
         
         # 定时器
         self.timer = QTimer(self)
@@ -178,6 +211,44 @@ class HoverTooltip(QWidget):
         # 首先直接获取鼠标位置的控件，无论是否被布局覆盖
         direct_widget = QApplication.widgetAt(self.last_mouse_pos)
         if direct_widget:
+            # 导入CustomButton类
+            from .button_widgets import CustomButton
+            
+            # 检查是否是CustomButton
+            if isinstance(direct_widget, CustomButton):
+                # 如果有自定义的悬浮信息文本，优先使用
+                if direct_widget._tooltip_text:
+                    return direct_widget._tooltip_text
+                # 如果是文本模式，直接返回文本
+                elif direct_widget._display_mode == "text" and direct_widget.text():
+                    return direct_widget.text()
+                # 如果是图标模式，返回图标描述
+                elif direct_widget._display_mode == "icon" and direct_widget._icon_path:
+                    # SVG路径到文字描述的映射字典
+                    svg_tooltip_map = {
+                        "favorites.svg": "收藏夹",
+                        "back.svg": "返回上一次退出程序时的目录",
+                        "forward.svg": "前进到下一次目录",
+                        "refresh.svg": "刷新",
+                        "search.svg": "搜索",
+                        "close.svg": "关闭",
+                        "folder.svg": "文件夹",
+                        "file.svg": "文件",
+                        "add.svg": "添加",
+                        "remove.svg": "移除",
+                        "edit.svg": "编辑",
+                        "settings.svg": "设置",
+                        "help.svg": "帮助",
+                        "info.svg": "信息",
+                        "trash.svg": "清空所有项目"
+                    }
+                    
+                    # 提取SVG文件名
+                    import os
+                    svg_filename = os.path.basename(direct_widget._icon_path)
+                    
+                    # 返回对应的文字描述
+                    return svg_tooltip_map.get(svg_filename, svg_filename)
             # 特殊处理CustomFileHorizontalCard组件
             from .custom_file_horizontal_card import CustomFileHorizontalCard
             if isinstance(direct_widget, CustomFileHorizontalCard) or isinstance(direct_widget.parent(), CustomFileHorizontalCard):
