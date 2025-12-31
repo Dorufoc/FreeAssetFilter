@@ -85,7 +85,7 @@ class CustomButton(QPushButton):
         shadow.setBlurRadius(int(2 * self.dpi_scale))
         shadow.setOffset(0, int(2 * self.dpi_scale))
         # 正确设置阴影颜色：黑色，带有适当的透明度
-        shadow.setColor(QColor(0, 0, 0, 20))  # 使用黑色阴影更明显
+        shadow.setColor(QColor(0, 0, 0, 0))  # 使用黑色阴影更明显
         self.setGraphicsEffect(shadow)
         
         # 设置固定高度，与CustomInputBox保持一致
