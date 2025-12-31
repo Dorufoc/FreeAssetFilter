@@ -127,6 +127,8 @@ class CustomFileSelector(QWidget):
         # 启用拖拽功能
         self.setAcceptDrops(True)
         self.files_container.setAcceptDrops(True)
+        # 设置事件过滤器，确保files_container的拖放事件能正确传递
+        self.files_container.installEventFilter(self)
         
         # 获取应用实例
         app = QApplication.instance()
@@ -253,25 +255,6 @@ class CustomFileSelector(QWidget):
         go_btn.clicked.connect(self.go_to_path)
         dir_layout.addWidget(go_btn)
         
-        # 收藏夹按钮
-        import os
-        star_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "star.svg")
-        self.favorites_btn = CustomButton(star_icon_path, button_type="normal", display_mode="icon", tooltip_text="收藏夹")
-        self.favorites_btn.clicked.connect(self._show_favorites_dialog)
-        dir_layout.addWidget(self.favorites_btn)
-        # 添加到悬浮信息目标控件
-        self.hover_tooltip.set_target_widget(self.favorites_btn)
-        
-        # 返回上一次退出所在目录按钮
-        # 使用arrow_counterclockwise_clock.svg图标替换文字，样式为普通样式
-        import os
-        last_path_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "arrow_counterclockwise_clock.svg")
-        self.last_path_btn = CustomButton(last_path_icon_path, button_type="normal", display_mode="icon", tooltip_text="返回上一次退出程序时的目录")
-        self.last_path_btn.clicked.connect(self._go_to_last_path)
-        dir_layout.addWidget(self.last_path_btn)
-        # 添加到悬浮信息目标控件
-        self.hover_tooltip.set_target_widget(self.last_path_btn)
-        
         main_layout.addLayout(dir_layout)
         
         # 第二行：返回上级和刷新按钮
@@ -287,6 +270,25 @@ class CustomFileSelector(QWidget):
         refresh_btn = CustomButton("刷新", button_type="primary")
         refresh_btn.clicked.connect(self.refresh_files)
         nav_layout.addWidget(refresh_btn)
+        
+        # 收藏夹按钮
+        import os
+        star_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "star.svg")
+        self.favorites_btn = CustomButton(star_icon_path, button_type="normal", display_mode="icon", tooltip_text="收藏夹")
+        self.favorites_btn.clicked.connect(self._show_favorites_dialog)
+        nav_layout.addWidget(self.favorites_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.favorites_btn)
+        
+        # 返回上一次退出所在目录按钮
+        # 使用arrow_counterclockwise_clock.svg图标替换文字，样式为普通样式
+        import os
+        last_path_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "arrow_counterclockwise_clock.svg")
+        self.last_path_btn = CustomButton(last_path_icon_path, button_type="normal", display_mode="icon", tooltip_text="返回上一次退出程序时的目录")
+        self.last_path_btn.clicked.connect(self._go_to_last_path)
+        nav_layout.addWidget(self.last_path_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.last_path_btn)
         
         # 添加拉伸空间
         nav_layout.addStretch(1)
@@ -2575,6 +2577,22 @@ class CustomFileSelector(QWidget):
                         # 文件：选中/取消选中
                         self._toggle_selection(obj)
                     return True
+        # 处理文件容器的拖放事件
+        elif obj == self.files_container:
+            if event.type() == QEvent.DragEnter or event.type() == QEvent.DragMove:
+                if event.mimeData().hasUrls():
+                    event.acceptProposedAction()
+                    # 添加拖拽视觉反馈：蓝色加粗虚线边框
+                    self.setStyleSheet(f"background-color: #f1f3f5; border: 3px dashed #1890ff; border-radius: {int(8 * self.dpi_scale)}px;")
+                    return True
+            elif event.type() == QEvent.DragLeave:
+                # 恢复原始样式，移除边框
+                self.setStyleSheet("background-color: #f1f3f5; border: none;")
+                return True
+            elif event.type() == QEvent.Drop:
+                # 将事件传递给主控件处理
+                self.dropEvent(event)
+                return True
         # 处理大小变化事件：包括视口和文件容器的大小变化
         elif event.type() == QEvent.Resize:
             # 使用防抖机制，避免频繁刷新
@@ -2751,8 +2769,8 @@ class CustomFileSelector(QWidget):
         """
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            # 添加拖拽视觉反馈
-            self.setStyleSheet(f"background-color: #e8f4fc; border: 2px dashed #4a7abc; border-radius: {int(8 * self.dpi_scale)}px;")
+            # 添加拖拽视觉反馈：蓝色加粗虚线边框
+            self.setStyleSheet(f"background-color: #f1f3f5; border: 3px dashed #1890ff; border-radius: {int(8 * self.dpi_scale)}px;")
     
     def dragMoveEvent(self, event):
         """
@@ -2771,8 +2789,8 @@ class CustomFileSelector(QWidget):
         Args:
             event (QDragLeaveEvent): 拖拽离开事件
         """
-        # 恢复原始样式
-        self.setStyleSheet("background-color: #f1f3f5;")
+        # 恢复原始样式，移除边框
+        self.setStyleSheet("background-color: #f1f3f5; border: none;")
     
     def dropEvent(self, event):
         """
@@ -2788,8 +2806,8 @@ class CustomFileSelector(QWidget):
             print(f"[{timestamp}] [CustomFileSelector.dropEvent] {msg}")
         
         debug("开始处理拖拽释放事件")
-        # 恢复原始样式
-        self.setStyleSheet("background-color: #f1f3f5;")
+        # 恢复原始样式，移除边框
+        self.setStyleSheet("background-color: #f1f3f5; border: none;")
         
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
@@ -2830,9 +2848,25 @@ class CustomFileSelector(QWidget):
                         self._update_file_selection_state()
                         debug(f"调用_update_file_selection_state更新选中状态")
                         
-                        # 同时实现两个功能：模拟右键选择和将文件添加到存储池
-                        self._handle_dropped_file(dropped_file_path)
-                        debug(f"调用_handle_dropped_file({dropped_file_path})")
+                        # 创建文件信息字典
+                        try:
+                            file_stat = os.stat(dropped_file_path)
+                            file_name = os.path.basename(dropped_file_path)
+                            file_info = {
+                                "name": file_name,
+                                "path": dropped_file_path,
+                                "is_dir": os.path.isdir(dropped_file_path),
+                                "size": file_stat.st_size,
+                                "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                                "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
+                                "suffix": os.path.splitext(file_name)[1].lower()
+                            }
+                            
+                            # 发出文件选择信号用于预览
+                            debug(f"发出file_selected信号，启动统一预览器")
+                            self.file_selected.emit(file_info)
+                        except Exception as e:
+                            debug(f"创建文件信息失败: {e}")
                     
                     self.refresh_files(callback=on_files_refreshed)
                     debug(f"调用refresh_files刷新文件列表，完成后调用回调函数")

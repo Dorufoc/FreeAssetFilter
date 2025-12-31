@@ -18,6 +18,9 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import sys
 import os
 import shutil
+
+# 添加项目根目录到Python路径，确保包能被正确导入
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QSlider, QLabel,
     QFileDialog, QStyle, QMessageBox, QGraphicsBlurEffect
@@ -434,6 +437,8 @@ class VideoPlayer(QWidget):
         self.speed_dropdown.set_fixed_width(scaled_min_width)
         # 设置倍速选项和默认值 - 使用加载的倍速设置
         self.speed_dropdown.set_items([f"{speed}x" for speed in self.speed_options], default_item=f"{self._current_speed}x")
+        # 显式更新当前选中项，确保显示正确的默认倍速
+        self.speed_dropdown.set_current_item(f"{self._current_speed}x")
         # 连接倍速选择信号
         self.speed_dropdown.itemClicked.connect(self._on_speed_selected)
         bottom_layout.addWidget(self.speed_dropdown)
@@ -930,18 +935,15 @@ class VideoPlayer(QWidget):
         """
         加载保存的倍速设置
         """
-        # 使用SettingsManager加载倍速设置，默认倍速为1.0
-        settings_manager = SettingsManager()
-        return settings_manager.get_setting('player.speed', 1.0)
+        # 总是返回默认倍速1.0，不保存用户设置
+        return 1.0
 
     def save_speed_setting(self, speed):
         """
         保存倍速设置
         """
-        # 使用SettingsManager保存倍速设置
-        settings_manager = SettingsManager()
-        settings_manager.set_setting('player.speed', speed)
-        settings_manager.save_settings()
+        # 不保存倍速设置，每次打开都使用默认值
+        pass
     
     def load_cube_file(self):
         """

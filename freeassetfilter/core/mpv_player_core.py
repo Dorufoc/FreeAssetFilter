@@ -440,12 +440,21 @@ class MPVPlayerCore(QObject):
                     if self._media:
                         print(f"[MPVPlayerCore] 循环播放：重新加载媒体文件 {self._media}")
                         
-                        # 保存当前的LUT设置，用于在FILE_LOADED事件中重新应用
+                        # 保存当前的播放速度，用于在FILE_LOADED事件中重新应用
+                        try:
+                            current_speed = self._get_property_double('speed')
+                            print(f"[MPVPlayerCore] 循环播放：保存当前播放速度: {current_speed}x")
+                        except Exception as e:
+                            current_speed = 1.0
+                            print(f"[MPVPlayerCore] 循环播放：获取当前播放速度失败，使用默认值: {current_speed}x")
+                        
+                        # 保存当前的LUT设置和播放速度，用于在FILE_LOADED事件中重新应用
                         self._pending_cube_apply = {
                             'enabled': self._cube_filter_enabled,
-                            'path': self._current_cube_path
+                            'path': self._current_cube_path,
+                            'speed': current_speed
                         }
-                        print(f"[MPVPlayerCore] 循环播放：保存当前LUT设置 - enabled: {self._pending_cube_apply['enabled']}, path: {self._pending_cube_apply['path']}")
+                        print(f"[MPVPlayerCore] 循环播放：保存当前LUT设置 - enabled: {self._pending_cube_apply['enabled']}, path: {self._pending_cube_apply['path']}, speed: {self._pending_cube_apply['speed']}x")
                         
                         # 使用replace参数重新加载当前媒体文件
                         # 增加错误处理，确保命令执行成功
@@ -496,7 +505,7 @@ class MPVPlayerCore(QObject):
                     pending_lut = self._pending_cube_apply
                     print(f"[MPVPlayerCore] FILE_LOADED事件：当前待处理LUT设置: {pending_lut}")
                     
-                    # 检查是否有需要应用的LUT设置
+                    # 检查是否有需要应用的LUT设置和播放速度
                     if pending_lut and not is_media_changing:
                         print(f"[MPVPlayerCore] FILE_LOADED事件：应用待处理的LUT设置 - enabled: {pending_lut['enabled']}, path: {pending_lut['path']}")
                         
@@ -507,6 +516,14 @@ class MPVPlayerCore(QObject):
                                 print(f"[MPVPlayerCore] FILE_LOADED事件：LUT设置应用成功")
                             except Exception as e:
                                 print(f"[MPVPlayerCore] FILE_LOADED事件：应用LUT设置失败 - {e}")
+                        
+                        # 恢复播放速度
+                        if 'speed' in pending_lut:
+                            try:
+                                self._set_property_double('speed', pending_lut['speed'])
+                                print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放速度为: {pending_lut['speed']}x")
+                            except Exception as e:
+                                print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放速度失败 - {e}")
                         
                         # 清除待处理的LUT设置
                         self._pending_cube_apply = None
@@ -535,11 +552,18 @@ class MPVPlayerCore(QObject):
                     
                     # 强制刷新视频，防止黑屏
                     try:
+                        # 保存当前播放速度
+                        current_speed = self._get_property_double('speed')
+                        
                         # 先设置播放速度为1.1，然后立即恢复为1.0
                         # 这种方式可以触发视频刷新，同时避免在媒体刚加载时的错误
                         self._execute_command(['set', 'speed', '1.1'])
                         self._execute_command(['set', 'speed', '1.0'])
                         print(f"[MPVPlayerCore] FILE_LOADED事件：通过调整播放速度刷新视频")
+                        
+                        # 恢复之前的播放速度
+                        self._set_property_double('speed', current_speed)
+                        print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放速度为: {current_speed}x")
                     except Exception as e:
                         # 忽略刷新错误，因为这不会影响播放功能
                         pass

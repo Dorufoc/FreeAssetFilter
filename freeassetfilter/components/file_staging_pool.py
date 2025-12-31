@@ -16,7 +16,12 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 
 import os
+import sys
 import tempfile
+
+# 添加项目根目录到Python路径，解决直接运行时的导入问题
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QScrollArea, QGroupBox, QListWidget, QListWidgetItem, 
