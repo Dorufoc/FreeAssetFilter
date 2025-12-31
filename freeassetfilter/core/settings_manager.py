@@ -56,6 +56,10 @@ class SettingsManager:
                 "default_export_data_path": "",
                 "default_export_file_path": "",
                 "delete_original_after_export": False
+            },
+            "player": {
+                "speed": 1.0,
+                "volume": 100
             }
         }
         

@@ -41,9 +41,10 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.widgets.custom_widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
+from freeassetfilter.widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.custom_dropdown_menu import CustomDropdownMenu
+from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 
 
 class CustomFileSelector(QWidget):
@@ -137,6 +138,13 @@ class CustomFileSelector(QWidget):
         else:
             # 默认显示"All"界面
             self.current_path = "All"
+        
+        # 初始化悬浮详细信息组件
+        self.hover_tooltip = HoverTooltip(self)
+        # 为路径输入框添加悬浮信息功能
+        self.hover_tooltip.set_target_widget(self.path_edit)
+        # 为筛选输入框添加悬浮信息功能
+        self.hover_tooltip.set_target_widget(self.filter_edit)
         
         # 初始化文件列表
         self.refresh_files()
@@ -1893,6 +1901,9 @@ class CustomFileSelector(QWidget):
             card = self._create_file_card(file)
             self.files_layout.addWidget(card, row, col)
             
+            # 为文件卡片添加悬浮信息功能
+            self.hover_tooltip.set_target_widget(card)
+            
             col += 1
             if col >= max_cols:
                 col = 0
@@ -2098,6 +2109,9 @@ class CustomFileSelector(QWidget):
         
         # 安装事件过滤器，用于处理鼠标事件
         card.installEventFilter(self)
+        
+        # 将卡片添加到悬浮信息组件的目标控件列表
+        self.hover_tooltip.set_target_widget(card)
         
         return card
     

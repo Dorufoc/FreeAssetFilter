@@ -677,14 +677,15 @@ def main():
             selected_font = None
     
     if selected_font:
-        # 设置全局字体
-        app.setFont(QFont(selected_font, DEFAULT_FONT_SIZE))
+        # 设置全局字体，使用Regular字重(QFont.Normal)
+        app.setFont(QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal))
         # 设置全局字体变量
-        global_font = QFont(selected_font, DEFAULT_FONT_SIZE)
+        global_font = QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal)
     else:
         # 使用系统默认字体
         global_font = QFont()
         global_font.setPointSize(DEFAULT_FONT_SIZE)
+        global_font.setWeight(QFont.Normal)
     
     # 将默认字体大小存储到app对象中，方便其他组件访问
     app.default_font_size = DEFAULT_FONT_SIZE

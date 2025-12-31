@@ -14,10 +14,12 @@ from .input_widgets import CustomInputBox
 from .custom_control_menu import CustomControlMenu
 from .setting_widgets import CustomSettingItem
 from .switch_widgets import CustomSwitch
+from .hover_tooltip import HoverTooltip
 
 # Re-export all widgets
 __all__ = [
     'CustomWindow', 'CustomButton', 'CustomProgressBar', 'CustomSelectListItem',
     'CustomSelectList', 'CustomValueBar', 'CustomVolumeBar', 'CustomMessageBox',
-    'CustomInputBox', 'CustomControlMenu', 'CustomSettingItem', 'CustomSwitch'
+    'CustomInputBox', 'CustomControlMenu', 'CustomSettingItem', 'CustomSwitch',
+    'HoverTooltip'
 ]

@@ -23,6 +23,8 @@ from PyQt5.QtCore import (
 from PyQt5.QtGui import (
     QFont, QFontMetrics, QPixmap
 )
+# 导入悬浮详细信息组件
+from .hover_tooltip import HoverTooltip
 # 添加项目根目录到Python路径
 sys.path.insert(
     0,
@@ -91,6 +93,10 @@ class CustomFileHorizontalCard(QWidget):
         
         # 初始化UI
         self.init_ui()
+        
+        # 初始化悬浮详细信息组件
+        self.hover_tooltip = HoverTooltip(self)
+        self.hover_tooltip.set_target_widget(self.card_container)
         
         # 如果提供了文件路径，加载文件信息
         if file_path:

@@ -137,6 +137,9 @@ class VideoPlayer(QWidget):
         # 初始化定时器
         self.timer.start()
         
+        # 应用保存的倍速设置到播放器核心
+        self.set_speed(self._current_speed)
+        
         # 延迟检查是否有LUT文件需要应用，避免启动过慢
         QTimer.singleShot(100, self.check_and_apply_lut_file)
     
@@ -181,7 +184,7 @@ class VideoPlayer(QWidget):
             'mpv': MPVPlayerCore
         }
         self._current_file_path = ""  # 当前播放的文件路径
-        self._current_speed = 1.0  # 当前播放速度
+        self._current_speed = self.load_speed_setting()  # 当前播放速度 - 加载保存的倍速设置
         
         # 音量控制相关属性
         self._is_muted = False  # 静音状态
@@ -429,7 +432,7 @@ class VideoPlayer(QWidget):
         self.speed_dropdown = CustomDropdownMenu(self)
         scaled_min_width = int(100 * self.dpi_scale)  # 增加宽度以确保文本可见
         self.speed_dropdown.set_fixed_width(scaled_min_width)
-        # 设置倍速选项和默认值
+        # 设置倍速选项和默认值 - 使用加载的倍速设置
         self.speed_dropdown.set_items([f"{speed}x" for speed in self.speed_options], default_item=f"{self._current_speed}x")
         # 连接倍速选择信号
         self.speed_dropdown.itemClicked.connect(self._on_speed_selected)
@@ -913,7 +916,7 @@ class VideoPlayer(QWidget):
         # 使用SettingsManager加载音量设置，默认音量为100
         settings_manager = SettingsManager()
         return settings_manager.get_setting('player.volume', 100)
-    
+
     def save_volume_setting(self, volume):
         """
         保存音量设置
@@ -921,6 +924,23 @@ class VideoPlayer(QWidget):
         # 使用SettingsManager保存音量设置
         settings_manager = SettingsManager()
         settings_manager.set_setting('player.volume', volume)
+        settings_manager.save_settings()
+        
+    def load_speed_setting(self):
+        """
+        加载保存的倍速设置
+        """
+        # 使用SettingsManager加载倍速设置，默认倍速为1.0
+        settings_manager = SettingsManager()
+        return settings_manager.get_setting('player.speed', 1.0)
+
+    def save_speed_setting(self, speed):
+        """
+        保存倍速设置
+        """
+        # 使用SettingsManager保存倍速设置
+        settings_manager = SettingsManager()
+        settings_manager.set_setting('player.speed', speed)
         settings_manager.save_settings()
     
     def load_cube_file(self):
@@ -1674,6 +1694,8 @@ class VideoPlayer(QWidget):
                 self.original_player_core.set_speed(speed)
             self._current_speed = speed
             self.speed_dropdown.set_current_item(f"{speed}x")
+            # 保存倍速设置到配置文件
+            self.save_speed_setting(speed)
     
     def _update_lut_button_style(self, is_active):
         """

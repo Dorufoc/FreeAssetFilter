@@ -17,6 +17,7 @@ from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush
 from .input_widgets import CustomInputBox
 from .button_widgets import CustomButton
 from .progress_widgets import CustomValueBar
+from .switch_widgets import CustomSwitch
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
@@ -210,26 +211,12 @@ class CustomSettingItem(QWidget):
         # 设置布局约束，允许完全自适应内容大小
         layout.setSizeConstraint(layout.SetMinAndMaxSize)
         
-        # 创建开关按钮
-        self.switch_button = QPushButton()
-        self.switch_button.setCheckable(True)
-        
-        # 设置初始状态
+        # 创建自定义开关控件
         initial_value = self.kwargs.get('initial_value', False)
-        self.switch_button.setChecked(initial_value)
-        
-        # 应用DPI缩放因子到开关尺寸，与CustomButton高度保持一致（40px基础高度）
-        scaled_height = int(40 * self.dpi_scale)
-        # 开关按钮宽度比高度略大，保持美观比例
-        scaled_width = int(40 * self.dpi_scale)
-        self.switch_button.setFixedSize(scaled_width, scaled_height)
-        
-        # 设置开关图标
-        self._update_switch_icon()
+        self.switch_button = CustomSwitch(initial_value=initial_value)
         
         # 连接信号
         self.switch_button.toggled.connect(self._on_switch_toggled)
-        self.switch_button.toggled.connect(self._update_switch_icon)
         
         layout.addWidget(self.switch_button)
         
@@ -239,48 +226,6 @@ class CustomSettingItem(QWidget):
         widget.setMinimumWidth(0)
         widget.setMaximumWidth(16777215)
         return widget
-    
-    def _update_switch_icon(self):
-        """更新开关图标"""
-        is_checked = self.switch_button.isChecked()
-        
-        # 获取按钮实际尺寸，图标大小为按钮尺寸的80%，与CustomButton图标大小保持一致
-        button_size = self.switch_button.size()
-        base_icon_size = min(button_size.width(), button_size.height()) * 0.8
-        icon_size = int(base_icon_size)
-        
-        # 获取图标路径
-        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
-        if is_checked:
-            icon_path = os.path.join(icon_dir, '开.svg')
-        else:
-            icon_path = os.path.join(icon_dir, '关.svg')
-        
-        # 使用SvgRenderer渲染图标，传入实际需要的图标大小
-        pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, self.dpi_scale)
-        
-        # 设置按钮图标和图标大小
-        from PyQt5.QtGui import QIcon
-        self.switch_button.setIcon(QIcon(pixmap))
-        self.switch_button.setIconSize(pixmap.size())
-        
-        # 设置按钮样式，与其他控件保持一致的交互体验
-        scaled_border_radius = int(20 * self.dpi_scale)  # 与CustomButton圆角保持一致
-        self.switch_button.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                padding: 0;
-                margin: 0;
-                border-radius: %dpx;
-            }
-            QPushButton:hover {
-                background-color: rgba(0, 120, 212, 0.1);
-            }
-            QPushButton:pressed {
-                background-color: rgba(0, 120, 212, 0.2);
-            }
-        """ % scaled_border_radius)
     
     def _on_switch_toggled(self, checked):
         """开关状态变化处理"""
