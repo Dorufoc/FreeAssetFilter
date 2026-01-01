@@ -98,7 +98,12 @@ class PDFPreviewWidget(QWidget):
         layout.setSpacing(scaled_spacing)
         
         # 设置背景色
-        self.setStyleSheet("background-color: #f5f5f5;")
+        # 获取主题颜色
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        self.setStyleSheet(f"background-color: {background_color};")
         
         # 工具栏
         toolbar_layout = QHBoxLayout()
@@ -604,7 +609,12 @@ class PDFPreviewer(QWidget):
         main_layout.setSpacing(0)
         
         # 设置整体背景色
-        self.setStyleSheet("background-color: #f5f5f5;")
+        # 获取主题颜色
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        self.setStyleSheet(f"background-color: {background_color};")
         
         # PDF预览区域
         self.pdf_widget = PDFPreviewWidget()

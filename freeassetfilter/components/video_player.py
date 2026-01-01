@@ -350,7 +350,7 @@ class VideoPlayer(QWidget):
         self.play_button = CustomButton(
             text="",
             parent=self,
-            button_type="normal",
+            button_type="primary",
             display_mode="icon"
         )
         

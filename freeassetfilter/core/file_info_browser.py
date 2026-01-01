@@ -109,7 +109,7 @@ class FileInfoBrowser:
             QWidget: 文件信息浏览组件的UI组件
         """
         from PyQt5.QtWidgets import (
-            QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox, QGridLayout,
+            QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox, QGridLayout,
             QTabWidget, QFrame, QSplitter, QSizePolicy, QHBoxLayout, QPushButton,
             QTextBrowser, QTreeWidget, QTreeWidgetItem, QFormLayout
         )
@@ -118,7 +118,13 @@ class FileInfoBrowser:
         
         # 创建滚动区域，作为主容器
         scroll_area = QScrollArea()
-        scroll_area.setStyleSheet("background-color: #ffffff;")
+        
+        # 获取主题颜色
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        scroll_area.setStyleSheet(f"background-color: {background_color};")
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -137,7 +143,7 @@ class FileInfoBrowser:
         # 创建主widget
         main_widget = QWidget()
         main_widget.setFont(self.global_font)
-        main_widget.setStyleSheet("background-color: #ffffff;")
+        main_widget.setStyleSheet(f"background-color: {background_color};")
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(scaled_spacing)

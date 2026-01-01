@@ -215,7 +215,11 @@ class TextPreviewWidget(QWidget):
         layout.setSpacing(scaled_spacing)
         
         # 设置背景色
-        self.setStyleSheet("background-color: #f5f5f5;")
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        self.setStyleSheet(f"background-color: {background_color};")
         
         # 预览模式选择
         mode_layout = QGridLayout()
@@ -811,7 +815,11 @@ class TextPreviewer(QMainWindow):
         main_layout.setSpacing(0)
         
         # 设置整体背景色
-        self.setStyleSheet("background-color: #f5f5f5;")
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        self.setStyleSheet(f"background-color: {background_color};")
         
         # 文本预览区域
         scroll_area = QScrollArea()

@@ -110,17 +110,31 @@ class CustomSettingItem(QWidget):
         shadow.setColor(QColor(0, 0, 0, 15))
         self.setGraphicsEffect(shadow)
         
+        # 获取主题颜色
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认列表项正常背景色
+        border_color = "#3C3C3C"  # 默认窗口边框色
+        hover_background = "#3C3C3C"  # 默认列表项悬停背景色
+        hover_border = "#4ECDC4"  # 默认高亮颜色
+        
+        # 尝试从应用实例获取主题颜色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.list_item_normal", "#2D2D2D")
+            border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
+            hover_background = app.settings_manager.get_setting("appearance.colors.list_item_hover", "#3C3C3C")
+            hover_border = app.settings_manager.get_setting("appearance.colors.text_highlight", "#4ECDC4")
+        
         self.setStyleSheet("""
             QWidget#CustomSettingItem {
-                background-color: #ffffff;
-                border: %dpx solid #e0e0e0;
+                background-color: %s;
+                border: %dpx solid %s;
                 border-radius: %dpx;
             }
             QWidget#CustomSettingItem:hover {
-                background-color: #f8f9fa;
-                border-color: #0078d4;
+                background-color: %s;
+                border-color: %s;
             }
-        """ % (scaled_border_width, scaled_border_radius))
+        """ % (background_color, scaled_border_width, border_color, scaled_border_radius, hover_background, hover_border))
         
         # 设置主控件大小策略，允许自适应内容
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -149,15 +163,23 @@ class CustomSettingItem(QWidget):
         self.main_text_label = QLabel(self.text)
         self.main_text_label.setFont(self.global_font)
         scaled_font_size = int(self.default_font_size * self.dpi_scale)
+        # 获取主题文本颜色
+        app = QApplication.instance()
+        text_color = "#FFFFFF"  # 默认白色文本
+        
+        # 尝试从应用实例获取主题颜色
+        if hasattr(app, 'settings_manager'):
+            text_color = app.settings_manager.get_setting("appearance.colors.text_normal", "#FFFFFF")
+        
         self.main_text_label.setStyleSheet("""
             QLabel {
-                color: #000000;
+                color: %s;
                 font-family: '%s';
                 font-size: %dpx;
                 text-align: left;
                 font-weight: normal;
             }
-        """ % (self.global_font.family(), scaled_font_size))
+        """ % (text_color, self.global_font.family(), scaled_font_size))
         self.main_text_label.setWordWrap(True)  # 允许文字换行
         self.main_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 顶部对齐，避免垂直居中导致的重叠
         layout.addWidget(self.main_text_label)
@@ -168,15 +190,23 @@ class CustomSettingItem(QWidget):
             secondary_font_size = int(scaled_font_size / 1.3)
             self.secondary_text_label = QLabel(self.secondary_text)
             self.secondary_text_label.setFont(self.global_font)
+            # 获取主题辅助文本颜色
+            app = QApplication.instance()
+            secondary_text_color = "#888888"  # 默认禁用文本颜色
+            
+            # 尝试从应用实例获取主题颜色
+            if hasattr(app, 'settings_manager'):
+                secondary_text_color = app.settings_manager.get_setting("appearance.colors.text_disabled", "#888888")
+            
             self.secondary_text_label.setStyleSheet("""
                 QLabel {
-                    color: #666666;
+                    color: %s;
                     font-family: '%s';
                     font-size: %dpx;
                     text-align: left;
                     font-weight: normal;
                 }
-            """ % (self.global_font.family(), secondary_font_size))
+            """ % (secondary_text_color, self.global_font.family(), secondary_font_size))
             self.secondary_text_label.setWordWrap(True)  # 允许文字换行
             self.secondary_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 顶部对齐
             layout.addWidget(self.secondary_text_label)
@@ -342,13 +372,21 @@ class CustomSettingItem(QWidget):
         self.value_label.setFont(self.global_font)
         # 应用DPI缩放因子到字体大小
         scaled_font_size = int(self.default_font_size * self.dpi_scale)
+        # 获取主题文本颜色
+        app = QApplication.instance()
+        text_color = "#FFFFFF"  # 默认白色文本
+        
+        # 尝试从应用实例获取主题颜色
+        if hasattr(app, 'settings_manager'):
+            text_color = app.settings_manager.get_setting("appearance.colors.text_normal", "#FFFFFF")
+        
         self.value_label.setStyleSheet("""
             QLabel {
-                color: #000000;
+                color: %s;
                 font-size: %dpx;
                 text-align: center;
             }
-        """ % scaled_font_size)
+        """ % (text_color, scaled_font_size))
         
         # 连接信号
         self.value_bar.valueChanged.connect(self._on_value_changed)

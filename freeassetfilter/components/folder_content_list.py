@@ -46,8 +46,14 @@ class FolderContentList(QWidget):
         
         # 获取应用实例和DPI缩放因子
         from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtGui import QFont
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 获取全局字体
+        self.global_font = getattr(app, 'global_font', QFont())
+        # 设置组件字体
+        self.setFont(self.global_font)
         
         # 初始化配置
         self.current_path = os.path.expanduser("~")  # 默认路径为用户主目录
@@ -69,6 +75,14 @@ class FolderContentList(QWidget):
         scaled_spacing = int(10 * self.dpi_scale)
         scaled_margin = int(10 * self.dpi_scale)
         
+        # 获取应用实例
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        
+        # 获取默认字体大小并应用DPI缩放
+        default_font_size = getattr(app, 'default_font_size', 14)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        
         # 创建主布局
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(scaled_spacing)
@@ -80,6 +94,8 @@ class FolderContentList(QWidget):
         
         # 路径标签
         self.path_label = QLabel(f"当前路径: {self.current_path}")
+        self.path_label.setFont(self.global_font)
+        self.path_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
         path_layout.addWidget(self.path_label)
         
         main_layout.addLayout(path_layout)
@@ -87,12 +103,16 @@ class FolderContentList(QWidget):
         # 创建列表控件
         self.content_list = QListWidget()
         self.content_list.setAlternatingRowColors(True)
+        self.content_list.setFont(self.global_font)
+        self.content_list.setStyleSheet(f"font-size: {scaled_font_size}px;")
         # 移除所有交互事件
         # 只保留列表显示功能
         main_layout.addWidget(self.content_list)
         
         # 创建底部状态栏
         self.status_label = QLabel("就绪")
+        self.status_label.setFont(self.global_font)
+        self.status_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
         main_layout.addWidget(self.status_label)
     
     def set_path(self, path):

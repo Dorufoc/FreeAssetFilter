@@ -77,6 +77,11 @@ class CustomButton(QPushButton):
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
+        # 获取当前主题颜色，如果没有则使用默认值
+        from freeassetfilter.core.settings_manager import SettingsManager
+        settings_manager = SettingsManager()
+        current_colors = settings_manager.get_setting("appearance.colors", {})
+        
         # 使用最新的DPI缩放因子重新计算按钮高度
         self._height = int(self._original_height * self.dpi_scale)
         
@@ -128,114 +133,146 @@ class CustomButton(QPushButton):
         
         if self.button_type == "primary":
             # 强调色方案
-            # 在图标模式下，强制文字颜色等于背景颜色
-            text_color = "#0a59f7" if self._display_mode == "icon" else "#ffffff"
+            # 使用主题颜色
+            bg_color = current_colors.get("button_normal", "#2D2D2D")
+            hover_color = current_colors.get("button_hover", "#3C3C3C")
+            pressed_color = current_colors.get("button_pressed", "#4C4C4C")
+            text_color = current_colors.get("button_text", "#FFFFFF")
+            border_color = current_colors.get("button_border", "#5C5C5C")
+            disabled_bg = "#888888"
+            disabled_text = "#FFFFFF"
+            disabled_border = "#666666"
+            
             self.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: #0a59f7;
+                    background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_primary_border_width}px solid #0a59f7;
+                    border: {scaled_primary_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-size: {scaled_font_size}px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
-                    background-color: #0c5bf9;
-                    border-color: #0c5bf9;
+                    background-color: {hover_color};
+                    border-color: {hover_color};
                 }}
                 QPushButton:pressed {{
-                    background-color: #0e5dfb;
-                    border-color: #0e5dfb;
+                    background-color: {pressed_color};
+                    border-color: {pressed_color};
                 }}
                 QPushButton:disabled {{
-                    background-color: #88A9EB;
-                    color: #FFFFFF;
-                    border-color: #88A9EB;
+                    background-color: {disabled_bg};
+                    color: {disabled_text};
+                    border-color: {disabled_border};
                 }}
             """)
         elif self.button_type == "normal":
             # 普通方案
-            # 在图标模式下，强制文字颜色等于背景颜色
-            text_color = "#f8f9fa" if self._display_mode == "icon" else "#0a59f7"
+            # 使用主题颜色
+            bg_color = current_colors.get("window_background", "#1E1E1E")
+            hover_color = current_colors.get("list_item_hover", "#3C3C3C")
+            pressed_color = current_colors.get("list_item_selected", "#4ECDC4")
+            text_color = current_colors.get("text_normal", "#FFFFFF")
+            border_color = current_colors.get("window_border", "#3C3C3C")
+            disabled_bg = "#2D2D2D"
+            disabled_text = "#666666"
+            disabled_border = "#444444"
+            
             self.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: #f8f9fa;
+                    background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_primary_border_width}px solid #dee2e6;
+                    border: {scaled_primary_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-size: {scaled_font_size}px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
-                    background-color: #e9ecef;
-                    border-color: #adb5bd;
+                    background-color: {hover_color};
+                    border-color: {hover_color};
                 }}
                 QPushButton:pressed {{
-                    background-color: #dee2e6;
-                    border-color: #ced4da;
+                    background-color: {pressed_color};
+                    border-color: {pressed_color};
                 }}
                 QPushButton:disabled {{
-                    background-color: #f8f9fa;
-                    color: #adb5bd;
-                    border-color: #dee2e6;
+                    background-color: {disabled_bg};
+                    color: {disabled_text};
+                    border-color: {disabled_border};
                 }}
             """)
         elif self.button_type == "warning":
             # 警告按钮方案
-            # 在图标模式下，强制文字颜色等于背景颜色
-            text_color = "#ff0000" if self._display_mode == "icon" else "#ffffff"
+            # 使用主题颜色
+            bg_color = current_colors.get("notification_error", "#F44336")
+            hover_color = "#E63946"
+            pressed_color = "#D62828"
+            text_color = current_colors.get("notification_text", "#FFFFFF")
+            border_color = current_colors.get("notification_error", "#F44336")
+            disabled_bg = "#FF8A80"
+            disabled_text = "#FFFFFF"
+            disabled_border = "#FF5252"
+            
             self.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: #ff0000;
+                    background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_primary_border_width}px solid #ff0000;
+                    border: {scaled_primary_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-size: {scaled_font_size}px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
-                    background-color: #e60000;
-                    border-color: #e60000;
+                    background-color: {hover_color};
+                    border-color: {hover_color};
                 }}
                 QPushButton:pressed {{
-                    background-color: #cc0000;
-                    border-color: #cc0000;
+                    background-color: {pressed_color};
+                    border-color: {pressed_color};
                 }}
                 QPushButton:disabled {{
-                    background-color: #ff8080;
-                    color: #FFFFFF;
-                    border-color: #ff8080;
+                    background-color: {disabled_bg};
+                    color: {disabled_text};
+                    border-color: {disabled_border};
                 }}
             """)
         else:  # secondary
             # 次选按钮方案：确保在白色背景下可见
-            # 在图标模式下，强制文字颜色等于背景颜色
-            text_color = "#ffffff" if self._display_mode == "icon" else "#0a59f7"
+            # 使用主题颜色
+            bg_color = current_colors.get("window_background", "#1E1E1E")
+            hover_color = current_colors.get("list_item_hover", "#3C3C3C")
+            pressed_color = current_colors.get("list_item_selected", "#4ECDC4")
+            text_color = current_colors.get("text_highlight", "#4ECDC4")
+            border_color = current_colors.get("text_highlight", "#4ECDC4")
+            disabled_bg = "#2D2D2D"
+            disabled_text = "#666666"
+            disabled_border = "#444444"
+            
             self.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: #ffffff;
+                    background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_border_width}px solid #0a59f7;
+                    border: {scaled_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-size: {scaled_font_size}px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
-                    background-color: #f0f4ff;
-                    border-color: #0d6efd;
+                    background-color: {hover_color};
+                    border-color: {hover_color};
                 }}
                 QPushButton:pressed {{
-                    background-color: #e0e7ff;
-                    border-color: #0A51E0;
+                    background-color: {pressed_color};
+                    border-color: {pressed_color};
                 }}
                 QPushButton:disabled {{
-                    background-color: #ffffff;
-                    color: #DADFE4;
-                    border-color: #DADFE4;
+                    background-color: {disabled_bg};
+                    color: {disabled_text};
+                    border-color: {disabled_border};
                 }}
             """)
     

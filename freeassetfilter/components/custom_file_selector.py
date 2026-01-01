@@ -187,7 +187,12 @@ class CustomFileSelector(QWidget):
         """
         # 创建主布局
         main_layout = QVBoxLayout(self)
-        self.setStyleSheet("background-color: #f1f3f5;")
+        # 获取主题颜色
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        self.setStyleSheet(f"background-color: {background_color};")
         # 应用DPI缩放因子到布局参数
         scaled_spacing = int(10 * self.dpi_scale)
         scaled_margin = int(10 * self.dpi_scale)

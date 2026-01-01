@@ -136,29 +136,42 @@ class CustomSelectListItem(QWidget):
         """
         scaled_radius = int(8 * self.dpi_scale)
         
+        # 获取主题颜色
+        app = QApplication.instance()
+        list_item_selected = "#0a59f7"  # 默认选中颜色
+        list_item_text_selected = "#ffffff"  # 默认选中文字颜色
+        list_item_normal = "#ffffff"  # 默认正常背景颜色
+        list_item_text_normal = "#000000"  # 默认正常文字颜色
+        
+        if hasattr(app, 'settings_manager'):
+            list_item_selected = app.settings_manager.get_setting("appearance.colors.list_item_selected", list_item_selected)
+            list_item_text_selected = app.settings_manager.get_setting("appearance.colors.list_item_text", list_item_text_selected)
+            list_item_normal = app.settings_manager.get_setting("appearance.colors.list_item_normal", list_item_normal)
+            list_item_text_normal = app.settings_manager.get_setting("appearance.colors.list_item_text", list_item_text_normal)
+        
         if self.is_selected:
-            # 选中状态：蓝色底白色字，字重600
+            # 选中状态：主题选中色底，主题文字色，字重600
             self.setStyleSheet(f"""
                 QWidget {{
-                    background-color: #0a59f7;
+                    background-color: {list_item_selected};
                     border-radius: {scaled_radius}px;
-                    color: #ffffff;
+                    color: {list_item_text_selected};
                 }}
                 QLabel {{
-                    color: #ffffff;
+                    color: {list_item_text_selected};
                     font-weight: 600;
                 }}
             """.strip())
         else:
-            # 未选中状态：白色底黑色字，字重恢复默认
+            # 未选中状态：主题正常色底，主题文字色，字重恢复默认
             self.setStyleSheet(f"""
                 QWidget {{
-                    background-color: #ffffff;
+                    background-color: {list_item_normal};
                     border-radius: {scaled_radius}px;
-                    color: #000000;
+                    color: {list_item_text_normal};
                 }}
                 QLabel {{
-                    color: #000000;
+                    color: {list_item_text_normal};
                     font-weight: normal;
                 }}
             """.strip())
@@ -272,35 +285,46 @@ class CustomSelectList(QWidget):
         self.setFixedSize(self.default_width, self.default_height)
         
         # 确保滚动条可见，将样式应用到滚动区域
-        self.scroll_area.setStyleSheet("""
-            QScrollArea {
+        # 获取主题颜色
+        app = QApplication.instance()
+        scrollbar_bg = "#f0f0f0"  # 默认滚动条背景颜色
+        scrollbar_handle = "#c0c0c0"  # 默认滚动条手柄颜色
+        scrollbar_handle_hover = "#a0a0a0"  # 默认滚动条手柄悬停颜色
+        
+        if hasattr(app, 'settings_manager'):
+            scrollbar_bg = app.settings_manager.get_setting("appearance.colors.scrollbar_bg", scrollbar_bg)
+            scrollbar_handle = app.settings_manager.get_setting("appearance.colors.scrollbar_handle", scrollbar_handle)
+            scrollbar_handle_hover = app.settings_manager.get_setting("appearance.colors.scrollbar_handle_hover", scrollbar_handle_hover)
+        
+        self.scroll_area.setStyleSheet(f"""
+            QScrollArea {{
                 border: none;
-            }
-            QScrollBar:vertical {
+            }}
+            QScrollBar:vertical {{
                 width: 8px;
-                background: #f0f0f0;
+                background: {scrollbar_bg};
                 border-radius: 3px;
-            }
-            QScrollBar::handle:vertical {
-                background: #c0c0c0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {scrollbar_handle};
                 border-radius: 3px;
                 min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #a0a0a0;
-            }
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {scrollbar_handle_hover};
+            }}
             QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {
+            QScrollBar::sub-line:vertical {{
                 height: 0px;
-            }
+            }}
             QScrollBar::up-arrow:vertical,
-            QScrollBar::down-arrow:vertical {
+            QScrollBar::down-arrow:vertical {{
                 height: 0px;
-            }
+            }}
             QScrollBar::add-page:vertical,
-            QScrollBar::sub-page:vertical {
+            QScrollBar::sub-page:vertical {{
                 background: none;
-            }
+            }}
         """)
         
         # 确保滚动条总是显示，用于测试

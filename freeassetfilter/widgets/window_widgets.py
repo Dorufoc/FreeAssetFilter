@@ -31,7 +31,7 @@ class CustomWindow(QWidget):
     
     def __init__(self, title="Custom Window", parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
         # 窗口标题
@@ -84,11 +84,22 @@ class CustomWindow(QWidget):
         
         # 创建窗口主体（带圆角）
         self.window_body = QWidget()
+        
+        # 获取主题颜色
+        app = QApplication.instance()
+        window_bg_color = "#ffffff"  # 默认白色
+        window_border_color = "#ffffff"  # 默认白色
+        
+        # 尝试从应用实例获取主题颜色
+        if hasattr(app, 'settings_manager'):
+            window_bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#ffffff")
+            window_border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#ffffff")
+        
         self.window_body.setStyleSheet(f"""
             QWidget {{
-                background-color: #ffffff;
+                background-color: {window_bg_color};
                 border-radius: {scaled_radius}px;
-                border: 1px solid #ffffff;
+                border: 1px solid {window_border_color};
             }}
         """)
         
@@ -352,6 +363,649 @@ class CustomWindow(QWidget):
             title_layout = title_bar.layout()
             title_label = title_layout.itemAt(0).widget()
             title_label.setText(title)
+
+
+class ThemeSettingsWindow(CustomWindow):
+    """
+    主题设置窗口组件
+    特点：
+    - 继承自CustomWindow，使用相同的无边框、圆角、阴影样式
+    - 包含颜色选择器和控件预览区域
+    - 实现颜色选择功能，允许用户自定义各种颜色
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(title="主题设置", parent=parent)
+        
+        # 获取应用实例和设置管理器
+        app = QApplication.instance()
+        self.settings_manager = getattr(app, 'settings_manager', None)
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 获取当前主题颜色
+        if self.settings_manager:
+            self.current_colors = self.settings_manager.get_setting("appearance.colors")
+        else:
+            # 使用默认颜色
+            self.current_colors = {
+                "window_background": "#1E1E1E",
+                "button_normal": "#2D2D2D",
+                "button_text": "#FFFFFF",
+                "text_normal": "#FFFFFF",
+                "input_background": "#2D2D2D",
+                "input_text": "#FFFFFF",
+                "list_background": "#1E1E1E",
+                "list_item_normal": "#2D2D2D",
+                "list_item_text": "#FFFFFF"
+            }
+        
+        # 初始化UI
+        self.init_theme_ui()
+    
+    def init_theme_ui(self):
+        """
+        初始化主题设置窗口UI
+        """
+        # 应用DPI缩放因子
+        scaled_padding = int(16 * self.dpi_scale)
+        scaled_spacing = int(12 * self.dpi_scale)
+        
+        # 创建主滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                background-color: transparent;
+                border: none;
+            }
+            QScrollBar {
+                background-color: transparent;
+            }
+            QScrollBar::vertical {
+                width: 8px;
+                background-color: transparent;
+            }
+            QScrollBar::horizontal {
+                height: 8px;
+                background-color: transparent;
+            }
+            QScrollBar::handle {
+                background-color: #888;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:hover {
+                background-color: #aaa;
+            }
+        """)
+        
+        # 滚动区域内容
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(scaled_padding, scaled_padding, scaled_padding, scaled_padding)
+        scroll_layout.setSpacing(scaled_spacing)
+        
+        # 添加颜色配置区域
+        self._add_color_section(scroll_layout, "窗口颜色", [
+            ("window_background", "窗口背景色"),
+            ("window_border", "窗口边框色")
+        ])
+        
+        self._add_color_section(scroll_layout, "按钮颜色", [
+            ("button_normal", "按钮背景色"),
+            ("button_hover", "按钮悬停色"),
+            ("button_pressed", "按钮按下色"),
+            ("button_text", "按钮文字色"),
+            ("button_border", "按钮边框色")
+        ])
+        
+        self._add_color_section(scroll_layout, "文字颜色", [
+            ("text_normal", "普通文字色"),
+            ("text_disabled", "禁用文字色"),
+            ("text_highlight", "高亮文字色"),
+            ("text_placeholder", "占位符文字色")
+        ])
+        
+        self._add_color_section(scroll_layout, "输入框颜色", [
+            ("input_background", "输入框背景色"),
+            ("input_border", "输入框边框色"),
+            ("input_focus_border", "输入框焦点边框色"),
+            ("input_text", "输入框文字色")
+        ])
+        
+        self._add_color_section(scroll_layout, "列表颜色", [
+            ("list_background", "列表背景色"),
+            ("list_item_normal", "列表项背景色"),
+            ("list_item_hover", "列表项悬停色"),
+            ("list_item_selected", "列表项选中色"),
+            ("list_item_text", "列表项文字色")
+        ])
+        
+        self._add_color_section(scroll_layout, "滑块颜色", [
+            ("slider_track", "滑块轨道色"),
+            ("slider_handle", "滑块手柄色"),
+            ("slider_handle_hover", "滑块手柄悬停色")
+        ])
+        
+        self._add_color_section(scroll_layout, "进度条颜色", [
+            ("progress_bar_bg", "进度条背景色"),
+            ("progress_bar_fg", "进度条前景色")
+        ])
+        
+        # 添加控件预览区域
+        self._add_preview_section(scroll_layout)
+        
+        # 添加保存按钮
+        from .button_widgets import CustomButton
+        save_button = CustomButton("保存主题设置", button_type="primary", display_mode="text")
+        save_button.clicked.connect(self.save_theme_settings)
+        scroll_layout.addWidget(save_button)
+        
+        # 设置滚动区域
+        scroll_area.setWidget(scroll_content)
+        self.add_widget(scroll_area)
+    
+    def _add_color_section(self, layout, title, color_items):
+        """
+        添加颜色配置区域
+        
+        Args:
+            layout (QLayout): 父布局
+            title (str): 区域标题
+            color_items (list): 颜色配置项列表，每个项为元组 (color_key, color_name)
+        """
+        # 应用DPI缩放因子
+        scaled_margin = int(8 * self.dpi_scale)
+        scaled_spacing = int(8 * self.dpi_scale)
+        scaled_border_radius = int(4 * self.dpi_scale)
+        
+        # 创建区域容器
+        section_widget = QWidget()
+        section_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: #f5f5f5;
+                border-radius: {scaled_border_radius}px;
+                padding: {scaled_margin}px;
+            }}
+        """)
+        section_layout = QVBoxLayout(section_widget)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(scaled_spacing)
+        
+        # 添加标题
+        title_label = QLabel(title)
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: 500;
+                color: #333333;
+                margin-bottom: 8px;
+            }
+        """)
+        section_layout.addWidget(title_label)
+        
+        # 添加颜色配置项
+        for color_key, color_name in color_items:
+            self._add_color_item(section_layout, color_key, color_name)
+        
+        # 将区域添加到父布局
+        layout.addWidget(section_widget)
+    
+    def _add_color_item(self, layout, color_key, color_name):
+        """
+        添加颜色配置项
+        
+        Args:
+            layout (QLayout): 父布局
+            color_key (str): 颜色配置键
+            color_name (str): 颜色配置名称
+        """
+        # 创建颜色配置项布局
+        item_layout = QHBoxLayout()
+        item_layout.setContentsMargins(0, 0, 0, 0)
+        item_layout.setSpacing(8)
+        
+        # 颜色名称标签
+        name_label = QLabel(color_name)
+        name_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #333333;
+                min-width: 120px;
+            }
+        """)
+        item_layout.addWidget(name_label)
+        
+        # 颜色显示框
+        color_display = QWidget()
+        color_display.setFixedSize(40, 24)
+        color_display.setStyleSheet(f"""
+            QWidget {{
+                background-color: {self.current_colors.get(color_key, '#ffffff')};
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+            }}
+        """)
+        
+        # 设置鼠标样式为可点击
+        color_display.setCursor(Qt.PointingHandCursor)
+        
+        # 存储颜色键
+        color_display.setProperty("color_key", color_key)
+        
+        # 添加点击事件
+        color_display.mousePressEvent = lambda event: self._select_color(color_key)
+        item_layout.addWidget(color_display)
+        
+        # 颜色值输入框
+        from .input_widgets import CustomInputBox
+        color_value = CustomInputBox(
+            initial_text=self.current_colors.get(color_key, '#ffffff'),
+            width=100,
+            height=24,
+            border_radius=4,
+            border_color="#cccccc",
+            background_color="#ffffff",
+            text_color="#666666",
+            placeholder_color="#999999",
+            active_border_color="#0078d4",
+            active_background_color="#ffffff"
+        )
+        
+        # 设置等宽字体
+        color_value.line_edit.setStyleSheet("""
+            QLineEdit {
+                font-family: Consolas, monospace;
+                font-size: 14px;
+                padding: 0 4px;
+            }
+        """)
+        
+        # 存储颜色键
+        color_value.setProperty("color_key", color_key)
+        
+        # 添加文本变化事件
+        color_value.textChanged.connect(lambda text: self._update_color_from_text(color_key, text))
+        
+        # 添加编辑完成事件
+        color_value.editingFinished.connect(lambda text: self._validate_color_input(color_key, text))
+        
+        item_layout.addWidget(color_value)
+        
+        # 存储引用，用于后续更新
+        if not hasattr(self, '_color_inputs'):
+            self._color_inputs = {}
+        self._color_inputs[color_key] = (color_display, color_value)
+        
+        # 将颜色配置项添加到父布局
+        layout.addLayout(item_layout)
+    
+    def _select_color(self, color_key):
+        """
+        打开颜色选择器
+        
+        Args:
+            color_key (str): 颜色配置键
+        """
+        from PyQt5.QtWidgets import QColorDialog
+        
+        # 获取当前颜色
+        current_color = self.current_colors.get(color_key, '#ffffff')
+        
+        # 打开颜色选择器
+        color_dialog = QColorDialog(QColor(current_color), self)
+        color_dialog.setOption(QColorDialog.ShowAlphaChannel, False)
+        
+        if color_dialog.exec_() == QColorDialog.Accepted:
+            # 获取选择的颜色
+            selected_color = color_dialog.selectedColor().name()
+            
+            # 更新当前颜色
+            self.current_colors[color_key] = selected_color
+            
+            # 更新UI
+            self._update_color_ui(color_key, selected_color)
+            
+            # 实时应用主题
+            self._apply_theme()
+    
+    def _update_color_ui(self, color_key, color_value):
+        """
+        更新颜色配置项的UI
+        
+        Args:
+            color_key (str): 颜色配置键
+            color_value (str): 颜色值
+        """
+        # 更新颜色显示框
+        for widget in self.findChildren(QWidget):
+            if widget.property("color_key") == color_key:
+                if isinstance(widget, QLabel):
+                    widget.setText(color_value)
+                else:
+                    widget.setStyleSheet(f"""
+                        QWidget {{
+                            background-color: {color_value};
+                            border: 1px solid #cccccc;
+                            border-radius: 4px;
+                        }}
+                    """)
+    
+    def _add_preview_section(self, layout):
+        """
+        添加控件预览区域
+        
+        Args:
+            layout (QLayout): 父布局
+        """
+        # 应用DPI缩放因子
+        scaled_margin = int(8 * self.dpi_scale)
+        scaled_spacing = int(8 * self.dpi_scale)
+        scaled_border_radius = int(4 * self.dpi_scale)
+        
+        # 创建预览区域容器
+        preview_widget = QWidget()
+        preview_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: #f5f5f5;
+                border-radius: {scaled_border_radius}px;
+                padding: {scaled_margin}px;
+            }}
+        """)
+        preview_layout = QVBoxLayout(preview_widget)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(scaled_spacing)
+        
+        # 添加标题
+        title_label = QLabel("控件预览")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: 500;
+                color: #333333;
+                margin-bottom: 8px;
+            }
+        """)
+        preview_layout.addWidget(title_label)
+        
+        # 添加预览控件
+        self._add_preview_controls(preview_layout)
+        
+        # 将预览区域添加到父布局
+        layout.addWidget(preview_widget)
+    
+    def _add_preview_controls(self, layout):
+        """
+        添加预览控件
+        
+        Args:
+            layout (QLayout): 父布局
+        """
+        # 应用DPI缩放因子
+        scaled_padding = int(12 * self.dpi_scale)
+        scaled_spacing = int(8 * self.dpi_scale)
+        scaled_border_radius = int(4 * self.dpi_scale)
+        
+        # 创建预览容器
+        controls_widget = QWidget()
+        controls_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: #ffffff;
+                border-radius: {scaled_border_radius}px;
+                padding: {scaled_padding}px;
+                border: 1px solid #e0e0e0;
+            }}
+        """)
+        controls_layout = QVBoxLayout(controls_widget)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(scaled_spacing)
+        
+        # 按钮预览
+        btn_label = QLabel("按钮预览:")
+        btn_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #333333;
+                margin-bottom: 4px;
+            }
+        """)
+        controls_layout.addWidget(btn_label)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(scaled_spacing)
+        
+        from .button_widgets import CustomButton
+        preview_btn1 = CustomButton("普通按钮", button_type="primary", display_mode="text")
+        preview_btn2 = CustomButton("悬停按钮", button_type="secondary", display_mode="text")
+        
+        btn_layout.addWidget(preview_btn1)
+        btn_layout.addWidget(preview_btn2)
+        controls_layout.addLayout(btn_layout)
+        
+        # 输入框预览
+        input_label = QLabel("输入框预览:")
+        input_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #333333;
+                margin-bottom: 4px;
+                margin-top: 12px;
+            }
+        """)
+        controls_layout.addWidget(input_label)
+        
+        input_edit = QLineEdit()
+        input_edit.setPlaceholderText("请输入文本...")
+        controls_layout.addWidget(input_edit)
+        
+        # 文本预览
+        text_label = QLabel("文本预览:")
+        text_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #333333;
+                margin-bottom: 4px;
+                margin-top: 12px;
+            }
+        """)
+        controls_layout.addWidget(text_label)
+        
+        text_preview = QLabel("这是普通文字，这是高亮文字")
+        text_preview.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #333333;
+            }
+        """)
+        controls_layout.addWidget(text_preview)
+        
+        # 添加预览容器到父布局
+        layout.addWidget(controls_widget)
+    
+    def _apply_theme(self):
+        """
+        应用主题颜色
+        """
+        # 获取应用实例
+        app = QApplication.instance()
+        
+        # 应用主题颜色到全局样式表
+        if hasattr(app, 'global_style_sheet'):
+            # 更新全局样式表
+            self._update_global_style_sheet()
+        
+        # 触发应用更新
+        if hasattr(app, 'update_theme'):
+            app.update_theme()
+    
+    def _update_global_style_sheet(self):
+        """
+        更新全局样式表
+        """
+        # 获取应用实例
+        app = QApplication.instance()
+        
+        # 创建主题样式表
+        theme_stylesheet = """
+            /* 窗口样式 */
+            QMainWindow, QWidget, QDialog {
+                background-color: %s;
+                border: 1px solid %s;
+            }
+            
+            /* 按钮样式 */
+            QPushButton {
+                background-color: %s;
+                color: %s;
+                border: 1px solid %s;
+                border-radius: 4px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                background-color: %s;
+            }
+            QPushButton:pressed {
+                background-color: %s;
+            }
+            
+            /* 文字样式 */
+            QLabel {
+                color: %s;
+            }
+            
+            /* 输入框样式 */
+            QLineEdit, QTextEdit, QPlainTextEdit {
+                background-color: %s;
+                color: %s;
+                border: 1px solid %s;
+                border-radius: 4px;
+                padding: 6px 8px;
+            }
+            QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+                border-color: %s;
+            }
+            
+            /* 列表和表格样式 */
+            QListWidget, QTableWidget, QTreeWidget {
+                background-color: %s;
+                color: %s;
+                border: 1px solid %s;
+                border-radius: 4px;
+            }
+            QListWidget::item, QTableWidget::item, QTreeWidget::item {
+                background-color: %s;
+                color: %s;
+            }
+            QListWidget::item:hover, QTableWidget::item:hover, QTreeWidget::item:hover {
+                background-color: %s;
+            }
+            QListWidget::item:selected, QTableWidget::item:selected, QTreeWidget::item:selected {
+                background-color: %s;
+                color: %s;
+            }
+        """ % (
+            self.current_colors.get("window_background", "#1E1E1E"),
+            self.current_colors.get("window_border", "#3C3C3C"),
+            self.current_colors.get("button_normal", "#2D2D2D"),
+            self.current_colors.get("button_text", "#FFFFFF"),
+            self.current_colors.get("button_border", "#5C5C5C"),
+            self.current_colors.get("button_hover", "#3C3C3C"),
+            self.current_colors.get("button_pressed", "#4C4C4C"),
+            self.current_colors.get("text_normal", "#FFFFFF"),
+            self.current_colors.get("input_background", "#2D2D2D"),
+            self.current_colors.get("input_text", "#FFFFFF"),
+            self.current_colors.get("input_border", "#3C3C3C"),
+            self.current_colors.get("input_focus_border", "#4ECDC4"),
+            self.current_colors.get("list_background", "#1E1E1E"),
+            self.current_colors.get("list_item_text", "#FFFFFF"),
+            self.current_colors.get("window_border", "#3C3C3C"),
+            self.current_colors.get("list_item_normal", "#2D2D2D"),
+            self.current_colors.get("list_item_text", "#FFFFFF"),
+            self.current_colors.get("list_item_hover", "#3C3C3C"),
+            self.current_colors.get("list_item_selected", "#4ECDC4"),
+            self.current_colors.get("list_item_text", "#FFFFFF")
+        )
+        
+        # 设置全局样式表
+        app.setStyleSheet(theme_stylesheet)
+    
+    def _update_color_from_text(self, color_key, text):
+        """
+        从文本输入更新颜色
+        
+        Args:
+            color_key (str): 颜色配置键
+            text (str): 颜色值文本
+        """
+        # 简单验证：必须是#开头，后面跟6位十六进制字符
+        if text.startswith("#") and len(text) == 7:
+            try:
+                # 尝试创建QColor对象来验证颜色值
+                QColor(text)
+                # 更新当前颜色
+                self.current_colors[color_key] = text
+                # 更新UI
+                if hasattr(self, '_color_inputs') and color_key in self._color_inputs:
+                    color_display, color_value = self._color_inputs[color_key]
+                    color_display.setStyleSheet(f"""
+                        QWidget {{
+                            background-color: {text};
+                            border: 1px solid #cccccc;
+                            border-radius: 4px;
+                        }}
+                    """)
+                # 实时应用主题
+                self._apply_theme()
+            except Exception:
+                pass
+    
+    def _validate_color_input(self, color_key, text):
+        """
+        验证颜色输入
+        
+        Args:
+            color_key (str): 颜色配置键
+            text (str): 颜色值文本
+        """
+        # 验证颜色值格式
+        if not (text.startswith("#") and len(text) == 7):
+            # 如果格式不正确，恢复到之前的颜色值
+            previous_color = self.current_colors.get(color_key, '#ffffff')
+            if hasattr(self, '_color_inputs') and color_key in self._color_inputs:
+                color_display, color_value = self._color_inputs[color_key]
+                color_value.line_edit.setText(previous_color)
+        else:
+            try:
+                # 尝试创建QColor对象来验证颜色值
+                QColor(text)
+            except Exception:
+                # 如果颜色值无效，恢复到之前的颜色值
+                previous_color = self.current_colors.get(color_key, '#ffffff')
+                if hasattr(self, '_color_inputs') and color_key in self._color_inputs:
+                    color_display, color_value = self._color_inputs[color_key]
+                    color_value.line_edit.setText(previous_color)
+    
+    def save_theme_settings(self):
+        """
+        保存主题设置
+        """
+        if self.settings_manager:
+            # 保存主题颜色设置
+            self.settings_manager.set_setting("appearance.colors", self.current_colors)
+            self.settings_manager.save_settings()
+            
+            # 显示保存成功提示
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "保存成功", "主题设置已保存！")
+            
+            # 应用主题
+            self._apply_theme()
+            
+            # 关闭窗口
+            self.close()
+        else:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "保存失败", "无法保存主题设置，请重试！")
 
 
 class CustomMessageBox(QDialog):

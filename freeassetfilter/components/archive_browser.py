@@ -239,7 +239,7 @@ class ArchiveBrowser(QWidget):
         
         # 应用DPI缩放因子到列表项字体
         scaled_font_size = int(default_font_size * self.dpi_scale)
-        list_font = QFont()
+        list_font = QFont(self.global_font)
         list_font.setPointSize(scaled_font_size)
         self.files_list.setFont(list_font)
         
@@ -271,6 +271,7 @@ class ArchiveBrowser(QWidget):
         
         # 文件计数显示
         self.file_count_label = QLabel("文件数量: 0")
+        self.file_count_label.setFont(self.global_font)
         self.file_count_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_height}px; padding: 5px;")
         layout.addWidget(self.file_count_label)
         

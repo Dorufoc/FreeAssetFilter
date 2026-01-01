@@ -44,7 +44,64 @@ class SettingsManager:
                 "style": "Microsoft YaHei"
             },
             "appearance": {
-                "theme": "default"
+                "theme": "default",
+                "colors": {
+                    # 窗口颜色
+                    "window_background": "#1E1E1E",
+                    "window_border": "#3C3C3C",
+                    
+                    # 按钮颜色
+                    "button_normal": "#2D2D2D",
+                    "button_hover": "#3C3C3C",
+                    "button_pressed": "#4C4C4C",
+                    "button_text": "#FFFFFF",
+                    "button_border": "#5C5C5C",
+                    
+                    # 文字颜色
+                    "text_normal": "#FFFFFF",
+                    "text_disabled": "#888888",
+                    "text_highlight": "#4ECDC4",
+                    "text_placeholder": "#666666",
+                    
+                    # 输入框颜色
+                    "input_background": "#2D2D2D",
+                    "input_border": "#3C3C3C",
+                    "input_focus_border": "#4ECDC4",
+                    "input_text": "#FFFFFF",
+                    
+                    # 列表和表格颜色
+                    "list_background": "#1E1E1E",
+                    "list_item_normal": "#2D2D2D",
+                    "list_item_hover": "#3C3C3C",
+                    "list_item_selected": "#4ECDC4",
+                    "list_item_text": "#FFFFFF",
+                    
+                    # 滑块颜色
+                    "slider_track": "#3C3C3C",
+                    "slider_handle": "#4ECDC4",
+                    "slider_handle_hover": "#5EE0D8",
+                    
+                    # 进度条颜色
+                    "progress_bar_bg": "#3C3C3C",
+                    "progress_bar_fg": "#4ECDC4",
+                    
+                    # 分隔线颜色
+                    "separator": "#3C3C3C",
+                    
+                    # 通知颜色
+                    "notification_info": "#4ECDC4",
+                    "notification_success": "#4CAF50",
+                    "notification_warning": "#FFC107",
+                    "notification_error": "#F44336",
+                    "notification_text": "#FFFFFF",
+                    
+                    # 标签页颜色
+                    "tab_normal": "#2D2D2D",
+                    "tab_selected": "#4ECDC4",
+                    "tab_text_normal": "#AAAAAA",
+                    "tab_text_selected": "#FFFFFF",
+                    "tab_border": "#3C3C3C"
+                }
             },
             "file_selector": {
                 "auto_clear_thumbnail_cache": True,
@@ -79,6 +136,8 @@ class SettingsManager:
                     loaded_settings = json.load(f)
                     # 合并默认设置和加载的设置，确保所有必要的设置项都存在
                     merged_settings = self._merge_settings(self.default_settings, loaded_settings)
+                    # 先将合并后的设置赋值给self.settings，再保存
+                    self.settings = merged_settings
                     # 如果合并后的设置与加载的设置不同，说明有缺失项，保存更新后的设置
                     if merged_settings != loaded_settings:
                         self.save_settings()
@@ -86,12 +145,16 @@ class SettingsManager:
             else:
                 # 文件不存在，返回默认设置并保存到文件
                 default_settings = self.default_settings.copy()
+                # 先将默认设置赋值给self.settings，再保存
+                self.settings = default_settings
                 self.save_settings()
                 return default_settings
         except Exception as e:
             print(f"加载设置失败: {e}")
             # 加载失败，返回默认设置并保存到文件
             default_settings = self.default_settings.copy()
+            # 先将默认设置赋值给self.settings，再保存
+            self.settings = default_settings
             self.save_settings()
             return default_settings
     

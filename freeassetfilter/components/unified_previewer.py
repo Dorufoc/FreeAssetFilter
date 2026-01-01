@@ -107,7 +107,12 @@ class UnifiedPreviewer(QWidget):
         
         # 创建主布局
         main_layout = QVBoxLayout(self)
-        self.setStyleSheet("background-color: #f1f3f5;")
+        # 获取主题颜色
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        self.setStyleSheet(f"background-color: {background_color};")
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
@@ -997,11 +1002,16 @@ class UnifiedPreviewer(QWidget):
         # 创建滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("background-color: #f1f3f5;")
+        # 获取主题颜色
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        scroll_area.setStyleSheet(f"background-color: {background_color};")
         
         # 创建滚动内容容器
         scroll_content = QWidget()
-        scroll_content.setStyleSheet("background-color: #f1f3f5;")
+        scroll_content.setStyleSheet(f"background-color: {background_color};")
         scroll_layout = QVBoxLayout(scroll_content)
         
         # 获取主程序的全局常量和用户设置
@@ -1016,7 +1026,7 @@ class UnifiedPreviewer(QWidget):
         group_font.setPointSize(int(14 * dpi_scale))
         group_font.setBold(True)
         main_program_group.setFont(group_font)
-        main_program_group.setStyleSheet("background-color: #f1f3f5;")
+        main_program_group.setStyleSheet(f"background-color: {background_color};")
         main_program_layout = QVBoxLayout(main_program_group)
         # 添加适当的间距，避免分组标题与子项重叠
         main_program_layout.setContentsMargins(int(10 * dpi_scale), int(20 * dpi_scale), int(10 * dpi_scale), int(10 * dpi_scale))
@@ -1472,6 +1482,14 @@ class UnifiedPreviewer(QWidget):
             interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
             buttons=[{"text": "设计器", "type": "primary"}]
         )
+        # 连接主题设置的按钮点击信号
+        def on_theme_button_clicked(button_index):
+            if button_index == 0:  # 设计器按钮
+                from freeassetfilter.widgets.window_widgets import ThemeSettingsWindow
+                # 创建主题设置窗口
+                self.theme_window = ThemeSettingsWindow()
+                self.theme_window.show()
+        theme_setting.button_clicked.connect(on_theme_button_clicked)
         main_program_layout.addWidget(theme_setting)
         
         # 文件选择器设置项组

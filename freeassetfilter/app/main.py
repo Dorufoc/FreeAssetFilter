@@ -207,7 +207,14 @@ class FreeAssetFilterApp(QMainWindow):
         """
         # 创建中央部件
         central_widget = QWidget()
-        central_widget.setStyleSheet("background-color: #f1f3f5;")
+        # 获取主题颜色
+        app = QApplication.instance()
+        background_color = "#2D2D2D"  # 默认窗口背景色
+        border_color = "#3C3C3C"  # 默认窗口边框色
+        if hasattr(app, 'settings_manager'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+            border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
+        central_widget.setStyleSheet(f"background-color: {background_color};")
         self.setCentralWidget(central_widget)
         
         # 创建主布局：标题 + 三列
@@ -229,7 +236,7 @@ class FreeAssetFilterApp(QMainWindow):
         left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # 应用DPI缩放因子到边框圆角
         scaled_border_radius = int(8 * self.dpi_scale)
-        left_column.setStyleSheet(f"background-color: #f1f3f5; border: 1px solid #ccc; border-radius: {scaled_border_radius}px;")
+        left_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
         left_layout = QVBoxLayout(left_column)
 
 
@@ -241,7 +248,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 中间列：文件临时存储池
         middle_column = QWidget()
         middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        middle_column.setStyleSheet(f"background-color: #f1f3f5; border: 1px solid #ccc; border-radius: {scaled_border_radius}px;")
+        middle_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
         middle_layout = QVBoxLayout(middle_column)
         
         # 添加文件临时存储池组件
@@ -251,7 +258,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 右侧列：统一文件预览器
         right_column = QWidget()
         right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        right_column.setStyleSheet(f"background-color: #f1f3f5; border: 1px solid #ccc; border-radius: {scaled_border_radius}px;")
+        right_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
         right_layout = QVBoxLayout(right_column)
         
 
@@ -317,6 +324,51 @@ class FreeAssetFilterApp(QMainWindow):
         """
         # 简单的信息显示，使用状态标签
         self.status_label.setText(f"{title}: {message}")
+    
+    def update_theme(self):
+        """
+        更新应用主题，当主题颜色更改时调用
+        """
+        # 获取应用实例
+        app = QApplication.instance()
+        
+        # 更新中央部件的背景色
+        if hasattr(self, 'central_widget'):
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+            border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
+            self.central_widget.setStyleSheet(f"background-color: {background_color};")
+            
+        # 更新三列的背景色
+        columns = [getattr(self, 'left_column', None), getattr(self, 'middle_column', None), getattr(self, 'right_column', None)]
+        for column in columns:
+            if column:
+                background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+                border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
+                scaled_border_radius = int(8 * self.dpi_scale)
+                column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
+        
+        # 递归更新所有子组件的样式
+        def update_child_widgets(widget):
+            for child in widget.findChildren(QWidget):
+                # 检查子组件是否有update_style方法
+                if hasattr(child, 'update_style') and callable(child.update_style):
+                    child.update_style()
+                # 递归更新子组件的子组件
+                update_child_widgets(child)
+        
+        update_child_widgets(self.central_widget)
+        
+        # 如果有统一预览器，更新其样式
+        if hasattr(self, 'unified_previewer'):
+            self.unified_previewer.update_style()
+        
+        # 如果有文件临时存储池，更新其样式
+        if hasattr(self, 'file_staging_pool'):
+            self.file_staging_pool.update_style()
+        
+        # 如果有文件选择器，更新其样式
+        if hasattr(self, 'file_selector_a'):
+            self.file_selector_a.update_style()
     
     def show_custom_window_demo(self):
         """
