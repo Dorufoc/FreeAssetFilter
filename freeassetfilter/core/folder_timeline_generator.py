@@ -21,6 +21,7 @@ import csv
 import json
 import datetime
 import subprocess
+import json
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
@@ -35,14 +36,16 @@ class FolderTimelineGenerator:
         """初始化生成器"""
         self.video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mxf']
         self.time_format = "%Y-%m-%d %H:%M:%S"
+        self.data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'timeline'))
+        self.mapping_file = os.path.join(self.data_dir, 'timeline_mapping.json')
     
-    def generate_timeline_csv(self, folder_path: str, output_csv_path: str, progress_callback=None) -> Tuple[bool, str]:
+    def generate_timeline_csv(self, folder_path: str, output_csv_path: Optional[str] = None, progress_callback=None) -> Tuple[bool, str]:
         """
         根据文件夹结构生成时间轴CSV
         
         Args:
             folder_path: 要处理的文件夹路径
-            output_csv_path: 输出CSV文件路径
+            output_csv_path: 输出CSV文件路径（可选，默认输出到data/timeline目录）
             progress_callback: 进度回调函数，接收两个参数：当前进度和总进度
             
         Returns:
@@ -62,8 +65,26 @@ class FolderTimelineGenerator:
             if not timeline_data:
                 return False, "未找到任何视频文件或子文件夹"
             
+            # 确保data/timeline目录存在
+            os.makedirs(self.data_dir, exist_ok=True)
+            
+            # 如果未指定输出路径，自动生成
+            if not output_csv_path:
+                # 使用当前时间和源文件夹名称生成唯一的CSV文件名
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                folder_name = os.path.basename(os.path.normpath(folder_path))
+                csv_filename = f"timeline_{folder_name}_{timestamp}.csv"
+                output_csv_path = os.path.join(self.data_dir, csv_filename)
+            else:
+                # 如果指定了路径但不是绝对路径，转换为绝对路径
+                if not os.path.isabs(output_csv_path):
+                    output_csv_path = os.path.abspath(output_csv_path)
+            
             # 写入CSV文件
             self._write_csv(output_csv_path, timeline_data)
+            
+            # 更新JSON映射文件
+            self._update_timeline_mapping(folder_path, output_csv_path)
             
             return True, f"成功生成时间轴CSV：{output_csv_path}"
             
@@ -83,51 +104,57 @@ class FolderTimelineGenerator:
         """
         timeline_data = []
         
-        # 遍历子文件夹，计算总任务数
-        subfolders = []
-        total_videos = 0
-        for subfolder_name in os.listdir(folder_path):
-            subfolder_path = os.path.join(folder_path, subfolder_name)
-            
-            if os.path.isdir(subfolder_path):
-                subfolders.append(subfolder_name)
-                video_files = self._get_video_files(subfolder_path)
-                total_videos += len(video_files)
+        # 预扫描所有子文件夹，收集所有视频文件信息
+        all_video_info = []
         
-        total_tasks = len(subfolders) + total_videos  # 子文件夹解析 + 视频文件处理
+        # 遍历所有直接子文件夹
+        for item in os.listdir(folder_path):
+            item_path = os.path.join(folder_path, item)
+            if os.path.isdir(item_path):
+                folder_name = os.path.basename(item_path)
+                
+                # 解析文件夹名称 xxx-yyy
+                event_name, device_name = self._parse_folder_name(folder_name)
+                
+                # 收集当前文件夹内的所有视频文件
+                for root, dirs, files in os.walk(item_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        file_ext = os.path.splitext(file)[1].lower()
+                        
+                        if file_ext in self.video_extensions:
+                            all_video_info.append({
+                                'event_name': event_name,
+                                'device_name': device_name,
+                                'video_path': file_path
+                            })
+        
+        # 基于视频文件总数计算进度
+        total_tasks = len(all_video_info)
         current_progress = 0
         
-        # 遍历子文件夹
-        for subfolder_name in subfolders:
-            subfolder_path = os.path.join(folder_path, subfolder_name)
+        # 处理每个视频文件
+        for video_info in all_video_info:
+            creation_time, duration_seconds = self._get_video_info(video_info['video_path'])
             
-            # 解析子文件夹名称
-            event_name, device_name = self._parse_folder_name(subfolder_name)
+            if creation_time and duration_seconds:
+                # 计算结束时间
+                end_time = creation_time + datetime.timedelta(seconds=duration_seconds)
+                
+                # 为每个视频文件单独创建记录
+                timeline_data.append({
+                    'event_name': video_info['event_name'],
+                    'device_name': video_info['device_name'],
+                    'start_time': creation_time.strftime(self.time_format),
+                    'end_time': end_time.strftime(self.time_format),
+                    'video_path': video_info['video_path']
+                })
+            
             current_progress += 1
             
-            # 收集该子文件夹下的视频文件信息
-            video_files = self._get_video_files(subfolder_path)
-            
-            for video_path in video_files:
-                # 获取视频文件信息
-                creation_time, duration_seconds = self._get_video_info(video_path)
-                current_progress += 1
-                
-                if creation_time and duration_seconds:
-                    # 计算结束时间
-                    end_time = creation_time + datetime.timedelta(seconds=duration_seconds)
-                    
-                    # 添加到时间轴数据
-                    timeline_data.append({
-                        'event_name': event_name,
-                        'device_name': device_name,
-                        'start_time': creation_time.strftime(self.time_format),
-                        'end_time': end_time.strftime(self.time_format)
-                    })
-                
-                # 更新进度
-                if progress_callback:
-                    progress_callback(current_progress, total_tasks)
+            # 更新进度
+            if progress_callback:
+                progress_callback(current_progress, total_tasks)
         
         # 按开始时间排序
         timeline_data.sort(key=lambda x: x['start_time'])
@@ -173,6 +200,19 @@ class FolderTimelineGenerator:
         
         return video_files
     
+    def get_video_file_count(self, folder_path: str) -> int:
+        """
+        获取文件夹下所有视频文件的数量
+        
+        Args:
+            folder_path: 文件夹路径
+            
+        Returns:
+            int: 视频文件数量
+        """
+        video_files = self._get_video_files(folder_path)
+        return len(video_files)
+    
     def _get_video_info(self, video_path: str) -> Tuple[Optional[datetime.datetime], Optional[float]]:
         """
         获取视频文件信息（创建时间和时长）
@@ -184,8 +224,8 @@ class FolderTimelineGenerator:
             Tuple[Optional[datetime.datetime], Optional[float]]: (创建时间, 时长秒数)
         """
         try:
-            # 获取文件创建时间
-            creation_time = datetime.datetime.fromtimestamp(os.path.getctime(video_path))
+            # 获取文件修改时间
+            creation_time = datetime.datetime.fromtimestamp(os.path.getmtime(video_path))
             
             # 获取视频时长
             duration_seconds = self._get_video_duration(video_path)
@@ -266,12 +306,20 @@ class FolderTimelineGenerator:
             os.makedirs(output_dir)
         
         # 写入CSV
-        with open(output_path, 'w', newline='', encoding='utf-8') as f:
-            fieldnames = ['事件名称', '设备名称', '开始时间', '结束时间']
+        with open(output_path, 'w', newline='', encoding='utf-8-sig') as f:
+            fieldnames = ['event_name', 'device_name', 'start_time', 'end_time', 'video_path']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             
-            # 写入表头
-            writer.writeheader()
+            # 写入中文表头
+            writer.writerow({
+                'event_name': '事件名称',
+                'device_name': '设备名称',
+                'start_time': '开始时间',
+                'end_time': '结束时间',
+                'video_path': '视频路径'
+            })
+            
+
             
             # 写入数据
             for data in timeline_data:
@@ -281,6 +329,40 @@ class FolderTimelineGenerator:
                     '开始时间': data['start_time'],
                     '结束时间': data['end_time']
                 })
+    
+    def _update_timeline_mapping(self, source_folder: str, csv_path: str) -> None:
+        """
+        更新时间轴映射JSON文件，记录CSV与提取来源目录路径的对应关系
+        
+        Args:
+            source_folder: 源文件夹路径
+            csv_path: 生成的CSV文件路径
+        """
+        # 确保映射文件目录存在
+        os.makedirs(os.path.dirname(self.mapping_file), exist_ok=True)
+        
+        # 读取现有映射
+        mapping_data = {}
+        if os.path.exists(self.mapping_file):
+            try:
+                with open(self.mapping_file, 'r', encoding='utf-8') as f:
+                    mapping_data = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                mapping_data = {}
+        
+        # 标准化路径
+        normalized_source = os.path.normpath(source_folder)
+        normalized_csv = os.path.normpath(csv_path)
+        
+        # 添加或更新映射
+        mapping_data[normalized_source] = {
+            'csv_path': normalized_csv,
+            'last_updated': datetime.datetime.now().strftime(self.time_format)
+        }
+        
+        # 保存映射文件
+        with open(self.mapping_file, 'w', encoding='utf-8') as f:
+            json.dump(mapping_data, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 if __name__ == "__main__":
@@ -289,7 +371,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='根据文件夹结构生成时间轴CSV')
     parser.add_argument('folder_path', help='要处理的文件夹路径')
-    parser.add_argument('output_csv', help='输出CSV文件路径')
+    parser.add_argument('--output-csv', help='输出CSV文件路径（可选，默认输出到data/timeline目录）', default=None)
     
     args = parser.parse_args()
     

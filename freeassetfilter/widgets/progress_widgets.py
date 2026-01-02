@@ -557,15 +557,32 @@ class CustomValueBar(QWidget):
         self._last_pos = 0
         
         # 外观属性，应用DPI缩放
-        self._bg_color = QColor(99, 99, 99)  # 进度条背景颜色
-        self._progress_color = QColor(0, 120, 212)  # 已完成区域颜色（蓝色，与不可交互进度条一致）
         self._handle_radius = int(12 * self.dpi_scale)
         self._bar_size = int(6 * self.dpi_scale)  # 横向时为高度，竖向时为宽度
         self._bar_radius = int(3 * self.dpi_scale)
         
-        # 圆形滑块颜色属性
-        self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
-        self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
+        # 尝试从应用实例获取主题颜色
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+            # 获取主题颜色
+            bg_color_str = settings_manager.get_setting("appearance.colors.progress_bar_bg", "#3C3C3C")
+            progress_color_str = settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
+            handle_color_str = settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
+            handle_hover_color_str = settings_manager.get_setting("appearance.colors.slider_handle_hover", "#5EE0D8")
+            
+            # 使用主题颜色
+            self._bg_color = QColor(bg_color_str)
+            self._progress_color = QColor(progress_color_str)
+            self._handle_border_color = QColor(handle_color_str)
+            self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
+        else:
+            # 使用默认颜色
+            self._bg_color = QColor(99, 99, 99)  # 进度条背景颜色
+            self._progress_color = QColor(0, 120, 212)  # 已完成区域颜色（蓝色，与不可交互进度条一致）
+            self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
+            self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
+        
         self._handle_border_width = int(2 * self.dpi_scale)  # 边框宽度，响应DPI缩放
     
     def setRange(self, minimum, maximum):
@@ -877,12 +894,6 @@ class CustomVolumeBar(QWidget):
         self._is_pressed = False
         self._last_pos = 0
         
-        # 外观属性
-        self._bg_color = QColor(99, 99, 99)  # 音量条背景颜色
-        self._progress_color = QColor(0, 120, 212)  # #0078d4
-        self._bar_height = 6
-        self._bar_radius = 3
-        
         # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -900,8 +911,25 @@ class CustomVolumeBar(QWidget):
         
         # 圆形滑块颜色属性
         self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
-        self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
         self._handle_border_width = int(2 * self.dpi_scale)  # 边框宽度，响应DPI缩放
+        
+        # 尝试从应用实例获取主题颜色
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+            # 获取主题颜色
+            bg_color_str = settings_manager.get_setting("appearance.colors.progress_bar_bg", "#3C3C3C")
+            progress_color_str = settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
+            handle_color_str = settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
+            
+            # 使用主题颜色
+            self._bg_color = QColor(bg_color_str)
+            self._progress_color = QColor(progress_color_str)
+            self._handle_border_color = QColor(handle_color_str)
+        else:
+            # 使用默认颜色
+            self._bg_color = QColor(99, 99, 99)  # 音量条背景颜色
+            self._progress_color = QColor(0, 120, 212)  # #0078d4
+            self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
     
     def setRange(self, minimum, maximum):
         """

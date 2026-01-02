@@ -31,11 +31,18 @@ def create_test_structure(base_dir):
         folder_path = os.path.join(base_dir, subfolder)
         os.makedirs(folder_path)
         
-        # 创建测试视频文件
-        video_path = os.path.join(folder_path, "test_video.mp4")
-        # 创建一个空文件（实际测试时需要替换为真实视频文件）
-        with open(video_path, 'w') as f:
-            f.write("test video content")
+        # 在每个子文件夹中创建多个视频文件，用于测试多个文件的处理
+        for i in range(3):
+            video_path = os.path.join(folder_path, f"test_video_{i+1}.mp4")
+            # 创建一个空文件（实际测试时需要替换为真实视频文件）
+            with open(video_path, 'w') as f:
+                f.write("test video content")
+            
+            # 设置不同的修改时间，以便在生成的CSV中可以看到不同的时间范围
+            # 每个文件的修改时间比前一个文件晚1小时
+            current_time = datetime.now() - timedelta(hours=2-i)
+            timestamp = current_time.timestamp()
+            os.utime(video_path, (timestamp, timestamp))
 
 
 def test_folder_timeline_generator():
@@ -58,8 +65,12 @@ def test_folder_timeline_generator():
         # 生成输出CSV路径
         output_csv = os.path.join(temp_dir, "test_timeline.csv")
         
-        # 测试生成时间轴CSV
-        success, message = generator.generate_timeline_csv(temp_dir, output_csv)
+        # 简单的进度回调函数
+        def progress_callback(current, total):
+            print(f"进度: {current}/{total} ({(current/total)*100:.1f}%)")
+        
+        # 测试生成时间轴CSV，传递进度回调函数
+        success, message = generator.generate_timeline_csv(temp_dir, output_csv, progress_callback)
         
         if success:
             print(f"成功: 时间轴生成成功: {message}")
