@@ -25,6 +25,7 @@ test/
 
 # Testing files
 tests/
+data/timeline/
 *.test
 
 # IDE files

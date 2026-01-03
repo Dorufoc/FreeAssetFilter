@@ -55,8 +55,38 @@ def main():
     # 合并事件
     timeline_window.merge_events()
     
+    # 添加调试信息：打印合并事件和视频文件
+    print("\n=== 调试信息 ===")
+    print(f"合并后事件数量: {len(timeline_window.merged_events)}")
+    for i, event in enumerate(timeline_window.merged_events):
+        print(f"\n事件 {i+1}:")
+        print(f"  名称: {event.name}")
+        print(f"  设备: {event.device}")
+        print(f"  时间范围数量: {len(event.time_ranges)}")
+        for j, (start_time, end_time) in enumerate(event.time_ranges):
+            print(f"    范围 {j+1}: {start_time} 到 {end_time}")
+        print(f"  视频数量: {len(event.videos)}")
+        for video in event.videos:
+            print(f"    视频: {video}")
+    
     # 更新视图
     timeline_window.update_view()
+    
+    # 直接测试选中文件功能 - 添加一个测试范围
+    current_time = datetime.datetime.now()
+    test_start = current_time - datetime.timedelta(minutes=40)
+    test_end = current_time - datetime.timedelta(minutes=5)
+    
+    # 设置测试选中范围
+    timeline_window.timeline_widget.selected_ranges.append((test_start, test_end))
+    
+    # 调用选中文件功能并打印结果
+    print("\n=== 测试选中文件功能 ===")
+    print(f"测试时间范围: {test_start} 到 {test_end}")
+    selected_videos = timeline_window.timeline_widget.get_videos_in_selected_ranges()
+    print(f"获取到的视频数量: {len(selected_videos)}")
+    for video in selected_videos:
+        print(f"  {video}")
     
     timeline_window.show()
     

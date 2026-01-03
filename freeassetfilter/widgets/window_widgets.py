@@ -450,7 +450,35 @@ class ThemeSettingsWindow(CustomWindow):
             ("window_border", "窗口边框色")
         ])
         
-        self._add_color_section(scroll_layout, "按钮颜色", [
+        # 强调样式按钮颜色
+        self._add_color_section(scroll_layout, "强调样式按钮颜色", [
+            ("button_primary_normal", "按钮背景色"),
+            ("button_primary_hover", "按钮悬停色"),
+            ("button_primary_pressed", "按钮按下色"),
+            ("button_primary_text", "按钮文字色"),
+            ("button_primary_border", "按钮边框色")
+        ])
+        
+        # 普通样式按钮颜色
+        self._add_color_section(scroll_layout, "普通样式按钮颜色", [
+            ("button_normal_normal", "按钮背景色"),
+            ("button_normal_hover", "按钮悬停色"),
+            ("button_normal_pressed", "按钮按下色"),
+            ("button_normal_text", "按钮文字色"),
+            ("button_normal_border", "按钮边框色")
+        ])
+        
+        # 次选样式按钮颜色
+        self._add_color_section(scroll_layout, "次选样式按钮颜色", [
+            ("button_secondary_normal", "按钮背景色"),
+            ("button_secondary_hover", "按钮悬停色"),
+            ("button_secondary_pressed", "按钮按下色"),
+            ("button_secondary_text", "按钮文字色"),
+            ("button_secondary_border", "按钮边框色")
+        ])
+        
+        # 通用按钮颜色（向后兼容）
+        self._add_color_section(scroll_layout, "通用按钮颜色（向后兼容）", [
             ("button_normal", "按钮背景色"),
             ("button_hover", "按钮悬停色"),
             ("button_pressed", "按钮按下色"),

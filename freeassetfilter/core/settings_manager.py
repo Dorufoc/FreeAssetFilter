@@ -50,12 +50,33 @@ class SettingsManager:
                     "window_background": "#1E1E1E",
                     "window_border": "#3C3C3C",
                     
-                    # 按钮颜色
+                    # 按钮颜色 - 通用（向后兼容）
                     "button_normal": "#2D2D2D",
                     "button_hover": "#3C3C3C",
                     "button_pressed": "#4C4C4C",
                     "button_text": "#FFFFFF",
                     "button_border": "#5C5C5C",
+                    
+                    # 按钮颜色 - 强调样式（primary）
+                    "button_primary_normal": "#2D2D2D",
+                    "button_primary_hover": "#3C3C3C",
+                    "button_primary_pressed": "#4C4C4C",
+                    "button_primary_text": "#FFFFFF",
+                    "button_primary_border": "#5C5C5C",
+                    
+                    # 按钮颜色 - 普通样式（normal）
+                    "button_normal_normal": "#1E1E1E",
+                    "button_normal_hover": "#3C3C3C",
+                    "button_normal_pressed": "#4ECDC4",
+                    "button_normal_text": "#FFFFFF",
+                    "button_normal_border": "#3C3C3C",
+                    
+                    # 按钮颜色 - 次选样式（secondary）
+                    "button_secondary_normal": "#1E1E1E",
+                    "button_secondary_hover": "#3C3C3C",
+                    "button_secondary_pressed": "#4ECDC4",
+                    "button_secondary_text": "#4ECDC4",
+                    "button_secondary_border": "#4ECDC4",
                     
                     # 文字颜色
                     "text_normal": "#FFFFFF",

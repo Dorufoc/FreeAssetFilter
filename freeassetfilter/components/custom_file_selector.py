@@ -45,6 +45,7 @@ from freeassetfilter.widgets import CustomButton, CustomInputBox, CustomWindow, 
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.custom_dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
+from freeassetfilter.components.auto_timeline import AutoTimeline
 
 
 class CustomFileSelector(QWidget):
@@ -146,9 +147,10 @@ class CustomFileSelector(QWidget):
         
         # 为路径输入框添加悬浮信息功能
         self.hover_tooltip.set_target_widget(self.path_edit)
-        # 为筛选输入框添加悬浮信息功能
-        self.hover_tooltip.set_target_widget(self.filter_edit)
+
         
+        # 初始化按钮样式
+        self._update_filter_button_style()
         # 初始化文件列表
         self.refresh_files()
     
@@ -256,9 +258,13 @@ class CustomFileSelector(QWidget):
         dir_layout.addWidget(self.path_edit, 1)
         
         # 前往按钮
-        go_btn = CustomButton("前往", button_type="primary")
+        import os
+        arrow_right_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "arrow_right.svg")
+        go_btn = CustomButton(arrow_right_icon_path, button_type="normal", display_mode="icon", tooltip_text="前往")
         go_btn.clicked.connect(self.go_to_path)
         dir_layout.addWidget(go_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(go_btn)
         
         main_layout.addLayout(dir_layout)
         
@@ -267,14 +273,22 @@ class CustomFileSelector(QWidget):
         nav_layout.setSpacing(5)
         
         # 返回上级文件夹按钮
-        self.parent_btn = CustomButton("返回上级文件夹", button_type="primary")
+        import os
+        unto_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "unto.svg")
+        self.parent_btn = CustomButton(unto_icon_path, button_type="normal", display_mode="icon", tooltip_text="返回上级文件夹")
         self.parent_btn.clicked.connect(self.go_to_parent)
         nav_layout.addWidget(self.parent_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.parent_btn)
         
         # 刷新按钮
-        refresh_btn = CustomButton("刷新", button_type="primary")
+        import os
+        refresh_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "refresh.svg")
+        refresh_btn = CustomButton(refresh_icon_path, button_type="normal", display_mode="icon", tooltip_text="刷新")
         refresh_btn.clicked.connect(self.refresh_files)
         nav_layout.addWidget(refresh_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(refresh_btn)
         
         # 收藏夹按钮
         import os
@@ -295,46 +309,23 @@ class CustomFileSelector(QWidget):
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.last_path_btn)
         
-        # 添加拉伸空间
-        nav_layout.addStretch(1)
+        # 筛选按钮
+        import os
+        sift_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "sift.svg")
+        self.filter_btn = CustomButton(sift_icon_path, button_type="normal", display_mode="icon", tooltip_text="筛选")
+        self.filter_btn.clicked.connect(self.apply_filter)
+        nav_layout.addWidget(self.filter_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.filter_btn)
+        
+        # 时间线按钮 - 移到第二行最后并自适应填充剩余空间
+        timeline_btn = CustomButton("时间线", button_type="primary")
+        timeline_btn.clicked.connect(self._show_timeline_window)
+        # 设置按钮大小策略为Expanding，使其填充剩余空间
+        timeline_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        nav_layout.addWidget(timeline_btn)
         
         main_layout.addLayout(nav_layout)
-        
-        # 第三行：文件筛选和排序功能
-        filter_sort_layout = QHBoxLayout()
-        filter_sort_layout.setSpacing(5)
-        
-        # 文件筛选功能（正则表达式）
-        self.filter_edit = CustomInputBox(
-            placeholder_text="正则表达式筛选",
-            height=40
-        )
-        self.filter_edit.line_edit.returnPressed.connect(self.apply_filter)
-        filter_sort_layout.addWidget(self.filter_edit, 1)
-        
-        # 筛选按钮
-        self.filter_btn = CustomButton("筛选", button_type="primary")
-        self.filter_btn.clicked.connect(self.apply_filter)
-        filter_sort_layout.addWidget(self.filter_btn)
-        
-        # 排序形式选择
-        self.sort_combo = CustomDropdownMenu(self, position="bottom")
-        # 应用DPI缩放因子到排序下拉栏宽度
-        scaled_sort_width = int(150 * self.dpi_scale)
-        self.sort_combo.set_fixed_width(scaled_sort_width)
-        # 设置排序选项
-        sort_items = ["名称升序", "名称降序", "大小升序", "大小降序", "创建时间升序", "创建时间降序"]
-        # 设置默认选中项（名称升序）
-        default_sort_item = "名称升序"
-        self.sort_combo.set_items(sort_items, default_item=default_sort_item)
-        self.sort_combo.itemClicked.connect(self.change_sort)
-        # 设置字体大小与全局默认字体大小一致
-        sort_combo_font = QFont(self.global_font)
-        sort_combo_font.setPointSize(scaled_font_size)
-        self.sort_combo.setFont(sort_combo_font)
-        filter_sort_layout.addWidget(self.sort_combo)
-        
-        main_layout.addLayout(filter_sort_layout)
         
         return panel
     
@@ -1583,13 +1574,62 @@ class CustomFileSelector(QWidget):
             warning_msg.buttonClicked.connect(warning_msg.close)
             warning_msg.exec_()
     
+    def _update_filter_button_style(self):
+        """
+        根据筛选条件状态更新筛选按钮的样式
+        - 当筛选条件非空时，使用强调样式（primary）
+        - 当筛选条件为空时，使用普通样式（normal）
+        """
+        if hasattr(self, 'filter_btn'):
+            # 检查是否有筛选条件（self.filter_pattern不等于"*"表示有筛选条件）
+            if self.filter_pattern != "*":
+                self.filter_btn.button_type = "primary"
+            else:
+                self.filter_btn.button_type = "normal"
+            # 应用新的样式
+            self.filter_btn.update_style()
+
     def apply_filter(self):
         """
-        应用筛选器
+        应用文件筛选
         """
-        filter_pattern = self.filter_edit.text().strip()
-        self.filter_pattern = filter_pattern if filter_pattern else "*"
-        self.refresh_files()
+        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        
+        # 创建自定义提示窗口
+        filter_dialog = CustomMessageBox(self)
+        filter_dialog.set_title("文件筛选")
+        filter_dialog.set_text("请输入正则表达式筛选条件，留空表示显示所有文件")
+        
+        # 设置输入框，使用当前筛选条件作为默认值
+        current_pattern = self.filter_pattern if self.filter_pattern != "*" else ""
+        filter_dialog.set_input(text=current_pattern, placeholder="正则表达式筛选条件")
+        
+        # 设置确认、取消和移除筛选按钮
+        filter_dialog.set_buttons(["确认", "取消", "移除筛选"], Qt.Horizontal, ["primary", "normal", "normal"])
+        
+        # 记录结果
+        result = None
+        
+        def on_button_clicked(button_index):
+            nonlocal result
+            result = button_index
+            filter_dialog.close()
+        
+        filter_dialog.buttonClicked.connect(on_button_clicked)
+        filter_dialog.exec_()
+        
+        if result == 0:  # 0表示确认按钮
+            filter_pattern = filter_dialog.get_input().strip()
+            self.filter_pattern = filter_pattern if filter_pattern else "*"
+            # 更新筛选按钮样式
+            self._update_filter_button_style()
+            self.refresh_files()
+        elif result == 2:  # 2表示移除筛选按钮
+            # 移除筛选条件
+            self.filter_pattern = "*"
+            # 更新筛选按钮样式
+            self._update_filter_button_style()
+            self.refresh_files()
     
     def change_sort(self, sort_text):
         """
@@ -2985,6 +3025,15 @@ class CustomFileSelector(QWidget):
                     widget.detail_label.setStyleSheet("background: transparent; border: none; color: #666666;")
                     if hasattr(widget, 'modified_label'):
                         widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
+    
+    def _show_timeline_window(self):
+        """
+        显示时间线窗口
+        """
+        # 创建并显示时间线窗口
+        timeline_window = AutoTimeline(self)
+        timeline_window.setWindowFlags(Qt.Window)
+        timeline_window.show()
 
 # 测试代码
 if __name__ == "__main__":

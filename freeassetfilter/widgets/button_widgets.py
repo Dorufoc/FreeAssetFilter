@@ -134,14 +134,23 @@ class CustomButton(QPushButton):
         if self.button_type == "primary":
             # 强调色方案
             # 使用主题颜色
-            bg_color = current_colors.get("button_normal", "#2D2D2D")
-            hover_color = current_colors.get("button_hover", "#3C3C3C")
-            pressed_color = current_colors.get("button_pressed", "#4C4C4C")
-            text_color = current_colors.get("button_text", "#FFFFFF")
-            border_color = current_colors.get("button_border", "#5C5C5C")
+            bg_color = current_colors.get("button_primary_normal", current_colors.get("button_normal", "#2D2D2D"))
+            hover_color = current_colors.get("button_primary_hover", current_colors.get("button_hover", "#3C3C3C"))
+            pressed_color = current_colors.get("button_primary_pressed", current_colors.get("button_pressed", "#4C4C4C"))
+            text_color = current_colors.get("button_primary_text", current_colors.get("button_text", "#FFFFFF"))
+            border_color = current_colors.get("button_primary_border", current_colors.get("button_border", "#5C5C5C"))
             disabled_bg = "#888888"
             disabled_text = "#FFFFFF"
             disabled_border = "#666666"
+            
+            # 对于图标按钮，文字颜色与背景颜色一致，按下时等于按下时的背景颜色
+            if self._display_mode == "icon":
+                # 图标模式下文字颜色与背景颜色一致
+                text_color = bg_color
+                pressed_text_color = pressed_color
+            else:
+                # 文字模式下使用正常文字颜色
+                pressed_text_color = text_color
             
             self.setStyleSheet(f"""
                 QPushButton {{
@@ -159,6 +168,7 @@ class CustomButton(QPushButton):
                 }}
                 QPushButton:pressed {{
                     background-color: {pressed_color};
+                    color: {pressed_text_color};
                     border-color: {pressed_color};
                 }}
                 QPushButton:disabled {{
@@ -170,14 +180,23 @@ class CustomButton(QPushButton):
         elif self.button_type == "normal":
             # 普通方案
             # 使用主题颜色
-            bg_color = current_colors.get("window_background", "#1E1E1E")
-            hover_color = current_colors.get("list_item_hover", "#3C3C3C")
-            pressed_color = current_colors.get("list_item_selected", "#4ECDC4")
-            text_color = current_colors.get("text_normal", "#FFFFFF")
-            border_color = current_colors.get("window_border", "#3C3C3C")
+            bg_color = current_colors.get("button_normal_normal", current_colors.get("window_background", "#1E1E1E"))
+            hover_color = current_colors.get("button_normal_hover", current_colors.get("list_item_hover", "#3C3C3C"))
+            pressed_color = current_colors.get("button_normal_pressed", current_colors.get("list_item_selected", "#4ECDC4"))
+            text_color = current_colors.get("button_normal_text", current_colors.get("text_normal", "#FFFFFF"))
+            border_color = current_colors.get("button_normal_border", current_colors.get("window_border", "#3C3C3C"))
             disabled_bg = "#2D2D2D"
             disabled_text = "#666666"
             disabled_border = "#444444"
+            
+            # 对于图标按钮，文字颜色与背景颜色一致，按下时等于按下时的背景颜色
+            if self._display_mode == "icon":
+                # 图标模式下文字颜色与背景颜色一致
+                text_color = bg_color
+                pressed_text_color = pressed_color
+            else:
+                # 文字模式下使用正常文字颜色
+                pressed_text_color = text_color
             
             self.setStyleSheet(f"""
                 QPushButton {{
@@ -195,6 +214,7 @@ class CustomButton(QPushButton):
                 }}
                 QPushButton:pressed {{
                     background-color: {pressed_color};
+                    color: {pressed_text_color};
                     border-color: {pressed_color};
                 }}
                 QPushButton:disabled {{
@@ -215,6 +235,15 @@ class CustomButton(QPushButton):
             disabled_text = "#FFFFFF"
             disabled_border = "#FF5252"
             
+            # 对于图标按钮，文字颜色与背景颜色一致，按下时等于按下时的背景颜色
+            if self._display_mode == "icon":
+                # 图标模式下文字颜色与背景颜色一致
+                text_color = bg_color
+                pressed_text_color = pressed_color
+            else:
+                # 文字模式下使用正常文字颜色
+                pressed_text_color = text_color
+            
             self.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {bg_color};
@@ -231,6 +260,7 @@ class CustomButton(QPushButton):
                 }}
                 QPushButton:pressed {{
                     background-color: {pressed_color};
+                    color: {pressed_text_color};
                     border-color: {pressed_color};
                 }}
                 QPushButton:disabled {{
@@ -242,14 +272,23 @@ class CustomButton(QPushButton):
         else:  # secondary
             # 次选按钮方案：确保在白色背景下可见
             # 使用主题颜色
-            bg_color = current_colors.get("window_background", "#1E1E1E")
-            hover_color = current_colors.get("list_item_hover", "#3C3C3C")
-            pressed_color = current_colors.get("list_item_selected", "#4ECDC4")
-            text_color = current_colors.get("text_highlight", "#4ECDC4")
-            border_color = current_colors.get("text_highlight", "#4ECDC4")
+            bg_color = current_colors.get("button_secondary_normal", current_colors.get("window_background", "#1E1E1E"))
+            hover_color = current_colors.get("button_secondary_hover", current_colors.get("list_item_hover", "#3C3C3C"))
+            pressed_color = current_colors.get("button_secondary_pressed", current_colors.get("list_item_selected", "#4ECDC4"))
+            text_color = current_colors.get("button_secondary_text", current_colors.get("text_highlight", "#4ECDC4"))
+            border_color = current_colors.get("button_secondary_border", current_colors.get("text_highlight", "#4ECDC4"))
             disabled_bg = "#2D2D2D"
             disabled_text = "#666666"
             disabled_border = "#444444"
+            
+            # 对于图标按钮，文字颜色与背景颜色一致，按下时等于按下时的背景颜色
+            if self._display_mode == "icon":
+                # 图标模式下文字颜色与背景颜色一致
+                text_color = bg_color
+                pressed_text_color = pressed_color
+            else:
+                # 文字模式下使用正常文字颜色
+                pressed_text_color = text_color
             
             self.setStyleSheet(f"""
                 QPushButton {{
@@ -267,6 +306,7 @@ class CustomButton(QPushButton):
                 }}
                 QPushButton:pressed {{
                     background-color: {pressed_color};
+                    color: {pressed_text_color};
                     border-color: {pressed_color};
                 }}
                 QPushButton:disabled {{

@@ -151,7 +151,7 @@ class FileStagingPool(QWidget):
         self.cards = []
         
         # 创建统计信息
-        self.stats_label = QLabel("当前项目数: 0")
+        self.stats_label = QLabel("0个条目")
         self.stats_label.setAlignment(Qt.AlignRight)
         # 使用全局字体，不单独设置过大的字体大小
         self.stats_label.setFont(self.global_font)
@@ -386,7 +386,7 @@ class FileStagingPool(QWidget):
                 total_size += item["size"]
         
         formatted_size = self._format_file_size(total_size)
-        self.stats_label.setText(f"当前项目数: {total_items} | 总计大小: {formatted_size}")
+        self.stats_label.setText(f" {total_items}个条目 | {formatted_size}")
     
     def on_card_clicked(self, path, card, file_info):
         """

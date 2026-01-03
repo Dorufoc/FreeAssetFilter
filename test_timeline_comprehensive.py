@@ -34,17 +34,7 @@ class TimelineTestApp(QWidget):
         # 主布局
         main_layout = QVBoxLayout(self)
         
-        # 顶部说明
-        self.info_label = QLabel("""
-使用说明：
-1. 使用鼠标左键在时间轴上框选区域
-2. 多次框选可以创建多个选中区域
-3. 右键点击可以清除所有选中区域
-4. 选中的文件会实时显示在右侧面板
-5. 可以通过顶部控制栏调整宽容度设置
-""")
-        self.info_label.setWordWrap(True)
-        main_layout.addWidget(self.info_label)
+
         
         # 分割器
         splitter = QSplitter(Qt.Horizontal)
@@ -169,6 +159,13 @@ class TimelineTestApp(QWidget):
 def main():
     """主函数"""
     app = QApplication(sys.argv)
+    
+    # 设置全局字体和DPI缩放因子，模拟main.py中的设置
+    DEFAULT_FONT_SIZE = 20
+    app.default_font_size = DEFAULT_FONT_SIZE
+    app.dpi_scale_factor = 0.5
+    app.global_font = app.font()  # 使用应用默认字体作为全局字体
+    app.setFont(app.global_font)
     
     # 创建并显示测试应用窗口
     test_app = TimelineTestApp()

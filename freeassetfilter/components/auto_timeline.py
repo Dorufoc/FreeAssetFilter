@@ -35,6 +35,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QSpinBox, QStatusBar, QProgressDialog, QTableWidget, QTableWidgetItem,
     QHeaderView, QSizePolicy, QTextEdit
 )
+from freeassetfilter.widgets.custom_widgets import CustomButton
 from PyQt5.QtCore import QTimer
 from PyQt5.QtCore import Qt, QRect, QRectF, QPoint, QSize, QEvent
 from PyQt5.QtGui import (
@@ -45,12 +46,13 @@ from PyQt5.QtGui import (
 
 class TimelineEvent:
     """时间轴事件类"""
-    def __init__(self, name, device, start_time, end_time, videos=None):
+    def __init__(self, name, device, start_time, end_time, videos=None, folder_name=None):
         self.name = name
         self.device = device
         self.start_time = start_time
         self.end_time = end_time
         self.videos = videos if videos else []  # 存储视频文件路径列表
+        self.folder_name = folder_name  # 存储文件夹名称
 
     def duration(self):
         """返回事件持续时间（秒）"""
@@ -64,32 +66,49 @@ class TimelineEvent:
 
 class MergedEvent:
     """合并后的事件类"""
-    def __init__(self, name, device):
+    def __init__(self, name, device, folder_name=None):
         self.name = name
         self.device = device
-        self.time_ranges = []
-        self.videos = []  # 存储视频文件路径列表
+        self.folder_name = folder_name  # 存储文件夹名称
+        self.time_range_videos = []  # 存储时间范围和对应的视频文件：[(start_time, end_time, videos_list), ...]
+        self.all_videos = []  # 存储该事件的所有视频文件（用于兼容旧代码）
 
-    def add_range(self, start_time, end_time):
-        """添加时间范围"""
-        self.time_ranges.append((start_time, end_time))
+    def add_range(self, start_time, end_time, videos=None):
+        """添加时间范围和对应的视频文件"""
+        videos = videos if videos else []
+        self.time_range_videos.append((start_time, end_time, videos))
         # 按起始时间排序
-        self.time_ranges.sort(key=lambda x: x[0])
+        self.time_range_videos.sort(key=lambda x: x[0])
+        
+        # 更新所有视频文件列表
+        for video in videos:
+            if video not in self.all_videos:
+                self.all_videos.append(video)
     
     def add_video(self, video_path):
-        """添加视频文件路径"""
-        if video_path not in self.videos:
-            self.videos.append(video_path)
+        """添加视频文件路径（用于兼容旧代码）"""
+        if video_path not in self.all_videos:
+            self.all_videos.append(video_path)
     
     def add_videos(self, video_paths):
-        """批量添加视频文件路径"""
+        """批量添加视频文件路径（用于兼容旧代码）"""
         for video_path in video_paths:
             self.add_video(video_path)
+    
+    @property
+    def time_ranges(self):
+        """返回所有时间范围（用于兼容旧代码）"""
+        return [(start, end) for start, end, _ in self.time_range_videos]
+    
+    @property
+    def videos(self):
+        """返回所有视频文件（用于兼容旧代码）"""
+        return self.all_videos
 
     def duration(self):
         """返回总持续时间（秒）"""
         total = 0
-        for start, end in self.time_ranges:
+        for start, end, _ in self.time_range_videos:
             total += (end - start).total_seconds()
         return total
 
@@ -99,8 +118,19 @@ class AutoTimeline(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.init_data()
+        # 获取全局应用程序对象
+        self.app = QApplication.instance()
+        # 获取全局字体大小和DPI缩放因子
+        self.global_font_size = getattr(self.app, 'default_font_size', 10)
+        self.dpi_scale_factor = getattr(self.app, 'dpi_scale_factor', 0.5)
+        # 获取全局字体
+        self.global_font = getattr(self.app, 'global_font', QFont())
         self.init_settings()
         self.init_ui()
+        # 设置全局字体
+        self.setFont(self.global_font)
+        # 初始化视图，应用全局字体设置
+        self.update_view()
         
     def eventFilter(self, obj, event):
         """事件过滤器，用于捕获整个组件的滚轮事件"""
@@ -138,22 +168,26 @@ class AutoTimeline(QWidget):
         control_layout = QHBoxLayout()
 
         # CSV导入按钮
-        self.import_btn = QPushButton("导入CSV")
+        self.import_btn = CustomButton("导入CSV", button_type="primary")
         self.import_btn.clicked.connect(self.import_csv)
+        self.import_btn.setFont(self.global_font)
         control_layout.addWidget(self.import_btn)
         
         # 从文件夹生成时间轴按钮
-        self.generate_from_folder_btn = QPushButton("从文件夹生成")
+        self.generate_from_folder_btn = CustomButton("从文件夹生成", button_type="primary")
         self.generate_from_folder_btn.clicked.connect(self.generate_timeline_from_folder)
+        self.generate_from_folder_btn.setFont(self.global_font)
         control_layout.addWidget(self.generate_from_folder_btn)
         
         # 刷新时间轴按钮
-        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn = CustomButton("刷新", button_type="primary")
         self.refresh_btn.clicked.connect(self.refresh_timeline)
+        self.refresh_btn.setFont(self.global_font)
         control_layout.addWidget(self.refresh_btn)
 
         # 时间格式选择
         self.time_format_label = QLabel("时间格式：")
+        self.time_format_label.setFont(self.global_font)
         control_layout.addWidget(self.time_format_label)
         self.time_format_combo = QComboBox()
         self.time_format_combo.addItems([
@@ -162,36 +196,44 @@ class AutoTimeline(QWidget):
             "%Y-%m-%dT%H:%M:%S",
             "%H:%M:%S"
         ])
+        self.time_format_combo.setFont(self.global_font)
         control_layout.addWidget(self.time_format_combo)
 
         # 缩放控制
         self.zoom_label = QLabel("缩放：")
+        self.zoom_label.setFont(self.global_font)
         control_layout.addWidget(self.zoom_label)
         self.zoom_spinbox = QSpinBox()
         self.zoom_spinbox.setRange(1, 200)
         self.zoom_spinbox.setValue(10)
         self.zoom_spinbox.valueChanged.connect(self.update_view)
+        self.zoom_spinbox.setFont(self.global_font)
         control_layout.addWidget(self.zoom_spinbox)
 
         # 时间单位选择
         self.unit_label = QLabel("单位：")
+        self.unit_label.setFont(self.global_font)
         control_layout.addWidget(self.unit_label)
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(["秒", "分钟", "小时"])
         self.unit_combo.currentIndexChanged.connect(self.update_view)
+        self.unit_combo.setFont(self.global_font)
         control_layout.addWidget(self.unit_combo)
 
         # 宽容度设置
         self.tolerance_label = QLabel("宽容度：")
+        self.tolerance_label.setFont(self.global_font)
         control_layout.addWidget(self.tolerance_label)
         self.tolerance_combo = QComboBox()
         self.tolerance_combo.addItems(["秒", "分钟", "小时"])
         self.tolerance_combo.currentIndexChanged.connect(self.update_view)
+        self.tolerance_combo.setFont(self.global_font)
         control_layout.addWidget(self.tolerance_combo)
         
         # 测试输出按钮 - 用于显示选中范围的文件列表
-        self.show_selected_btn = QPushButton("显示选中文件")
+        self.show_selected_btn = CustomButton("显示选中文件", button_type="primary")
         self.show_selected_btn.clicked.connect(self.show_selected_files)
+        self.show_selected_btn.setFont(self.global_font)
         control_layout.addWidget(self.show_selected_btn)
 
         control_layout.addStretch()
@@ -199,54 +241,41 @@ class AutoTimeline(QWidget):
         
         # 测试输出区域 - 显示选中范围的视频文件
         self.selected_files_label = QLabel("选中的视频文件：")
+        self.selected_files_label.setFont(self.global_font)
         main_layout.addWidget(self.selected_files_label)
         
         self.selected_files_text = QTextEdit()
         self.selected_files_text.setReadOnly(True)
         self.selected_files_text.setMaximumHeight(100)
+        self.selected_files_text.setFont(self.global_font)
         main_layout.addWidget(self.selected_files_text)
 
-        # 时间轴区域布局 - 使用QSplitter实现可拖动分割线
-        timeline_container = QSplitter(Qt.Horizontal)
-        timeline_container.setContentsMargins(0, 0, 0, 0)
-        timeline_container.setHandleWidth(5)  # 设置分割线宽度
+        # 左侧固定列控件
+        self.timeline_left_columns = TimelineLeftColumns(global_font=self.global_font)
         
-        # 左侧固定列容器
-        left_columns_widget = QWidget()
-        left_columns_layout = QVBoxLayout(left_columns_widget)
-        left_columns_layout.setContentsMargins(0, 0, 0, 0)
-        left_columns_layout.setAlignment(Qt.AlignTop)  # 设置顶部对齐，而不是默认的居中对齐
+        # 右侧时间轴控件
+        self.timeline_widget = TimelineWidget(global_font=self.global_font)
         
-        # 事件名称和设备列控件
-        self.left_columns_content = TimelineLeftColumns()
-        left_columns_layout.addWidget(self.left_columns_content)
+        # 创建水平布局来并列显示左侧固定列和右侧时间轴
+        horizontal_layout = QHBoxLayout()
+        horizontal_layout.addWidget(self.timeline_left_columns)
+        horizontal_layout.addWidget(self.timeline_widget)
+        horizontal_layout.setSpacing(0)
+        horizontal_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 创建一个容器widget来包含水平布局
+        main_timeline_widget = QWidget()
+        main_timeline_widget.setLayout(horizontal_layout)
         
         # 右侧时间轴滚动区域
         self.timeline_scroll_area = QScrollArea()
         self.timeline_scroll_area.setWidgetResizable(True)  # 允许时间轴控件自动调整大小
         self.timeline_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        self.timeline_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
-        # 时间轴主控件
-        self.timeline_widget = TimelineWidget()
-        self.timeline_scroll_area.setWidget(self.timeline_widget)
-        
-        # 将左侧固定列和右侧滚动区域添加到Splitter
-        timeline_container.addWidget(left_columns_widget)
-        timeline_container.addWidget(self.timeline_scroll_area)
-        
-        # 设置初始大小比例
-        timeline_container.setSizes([self.name_column_width + self.device_column_width, 600])
+        self.timeline_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.timeline_scroll_area.setWidget(main_timeline_widget)
         
         # 整个时间轴区域的垂直滚动区域
-        self.main_scroll_area = QScrollArea()
-        self.main_scroll_area.setWidgetResizable(True)
-        self.main_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.main_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.main_scroll_area.setWidget(timeline_container)
-        
-        # 连接滚动事件，实现左右同步
-        self.main_scroll_area.verticalScrollBar().valueChanged.connect(self.sync_scroll)
+        self.main_scroll_area = self.timeline_scroll_area
         
         # 存储滚动同步的标志，避免循环触发
         self.is_syncing = False
@@ -256,7 +285,9 @@ class AutoTimeline(QWidget):
         # 底部状态栏
         self.status_bar = QStatusBar()
         self.time_range_label = QLabel("时间范围：")
+        self.time_range_label.setFont(self.global_font)
         self.event_count_label = QLabel("事件数量：0")
+        self.event_count_label.setFont(self.global_font)
         
         # 创建水平布局用于状态栏内容
         status_layout = QHBoxLayout()
@@ -280,8 +311,6 @@ class AutoTimeline(QWidget):
         # 安装事件过滤器，捕获整个组件的滚轮事件
         self.installEventFilter(self)
         self.main_scroll_area.installEventFilter(self)
-        self.timeline_scroll_area.installEventFilter(self)
-        self.left_columns_content.installEventFilter(self)
         self.timeline_widget.installEventFilter(self)
         
         # 设置定期检测滚动同步的定时器
@@ -317,11 +346,13 @@ class AutoTimeline(QWidget):
         self.unit_multiplier = 1  # 秒=1, 分钟=60, 小时=3600
         self.tolerance_unit = "秒"  # 默认宽容度单位
         self.tolerance_multiplier = 1  # 宽容度单位转换因子
-        self.time_margin = 10  # 时间轴两侧的边距
-        self.name_column_width = 200  # 活动名称列宽度
-        self.device_column_width = 100  # 设备列宽度
-        self.event_block_height = 30  # 事件块高度
-        self.row_spacing = 10  # 行间距
+        # 应用DPI缩放因子到所有尺寸设置
+        self.time_margin = int(10 * self.dpi_scale_factor)  # 时间轴两侧的边距
+        self.name_column_width = int(200 * self.dpi_scale_factor)  # 活动名称列宽度
+        self.device_column_width = int(100 * self.dpi_scale_factor)  # 设备列宽度
+        self.folder_column_width = int(150 * self.dpi_scale_factor)  # 文件夹名称列宽度
+        self.event_block_height = int(30 * self.dpi_scale_factor)  # 事件块高度
+        self.row_spacing = int(10 * self.dpi_scale_factor)  # 行间距
 
     def import_csv(self):
         """导入CSV文件"""
@@ -448,9 +479,32 @@ class AutoTimeline(QWidget):
         """解析CSV文件"""
         self.init_data()
         self.time_format = self.time_format_combo.currentText()
+        
+        # 设置当前CSV路径
+        self.current_csv_path = os.path.normpath(file_path)
+        
+        # 尝试从Timeline map JSON中查找对应的文件夹路径
+        self.current_folder_path = None
+        try:
+            # 读取映射文件
+            generator = FolderTimelineGenerator()
+            mapping_file = generator.mapping_file
+            if os.path.exists(mapping_file):
+                with open(mapping_file, 'r', encoding='utf-8') as f:
+                    mapping_data = json.load(f)
+                    
+                # 查找当前CSV对应的文件夹路径
+                for folder_path, mapping_info in mapping_data.items():
+                    if os.path.normpath(mapping_info['csv_path']) == self.current_csv_path:
+                        self.current_folder_path = folder_path
+                        print(f"从映射文件中找到CSV对应的文件夹路径：{folder_path}")
+                        break
+        except Exception as e:
+            print(f"读取映射文件时出错：{str(e)}")
 
         with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
+            # 设置quotechar='"'确保能够正确处理被双引号包围的字段
+            reader = csv.reader(f, quotechar='"', delimiter=',')
             header = next(reader)  # 读取表头
             
             # 尝试自动识别列
@@ -459,6 +513,7 @@ class AutoTimeline(QWidget):
             start_idx = -1
             end_idx = -1
             video_idx = -1  # 视频路径列索引
+            folder_idx = -1  # 文件夹名称列索引
 
             for i, col in enumerate(header):
                 col_lower = col.lower().strip()
@@ -479,15 +534,19 @@ class AutoTimeline(QWidget):
                     # 尝试识别视频路径列
                     video_idx = i
                     print(f"识别到视频路径列: {col} (索引: {i})")
+                elif 'folder' in col_lower or '文件夹' in col_lower:
+                    # 尝试识别文件夹名称列
+                    folder_idx = i
+                    print(f"识别到文件夹名称列: {col} (索引: {i})")
             
-            print(f"最终识别的列索引: name_idx={name_idx}, device_idx={device_idx}, start_idx={start_idx}, end_idx={end_idx}, video_idx={video_idx}")
+            print(f"最终识别的列索引: name_idx={name_idx}, device_idx={device_idx}, start_idx={start_idx}, end_idx={end_idx}, video_idx={video_idx}, folder_idx={folder_idx}")
 
             if name_idx == -1 or start_idx == -1 or end_idx == -1:
                 raise ValueError("无法识别CSV列：需要包含事件名称、开始时间和结束时间列")
 
             # 读取数据行
             for row in reader:
-                if len(row) < max(name_idx, device_idx, start_idx, end_idx) + 1:
+                if len(row) < max(name_idx, device_idx, start_idx, end_idx, video_idx if video_idx != -1 else 0, folder_idx if folder_idx != -1 else 0) + 1:
                     continue
 
                 name = row[name_idx].strip()
@@ -513,15 +572,23 @@ class AutoTimeline(QWidget):
                 else:
                     print(f"  行数据中无视频路径 (video_idx: {video_idx}, 行长度: {len(row)})")
                 
+                # 获取文件夹名称
+                folder_name = None
+                if folder_idx != -1 and len(row) > folder_idx:
+                    folder_name = row[folder_idx].strip()
+                    print(f"  行数据中的文件夹名称: {folder_name}")
+                else:
+                    print(f"  行数据中无文件夹名称 (folder_idx: {folder_idx}, 行长度: {len(row)})")
+                
                 # 创建事件
-                event = TimelineEvent(name, device, start_time, end_time)
+                event = TimelineEvent(name, device, start_time, end_time, folder_name=folder_name)
                 
                 # 添加视频路径（如果有）
                 if video_path:
                     event.add_video(video_path)
                     print(f"  添加视频路径到事件: {video_path}")
                 
-                print(f"  事件创建完成，视频数量: {len(event.videos)}")
+                print(f"  事件创建完成，视频数量: {len(event.videos)}, 文件夹名称: {folder_name}")
                 
                 self.events.append(event)
                 self.event_names.add(name)
@@ -551,11 +618,9 @@ class AutoTimeline(QWidget):
         # 合并每个组内的事件
         self.merged_events = []
         for (name, device), group_events in event_groups.items():
-            merged_event = MergedEvent(name, device)
-            
-            # 收集所有视频文件信息
-            for event in group_events:
-                merged_event.add_videos(event.videos)
+            # 获取文件夹名称（使用组内第一个事件的文件夹名称）
+            folder_name = group_events[0].folder_name if group_events else None
+            merged_event = MergedEvent(name, device, folder_name=folder_name)
             
             # 按起始时间排序
             group_events.sort(key=lambda x: x.start_time)
@@ -563,6 +628,7 @@ class AutoTimeline(QWidget):
             # 合并同一宽容度时间范围内的事件
             current_start = group_events[0].start_time
             current_end = group_events[0].end_time
+            current_videos = group_events[0].videos.copy()  # 初始化当前范围的视频列表
             
             for event in group_events[1:]:
                 # 根据宽容度截断时间
@@ -573,14 +639,19 @@ class AutoTimeline(QWidget):
                 if truncated_event_start <= truncated_current_end:
                     # 合并时间范围
                     current_end = max(current_end, event.end_time)
+                    # 合并视频文件列表
+                    for video in event.videos:
+                        if video not in current_videos:
+                            current_videos.append(video)
                 else:
                     # 不连续，保存当前范围并开始新范围
-                    merged_event.add_range(current_start, current_end)
+                    merged_event.add_range(current_start, current_end, current_videos)
                     current_start = event.start_time
                     current_end = event.end_time
+                    current_videos = event.videos.copy()  # 初始化新范围的视频列表
             
             # 添加最后一个范围
-            merged_event.add_range(current_start, current_end)
+            merged_event.add_range(current_start, current_end, current_videos)
             self.merged_events.append(merged_event)
 
         # 按事件名称排序
@@ -601,6 +672,7 @@ class AutoTimeline(QWidget):
         print(f"更新视图：事件数量={len(self.events)}, 合并后事件数量={len(self.merged_events)}")
         print(f"左侧列尺寸：名称列={self.name_column_width}, 设备列={self.device_column_width}")
         print(f"时间轴缩放：每单位像素数={self.pixels_per_unit}, 时间单位={unit}")
+        print(f"全局字体大小：{self.global_font_size}, DPI缩放因子：{self.dpi_scale_factor}")
         
         # 更新宽容度设置
         self.tolerance_unit = self.tolerance_combo.currentText()
@@ -617,20 +689,20 @@ class AutoTimeline(QWidget):
         # 更新缩放比例
         self.pixels_per_unit = self.zoom_spinbox.value()
         
-        # 更新左侧固定列控件
-        self.left_columns_content.set_data(
-            self.merged_events,
-            self.event_names,
-            self.devices
-        )
-        self.left_columns_content.set_settings(
+        # 更新左侧固定列
+        self.timeline_left_columns.set_data(self.merged_events, self.event_names, self.devices)
+        self.timeline_left_columns.set_settings(
             self.time_margin,
             self.name_column_width,
             self.device_column_width,
+            self.folder_column_width,
             self.event_block_height,
-            self.row_spacing
+            self.row_spacing,
+            self.global_font,  # 传递全局字体对象
+            self.global_font_size,  # 传递全局字体大小
+            self.dpi_scale_factor    # 传递DPI缩放因子
         )
-        self.left_columns_content.update()
+        self.timeline_left_columns.update_table()
         
         # 更新时间轴控件
         self.timeline_widget.set_data(
@@ -644,10 +716,14 @@ class AutoTimeline(QWidget):
             self.time_margin,
             self.name_column_width,
             self.device_column_width,
+            self.folder_column_width,
             self.event_block_height,
             self.row_spacing,
             self.tolerance_unit,
-            self.tolerance_multiplier
+            self.tolerance_multiplier,
+            self.global_font,  # 传递全局字体对象
+            self.global_font_size,  # 传递全局字体大小
+            self.dpi_scale_factor    # 传递DPI缩放因子
         )
         self.timeline_widget.update()
 
@@ -674,8 +750,8 @@ class AutoTimeline(QWidget):
         if not self.events:
             return
             
-        # 获取可用宽度（窗口宽度减去名称列和设备列的宽度）
-        available_width = self.width() - self.name_column_width - self.device_column_width - self.time_margin * 2
+        # 获取可用宽度（窗口宽度减去名称列、设备列和文件夹列的宽度）
+        available_width = self.width() - self.name_column_width - self.device_column_width - self.folder_column_width - self.time_margin * 2
         
         if available_width <= 0:
             return
@@ -737,21 +813,48 @@ class AutoTimeline(QWidget):
             scrollbar.setValue(current_value)
     
     def show_selected_files(self):
-        """显示选中区域内的视频文件"""
-        # 获取选中区域内的视频文件
-        selected_videos = self.timeline_widget.get_videos_in_selected_ranges()
+        """显示选中区域内的视频文件和事件信息"""
+        # 获取选中区域内的视频文件和事件信息
+        videos, selected_events = self.timeline_widget.get_videos_in_selected_ranges()
         
         # 清空之前的内容
         self.selected_files_text.clear()
         
-        if not selected_videos:
-            self.selected_files_text.append("没有选中任何视频文件")
+        if not selected_events:
+            self.selected_files_text.append("没有选中任何事件")
             return
         
-        # 显示选中的视频文件
-        self.selected_files_text.append(f"共选中 {len(selected_videos)} 个视频文件：")
-        for i, video in enumerate(selected_videos, 1):
-            self.selected_files_text.append(f"{i}. {video}")
+        # 显示选中的事件信息
+        self.selected_files_text.append(f"共选中 {len(selected_events)} 个事件：")
+        
+        # 使用集合来跟踪已显示的视频，避免重复
+        displayed_videos = set()
+        
+        for i, event in enumerate(selected_events, 1):
+            self.selected_files_text.append(f"\n{i}. 事件: {event['name']}")
+            self.selected_files_text.append(f"   设备: {event['device']}")
+            self.selected_files_text.append(f"   时间范围: {event['start_time']} 到 {event['end_time']}")
+            
+            # 计算事件持续时间
+            duration = event['end_time'] - event['start_time']
+            hours, remainder = divmod(duration.total_seconds(), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self.selected_files_text.append(f"   持续时间: {int(hours)}小时{int(minutes)}分钟{int(seconds)}秒")
+            
+            # 显示视频文件列表
+            if event['videos']:
+                self.selected_files_text.append(f"   视频文件 ({len(event['videos'])} 个):")
+                for video in event['videos']:
+                    self.selected_files_text.append(f"     - {video}")
+                    displayed_videos.add(video)
+            else:
+                self.selected_files_text.append(f"   视频文件: 无")
+        
+        # 显示所有唯一的视频文件列表
+        if displayed_videos:
+            self.selected_files_text.append(f"\n\n共选中 {len(displayed_videos)} 个唯一视频文件：")
+            for i, video in enumerate(sorted(displayed_videos), 1):
+                self.selected_files_text.append(f"{i}. {video}")
     
     def refresh_timeline(self):
         """刷新时间轴，重新生成CSV并覆盖原有文件"""
@@ -806,7 +909,7 @@ class AutoTimeline(QWidget):
 
 class TimelineLeftColumns(QWidget):
     """时间轴左侧固定列控件"""
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None):
         super().__init__(parent)
         self.setMouseTracking(True)
         
@@ -819,13 +922,20 @@ class TimelineLeftColumns(QWidget):
         self.time_margin = 10
         self.name_column_width = 200
         self.device_column_width = 100
+        self.folder_column_width = 150  # 文件夹名称列宽度
         self.event_block_height = 30
         self.row_spacing = 10
+        # 初始化默认的全局字体大小、DPI缩放因子和全局字体对象
+        self.global_font_size = 10
+        self.dpi_scale_factor = 0.5
+        self.global_font = global_font or QFont()
+        # 初始化默认高度，避免sizeHint方法调用时属性未定义
+        self.total_height = 200  # 默认高度
         
         # 创建表格控件
         self.table_widget = QTableWidget(self)
-        self.table_widget.setColumnCount(2)  # 两列：事件名称和设备
-        self.table_widget.setHorizontalHeaderLabels(["事件名称", "设备"])
+        self.table_widget.setColumnCount(3)  # 三列：事件名称、设备和文件夹名称
+        self.table_widget.setHorizontalHeaderLabels(["事件名称", "设备", "文件夹名称"])
         
         # 配置表格
         self.table_widget.horizontalHeader().setVisible(False)  # 隐藏表头
@@ -836,14 +946,17 @@ class TimelineLeftColumns(QWidget):
         
         # 设置尺寸策略，确保表格能随父容器拉伸
         self.table_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # 设置左侧固定列的尺寸策略为Fixed宽度，Expanding高度
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         
         # 设置列宽和伸缩模式
         self.table_widget.setColumnWidth(0, self.name_column_width)
         self.table_widget.setColumnWidth(1, self.device_column_width)
+        self.table_widget.setColumnWidth(2, self.folder_column_width)
         # 设置列伸缩模式，让列可以随表格宽度变化而调整
         self.table_widget.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)  # 第一列（事件名称）自动伸缩
         self.table_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)  # 第二列（设备）自动伸缩
+        self.table_widget.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)  # 第三列（文件夹名称）自动伸缩
         
         # 创建布局
         layout = QVBoxLayout(self)
@@ -870,20 +983,40 @@ class TimelineLeftColumns(QWidget):
         # 更新表格内容
         self.update_table()
 
-    def set_settings(self, time_margin, name_column_width, device_column_width, event_block_height, row_spacing):
-        """设置参数"""
+    def set_settings(self, time_margin, name_column_width, device_column_width, folder_column_width, event_block_height, row_spacing, global_font=None, global_font_size=10, dpi_scale_factor=0.5):
+        """
+        设置参数
+        """
         self.time_margin = time_margin
         self.name_column_width = name_column_width
         self.device_column_width = device_column_width
+        self.folder_column_width = folder_column_width
         self.event_block_height = event_block_height
         self.row_spacing = row_spacing
+        # 使用传递的全局字体对象，如果没有则使用当前的
+        self.global_font = global_font or self.global_font
+        # 更新字体大小和DPI缩放因子
+        self.global_font_size = global_font_size
+        self.dpi_scale_factor = dpi_scale_factor
         
         # 更新表格设置
         self.table_widget.setColumnWidth(0, self.name_column_width)
         self.table_widget.setColumnWidth(1, self.device_column_width)
-        # 确保列保持伸缩模式
-        self.table_widget.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table_widget.setColumnWidth(2, self.folder_column_width)
+        # 设置列宽为固定模式，确保缩放因子生效
+        self.table_widget.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.table_widget.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        
+        # 设置表格默认字体
+        if self.global_font:
+            font = QFont(self.global_font)
+            font.setPointSize(int(self.global_font_size * self.dpi_scale_factor))
+            self.table_widget.setFont(font)
+        
+        # 设置表格支持文本换行
+        self.table_widget.setWordWrap(True)
+        
         self.update_table()
 
     def update_table(self):
@@ -901,7 +1034,11 @@ class TimelineLeftColumns(QWidget):
             # 事件名称单元格
             name_item = QTableWidgetItem(event.name)
             name_item.setTextAlignment(Qt.AlignTop | Qt.AlignLeft)
-            name_item.setFont(QFont("Arial", 10, QFont.Bold))
+            # 创建粗体字体
+            bold_font = QFont(self.global_font)
+            bold_font.setBold(True)
+            bold_font.setPointSize(int(self.global_font_size * self.dpi_scale_factor))
+            name_item.setFont(bold_font)
             name_item.setForeground(QColor(50, 50, 50))
             name_item.setBackground(QColor(240, 240, 240))
             name_item.setFlags(Qt.ItemIsEnabled)
@@ -910,29 +1047,59 @@ class TimelineLeftColumns(QWidget):
             # 设备名称单元格
             device_item = QTableWidgetItem(event.device)
             device_item.setTextAlignment(Qt.AlignTop | Qt.AlignLeft)
-            device_item.setFont(QFont("Arial", 9))
+            # 创建设备名称字体
+            device_font = QFont(self.global_font)
+            device_font.setPointSize(int((self.global_font_size - 1) * self.dpi_scale_factor))
+            device_item.setFont(device_font)
             device_item.setForeground(QColor(80, 80, 80))
             device_item.setBackground(QColor(230, 230, 230))
             device_item.setFlags(Qt.ItemIsEnabled)
             self.table_widget.setItem(i, 1, device_item)
+            
+            # 文件夹名称单元格（使用QLabel文本控件）
+            folder_name = event.folder_name if event.folder_name else ""
+            folder_label = QLabel(folder_name)
+            # 设置文本对齐方式
+            folder_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            # 创建文件夹名称字体
+            folder_font = QFont(self.global_font)
+            folder_font.setPointSize(int((self.global_font_size - 1) * self.dpi_scale_factor))
+            folder_label.setFont(folder_font)
+            # 设置文本颜色
+            folder_label.setStyleSheet(f"color: #505050; background-color: #E6E6E6; padding: 8px; border: none;")
+            # 设置自动换行
+            folder_label.setWordWrap(True)
+            # 设置垂直方向的尺寸策略为最小高度
+            folder_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            # 将QLabel添加到单元格
+            self.table_widget.setCellWidget(i, 2, folder_label)
         
         # 如果没有数据，显示提示
         if not self.merged_events:
             self.table_widget.setRowCount(5)
             for i in range(5):
                 self.table_widget.setRowHeight(i, row_height)
-                for j in range(2):
-                    empty_item = QTableWidgetItem()
+                for j in range(3):  # 现在是3列，包括文件夹名称列
                     if i == 2 and j == 0:
-                        empty_item.setText("无数据，请先导入CSV文件")
-                        empty_item.setTextAlignment(Qt.AlignCenter)
-                        empty_item.setFont(QFont("Arial", 9, QFont.Light))
-                        empty_item.setForeground(QColor(150, 150, 150))
+                        # 在中间行第一列显示提示信息
+                        empty_item = QTableWidgetItem("无数据，请先导入CSV文件")
                         empty_item.setBackground(QColor(240, 240, 240))
+                        empty_item.setTextAlignment(Qt.AlignCenter)
+                        # 创建浅色字体
+                        light_font = QFont(self.global_font)
+                        light_font.setPointSize(int((self.global_font_size - 1) * self.dpi_scale_factor))
+                        light_font.setWeight(QFont.Light)
+                        empty_item.setFont(light_font)
+                        empty_item.setForeground(QColor(150, 150, 150))
+                        empty_item.setFlags(Qt.ItemIsEnabled)
+                        self.table_widget.setItem(i, j, empty_item)
                     else:
-                        empty_item.setBackground(QColor(240, 240, 240) if j == 0 else QColor(230, 230, 230))
-                    empty_item.setFlags(Qt.ItemIsEnabled)
-                    self.table_widget.setItem(i, j, empty_item)
+                        # 其他单元格显示空白背景
+                        empty_item = QTableWidgetItem()
+                        bg_color = QColor(240, 240, 240) if j == 0 else QColor(230, 230, 230)
+                        empty_item.setBackground(bg_color)
+                        empty_item.setFlags(Qt.ItemIsEnabled)
+                        self.table_widget.setItem(i, j, empty_item)
         
         # 调整控件大小
         self.calculate_layout()
@@ -947,17 +1114,28 @@ class TimelineLeftColumns(QWidget):
             self.total_height = self.time_margin * 2 + len(self.merged_events) * (self.event_block_height + self.row_spacing)
         
         # 调整控件大小：只设置最小高度和最小宽度，移除固定宽度限制，让控件可以自由伸缩
-        min_width = self.name_column_width + self.device_column_width  # 设置最小宽度为能显示内容的宽度
+        min_width = self.name_column_width + self.device_column_width + self.folder_column_width  # 设置最小宽度为能显示内容的宽度
         self.setMinimumSize(min_width, self.total_height)
         self.setMaximumSize(16777215, 16777215)  # 设置为Qt的最大允许值，让控件可以自由伸缩
+    
+    def sizeHint(self):
+        """返回控件的建议大小"""
+        # 计算总宽度：事件名称列 + 设备列 + 文件夹名称列
+        total_width = self.name_column_width + self.device_column_width + self.folder_column_width
+        
+        # 返回建议大小
+        return QSize(total_width, self.total_height)
 
 
 class TimelineWidget(QWidget):
     """时间轴绘制控件"""
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None):
         super().__init__(parent)
         self.setMinimumHeight(500)
         self.setMouseTracking(True)
+        
+        # 设置尺寸策略，确保时间轴能在布局中正确调整大小
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # 数据
         self.merged_events = []
@@ -970,8 +1148,16 @@ class TimelineWidget(QWidget):
         self.time_margin = 10
         self.name_column_width = 200
         self.device_column_width = 100
+        self.folder_column_width = 150  # 文件夹名称列宽度
         self.event_block_height = 30
         self.row_spacing = 10
+        # 初始化默认的全局字体大小、DPI缩放因子和全局字体对象
+        self.global_font_size = 10
+        self.dpi_scale_factor = 0.5
+        self.global_font = global_font or QFont()
+        # 初始化默认高度和宽度，避免sizeHint方法调用时属性未定义
+        self.total_height = 200  # 默认高度
+        self.content_width = 400  # 默认宽度
         
         # 交互
         self.hovered_event = None
@@ -997,18 +1183,24 @@ class TimelineWidget(QWidget):
         self.devices = devices
 
     def set_settings(self, pixels_per_unit, unit_multiplier, time_margin, 
-                    name_column_width, device_column_width, event_block_height, row_spacing,
-                    tolerance_unit="秒", tolerance_multiplier=1):
+                    name_column_width, device_column_width, folder_column_width, event_block_height, row_spacing,
+                    tolerance_unit="秒", tolerance_multiplier=1, global_font=None, global_font_size=10, dpi_scale_factor=0.5):
         """设置参数"""
         self.pixels_per_unit = pixels_per_unit
         self.unit_multiplier = unit_multiplier
         self.time_margin = time_margin
         self.name_column_width = name_column_width
         self.device_column_width = device_column_width
+        self.folder_column_width = folder_column_width
         self.event_block_height = event_block_height
         self.row_spacing = row_spacing
         self.tolerance_unit = tolerance_unit
         self.tolerance_multiplier = tolerance_multiplier
+        # 使用传递的全局字体对象，如果没有则使用当前的
+        self.global_font = global_font or self.global_font
+        # 更新字体大小和DPI缩放因子
+        self.global_font_size = global_font_size
+        self.dpi_scale_factor = dpi_scale_factor
 
     def generate_colors(self):
         """生成颜色映射"""
@@ -1034,6 +1226,10 @@ class TimelineWidget(QWidget):
         if not self.merged_events:
             # 确保控件有足够的高度来显示提示文本
             self.setMinimumHeight(200)
+            # 使用全局字体
+            font = QFont(self.global_font)
+            font.setPointSize(int(self.global_font_size * self.dpi_scale_factor))
+            painter.setFont(font)
             painter.drawText(self.rect(), Qt.AlignCenter, "无数据，请先导入CSV文件")
             return
 
@@ -1083,12 +1279,26 @@ class TimelineWidget(QWidget):
         self.total_time = (self.max_time - self.min_time).total_seconds()
         
         # 计算内容宽度
-        self.content_width = self.name_column_width + self.device_column_width
+        self.content_width = self.name_column_width + self.device_column_width + self.folder_column_width
         self.content_width += self.time_margin * 2
         self.content_width += int(self.total_time / self.unit_multiplier * self.pixels_per_unit)
         
         # 调整控件大小
         self.setMinimumSize(self.content_width, self.total_height)
+    
+    def sizeHint(self):
+        """返回控件的建议大小"""
+        if not self.merged_events:
+            # 如果没有事件数据，返回一个最小的建议大小
+            return QSize(400, 200)
+        
+        # 计算内容宽度（包括左侧固定列和时间轴区域）
+        width = self.content_width
+        
+        # 计算总高度（包括事件区域和时间刻度）
+        height = self.total_height
+        
+        return QSize(width, height)
 
     def draw_background(self, painter):
         """绘制背景"""
@@ -1138,7 +1348,8 @@ class TimelineWidget(QWidget):
         current_time = start_scale_time
         
         # 用于标签跳过机制的变量
-        font = QFont("Arial", 8)
+        font = QFont(self.global_font)
+        font.setPointSize(int((self.global_font_size - 2) * self.dpi_scale_factor))
         fm = QFontMetrics(font)
         last_label_x = -float('inf')  # 上一个标签的位置
         label_padding = 10  # 标签之间的额外间距
@@ -1190,7 +1401,7 @@ class TimelineWidget(QWidget):
         y = self.time_margin + self.row_spacing / 2
         
         for i, event in enumerate(self.merged_events):
-            # 只绘制事件时间块（隐藏事件名称和设备名称）
+            # 只绘制事件时间块（隐藏事件名称、设备名称和文件夹名称，这些都在左侧固定列中显示）
             self.draw_event_blocks(painter, event, y)
             
             # 移动到下一行
@@ -1199,7 +1410,9 @@ class TimelineWidget(QWidget):
     def draw_event_name(self, painter, name, y):
         """绘制事件名称"""
         # 设置字体
-        font = QFont("Arial", 10, QFont.Bold)
+        font = QFont(self.global_font)
+        font.setPointSize(int(self.global_font_size * self.dpi_scale_factor))
+        font.setBold(True)
         painter.setFont(font)
         painter.setPen(QColor(50, 50, 50))
         
@@ -1218,7 +1431,8 @@ class TimelineWidget(QWidget):
     def draw_device_name(self, painter, device, y):
         """绘制设备名称"""
         # 设置字体
-        font = QFont("Arial", 9)
+        font = QFont(self.global_font)
+        font.setPointSize(int((self.global_font_size - 1) * self.dpi_scale_factor))
         painter.setFont(font)
         painter.setPen(QColor(80, 80, 80))
         
@@ -1234,6 +1448,26 @@ class TimelineWidget(QWidget):
         option.setWrapMode(QTextOption.WordWrap)
         painter.drawText(QRectF(rect), device, option)
 
+    def draw_folder_name(self, painter, folder_name, y):
+        """绘制文件夹名称"""
+        # 设置字体
+        font = QFont(self.global_font)
+        font.setPointSize(int((self.global_font_size - 1) * self.dpi_scale_factor))
+        painter.setFont(font)
+        painter.setPen(QColor(50, 50, 50))
+        
+        # 计算文本矩形
+        rect = QRect(
+            self.name_column_width + self.device_column_width + 5, y, 
+            self.folder_column_width - 10, self.event_block_height
+        )
+        
+        # 绘制文本
+        option = QTextOption()
+        option.setAlignment(Qt.AlignTop)
+        option.setWrapMode(QTextOption.WordWrap)
+        painter.drawText(QRectF(rect), folder_name or "", option)
+
     def draw_event_blocks(self, painter, event, y):
         """绘制事件时间块"""
         # 获取颜色
@@ -1245,7 +1479,8 @@ class TimelineWidget(QWidget):
             start_seconds = (start_time - self.min_time).total_seconds()
             end_seconds = (end_time - self.min_time).total_seconds()
             
-            x = self.time_margin
+            x = self.name_column_width + self.device_column_width + self.folder_column_width
+            x += self.time_margin
             x += int(start_seconds / self.unit_multiplier * self.pixels_per_unit)
             
             width = int((end_seconds - start_seconds) / self.unit_multiplier * self.pixels_per_unit)
@@ -1258,7 +1493,8 @@ class TimelineWidget(QWidget):
             
             # 绘制事件名称（可选）
             if width > 50:
-                font = QFont("Arial", 8)
+                font = QFont(self.global_font)
+                font.setPointSize(int((self.global_font_size - 2) * self.dpi_scale_factor))
                 painter.setFont(font)
                 painter.setPen(QColor(255, 255, 255))
                 painter.drawText(rect.adjusted(5, 0, -5, 0), Qt.AlignCenter, event.name[:10])
@@ -1436,7 +1672,9 @@ class TimelineWidget(QWidget):
         if current_time:
             # 绘制时间标签
             time_str = current_time.strftime("%H:%M:%S")
-            font = QFont("Arial", 8, QFont.Bold)
+            font = QFont(self.global_font)
+            font.setPointSize(int((self.global_font_size - 2) * self.dpi_scale_factor))
+            font.setBold(True)
             painter.setFont(font)
             painter.setPen(QColor(255, 0, 0))
             
@@ -1458,7 +1696,8 @@ class TimelineWidget(QWidget):
         if current_event:
             # 绘制事件信息
             event_info = f"{current_event.name} - {current_event.device}"
-            font = QFont("Arial", 8)
+            font = QFont(self.global_font)
+            font.setPointSize(int((self.global_font_size - 2) * self.dpi_scale_factor))
             painter.setFont(font)
             painter.setPen(QColor(255, 0, 0))
             
@@ -1634,13 +1873,18 @@ class TimelineWidget(QWidget):
             painter.drawRect(selection_rect)
     
     def get_videos_in_selected_ranges(self):
-        """获取所有选中区域内的视频文件"""
-        videos = set()  # 使用集合避免重复
+        """获取所有选中区域内的视频文件和事件信息"""
+        videos = set()  # 使用集合避免重复的视频路径
+        selected_events = []  # 保存所有选中的事件信息
         
         # 添加调试信息
         print(f"选中区域数量: {len(self.selected_ranges)}")
         print(f"合并事件数量: {len(self.merged_events)}")
-        print(f"宽容度设置: {self.tolerance_unit} ({self.tolerance_multiplier} 秒)")
+        
+        # 检查宽容度属性是否存在
+        tolerance_unit = getattr(self, 'tolerance_unit', '秒')
+        tolerance_multiplier = getattr(self, 'tolerance_multiplier', 0)
+        print(f"宽容度设置: {tolerance_unit} ({tolerance_multiplier} 秒)")
         
         # 遍历所有已保存的选中区域
         for i, (range_start, range_end) in enumerate(self.selected_ranges):
@@ -1658,20 +1902,33 @@ class TimelineWidget(QWidget):
             
             # 遍历所有合并事件
             for event in self.merged_events:
-                # 遍历事件的所有时间范围
-                for j, (event_start, event_end) in enumerate(event.time_ranges):
-                    print(f"  事件 '{event.name}' 时间范围 {j+1}: {event_start} 到 {event_end}")
+                # 遍历事件的所有时间范围和对应的视频文件
+                for j, (event_start, event_end, event_videos) in enumerate(event.time_range_videos):
+                    print(f"  事件 '{event.name}' 时间范围 {j+1}: {event_start} 到 {event_end} (视频数量: {len(event_videos)})")
                     
                     # 检查时间范围是否与扩展后的选中区域有交集
                     if (event_start <= extended_end) and (event_end >= extended_start):
-                        print(f"    -> 有交集！视频数量: {len(event.videos)}")
-                        # 添加该事件的所有视频文件
-                        for video in event.videos:
+                        print(f"    -> 有交集！")
+                        
+                        # 保存事件信息
+                        event_info = {
+                            'name': event.name,
+                            'device': event.device,
+                            'start_time': event_start,
+                            'end_time': event_end,
+                            'videos': event_videos.copy()
+                        }
+                        selected_events.append(event_info)
+                        
+                        # 添加该时间范围对应的视频文件
+                        for video in event_videos:
                             videos.add(video)
                             print(f"      -> 添加视频: {video}")
         
         print(f"最终返回视频列表数量: {len(videos)}")
-        return list(videos)  # 转换为列表返回
+        print(f"最终选中事件数量: {len(selected_events)}")
+        
+        return videos, selected_events  # 返回视频集合和选中事件列表
 
 
 if __name__ == "__main__":

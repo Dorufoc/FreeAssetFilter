@@ -979,9 +979,8 @@ class UnifiedPreviewer(QWidget):
         打开全局设置窗口
         """
         # 创建全局设置窗口
-        from freeassetfilter.widgets.custom_widgets import CustomWindow
         from freeassetfilter.widgets.setting_widgets import CustomSettingItem
-        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout, QGroupBox, QWidget, QApplication
+        from PyQt5.QtWidgets import QScrollArea, QVBoxLayout, QGroupBox, QWidget, QApplication, QDialog
         from freeassetfilter.widgets.custom_widgets import CustomMessageBox
         
         # 获取应用实例和DPI缩放因子
@@ -992,12 +991,14 @@ class UnifiedPreviewer(QWidget):
         from freeassetfilter.core.settings_manager import SettingsManager
         settings_manager = getattr(app, 'settings_manager', SettingsManager())
         
-        # 创建自定义窗口，确保它是独立的顶级窗口
-        self.settings_window = CustomWindow("全局设置", None)
-        # 设置窗口标志，确保它是一个独立的顶级窗口
-        self.settings_window.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.settings_window.setAttribute(Qt.WA_TranslucentBackground)
+        # 创建原生对话框窗口
+        self.settings_window = QDialog(None)
+        # 设置窗口标题
+        self.settings_window.setWindowTitle("全局设置")
+        # 设置窗口大小
         self.settings_window.setGeometry(100, 100, int(800 * dpi_scale), int(600 * dpi_scale))
+        # 设置窗口模态
+        self.settings_window.setModal(True)
         
         # 创建滚动区域
         scroll_area = QScrollArea()
@@ -1638,8 +1639,13 @@ class UnifiedPreviewer(QWidget):
         # 设置滚动区域内容
         scroll_area.setWidget(scroll_content)
         
-        # 添加滚动区域到窗口
-        self.settings_window.add_widget(scroll_area)
+        # 为对话框创建布局管理器
+        dialog_layout = QVBoxLayout()
+        dialog_layout.setContentsMargins(0, 0, 0, 0)
+        # 将滚动区域添加到布局中
+        dialog_layout.addWidget(scroll_area)
+        # 设置对话框的布局
+        self.settings_window.setLayout(dialog_layout)
         
         # 计算并设置窗口居中位置
         from PyQt5.QtWidgets import QApplication

@@ -126,6 +126,7 @@ class FolderTimelineGenerator:
                             all_video_info.append({
                                 'event_name': event_name,
                                 'device_name': device_name,
+                                'folder_name': folder_name,
                                 'video_path': file_path
                             })
         
@@ -145,6 +146,7 @@ class FolderTimelineGenerator:
                 timeline_data.append({
                     'event_name': video_info['event_name'],
                     'device_name': video_info['device_name'],
+                    'folder_name': video_info['folder_name'],
                     'start_time': creation_time.strftime(self.time_format),
                     'end_time': end_time.strftime(self.time_format),
                     'video_path': video_info['video_path']
@@ -307,27 +309,29 @@ class FolderTimelineGenerator:
         
         # 写入CSV
         with open(output_path, 'w', newline='', encoding='utf-8-sig') as f:
-            fieldnames = ['event_name', 'device_name', 'start_time', 'end_time', 'video_path']
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            fieldnames = ['event_name', 'device_name', 'folder_name', 'start_time', 'end_time', 'video_path']
+            # 设置quoting=csv.QUOTE_ALL，确保所有字段都用引号包围，避免逗号引起的格式问题
+            writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
             
             # 写入中文表头
             writer.writerow({
                 'event_name': '事件名称',
                 'device_name': '设备名称',
+                'folder_name': '文件夹名称',
                 'start_time': '开始时间',
                 'end_time': '结束时间',
                 'video_path': '视频路径'
             })
             
-
-            
             # 写入数据
             for data in timeline_data:
                 writer.writerow({
-                    '事件名称': data['event_name'],
-                    '设备名称': data['device_name'],
-                    '开始时间': data['start_time'],
-                    '结束时间': data['end_time']
+                    'event_name': data['event_name'],
+                    'device_name': data['device_name'],
+                    'folder_name': data['folder_name'],
+                    'start_time': data['start_time'],
+                    'end_time': data['end_time'],
+                    'video_path': data['video_path']
                 })
     
     def _update_timeline_mapping(self, source_folder: str, csv_path: str) -> None:
