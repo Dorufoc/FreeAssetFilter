@@ -105,8 +105,8 @@ class ArchiveBrowser(QWidget):
         """
         # 创建主布局
         main_layout = QVBoxLayout(self)
-        scaled_spacing = int(10 * self.dpi_scale)
-        scaled_margin = int(10 * self.dpi_scale)
+        scaled_spacing = int(5 * self.dpi_scale)
+        scaled_margin = int(5 * self.dpi_scale)
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
@@ -143,7 +143,7 @@ class ArchiveBrowser(QWidget):
         # 应用DPI缩放因子到字体和按钮高度
         scaled_font_size = int(default_font_size * self.dpi_scale)
         # 使用统一的按钮高度（与文件选择器保持一致）
-        button_height = 40
+        button_height = 20
         scaled_button_height = int(button_height * self.dpi_scale)
         
         # 第一行：路径显示和返回按钮
@@ -244,7 +244,7 @@ class ArchiveBrowser(QWidget):
         self.files_list.setFont(list_font)
         
         # 设置列表项高度
-        scaled_item_height = int(30 * self.dpi_scale)
+        scaled_item_height = int(15 * self.dpi_scale)
         self.files_list.setStyleSheet(f"QListWidget::item {{ height: {scaled_item_height}px; }}")
         
         scroll_area.setWidget(self.files_list)
@@ -267,7 +267,7 @@ class ArchiveBrowser(QWidget):
         
         # 应用DPI缩放因子到状态栏
         scaled_font_size = int(default_font_size * self.dpi_scale)
-        scaled_height = int(30 * self.dpi_scale)
+        scaled_height = int(15 * self.dpi_scale)
         
         # 文件计数显示
         self.file_count_label = QLabel("文件数量: 0")

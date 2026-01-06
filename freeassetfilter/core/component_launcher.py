@@ -79,6 +79,11 @@ class ComponentLauncher(QMainWindow):
                 "description": "统一文件预览器，根据文件类型动态调用对应预览组件"
             },
             {
+                "name": "自动时间线",
+                "command": [sys.executable, "freeassetfilter/components/auto_timeline.py"],
+                "description": "自动时间线组件，用于多媒体资产管理与行为分析的核心可视化工具"
+            },
+            {
                 "name": "中文日志测试",
                 "command": [sys.executable, "freeassetfilter/app/test_chinese_log.py"],
                 "description": "测试中文日志输出是否正常"

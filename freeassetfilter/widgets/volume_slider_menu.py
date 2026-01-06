@@ -66,7 +66,7 @@ class VolumeSliderMenu(QWidget):
             text=self._volume_icon_path,
             button_type="normal",
             display_mode="icon",
-            height=36
+            height=18
         )
         # 设置音量图标
         self.update_volume_icon()
@@ -96,9 +96,9 @@ class VolumeSliderMenu(QWidget):
         # 设置音量条尺寸，考虑DPI缩放
         # 音量条宽度与音量按钮宽度匹配，确保视觉居中
         # 使用与音量按钮相同的固定尺寸
-        button_size = int(36 * self.dpi_scale)
+        button_size = int(18 * self.dpi_scale)
         slider_width = button_size
-        slider_height = int(200 * self.dpi_scale)
+        slider_height = int(50 * self.dpi_scale)
         self.volume_slider.setFixedSize(slider_width, slider_height)
         
         # 确保音量按钮也使用相同的尺寸
@@ -110,7 +110,7 @@ class VolumeSliderMenu(QWidget):
         container.setStyleSheet("QWidget { background-color: transparent; border: none; }")
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.setSpacing(int(10 * self.dpi_scale))
+        container_layout.setSpacing(int(2.5 * self.dpi_scale))
         
         # 创建百分比显示标签
         self.volume_label = QLabel(f"{self._volume}%")
@@ -119,7 +119,7 @@ class VolumeSliderMenu(QWidget):
         
         # 设置标签样式，确保美观
         # 字体大小根据DPI缩放，颜色与应用风格一致
-        font_size = int(12 * self.dpi_scale)
+        font_size = int(6 * self.dpi_scale)
         self.volume_label.setStyleSheet(f"QLabel {{ font-size: {font_size}px; color: #333333; font-weight: normal; }}")
         
         # 添加标签和音量条到容器

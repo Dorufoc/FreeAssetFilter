@@ -99,11 +99,11 @@ class UnifiedPreviewer(QWidget):
         """
         初始化用户界面
         """
-        # 应用DPI缩放因子到布局参数
-        scaled_spacing = int(10 * self.dpi_scale)
-        scaled_margin = int(10 * self.dpi_scale)
-        scaled_font_size = int(12 * self.dpi_scale)
-        scaled_control_margin = int(5 * self.dpi_scale)
+        # 应用DPI缩放因子到布局参数（调整为原始的一半）
+        scaled_spacing = int(5 * self.dpi_scale)
+        scaled_margin = int(5 * self.dpi_scale)
+        scaled_font_size = int(6 * self.dpi_scale)
+        scaled_control_margin = int(2 * self.dpi_scale)
         
         # 创建主布局
         main_layout = QVBoxLayout(self)
@@ -997,8 +997,8 @@ class UnifiedPreviewer(QWidget):
         self.settings_window.setWindowTitle("全局设置")
         # 设置窗口大小
         self.settings_window.setGeometry(100, 100, int(800 * dpi_scale), int(600 * dpi_scale))
-        # 设置窗口模态
-        self.settings_window.setModal(True)
+        # 设置窗口非模态
+        self.settings_window.setModal(False)
         
         # 创建滚动区域
         scroll_area = QScrollArea()

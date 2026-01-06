@@ -121,13 +121,13 @@ class CustomFileHorizontalCard(QWidget):
         
         # 创建卡片内容布局
         card_content_layout = QHBoxLayout(self.card_container)
-        card_content_layout.setSpacing(int(15 * self.dpi_scale))
+        card_content_layout.setSpacing(int(7.5 * self.dpi_scale))
         # 增加上下高度尺寸，设置为更大的数值
-        min_height_margin = int(25 * self.dpi_scale)
+        min_height_margin = int(6.25 * self.dpi_scale)
         card_content_layout.setContentsMargins(
-            int(15 * self.dpi_scale),
+            int(7.5 * self.dpi_scale),
             min_height_margin,
-            int(15 * self.dpi_scale),
+            int(7.5 * self.dpi_scale),
             min_height_margin
         )
         card_content_layout.setAlignment(Qt.AlignVCenter)
@@ -135,14 +135,14 @@ class CustomFileHorizontalCard(QWidget):
         # 缩略图/图标显示组件
         self.icon_display = QLabel()
         self.icon_display.setAlignment(Qt.AlignCenter)
-        self.icon_display.setFixedSize(int(80 * self.dpi_scale), int(80 * self.dpi_scale))
+        self.icon_display.setFixedSize(int(20 * self.dpi_scale), int(20 * self.dpi_scale))
         self.icon_display.setStyleSheet('background: transparent; border: none;')
         card_content_layout.addWidget(self.icon_display, alignment=Qt.AlignVCenter)
         
         # 文字信息区
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(int(8 * self.dpi_scale))
+        text_layout.setSpacing(int(4 * self.dpi_scale))
         text_layout.setAlignment(Qt.AlignVCenter)
         
         # 文件名标签
@@ -156,7 +156,7 @@ class CustomFileHorizontalCard(QWidget):
         # 设置字体大小和粗细
         name_font = QFont(self.global_font)
         name_font.setBold(True)  # 字重600
-        scaled_font_size = int(16 * self.dpi_scale)
+        scaled_font_size = int(4 * self.dpi_scale)
         name_font.setPointSize(scaled_font_size)
         self.name_label.setFont(name_font)
         self.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
@@ -172,7 +172,7 @@ class CustomFileHorizontalCard(QWidget):
         self.info_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         # 设置字体大小
         info_font = QFont(self.global_font)
-        scaled_info_font_size = int(12 * self.dpi_scale)
+        scaled_info_font_size = int(3 * self.dpi_scale)
         info_font.setPointSize(scaled_info_font_size)
         self.info_label.setFont(info_font)
         self.info_label.setStyleSheet("background: transparent; border: none; color: #666666;")
@@ -190,14 +190,14 @@ class CustomFileHorizontalCard(QWidget):
         # 设置覆盖层布局
         overlay_layout = QHBoxLayout(self.overlay_widget)
         # 使用与卡片内容布局相同的上下边距
-        min_height_margin = int(25 * self.dpi_scale)
+        min_height_margin = int(6.25 * self.dpi_scale)
         overlay_layout.setContentsMargins(
-            int(10 * self.dpi_scale),
+            int(2.5 * self.dpi_scale),
             min_height_margin,
-            int(10 * self.dpi_scale),
+            int(2.5 * self.dpi_scale),
             min_height_margin
         )
-        overlay_layout.setSpacing(int(5 * self.dpi_scale))
+        overlay_layout.setSpacing(int(2.5 * self.dpi_scale))
         # 右对齐，确保按钮始终在右侧
         overlay_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         
@@ -314,13 +314,13 @@ class CustomFileHorizontalCard(QWidget):
             print(f"_load_file_info called, component_width: {component_width}")
             if component_width <= 0:
                 # 如果组件宽度还未计算，使用一个默认值
-                component_width = int(700 * self.dpi_scale)
+                component_width = int(87.5 * self.dpi_scale)
                 print(f"Using default component_width: {component_width}")
             
             # 文件名截断处理
             name_font_metrics = QFontMetrics(self.name_label.font())
             # 留一些边距和图标的宽度
-            icon_margin = int(80 * self.dpi_scale)
+            icon_margin = int(10 * self.dpi_scale)
             available_width = component_width - icon_margin  # 图标宽度 + 边距
             # 调试信息：打印可用宽度计算
             print(f"icon_margin: {icon_margin}, available_width: {available_width}")
@@ -364,7 +364,7 @@ class CustomFileHorizontalCard(QWidget):
             # 首先处理lnk和exe文件，使用它们自身的图标
             if suffix in ["lnk", "exe"]:
                 # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
-                base_icon_size = int(80 * self.dpi_scale)
+                base_icon_size = int(10 * self.dpi_scale)
                 scaled_icon_size = int(base_icon_size * 0.8)
                 
                 # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
@@ -400,7 +400,7 @@ class CustomFileHorizontalCard(QWidget):
                 use_thumbnail = True
             
             if use_thumbnail:
-                scaled_icon_size = int(80 * self.dpi_scale)
+                scaled_icon_size = int(20 * self.dpi_scale)
                 pixmap = QPixmap(thumbnail_path)
                 # 调整缩略图大小以适应图标显示区域
                 pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -411,10 +411,10 @@ class CustomFileHorizontalCard(QWidget):
             icon_path = self._get_file_icon_path(suffix, file_info.isDir())
             if icon_path and os.path.exists(icon_path):
                 # 应用DPI缩放因子到图标大小
-                scaled_icon_size = int(80 * self.dpi_scale)
+                scaled_icon_size = int(40 * self.dpi_scale)
                 
                 # 使用SvgRenderer.render_svg_to_widget直接渲染SVG图标，返回QSvgWidget对象
-                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, 80, self.dpi_scale)
+                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, 40, self.dpi_scale)
                 svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
                 # 确保QSvgWidget完全透明，没有任何可见样式
                 svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
@@ -454,7 +454,7 @@ class CustomFileHorizontalCard(QWidget):
                             font.setFamily(font_family)
                     
                     # 设置字体大小，应用DPI缩放
-                    font_size = int(16 * self.dpi_scale)
+                    font_size = int(4 * self.dpi_scale)
                     font.setPointSize(font_size)
                     font.setBold(True)
                     
@@ -463,8 +463,8 @@ class CustomFileHorizontalCard(QWidget):
                     text_width = font_metrics.width(display_suffix)
                     
                     # 应用DPI缩放因子到最大文本宽度和最小字体大小
-                    max_text_width = int(30 * self.dpi_scale)
-                    min_font_size = int(8 * self.dpi_scale)
+                    max_text_width = int(7.5 * self.dpi_scale)
+                    min_font_size = int(4 * self.dpi_scale)
                     
                     while text_width > max_text_width and font_size > min_font_size:
                         font_size -= 1
@@ -498,7 +498,7 @@ class CustomFileHorizontalCard(QWidget):
                 # 设置默认图标
                 self.icon_display.setText("📄")
                 font = QFont()
-                font.setPointSize(int(48 * self.dpi_scale))
+                font.setPointSize(int(12 * self.dpi_scale))
                 self.icon_display.setFont(font)
         except Exception as e:
             print(f"设置文件图标失败: {e}")
@@ -551,8 +551,8 @@ class CustomFileHorizontalCard(QWidget):
 
     def update_card_style(self):
         """更新卡片样式"""
-        scaled_border_width = int(2 * self.dpi_scale)
-        scaled_border_radius = int(6 * self.dpi_scale)
+        scaled_border_width = int(1 * self.dpi_scale)
+        scaled_border_radius = int(1.5 * self.dpi_scale)
         # 设置组件本身的样式（透明背景）
         self.setStyleSheet("""
             QWidget {

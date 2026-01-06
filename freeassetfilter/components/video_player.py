@@ -225,11 +225,11 @@ class VideoPlayer(QWidget):
         
         # 媒体显示区域设置
         self.media_frame.setStyleSheet("background-color: black;")
-        self.media_frame.setMinimumSize(300, 200)
+        self.media_frame.setMinimumSize(150, 100)
         
         # 视频显示区域设置 - MPV将直接渲染到这个窗口
         self.video_frame.setStyleSheet("background-color: black;")
-        self.video_frame.setMinimumSize(300, 200)
+        self.video_frame.setMinimumSize(150, 100)
         
         # 设置视频显示区域的布局
         video_layout = QVBoxLayout(self.video_frame)
@@ -245,7 +245,7 @@ class VideoPlayer(QWidget):
         self.background_label.setStyleSheet("background-color: black;")
         self.background_label.setScaledContents(True)
         self.background_label.setAlignment(Qt.AlignCenter)
-        self.background_label.setMinimumSize(300, 200)
+        self.background_label.setMinimumSize(150, 100)
         
         # 添加模糊效果
         self.blur_effect = QGraphicsBlurEffect()
@@ -262,7 +262,7 @@ class VideoPlayer(QWidget):
         # 歌曲名称标签
         self.song_name_label = QLabel("歌曲名")
         # 应用DPI缩放因子到字体大小
-        scaled_song_font_size = int(default_font_size * 2.4 * self.dpi_scale)  # 2.4倍于默认大小
+        scaled_song_font_size = int(default_font_size * 1.2 * self.dpi_scale)  # 1.2倍于默认大小
         self.song_name_label.setFont(self.global_font)
         self.song_name_label.setStyleSheet(f"""
             color: white;
@@ -277,7 +277,7 @@ class VideoPlayer(QWidget):
         # 作者名称标签
         self.artist_name_label = QLabel("作者名")
         # 应用DPI缩放因子到字体大小
-        scaled_artist_font_size = int(default_font_size * 1.8 * self.dpi_scale)  # 1.8倍于默认大小
+        scaled_artist_font_size = int(default_font_size * 0.9 * self.dpi_scale)  # 0.9倍于默认大小
         self.artist_name_label.setFont(self.global_font)
         self.artist_name_label.setStyleSheet(f"""
             color: white;
@@ -292,19 +292,19 @@ class VideoPlayer(QWidget):
         # 音频显示容器
         audio_container_layout = QVBoxLayout(self.audio_container)
         audio_container_layout.setContentsMargins(0, 0, 0, 0)
-        audio_container_layout.setSpacing(15)
+        audio_container_layout.setSpacing(7)
         audio_container_layout.setAlignment(Qt.AlignCenter)
         
         # 歌曲封面设置
         # 计算缩放后的封面大小（100dpx正方形）
-        scaled_cover_size = int(100 * self.dpi_scale)
+        scaled_cover_size = int(50 * self.dpi_scale)
         self.cover_label.setFixedSize(scaled_cover_size, scaled_cover_size)
         self.cover_label.setAlignment(Qt.AlignCenter)
         # 设置封面的圆角矩形遮罩
         self.cover_label.setStyleSheet(f"""
             background-color: #333333;
             border-radius: {int(scaled_cover_size * 0.1)}px;
-            border: {int(2 * self.dpi_scale)}px solid rgba(255, 255, 255, 0.3);
+            border: {int(1 * self.dpi_scale)}px solid rgba(255, 255, 255, 0.3);
         """)
         
         # 添加歌曲信息到容器（封面在最上面）
@@ -314,7 +314,7 @@ class VideoPlayer(QWidget):
         
         # 设置音频容器样式
         self.audio_container.setStyleSheet("background-color: transparent;")
-        self.audio_container.setMinimumSize(300, 200)
+        self.audio_container.setMinimumSize(150, 100)
         
         # 构建音频叠加布局 - 将所有部件放在同一网格位置
         audio_layout.addWidget(self.background_label, 0, 0)
@@ -337,12 +337,12 @@ class VideoPlayer(QWidget):
         # 控制按钮区域 - 根据Figma设计稿更新样式，应用DPI缩放
         control_container = QWidget()
         # 应用DPI缩放因子到控制栏样式
-        scaled_border_radius = int(35 * self.dpi_scale)
-        scaled_border = int(1 * self.dpi_scale)
+        scaled_border_radius = int(17.5 * self.dpi_scale)
+        scaled_border = int(0.5 * self.dpi_scale)
         control_container.setStyleSheet(f"background-color: #FFFFFF; border: {scaled_border}px solid #FFFFFF; border-radius: {scaled_border_radius}px {scaled_border_radius}px {scaled_border_radius}px {scaled_border_radius}px;")
         self.control_layout = QHBoxLayout(control_container)
-        scaled_margin = int(15 * self.dpi_scale)
-        scaled_spacing = int(15 * self.dpi_scale)
+        scaled_margin = int(7.5 * self.dpi_scale)
+        scaled_spacing = int(7.5 * self.dpi_scale)
         self.control_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         self.control_layout.setSpacing(scaled_spacing)
         
@@ -387,13 +387,13 @@ class VideoPlayer(QWidget):
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         # 应用DPI缩放因子到间距
-        scaled_spacing = int(10 * self.dpi_scale)
+        scaled_spacing = int(5 * self.dpi_scale)
         bottom_layout.setSpacing(scaled_spacing)
         
         # 时间标签样式，应用DPI缩放
-        scaled_padding = int(5 * self.dpi_scale)
-        scaled_font_size = int(16 * self.dpi_scale)
-        scaled_border = int(1 * self.dpi_scale)
+        scaled_padding = int(2.5 * self.dpi_scale)
+        scaled_font_size = int(8 * self.dpi_scale)
+        scaled_border = int(0.5 * self.dpi_scale)
         self.time_label.setStyleSheet(f"""
             color: #000000;
             background-color: #FFFFFF;
@@ -433,7 +433,7 @@ class VideoPlayer(QWidget):
         
         # 添加倍速控制下拉菜单，应用DPI缩放
         self.speed_dropdown = CustomDropdownMenu(self)
-        scaled_min_width = int(100 * self.dpi_scale)  # 增加宽度以确保文本可见
+        scaled_min_width = int(50 * self.dpi_scale)  # 增加宽度以确保文本可见
         self.speed_dropdown.set_fixed_width(scaled_min_width)
         # 设置倍速选项和默认值 - 使用加载的倍速设置
         self.speed_dropdown.set_items([f"{speed}x" for speed in self.speed_options], default_item=f"{self._current_speed}x")
@@ -444,12 +444,12 @@ class VideoPlayer(QWidget):
         bottom_layout.addWidget(self.speed_dropdown)
         
         # 应用DPI缩放因子到按钮样式（用于Cube按钮）
-        scaled_padding = int(5 * self.dpi_scale)
-        scaled_padding_right = int(10 * self.dpi_scale)
-        scaled_border_radius = int(5 * self.dpi_scale)
-        scaled_min_width = int(80 * self.dpi_scale)
-        scaled_font_size = int(16 * self.dpi_scale)
-        scaled_border = int(1 * self.dpi_scale)
+        scaled_padding = int(2.5 * self.dpi_scale)
+        scaled_padding_right = int(5 * self.dpi_scale)
+        scaled_border_radius = int(2.5 * self.dpi_scale)
+        scaled_min_width = int(40 * self.dpi_scale)
+        scaled_font_size = int(8 * self.dpi_scale)
+        scaled_border = int(0.5 * self.dpi_scale)
         
         # 添加Cube色彩映射控件
         # 创建Cube文件选择按钮
@@ -807,13 +807,13 @@ class VideoPlayer(QWidget):
         # 创建纵向布局
         volume_layout = QVBoxLayout(volume_content)
         volume_layout.setContentsMargins(0, 0, 0, 0)
-        volume_layout.setSpacing(int(10 * self.dpi_scale))
+        volume_layout.setSpacing(int(5 * self.dpi_scale))
         # 设置水平和垂直居中对齐
         volume_layout.setAlignment(Qt.AlignCenter)
         
         # 创建音量值显示标签
         self.volume_menu_label = QLabel(f"{initial_volume}%")
-        font_size = int(14 * self.dpi_scale)
+        font_size = int(7 * self.dpi_scale)
         self.volume_menu_label.setStyleSheet(
             "QLabel {" +
             #f"color: #333;" +
@@ -835,8 +835,8 @@ class VideoPlayer(QWidget):
         self.volume_menu_slider._handle_border_color = QColor(0, 120, 212)
         
         # 设置纵向滑块尺寸
-        scaled_width = int(40 * self.dpi_scale)
-        scaled_height = int(120 * self.dpi_scale)
+        scaled_width = int(20 * self.dpi_scale)
+        scaled_height = int(60 * self.dpi_scale)
         self.volume_menu_slider.setFixedSize(scaled_width, scaled_height)
         
         # 添加组件到布局
@@ -1055,8 +1055,8 @@ class VideoPlayer(QWidget):
                 self.filtered_video_frame.setMinimumSize(0, 0)
                 self.filtered_video_frame.resize(0, 0)
             else:
-                self.original_video_frame.setMinimumSize(150, 100)
-                self.filtered_video_frame.setMinimumSize(150, 100)
+                self.original_video_frame.setMinimumSize(75, 50)
+                self.filtered_video_frame.setMinimumSize(75, 50)
             
             # 添加到对比布局
             self.comparison_layout.addWidget(self.original_video_frame)
@@ -1321,7 +1321,7 @@ class VideoPlayer(QWidget):
                     
                     # 确保video_frame在布局中并显示
                     media_layout.addWidget(self.video_frame)
-                    self.video_frame.setMinimumSize(300, 200)
+                    self.video_frame.setMinimumSize(150, 100)
                     self.video_frame.show()
                     
                     # 主播放器加载并播放视频
@@ -1451,7 +1451,7 @@ class VideoPlayer(QWidget):
             cover_data: 封面数据（字节）
         """
         # 计算缩放后的封面大小（100dpx正方形）
-        scaled_cover_size = int(100 * self.dpi_scale)
+        scaled_cover_size = int(50 * self.dpi_scale)
         
         if cover_data:
             try:
@@ -1710,12 +1710,12 @@ class VideoPlayer(QWidget):
             return
         
         # 获取缩放参数
-        scaled_border = int(1 * self.dpi_scale)
-        scaled_padding = int(5 * self.dpi_scale)
-        scaled_padding_right = int(10 * self.dpi_scale)
-        scaled_border_radius = int(5 * self.dpi_scale)
-        scaled_min_width = int(80 * self.dpi_scale)
-        scaled_font_size = int(16 * self.dpi_scale)
+        scaled_border = int(0.5 * self.dpi_scale)
+        scaled_padding = int(2.5 * self.dpi_scale)
+        scaled_padding_right = int(5 * self.dpi_scale)
+        scaled_border_radius = int(2.5 * self.dpi_scale)
+        scaled_min_width = int(40 * self.dpi_scale)
+        scaled_font_size = int(8 * self.dpi_scale)
         
         # 使用CustomButton的set_button_type方法更新样式，保持一致性
         if is_active:

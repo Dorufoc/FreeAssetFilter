@@ -92,8 +92,8 @@ class PDFPreviewWidget(QWidget):
         layout = QVBoxLayout(self)
         
         # 使用DPI缩放因子调整边距和间距
-        scaled_margin = int(20 * self.dpi_scale)
-        scaled_spacing = int(15 * self.dpi_scale)
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_spacing = int(8 * self.dpi_scale)
         layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         layout.setSpacing(scaled_spacing)
         
@@ -145,7 +145,7 @@ class PDFPreviewWidget(QWidget):
         # 预览区域
         self.preview_container = QScrollArea()
         self.preview_container.setWidgetResizable(True)
-        scaled_min_height = int(500 * self.dpi_scale)
+        scaled_min_height = int(250 * self.dpi_scale)
         self.preview_container.setMinimumHeight(scaled_min_height)
         self.preview_container.setStyleSheet('''.QScrollArea {
             background-color: transparent;
@@ -168,13 +168,13 @@ class PDFPreviewWidget(QWidget):
         
         # 页面控制按钮
         page_control_layout = QHBoxLayout()
-        scaled_button_spacing = int(10 * self.dpi_scale)
+        scaled_button_spacing = int(5 * self.dpi_scale)
         page_control_layout.setSpacing(scaled_button_spacing)
         
         # 按钮样式
-        scaled_button_border_radius = int(8 * self.dpi_scale)
-        scaled_button_padding_v = int(12 * self.dpi_scale)
-        scaled_button_padding_h = int(24 * self.dpi_scale)
+        scaled_button_border_radius = int(4 * self.dpi_scale)
+        scaled_button_padding_v = int(6 * self.dpi_scale)
+        scaled_button_padding_h = int(12 * self.dpi_scale)
         
         self.prev_button = CustomButton("上一页", button_type="secondary")
         self.prev_button.setFont(self.global_font)
@@ -248,8 +248,8 @@ class PDFPreviewWidget(QWidget):
                 
                 # 获取预览区域的可用宽度
                 # 预览容器的宽度减去左右边距和页面内边距
-                scaled_margin = int(20 * self.dpi_scale)
-                scaled_padding = int(20 * self.dpi_scale)
+                scaled_margin = int(10 * self.dpi_scale)
+                scaled_padding = int(10 * self.dpi_scale)
                 available_width = self.preview_container.width() - (2 * scaled_margin) - (2 * scaled_padding)
                 
                 # 计算新的基准缩放因子，使页面宽度适应可用宽度
@@ -321,8 +321,8 @@ class PDFPreviewWidget(QWidget):
                 default_font_size = getattr(app, 'default_font_size', 18)
                 scaled_font_size = int(default_font_size * self.dpi_scale)
                 scaled_border_radius = int(8 * self.dpi_scale)
-                scaled_padding = int(20 * self.dpi_scale)
-                error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
+                scaled_padding = int(10 * self.dpi_scale)
+                    error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
                 self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
                 return False
             
@@ -343,8 +343,8 @@ class PDFPreviewWidget(QWidget):
                         
                         # 获取预览区域的可用宽度
                         # 预览容器的宽度减去左右边距和页面内边距
-                        scaled_margin = int(20 * self.dpi_scale)
-                        scaled_padding = int(20 * self.dpi_scale)
+                        scaled_margin = int(10 * self.dpi_scale)
+                        scaled_padding = int(10 * self.dpi_scale)
                         available_width = self.preview_container.width() - (2 * scaled_margin) - (2 * scaled_padding)
                         
                         # 计算基准缩放因子，使页面宽度适应可用宽度
@@ -372,8 +372,8 @@ class PDFPreviewWidget(QWidget):
                     app = QApplication.instance()
                     default_font_size = getattr(app, 'default_font_size', 18)
                     scaled_font_size = int(default_font_size * self.dpi_scale)
-                    scaled_border_radius = int(8 * self.dpi_scale)
-                    scaled_padding = int(20 * self.dpi_scale)
+                    scaled_border_radius = int(4 * self.dpi_scale)
+                    scaled_padding = int(10 * self.dpi_scale)
                     error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
                     self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
                     return False
@@ -386,7 +386,7 @@ class PDFPreviewWidget(QWidget):
             default_font_size = getattr(app, 'default_font_size', 18)
             scaled_font_size = int(default_font_size * self.dpi_scale)
             scaled_border_radius = int(8 * self.dpi_scale)
-            scaled_padding = int(20 * self.dpi_scale)
+            scaled_padding = int(10 * self.dpi_scale)
             error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
             self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
             return False
@@ -457,7 +457,7 @@ class PDFPreviewWidget(QWidget):
             error_label = QLabel(f"错误：无法渲染页 {page_num + 1}\n{str(e)}")
             scaled_font_size = int(14 * self.dpi_scale)
             scaled_border_radius = int(8 * self.dpi_scale)
-            scaled_padding = int(20 * self.dpi_scale)
+            scaled_padding = int(10 * self.dpi_scale)
             error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
             self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
             self.rendered_pages.append(error_label)
@@ -521,7 +521,7 @@ class PDFPreviewWidget(QWidget):
             current_pos = scroll_bar.value()
             page_height = 0
             if self.rendered_pages:
-                scaled_spacing = int(15 * self.dpi_scale)  # 与布局间距保持一致
+                scaled_spacing = int(8 * self.dpi_scale)  # 与布局间距保持一致
                 page_height = self.rendered_pages[0].height() + scaled_spacing  # 页面高度 + 间距
             scroll_bar.setValue(max(0, current_pos - page_height))
         except Exception as e:
@@ -537,7 +537,7 @@ class PDFPreviewWidget(QWidget):
             current_pos = scroll_bar.value()
             page_height = 0
             if self.rendered_pages:
-                scaled_spacing = int(15 * self.dpi_scale)  # 与布局间距保持一致
+                scaled_spacing = int(8 * self.dpi_scale)  # 与布局间距保持一致
                 page_height = self.rendered_pages[0].height() + scaled_spacing  # 页面高度 + 间距
             scroll_bar.setValue(current_pos + page_height)
         except Exception as e:
@@ -592,8 +592,8 @@ class PDFPreviewer(QWidget):
         self.setWindowTitle("PDF预览器")
         
         # 使用DPI缩放因子调整窗口大小
-        scaled_min_width = int(300 * self.dpi_scale)
-        scaled_min_height = int(480 * self.dpi_scale)
+        scaled_min_width = int(150 * self.dpi_scale)
+        scaled_min_height = int(240 * self.dpi_scale)
         self.setMinimumSize(scaled_min_width, scaled_min_height)
         
         # 创建UI组件

@@ -49,8 +49,8 @@ class CustomProgressBar(QWidget):
         self._orientation = self.Horizontal
         
         # 设置默认尺寸，应用DPI缩放
-        scaled_min_width = int(400 * self.dpi_scale)
-        scaled_min_height = int(28 * self.dpi_scale)
+        scaled_min_width = int(50 * self.dpi_scale)
+        scaled_min_height = int(7 * self.dpi_scale)
         self.setMinimumSize(scaled_min_width, scaled_min_height)
         self.setMaximumHeight(scaled_min_height)
         
@@ -90,9 +90,9 @@ class CustomProgressBar(QWidget):
             self._handle_color = QColor(0, 120, 212)  # #0078d4
             self._handle_hover_color = QColor(16, 110, 190)  # #106ebe
             self._handle_pressed_color = QColor(0, 90, 158)  # #005a9e
-        self._handle_radius = int(12 * self.dpi_scale)
-        self._bar_height = int(6 * self.dpi_scale)
-        self._bar_radius = int(3 * self.dpi_scale)
+        self._handle_radius = int(3 * self.dpi_scale)
+        self._bar_height = int(1.5 * self.dpi_scale)
+        self._bar_radius = int(1 * self.dpi_scale)
         
         # SVG 图标路径
         icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
@@ -116,9 +116,9 @@ class CustomProgressBar(QWidget):
             self._orientation = orientation
             
             # 应用DPI缩放因子到尺寸限制
-            scaled_min_width = int(400 * self.dpi_scale)
-            scaled_min_height = int(28 * self.dpi_scale)
-            scaled_square_dim = int(28 * self.dpi_scale)
+            scaled_min_width = int(200 * self.dpi_scale)
+            scaled_min_height = int(7 * self.dpi_scale)
+            scaled_square_dim = int(7 * self.dpi_scale)
             
             # 根据新方向更新尺寸限制
             if orientation == self.Horizontal:
@@ -537,9 +537,9 @@ class CustomValueBar(QWidget):
         self._interactive = interactive
         
         # 应用DPI缩放因子到尺寸
-        scaled_min_width = int(200 * self.dpi_scale)
-        scaled_min_height = int(28 * self.dpi_scale)
-        scaled_square_dim = int(28 * self.dpi_scale)
+        scaled_min_width = int(100 * self.dpi_scale)
+        scaled_min_height = int(7 * self.dpi_scale)
+        scaled_square_dim = int(7 * self.dpi_scale)
         
         # 根据方向设置最小和最大尺寸，应用DPI缩放
         if self._orientation == self.Horizontal:
@@ -557,9 +557,9 @@ class CustomValueBar(QWidget):
         self._last_pos = 0
         
         # 外观属性，应用DPI缩放
-        self._handle_radius = int(12 * self.dpi_scale)
-        self._bar_size = int(6 * self.dpi_scale)  # 横向时为高度，竖向时为宽度
-        self._bar_radius = int(3 * self.dpi_scale)
+        self._handle_radius = int(3 * self.dpi_scale)
+        self._bar_size = int(1.5 * self.dpi_scale)  # 横向时为高度，竖向时为宽度
+        self._bar_radius = int(1 * self.dpi_scale)
         
         # 尝试从应用实例获取主题颜色
         app = QApplication.instance()
@@ -583,7 +583,7 @@ class CustomValueBar(QWidget):
             self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
             self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
         
-        self._handle_border_width = int(2 * self.dpi_scale)  # 边框宽度，响应DPI缩放
+        self._handle_border_width = int(1 * self.dpi_scale)  # 边框宽度，响应DPI缩放
     
     def setRange(self, minimum, maximum):
         """
@@ -624,9 +624,9 @@ class CustomValueBar(QWidget):
             self._orientation = orientation
             
             # 应用DPI缩放因子到尺寸
-            scaled_min_width = int(200 * self.dpi_scale)
-            scaled_min_height = int(28 * self.dpi_scale)
-            scaled_square_dim = int(28 * self.dpi_scale)
+            scaled_min_width = int(100 * self.dpi_scale)
+            scaled_min_height = int(14 * self.dpi_scale)
+            scaled_square_dim = int(14 * self.dpi_scale)
             
             # 根据新方向更新尺寸限制，应用DPI缩放
             if orientation == self.Horizontal:

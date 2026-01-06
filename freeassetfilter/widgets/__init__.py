@@ -13,6 +13,8 @@ from .window_widgets import CustomWindow, CustomMessageBox
 from .custom_file_horizontal_card import CustomFileHorizontalCard
 # 导入悬浮详细信息组件
 from .hover_tooltip import HoverTooltip
+# 导入自定义表格组件
+from .table_widgets import CustomTimelineTable, CustomMatrixTable
 
 __all__ = [
     'CustomButton',
@@ -20,5 +22,7 @@ __all__ = [
     'CustomWindow',
     'CustomMessageBox',
     'CustomFileHorizontalCard',
-    'HoverTooltip'
+    'HoverTooltip',
+    'CustomTimelineTable',
+    'CustomMatrixTable'
 ]

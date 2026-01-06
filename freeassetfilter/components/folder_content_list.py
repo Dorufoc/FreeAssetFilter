@@ -72,8 +72,8 @@ class FolderContentList(QWidget):
         初始化用户界面
         """
         # 应用DPI缩放因子到布局参数
-        scaled_spacing = int(10 * self.dpi_scale)
-        scaled_margin = int(10 * self.dpi_scale)
+        scaled_spacing = int(5 * self.dpi_scale)
+        scaled_margin = int(5 * self.dpi_scale)
         
         # 获取应用实例
         from PyQt5.QtWidgets import QApplication

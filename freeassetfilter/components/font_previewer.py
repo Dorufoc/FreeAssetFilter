@@ -84,8 +84,8 @@ class FontPreviewWidget(QWidget):
         layout = QVBoxLayout(self)
         
         # 应用DPI缩放因子到边距和间距
-        scaled_margin = int(20 * self.dpi_scale)
-        scaled_spacing = int(10 * self.dpi_scale)
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_spacing = int(5 * self.dpi_scale)
         layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         layout.setSpacing(scaled_spacing)
         
@@ -115,7 +115,7 @@ class FontPreviewWidget(QWidget):
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
         self.preview_text.setStyleSheet("background-color: white; color: black; font-family: Arial;")
-        scaled_min_height = int(400 * self.dpi_scale)
+        scaled_min_height = int(200 * self.dpi_scale)
         self.preview_text.setMinimumHeight(scaled_min_height)
         self.preview_text.setPlainText(self.sample_texts[self.current_sample_type])
         layout.addWidget(self.preview_text)
@@ -213,8 +213,8 @@ class FontPreviewer(QMainWindow):
         self.setWindowTitle("字体预览器")
         
         # 应用DPI缩放因子到窗口大小
-        scaled_width = int(1000 * self.dpi_scale)
-        scaled_height = int(800 * self.dpi_scale)
+        scaled_width = int(500 * self.dpi_scale)
+        scaled_height = int(400 * self.dpi_scale)
         self.setGeometry(100, 100, scaled_width, scaled_height)
         
         # 创建UI
@@ -229,12 +229,12 @@ class FontPreviewer(QMainWindow):
         self.setCentralWidget(central_widget)
         
         # 应用DPI缩放因子到布局参数
-        scaled_margin = int(20 * self.dpi_scale)
-        scaled_spacing = int(20 * self.dpi_scale)
-        scaled_small_spacing = int(10 * self.dpi_scale)
-        scaled_panel_min_width = int(280 * self.dpi_scale)
-        scaled_radius = int(12 * self.dpi_scale)
-        scaled_padding = int(20 * self.dpi_scale)
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_spacing = int(10 * self.dpi_scale)
+        scaled_small_spacing = int(5 * self.dpi_scale)
+        scaled_panel_min_width = int(140 * self.dpi_scale)
+        scaled_radius = int(6 * self.dpi_scale)
+        scaled_padding = int(10 * self.dpi_scale)
         
         # 创建主布局
         main_layout = QHBoxLayout(central_widget)
@@ -285,9 +285,9 @@ class FontPreviewer(QMainWindow):
         scaled_group_font_size = int(default_font_size * self.dpi_scale)
         scaled_group_border_radius = int(8 * self.dpi_scale)
         scaled_group_padding = int(15 * self.dpi_scale)
-        scaled_group_title_left = int(15 * self.dpi_scale)
-        scaled_group_title_top = int(10 * self.dpi_scale)
-        scaled_group_title_padding = int(8 * self.dpi_scale)
+        scaled_group_title_left = int(8 * self.dpi_scale)
+        scaled_group_title_top = int(5 * self.dpi_scale)
+        scaled_group_title_padding = int(4 * self.dpi_scale)
         
         file_group.setStyleSheet(f"""
         .QGroupBox {
@@ -315,9 +315,9 @@ class FontPreviewer(QMainWindow):
         self.open_button.clicked.connect(self.open_file)
         
         # 应用DPI缩放因子到按钮样式
-        scaled_button_radius = int(8 * self.dpi_scale)
-        scaled_button_padding_v = int(12 * self.dpi_scale)
-        scaled_button_padding_h = int(20 * self.dpi_scale)
+        scaled_button_radius = int(4 * self.dpi_scale)
+        scaled_button_padding_v = int(6 * self.dpi_scale)
+        scaled_button_padding_h = int(10 * self.dpi_scale)
         # 使用全局默认字体大小
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 18)
@@ -404,8 +404,8 @@ class FontPreviewer(QMainWindow):
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 18)
         scaled_label_font_size = int(default_font_size * self.dpi_scale)
-        scaled_label_radius = int(4 * self.dpi_scale)
-        scaled_label_padding = int(6 * self.dpi_scale)
+        scaled_label_radius = int(2 * self.dpi_scale)
+        scaled_label_padding = int(3 * self.dpi_scale)
         
         row = 0
         for key, label in self.font_info_labels.items():

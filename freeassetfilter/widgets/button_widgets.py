@@ -28,7 +28,7 @@ class CustomButton(QPushButton):
     - 支持文字和图标两种显示模式
     """
     
-    def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text", height=40, tooltip_text=""):
+    def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text", height=20, tooltip_text=""):
         """
         初始化自定义按钮
         
@@ -82,13 +82,13 @@ class CustomButton(QPushButton):
         settings_manager = SettingsManager()
         current_colors = settings_manager.get_setting("appearance.colors", {})
         
-        # 使用最新的DPI缩放因子重新计算按钮高度
+        # 使用最新的DPI缩放因子重新计算按钮高度（保持原始值，因为我们已经在初始化时减半了）
         self._height = int(self._original_height * self.dpi_scale)
         
         # 添加阴影效果，应用最新的DPI缩放
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(int(2 * self.dpi_scale))
-        shadow.setOffset(0, int(2 * self.dpi_scale))
+        shadow.setBlurRadius(int(1 * self.dpi_scale))
+        shadow.setOffset(0, int(1 * self.dpi_scale))
         # 正确设置阴影颜色：黑色，带有适当的透明度
         shadow.setColor(QColor(0, 0, 0, 0))  # 使用黑色阴影更明显
         self.setGraphicsEffect(shadow)
@@ -106,11 +106,11 @@ class CustomButton(QPushButton):
         if self._display_mode == "icon":
             scaled_border_radius = self._height // 2
         else:
-            scaled_border_radius = int(20 * self.dpi_scale)
-        scaled_padding = f"{int(8 * self.dpi_scale)}px {int(12 * self.dpi_scale)}px"
+            scaled_border_radius = int(10 * self.dpi_scale)
+        scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
         scaled_font_size = int(default_font_size * self.dpi_scale)
-        scaled_border_width = int(2 * self.dpi_scale)  # 边框宽度随DPI缩放
-        scaled_primary_border_width = int(1 * self.dpi_scale)  # 主要按钮边框宽度随DPI缩放
+        scaled_border_width = int(1 * self.dpi_scale)  # 边框宽度随DPI缩放
+        scaled_primary_border_width = int(0.5 * self.dpi_scale)  # 主要按钮边框宽度随DPI缩放
         
         # 更新全局字体大小，确保文字显示正确
         self.global_font = getattr(app, 'global_font', QFont())
@@ -125,8 +125,8 @@ class CustomButton(QPushButton):
         else:
             # 文字模式，确保按钮有足够的宽度
             self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            # 设置最小宽度，确保短文字按钮不会太小，应用DPI缩放
-            self.setMinimumWidth(int(100 * self.dpi_scale))
+            # 设置最小宽度，确保短文字按钮不会太小，应用DPI缩放（调整为原始的一半）
+            self.setMinimumWidth(int(25 * self.dpi_scale))
             self.setMaximumWidth(16777215)
             # 确保按钮宽度能容纳文字内容
             self.adjustSize()
@@ -349,7 +349,7 @@ class CustomButton(QPushButton):
                 # 先获取按钮的实际尺寸，考虑DPI缩放
                 button_size = min(self.width(), self.height())
                 # 图标大小为按钮尺寸的90%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
-                icon_size = button_size * 0.6
+                icon_size = button_size * 0.3
                 # 使用项目中已有的SvgRenderer渲染SVG图标，传递DPI缩放因子
                 self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size), self.dpi_scale)
             else:
@@ -420,7 +420,7 @@ class CustomButton(QPushButton):
                     
                     # 计算合适的图标大小，确保图标不会超出按钮范围
                     button_size = min(self.width(), self.height())
-                    icon_size = button_size * 0.6
+                    icon_size = button_size * 0.3
                     
                     # 计算图标绘制位置（居中）
                     icon_rect = painter.window()

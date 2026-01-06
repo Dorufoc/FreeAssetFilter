@@ -49,9 +49,9 @@ class CustomSelectListItem(QWidget):
         初始化列表项UI
         """
         # 应用DPI缩放
-        scaled_icon_size = int(24 * self.dpi_scale)
-        scaled_margin = int(8 * self.dpi_scale)  # 外部边距
-        text_margin = int(6 * self.dpi_scale)  # 6dx文本边距
+        scaled_icon_size = int(6 * self.dpi_scale)
+        scaled_margin = int(2 * self.dpi_scale)  # 外部边距
+        text_margin = int(1.5 * self.dpi_scale)  # 1.5dx文本边距
         
         # 主布局
         main_layout = QHBoxLayout(self)
@@ -134,7 +134,7 @@ class CustomSelectListItem(QWidget):
         """
         更新列表项样式
         """
-        scaled_radius = int(8 * self.dpi_scale)
+        scaled_radius = int(2 * self.dpi_scale)
         
         # 获取主题颜色
         app = QApplication.instance()
@@ -217,7 +217,7 @@ class CustomSelectList(QWidget):
     itemDoubleClicked = pyqtSignal(int)  # 单项双击信号，传递索引
     selectionChanged = pyqtSignal(list)  # 选择变化信号，传递选中索引列表
     
-    def __init__(self, parent=None, default_width=300, default_height=200, min_width=200, min_height=150, selection_mode="single"):
+    def __init__(self, parent=None, default_width=75, default_height=50, min_width=50, min_height=37.5, selection_mode="single"):
         """
         初始化自定义选择列表
         
@@ -301,14 +301,14 @@ class CustomSelectList(QWidget):
                 border: none;
             }}
             QScrollBar:vertical {{
-                width: 8px;
+                width: 2px;
                 background: {scrollbar_bg};
-                border-radius: 3px;
+                border-radius: 0.5px;
             }}
             QScrollBar::handle:vertical {{
                 background: {scrollbar_handle};
-                border-radius: 3px;
-                min-height: 20px;
+                border-radius: 0.5px;
+                min-height: 10px;
             }}
             QScrollBar::handle:vertical:hover {{
                 background: {scrollbar_handle_hover};
@@ -352,7 +352,7 @@ class CustomSelectList(QWidget):
         self.content_layout.addWidget(item_widget)
         
         # 设置间距，应用DPI缩放
-        scaled_spacing = int(4 * self.dpi_scale)
+        scaled_spacing = int(1 * self.dpi_scale)
         self.content_layout.setSpacing(scaled_spacing)
     
     def add_items(self, items):

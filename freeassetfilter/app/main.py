@@ -81,8 +81,8 @@ class FreeAssetFilterApp(QMainWindow):
         available_height = available_geometry.height()
         
         # 使用DPI缩放因子调整窗口大小，但不超过屏幕可用尺寸
-        # 调整为更合理的基础宽度，确保有足够空间显示3列卡片，同时避免出现过多空白区域
-        window_width = int(1700 * self.dpi_scale)
+        # 调整为更合理的基础宽度，确保有足够空间显示3列卡片，同时避免出现过多空白区域（调整为原始的一半）
+        window_width = int(850 * self.dpi_scale)
         # 计算16:10比例的高度，保持宽度不变
         window_height = int(window_width * (10/16))
         
@@ -111,7 +111,9 @@ class FreeAssetFilterApp(QMainWindow):
         self.file_selector_counter = 0
         
         # 获取全局字体并应用DPI缩放
-        self.global_font = getattr(app, 'global_font', QFont())
+        global_font = getattr(app, 'global_font', QFont())
+        # 创建全局字体的副本，避免修改全局字体对象
+        self.global_font = QFont(global_font)
         # 根据DPI缩放因子调整字体大小
         font_size = self.global_font.pointSize()
         if font_size > 0:
@@ -137,6 +139,14 @@ class FreeAssetFilterApp(QMainWindow):
         # 保存文件存储池状态，传递文件选择器的当前路径
         if hasattr(self, 'file_staging_pool'):
             self.file_staging_pool.save_backup(last_path)
+        
+        # 检查并执行缩略图缓存自动清理
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager') and app.settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
+            from freeassetfilter.core.thumbnail_cleaner import get_thumbnail_cleaner
+            thumbnail_cleaner = get_thumbnail_cleaner()
+            deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails()
+            print(f"[DEBUG] 退出前自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
 
         # 清理统一预览器中的临时PDF文件
         if hasattr(self, 'unified_previewer'):
@@ -261,8 +271,6 @@ class FreeAssetFilterApp(QMainWindow):
         right_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
         right_layout = QVBoxLayout(right_column)
         
-
-        
         # 统一文件预览器
         self.unified_previewer = UnifiedPreviewer()
         right_layout.addWidget(self.unified_previewer, 1)
@@ -272,11 +280,11 @@ class FreeAssetFilterApp(QMainWindow):
         splitter.addWidget(middle_column)
         splitter.addWidget(right_column)
         
-        # 使用DPI缩放因子调整分割器初始大小，确保文件选择器有足够宽度显示3列卡片
+        # 使用DPI缩放因子调整分割器初始大小，确保文件选择器有足够宽度显示3列卡片（调整为原始的一半）
         # 确保文件选择器的初始宽度足够显示3列卡片
         # 中间临时存储池：适中大小
         # 右侧预览器：较大宽度，适合预览
-        scaled_sizes = [int(400 * self.dpi_scale), int(300 * self.dpi_scale), int(600 * self.dpi_scale)]
+        scaled_sizes = [int(200 * self.dpi_scale), int(150 * self.dpi_scale), int(300 * self.dpi_scale)]
         splitter.setSizes(scaled_sizes)
         
         # 连接文件选择器的信号到预览器
@@ -745,7 +753,7 @@ def main():
     # 计算DPI缩放因子
     
     # 固定DPI缩放因子为0.5，禁用根据屏幕分辨率自动识别的功能
-    app.dpi_scale_factor = 0.5
+    app.dpi_scale_factor = 1.0
     # 输出调试信息
     print(f"[DEBUG] 当前DPI缩放因子: {app.dpi_scale_factor:.2f}")
     
@@ -754,6 +762,13 @@ def main():
     
     # 将全局字体存储到app对象中，方便其他组件访问
     app.global_font = global_font
+    
+    # 检查并执行缩略图缓存自动清理
+    if settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
+        from freeassetfilter.core.thumbnail_cleaner import get_thumbnail_cleaner
+        thumbnail_cleaner = get_thumbnail_cleaner()
+        deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails()
+        print(f"[DEBUG] 自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
     
     window = FreeAssetFilterApp()
     # 窗口启动时窗口化显示

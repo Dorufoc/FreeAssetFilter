@@ -209,8 +209,8 @@ class TextPreviewWidget(QWidget):
         layout = QVBoxLayout(self)
         
         # 应用DPI缩放因子到布局参数
-        scaled_margin = int(20 * self.dpi_scale)
-        scaled_spacing = int(15 * self.dpi_scale)
+        scaled_margin = int(10 * self.dpi_scale)
+        scaled_spacing = int(8 * self.dpi_scale)
         layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         layout.setSpacing(scaled_spacing)
         
@@ -223,18 +223,18 @@ class TextPreviewWidget(QWidget):
         
         # 预览模式选择
         mode_layout = QGridLayout()
-        mode_layout.setSpacing(int(10 * self.dpi_scale))
+        mode_layout.setSpacing(int(5 * self.dpi_scale))
         mode_layout.setColumnStretch(4, 1)  # 最后一列添加拉伸
         
         # 使用全局默认字体大小
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
+        default_font_size = getattr(app, 'default_font_size', 9)
         scaled_font_size = int(default_font_size * self.dpi_scale)
-        scaled_padding_v = int(8 * self.dpi_scale)
-        scaled_padding_h = int(12 * self.dpi_scale)
-        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_padding_v = int(4 * self.dpi_scale)
+        scaled_padding_h = int(6 * self.dpi_scale)
+        scaled_border_radius = int(4 * self.dpi_scale)
         scaled_combo_font_size = int(default_font_size * self.dpi_scale)
-        scaled_max_width = int(200 * self.dpi_scale)  # 下拉框最大宽度
+        scaled_max_width = int(100 * self.dpi_scale)  # 下拉框最大宽度
         
         # 第一行：预览模式
         mode_label = QLabel("预览模式:")
@@ -360,7 +360,7 @@ class TextPreviewWidget(QWidget):
         
         # 预览区域
         self.web_view = QWebEngineView()
-        scaled_min_height = int(500 * self.dpi_scale)
+        scaled_min_height = int(250 * self.dpi_scale)
         self.web_view.setMinimumHeight(scaled_min_height)
         self.web_view.setStyleSheet(f"background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px;")
         # 为WebView添加自定义上下文菜单

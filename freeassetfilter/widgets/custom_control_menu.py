@@ -53,9 +53,9 @@ class CustomControlMenu(QWidget):
         # 外观属性，应用DPI缩放
         self._bg_color = QColor(255, 255, 255)  # 白色背景
         self._shadow_color = QColor(0, 0, 0, 25)  # 阴影颜色，透明度25/255
-        self._shadow_radius = int(4 * self.dpi_scale)  # 阴影半径
-        self._border_radius = int(8 * self.dpi_scale)  # 圆角半径
-        self._padding = int(10 * self.dpi_scale)  # 内边距
+        self._shadow_radius = int(1 * self.dpi_scale)  # 阴影半径
+        self._border_radius = int(2 * self.dpi_scale)  # 圆角半径
+        self._padding = int(2.5 * self.dpi_scale)  # 内边距
         
         # 布局属性
         self._content_layout = None
@@ -86,7 +86,7 @@ class CustomControlMenu(QWidget):
         # 创建内容布局
         self._content_layout = QVBoxLayout(self.content_container)
         self._content_layout.setContentsMargins(self._padding, self._padding, self._padding, self._padding)
-        self._content_layout.setSpacing(int(10 * self.dpi_scale))
+        self._content_layout.setSpacing(int(2.5 * self.dpi_scale))
         
         main_layout.addWidget(self.content_container)
     
@@ -178,11 +178,11 @@ class CustomControlMenu(QWidget):
         x = content_center_x - (self._shadow_radius + content_width // 2)
         
         # 垂直位置：根据position属性设置
-        y = button_global_pos.y() - menu_height - int(10 * self.dpi_scale)
+        y = button_global_pos.y() - menu_height - int(2.5 * self.dpi_scale)
         
         # 如果设置为下方位置
         if self._position == "bottom":
-            y = button_global_pos.y() + button_frame.height() + int(10 * self.dpi_scale)
+            y = button_global_pos.y() + button_frame.height() + int(2.5 * self.dpi_scale)
         
         # 确保菜单在屏幕内
         screen = self.screen()
@@ -197,10 +197,10 @@ class CustomControlMenu(QWidget):
         # 垂直边界检查
         if y < 0:
             # 如果位置在上方但顶部超出屏幕，则显示在下方
-            y = button_global_pos.y() + button_frame.height() + int(10 * self.dpi_scale)
+            y = button_global_pos.y() + button_frame.height() + int(2.5 * self.dpi_scale)
         elif y + menu_height > screen_rect.height():
             # 如果位置在下方但底部超出屏幕，则显示在上方
-            y = button_global_pos.y() - menu_height - int(10 * self.dpi_scale)
+            y = button_global_pos.y() - menu_height - int(5 * self.dpi_scale)
         
         # 设置菜单位置
         self.move(x, y)

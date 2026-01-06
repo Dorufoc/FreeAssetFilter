@@ -75,7 +75,7 @@ class CustomSettingItem(QWidget):
         self.setFont(self.global_font)
         
         # 从app对象获取全局默认字体大小，确保使用正确的默认值
-        self.default_font_size = getattr(app, 'default_font_size', 20)
+        self.default_font_size = getattr(app, 'default_font_size', 10)
         
         # 设置基本属性
         self.text = text
@@ -91,22 +91,22 @@ class CustomSettingItem(QWidget):
         # 设置主布局
         main_layout = QHBoxLayout(self)
         # 应用DPI缩放因子到边距
-        scaled_margin = int(12 * self.dpi_scale)
-        scaled_spacing = int(16 * self.dpi_scale)
+        scaled_margin = int(3 * self.dpi_scale)
+        scaled_spacing = int(2 * self.dpi_scale)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(scaled_spacing)
         
         # 设置背景色、圆角、边框和阴影，创建完整的卡片效果
         self.setObjectName("CustomSettingItem")
         # 应用DPI缩放因子到卡片样式参数
-        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_border_radius = int(2 * self.dpi_scale)
         scaled_border_width = int(1 * self.dpi_scale)
         
         # 添加阴影效果，增强视觉层次感
         from PyQt5.QtWidgets import QGraphicsDropShadowEffect
         shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(int(4 * self.dpi_scale))
-        shadow.setOffset(0, int(2 * self.dpi_scale))
+        shadow.setBlurRadius(int(1 * self.dpi_scale))
+        shadow.setOffset(0, int(1 * self.dpi_scale))
         shadow.setColor(QColor(0, 0, 0, 15))
         self.setGraphicsEffect(shadow)
         
@@ -157,7 +157,7 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(int(4 * self.dpi_scale))  # 添加适当间距，避免文字重叠
+        layout.setSpacing(int(1 * self.dpi_scale))  # 添加适当间距，避免文字重叠
         
         # 主文本
         self.main_text_label = QLabel(self.text)
@@ -269,7 +269,7 @@ class CustomSettingItem(QWidget):
         # 设置布局约束，允许完全自适应内容大小
         layout.setSizeConstraint(layout.SetMinAndMaxSize)
         # 应用DPI缩放因子到按钮间距
-        scaled_spacing = int(8 * self.dpi_scale)
+        scaled_spacing = int(2 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
         
         # 获取按钮配置
@@ -313,7 +313,7 @@ class CustomSettingItem(QWidget):
         # 设置布局约束，允许完全自适应内容大小
         layout.setSizeConstraint(layout.SetMinAndMaxSize)
         # 应用DPI缩放因子到组件间距
-        scaled_spacing = int(8 * self.dpi_scale)
+        scaled_spacing = int(2 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
         
         # 创建文本输入框
@@ -322,7 +322,7 @@ class CustomSettingItem(QWidget):
         self.input_box = CustomInputBox(
             placeholder_text=placeholder,
             initial_text=initial_text,
-            height=32  # 固定高度，与按钮匹配
+            height=8  # 固定高度，与按钮匹配
         )
         
         # 创建按钮
@@ -355,7 +355,7 @@ class CustomSettingItem(QWidget):
         # 设置布局约束，允许完全自适应内容大小
         layout.setSizeConstraint(layout.SetMinAndMaxSize)
         # 应用DPI缩放因子到组件间距
-        scaled_spacing = int(8 * self.dpi_scale)
+        scaled_spacing = int(4 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
         
         # 数值控制条

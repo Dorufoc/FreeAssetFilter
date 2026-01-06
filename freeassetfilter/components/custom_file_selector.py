@@ -73,12 +73,12 @@ class CustomFileSelector(QWidget):
         # 设置组件字体
         self.setFont(self.global_font)
         
-        # 设置最小宽度，确保能容纳3列卡片并有空间放下滚动条，并应用DPI缩放
+        # 设置最小宽度，确保能容纳3列卡片并有空间放下滚动条，并应用DPI缩放（调整为原始的一半）
         # 计算方式：3列卡片宽度 + 间距 + 左右边距 + 滚动条宽度
-        card_width = int(140 * self.dpi_scale)  # 卡片宽度
-        spacing = int(10 * self.dpi_scale)  # 卡片间距
-        margin = int(10 * self.dpi_scale)  # 单边边距
-        scrollbar_width = int(20 * self.dpi_scale)  # 滚动条宽度估计值
+        card_width = int(35 * self.dpi_scale)  # 卡片宽度（调整为原始的一半）
+        spacing = int(2.5 * self.dpi_scale)  # 卡片间距（调整为原始的一半）
+        margin = int(2.5 * self.dpi_scale)  # 单边边距（调整为原始的一半）
+        scrollbar_width = int(10 * self.dpi_scale)  # 滚动条宽度估计值（保持不变）
         
         # 3列卡片总宽度 = 3*卡片宽度 + 2*间距（因为3列只有2个间距）
         cards_total_width = 3 * card_width + 2 * spacing
@@ -88,8 +88,8 @@ class CustomFileSelector(QWidget):
         total_min_width = cards_total_width + margins_total + scrollbar_width
         
         # 强制设置文件选择器的最小宽度，确保能显示3列卡片
-        # 3列所需宽度：3*140px + 2*10px + 2*10px + 20px = 420px + 20px + 20px + 20px = 480px
-        min_three_columns_width = int(480 * self.dpi_scale)  # 确保有足够宽度显示3列
+        # 3列所需宽度：3*70px + 2*5px + 2*5px + 20px = 210px + 10px + 10px + 20px = 250px
+        min_three_columns_width = int(120 * self.dpi_scale)  # 确保有足够宽度显示3列（调整为原始的一半）
         
         # 直接设置固定的最小宽度，不进行复杂计算
         self.setMinimumWidth(min_three_columns_width)
@@ -196,8 +196,8 @@ class CustomFileSelector(QWidget):
             background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
         self.setStyleSheet(f"background-color: {background_color};")
         # 应用DPI缩放因子到布局参数
-        scaled_spacing = int(10 * self.dpi_scale)
-        scaled_margin = int(10 * self.dpi_scale)
+        scaled_spacing = int(2.5 * self.dpi_scale)
+        scaled_margin = int(2.5 * self.dpi_scale)
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
@@ -235,14 +235,14 @@ class CustomFileSelector(QWidget):
         # 盘符选择器
         self.drive_combo = CustomDropdownMenu(self, position="bottom")
         # 设置固定宽度，增加盘符选择器的宽度，应用DPI缩放
-        scaled_drive_width = int(80 * self.dpi_scale)
+        scaled_drive_width = int(40 * self.dpi_scale)
         self.drive_combo.set_fixed_width(scaled_drive_width)
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
         self.drive_combo.itemClicked.connect(self._on_drive_changed)
         # 设置字体大小与全局默认字体大小一致
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
+        default_font_size = getattr(app, 'default_font_size', 9)
         scaled_font_size = int(default_font_size * self.dpi_scale)
         drive_combo_font = QFont(self.global_font)
         drive_combo_font.setPointSize(scaled_font_size)
@@ -252,7 +252,7 @@ class CustomFileSelector(QWidget):
         # 目录显示区域（可编辑）
         self.path_edit = CustomInputBox(
             placeholder_text="输入路径",
-            height=40
+            height=20
         )
         self.path_edit.line_edit.returnPressed.connect(self.go_to_path)
         dir_layout.addWidget(self.path_edit, 1)
@@ -345,8 +345,8 @@ class CustomFileSelector(QWidget):
         self.files_layout = QGridLayout(self.files_container)
         self.files_container.setStyleSheet("QWidget { border: 0px solid #e0e0e0; }")# 控制文件容器边框
         # 应用DPI缩放因子到卡片间距和边距
-        scaled_card_spacing = int(10 * self.dpi_scale)
-        scaled_card_margin = int(10 * self.dpi_scale)
+        scaled_card_spacing = int(5 * self.dpi_scale)
+        scaled_card_margin = int(5 * self.dpi_scale)
         self.files_layout.setSpacing(scaled_card_spacing)  # 卡片间距随DPI调整
         self.files_layout.setContentsMargins(scaled_card_margin, scaled_card_margin, scaled_card_margin, scaled_card_margin)  # 卡片边距随DPI调整
         # 左对齐，按用户要求调整
@@ -657,11 +657,11 @@ class CustomFileSelector(QWidget):
                     # 计算新尺寸，保持原始比例，最大尺寸为128x128
                     if aspect_ratio > 1:
                         # 宽图，以宽度为基准
-                        new_width = 128
+                        new_width = 64
                         new_height = int(new_width / aspect_ratio)
                     else:
                         # 高图或正方形，以高度为基准
-                        new_height = 128
+                        new_height = 64
                         new_width = int(new_height * aspect_ratio)
                     
                     # 调整大小，保持原始比例
@@ -967,7 +967,7 @@ class CustomFileSelector(QWidget):
         """
         # 使用全局默认字体大小
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
+        default_font_size = getattr(app, 'default_font_size', 9)
         scaled_font_size = int(default_font_size * self.dpi_scale)
         
         # 创建自定义提示窗
@@ -981,7 +981,7 @@ class CustomFileSelector(QWidget):
             list_items.append(text)
         
         # 设置列表
-        dialog.set_list(list_items, selection_mode="single", default_width=370, default_height=200)
+        dialog.set_list(list_items, selection_mode="single", default_width=185, default_height=100)
         
         # 获取列表实例
         favorites_list = dialog._list
@@ -1897,9 +1897,9 @@ class CustomFileSelector(QWidget):
         viewport_width = scroll_area.viewport().width()
         
         # 定义卡片属性，应用DPI缩放
-        card_width = int(140 * self.dpi_scale)  # 卡片固定宽度，考虑DPI缩放
-        spacing = int(10 * self.dpi_scale)  # 卡片之间的间距，考虑DPI缩放
-        actual_margin = int(10 * self.dpi_scale)  # 单边实际边距，与布局设置一致
+        card_width = int(70 * self.dpi_scale)  # 卡片固定宽度，考虑DPI缩放
+        spacing = int(5 * self.dpi_scale)  # 卡片之间的间距，考虑DPI缩放
+        actual_margin = int(5 * self.dpi_scale)  # 单边实际边距，与布局设置一致
         margin = actual_margin * 2  # 左右边距总和
         
         # 可用宽度 = 视口宽度 - 左右边距
@@ -1979,18 +1979,18 @@ class CustomFileSelector(QWidget):
         创建单个文件卡片
         """
         # 应用DPI缩放因子到卡片尺寸和样式
-        scaled_card_width = int(140 * self.dpi_scale)
-        scaled_border_radius = int(8 * self.dpi_scale)
-        scaled_border_width = int(2 * self.dpi_scale)
-        scaled_padding = int(8 * self.dpi_scale)
+        scaled_card_width = int(70 * self.dpi_scale)
+        scaled_border_radius = int(4 * self.dpi_scale)
+        scaled_border_width = int(1 * self.dpi_scale)
+        scaled_padding = int(4 * self.dpi_scale)
         
         # 应用DPI缩放因子到内部元素
-        scaled_spacing = int(5 * self.dpi_scale)
-        scaled_margin = int(5 * self.dpi_scale)
-        scaled_icon_size = int(120 * self.dpi_scale)
+        scaled_spacing = int(2.5 * self.dpi_scale)
+        scaled_margin = int(2.5 * self.dpi_scale)
+        scaled_icon_size = int(60 * self.dpi_scale)
         # 使用全局默认字体大小
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
+        default_font_size = getattr(app, 'default_font_size', 9)
         scaled_font_size = int(default_font_size * self.dpi_scale)
         
         # 计算文字标签高度
@@ -2008,7 +2008,7 @@ class CustomFileSelector(QWidget):
         total_height += scaled_padding * 2  # 上下内边距
         
         # 确保总高度有一个合理的最小值
-        scaled_card_height = max(int(180 * self.dpi_scale), total_height)
+        scaled_card_height = max(int(90 * self.dpi_scale), total_height)
         
         # 创建卡片容器
         card = QWidget()
@@ -2044,7 +2044,7 @@ class CustomFileSelector(QWidget):
             card.is_selected = True
         
         # 计算文本最大宽度
-        scaled_max_width = int(110 * self.dpi_scale)
+        scaled_max_width = int(55 * self.dpi_scale)
         
         # 创建卡片布局
         layout = QVBoxLayout(card)
@@ -2095,7 +2095,7 @@ class CustomFileSelector(QWidget):
         temp_font = QFont(self.global_font)
         # 使用全局默认字体大小
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
+        default_font_size = getattr(app, 'default_font_size', 9)
         scaled_size_font_size = int(default_font_size * self.dpi_scale // 1.3)
         temp_font.setPointSize(scaled_size_font_size)
         size_label.setFont(temp_font)
@@ -2113,7 +2113,7 @@ class CustomFileSelector(QWidget):
         temp_font = QFont(self.global_font)
         # 使用全局默认字体大小
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
+        default_font_size = getattr(app, 'default_font_size', 9)
         scaled_modified_font_size = int(default_font_size * self.dpi_scale // 1.3)
         temp_font.setPointSize(scaled_modified_font_size)
         modified_label.setFont(temp_font)
@@ -2178,7 +2178,7 @@ class CustomFileSelector(QWidget):
             suffix = file_info["suffix"].lower()
             if suffix in ["lnk", "exe"]:
                 # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
-                base_icon_size = int(120 * self.dpi_scale)
+                base_icon_size = int(60 * self.dpi_scale)
                 scaled_icon_size = int(base_icon_size * 0.8)
                 
                 # 创建标签显示图标
@@ -2793,7 +2793,7 @@ class CustomFileSelector(QWidget):
         close_btn = QPushButton("关闭")
         # 使用全局默认字体大小
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
+        default_font_size = getattr(app, 'default_font_size', 9)
         dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         scaled_font_size = int(default_font_size * dpi_scale)
         font = close_btn.font()
@@ -3030,10 +3030,10 @@ class CustomFileSelector(QWidget):
         """
         显示时间线窗口
         """
-        # 创建并显示时间线窗口
-        timeline_window = AutoTimeline(self)
-        timeline_window.setWindowFlags(Qt.Window)
-        timeline_window.show()
+        # 创建并显示时间线窗口 - 使用实例变量防止垃圾回收
+        self.timeline_window = AutoTimeline()
+        self.timeline_window.setWindowFlags(Qt.Window)
+        self.timeline_window.show()
 
 # 测试代码
 if __name__ == "__main__":

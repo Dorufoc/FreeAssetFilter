@@ -219,8 +219,8 @@ class ImageWidget(QWidget):
             if self.original_image:
                 # 获取父控件的大小（滚动区域的视口大小）
                 parent_size = self.parent().viewport().size() if hasattr(self.parent(), 'viewport') else self.parent().size() if self.parent() else QSize(800, 600)
-                available_width = parent_size.width() - 20  # 留出一些边距
-                available_height = parent_size.height() - 20
+                available_width = parent_size.width() - 10  # 留出一些边距
+                available_height = parent_size.height() - 10
                 
                 # 计算缩放因子
                 image_width = self.original_image.width()
@@ -604,8 +604,8 @@ class PhotoViewer(QWidget):
         self.setWindowTitle("照片查看器")
         
         # 使用DPI缩放因子调整窗口大小
-        scaled_min_width = int(800 * self.dpi_scale)
-        scaled_min_height = int(600 * self.dpi_scale)
+        scaled_min_width = int(400 * self.dpi_scale)
+        scaled_min_height = int(300 * self.dpi_scale)
         self.setMinimumSize(scaled_min_width, scaled_min_height)
         
         # 创建UI组件

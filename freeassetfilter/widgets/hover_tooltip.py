@@ -73,7 +73,7 @@ class HoverTooltip(QWidget):
             QLabel {
                 color: #666666;
                 background: transparent;
-                padding: 8px;
+                padding: 4px;
                 font-weight: 400;
             }
         """)
@@ -185,7 +185,8 @@ class HoverTooltip(QWidget):
         
         # 调整大小
         self.label.adjustSize()
-        self.resize(self.label.width() + 16, self.label.height() + 16)
+        margin = int(4 * self.dpi_scale)
+        self.resize(self.label.width() + margin, self.label.height() + margin)
         
         # 将文本标签在主容器中居中放置
         label_x = (self.width() - self.label.width()) // 2
@@ -194,14 +195,15 @@ class HoverTooltip(QWidget):
         
         # 设置位置（鼠标指针下方）
         pos = self.last_mouse_pos
-        pos.setY(pos.y() + 20)
+        pos.setY(pos.y() + int(5 * self.dpi_scale))
         
         # 确保提示框在屏幕内
         screen_rect = QApplication.desktop().screenGeometry()
+        margin = int(2.5 * self.dpi_scale)
         if pos.x() + self.width() > screen_rect.width():
-            pos.setX(screen_rect.width() - self.width() - 10)
+            pos.setX(screen_rect.width() - self.width() - margin)
         if pos.y() + self.height() > screen_rect.height():
-            pos.setY(screen_rect.height() - self.height() - 10)
+            pos.setY(screen_rect.height() - self.height() - margin)
         
         self.move(pos)
         self.show()
@@ -479,5 +481,5 @@ class HoverTooltip(QWidget):
         
         # 绘制圆角矩形
         rect = QRect(0, 0, self.width() - 1, self.height() - 1)
-        radius = 8
+        radius = 4
         painter.drawRoundedRect(rect, radius, radius)

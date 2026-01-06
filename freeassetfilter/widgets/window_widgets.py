@@ -67,15 +67,15 @@ class CustomWindow(QWidget):
         初始化自定义窗口UI
         """
         # 应用DPI缩放因子
-        scaled_margin = int(10 * self.dpi_scale)
-        scaled_radius = int(12 * self.dpi_scale)
-        self.scaled_title_height = int(40 * self.dpi_scale)
-        scaled_shadow_radius = int(20 * self.dpi_scale)
-        scaled_shadow_offset = int(8 * self.dpi_scale)
+        scaled_margin = int(2.5 * self.dpi_scale)
+        scaled_radius = int(1.5 * self.dpi_scale)
+        self.scaled_title_height = int(5 * self.dpi_scale)
+        scaled_shadow_radius = int(2.5 * self.dpi_scale)
+        scaled_shadow_offset = int(1 * self.dpi_scale)
         
-        # 设置默认大小，应用DPI缩放
-        self.setMinimumSize(400, 300)
-        self.resize(400, 300)
+        # 设置默认大小（调整为原始的一半）
+        self.setMinimumSize(100, 75)
+        self.resize(100, 75)
         
         # 主布局（用于容纳内容和装饰）
         main_layout = QVBoxLayout(self)
@@ -128,9 +128,9 @@ class CustomWindow(QWidget):
         
         title_layout = QHBoxLayout(title_bar)
         # 应用DPI缩放因子到边距和间距
-        scaled_left_margin = int(16 * self.dpi_scale)
-        scaled_right_margin = int(8 * self.dpi_scale)
-        scaled_spacing = int(8 * self.dpi_scale)
+        scaled_left_margin = int(2 * self.dpi_scale)
+        scaled_right_margin = int(2 * self.dpi_scale)
+        scaled_spacing = int(2 * self.dpi_scale)
         title_layout.setContentsMargins(scaled_left_margin, 0, scaled_right_margin, 0)
         title_layout.setSpacing(scaled_spacing)
         
@@ -138,7 +138,7 @@ class CustomWindow(QWidget):
         title_label = QLabel(self.title)
         # 从app对象获取全局默认字体大小
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
+        default_font_size = getattr(app, 'default_font_size', 9)
         scaled_font_size = int(default_font_size * self.dpi_scale)
         title_label.setFont(self.global_font)
         title_label.setStyleSheet(f"""
@@ -153,8 +153,8 @@ class CustomWindow(QWidget):
         # 关闭按钮
         # 使用CustomButton代替QPushButton以确保一致性和DPI缩放兼容性
         from .button_widgets import CustomButton
-        self.close_button = CustomButton("×", button_type="primary", display_mode="text", height=24)
-        self.close_button.setFixedSize(int(24 * self.dpi_scale), int(24 * self.dpi_scale))
+        self.close_button = CustomButton("×", button_type="primary", display_mode="text", height=12)
+        self.close_button.setFixedSize(int(6 * self.dpi_scale), int(6 * self.dpi_scale))
         self.close_button.clicked.connect(self.close)
         title_layout.addWidget(self.close_button)
         
@@ -168,9 +168,9 @@ class CustomWindow(QWidget):
         
         self.content_layout = QVBoxLayout(self.content_widget)
         # 应用DPI缩放因子到内容区域边距和间距
-        scaled_content_margin = int(16 * self.dpi_scale)
-        scaled_content_top_margin = int(8 * self.dpi_scale)
-        scaled_content_spacing = int(12 * self.dpi_scale)
+        scaled_content_margin = int(2 * self.dpi_scale)
+        scaled_content_top_margin = int(2 * self.dpi_scale)
+        scaled_content_spacing = int(1.5 * self.dpi_scale)
         self.content_layout.setContentsMargins(scaled_content_margin, scaled_content_top_margin, scaled_content_margin, scaled_content_margin)
         self.content_layout.setSpacing(scaled_content_spacing)
         
@@ -281,7 +281,7 @@ class CustomWindow(QWidget):
                 new_y = orig_y + delta.y()
             
             # 设置最小大小限制
-            min_width, min_height = 200, 150
+            min_width, min_height = 100, 75
             new_width = max(min_width, new_width)
             new_height = max(min_height, new_height)
             
@@ -365,22 +365,32 @@ class CustomWindow(QWidget):
             title_label.setText(title)
 
 
-class ThemeSettingsWindow(CustomWindow):
+class ThemeSettingsWindow(QDialog):
     """
     主题设置窗口组件
     特点：
-    - 继承自CustomWindow，使用相同的无边框、圆角、阴影样式
+    - 使用原生窗口样式
     - 包含颜色选择器和控件预览区域
     - 实现颜色选择功能，允许用户自定义各种颜色
     """
     
     def __init__(self, parent=None):
-        super().__init__(title="主题设置", parent=parent)
+        super().__init__(parent)
+        
+        # 设置窗口标志，确保不使用WindowStaysOnTopHint
+        self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowCloseButtonHint)
+        
+        # 设置窗口标题
+        self.setWindowTitle("主题设置")
         
         # 获取应用实例和设置管理器
         app = QApplication.instance()
         self.settings_manager = getattr(app, 'settings_manager', None)
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 设置窗口大小，应用DPI缩放（调整为原始的一半）
+        self.setMinimumSize(int(75 * self.dpi_scale), int(62.5 * self.dpi_scale))
+        self.resize(int(75 * self.dpi_scale), int(62.5 * self.dpi_scale))
         
         # 获取当前主题颜色
         if self.settings_manager:
@@ -399,6 +409,9 @@ class ThemeSettingsWindow(CustomWindow):
                 "list_item_text": "#FFFFFF"
             }
         
+        # 创建主布局
+        self.main_layout = QVBoxLayout(self)
+        
         # 初始化UI
         self.init_theme_ui()
     
@@ -407,8 +420,8 @@ class ThemeSettingsWindow(CustomWindow):
         初始化主题设置窗口UI
         """
         # 应用DPI缩放因子
-        scaled_padding = int(16 * self.dpi_scale)
-        scaled_spacing = int(12 * self.dpi_scale)
+        scaled_padding = int(2 * self.dpi_scale)
+        scaled_spacing = int(3 * self.dpi_scale)
         
         # 创建主滚动区域
         scroll_area = QScrollArea()
@@ -422,16 +435,16 @@ class ThemeSettingsWindow(CustomWindow):
                 background-color: transparent;
             }
             QScrollBar::vertical {
-                width: 8px;
+                width: 4px;
                 background-color: transparent;
             }
             QScrollBar::horizontal {
-                height: 8px;
+                height: 4px;
                 background-color: transparent;
             }
             QScrollBar::handle {
                 background-color: #888;
-                border-radius: 4px;
+                border-radius: 1px;
             }
             QScrollBar::handle:hover {
                 background-color: #aaa;
@@ -530,7 +543,7 @@ class ThemeSettingsWindow(CustomWindow):
         
         # 设置滚动区域
         scroll_area.setWidget(scroll_content)
-        self.add_widget(scroll_area)
+        self.main_layout.addWidget(scroll_area)
     
     def _add_color_section(self, layout, title, color_items):
         """
@@ -544,7 +557,7 @@ class ThemeSettingsWindow(CustomWindow):
         # 应用DPI缩放因子
         scaled_margin = int(8 * self.dpi_scale)
         scaled_spacing = int(8 * self.dpi_scale)
-        scaled_border_radius = int(4 * self.dpi_scale)
+        scaled_border_radius = int(2 * self.dpi_scale)
         
         # 创建区域容器
         section_widget = QWidget()
@@ -561,13 +574,17 @@ class ThemeSettingsWindow(CustomWindow):
         
         # 添加标题
         title_label = QLabel(title)
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: 16px;
+        # 从应用实例获取全局默认字体大小和DPI缩放因子
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 16)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        title_label.setStyleSheet(f"""
+            QLabel {{ 
+                font-size: {scaled_font_size}px;
                 font-weight: 500;
                 color: #333333;
                 margin-bottom: 8px;
-            }
+            }}
         """)
         section_layout.addWidget(title_label)
         
@@ -590,27 +607,31 @@ class ThemeSettingsWindow(CustomWindow):
         # 创建颜色配置项布局
         item_layout = QHBoxLayout()
         item_layout.setContentsMargins(0, 0, 0, 0)
-        item_layout.setSpacing(8)
+        item_layout.setSpacing(4)
         
         # 颜色名称标签
         name_label = QLabel(color_name)
-        name_label.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
+        # 从应用实例获取全局默认字体大小和DPI缩放因子
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        scaled_font_size = int(default_font_size * self.dpi_scale * 0.875)  # 14px 是 16px 的 0.875
+        name_label.setStyleSheet(f"""
+            QLabel {{ 
+                font-size: {scaled_font_size}px;
                 color: #333333;
                 min-width: 120px;
-            }
+            }}
         """)
         item_layout.addWidget(name_label)
         
         # 颜色显示框
         color_display = QWidget()
-        color_display.setFixedSize(40, 24)
+        color_display.setFixedSize(10, 6)
         color_display.setStyleSheet(f"""
             QWidget {{
                 background-color: {self.current_colors.get(color_key, '#ffffff')};
                 border: 1px solid #cccccc;
-                border-radius: 4px;
+                border-radius: 2px;
             }}
         """)
         
@@ -628,9 +649,9 @@ class ThemeSettingsWindow(CustomWindow):
         from .input_widgets import CustomInputBox
         color_value = CustomInputBox(
             initial_text=self.current_colors.get(color_key, '#ffffff'),
-            width=100,
-            height=24,
-            border_radius=4,
+            width=25,
+            height=6,
+            border_radius=2,
             border_color="#cccccc",
             background_color="#ffffff",
             text_color="#666666",
@@ -640,12 +661,16 @@ class ThemeSettingsWindow(CustomWindow):
         )
         
         # 设置等宽字体
-        color_value.line_edit.setStyleSheet("""
-            QLineEdit {
+        # 从应用实例获取全局默认字体大小和DPI缩放因子
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        scaled_font_size = int(default_font_size * self.dpi_scale * 0.875)  # 14px 是 16px 的 0.875
+        color_value.line_edit.setStyleSheet(f"""
+            QLineEdit {{ 
                 font-family: Consolas, monospace;
-                font-size: 14px;
+                font-size: {scaled_font_size}px;
                 padding: 0 4px;
-            }
+            }}
         """)
         
         # 存储颜色键
@@ -745,13 +770,17 @@ class ThemeSettingsWindow(CustomWindow):
         
         # 添加标题
         title_label = QLabel("控件预览")
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: 16px;
+        # 从应用实例获取全局默认字体大小和DPI缩放因子
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 16)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        title_label.setStyleSheet(f"""
+            QLabel {{ 
+                font-size: {scaled_font_size}px;
                 font-weight: 500;
                 color: #333333;
                 margin-bottom: 8px;
-            }
+            }}
         """)
         preview_layout.addWidget(title_label)
         
@@ -789,12 +818,16 @@ class ThemeSettingsWindow(CustomWindow):
         
         # 按钮预览
         btn_label = QLabel("按钮预览:")
-        btn_label.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
+        # 从应用实例获取全局默认字体大小和DPI缩放因子
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        scaled_font_size = int(default_font_size * self.dpi_scale * 0.875)  # 14px 是 16px 的 0.875
+        btn_label.setStyleSheet(f"""
+            QLabel {{ 
+                font-size: {scaled_font_size}px;
                 color: #333333;
                 margin-bottom: 4px;
-            }
+            }}
         """)
         controls_layout.addWidget(btn_label)
         
@@ -812,13 +845,17 @@ class ThemeSettingsWindow(CustomWindow):
         
         # 输入框预览
         input_label = QLabel("输入框预览:")
-        input_label.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
+        # 从应用实例获取全局默认字体大小和DPI缩放因子
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        scaled_font_size = int(default_font_size * self.dpi_scale * 0.875)  # 14px 是 16px 的 0.875
+        input_label.setStyleSheet(f"""
+            QLabel {{ 
+                font-size: {scaled_font_size}px;
                 color: #333333;
                 margin-bottom: 4px;
                 margin-top: 12px;
-            }
+            }}
         """)
         controls_layout.addWidget(input_label)
         
@@ -828,22 +865,26 @@ class ThemeSettingsWindow(CustomWindow):
         
         # 文本预览
         text_label = QLabel("文本预览:")
-        text_label.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
+        # 从应用实例获取全局默认字体大小和DPI缩放因子
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 14)
+        scaled_font_size = int(default_font_size * self.dpi_scale * 0.875)  # 14px 是 16px 的 0.875
+        text_label.setStyleSheet(f"""
+            QLabel {{ 
+                font-size: {scaled_font_size}px;
                 color: #333333;
                 margin-bottom: 4px;
                 margin-top: 12px;
-            }
+            }}
         """)
         controls_layout.addWidget(text_label)
         
         text_preview = QLabel("这是普通文字，这是高亮文字")
-        text_preview.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
+        text_preview.setStyleSheet(f"""
+            QLabel {{ 
+                font-size: {scaled_font_size}px;
                 color: #333333;
-            }
+            }}
         """)
         controls_layout.addWidget(text_preview)
         
@@ -976,11 +1017,11 @@ class ThemeSettingsWindow(CustomWindow):
                 if hasattr(self, '_color_inputs') and color_key in self._color_inputs:
                     color_display, color_value = self._color_inputs[color_key]
                     color_display.setStyleSheet(f"""
-                        QWidget {{
+                        QWidget {
                             background-color: {text};
                             border: 1px solid #cccccc;
-                            border-radius: 4px;
-                        }}
+                            border-radius: 2px;
+                        }
                     """)
                 # 实时应用主题
                 self._apply_theme()
@@ -1090,18 +1131,18 @@ class CustomMessageBox(QDialog):
         初始化自定义提示窗口UI
         """
         # 应用DPI缩放因子到UI参数
-        scaled_margin = int(10 * self.dpi_scale)
-        scaled_radius = int(12 * self.dpi_scale)
-        scaled_shadow_radius = int(60 * self.dpi_scale)
-        scaled_shadow_offset = int(4 * self.dpi_scale)
-        scaled_body_margin = int(20 * self.dpi_scale)
-        scaled_body_spacing = int(16 * self.dpi_scale)
-        scaled_title_font_size = int(24 * self.dpi_scale)
-        scaled_title_padding = f"{int(24 * self.dpi_scale)}px {int(30 * self.dpi_scale)}px 0 {int(30 * self.dpi_scale)}px"
-        scaled_text_font_size = int(16 * self.dpi_scale)
-        scaled_min_width = int(400 * self.dpi_scale)
-        scaled_button_margin = int(8 * self.dpi_scale)
-        scaled_button_spacing = int(12 * self.dpi_scale)
+        scaled_margin = int(5 * self.dpi_scale)
+        scaled_radius = int(6 * self.dpi_scale)
+        scaled_shadow_radius = int(30 * self.dpi_scale)
+        scaled_shadow_offset = int(2 * self.dpi_scale)
+        scaled_body_margin = int(10 * self.dpi_scale)
+        scaled_body_spacing = int(8 * self.dpi_scale)
+        scaled_title_font_size = int(12 * self.dpi_scale)
+        scaled_title_padding = f"{int(12 * self.dpi_scale)}px {int(15 * self.dpi_scale)}px 0 {int(15 * self.dpi_scale)}px"
+        scaled_text_font_size = int(8 * self.dpi_scale)
+        scaled_min_width = int(200 * self.dpi_scale)
+        scaled_button_margin = int(4 * self.dpi_scale)
+        scaled_button_spacing = int(6 * self.dpi_scale)
         
         # 主布局（用于容纳内容和装饰）
         main_layout = QVBoxLayout(self)
@@ -1480,10 +1521,10 @@ class CustomMessageBox(QDialog):
         
         # 设置布局属性，应用DPI缩放
         # 左右边距和进度条一样，底部添加边距确保最后一个按钮的阴影不会被切掉
-        scaled_left_right_margin = int(30 * self.dpi_scale)
-        scaled_top_margin = int(8 * self.dpi_scale)
-        scaled_bottom_margin = int(16 * self.dpi_scale)
-        scaled_button_spacing = int(16 * self.dpi_scale)
+        scaled_left_right_margin = int(15 * self.dpi_scale)
+        scaled_top_margin = int(4 * self.dpi_scale)
+        scaled_bottom_margin = int(8 * self.dpi_scale)
+        scaled_button_spacing = int(8 * self.dpi_scale)
         
         self.button_layout.setContentsMargins(scaled_left_right_margin, scaled_top_margin, scaled_left_right_margin, scaled_bottom_margin)
         self.button_layout.setSpacing(scaled_button_spacing)  # 增加按钮之间的间距，确保阴影不重叠

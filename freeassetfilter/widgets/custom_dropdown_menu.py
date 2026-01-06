@@ -44,7 +44,7 @@ class CustomDropdownMenu(QWidget):
         self._current_item = None  # 当前选中项
         self._menu_visible = False  # 菜单是否可见
         self._fixed_width = None  # 固定宽度
-        self._max_height = int(200 * self.dpi_scale)  # 最大高度
+        self._max_height = int(50 * self.dpi_scale)  # 最大高度
         self._position = position  # 菜单位置："top" 或 "bottom"
         
         # 初始化UI
@@ -85,8 +85,8 @@ class CustomDropdownMenu(QWidget):
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setStyleSheet(
             "QScrollArea { border: none; background-color: transparent; }"+
-            "QScrollBar:vertical { background-color: transparent; width: 8px; }"+
-            "QScrollBar::handle:vertical { background-color: #e0e0e0; border-radius: 4px; }"
+            "QScrollBar:vertical { background-color: transparent; width: 4px; }"+
+            "QScrollBar::handle:vertical { background-color: #e0e0e0; border-radius: 2px; }"
         )
         
         # 创建列表容器
@@ -144,12 +144,12 @@ class CustomDropdownMenu(QWidget):
             item_button.setCursor(Qt.PointingHandCursor)  # 设置鼠标指针为手型
             
             # 设置样式
-            font_size = int(14 * self.dpi_scale)
+            font_size = int(7 * self.dpi_scale)
             item_button.setStyleSheet(f"""
                 QPushButton {{ 
                     font-size: {font_size}px;
                     color: #333333;
-                    padding: 8px 12px;
+                    padding: 2px 3px;
                     background-color: transparent;
                     border: none;
                     text-align: left;
@@ -302,7 +302,7 @@ class CustomDropdownMenu(QWidget):
         if self._fixed_width:
             font_metrics = QFontMetrics(self.main_button.font())
             # 减小内边距以显示更多文本，并增加可用宽度
-            elided_text = font_metrics.elidedText(text, Qt.ElideRight, self._fixed_width - 4)
+            elided_text = font_metrics.elidedText(text, Qt.ElideRight, self._fixed_width - 2)
             self.main_button.setText(elided_text)
         else:
             self.main_button.setText(text)

@@ -98,9 +98,9 @@ class FileStagingPool(QWidget):
         """
         初始化用户界面
         """
-        # 应用DPI缩放因子到布局参数
-        scaled_spacing = int(10 * self.dpi_scale)
-        scaled_margin = int(10 * self.dpi_scale)
+        # 应用DPI缩放因子到布局参数（调整为原始的一半）
+        scaled_spacing = int(5 * self.dpi_scale)
+        scaled_margin = int(5 * self.dpi_scale)
         
         # 创建主布局
         main_layout = QVBoxLayout(self)
@@ -134,7 +134,7 @@ class FileStagingPool(QWidget):
         # 创建卡片容器和布局
         self.cards_container = QWidget()
         self.cards_layout = QVBoxLayout(self.cards_container)
-        self.cards_layout.setSpacing(int(10 * self.dpi_scale))
+        self.cards_layout.setSpacing(int(5 * self.dpi_scale))
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
         # 设置布局上对齐
         self.cards_layout.setAlignment(Qt.AlignTop)

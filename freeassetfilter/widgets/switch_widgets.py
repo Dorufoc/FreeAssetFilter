@@ -28,7 +28,7 @@ class CustomSwitch(QWidget):
     # 信号定义
     toggled = pyqtSignal(bool)  # 开关状态变化信号
     
-    def __init__(self, parent=None, initial_value=False, height=40):
+    def __init__(self, parent=None, initial_value=False, height=20):
         """
         初始化开关控件
         
