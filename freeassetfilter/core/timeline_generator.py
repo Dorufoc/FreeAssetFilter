@@ -18,6 +18,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import os
 import sys
 import csv
+import concurrent.futures
 from itertools import groupby
 
 # 添加项目根目录到Python路径
@@ -29,6 +30,41 @@ from PyQt5.QtCore import (
 
 
 # 核心数据结构：原始事件
+def get_video_duration(file_path):
+    """
+    获取视频文件的真实时长（秒）
+    
+    Args:
+        file_path: str - 视频文件路径
+        
+    Returns:
+        float - 视频时长（秒），如果无法获取则返回默认值60秒
+    """
+    default_duration = 60.0
+    
+    # 尝试使用moviepy（如果可用）
+    try:
+        from moviepy.editor import VideoFileClip
+        with VideoFileClip(file_path) as clip:
+            return clip.duration
+    except Exception:
+        pass
+    
+    # 尝试使用opencv-python（如果可用）
+    try:
+        import cv2
+        cap = cv2.VideoCapture(file_path)
+        if cap.isOpened():
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if frame_count > 0 and fps > 0:
+                return frame_count / fps
+            cap.release()
+    except Exception:
+        pass
+    
+    return default_duration
+
 class TimelineEvent:
     """
     封装单一事件的时间戳、关联视频路径及基础属性
@@ -95,6 +131,7 @@ class FolderScanner(QThread):
     增强版支持生成特定格式的CSV和JSON记录
     """
     scan_finished = pyqtSignal(list, str, str)  # 扫描完成后发送结果：事件列表、CSV路径、JSON路径
+    progress = pyqtSignal(int, int)  # 进度信号：已完成数量，总数
     
     def __init__(self, path):
         super().__init__()
@@ -108,7 +145,7 @@ class FolderScanner(QThread):
     def run(self):
         """扫描文件夹，生成TimelineEvent列表，并创建CSV和JSON记录"""
         results = []
-        video_count = 0
+        video_files = []  # 存储所有需要处理的视频文件信息
         subfolder_set = set()  # 跟踪所有子文件夹名称
         main_folder_name = os.path.basename(self.path)
         
@@ -117,6 +154,7 @@ class FolderScanner(QThread):
         print(f"文件夹存在: {os.path.exists(self.path)}")
         print(f"文件夹可访问: {os.access(self.path, os.R_OK)}")
         
+        # 1. 首先扫描所有视频文件，收集信息
         try:
             for root, dirs, files in os.walk(self.path):
                 print(f"\n  正在扫描目录: {root}")
@@ -148,30 +186,12 @@ class FolderScanner(QThread):
                         try:
                             # 获取文件元数据
                             stat = os.stat(file_path)
-                            print(f"    文件大小: {stat.st_size} 字节")
-                            print(f"    修改时间: {stat.st_mtime}")
-                            
-                            # 假设视频时长为60秒（实际项目中应使用FFmpeg或其他库获取真实时长）
                             mod_time = int(stat.st_mtime)
-                            start_time = QDateTime.fromSecsSinceEpoch(mod_time)
-                            end_time = QDateTime.fromSecsSinceEpoch(mod_time + 60)
                             
-                            # 为每个视频创建一个TimelineEvent
-                            event = TimelineEvent(
-                                name=file,  # 使用文件名作为事件名称
-                                device=subfolder_name,  # 使用子文件夹名称作为设备
-                                start_time=start_time,
-                                end_time=end_time,
-                                videos=[file_path]
-                            )
-                            results.append(event)
-                            video_count += 1
-                            print(f"    成功创建视频事件: {file}")
-                            print(f"    事件设备: {subfolder_name}")
-                            print(f"    事件开始时间: {start_time.toString()}")
-                            print(f"    事件结束时间: {end_time.toString()}")
+                            # 收集视频文件信息
+                            video_files.append((file, file_path, subfolder_name, mod_time))
                         except Exception as e:
-                            print(f"    处理文件 {file_path} 时出错: {e}")
+                            print(f"    获取文件信息出错 {file_path}: {e}")
                             import traceback
                             traceback.print_exc()
                     else:
@@ -180,10 +200,43 @@ class FolderScanner(QThread):
             print(f"扫描过程中出错: {e}")
             import traceback
             traceback.print_exc()
-        
-        print(f"\n=== 扫描完成 ===")
+            
+        video_count = len(video_files)
+        print(f"\n=== 扫描完成，开始并发处理视频文件 ===")
         print(f"找到的视频文件数量: {video_count}")
-        print(f"生成的事件数量: {len(results)}")
+        
+        # 2. 使用多线程并发处理视频时长计算
+        if video_count > 0:
+            # 定义线程池大小（根据CPU核心数或固定数量）
+            max_workers = min(8, os.cpu_count() or 4)
+            
+            processed_count = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有视频处理任务
+                future_to_video = {
+                    executor.submit(self._process_single_video, file_info): file_info 
+                    for file_info in video_files
+                }
+                
+                # 处理完成的任务
+                for future in concurrent.futures.as_completed(future_to_video):
+                    video_info = future_to_video[future]
+                    try:
+                        event = future.result()
+                        if event:
+                            results.append(event)
+                    except Exception as e:
+                        file_name, file_path, *_ = video_info
+                        print(f"处理视频文件 {file_name} 时出错: {e}")
+                        import traceback
+                        traceback.print_exc()
+                    
+                    # 更新进度
+                    processed_count += 1
+                    self.progress.emit(processed_count, video_count)
+        
+        print(f"\n=== 所有视频文件处理完成 ===")
+        print(f"成功处理的视频文件数量: {len(results)}")
         print(f"子文件夹数量: {len(subfolder_set)}")
         print(f"子文件夹列表: {list(subfolder_set)}")
         
@@ -224,6 +277,48 @@ class FolderScanner(QThread):
         
         print(f"CSV文件已生成: {csv_path}")
         return csv_path
+    
+    def _process_single_video(self, video_info):
+        """
+        处理单个视频文件，计算时长并创建TimelineEvent
+        
+        Args:
+            video_info: tuple - (file_name, file_path, subfolder_name, mod_time)
+            
+        Returns:
+            TimelineEvent or None - 处理成功返回事件对象，失败返回None
+        """
+        file_name, file_path, subfolder_name, mod_time = video_info
+        
+        try:
+            # 获取视频真实时长
+            duration = get_video_duration(file_path)
+            
+            # 创建时间对象
+            start_time = QDateTime.fromSecsSinceEpoch(mod_time)
+            end_time = QDateTime.fromSecsSinceEpoch(mod_time + int(duration))
+            
+            # 为每个视频创建一个TimelineEvent
+            event = TimelineEvent(
+                name=file_name,  # 使用文件名作为事件名称
+                device=subfolder_name,  # 使用子文件夹名称作为设备
+                start_time=start_time,
+                end_time=end_time,
+                videos=[file_path]
+            )
+            
+            print(f"    成功创建视频事件: {file_name}")
+            print(f"    事件设备: {subfolder_name}")
+            print(f"    事件开始时间: {start_time.toString()}")
+            print(f"    事件结束时间: {end_time.toString()}")
+            print(f"    视频时长: {duration:.2f} 秒")
+            
+            return event
+        except Exception as e:
+            print(f"    处理文件 {file_name} 时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def _generate_json(self, main_folder_name, video_count, subfolder_set, events):
         """
@@ -266,6 +361,7 @@ class CSVParser(QThread):
     异步解析CSV文件，生成TimelineEvent列表
     """
     finished = pyqtSignal(list)  # 解析完成后发送结果
+    progress = pyqtSignal(int, int)  # 进度信号：已完成数量，总数
     
     def __init__(self, file_path):
         super().__init__()
@@ -276,6 +372,12 @@ class CSVParser(QThread):
         results = []
         
         try:
+            # 先计算总行数（不包括标题行）
+            with open(self.file_path, 'r', encoding='utf-8') as f:
+                line_count = sum(1 for _ in f) - 1  # 减去标题行
+            
+            processed_count = 0
+            
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 
@@ -321,9 +423,10 @@ class CSVParser(QThread):
                             end_time = self.parse_datetime(row[end_col])
                             duration_sec = start_time.secsTo(end_time)
                         else:
-                            # 尝试从文件路径获取时长（实际项目中应使用FFmpeg或其他库）
+                            # 从文件路径获取真实时长
                             if video_col and row.get(video_col):
-                                # 这里仅做示例，实际项目中应使用专业库获取视频时长
+                                video_path = row[video_col]
+                                duration_sec = int(get_video_duration(video_path))
                                 end_time = start_time.addSecs(duration_sec)
                             else:
                                 end_time = start_time.addSecs(duration_sec)
@@ -348,6 +451,10 @@ class CSVParser(QThread):
                     except Exception as e:
                         print(f"Error parsing row {row}: {e}")
                         continue
+                    finally:
+                        # 更新进度
+                        processed_count += 1
+                        self.progress.emit(processed_count, line_count)
         except Exception as e:
             print(f"Error reading CSV file: {e}")
         
