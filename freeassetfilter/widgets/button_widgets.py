@@ -226,11 +226,11 @@ class CustomButton(QPushButton):
         elif self.button_type == "warning":
             # 警告按钮方案
             # 使用主题颜色
-            bg_color = current_colors.get("notification_error", "#F44336")
-            hover_color = "#E63946"
-            pressed_color = "#D62828"
-            text_color = current_colors.get("notification_text", "#FFFFFF")
-            border_color = current_colors.get("notification_error", "#F44336")
+            bg_color = current_colors.get("button_warning_normal", current_colors.get("notification_error", "#F44336"))
+            hover_color = current_colors.get("button_warning_hover", "#E63946")
+            pressed_color = current_colors.get("button_warning_pressed", "#D62828")
+            text_color = current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF"))
+            border_color = current_colors.get("button_warning_border", current_colors.get("notification_error", "#F44336"))
             disabled_bg = "#FF8A80"
             disabled_text = "#FFFFFF"
             disabled_border = "#FF5252"
@@ -349,7 +349,7 @@ class CustomButton(QPushButton):
                 # 先获取按钮的实际尺寸，考虑DPI缩放
                 button_size = min(self.width(), self.height())
                 # 图标大小为按钮尺寸的90%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
-                icon_size = button_size * 0.3
+                icon_size = button_size * 0.52
                 # 使用项目中已有的SvgRenderer渲染SVG图标，传递DPI缩放因子
                 self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size), self.dpi_scale)
             else:
@@ -420,7 +420,7 @@ class CustomButton(QPushButton):
                     
                     # 计算合适的图标大小，确保图标不会超出按钮范围
                     button_size = min(self.width(), self.height())
-                    icon_size = button_size * 0.3
+                    icon_size = button_size * 0.52
                     
                     # 计算图标绘制位置（居中）
                     icon_rect = painter.window()

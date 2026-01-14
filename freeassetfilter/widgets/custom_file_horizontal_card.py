@@ -156,8 +156,6 @@ class CustomFileHorizontalCard(QWidget):
         # 设置字体大小和粗细
         name_font = QFont(self.global_font)
         name_font.setBold(True)  # 字重600
-        scaled_font_size = int(4 * self.dpi_scale)
-        name_font.setPointSize(scaled_font_size)
         self.name_label.setFont(name_font)
         self.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
         text_layout.addWidget(self.name_label)
@@ -172,8 +170,7 @@ class CustomFileHorizontalCard(QWidget):
         self.info_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         # 设置字体大小
         info_font = QFont(self.global_font)
-        scaled_info_font_size = int(3 * self.dpi_scale)
-        info_font.setPointSize(scaled_info_font_size)
+        info_font.setWeight(QFont.Light)  # 可选：设置为轻量字重，与文件名区分
         self.info_label.setFont(info_font)
         self.info_label.setStyleSheet("background: transparent; border: none; color: #666666;")
         text_layout.addWidget(self.info_label)
@@ -364,14 +361,29 @@ class CustomFileHorizontalCard(QWidget):
             # 首先处理lnk和exe文件，使用它们自身的图标
             if suffix in ["lnk", "exe"]:
                 # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
-                base_icon_size = int(10 * self.dpi_scale)
+                base_icon_size = int(40 * self.dpi_scale)
                 scaled_icon_size = int(base_icon_size * 0.8)
                 
                 # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
                 from PyQt5.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
                 icon = icon_provider.icon(file_info)
-                pixmap = icon.pixmap(scaled_icon_size, scaled_icon_size)
+                
+                # 获取图标可用的所有尺寸，选择最大的尺寸以获取最高质量图标
+                available_sizes = icon.availableSizes()
+                if available_sizes:
+                    # 选择最大的尺寸
+                    max_size = max(available_sizes, key=lambda s: s.width() * s.height())
+                    max_width, max_height = max_size.width(), max_size.height()
+                else:
+                    # 如果没有可用尺寸信息，使用4096x4096作为最大尺寸（通常足够获取ICO中最大的图标）
+                    max_width = max_height = 4096
+                
+                # 使用最大尺寸获取图标
+                high_res_pixmap = icon.pixmap(max_width, max_height)
+                
+                # 使用高质量缩放算法缩放到目标大小
+                pixmap = high_res_pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 
                 # 检查是否获取到有效图标
                 if not pixmap.isNull():
@@ -414,13 +426,14 @@ class CustomFileHorizontalCard(QWidget):
                 scaled_icon_size = int(40 * self.dpi_scale)
                 
                 # 使用SvgRenderer.render_svg_to_widget直接渲染SVG图标，返回QSvgWidget对象
-                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, 40, self.dpi_scale)
+                # 注意：直接使用scaled_icon_size而不是40，避免DPI缩放被应用两次
+                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, 1.0)
                 svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
                 # 确保QSvgWidget完全透明，没有任何可见样式
                 svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                 svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                 
-                # 如果是未知文件类型或压缩文件类型，需要在图标上显示后缀名
+                # 如果是未知文件类型或压缩文件类型，使用统一的SVG渲染器处理
                 if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
                     # 获取后缀名，压缩文件显示带点的后缀名（如".zip"），未知文件显示大写后缀名
                     if icon_path.endswith("压缩文件.svg"):
@@ -432,57 +445,9 @@ class CustomFileHorizontalCard(QWidget):
                         if len(display_suffix) > 5:
                             display_suffix = "FILE"
                     
-                    # 创建文字标签
-                    from PyQt5.QtWidgets import QLabel
-                    from PyQt5.QtGui import QFont, QFontMetrics, QFontDatabase
-                    
-                    text_label = QLabel(display_suffix)
-                    text_label.setAlignment(Qt.AlignCenter)
-                    # 确保文字标签完全透明，没有任何可见样式
-                    text_label.setStyleSheet('background: transparent; border: none; padding: 0; margin: 0;')
-                    text_label.setAttribute(Qt.WA_TranslucentBackground, True)
-                    
-                    # 设置字体
-                    font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
-                    font = QFont()
-                    
-                    # 尝试加载字体文件，如果失败则使用默认字体
-                    if os.path.exists(font_path):
-                        font_id = QFontDatabase.addApplicationFont(font_path)
-                        if font_id != -1:
-                            font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-                            font.setFamily(font_family)
-                    
-                    # 设置字体大小，应用DPI缩放
-                    font_size = int(4 * self.dpi_scale)
-                    font.setPointSize(font_size)
-                    font.setBold(True)
-                    
-                    # 自适应调整字体大小，确保文字不超出图标边界
-                    font_metrics = QFontMetrics(font)
-                    text_width = font_metrics.width(display_suffix)
-                    
-                    # 应用DPI缩放因子到最大文本宽度和最小字体大小
-                    max_text_width = int(7.5 * self.dpi_scale)
-                    min_font_size = int(4 * self.dpi_scale)
-                    
-                    while text_width > max_text_width and font_size > min_font_size:
-                        font_size -= 1
-                        font.setPointSize(font_size)
-                        font_metrics = QFontMetrics(font)
-                        text_width = font_metrics.width(display_suffix)
-                    
-                    text_label.setFont(font)
-                    
-                    # 设置文字颜色：压缩文件使用白色，未知文件使用黑色
-                    if icon_path.endswith("压缩文件.svg"):
-                        text_label.setStyleSheet('background: transparent; border: none; color: white; padding: 0; margin: 0;')
-                    else:
-                        text_label.setStyleSheet('background: transparent; border: none; color: black; padding: 0; margin: 0;')
-                    
-                    # 将文字标签添加到svg_widget上方
-                    text_label.setGeometry(0, 0, scaled_icon_size, scaled_icon_size)
-                    text_label.setParent(svg_widget)
+                    # 使用统一的SVG渲染器处理带有文字的未知文件类型图标
+                    # 注意：直接使用scaled_icon_size而不是40，避免DPI缩放被应用两次
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, 1.0)
                 
                 # 替换QLabel为我们的QSvgWidget
                 # 首先移除原有的QLabel

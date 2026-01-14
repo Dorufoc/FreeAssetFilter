@@ -16,11 +16,12 @@ from .setting_widgets import CustomSettingItem
 from .switch_widgets import CustomSwitch
 from .hover_tooltip import HoverTooltip
 from .table_widgets import CustomTimelineTable
+from .modern_settings_window import ModernSettingsWindow
 
 # Re-export all widgets
 __all__ = [
     'CustomWindow', 'CustomButton', 'CustomProgressBar', 'CustomSelectListItem',
     'CustomSelectList', 'CustomValueBar', 'CustomVolumeBar', 'CustomMessageBox',
     'CustomInputBox', 'CustomControlMenu', 'CustomSettingItem', 'CustomSwitch',
-    'HoverTooltip', 'CustomTimelineTable'
+    'HoverTooltip', 'CustomTimelineTable', 'ModernSettingsWindow'
 ]

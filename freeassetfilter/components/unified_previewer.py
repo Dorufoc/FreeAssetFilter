@@ -1636,6 +1636,24 @@ class UnifiedPreviewer(QWidget):
         scroll_layout.addWidget(file_selector_group)
         scroll_layout.addWidget(file_staging_group)
         
+        # 添加跳转到现代设置窗口的选项
+        modern_settings_setting = CustomSettingItem(
+            text="现代设置窗口",
+            secondary_text="打开全新设计的现代化设置窗口",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": "打开现代设置", "type": "primary"}]
+        )
+        # 连接现代设置窗口按钮信号
+        def on_modern_settings_clicked(button_index):
+            # 导入并打开现代设置窗口
+            from freeassetfilter.widgets.modern_settings_window import ModernSettingsWindow
+            modern_window = ModernSettingsWindow(self)
+            modern_window.show()
+            # 关闭当前的旧设置窗口
+            self.settings_window.close()
+        modern_settings_setting.button_clicked.connect(on_modern_settings_clicked)
+        scroll_layout.addWidget(modern_settings_setting)
+        
         # 设置滚动区域内容
         scroll_area.setWidget(scroll_content)
         

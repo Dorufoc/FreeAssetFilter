@@ -40,7 +40,7 @@ class SettingsManager:
                 "global_scale_factor": 1.0
             },
             "font": {
-                "size": 20,
+                "size": 18,
                 "style": "Microsoft YaHei"
             },
             "appearance": {
@@ -58,59 +58,66 @@ class SettingsManager:
                     "button_border": "#5C5C5C",
                     
                     # 按钮颜色 - 强调样式（primary）
-                    "button_primary_normal": "#2D2D2D",
-                    "button_primary_hover": "#3C3C3C",
-                    "button_primary_pressed": "#4C4C4C",
+                    "button_primary_normal": "#007AFF",
+                    "button_primary_hover": "#0A84FF",
+                    "button_primary_pressed": "#0056CC",
                     "button_primary_text": "#FFFFFF",
-                    "button_primary_border": "#5C5C5C",
+                    "button_primary_border": "#007AFF",
                     
                     # 按钮颜色 - 普通样式（normal）
                     "button_normal_normal": "#1E1E1E",
                     "button_normal_hover": "#3C3C3C",
-                    "button_normal_pressed": "#4ECDC4",
+                    "button_normal_pressed": "#007AFF",
                     "button_normal_text": "#FFFFFF",
                     "button_normal_border": "#3C3C3C",
                     
                     # 按钮颜色 - 次选样式（secondary）
                     "button_secondary_normal": "#1E1E1E",
                     "button_secondary_hover": "#3C3C3C",
-                    "button_secondary_pressed": "#4ECDC4",
-                    "button_secondary_text": "#4ECDC4",
-                    "button_secondary_border": "#4ECDC4",
+                    "button_secondary_pressed": "#007AFF",
+                    "button_secondary_text": "#007AFF",
+                    "button_secondary_border": "#007AFF",
+                    
+                    # 按钮颜色 - 警告样式（warning）
+                    "button_warning_normal": "#F44336",
+                    "button_warning_hover": "#E63946",
+                    "button_warning_pressed": "#D62828",
+                    "button_warning_text": "#FFFFFF",
+                    "button_warning_border": "#F44336",
                     
                     # 文字颜色
                     "text_normal": "#FFFFFF",
                     "text_disabled": "#888888",
-                    "text_highlight": "#4ECDC4",
+                    "text_highlight": "#007AFF",
                     "text_placeholder": "#666666",
                     
                     # 输入框颜色
                     "input_background": "#2D2D2D",
                     "input_border": "#3C3C3C",
-                    "input_focus_border": "#4ECDC4",
+                    "input_focus_border": "#007AFF",
                     "input_text": "#FFFFFF",
                     
                     # 列表和表格颜色
                     "list_background": "#1E1E1E",
                     "list_item_normal": "#2D2D2D",
                     "list_item_hover": "#3C3C3C",
-                    "list_item_selected": "#4ECDC4",
+                    "list_item_selected": "#007AFF",
                     "list_item_text": "#FFFFFF",
                     
                     # 滑块颜色
                     "slider_track": "#3C3C3C",
-                    "slider_handle": "#4ECDC4",
-                    "slider_handle_hover": "#5EE0D8",
+                    "slider_handle": "#007AFF",
+                    "slider_handle_hover": "#0A84FF",
                     
                     # 进度条颜色
                     "progress_bar_bg": "#3C3C3C",
-                    "progress_bar_fg": "#4ECDC4",
+                    "progress_bar_fg": "#007AFF",
                     
                     # 分隔线颜色
                     "separator": "#3C3C3C",
                     
                     # 通知颜色
-                    "notification_info": "#4ECDC4",
+                    "notification_info": "#007AFF",
                     "notification_success": "#4CAF50",
                     "notification_warning": "#FFC107",
                     "notification_error": "#F44336",
@@ -118,7 +125,7 @@ class SettingsManager:
                     
                     # 标签页颜色
                     "tab_normal": "#2D2D2D",
-                    "tab_selected": "#4ECDC4",
+                    "tab_selected": "#007AFF",
                     "tab_text_normal": "#AAAAAA",
                     "tab_text_selected": "#FFFFFF",
                     "tab_border": "#3C3C3C"

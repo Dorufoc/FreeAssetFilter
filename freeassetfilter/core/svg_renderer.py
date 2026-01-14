@@ -295,6 +295,182 @@ class SvgRenderer:
         return pixmap
     
     @staticmethod
+    def render_unknown_file_icon(icon_path, text, icon_size=120, dpi_scale=1.0):
+        """
+        渲染带有文字的未知文件类型图标
+        将SVG底板与文字组合渲染为一个QPixmap或QSvgWidget
+        
+        Args:
+            icon_path (str): SVG底板文件路径
+            text (str): 要显示的文字（文件后缀名）
+            icon_size (int): 输出图标大小，默认120x120
+            dpi_scale (float): DPI缩放因子，默认1.0
+            
+        Returns:
+            QWidget: 渲染后的Widget对象，确保控件本身完全透明
+        """
+        # 应用DPI缩放因子到图标大小
+        scaled_icon_size = int(icon_size * dpi_scale)
+        
+        if not icon_path or not os.path.exists(icon_path):
+            # 如果路径无效，返回完全透明的QLabel
+            label = QLabel()
+            label.setFixedSize(scaled_icon_size, scaled_icon_size)
+            label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            label.setAttribute(Qt.WA_TranslucentBackground, True)
+            pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
+            pixmap.fill(Qt.transparent)
+            label.setPixmap(pixmap)
+            return label
+        
+        try:
+            # 创建容器widget
+            container = QWidget()
+            container.setFixedSize(scaled_icon_size, scaled_icon_size)
+            container.setStyleSheet('background: transparent; border: none;')
+            container.setAttribute(Qt.WA_TranslucentBackground, True)
+            
+            # 使用QSvgWidget渲染SVG底板
+            svg_widget = QSvgWidget(container)
+            svg_widget.load(icon_path)
+            svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+            svg_widget.setStyleSheet('background: transparent; border: none;')
+            svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+            svg_widget.move(0, 0)
+            
+            # 如果有文字，创建文字标签
+            if text:
+                # 创建文字标签
+                text_label = QLabel(text, container)
+                text_label.setAlignment(Qt.AlignCenter)
+                text_label.setFixedSize(scaled_icon_size, scaled_icon_size)
+                text_label.setStyleSheet('background: transparent; border: none;')
+                text_label.setAttribute(Qt.WA_TranslucentBackground, True)
+                text_label.move(0, 0)
+                
+                # 加载字体
+                from PyQt5.QtGui import QFont, QFontMetrics, QFontDatabase
+                font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
+                font = QFont()
+                
+                if os.path.exists(font_path):
+                    font_id = QFontDatabase.addApplicationFont(font_path)
+                    if font_id != -1:
+                        font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                        font.setFamily(font_family)
+                
+                # 计算合适的字体大小
+                base_font_size = int(scaled_icon_size * 0.18)
+                font.setPointSize(base_font_size)
+                font.setBold(True)
+                
+                # 自适应调整字体大小，确保文字不超出图标边界
+                font_metrics = QFontMetrics(font)
+                text_width = font_metrics.width(text)
+                text_height = font_metrics.height()
+                
+                # 最小字体为容器大小的15%
+                min_font_size = int(scaled_icon_size * 0.15)
+                
+                # 调整字体大小，确保文字完全显示在容器内
+                while (text_width > scaled_icon_size * 0.8 or text_height > scaled_icon_size * 0.8) and base_font_size > min_font_size:
+                    base_font_size -= 1
+                    font.setPointSize(base_font_size)
+                    font_metrics = QFontMetrics(font)
+                    text_width = font_metrics.width(text)
+                    text_height = font_metrics.height()
+                
+                # 设置文字颜色
+                if icon_path.endswith("压缩文件.svg"):
+                    text_label.setStyleSheet(f'color: white; font: {base_font_size}pt "{font.family()}"; font-weight: bold; background: transparent;')
+                else:
+                    text_label.setStyleSheet(f'color: black; font: {base_font_size}pt "{font.family()}"; font-weight: bold; background: transparent;')
+            
+            return container
+        except Exception as e:
+            print(f"渲染未知文件图标失败: {e}")
+            # 如果渲染失败，回退到使用位图渲染
+            
+            # 首先渲染SVG底板
+            base_pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale)
+            
+            # 创建一个透明的QPixmap用于绘制最终结果
+            final_pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
+            final_pixmap.fill(Qt.transparent)
+            
+            # 创建画家
+            painter = QPainter(final_pixmap)
+            
+            # 设置最高质量的渲染提示
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
+            
+            # 绘制SVG底板
+            painter.drawPixmap(0, 0, base_pixmap)
+            
+            # 如果有文字，绘制文字
+            if text:
+                from PyQt5.QtGui import QFont, QFontMetrics, QFontDatabase, QColor
+                
+                # 加载字体
+                font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
+                font = QFont()
+                
+                if os.path.exists(font_path):
+                    font_id = QFontDatabase.addApplicationFont(font_path)
+                    if font_id != -1:
+                        font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+                        font.setFamily(font_family)
+                
+                # 计算合适的字体大小
+                base_font_size = int(scaled_icon_size * 0.35)
+                font.setPointSize(base_font_size)
+                font.setBold(True)
+                
+                # 自适应调整字体大小
+                font_metrics = QFontMetrics(font)
+                text_width = font_metrics.width(text)
+                text_height = font_metrics.height()
+                
+                min_font_size = int(scaled_icon_size * 0.15)
+                
+                while (text_width > scaled_icon_size * 0.8 or text_height > scaled_icon_size * 0.8) and base_font_size > min_font_size:
+                    base_font_size -= 1
+                    font.setPointSize(base_font_size)
+                    font_metrics = QFontMetrics(font)
+                    text_width = font_metrics.width(text)
+                    text_height = font_metrics.height()
+                
+                # 设置文字颜色
+                if icon_path.endswith("压缩文件.svg"):
+                    text_color = QColor(255, 255, 255)
+                else:
+                    text_color = QColor(0, 0, 0)
+                
+                painter.setPen(text_color)
+                painter.setFont(font)
+                
+                # 计算文字位置，居中显示
+                text_x = (scaled_icon_size - text_width) // 2
+                text_y = (scaled_icon_size + font_metrics.ascent()) // 2
+                
+                # 绘制文字
+                painter.drawText(text_x, text_y, text)
+            
+            painter.end()
+            
+            # 将最终结果显示在QLabel中
+            label = QLabel()
+            label.setFixedSize(scaled_icon_size, scaled_icon_size)
+            label.setPixmap(final_pixmap)
+            label.setStyleSheet('background: transparent; border: none;')
+            label.setAttribute(Qt.WA_TranslucentBackground, True)
+            
+            return label
+    
+    @staticmethod
     def render_svg_string_to_pixmap(svg_string, icon_size=24):
         """
         将SVG字符串渲染为QPixmap，支持透明背景和高质量渲染
