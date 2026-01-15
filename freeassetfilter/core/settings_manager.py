@@ -36,9 +36,6 @@ class SettingsManager:
         
         # 默认设置
         self.default_settings = {
-            "dpi": {
-                "global_scale_factor": 1.0
-            },
             "font": {
                 "size": 18,
                 "style": "Microsoft YaHei"
@@ -47,15 +44,15 @@ class SettingsManager:
                 "theme": "default",
                 "colors": {
                     # 窗口颜色
-                    "window_background": "#1E1E1E",
-                    "window_border": "#3C3C3C",
+                    "window_background": "#f1f3f5",
+                    "window_border": "#e0e0e0",
                     
                     # 按钮颜色 - 通用（向后兼容）
-                    "button_normal": "#2D2D2D",
-                    "button_hover": "#3C3C3C",
-                    "button_pressed": "#4C4C4C",
-                    "button_text": "#FFFFFF",
-                    "button_border": "#5C5C5C",
+                    "button_normal": "#ffffff",
+                    "button_hover": "#e0e0e0",
+                    "button_pressed": "#d0d0d0",
+                    "button_text": "#333333",
+                    "button_border": "#e0e0e0",
                     
                     # 按钮颜色 - 强调样式（primary）
                     "button_primary_normal": "#007AFF",
@@ -65,16 +62,16 @@ class SettingsManager:
                     "button_primary_border": "#007AFF",
                     
                     # 按钮颜色 - 普通样式（normal）
-                    "button_normal_normal": "#1E1E1E",
-                    "button_normal_hover": "#3C3C3C",
-                    "button_normal_pressed": "#007AFF",
-                    "button_normal_text": "#FFFFFF",
-                    "button_normal_border": "#3C3C3C",
+                    "button_normal_normal": "#ffffff",
+                    "button_normal_hover": "#e0e0e0",
+                    "button_normal_pressed": "#d0d0d0",
+                    "button_normal_text": "#333333",
+                    "button_normal_border": "#e0e0e0",
                     
                     # 按钮颜色 - 次选样式（secondary）
-                    "button_secondary_normal": "#1E1E1E",
-                    "button_secondary_hover": "#3C3C3C",
-                    "button_secondary_pressed": "#007AFF",
+                    "button_secondary_normal": "#ffffff",
+                    "button_secondary_hover": "#e0e0e0",
+                    "button_secondary_pressed": "#d0d0d0",
                     "button_secondary_text": "#007AFF",
                     "button_secondary_border": "#007AFF",
                     
@@ -86,35 +83,35 @@ class SettingsManager:
                     "button_warning_border": "#F44336",
                     
                     # 文字颜色
-                    "text_normal": "#FFFFFF",
-                    "text_disabled": "#888888",
+                    "text_normal": "#333333",
+                    "text_disabled": "#999999",
                     "text_highlight": "#007AFF",
-                    "text_placeholder": "#666666",
+                    "text_placeholder": "#999999",
                     
                     # 输入框颜色
-                    "input_background": "#2D2D2D",
-                    "input_border": "#3C3C3C",
+                    "input_background": "#ffffff",
+                    "input_border": "#e0e0e0",
                     "input_focus_border": "#007AFF",
-                    "input_text": "#FFFFFF",
+                    "input_text": "#333333",
                     
                     # 列表和表格颜色
-                    "list_background": "#1E1E1E",
-                    "list_item_normal": "#2D2D2D",
-                    "list_item_hover": "#3C3C3C",
+                    "list_background": "#f1f3f5",
+                    "list_item_normal": "#ffffff",
+                    "list_item_hover": "#e0e0e0",
                     "list_item_selected": "#007AFF",
-                    "list_item_text": "#FFFFFF",
+                    "list_item_text": "#333333",
                     
                     # 滑块颜色
-                    "slider_track": "#3C3C3C",
+                    "slider_track": "#e0e0e0",
                     "slider_handle": "#007AFF",
                     "slider_handle_hover": "#0A84FF",
                     
                     # 进度条颜色
-                    "progress_bar_bg": "#3C3C3C",
+                    "progress_bar_bg": "#e0e0e0",
                     "progress_bar_fg": "#007AFF",
                     
                     # 分隔线颜色
-                    "separator": "#3C3C3C",
+                    "separator": "#e0e0e0",
                     
                     # 通知颜色
                     "notification_info": "#007AFF",
@@ -124,11 +121,11 @@ class SettingsManager:
                     "notification_text": "#FFFFFF",
                     
                     # 标签页颜色
-                    "tab_normal": "#2D2D2D",
+                    "tab_normal": "#ffffff",
                     "tab_selected": "#007AFF",
-                    "tab_text_normal": "#AAAAAA",
+                    "tab_text_normal": "#666666",
                     "tab_text_selected": "#FFFFFF",
-                    "tab_border": "#3C3C3C"
+                    "tab_border": "#e0e0e0"
                 }
             },
             "file_selector": {

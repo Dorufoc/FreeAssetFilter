@@ -65,43 +65,54 @@ class FreeAssetFilterApp(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        # 获取应用实例和DPI缩放因子
+        # 获取应用实例
         app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
         # 获取屏幕尺寸
         screen = QApplication.primaryScreen()
-        # 获取整个屏幕尺寸用于居中计算
-        full_geometry = screen.geometry()
-        full_screen_width = full_geometry.width()
-        full_screen_height = full_geometry.height()
-        # 获取可用屏幕尺寸用于限制窗口大小
+        # 获取设备像素比（物理像素/逻辑像素）
+        self.device_pixel_ratio = screen.devicePixelRatio()
+        print(f"[DEBUG] 设备像素比: {self.device_pixel_ratio:.2f}")
+        
+        # 获取系统DPI缩放百分比（例如150%、200%等）
+        dpi_scale_percent = int(self.device_pixel_ratio * 100)
+        print(f"[DEBUG] 系统DPI缩放百分比: {dpi_scale_percent}%")
+        
+        # 根据用户要求，将默认缩放调整至系统屏幕缩放值的1.5倍
+        target_scale_percent = int(dpi_scale_percent * 1.5)
+        print(f"[DEBUG] 目标DPI缩放百分比: {target_scale_percent}%")
+        
+        # 根据目标DPI缩放百分比调整基础窗口大小
+        base_window_width = 850  # 基础逻辑像素（100%缩放时的大小）
+        # 根据目标DPI缩放百分比调整窗口大小
+        scaled_window_width = int(base_window_width * (target_scale_percent / 100))
+        scaled_window_height = int(scaled_window_width * (10/16))
+        
+        # 获取可用屏幕尺寸（物理像素），并转换为逻辑像素
         available_geometry = screen.availableGeometry()
-        available_width = available_geometry.width()
-        available_height = available_geometry.height()
+        available_width_logical = available_geometry.width() / self.device_pixel_ratio
+        available_height_logical = available_geometry.height() / self.device_pixel_ratio
         
-        # 使用DPI缩放因子调整窗口大小，但不超过屏幕可用尺寸
-        # 调整为更合理的基础宽度，确保有足够空间显示3列卡片，同时避免出现过多空白区域（调整为原始的一半）
-        window_width = int(850 * self.dpi_scale)
-        # 计算16:10比例的高度，保持宽度不变
-        window_height = int(window_width * (10/16))
+        # 确保窗口大小不超过屏幕可用尺寸（使用逻辑像素）
+        self.window_width = min(scaled_window_width, available_width_logical - 20)  # 留20px边距
+        self.window_height = min(scaled_window_height, available_height_logical - 20)  # 留20px边距
         
-        # 确保窗口大小不超过屏幕可用尺寸
-        window_width = min(window_width, available_width - 20)  # 留20px边距
-        window_height = min(window_height, available_height - 20)  # 留20px边距
+        # 计算窗口居中位置（使用逻辑像素）
+        full_geometry = screen.geometry()
+        full_screen_width_logical = full_geometry.width() / self.device_pixel_ratio
+        full_screen_height_logical = full_geometry.height() / self.device_pixel_ratio
+        x = (full_screen_width_logical - self.window_width) // 2
+        y = (full_screen_height_logical - self.window_height) // 2
         
-        # 计算窗口居中位置（使用整个屏幕尺寸）
-        x = (full_screen_width - window_width) // 2
-        y = (full_screen_height - window_height) // 2
-        
-        # 确保窗口不会超出可用区域
-        x = max(x, available_geometry.left())
-        y = max(y, available_geometry.top())
-        x = min(x, available_width - window_width - 10)  # 留10px右边距
-        y = min(y, available_height - window_height - 10)  # 留10px底边距
+        # 确保窗口不会超出可用区域（使用逻辑像素）
+        x = max(x, available_geometry.left() / self.device_pixel_ratio)
+        y = max(y, available_geometry.top() / self.device_pixel_ratio)
+        x = min(x, available_width_logical - self.window_width - 10)  # 留10px右边距
+        y = min(y, available_height_logical - self.window_height - 10)  # 留10px底边距
         
         self.setWindowTitle("FreeAssetFilter")
-        self.setGeometry(x, y, window_width, window_height)
+        # 使用逻辑像素设置窗口大小和位置，将浮点数转换为整数
+        self.setGeometry(int(x), int(y), int(self.window_width), int(self.window_height))
         
         # 设置程序图标
         icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'FAF-main.ico')
@@ -110,15 +121,10 @@ class FreeAssetFilterApp(QMainWindow):
         # 用于生成唯一的文件选择器实例ID
         self.file_selector_counter = 0
         
-        # 获取全局字体并应用DPI缩放
+        # 获取全局字体
         global_font = getattr(app, 'global_font', QFont())
         # 创建全局字体的副本，避免修改全局字体对象
         self.global_font = QFont(global_font)
-        # 根据DPI缩放因子调整字体大小
-        font_size = self.global_font.pointSize()
-        if font_size > 0:
-            scaled_size = int(font_size * self.dpi_scale)
-            self.global_font.setPointSize(scaled_size)
         #print(f"\n[DEBUG] 主窗口获取到的全局字体: {self.global_font.family()}, 缩放后大小: {self.global_font.pointSize()}")
         
         # 设置窗口字体
@@ -200,6 +206,26 @@ class FreeAssetFilterApp(QMainWindow):
         - 确保组件获得焦点时能够接收键盘事件
         """
         super().focusInEvent(event)
+        
+    def resizeEvent(self, event):
+        """
+        处理窗口大小变化事件
+        - 当DPI发生变化时，也会触发此事件
+        """
+        # 获取当前屏幕的设备像素比
+        screen = QApplication.primaryScreen()
+        current_ratio = screen.devicePixelRatio()
+        
+        # 如果设备像素比发生变化，更新组件的样式
+        if hasattr(self, 'device_pixel_ratio') and self.device_pixel_ratio != current_ratio:
+            print(f"[DEBUG] 设备像素比变化: {self.device_pixel_ratio:.2f} -> {current_ratio:.2f}")
+            self.device_pixel_ratio = current_ratio
+            
+            # 更新所有子组件的样式
+            self.update_theme()
+        
+        # 调用父类的resizeEvent
+        super().resizeEvent(event)
     
     def _create_file_selector_widget(self):
         """
@@ -219,24 +245,22 @@ class FreeAssetFilterApp(QMainWindow):
         central_widget = QWidget()
         # 获取主题颜色
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
-        border_color = "#3C3C3C"  # 默认窗口边框色
+        background_color = "#f1f3f5"  # 默认窗口背景色
+        border_color = "#e0e0e0"  # 默认窗口边框色
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-            border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#f1f3f5")
+            border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#e0e0e0")
         central_widget.setStyleSheet(f"background-color: {background_color};")
         self.setCentralWidget(central_widget)
         
         # 创建主布局：标题 + 三列
         main_layout = QVBoxLayout(central_widget)
-        # 使用DPI缩放因子调整间距和边距
-        scaled_spacing = int(10 * self.dpi_scale)
-        scaled_margin = int(10 * self.dpi_scale)
-        main_layout.setSpacing(scaled_spacing)
-        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
-        
+        # 设置间距和边距
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
 
-        
+
+
         # 创建三列布局，使用QSplitter实现可拖动分割
         splitter = QSplitter(Qt.Horizontal)
         splitter.setContentsMargins(0, 0, 0, 0)
@@ -244,9 +268,9 @@ class FreeAssetFilterApp(QMainWindow):
         # 左侧列：文件选择器A
         left_column = QWidget()
         left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # 应用DPI缩放因子到边框圆角
-        scaled_border_radius = int(8 * self.dpi_scale)
-        left_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
+        # 设置边框圆角
+        border_radius = 8
+        left_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {border_radius}px;")
         left_layout = QVBoxLayout(left_column)
 
 
@@ -258,7 +282,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 中间列：文件临时存储池
         middle_column = QWidget()
         middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        middle_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
+        middle_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {border_radius}px;")
         middle_layout = QVBoxLayout(middle_column)
         
         # 添加文件临时存储池组件
@@ -268,7 +292,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 右侧列：统一文件预览器
         right_column = QWidget()
         right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        right_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
+        right_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {border_radius}px;")
         right_layout = QVBoxLayout(right_column)
         
         # 统一文件预览器
@@ -280,12 +304,17 @@ class FreeAssetFilterApp(QMainWindow):
         splitter.addWidget(middle_column)
         splitter.addWidget(right_column)
         
-        # 使用DPI缩放因子调整分割器初始大小，确保文件选择器有足够宽度显示3列卡片（调整为原始的一半）
-        # 确保文件选择器的初始宽度足够显示3列卡片
-        # 中间临时存储池：适中大小
-        # 右侧预览器：较大宽度，适合预览
-        scaled_sizes = [int(200 * self.dpi_scale), int(150 * self.dpi_scale), int(300 * self.dpi_scale)]
-        splitter.setSizes(scaled_sizes)
+        # 设置分割器初始大小，将三个板块宽度默认值设定为比值334（3:3:4）
+        # 计算总宽度（使用逻辑像素）
+        total_width = self.window_width - 40  # 减去边距和边框宽度
+        # 根据3:3:4的比例分配宽度
+        left_width = int(total_width * (3/10))
+        middle_width = int(total_width * (3/10))
+        right_width = int(total_width * (4/10))
+        sizes = [left_width, middle_width, right_width]
+        print(f"[DEBUG] 三列初始宽度比例: 3:3:4")
+        print(f"[DEBUG] 三列初始宽度: {left_width}, {middle_width}, {right_width}")
+        splitter.setSizes(sizes)
         
         # 连接文件选择器的信号到预览器
         self.file_selector_a.file_right_clicked.connect(self.unified_previewer.set_file)
@@ -310,10 +339,10 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(self.global_font)
-        # 使用DPI缩放因子调整字体大小和边距
-        scaled_font_size = int(12 * self.dpi_scale)
-        scaled_margin = int(10 * self.dpi_scale)
-        self.status_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #666; margin-top: {scaled_margin}px;")
+        # 设置字体大小和边距
+        font_size = 12
+        margin = 10
+        self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #666; margin-top: {margin}px;")
         main_layout.addWidget(self.status_label)
         #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
         
@@ -352,8 +381,8 @@ class FreeAssetFilterApp(QMainWindow):
             if column:
                 background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
                 border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
-                scaled_border_radius = int(8 * self.dpi_scale)
-                column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {scaled_border_radius}px;")
+                border_radius = 8
+                column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {border_radius}px;")
         
         # 递归更新所有子组件的样式
         def update_child_widgets(widget):
@@ -382,9 +411,9 @@ class FreeAssetFilterApp(QMainWindow):
         """
         演示自定义窗口的使用
         """
-        # 使用DPI缩放因子调整窗口大小
-        window_width = int(400 * self.dpi_scale)
-        window_height = int(300 * self.dpi_scale)
+        # 设置窗口大小
+        window_width = 400
+        window_height = 300
         
         # 创建自定义窗口实例
         custom_window = CustomWindow("自定义窗口演示", self)
@@ -394,14 +423,14 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 1. 添加标题标签
         title_label = QLabel("这是一个自定义窗口")
-        scaled_title_size = int(18 * self.dpi_scale)
-        scaled_title_margin = int(16 * self.dpi_scale)
+        title_size = 18
+        title_margin = 16
         title_label.setStyleSheet(f"""
             QLabel {{
-                font-size: {scaled_title_size}px;
+                font-size: {title_size}px;
                 font-weight: 600;
                 color: #333333;
-                margin-bottom: {scaled_title_margin}px;
+                margin-bottom: {title_margin}px;
                 text-align: center;
             }}
         """)
@@ -414,14 +443,14 @@ class FreeAssetFilterApp(QMainWindow):
                             "• 可拖拽移动（通过标题栏）\n" \
                             "• 支持内嵌其他控件\n" \
                             "• 带阴影效果")
-        scaled_info_size = int(14 * self.dpi_scale)
-        scaled_info_margin = int(24 * self.dpi_scale)
+        info_size = 14
+        info_margin = 24
         info_label.setStyleSheet(f"""
             QLabel {{
-                font-size: {scaled_info_size}px;
+                font-size: {info_size}px;
                 color: #666666;
                 line-height: 1.6;
-                margin-bottom: {scaled_info_margin}px;
+                margin-bottom: {info_margin}px;
             }}
         """)
         info_label.setWordWrap(True)
@@ -483,16 +512,16 @@ class FreeAssetFilterApp(QMainWindow):
                     if widget.file_info['path'] == file_path:
                         # 直接更新卡片的选中状态和样式，不调用toggle_selection
                         widget.is_selected = False
-                        # 应用DPI缩放因子到文件卡片样式
-                        scaled_border_radius = int(8 * self.dpi_scale)
-                        scaled_border_width = int(2 * self.dpi_scale)
-                        scaled_padding = int(8 * self.dpi_scale)
+                        # 设置文件卡片样式
+                        border_radius = 8
+                        border_width = 2
+                        padding = 8
                         widget.setStyleSheet(f"""
                             QWidget#FileCard {{
                                 background-color: #f1f3f5;
-                                border: {scaled_border_width}px solid #e0e0e0;
-                                border-radius: {scaled_border_radius}px;
-                                padding: {scaled_padding}px;
+                                border: {border_width}px solid #e0e0e0;
+                                border-radius: {border_radius}px;
+                                padding: {padding}px;
                                 text-align: center;
                             }}
                             QWidget#FileCard:hover {{
@@ -644,13 +673,55 @@ def main():
         import ctypes
         # 加载Windows API库
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeAssetFilter.App")
+        
+        # 设置DPI感知级别
+        try:
+            # 尝试设置为每显示器DPI感知v2（Windows 10 1607及以上版本支持）
+            user32 = ctypes.windll.user32
+            # PROCESS_PER_MONITOR_DPI_AWARE_V2 = 2
+            # PROCESS_PER_MONITOR_DPI_AWARE = 1
+            # PROCESS_SYSTEM_DPI_AWARE = 1
+            # PROCESS_DPI_UNAWARE = 0
+            
+            # 尝试使用SetProcessDpiAwarenessContext API（Windows 10 1607及以上版本）
+            # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = 0x3
+            SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
+            SetProcessDpiAwarenessContext.restype = ctypes.c_void_p
+            SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = 0x3
+            result = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            if result == 0:
+                # 如果失败，尝试使用SetProcessDpiAwareness API（Windows 8.1及以上版本）
+                shcore = ctypes.windll.shcore
+                SetProcessDpiAwareness = shcore.SetProcessDpiAwareness
+                SetProcessDpiAwareness.restype = ctypes.c_long
+                SetProcessDpiAwareness.argtypes = [ctypes.c_int]
+                PROCESS_PER_MONITOR_DPI_AWARE = 2
+                SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+                print("[DEBUG] 设置为每显示器DPI感知模式")
+            else:
+                print("[DEBUG] 设置为每显示器DPI感知v2模式")
+        except (AttributeError, OSError) as e:
+            # 如果上述API都不可用，尝试使用SetProcessDPIAware（Windows Vista及以上版本）
+            try:
+                user32 = ctypes.windll.user32
+                SetProcessDPIAware = user32.SetProcessDPIAware
+                SetProcessDPIAware.restype = ctypes.c_bool
+                SetProcessDPIAware()
+                print("[DEBUG] 设置为系统DPI感知模式")
+            except (AttributeError, OSError) as e2:
+                print(f"[DEBUG] 设置DPI感知失败: {e2}")
     
     # 设置DPI相关属性
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
-    QApplication.setAttribute(Qt.AA_Use96Dpi)
     
     app = QApplication(sys.argv)
+    
+    # 设置全局DPI缩放因子
+    dpi_scale_factor = app.primaryScreen().logicalDotsPerInch() / 96.0
+    app.dpi_scale_factor = dpi_scale_factor
+    print(f"[DEBUG] 设置全局DPI缩放因子: {dpi_scale_factor:.2f}")
     
     # 设置应用程序图标，用于任务栏显示
     icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
@@ -749,13 +820,6 @@ def main():
     
     # 将默认字体大小存储到app对象中，方便其他组件访问
     app.default_font_size = DEFAULT_FONT_SIZE
-    
-    # 计算DPI缩放因子
-    
-    # 固定DPI缩放因子为0.5，禁用根据屏幕分辨率自动识别的功能
-    app.dpi_scale_factor = 1.0
-    # 输出调试信息
-    print(f"[DEBUG] 当前DPI缩放因子: {app.dpi_scale_factor:.2f}")
     
     # 将设置管理器存储到app对象中，方便其他组件访问
     app.settings_manager = settings_manager

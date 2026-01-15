@@ -47,11 +47,6 @@ class ModernSettingsWindow(QDialog):
         app = parent if hasattr(parent, 'settings_manager') else None
         self.settings_manager = getattr(app, 'settings_manager', None) or SettingsManager()
         
-        # 获取应用实例和DPI缩放因子
-        from PyQt5.QtWidgets import QApplication
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
         # 当前设置值
         self.current_settings = {}
         
@@ -261,7 +256,7 @@ class ModernSettingsWindow(QDialog):
         # 从app对象获取全局默认字体大小
         app = self.parent() if hasattr(self, 'parent') and self.parent() else None
         default_font_size = getattr(app, 'default_font_size', 18)
-        scaled_font_size = int(default_font_size * self.dpi_scale * 1.1)
+        scaled_font_size = int(default_font_size * 1.1)
         
         title_label.setStyleSheet("""
             QLabel {
@@ -300,8 +295,8 @@ class ModernSettingsWindow(QDialog):
         self.scroll_layout = QVBoxLayout(scroll_content)
         
         # 应用DPI缩放因子到布局
-        scaled_padding = int(2 * self.dpi_scale)
-        scaled_spacing = int(3 * self.dpi_scale)
+        scaled_padding = 2
+        scaled_spacing = 3
         self.scroll_layout.setContentsMargins(scaled_padding, scaled_padding, scaled_padding, scaled_padding)
         self.scroll_layout.setSpacing(scaled_spacing)
         
@@ -318,7 +313,7 @@ class ModernSettingsWindow(QDialog):
         layout = QHBoxLayout(widget)
         
         # 应用DPI缩放因子到布局
-        scaled_spacing = int(3 * self.dpi_scale)
+        scaled_spacing = 3
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(scaled_spacing)
         
@@ -532,17 +527,7 @@ class ModernSettingsWindow(QDialog):
         general_group = QGroupBox("通用设置")
         general_layout = QVBoxLayout(general_group)
         
-        # DPI缩放设置
-        self.dpi_scale_bar = CustomSettingItem(
-            text="DPI缩放",
-            secondary_text="调整应用缩放比例",
-            interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
-            min_value=50,
-            max_value=200,
-            initial_value=int(self.settings_manager.get_setting("dpi.global_scale_factor", 1.0) * 100)
-        )
-        self.dpi_scale_bar.value_changed.connect(lambda value: self.current_settings.update({"dpi.global_scale_factor": value / 100}))
-        general_layout.addWidget(self.dpi_scale_bar)
+        # 通用设置项可以在这里添加
         
         self.scroll_layout.addWidget(general_group)
     
@@ -562,7 +547,6 @@ class ModernSettingsWindow(QDialog):
         self.current_settings = {
             "appearance.theme": self.settings_manager.get_setting("appearance.theme", "default"),
             "font.size": self.settings_manager.get_setting("font.size", 20),
-            "dpi.global_scale_factor": self.settings_manager.get_setting("dpi.global_scale_factor", 1.0),
             "file_selector.auto_clear_thumbnail_cache": self.settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True),
             "file_selector.restore_last_path": self.settings_manager.get_setting("file_selector.restore_last_path", True),
             "file_staging.auto_restore_records": self.settings_manager.get_setting("file_staging.auto_restore_records", True),
@@ -621,7 +605,6 @@ class ModernSettingsWindow(QDialog):
         self.delete_original_switch.set_switch_value(False)
         self.speed_bar.set_value(100)
         self.volume_bar.set_value(100)
-        self.dpi_scale_bar.set_value(100)
         
         # 重置当前设置
         self.load_settings()
