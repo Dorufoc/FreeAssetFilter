@@ -2992,13 +2992,77 @@ class CustomFileSelector(QWidget):
     
     def _show_timeline_window(self):
         """
-        显示时间线窗口
+        显示时间线窗口：先生成CSV文件，再显示时间线
         """
-        # 创建并显示时间线窗口 - 使用实例变量防止垃圾回收
-        # 将当前路径传递给时间线控件
-        self.timeline_window = AutoTimeline(self.current_path)
-        self.timeline_window.setWindowFlags(Qt.Window)
-        self.timeline_window.show()
+        from freeassetfilter.components.auto_timeline import AutoTimeline
+        from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+        from freeassetfilter.core.timeline_generator import FolderScanner
+        
+        # 创建自定义提示弹窗
+        progress_dialog = CustomMessageBox(self)
+        progress_dialog.setModal(True)
+        progress_dialog.set_title("生成CSV文件")
+        progress_dialog.set_text("正在生成CSV文件，请稍候...")
+        
+        # 创建进度条
+        progress_bar = CustomProgressBar(is_interactive=False)
+        progress_bar.setRange(0, 100)
+        progress_bar.setValue(0)
+        progress_dialog.set_progress(progress_bar)
+        
+        # 添加取消按钮
+        progress_dialog.set_buttons(["取消"], orientations=Qt.Horizontal)
+        
+        # 初始化结果变量
+        csv_path = ""
+        events = []
+        cancel_flag = False
+        
+        def on_progress_update(current, total):
+            """更新进度条"""
+            if total > 0:
+                progress = int((current / total) * 100)
+                progress_bar.setValue(progress)
+        
+        def on_csv_generated(result_events, result_csv_path, json_path):
+            """CSV文件生成完成"""
+            nonlocal csv_path, events
+            if not cancel_flag:
+                csv_path = result_csv_path
+                events = result_events
+                progress_dialog.close()
+        
+        def on_button_clicked(button_index):
+            """处理按钮点击事件"""
+            nonlocal cancel_flag
+            if button_index == 0:  # 取消按钮
+                cancel_flag = True
+                scanner.terminate()  # 停止FolderScanner线程
+                progress_dialog.close()
+        
+        # 连接按钮点击信号
+        progress_dialog.buttonClicked.connect(on_button_clicked)
+        
+        # 创建并启动FolderScanner线程
+        scanner = FolderScanner(self.current_path)
+        scanner.scan_finished.connect(on_csv_generated)
+        scanner.progress.connect(on_progress_update)
+        scanner.start()
+        
+        # 显示进度对话框
+        progress_dialog.exec_()
+        
+        # 如果CSV文件生成成功，显示时间线组件
+        if csv_path:
+            # 创建并显示时间线窗口 - 使用实例变量防止垃圾回收
+            self.timeline_window = AutoTimeline()
+            self.timeline_window.setWindowFlags(Qt.Window)
+            self.timeline_window.show()
+            
+            # 直接导入生成的CSV文件
+            self.timeline_window.import_csv(csv_path)
+
+# 使用项目中的自定义提示弹窗实现CSV生成进度显示
 
 # 测试代码
 if __name__ == "__main__":

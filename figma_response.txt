@@ -1,0 +1,7 @@
+我具备Figma集成能力，可以通过Figma API访问和处理Figma设计文件。不过，我需要您提供具体的Figma文件信息，例如：
+
+1. Figma文件的key（通常在URL中，格式类似：figma.com/file/{fileKey}/...）
+2. 或者完整的Figma文件URL
+3. 如果需要访问特定的设计元素，还需要提供相应的节点ID
+
+有了这些信息，我就可以帮您获取Figma文件的设计数据、下载图片资源等。请问您需要我处理哪个Figma文件？

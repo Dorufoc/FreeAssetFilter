@@ -975,11 +975,16 @@ class AutoTimeline(QWidget):
         self.scanner.start()
         print(f"扫描线程已启动")
     
-    def import_csv(self):
-        """导入CSV文件，生成时间线"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择CSV文件", "", "CSV Files (*.csv);;All Files (*)"
-        )
+    def import_csv(self, file_path=None):
+        """
+        导入CSV文件，生成时间线
+        如果提供了file_path参数，则直接使用该路径，否则弹出文件选择对话框
+        """
+        if not file_path:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "选择CSV文件", "", "CSV Files (*.csv);;All Files (*)"
+            )
+        
         if not file_path:
             return
         

@@ -89,10 +89,13 @@ class ThumbnailCleaner:
             pass
         return False
     
-    def clean_thumbnails(self):
+    def clean_thumbnails(self, cleanup_period_days=None):
         """
         清理缩略图缓存，删除超过最大数量的旧文件
         
+        Args:
+            cleanup_period_days (int, optional): 缓存清理周期（天），如果提供，则删除超过此天数的文件
+            
         Returns:
             tuple: (删除的文件数量, 剩余的文件数量)
         """
@@ -100,27 +103,40 @@ class ThumbnailCleaner:
         thumbnail_files = self._get_all_thumbnail_files()
         total_files = len(thumbnail_files)
         
-        # 如果文件数量未超过限制，直接返回
-        if total_files <= self.max_cache_size:
-            return 0, total_files
+        # 需要删除的文件路径列表
+        files_to_delete_paths = []
         
-        # 需要删除的文件数量
-        files_to_delete = total_files - self.max_cache_size
-        
-        # 按创建时间排序（旧文件在前）
-        thumbnail_files.sort(key=lambda x: x[1])
-        
-        # 选择要删除的文件
-        files_to_delete_paths = [file_path for file_path, _ in thumbnail_files[:files_to_delete]]
+        if cleanup_period_days:
+            # 基于时间的清理：删除超过指定天数的文件
+            current_time = time.time()
+            cutoff_time = current_time - (cleanup_period_days * 86400)  # 86400秒 = 1天
+            
+            for file_path, ctime in thumbnail_files:
+                if ctime < cutoff_time:
+                    files_to_delete_paths.append(file_path)
+        else:
+            # 基于数量的清理：删除超过最大数量的旧文件
+            if total_files <= self.max_cache_size:
+                return 0, total_files
+            
+            # 需要删除的文件数量
+            files_to_delete = total_files - self.max_cache_size
+            
+            # 按创建时间排序（旧文件在前）
+            thumbnail_files.sort(key=lambda x: x[1])
+            
+            # 选择要删除的文件
+            files_to_delete_paths = [file_path for file_path, _ in thumbnail_files[:files_to_delete]]
         
         # 使用线程池快速删除文件
         deleted_count = 0
         
-        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
-            # 提交所有删除任务
-            results = list(executor.map(self._delete_file, files_to_delete_paths))
-            # 统计成功删除的数量
-            deleted_count = sum(results)
+        if files_to_delete_paths:
+            with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+                # 提交所有删除任务
+                results = list(executor.map(self._delete_file, files_to_delete_paths))
+                # 统计成功删除的数量
+                deleted_count = sum(results)
         
         return deleted_count, total_files - deleted_count
     

@@ -24,6 +24,7 @@ FreeAssetFilter 主程序
 import sys
 import os
 import warnings
+import time
 
 # 忽略sipPyTypeDict相关的弃用警告
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="PyQt5")
@@ -829,14 +830,43 @@ def main():
     if settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
         from freeassetfilter.core.thumbnail_cleaner import get_thumbnail_cleaner
         thumbnail_cleaner = get_thumbnail_cleaner()
-        deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails()
-        print(f"[DEBUG] 自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
+        
+        # 获取缓存清理周期（天）
+        cache_cleanup_period = settings_manager.get_setting("file_selector.cache_cleanup_period", 7)
+        
+        # 获取上次清理时间
+        last_cleanup_time = settings_manager.get_setting("file_selector.last_cleanup_time", None)
+        
+        # 获取当前时间
+        current_time = time.time()
+        
+        # 检查是否需要清理缓存
+        if last_cleanup_time is None or (current_time - last_cleanup_time) > (cache_cleanup_period * 86400):
+            # 执行缓存清理
+            deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails(cleanup_period_days=cache_cleanup_period)
+            print(f"[DEBUG] 自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
+            
+            # 更新上次清理时间
+            settings_manager.set_setting("file_selector.last_cleanup_time", current_time)
+            settings_manager.save_settings()
     
     window = FreeAssetFilterApp()
     # 窗口启动时窗口化显示
     window.show()
     # 窗口显示后再检查并恢复文件列表，确保主面板先显示
     window.check_and_restore_backup()
+    
+    # 应用程序退出前记录当前时间
+    def on_app_exit():
+        # 记录程序退出时间
+        exit_time = time.time()
+        settings_manager.set_setting("app.last_exit_time", exit_time)
+        settings_manager.save_settings()
+        print(f"[DEBUG] 程序退出时间已记录: {exit_time}")
+    
+    # 连接应用程序退出信号
+    app.aboutToQuit.connect(on_app_exit)
+    
     sys.exit(app.exec_())
 
 # 主程序入口

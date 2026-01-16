@@ -37,7 +37,7 @@ class SettingsManager:
         # 默认设置
         self.default_settings = {
             "font": {
-                "size": 18,
+                "size": 8,
                 "style": "Microsoft YaHei"
             },
             "appearance": {
