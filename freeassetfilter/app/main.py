@@ -97,22 +97,20 @@ class FreeAssetFilterApp(QMainWindow):
         self.window_width = min(scaled_window_width, available_width_logical - 20)  # 留20px边距
         self.window_height = min(scaled_window_height, available_height_logical - 20)  # 留20px边距
         
-        # 计算窗口居中位置（使用逻辑像素）
-        full_geometry = screen.geometry()
-        full_screen_width_logical = full_geometry.width() / self.device_pixel_ratio
-        full_screen_height_logical = full_geometry.height() / self.device_pixel_ratio
-        x = (full_screen_width_logical - self.window_width) // 2
-        y = (full_screen_height_logical - self.window_height) // 2
-        
-        # 确保窗口不会超出可用区域（使用逻辑像素）
-        x = max(x, available_geometry.left() / self.device_pixel_ratio)
-        y = max(y, available_geometry.top() / self.device_pixel_ratio)
-        x = min(x, available_width_logical - self.window_width - 10)  # 留10px右边距
-        y = min(y, available_height_logical - self.window_height - 10)  # 留10px底边距
-        
         self.setWindowTitle("FreeAssetFilter")
-        # 使用逻辑像素设置窗口大小和位置，将浮点数转换为整数
-        self.setGeometry(int(x), int(y), int(self.window_width), int(self.window_height))
+        
+        # 设置窗口大小
+        self.resize(int(self.window_width), int(self.window_height))
+        
+        # 使用PyQt5内置方法将窗口居中到可用屏幕区域
+        # 获取窗口的几何尺寸
+        window_geometry = self.frameGeometry()
+        # 获取屏幕可用区域的中心点
+        center_point = screen.availableGeometry().center()
+        # 将窗口的中心移动到屏幕可用区域的中心
+        window_geometry.moveCenter(center_point)
+        # 设置窗口位置（自动处理物理像素和逻辑像素的转换）
+        self.move(window_geometry.topLeft())
         
         # 设置程序图标
         icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'FAF-main.ico')

@@ -131,7 +131,10 @@ class SettingsManager:
             "file_selector": {
                 "auto_clear_thumbnail_cache": True,
                 "restore_last_path": True,
-                "default_layout": "card"
+                "default_layout": "card",
+                "cache_cleanup_period": 7,
+                "cache_cleanup_threshold": 500,
+                "return_shortcut": "middle_click"
             },
             "file_staging": {
                 "auto_restore_records": True,

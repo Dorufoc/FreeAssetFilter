@@ -2995,7 +2995,8 @@ class CustomFileSelector(QWidget):
         显示时间线窗口
         """
         # 创建并显示时间线窗口 - 使用实例变量防止垃圾回收
-        self.timeline_window = AutoTimeline()
+        # 将当前路径传递给时间线控件
+        self.timeline_window = AutoTimeline(self.current_path)
         self.timeline_window.setWindowFlags(Qt.Window)
         self.timeline_window.show()
 

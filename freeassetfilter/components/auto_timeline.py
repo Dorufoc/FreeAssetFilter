@@ -695,7 +695,7 @@ class AutoTimeline(QWidget):
     # 定义JSON结果信号，传递格式化后的JSON数据
     json_result_ready = pyqtSignal(str)
     
-    def __init__(self):
+    def __init__(self, initial_path=None):
         super().__init__()
         
         # 获取应用实例和DPI缩放因子
@@ -740,6 +740,10 @@ class AutoTimeline(QWidget):
         
         # 初始化完成标志
         self.initialized = False
+        
+        # 如果提供了初始路径，自动加载该路径
+        if initial_path and initial_path != "All" and os.path.exists(initial_path):
+            self.load_path(initial_path)
     
     def init_ui(self):
         """初始化用户界面"""
@@ -951,7 +955,14 @@ class AutoTimeline(QWidget):
         if not folder_path:
             return
         
-        print(f"用户选择了文件夹: {folder_path}")
+        self.load_path(folder_path)
+    
+    def load_path(self, folder_path):
+        """加载指定路径，生成时间线"""
+        if not folder_path or not os.path.exists(folder_path):
+            return
+        
+        print(f"正在加载文件夹: {folder_path}")
         
         # 显示进度条
         self.progress_bar.setVisible(True)
