@@ -7,121 +7,13 @@ FreeAssetFilter 现代主题编辑器
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, 
-    QScrollArea, QLabel, QFrame, QSizePolicy
+    QScrollArea
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSize
-from PyQt5.QtGui import QColor, QPen, QBrush, QPainter, QFont
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QFont
 
-class ThemeCard(QWidget):
-    """
-    主题卡片组件
-    包含色彩行和文字行
-    """
-    
-    clicked = pyqtSignal(object)  # 点击信号，传递主题信息
-    
-    def __init__(self, theme_name, colors, is_selected=False, is_add_card=False, parent=None):
-        """
-        初始化主题卡片
-        
-        Args:
-            theme_name (str): 主题名称
-            colors (list): 颜色列表 [主题色, 文本颜色, 次选颜色, 不可用颜色]
-            is_selected (bool): 是否被选中
-            is_add_card (bool): 是否为添加新设计的卡片
-            parent (QWidget): 父控件
-        """
-        super().__init__(parent)
-        self.theme_name = theme_name
-        self.colors = colors
-        self.is_selected = is_selected
-        self.is_add_card = is_add_card
-        
-        # 增加卡片尺寸，为4px的选中边框留出足够空间
-        self.setFixedSize(250, 170)
-        self.setCursor(Qt.PointingHandCursor)
-        
-        # 主布局
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(20, 20, 20, 20)
-        self.main_layout.setSpacing(20)
-        
-        if self.is_add_card:
-            # 添加新设计的卡片
-            self.add_layout = QHBoxLayout()
-            self.add_label = QLabel("添加一个新设计..", self)
-            self.add_label.setAlignment(Qt.AlignCenter)
-            self.add_label.setFont(QFont("Noto Sans SC", 16))
-            self.add_layout.addWidget(self.add_label)
-            self.main_layout.addLayout(self.add_layout)
-        else:
-            # 色彩行
-            self.color_layout = QHBoxLayout()
-            self.color_layout.setSpacing(10)
-            
-            # 主题色
-            self.theme_color = QFrame(self)
-            self.theme_color.setFixedSize(66, 30)
-            self.theme_color.setStyleSheet(f"background-color: {colors[0]}; border-radius: 10px;")
-            self.color_layout.addWidget(self.theme_color)
-            
-            # 其他颜色
-            for color in colors[1:]:
-                color_frame = QFrame(self)
-                color_frame.setFixedSize(30, 30)
-                color_frame.setStyleSheet(f"background-color: {color}; border-radius: 10px;")
-                self.color_layout.addWidget(color_frame)
-            
-            self.main_layout.addLayout(self.color_layout)
-            
-            # 文字行
-            self.text_label = QLabel(theme_name, self)
-            self.text_label.setAlignment(Qt.AlignCenter)
-            self.text_label.setFont(QFont("Noto Sans SC", 16))
-            self.main_layout.addWidget(self.text_label)
-    
-    def mousePressEvent(self, event):
-        """鼠标点击事件"""
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit(self)
-    
-    def paintEvent(self, event):
-        """绘制事件，处理选中状态的边框"""
-        super().paintEvent(event)
-        
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        # 绘制卡片背景（2px边框）
-        painter.setBrush(QBrush(QColor("#FFFFFF")))
-        border_width = 2
-        x = border_width // 2
-        y = border_width // 2
-        width = self.width() - border_width
-        height = self.height() - border_width
-        painter.setPen(QPen(QColor("#000000"), border_width))
-        painter.drawRoundedRect(x, y, width, height, 20, 20)
-        
-        # 如果是选中状态，绘制加粗边框（4px边框）
-        if self.is_selected and not self.is_add_card:
-            border_width = 4
-            x = border_width // 2
-            y = border_width // 2
-            width = self.width() - border_width
-            height = self.height() - border_width
-            painter.setPen(QPen(QColor(self.colors[0]), border_width))
-            painter.drawRoundedRect(x, y, width, height, 20, 20)
-        
-        # 如果是添加卡片，绘制虚线边框（2px边框）
-        if self.is_add_card:
-            border_width = 2
-            x = border_width // 2
-            y = border_width // 2
-            width = self.width() - border_width
-            height = self.height() - border_width
-            pen = QPen(QColor("#000000"), border_width, Qt.DashLine)
-            painter.setPen(pen)
-            painter.drawRoundedRect(x, y, width, height, 20, 20)
+# 导入独立的ThemeCard控件
+from freeassetfilter.widgets.theme_card import ThemeCard
 
 class ThemeEditor(QScrollArea):
     """
@@ -135,6 +27,11 @@ class ThemeEditor(QScrollArea):
     def __init__(self, parent=None):
         """初始化主题编辑器"""
         super().__init__(parent)
+        
+        # 获取应用实例和设置管理器
+        from PyQt5.QtWidgets import QApplication
+        self.app = QApplication.instance()
+        self.settings_manager = getattr(self.app, 'settings_manager', None)
         
         # 预设主题数据
         self.preset_themes = [
@@ -151,9 +48,55 @@ class ThemeEditor(QScrollArea):
             {"name": "自定义设计1", "colors": ["#27BE24", "#000000", "#808080", "#D9D9D9"]}
         ]
         
+        # 加载当前主题设置
+        self.current_theme = self._load_current_theme()
+        
         self.selected_theme = None
         
+        # 在初始化UI前检查当前主题是否与预设主题匹配
+        self._check_current_theme_match()
+        
         self.init_ui()
+    
+    def _check_current_theme_match(self):
+        """
+        检查当前主题是否与预设主题匹配
+        """
+        if not self.current_theme:
+            return
+        
+        # 当前主题颜色列表
+        current_colors = [
+            self.current_theme["accent_color"],
+            self.current_theme["secondary_color"],
+            self.current_theme["normal_color"],
+            self.current_theme["auxiliary_color"]
+        ]
+        
+        # 检查是否与预设主题匹配
+        for theme in self.preset_themes:
+            if theme["colors"] == current_colors:
+                self.selected_theme = theme
+                return
+        
+        # 检查是否与自定义主题匹配
+        for theme in self.custom_themes:
+            if theme["colors"] == current_colors:
+                self.selected_theme = theme
+                return
+    
+    def _load_current_theme(self):
+        """
+        从设置管理器加载当前主题设置
+        """
+        if self.settings_manager:
+            return {
+                "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
+                "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
+                "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
+                "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+            }
+        return None
     
     def init_ui(self):
         """初始化UI"""
@@ -188,9 +131,8 @@ class ThemeEditor(QScrollArea):
             row = index // 3
             col = index % 3
             
-            is_selected = index == 0  # 默认选中第一个主题
-            if is_selected:
-                self.selected_theme = theme
+            # 检查是否是当前选中的主题
+            is_selected = self.selected_theme and self.selected_theme["colors"] == theme["colors"]
             
             card = ThemeCard(
                 theme["name"], 
@@ -221,9 +163,13 @@ class ThemeEditor(QScrollArea):
         
         # 添加自定义主题卡片
         for index, theme in enumerate(self.custom_themes):
+            # 检查是否是当前选中的主题
+            is_selected = self.selected_theme and self.selected_theme["colors"] == theme["colors"]
+            
             card = ThemeCard(
                 theme["name"], 
                 theme["colors"],
+                is_selected=is_selected,
                 parent=self.custom_group
             )
             card.clicked.connect(self.on_theme_card_clicked)
@@ -282,12 +228,89 @@ class ThemeEditor(QScrollArea):
     def on_add_card_clicked(self, card):
         """添加新设计卡片点击事件"""
         self.add_new_design.emit()
+    
+    def on_reset_clicked(self):
+        """
+        重置按钮点击事件
+        重置所有颜色设置为默认值
+        """
+        # 默认颜色设置
+        default_colors = {
+            "accent_color": "#007AFF",
+            "secondary_color": "#333333",
+            "normal_color": "#e0e0e0",
+            "auxiliary_color": "#f1f3f5"
+        }
+        
+        # 更新设置管理器中的颜色设置
+        if self.settings_manager:
+            for color_key, color_value in default_colors.items():
+                self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
+            
+            # 保存设置
+            self.settings_manager.save_settings()
+            
+            # 重新加载当前主题设置
+            self.current_theme = self._load_current_theme()
+            
+            # 更新选中主题
+            self.selected_theme = None
+            
+            # 重新初始化UI
+            self.init_ui()
+    
+    def on_apply_clicked(self):
+        """
+        应用按钮点击事件
+        应用选中的主题颜色
+        """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [ThemeEditor.on_apply_clicked] {msg}")
+        
+        debug("开始应用选中的主题颜色")
+        
+        if self.selected_theme and "colors" in self.selected_theme:
+            debug(f"选中的主题: {self.selected_theme['name']}")
+            debug(f"主题颜色列表: {self.selected_theme['colors']}")
+            
+            # 发送主题选择信号
+            debug("发送主题选择信号")
+            self.theme_selected.emit(self.selected_theme)
+            
+            # 直接保存设置，确保配置被保存到文件
+            if self.settings_manager:
+                debug("使用设置管理器保存主题颜色")
+                
+                # 定义颜色映射
+                color_mapping = {
+                    "accent_color": self.selected_theme["colors"][0],
+                    "secondary_color": self.selected_theme["colors"][1],
+                    "normal_color": self.selected_theme["colors"][2],
+                    "auxiliary_color": self.selected_theme["colors"][3]
+                }
+                
+                # 保存每个颜色
+                for color_key, color_value in color_mapping.items():
+                    setting_path = f"appearance.colors.{color_key}"
+                    debug(f"设置颜色: {color_key} = {color_value} (路径: {setting_path})")
+                    self.settings_manager.set_setting(setting_path, color_value)
+                
+                # 保存设置到文件
+                debug("保存所有设置到配置文件")
+                self.settings_manager.save_settings()
+                debug("主题颜色保存完成")
+            else:
+                debug("警告: 没有找到设置管理器，无法保存主题颜色")
+        else:
+            debug("错误: 没有选中有效的主题或主题缺少颜色信息")
 
 # 测试代码
 if __name__ == "__main__":
     import sys
     from PyQt5.QtWidgets import QApplication
-    from freeassetfilter.widgets.window_widgets import CustomWindow
+    from freeassetfilter.widgets.message_box import CustomWindow
     
     app = QApplication(sys.argv)
     

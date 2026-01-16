@@ -6,7 +6,7 @@ FreeAssetFilter 自定义控件库
 """
 
 # Import all separated widgets
-from .window_widgets import CustomWindow, CustomMessageBox
+from .message_box import CustomWindow, CustomMessageBox
 from .button_widgets import CustomButton
 from .progress_widgets import CustomProgressBar, CustomValueBar, CustomVolumeBar
 from .list_widgets import CustomSelectListItem, CustomSelectList

@@ -498,7 +498,45 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.SWITCH_TYPE,
             initial_value=self.settings_manager.get_setting("appearance.theme", "default") == "dark"
         )
-        self.theme_switch.switch_toggled.connect(lambda value: self.current_settings.update({"appearance.theme": "dark" if value else "default"}))
+        # 扩展开关逻辑，同时更新主题模式和底层色
+        def on_theme_toggled(value):
+            # 更新主题模式设置
+            theme_value = "dark" if value else "default"
+            self.current_settings.update({"appearance.theme": theme_value})
+            # 直接更新设置管理器中的主题模式
+            self.settings_manager.set_setting("appearance.theme", theme_value)
+            # 保存设置到文件
+            self.settings_manager.save_settings()
+            
+            # 根据主题模式更新底层色和其他相关颜色
+            if value:  # 深色主题
+                base_color = "#212121"  # 用户要求的深色底层色
+                # 更新当前设置
+                self.current_settings.update({
+                    "appearance.colors.base_color": base_color,
+                    "appearance.colors.secondary_color": "#FFFFFF"  # 深色模式下文字颜色为白色
+                })
+                # 直接更新设置管理器中的颜色
+                self.settings_manager.set_setting("appearance.colors.base_color", base_color)
+            else:  # 浅色主题
+                base_color = "#FFFFFF"  # 用户要求的浅色底层色
+                # 更新当前设置
+                self.current_settings.update({
+                    "appearance.colors.base_color": base_color,
+                    "appearance.colors.secondary_color": "#333333"  # 浅色模式下文字颜色为黑色
+                })
+                # 直接更新设置管理器中的颜色
+                self.settings_manager.set_setting("appearance.colors.base_color", base_color)
+            
+            # 应用主题更新到UI
+            app = self.parent() if self.parent() else None
+            if hasattr(app, 'update_theme'):
+                app.update_theme()
+            
+            # 发出设置保存信号，通知其他组件
+            self.settings_saved.emit(self.current_settings)
+        
+        self.theme_switch.switch_toggled.connect(on_theme_toggled)
         theme_layout.addWidget(self.theme_switch)
         
         # 主题颜色设置按钮
@@ -820,10 +858,87 @@ class ModernSettingsWindow(QDialog):
         """
         打开主题颜色设置窗口
         """
-        from .window_widgets import ThemeSettingsWindow
+        from freeassetfilter.components.theme_editor import ThemeEditor
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton
+        from PyQt5.QtCore import Qt
         
-        theme_window = ThemeSettingsWindow(self)
-        theme_window.exec_()
+        # 创建原生Qt对话框
+        theme_window = QDialog(self)
+        theme_window.setWindowTitle("主题设置")
+        theme_window.resize(450, 350)
+        
+        # 设置对话框标志
+        theme_window.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowCloseButtonHint)
+        
+        # 创建主布局
+        main_layout = QVBoxLayout(theme_window)
+        
+        # 创建主题编辑器
+        self.theme_editor = ThemeEditor()
+        
+        # 连接主题选择信号
+        self.theme_editor.theme_selected.connect(self._apply_selected_theme)
+        
+        # 添加主题编辑器到布局
+        main_layout.addWidget(self.theme_editor)
+        
+        # 创建按钮布局
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setAlignment(Qt.AlignCenter)
+        
+        # 导入CustomButton
+        from .button_widgets import CustomButton
+        
+        # 重置按钮（次选按钮）
+        reset_button = CustomButton("重置", button_type="secondary", height=20)
+        reset_button.clicked.connect(lambda: self.theme_editor.on_reset_clicked())
+        buttons_layout.addWidget(reset_button)
+        
+        # 应用按钮（强调按钮）
+        apply_button = CustomButton("应用", button_type="primary", height=20)
+        apply_button.clicked.connect(lambda: self.theme_editor.on_apply_clicked())
+        buttons_layout.addWidget(apply_button)
+        
+        # 添加按钮布局到主布局
+        main_layout.addLayout(buttons_layout)
+        
+        # 显示对话框
+        theme_window.show()
+        
+    def _apply_selected_theme(self, theme):
+        """
+        应用选中的主题颜色
+        """
+        if theme and "colors" in theme:
+            # 更新设置管理器中的颜色设置
+            for color_key, color_value in {
+                "accent_color": theme["colors"][0],
+                "secondary_color": theme["colors"][1],
+                "normal_color": theme["colors"][2],
+                "auxiliary_color": theme["colors"][3]
+            }.items():
+                self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
+            
+            # 保存设置
+            self.settings_manager.save_settings()
+            
+            # 发送设置保存信号
+            self.settings_saved.emit(self.current_settings)
+            
+            # 应用主题更新
+            self._update_theme_display()
+            
+            # 更新应用程序主题
+            app = self.parent() if hasattr(self, 'parent') and self.parent() else None
+            if hasattr(app, 'update_theme'):
+                app.update_theme()
+    
+    def _update_theme_display(self):
+        """
+        更新UI显示的主题颜色
+        """
+        # 这里可以添加更新UI显示的代码，例如更新按钮颜色等
+        pass
     
     def load_settings(self):
         """

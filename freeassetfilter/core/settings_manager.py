@@ -44,89 +44,12 @@ class SettingsManager:
             "appearance": {
                 "theme": "default",
                 "colors": {
-                    # 窗口颜色
-                    "window_background": "#f1f3f5",
-                    "window_border": "#e0e0e0",
-                    
-                    # 按钮颜色 - 通用（向后兼容）
-                    "button_normal": "#ffffff",
-                    "button_hover": "#e0e0e0",
-                    "button_pressed": "#d0d0d0",
-                    "button_text": "#333333",
-                    "button_border": "#e0e0e0",
-                    
-                    # 按钮颜色 - 强调样式（primary）
-                    "button_primary_normal": "#007AFF",
-                    "button_primary_hover": "#0A84FF",
-                    "button_primary_pressed": "#0056CC",
-                    "button_primary_text": "#FFFFFF",
-                    "button_primary_border": "#007AFF",
-                    
-                    # 按钮颜色 - 普通样式（normal）
-                    "button_normal_normal": "#ffffff",
-                    "button_normal_hover": "#e0e0e0",
-                    "button_normal_pressed": "#d0d0d0",
-                    "button_normal_text": "#333333",
-                    "button_normal_border": "#e0e0e0",
-                    
-                    # 按钮颜色 - 次选样式（secondary）
-                    "button_secondary_normal": "#ffffff",
-                    "button_secondary_hover": "#e0e0e0",
-                    "button_secondary_pressed": "#d0d0d0",
-                    "button_secondary_text": "#007AFF",
-                    "button_secondary_border": "#007AFF",
-                    
-                    # 按钮颜色 - 警告样式（warning）
-                    "button_warning_normal": "#F44336",
-                    "button_warning_hover": "#E63946",
-                    "button_warning_pressed": "#D62828",
-                    "button_warning_text": "#FFFFFF",
-                    "button_warning_border": "#F44336",
-                    
-                    # 文字颜色
-                    "text_normal": "#333333",
-                    "text_disabled": "#999999",
-                    "text_highlight": "#007AFF",
-                    "text_placeholder": "#999999",
-                    
-                    # 输入框颜色
-                    "input_background": "#ffffff",
-                    "input_border": "#e0e0e0",
-                    "input_focus_border": "#007AFF",
-                    "input_text": "#333333",
-                    
-                    # 列表和表格颜色
-                    "list_background": "#f1f3f5",
-                    "list_item_normal": "#ffffff",
-                    "list_item_hover": "#e0e0e0",
-                    "list_item_selected": "#007AFF",
-                    "list_item_text": "#333333",
-                    
-                    # 滑块颜色
-                    "slider_track": "#e0e0e0",
-                    "slider_handle": "#007AFF",
-                    "slider_handle_hover": "#0A84FF",
-                    
-                    # 进度条颜色
-                    "progress_bar_bg": "#e0e0e0",
-                    "progress_bar_fg": "#007AFF",
-                    
-                    # 分隔线颜色
-                    "separator": "#e0e0e0",
-                    
-                    # 通知颜色
-                    "notification_info": "#007AFF",
-                    "notification_success": "#4CAF50",
-                    "notification_warning": "#FFC107",
-                    "notification_error": "#F44336",
-                    "notification_text": "#FFFFFF",
-                    
-                    # 标签页颜色
-                    "tab_normal": "#ffffff",
-                    "tab_selected": "#007AFF",
-                    "tab_text_normal": "#666666",
-                    "tab_text_selected": "#FFFFFF",
-                    "tab_border": "#e0e0e0"
+                    # 基础颜色配置
+                    "accent_color": "#007AFF",      # 强调色
+                    "secondary_color": "#333333",   # 次选色
+                    "normal_color": "#e0e0e0",      # 普通色
+                    "auxiliary_color": "#f1f3f5",    # 辅助色
+                    "base_color": "#ffffff"        # 底层色
                 }
             },
             "file_selector": {
@@ -191,11 +114,27 @@ class SettingsManager:
         """
         将当前设置保存到JSON文件
         """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [SettingsManager.save_settings] {msg}")
+        
+        debug("开始保存设置")
+        debug(f"设置文件路径: {self.settings_file}")
+        
+        # 显示主题颜色设置
+        if "appearance" in self.settings and "colors" in self.settings["appearance"]:
+            debug("当前主题颜色设置:")
+            for color_key, color_value in self.settings["appearance"]["colors"].items():
+                debug(f"  {color_key}: {color_value}")
+        
         try:
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, ensure_ascii=False, indent=4)
+            debug(f"设置保存成功: {self.settings_file}")
             print(f"设置已保存到: {self.settings_file}")
         except Exception as e:
+            debug(f"设置保存失败: {e}")
             print(f"保存设置失败: {e}")
     
     def get_setting(self, key_path, default=None):
@@ -234,6 +173,17 @@ class SettingsManager:
             key_path (str): 设置键路径，使用点分隔，如 "dpi.global_scale_factor"
             value: 要设置的值
         """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [SettingsManager.set_setting] {msg}")
+        
+        # 移除对颜色设置的限制，允许保存所有颜色设置
+        
+        # 仅当设置与主题颜色相关时才输出详细debug信息
+        if "appearance.colors" in key_path:
+            debug(f"设置键路径: {key_path} = {value}")
+        
         keys = key_path.split(".")
         settings = self.settings
         
@@ -245,6 +195,9 @@ class SettingsManager:
         
         # 设置最后一个键的值
         settings[keys[-1]] = value
+        
+        if "appearance.colors" in key_path:
+            debug(f"设置完成: {key_path} = {value}")
     
     def _merge_settings(self, default, loaded):
         """
@@ -262,8 +215,12 @@ class SettingsManager:
         
         for key, value in loaded.items():
             if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-                # 如果是嵌套字典，递归合并
-                merged[key] = self._merge_settings(merged[key], value)
+                # 如果是颜色字典，保留所有颜色设置
+                if key == "colors" and "appearance" in merged:
+                    merged[key] = value
+                else:
+                    # 其他嵌套字典，递归合并
+                    merged[key] = self._merge_settings(merged[key], value)
             else:
                 # 否则，使用加载的设置值
                 merged[key] = value

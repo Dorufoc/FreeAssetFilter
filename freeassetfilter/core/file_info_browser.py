@@ -1155,7 +1155,7 @@ class FileInfoBrowser:
         """
         显示加载状态对话框（使用自定义提示弹窗）
         """
-        from freeassetfilter.widgets.window_widgets import CustomMessageBox
+        from freeassetfilter.widgets.message_box import CustomMessageBox
         from freeassetfilter.widgets.progress_widgets import CustomProgressBar
         from PyQt5.QtCore import Qt
         

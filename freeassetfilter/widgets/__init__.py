@@ -8,7 +8,7 @@ from .button_widgets import CustomButton
 # 导入自定义输入框组件
 from .input_widgets import CustomInputBox
 # 导入自定义窗口组件
-from .window_widgets import CustomWindow, CustomMessageBox
+from .message_box import CustomWindow, CustomMessageBox
 # 导入自定义文件横向卡片组件
 from .file_horizontal_card import CustomFileHorizontalCard
 # 导入悬浮详细信息组件

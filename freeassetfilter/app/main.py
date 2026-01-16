@@ -241,7 +241,7 @@ class FreeAssetFilterApp(QMainWindow):
         初始化用户界面
         """
         # 创建中央部件
-        central_widget = QWidget()
+        self.central_widget = QWidget()
         # 获取主题颜色
         app = QApplication.instance()
         background_color = "#f1f3f5"  # 默认窗口背景色
@@ -249,11 +249,11 @@ class FreeAssetFilterApp(QMainWindow):
         if hasattr(app, 'settings_manager'):
             background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#f1f3f5")
             border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#e0e0e0")
-        central_widget.setStyleSheet(f"background-color: {background_color};")
-        self.setCentralWidget(central_widget)
+        self.central_widget.setStyleSheet(f"background-color: {background_color};")
+        self.setCentralWidget(self.central_widget)
         
         # 创建主布局：标题 + 三列
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QVBoxLayout(self.central_widget)
         # 设置间距和边距
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(10, 10, 10, 10)
@@ -349,6 +349,9 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 初始化完成后，检查是否需要恢复上次的文件列表
         # 移到window.show()之后执行，确保主面板先显示
+        
+        # 应用主题设置
+        self.update_theme()
     
     def show_info(self, title, message):
         """
@@ -394,16 +397,16 @@ class FreeAssetFilterApp(QMainWindow):
         
         update_child_widgets(self.central_widget)
         
-        # 如果有统一预览器，更新其样式
-        if hasattr(self, 'unified_previewer'):
+        # 如果有统一预览器，更新其样式（如果有update_style方法）
+        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'update_style') and callable(self.unified_previewer.update_style):
             self.unified_previewer.update_style()
         
-        # 如果有文件临时存储池，更新其样式
-        if hasattr(self, 'file_staging_pool'):
+        # 如果有文件临时存储池，更新其样式（如果有update_style方法）
+        if hasattr(self, 'file_staging_pool') and hasattr(self.file_staging_pool, 'update_style') and callable(self.file_staging_pool.update_style):
             self.file_staging_pool.update_style()
         
-        # 如果有文件选择器，更新其样式
-        if hasattr(self, 'file_selector_a'):
+        # 如果有文件选择器，更新其样式（如果有update_style方法）
+        if hasattr(self, 'file_selector_a') and hasattr(self.file_selector_a, 'update_style') and callable(self.file_selector_a.update_style):
             self.file_selector_a.update_style()
     
     def show_custom_window_demo(self):
@@ -726,57 +729,6 @@ def main():
     icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
     app.setWindowIcon(QIcon(icon_path))
     
-    # 设置全局滚动条样式，应用到所有滚动条
-    app.setStyleSheet("""
-        /* 滚动区域样式 */
-        QScrollArea {
-            background-color: #ffffff;
-            border: none;
-        }
-        
-        /* 垂直滚动条样式 */
-        QScrollBar:vertical {
-            width: 8px;
-            background: #f0f0f0;
-            border-radius: 3px;
-        }
-        
-        QScrollBar::handle:vertical {
-            background: #c0c0c0;
-            border-radius: 3px;
-        }
-        
-        QScrollBar::handle:vertical:hover {
-            background: #a0a0a0;
-        }
-        
-        QScrollBar::sub-line:vertical,
-        QScrollBar::add-line:vertical {
-            height: 0px;
-        }
-        
-        /* 水平滚动条样式 */
-        QScrollBar:horizontal {
-            height: 8px;
-            background: #f0f0f0;
-            border-radius: 3px;
-        }
-        
-        QScrollBar::handle:horizontal {
-            background: #c0c0c0;
-            border-radius: 3px;
-        }
-        
-        QScrollBar::handle:horizontal:hover {
-            background: #a0a0a0;
-        }
-        
-        QScrollBar::sub-line:horizontal,
-        QScrollBar::add-line:horizontal {
-            width: 0px;
-        }
-    """)
-    
     # 导入设置管理器
     from freeassetfilter.core.settings_manager import SettingsManager
     
@@ -826,6 +778,74 @@ def main():
     # 将全局字体存储到app对象中，方便其他组件访问
     app.global_font = global_font
     
+    # 根据当前主题动态设置全局滚动条样式
+    theme = settings_manager.get_setting("appearance.theme", "default")
+    if theme == "dark":
+        scroll_area_bg = "#2D2D2D"
+        scrollbar_bg = "#3C3C3C"
+        scrollbar_handle = "#555555"
+        scrollbar_handle_hover = "#666666"
+    else:
+        scroll_area_bg = "#ffffff"
+        scrollbar_bg = "#f0f0f0"
+        scrollbar_handle = "#c0c0c0"
+        scrollbar_handle_hover = "#a0a0a0"
+    
+    # 生成滚动条样式
+    scrollbar_style = """
+        /* 滚动区域样式 */
+        QScrollArea {
+            background-color: %s;
+            border: none;
+        }
+        
+        /* 垂直滚动条样式 */
+        QScrollBar:vertical {
+            width: 8px;
+            background: %s;
+            border-radius: 3px;
+        }
+        
+        QScrollBar::handle:vertical {
+            background: %s;
+            border-radius: 3px;
+        }
+        
+        QScrollBar::handle:vertical:hover {
+            background: %s;
+        }
+        
+        QScrollBar::sub-line:vertical,
+        QScrollBar::add-line:vertical {
+            height: 0px;
+        }
+        
+        /* 水平滚动条样式 */
+        QScrollBar:horizontal {
+            height: 8px;
+            background: %s;
+            border-radius: 3px;
+        }
+        
+        QScrollBar::handle:horizontal {
+            background: %s;
+            border-radius: 3px;
+        }
+        
+        QScrollBar::handle:horizontal:hover {
+            background: %s;
+        }
+        
+        QScrollBar::sub-line:horizontal,
+        QScrollBar::add-line:horizontal {
+            width: 0px;
+        }
+    """ % (scroll_area_bg, scrollbar_bg, scrollbar_handle, scrollbar_handle_hover, 
+              scrollbar_bg, scrollbar_handle, scrollbar_handle_hover)
+    
+    # 设置全局滚动条样式
+    app.setStyleSheet(scrollbar_style)
+    
     # 检查并执行缩略图缓存自动清理
     if settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
         from freeassetfilter.core.thumbnail_cleaner import get_thumbnail_cleaner
@@ -851,6 +871,8 @@ def main():
             settings_manager.save_settings()
     
     window = FreeAssetFilterApp()
+    # 应用主题设置
+    window.update_theme()
     # 窗口启动时窗口化显示
     window.show()
     # 窗口显示后再检查并恢复文件列表，确保主面板先显示

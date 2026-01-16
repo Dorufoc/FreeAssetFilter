@@ -365,7 +365,7 @@ class CustomWindow(QWidget):
             title_label.setText(title)
 
 
-class ThemeSettingsWindow(QDialog):
+
     """
     主题设置窗口组件
     特点：
@@ -412,6 +412,9 @@ class ThemeSettingsWindow(QDialog):
         # 创建主布局
         self.main_layout = QVBoxLayout(self)
         
+        # 计算颜色
+        self._calculate_colors()
+        
         # 初始化UI
         self.init_theme_ui()
     
@@ -457,79 +460,13 @@ class ThemeSettingsWindow(QDialog):
         scroll_layout.setContentsMargins(scaled_padding, scaled_padding, scaled_padding, scaled_padding)
         scroll_layout.setSpacing(scaled_spacing)
         
-        # 添加颜色配置区域
-        self._add_color_section(scroll_layout, "窗口颜色", [
-            ("window_background", "窗口背景色"),
-            ("window_border", "窗口边框色")
-        ])
-        
-        # 强调样式按钮颜色
-        self._add_color_section(scroll_layout, "强调样式按钮颜色", [
-            ("button_primary_normal", "按钮背景色"),
-            ("button_primary_hover", "按钮悬停色"),
-            ("button_primary_pressed", "按钮按下色"),
-            ("button_primary_text", "按钮文字色"),
-            ("button_primary_border", "按钮边框色")
-        ])
-        
-        # 普通样式按钮颜色
-        self._add_color_section(scroll_layout, "普通样式按钮颜色", [
-            ("button_normal_normal", "按钮背景色"),
-            ("button_normal_hover", "按钮悬停色"),
-            ("button_normal_pressed", "按钮按下色"),
-            ("button_normal_text", "按钮文字色"),
-            ("button_normal_border", "按钮边框色")
-        ])
-        
-        # 次选样式按钮颜色
-        self._add_color_section(scroll_layout, "次选样式按钮颜色", [
-            ("button_secondary_normal", "按钮背景色"),
-            ("button_secondary_hover", "按钮悬停色"),
-            ("button_secondary_pressed", "按钮按下色"),
-            ("button_secondary_text", "按钮文字色"),
-            ("button_secondary_border", "按钮边框色")
-        ])
-        
-        # 通用按钮颜色（向后兼容）
-        self._add_color_section(scroll_layout, "通用按钮颜色（向后兼容）", [
-            ("button_normal", "按钮背景色"),
-            ("button_hover", "按钮悬停色"),
-            ("button_pressed", "按钮按下色"),
-            ("button_text", "按钮文字色"),
-            ("button_border", "按钮边框色")
-        ])
-        
-        self._add_color_section(scroll_layout, "文字颜色", [
-            ("text_normal", "普通文字色"),
-            ("text_disabled", "禁用文字色"),
-            ("text_highlight", "高亮文字色"),
-            ("text_placeholder", "占位符文字色")
-        ])
-        
-        self._add_color_section(scroll_layout, "输入框颜色", [
-            ("input_background", "输入框背景色"),
-            ("input_border", "输入框边框色"),
-            ("input_focus_border", "输入框焦点边框色"),
-            ("input_text", "输入框文字色")
-        ])
-        
-        self._add_color_section(scroll_layout, "列表颜色", [
-            ("list_background", "列表背景色"),
-            ("list_item_normal", "列表项背景色"),
-            ("list_item_hover", "列表项悬停色"),
-            ("list_item_selected", "列表项选中色"),
-            ("list_item_text", "列表项文字色")
-        ])
-        
-        self._add_color_section(scroll_layout, "滑块颜色", [
-            ("slider_track", "滑块轨道色"),
-            ("slider_handle", "滑块手柄色"),
-            ("slider_handle_hover", "滑块手柄悬停色")
-        ])
-        
-        self._add_color_section(scroll_layout, "进度条颜色", [
-            ("progress_bar_bg", "进度条背景色"),
-            ("progress_bar_fg", "进度条前景色")
+        # 添加基础颜色配置区域
+        self._add_color_section(scroll_layout, "基础颜色配置", [
+            ("accent_color", "强调色"),
+            ("secondary_color", "次选色"),
+            ("normal_color", "普通色"),
+            ("auxiliary_color", "辅助色"),
+            ("base_color", "底层色")
         ])
         
         # 添加控件预览区域
@@ -715,11 +652,98 @@ class ThemeSettingsWindow(QDialog):
             # 更新当前颜色
             self.current_colors[color_key] = selected_color
             
+            # 重新计算所有颜色
+            self._calculate_colors()
+            
             # 更新UI
             self._update_color_ui(color_key, selected_color)
             
             # 实时应用主题
             self._apply_theme()
+    
+    def _darken_color(self, color_hex, percentage):
+        """
+        将颜色加深指定百分比
+        
+        Args:
+            color_hex (str): 十六进制颜色值，如 "#007AFF"
+            percentage (float): 加深百分比，如 0.02 表示加深2%
+            
+        Returns:
+            str: 加深后的十六进制颜色值
+        """
+        from PyQt5.QtGui import QColor
+        
+        color = QColor(color_hex)
+        r = max(0, int(color.red() * (1 - percentage)))
+        g = max(0, int(color.green() * (1 - percentage)))
+        b = max(0, int(color.blue() * (1 - percentage)))
+        
+        return f"#{r:02x}{g:02x}{b:02x}"
+    
+    def _calculate_colors(self):
+        """
+        根据基础颜色计算所有其他颜色
+        """
+        # 获取基础颜色
+        accent_color = self.current_colors.get("accent_color", "#007AFF")
+        secondary_color = self.current_colors.get("secondary_color", "#333333")
+        normal_color = self.current_colors.get("normal_color", "#e0e0e0")
+        auxiliary_color = self.current_colors.get("auxiliary_color", "#f1f3f5")
+        base_color = self.current_colors.get("base_color", "#ffffff")
+        
+        # 窗口颜色
+        self.current_colors["window_background"] = auxiliary_color  # 辅助色
+        self.current_colors["window_border"] = normal_color  # 普通色
+        
+        # 强调样式按钮颜色
+        self.current_colors["button_primary_normal"] = accent_color  # 强调色
+        self.current_colors["button_primary_hover"] = self._darken_color(accent_color, 0.02)  # 强调色加深2%
+        self.current_colors["button_primary_pressed"] = self._darken_color(accent_color, 0.05)  # 强调色加深5%
+        self.current_colors["button_primary_text"] = base_color  # 底层色
+        self.current_colors["button_primary_border"] = accent_color  # 强调色
+        
+        # 普通样式按钮颜色
+        self.current_colors["button_normal_normal"] = base_color  # 底层色
+        self.current_colors["button_normal_hover"] = self._darken_color(base_color, 0.02)  # 底层色加深2%
+        self.current_colors["button_normal_pressed"] = self._darken_color(base_color, 0.05)  # 底层色加深5%
+        self.current_colors["button_normal_text"] = secondary_color  # 次选色
+        self.current_colors["button_normal_border"] = secondary_color  # 次选色
+        
+        # 次选样式按钮颜色
+        self.current_colors["button_secondary_normal"] = base_color  # 底层色
+        self.current_colors["button_secondary_hover"] = self._darken_color(base_color, 0.02)  # 底层色加深2%
+        self.current_colors["button_secondary_pressed"] = self._darken_color(base_color, 0.05)  # 底层色加深5%
+        self.current_colors["button_secondary_text"] = accent_color  # 强调色
+        self.current_colors["button_secondary_border"] = accent_color  # 强调色
+        
+        # 文字颜色
+        self.current_colors["text_normal"] = secondary_color  # 次选色
+        self.current_colors["text_disabled"] = auxiliary_color  # 辅助色
+        self.current_colors["text_highlight"] = accent_color  # 强调色
+        self.current_colors["text_placeholder"] = normal_color  # 普通色
+        
+        # 输入框颜色
+        self.current_colors["input_background"] = base_color  # 底层色
+        self.current_colors["input_border"] = normal_color  # 普通色
+        self.current_colors["input_focus_border"] = accent_color  # 强调色
+        self.current_colors["input_text"] = secondary_color  # 次选色
+        
+        # 列表颜色
+        self.current_colors["list_background"] = auxiliary_color  # 辅助色
+        self.current_colors["list_item_normal"] = normal_color  # 普通色
+        self.current_colors["list_item_hover"] = self._darken_color(normal_color, 0.02)  # 普通色加深2%
+        self.current_colors["list_item_selected"] = accent_color  # 强调色
+        self.current_colors["list_item_text"] = secondary_color  # 次选色
+        
+        # 滑块颜色
+        self.current_colors["slider_track"] = base_color  # 底层色
+        self.current_colors["slider_handle"] = accent_color  # 强调色
+        self.current_colors["slider_handle_hover"] = accent_color  # 强调色
+        
+        # 进度条颜色
+        self.current_colors["progress_bar_bg"] = base_color  # 底层色
+        self.current_colors["progress_bar_fg"] = accent_color  # 强调色
     
     def _update_color_ui(self, color_key, color_value):
         """
@@ -1006,6 +1030,8 @@ class ThemeSettingsWindow(QDialog):
             color_key (str): 颜色配置键
             text (str): 颜色值文本
         """
+        from PyQt5.QtGui import QColor
+        
         # 简单验证：必须是#开头，后面跟6位十六进制字符
         if text.startswith("#") and len(text) == 7:
             try:
@@ -1013,15 +1039,17 @@ class ThemeSettingsWindow(QDialog):
                 QColor(text)
                 # 更新当前颜色
                 self.current_colors[color_key] = text
+                # 重新计算所有颜色
+                self._calculate_colors()
                 # 更新UI
                 if hasattr(self, '_color_inputs') and color_key in self._color_inputs:
                     color_display, color_value = self._color_inputs[color_key]
                     color_display.setStyleSheet(f"""
-                        QWidget {
+                        QWidget {{
                             background-color: {text};
                             border: 1px solid #cccccc;
                             border-radius: 2px;
-                        }
+                        }}
                     """)
                 # 实时应用主题
                 self._apply_theme()
@@ -1059,8 +1087,21 @@ class ThemeSettingsWindow(QDialog):
         保存主题设置
         """
         if self.settings_manager:
-            # 保存主题颜色设置
-            self.settings_manager.set_setting("appearance.colors", self.current_colors)
+            # 只保存基础颜色设置项，而不是整个colors字典
+            # 这些基础颜色会在应用启动时重新计算其他颜色
+            base_colors = {
+                "accent_color": self.current_colors.get("accent_color", "#007AFF"),
+                "secondary_color": self.current_colors.get("secondary_color", "#333333"),
+                "normal_color": self.current_colors.get("normal_color", "#e0e0e0"),
+                "auxiliary_color": self.current_colors.get("auxiliary_color", "#f1f3f5"),
+                "base_color": self.current_colors.get("base_color", "#ffffff")
+            }
+            
+            # 保存每个基础颜色
+            for color_key, color_value in base_colors.items():
+                self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
+                
+            # 保存设置
             self.settings_manager.save_settings()
             
             # 显示保存成功提示
