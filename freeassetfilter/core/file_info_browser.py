@@ -1202,7 +1202,7 @@ class FileInfoBrowser:
             self.loading_dialog.close()
         
         # 显示错误提示
-        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         msg_box = CustomMessageBox(None)
         msg_box.set_title("错误")
         msg_box.set_text(f"加载详细信息失败: {error_msg}")

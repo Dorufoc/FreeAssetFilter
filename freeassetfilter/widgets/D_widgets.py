@@ -11,7 +11,7 @@ from .button_widgets import CustomButton
 from .progress_widgets import CustomProgressBar, CustomValueBar, CustomVolumeBar
 from .list_widgets import CustomSelectListItem, CustomSelectList
 from .input_widgets import CustomInputBox
-from .custom_control_menu import CustomControlMenu
+from .control_menu import CustomControlMenu
 from .setting_widgets import CustomSettingItem
 from .switch_widgets import CustomSwitch
 from .hover_tooltip import HoverTooltip

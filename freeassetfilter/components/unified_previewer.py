@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
 )
 
 # 导入自定义按钮
-from freeassetfilter.widgets.custom_widgets import CustomButton
+from freeassetfilter.widgets.D_widgets import CustomButton
 from PyQt5.QtCore import Qt
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QFont
@@ -35,7 +35,7 @@ from PyQt5.QtGui import QFont
 from freeassetfilter.core.file_info_browser import FileInfoBrowser
 from freeassetfilter.components.folder_content_list import FolderContentList
 from freeassetfilter.components.archive_browser import ArchiveBrowser
-from freeassetfilter.widgets.custom_widgets import CustomMessageBox, CustomProgressBar
+from freeassetfilter.widgets.D_widgets import CustomMessageBox, CustomProgressBar
 
 class UnifiedPreviewer(QWidget):
     """
@@ -343,7 +343,7 @@ class UnifiedPreviewer(QWidget):
         
         # 检查文件是否存在
         if not os.path.exists(file_path):
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
             msg_box.set_title("错误")
             msg_box.set_text(f"文件不存在: {file_path}")
@@ -362,7 +362,7 @@ class UnifiedPreviewer(QWidget):
                 # Linux系统
                 os.system(f"xdg-open \"{file_path}\"")
         except Exception as e:
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
             msg_box.set_title("错误")
             msg_box.set_text(f"无法打开文件: {str(e)}")

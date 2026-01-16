@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt, QPoint, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont
 
 # 导入现有的自定义控件
-from .custom_control_menu import CustomControlMenu
+from .control_menu import CustomControlMenu
 from .progress_widgets import CustomValueBar
 from .button_widgets import CustomButton
 from freeassetfilter.core.svg_renderer import SvgRenderer

@@ -34,7 +34,7 @@ from PyQt5.QtCore import (
 )
 
 # 导入自定义控件
-from freeassetfilter.widgets.custom_widgets import CustomButton, CustomValueBar
+from freeassetfilter.widgets.D_widgets import CustomButton, CustomValueBar
 
 # 尝试导入PyMuPDF (fitz)库，作为PDF渲染引擎
 try:
@@ -322,7 +322,7 @@ class PDFPreviewWidget(QWidget):
                 scaled_font_size = int(default_font_size * self.dpi_scale)
                 scaled_border_radius = int(8 * self.dpi_scale)
                 scaled_padding = int(10 * self.dpi_scale)
-                    error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
+                error_label.setStyleSheet(f"color: #d32f2f; font-size: {scaled_font_size}px; background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
                 self.pages_layout.addWidget(error_label, alignment=Qt.AlignCenter)
                 return False
             
@@ -636,7 +636,7 @@ class PDFPreviewer(QWidget):
                 self.load_file_from_path(file_path)
         except Exception as e:
             print(f"打开文件时出错: {e}")
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
             msg_box.set_title("错误")
             msg_box.set_text(f"打开文件时出错: {str(e)}")

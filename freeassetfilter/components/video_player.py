@@ -29,11 +29,11 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage, QCursor
 from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.widgets.custom_widgets import CustomValueBar, CustomButton
+from freeassetfilter.widgets.D_widgets import CustomValueBar, CustomButton
 from freeassetfilter.utils.path_utils import get_app_data_path
-from freeassetfilter.widgets.custom_control_menu import CustomControlMenu
+from freeassetfilter.widgets.control_menu import CustomControlMenu
 from freeassetfilter.widgets.volume_slider_menu import VolumeSliderMenu
-from freeassetfilter.widgets.custom_dropdown_menu import CustomDropdownMenu
+from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.core.settings_manager import SettingsManager
 
 # 用于读取音频文件封面

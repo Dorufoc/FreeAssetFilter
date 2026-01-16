@@ -252,7 +252,7 @@ class HoverTooltip(QWidget):
                     # 返回对应的文字描述
                     return svg_tooltip_map.get(svg_filename, svg_filename)
             # 特殊处理CustomFileHorizontalCard组件
-            from .custom_file_horizontal_card import CustomFileHorizontalCard
+            from .file_horizontal_card import CustomFileHorizontalCard
             if isinstance(direct_widget, CustomFileHorizontalCard) or isinstance(direct_widget.parent(), CustomFileHorizontalCard):
                 card = direct_widget if isinstance(direct_widget, CustomFileHorizontalCard) else direct_widget.parent()
                 file_path = card.file_path
@@ -451,7 +451,7 @@ class HoverTooltip(QWidget):
         if direct_widget:
             parent = direct_widget.parent()
             while parent:
-                from .custom_file_horizontal_card import CustomFileHorizontalCard
+                from .file_horizontal_card import CustomFileHorizontalCard
                 if isinstance(parent, CustomFileHorizontalCard):
                     file_path = parent.file_path
                     if parent._display_name:

@@ -29,8 +29,8 @@ from PyQt5.QtWidgets import (
 )
 
 # 导入自定义控件
-from freeassetfilter.widgets.custom_widgets import CustomButton, CustomMessageBox, CustomProgressBar
-from freeassetfilter.widgets.custom_file_horizontal_card import CustomFileHorizontalCard
+from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox, CustomProgressBar
+from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo
@@ -457,7 +457,7 @@ class FileStagingPool(QWidget):
             file_info (dict): 文件信息字典
             widget (QWidget): 不再使用，保留参数以保持向后兼容
         """
-        from freeassetfilter.widgets.custom_widgets import CustomInputBox
+        from freeassetfilter.widgets.D_widgets import CustomInputBox
         
         # 获取当前显示名称
         current_name = file_info["display_name"]

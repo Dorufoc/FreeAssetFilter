@@ -45,12 +45,12 @@ from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtGui import QFont, QIcon
 
 # 导入自定义控件库
-from freeassetfilter.widgets.custom_widgets import CustomWindow, CustomButton
+from freeassetfilter.widgets.D_widgets import CustomWindow, CustomButton
 
 
 
 # 导入自定义文件选择器组件
-from freeassetfilter.components.custom_file_selector import CustomFileSelector
+from freeassetfilter.components.file_selector import CustomFileSelector
 # 导入统一文件预览器组件
 from freeassetfilter.components.unified_previewer import UnifiedPreviewer
 # 导入文件临时存储池组件
@@ -539,7 +539,7 @@ class FreeAssetFilterApp(QMainWindow):
         检查是否存在备份文件，并询问用户是否要恢复上次的文件列表和文件选择器目录
         """
         # 导入自定义消息框
-        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         import os
         import json
         
@@ -789,7 +789,7 @@ def main():
     settings_manager = SettingsManager()
     
     # 从设置管理器中获取字体设置
-    DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 20)  # 基础字体大小，可统一调整
+    DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 8)  # 基础字体大小，可统一调整
     saved_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")  # 从设置中获取保存的字体样式
     
     # 检查保存的字体是否可用，如果不可用则回退到微软雅黑

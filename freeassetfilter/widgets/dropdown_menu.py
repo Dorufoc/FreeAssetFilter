@@ -11,7 +11,7 @@ from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QSize, QRect
 from PyQt5.QtGui import QFont, QFontMetrics
 
 # 导入现有的自定义控件
-from .custom_control_menu import CustomControlMenu
+from .control_menu import CustomControlMenu
 from .button_widgets import CustomButton
 import os
 
@@ -46,6 +46,7 @@ class CustomDropdownMenu(QWidget):
         self._fixed_width = None  # 固定宽度
         self._max_height = int(50 * self.dpi_scale)  # 最大高度
         self._position = position  # 菜单位置："top" 或 "bottom"
+        self._external_target_button = None  # 外部设置的目标按钮
         
         # 初始化UI
         self.init_ui()
@@ -285,6 +286,19 @@ class CustomDropdownMenu(QWidget):
         """
         if position in ["top", "bottom"]:
             self._position = position
+            if hasattr(self, 'dropdown_menu'):
+                self.dropdown_menu.set_position(position)
+    
+    def set_target_button(self, button):
+        """
+        设置目标按钮
+        
+        Args:
+            button: 目标按钮部件
+        """
+        self._external_target_button = button
+        if hasattr(self, 'dropdown_menu'):
+            self.dropdown_menu.set_target_button(button)
     
     def _update_button_text(self):
         """
@@ -329,8 +343,11 @@ class CustomDropdownMenu(QWidget):
             # 列表容器宽度减去滚动条宽度，避免文字被遮挡
             self.list_container.setFixedWidth(self._fixed_width - scroll_bar_width)
         else:
-            # 自适应宽度
-            button_width = self.main_button.width()
+            # 自适应宽度：优先使用外部目标按钮的宽度，否则使用内部main_button的宽度
+            if self._external_target_button:
+                button_width = self._external_target_button.width()
+            else:
+                button_width = self.main_button.width()
             self.scroll_area.setFixedWidth(button_width)
             # 列表容器宽度减去滚动条宽度，避免文字被遮挡
             self.list_container.setFixedWidth(button_width - scroll_bar_width)
@@ -352,8 +369,10 @@ class CustomDropdownMenu(QWidget):
         显示菜单
         """
         if not self._menu_visible:
+            # 优先使用外部设置的目标按钮，否则使用内部main_button
+            target_button = self._external_target_button if self._external_target_button else self.main_button
             # 设置目标按钮
-            self.dropdown_menu.set_target_button(self.main_button)
+            self.dropdown_menu.set_target_button(target_button)
             # 设置菜单位置
             self.dropdown_menu.set_position(self._position)
             # 显示菜单
@@ -364,7 +383,8 @@ class CustomDropdownMenu(QWidget):
             # 连接点击外部区域关闭菜单信号
             self.dropdown_menu.mousePressEvent = self._on_menu_click
             # 连接按钮的leaveEvent
-            self.main_button.leaveEvent = self._on_button_leave
+            if target_button is self.main_button:
+                self.main_button.leaveEvent = self._on_button_leave
             # 启动定时器，3秒后检查是否需要关闭菜单
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(3000, self._check_leave_and_close)
@@ -377,7 +397,10 @@ class CustomDropdownMenu(QWidget):
             self.dropdown_menu.close()
             self._menu_visible = False
             # 断开按钮的leaveEvent
-            self.main_button.leaveEvent = None
+            if self._external_target_button is None:
+                self.main_button.leaveEvent = None
+            # 重置外部目标按钮，避免下次使用时产生混淆
+            self._external_target_button = None
             
     def _on_menu_close(self, event):
         """

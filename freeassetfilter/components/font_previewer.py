@@ -476,7 +476,7 @@ class FontPreviewer(QMainWindow):
                 self.setWindowTitle(f"字体预览�?- {file_name}")
             else:
                 # 字体加载失败
-                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                from freeassetfilter.widgets.D_widgets import CustomMessageBox
                 msg_box = CustomMessageBox(self)
                 msg_box.set_title("错误")
                 msg_box.set_text("无法加载字体文件")

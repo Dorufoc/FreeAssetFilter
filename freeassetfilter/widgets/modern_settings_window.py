@@ -38,10 +38,15 @@ class ModernSettingsWindow(QDialog):
     settings_saved = pyqtSignal(dict)  # 设置保存信号
     
     def __init__(self, parent=None):
-        super().__init__(parent)
+        # 使用Qt.Dialog | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint 标志
+        # 这样可以让对话框支持最大化、最小化和关闭按钮
+        super().__init__(parent, Qt.Dialog | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint)
         
         # 设置窗口标题
         self.setWindowTitle("设置")
+        
+        # 隐藏窗口右下角的拖动区域样式
+        self.setSizeGripEnabled(False)
         
         # 获取设置管理器
         app = parent if hasattr(parent, 'settings_manager') else None
@@ -56,16 +61,19 @@ class ModernSettingsWindow(QDialog):
                 background-color: #FFFFFF;
                 border: 1px solid #E0E0E0;
                 border-radius: 8px;
-                padding: 5px;
-                margin-bottom: 0px;
+                padding: 10px;
+                margin-bottom: 5px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                padding: 0 10x;
+                padding: 0px 10px;
                 color: #333333;
                 font-weight: 600;
-                font-size: 8px;
+                font-size: 6px;
+                margin-bottom: 0px;
+                top: -2px;
+                background-color: white;
             }
         """
         
@@ -343,15 +351,15 @@ class ModernSettingsWindow(QDialog):
         # 从app对象获取全局默认字体大小
         app = self.parent() if hasattr(self, 'parent') and self.parent() else None
         default_font_size = getattr(app, 'default_font_size', 18)
-        scaled_font_size = int(default_font_size * 1.1)
+        scaled_font_size = int(default_font_size * 1)
         
         title_label.setStyleSheet("""
             QLabel {
                 font-size: %dpx;
                 font-weight: 600;
                 color: #000000;
-                margin-bottom: 15px;
-                padding: 5px;
+                margin-bottom: 5px;
+                padding: 2px;
             }
         """ % scaled_font_size)
         layout.addWidget(title_label)
@@ -493,12 +501,12 @@ class ModernSettingsWindow(QDialog):
         self.theme_switch.switch_toggled.connect(lambda value: self.current_settings.update({"appearance.theme": "dark" if value else "default"}))
         theme_layout.addWidget(self.theme_switch)
         
-        self.scroll_layout.addWidget(theme_group)
-        
         # 主题颜色设置按钮
         self.theme_color_button = CustomButton("自定义主题颜色", button_type="secondary")
         self.theme_color_button.clicked.connect(self._open_theme_color_settings)
-        self.scroll_layout.addWidget(self.theme_color_button)
+        theme_layout.addWidget(self.theme_color_button)
+        
+        self.scroll_layout.addWidget(theme_group)
         
         # 字体设置组
         font_group = QGroupBox("字体设置")
@@ -507,37 +515,42 @@ class ModernSettingsWindow(QDialog):
         
         # 字体样式选择
         from PyQt5.QtGui import QFontDatabase
-        from .custom_dropdown_menu import CustomDropdownMenu
+        from .dropdown_menu import CustomDropdownMenu
         font_db = QFontDatabase()
         font_families = font_db.families()
         
         # 获取当前字体设置
         current_font = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
         
-        # 创建字体样式选择控件（只用于显示标题和描述）
-        font_style_label = CustomSettingItem(
+        # 创建字体样式选择控件，使用按钮组交互类型
+        self.font_style_setting = CustomSettingItem(
             text="字体样式",
             secondary_text="选择应用内使用的字体",
-            interaction_type=None  # 不添加交互控件
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": current_font, "type": "primary"}]
         )
         
-        # 创建自定义下拉菜单（直接使用自带的按钮）
-        self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+        # 字体样式选择按钮点击处理
+        def on_font_style_button_clicked(button_index):
+            # 创建自定义下拉菜单（点击时才创建，避免初始位置错误）
+            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            # 设置字体列表项
+            self.font_dropdown_menu.set_items(font_families, default_item=current_font)
+            # 字体选择下拉菜单项点击处理
+            def on_font_item_clicked(selected_font_family):
+                self.current_settings.update({"font.style": selected_font_family})
+                # 更新按钮显示的字体名称
+                self.font_style_setting.button_group[0].setText(selected_font_family)
+            self.font_dropdown_menu.itemClicked.connect(on_font_item_clicked)
+            
+            # 设置目标按钮并显示下拉菜单
+            button = self.font_style_setting.button_group[button_index]
+            self.font_dropdown_menu.set_target_button(button)
+            self.font_dropdown_menu.show_menu()
+        self.font_style_setting.button_clicked.connect(on_font_style_button_clicked)
         
-        # 设置按钮样式为primary
-        self.font_dropdown_menu.main_button.set_button_type("primary")
-        
-        # 设置字体列表项
-        self.font_dropdown_menu.set_items(font_families, default_item=current_font)
-        
-        # 字体选择下拉菜单项点击处理
-        def on_font_item_clicked(selected_font_family):
-            self.current_settings.update({"font.style": selected_font_family})
-        self.font_dropdown_menu.itemClicked.connect(on_font_item_clicked)
-        
-        # 将标签和下拉菜单添加到布局
-        font_layout.addWidget(font_style_label)
-        font_layout.addWidget(self.font_dropdown_menu)
+        # 将字体样式选择控件添加到布局
+        font_layout.addWidget(self.font_style_setting)
         
         # 字体大小滑块
         self.font_size_bar = CustomSettingItem(
@@ -564,7 +577,7 @@ class ModernSettingsWindow(QDialog):
         
         # 字体样式选择
         from PyQt5.QtGui import QFontDatabase
-        from .custom_dropdown_menu import CustomDropdownMenu
+        from .dropdown_menu import CustomDropdownMenu
         font_db = QFontDatabase()
         font_families = font_db.families()
         
@@ -578,23 +591,38 @@ class ModernSettingsWindow(QDialog):
             interaction_type=None  # 不添加交互控件
         )
         
-        # 创建自定义下拉菜单（直接使用自带的按钮）
-        self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+        # 创建字体样式选择控件，使用按钮组交互类型
+        self.font_style_setting = CustomSettingItem(
+            text="",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": current_font, "type": "primary"}]
+        )
         
-        # 设置按钮样式为primary
-        self.font_dropdown_menu.main_button.set_button_type("primary")
-        
-        # 设置字体列表项
-        self.font_dropdown_menu.set_items(font_families, default_item=current_font)
-        
-        # 字体选择下拉菜单项点击处理
-        def on_font_item_clicked(selected_font_family):
-            self.current_settings.update({"font.style": selected_font_family})
-        self.font_dropdown_menu.itemClicked.connect(on_font_item_clicked)
-        
-        # 将标签和下拉菜单添加到布局
+        # 将标签和字体选择控件添加到布局
         font_layout.addWidget(font_style_label)
-        font_layout.addWidget(self.font_dropdown_menu)
+        font_layout.addWidget(self.font_style_setting)
+        
+        # 字体样式选择按钮点击处理
+        def on_font_style_button_clicked(button_index):
+            # 创建自定义下拉菜单（点击时才创建，避免初始位置错误）
+            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            # 设置按钮样式为primary
+            self.font_dropdown_menu.main_button.set_button_type("primary")
+            # 设置字体列表项
+            self.font_dropdown_menu.set_items(font_families, default_item=current_font)
+            
+            # 字体选择下拉菜单项点击处理
+            def on_font_item_clicked(selected_font_family):
+                self.current_settings.update({"font.style": selected_font_family})
+                # 更新按钮显示的字体名称
+                self.font_style_setting.button_group[0].setText(selected_font_family)
+            self.font_dropdown_menu.itemClicked.connect(on_font_item_clicked)
+            
+            # 设置目标按钮并显示下拉菜单
+            button = self.font_style_setting.button_group[button_index]
+            self.font_dropdown_menu.set_target_button(button)
+            self.font_dropdown_menu.show_menu()
+        self.font_style_setting.button_clicked.connect(on_font_style_button_clicked)
         
         # 字体大小滑块
         self.font_size_bar = CustomSettingItem(

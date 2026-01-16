@@ -43,7 +43,7 @@ from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
 from freeassetfilter.widgets.list_widgets import CustomSelectList
-from freeassetfilter.widgets.custom_dropdown_menu import CustomDropdownMenu
+from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from freeassetfilter.components.auto_timeline import AutoTimeline
 
@@ -418,7 +418,7 @@ class CustomFileSelector(QWidget):
         
         if not media_files:
             # 当前目录下没有需要生成缩略图的媒体文件
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             info_msg = CustomMessageBox(self)
             info_msg.set_title("提示")
             info_msg.set_text("当前目录下没有需要生成缩略图的媒体文件")
@@ -436,7 +436,7 @@ class CustomFileSelector(QWidget):
         
         if not files_to_generate:
             # 所有文件都已有缩略图，无需重新生成
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             info_msg = CustomMessageBox(self)
             info_msg.set_title("提示")
             info_msg.set_text("所有文件都已有缩略图，无需重新生成")
@@ -446,7 +446,7 @@ class CustomFileSelector(QWidget):
             return
         
         # 使用自定义提示窗口来显示进度
-        from freeassetfilter.widgets.custom_widgets import CustomMessageBox, CustomProgressBar
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox, CustomProgressBar
         
         # 创建自定义提示窗口
         progress_msg = CustomMessageBox(self)
@@ -524,7 +524,7 @@ class CustomFileSelector(QWidget):
         清理缩略图缓存，删除所有本地存储的缩略图文件，并刷新页面显示
         """
         import shutil
-        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         
         # 确认对话框
         confirm_msg = CustomMessageBox(self)
@@ -1055,7 +1055,7 @@ class CustomFileSelector(QWidget):
             favorite = self.favorites[index]
             
             # 使用CustomMessageBox的输入模式获取新名称
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             input_dialog = CustomMessageBox(self)
             input_dialog.set_title("重命名收藏夹")
             input_dialog.set_text("请输入新名称:")
@@ -1095,7 +1095,7 @@ class CustomFileSelector(QWidget):
             path = favorite['path']
             
             # 创建并配置自定义确认窗口
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
             msg_box.set_title("删除收藏夹")
             msg_box.set_text(f"确定要删除收藏夹项 '{name}' 吗?")
@@ -1132,7 +1132,7 @@ class CustomFileSelector(QWidget):
         # 检查当前路径是否已经在收藏夹中
         for favorite in self.favorites:
             if favorite['path'] == current_path:
-                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                from freeassetfilter.widgets.D_widgets import CustomMessageBox
                 # 创建并配置自定义提示窗口
                 msg_box = CustomMessageBox(self)
                 msg_box.set_title("提示")
@@ -1147,7 +1147,7 @@ class CustomFileSelector(QWidget):
         default_name = os.path.basename(current_path) or current_path
         
         # 使用CustomMessageBox的输入模式获取收藏夹名称
-        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         input_dialog = CustomMessageBox(self)
         input_dialog.set_title("添加到收藏夹")
         input_dialog.set_text("请输入收藏名称:")
@@ -1229,7 +1229,7 @@ class CustomFileSelector(QWidget):
             for i, favorite in enumerate(self.favorites):
                 if favorite['path'] == path and favorite['name'] == old_name:
                     # 使用CustomMessageBox的输入模式获取新名称
-                    from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                    from freeassetfilter.widgets.D_widgets import CustomMessageBox
                     input_dialog = CustomMessageBox(self)
                     input_dialog.set_title("重命名")
                     input_dialog.set_text("请输入新名称:")
@@ -1264,7 +1264,7 @@ class CustomFileSelector(QWidget):
             name, path = text.split(' - ', 1)
             
             # 确认删除
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             confirm_msg = CustomMessageBox(self)
             confirm_msg.set_title("确认删除")
             confirm_msg.set_text(f"确定要删除收藏夹项 '{name}' 吗?")
@@ -1303,7 +1303,7 @@ class CustomFileSelector(QWidget):
         # 检查是否已存在
         for favorite in self.favorites:
             if favorite['path'] == current_path:
-                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                from freeassetfilter.widgets.D_widgets import CustomMessageBox
                 info_msg = CustomMessageBox(self)
                 info_msg.set_title("提示")
                 info_msg.set_text("该路径已在收藏夹中")
@@ -1313,7 +1313,7 @@ class CustomFileSelector(QWidget):
                 return
         
         # 使用CustomMessageBox的输入模式获取收藏夹名称
-        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         input_dialog = CustomMessageBox(self)
         input_dialog.set_title("添加到收藏夹")
         input_dialog.set_text("请输入收藏名称:")
@@ -1566,7 +1566,7 @@ class CustomFileSelector(QWidget):
             self.current_path = path
             self.refresh_files()
         else:
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             warning_msg = CustomMessageBox(self)
             warning_msg.set_title("警告")
             warning_msg.set_text("无效的路径")
@@ -1593,7 +1593,7 @@ class CustomFileSelector(QWidget):
         """
         应用文件筛选
         """
-        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         
         # 创建自定义提示窗口
         filter_dialog = CustomMessageBox(self)
@@ -1822,7 +1822,7 @@ class CustomFileSelector(QWidget):
                     files.append(file_dict)
             except Exception as e:
                 print(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
-                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                from freeassetfilter.widgets.D_widgets import CustomMessageBox
                 error_msg = CustomMessageBox(self)
                 error_msg.set_title("错误")
                 error_msg.set_text(f"读取目录失败: {e}")

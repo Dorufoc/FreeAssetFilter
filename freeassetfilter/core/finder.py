@@ -336,7 +336,7 @@ def show_dependency_error(missing_deps, version_issues):
     # 尝试使用自定义消息框显示错误
     try:
         from PyQt5.QtWidgets import QApplication
-        from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         app = QApplication.instance()
         if app:
             msg_box = CustomMessageBox(None)

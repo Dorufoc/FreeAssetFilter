@@ -7,6 +7,7 @@ FreeAssetFilter 设置管理模块
 
 import os
 import json
+import copy
 
 
 class SettingsManager:
@@ -172,7 +173,7 @@ class SettingsManager:
                     return merged_settings
             else:
                 # 文件不存在，返回默认设置并保存到文件
-                default_settings = self.default_settings.copy()
+                default_settings = copy.deepcopy(self.default_settings)
                 # 先将默认设置赋值给self.settings，再保存
                 self.settings = default_settings
                 self.save_settings()
@@ -180,7 +181,7 @@ class SettingsManager:
         except Exception as e:
             print(f"加载设置失败: {e}")
             # 加载失败，返回默认设置并保存到文件
-            default_settings = self.default_settings.copy()
+            default_settings = copy.deepcopy(self.default_settings)
             # 先将默认设置赋值给self.settings，再保存
             self.settings = default_settings
             self.save_settings()
@@ -257,7 +258,7 @@ class SettingsManager:
         Returns:
             dict: 合并后的设置
         """
-        merged = default.copy()
+        merged = copy.deepcopy(default)
         
         for key, value in loaded.items():
             if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
@@ -268,3 +269,9 @@ class SettingsManager:
                 merged[key] = value
         
         return merged
+    
+    def reset_to_defaults(self):
+        """
+        重置所有设置为默认值
+        """
+        self.settings = copy.deepcopy(self.default_settings)

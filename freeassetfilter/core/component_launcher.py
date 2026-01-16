@@ -359,7 +359,7 @@ class ComponentLauncher(QMainWindow):
                     self._log(f"已启动组件", component=component_name, level="INFO")
                 else:
                     self._log(f"启动失败", component=component_name, level="ERROR")
-                    from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                    from freeassetfilter.widgets.D_widgets import CustomMessageBox
                     msg_box = CustomMessageBox(self)
                     msg_box.set_title("启动失败")
                     msg_box.set_text(f"无法启动组件: {component_name}")
@@ -378,7 +378,7 @@ class ComponentLauncher(QMainWindow):
                     )
                 else:
                     self._log(f"启动错误: {str(e)}", component=component_name, level="ERROR")
-                from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+                from freeassetfilter.widgets.D_widgets import CustomMessageBox
                 msg_box = CustomMessageBox(self)
                 msg_box.set_title("启动错误")
                 msg_box.set_text(f"启动组件时发生错误: {component_name}\n{str(e)}")
@@ -466,7 +466,7 @@ class ComponentLauncher(QMainWindow):
                 f.write('\n'.join(logs) + '\n')
             
             self._log(f"组件日志已保存到 {log_path}", component=component_name, level="INFO")
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
             msg_box.set_title("保存成功")
             msg_box.set_text(f"日志已成功保存到:\n{log_path}")
@@ -474,7 +474,7 @@ class ComponentLauncher(QMainWindow):
             msg_box.exec_()
         except Exception as e:
             self._log(f"保存日志失败: {str(e)}", component=component_name, level="ERROR")
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
             msg_box.set_title("保存失败")
             msg_box.set_text(f"保存日志时发生错误:\n{str(e)}")
@@ -502,7 +502,7 @@ class ComponentLauncher(QMainWindow):
             clipboard.setText(recent_logs)
             
             # 显示成功消息
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
             msg_box.set_title("复制成功")
             msg_box.set_text("最近一次启动的日志已复制到剪贴板！")
@@ -511,7 +511,7 @@ class ComponentLauncher(QMainWindow):
             self._log("已复制最近一次启动的日志", level="INFO")
         except Exception as e:
             self._log(f"复制日志失败: {str(e)}", level="ERROR")
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
             msg_box.set_title("复制失败")
             msg_box.set_text(f"复制日志时发生错误:\n{str(e)}")
@@ -671,7 +671,7 @@ class ComponentLauncher(QMainWindow):
         """窗口关闭事件，停止所有运行中的进程"""
         if self.running_processes:
             count = len(self.running_processes)
-            from freeassetfilter.widgets.custom_widgets import CustomMessageBox
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             confirm_msg = CustomMessageBox(self)
             confirm_msg.set_title("确认关闭")
             confirm_msg.set_text(f"还有 {count} 个组件正在运行，确定要关闭启动器并停止所有组件吗？")
