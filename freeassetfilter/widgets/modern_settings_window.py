@@ -508,7 +508,6 @@ class ModernSettingsWindow(QDialog):
         # 字体样式选择
         from PyQt5.QtGui import QFontDatabase
         from .custom_dropdown_menu import CustomDropdownMenu
-        from .setting_widgets import CustomSettingItem
         font_db = QFontDatabase()
         font_families = font_db.families()
         
@@ -566,7 +565,6 @@ class ModernSettingsWindow(QDialog):
         # 字体样式选择
         from PyQt5.QtGui import QFontDatabase
         from .custom_dropdown_menu import CustomDropdownMenu
-        from .setting_widgets import CustomSettingItem
         font_db = QFontDatabase()
         font_families = font_db.families()
         
