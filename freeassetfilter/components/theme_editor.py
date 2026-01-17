@@ -95,7 +95,8 @@ class ThemeEditor(QScrollArea):
                 "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
                 "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
                 "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
-                "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+                "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),
+                "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#f1f3f5")
             }
         return None
     
@@ -240,7 +241,8 @@ class ThemeEditor(QScrollArea):
             "accent_color": "#007AFF",
             "secondary_color": "#333333",
             "normal_color": "#e0e0e0",
-            "auxiliary_color": "#f1f3f5"
+            "auxiliary_color": "#f1f3f5",
+            "base_color": "#f1f3f5"
         }
         
         # 更新设置管理器中的颜色设置

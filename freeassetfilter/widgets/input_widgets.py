@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
     QScrollArea
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QRectF
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
@@ -239,17 +239,21 @@ class CustomInputBox(QWidget):
         # 边框宽度设置为1，应用DPI缩放
         scaled_border_width = int(1 * self.dpi_scale)
         
-        # 绘制背景矩形
-        rect = self.rect().adjusted(scaled_border_width, scaled_border_width, -scaled_border_width, -scaled_border_width)
+        # 绘制背景矩形 - 使用整个控件区域，确保不会出现间隙
+        rect = self.rect()
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(background_color))
         painter.drawRoundedRect(rect, self._border_radius, self._border_radius)
         
-        # 绘制边框
+        # 绘制边框 - 调整矩形以确保边框完全显示，不会被裁剪
+        # 使用QRectF来确保更高的精度，避免浮点数计算误差
+        border_rect = QRectF(self.rect())
+        # 向内收缩边框宽度的一半，确保边框居中且完全可见
+        border_rect.adjust(scaled_border_width / 2, scaled_border_width / 2, -scaled_border_width / 2, -scaled_border_width / 2)
+        
         painter.setPen(QPen(border_color, scaled_border_width))
         painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(self.rect().adjusted(scaled_border_width // 2, scaled_border_width // 2, -scaled_border_width // 2, -scaled_border_width // 2), 
-                               self._border_radius, self._border_radius)
+        painter.drawRoundedRect(border_rect, self._border_radius, self._border_radius)
     
     def set_text(self, text):
         """
