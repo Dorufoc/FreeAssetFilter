@@ -1385,9 +1385,15 @@ class UnifiedPreviewer(QWidget):
         使用ModernSettingsWindow替代原来的设置窗口
         """
         from freeassetfilter.widgets.modern_settings_window import ModernSettingsWindow
+        from freeassetfilter.app.main import FreeAssetFilterApp
         
-        # 创建现代设置窗口实例
-        settings_window = ModernSettingsWindow(self)
+        # 查找主窗口作为父对象，确保设置窗口随主窗口关闭而销毁
+        parent_widget = self
+        while parent_widget is not None and not isinstance(parent_widget, FreeAssetFilterApp):
+            parent_widget = parent_widget.parent()
+        
+        # 创建现代设置窗口实例，使用主窗口作为父对象
+        settings_window = ModernSettingsWindow(parent_widget if parent_widget is not None else self)
         
         # 连接设置保存信号到更新主题方法
         settings_window.settings_saved.connect(lambda: self._update_appearance_after_settings_change())
