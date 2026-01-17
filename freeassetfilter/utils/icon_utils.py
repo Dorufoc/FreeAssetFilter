@@ -163,6 +163,180 @@ ExtractIconExW = shell32.ExtractIconExW
 ExtractIconExW.argtypes = [LPCWSTR, ctypes.c_int, ctypes.POINTER(HICON), ctypes.POINTER(HICON), UINT]
 ExtractIconExW.restype = UINT
 
+def get_all_icons_from_exe(file_path):
+    """
+    从EXE文件中提取所有可用的图标
+    
+    参数:
+        file_path: str - EXE文件路径
+    
+    返回:
+        list - 包含所有图标信息的列表，每个元素是(dict):
+            {"hicon": HICON, "index": int, "width": int, "height": int}
+    """
+    icons = []
+    
+    try:
+        # 获取图标数量
+        icon_count = ExtractIconExW(file_path, -1, None, None, 0)
+        
+        if icon_count > 0:
+            # 为图标信息获取定义必要的结构
+            class ICONINFO(ctypes.Structure):
+                _fields_ = [
+                    ("fIcon", BOOL),
+                    ("xHotspot", ctypes.c_uint),
+                    ("yHotspot", ctypes.c_uint),
+                    ("hbmMask", ctypes.c_void_p),
+                    ("hbmColor", ctypes.c_void_p)
+                ]
+            
+            class BITMAP(ctypes.Structure):
+                _fields_ = [
+                    ("bmType", DWORD),
+                    ("bmWidth", DWORD),
+                    ("bmHeight", DWORD),
+                    ("bmWidthBytes", DWORD),
+                    ("bmPlanes", ctypes.c_ushort),
+                    ("bmBitsPixel", ctypes.c_ushort),
+                    ("bmBits", ctypes.c_void_p)
+                ]
+            
+            GetIconInfo = user32.GetIconInfo
+            GetIconInfo.argtypes = [HICON, ctypes.POINTER(ICONINFO)]
+            GetIconInfo.restype = BOOL
+            
+            GetObjectW = windll.gdi32.GetObjectW
+            GetObjectW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            GetObjectW.restype = ctypes.c_int
+            
+            DeleteObject = windll.gdi32.DeleteObject
+            DeleteObject.argtypes = [ctypes.c_void_p]
+            DeleteObject.restype = BOOL
+            
+            # 尝试使用SHDefExtractIcon获取不同尺寸的图标
+            try:
+                SHDefExtractIcon = shell32.SHDefExtractIconW
+                SHDefExtractIcon.argtypes = [
+                    LPCWSTR,  # pszIconFile
+                    ctypes.c_int,  # iIndex
+                    UINT,  # uFlags
+                    ctypes.POINTER(HICON),  # phiconLarge
+                    ctypes.POINTER(ctypes.c_uint),  # piconidLarge
+                    UINT  # nIconSize
+                ]
+                SHDefExtractIcon.restype = ctypes.c_long
+                
+                # 尝试的图标尺寸（从高到低）
+                icon_sizes = [1024, 512, 256, 128, 64, 32]  # 尝试更大的图标尺寸              
+                for i in range(icon_count):
+                    for size in icon_sizes:
+                        hicon = HICON()
+                        icon_id = ctypes.c_uint()
+                        
+                        # 提取指定索引和尺寸的图标
+                        result = SHDefExtractIcon(
+                            file_path,  # 图标文件路径
+                            i,  # 图标索引
+                            0,  # 标志
+                            byref(hicon),  # 输出的图标句柄
+                            byref(icon_id),  # 输出的图标ID
+                            size  # 图标尺寸
+                        )
+                        
+                        if result == 0 and hicon.value != 0:
+                            # 获取图标尺寸
+                            icon_info = ICONINFO()
+                            if GetIconInfo(hicon, byref(icon_info)):
+                                try:
+                                    bmp = BITMAP()
+                                    if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
+                                        # 添加到图标列表
+                                        icons.append({
+                                            "hicon": hicon,
+                                            "index": i,
+                                            "width": bmp.bmWidth,
+                                            "height": bmp.bmHeight
+                                        })
+                                        continue  # 保留当前图标句柄
+                                finally:
+                                    # 释放图标信息资源
+                                    if icon_info.hbmMask:
+                                        DeleteObject(icon_info.hbmMask)
+                                    if icon_info.hbmColor:
+                                        DeleteObject(icon_info.hbmColor)
+                            
+                            # 如果无法获取尺寸信息，释放图标
+                            DestroyIcon(hicon)
+            except Exception as e:
+                print(f"SHDefExtractIcon提取图标失败: {e}")
+            
+            # 如果SHDefExtractIcon失败或返回空，使用ExtractIconEx作为备用
+            if not icons:
+                for i in range(icon_count):
+                    # 为每个索引分别提取图标
+                    large_icons = (HICON * 1)()
+                    small_icons = (HICON * 1)()
+                    
+                    extracted_count = ExtractIconExW(file_path, i, byref(large_icons), byref(small_icons), 1)
+                    
+                    if extracted_count > 0:
+                        # 处理大图标的情况
+                        if large_icons[0]:
+                            # 获取图标尺寸
+                            icon_info = ICONINFO()
+                            if GetIconInfo(large_icons[0], byref(icon_info)):
+                                try:
+                                    bmp = BITMAP()
+                                    if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
+                                        icons.append({
+                                            "hicon": large_icons[0],
+                                            "index": i,
+                                            "width": bmp.bmWidth,
+                                            "height": bmp.bmHeight
+                                        })
+                                        continue  # 保留当前图标句柄
+                                finally:
+                                    # 释放图标信息资源
+                                    if icon_info.hbmMask:
+                                        DeleteObject(icon_info.hbmMask)
+                                    if icon_info.hbmColor:
+                                        DeleteObject(icon_info.hbmColor)
+                            
+                            # 如果无法获取尺寸信息，释放图标
+                            DestroyIcon(large_icons[0])
+                        
+                        # 处理小图标的情况
+                        if small_icons[0]:
+                            # 获取图标尺寸
+                            icon_info = ICONINFO()
+                            if GetIconInfo(small_icons[0], byref(icon_info)):
+                                try:
+                                    bmp = BITMAP()
+                                    if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
+                                        icons.append({
+                                            "hicon": small_icons[0],
+                                            "index": i,
+                                            "width": bmp.bmWidth,
+                                            "height": bmp.bmHeight
+                                        })
+                                        continue  # 保留当前图标句柄
+                                finally:
+                                    # 释放图标信息资源
+                                    if icon_info.hbmMask:
+                                        DeleteObject(icon_info.hbmMask)
+                                    if icon_info.hbmColor:
+                                        DeleteObject(icon_info.hbmColor)
+                            
+                            # 如果无法获取尺寸信息，释放图标
+                            DestroyIcon(small_icons[0])
+    
+    except Exception as e:
+        print(f"提取所有图标时出错: {e}")
+    
+    return icons
+
+
 def get_highest_resolution_icon(file_path, desired_size=256):
     """
     获取文件的最高分辨率图标，支持exe和lnk文件
@@ -187,31 +361,21 @@ def get_highest_resolution_icon(file_path, desired_size=256):
                 _, ext = os.path.splitext(file_path)
                 ext = ext.lower()
         
-        # 优先使用ExtractIconEx处理exe文件，以获取最大尺寸图标
+        # 对于exe文件，使用get_all_icons_from_exe获取所有可用图标，然后选择最高分辨率的
         if ext == '.exe':
-            # 获取图标数量
-            icon_count = ExtractIconExW(file_path, -1, None, None, 0)
-            if icon_count > 0:
-                # 分配内存存储图标句柄
-                large_icons = (HICON * icon_count)()
-                small_icons = (HICON * icon_count)()
+            # 获取所有可用图标
+            all_icons = get_all_icons_from_exe(file_path)
+            
+            if all_icons:
+                # 按分辨率排序，选择最高分辨率的图标
+                highest_res_icon = max(all_icons, key=lambda icon: icon["width"] * icon["height"])
                 
-                # 提取所有图标
-                extracted_count = ExtractIconExW(file_path, 0, byref(large_icons), byref(small_icons), icon_count)
+                # 释放其他图标的句柄
+                for icon in all_icons:
+                    if icon["hicon"] != highest_res_icon["hicon"]:
+                        DestroyIcon(icon["hicon"])
                 
-                if extracted_count > 0:
-                    # 只使用第一个大图标（通常是最大尺寸）
-                    if large_icons[0]:
-                        # 关闭其他图标句柄
-                        for i in range(1, extracted_count):
-                            if large_icons[i]:
-                                DestroyIcon(large_icons[i])
-                            if small_icons[i]:
-                                DestroyIcon(small_icons[i])
-                        # 关闭第一个小图标
-                        if small_icons[0]:
-                            DestroyIcon(small_icons[0])
-                        return large_icons[0]
+                return highest_res_icon["hicon"]
         
         # 使用SHGetFileInfo获取其他类型文件的图标
         # 创建SHFILEINFO结构
@@ -525,6 +689,7 @@ def hicon_to_pixmap(hicon, size, qt_app):
 # 模块导出
 __all__ = [
     "get_highest_resolution_icon",
+    "get_all_icons_from_exe",
     "hicon_to_pixmap",
     "get_lnk_target",
     "DestroyIcon"

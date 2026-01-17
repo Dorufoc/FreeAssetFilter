@@ -402,6 +402,9 @@ class SvgRenderer:
             # 如果指定了宽度和高度，按指定比例缩放；否则保持1:1比例
             final_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
+            # 设置设备像素比，确保高DPI屏幕上的清晰度
+            final_pixmap.setDevicePixelRatio(dpi_scale)
+            
             if not final_pixmap.isNull():
                 return final_pixmap
             else:
