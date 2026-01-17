@@ -495,9 +495,36 @@ class ModernSettingsWindow(QDialog):
             theme_value = "dark" if value else "default"
             self.current_settings.update({"appearance.theme": theme_value})
             
-            # 更新当前设置中的所有颜色
-            for color_key, color_value in updated_colors.items():
-                self.current_settings.update({f"appearance.colors.{color_key}": color_value})
+            # 根据主题模式更新所有相关颜色
+            if value:  # 深色主题
+                # 定义深色主题的完整颜色集
+                dark_colors = {
+                    "base_color": "#212121",          # 用户要求的深色底层色
+                    "secondary_color": "#FFFFFF",      # 深色模式下文字颜色为白色
+                    "normal_color": "#333333",        # 深色模式下普通色
+                    "auxiliary_color": "#1E1E1E"      # 深色模式下辅助色
+                }
+                # 更新当前设置中的所有颜色
+                for color_key, color_value in dark_colors.items():
+                    self.current_settings.update({f"appearance.colors.{color_key}": color_value})
+                    # 直接更新设置管理器中的颜色
+                    self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
+            else:  # 浅色主题
+                # 定义浅色主题的完整颜色集
+                light_colors = {
+                    "base_color": "#f1f3f5",          # 用户要求的浅色底层色
+                    "secondary_color": "#333333",      # 浅色模式下文字颜色为黑色
+                    "normal_color": "#e0e0e0",        # 浅色模式下普通色
+                    "auxiliary_color": "#f1f3f5"      # 浅色模式下辅助色
+                }
+                # 更新当前设置中的所有颜色
+                for color_key, color_value in light_colors.items():
+                    self.current_settings.update({f"appearance.colors.{color_key}": color_value})
+                    # 直接更新设置管理器中的颜色
+                    self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
+            
+            # 保存所有设置到文件
+            self.settings_manager.save_settings()
             
             # 应用主题更新到UI
             app = self.parent() if self.parent() else None

@@ -136,7 +136,13 @@ class FreeAssetFilterApp(QMainWindow):
     def closeEvent(self, event):
         """
         主窗口关闭事件，确保保存文件选择器的当前路径和文件存储池状态
+        并关闭所有子窗口（包括全局设置窗口）
         """
+        # 关闭所有子窗口，确保全局设置窗口等随主窗口关闭而销毁
+        from PyQt5.QtWidgets import QDialog
+        for widget in self.findChildren(QDialog):
+            widget.close()
+        
         # 保存文件选择器A的当前路径
         last_path = 'All'
         if hasattr(self, 'file_selector_a'):

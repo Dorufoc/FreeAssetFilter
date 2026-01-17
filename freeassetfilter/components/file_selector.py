@@ -191,9 +191,9 @@ class CustomFileSelector(QWidget):
         main_layout = QVBoxLayout(self)
         # 获取主题颜色
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
+        background_color = "#f1f3f5"  # 默认窗口背景色
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#f1f3f5")
         self.setStyleSheet(f"background-color: {background_color};")
         # 应用DPI缩放因子到布局参数
         scaled_spacing = int(2.5 * self.dpi_scale)
@@ -2020,7 +2020,7 @@ class CustomFileSelector(QWidget):
         # 设置卡片样式
         card.setStyleSheet(f"""
             QWidget#FileCard {{
-                background-color: #f1f3f5;
+                background-color: #ffffff;
                 border: {scaled_border_width}px solid #e0e0e0;
                 border-radius: {scaled_border_radius}px;
                 padding: {scaled_padding}px;
@@ -2147,7 +2147,7 @@ class CustomFileSelector(QWidget):
         else:
             card.setStyleSheet(f"""
                 QWidget#FileCard {{
-                    background-color: #f1f3f5;
+                    background-color: #ffffff;
                     border: {scaled_border_width}px solid #e0e0e0;
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding}px;
@@ -2638,7 +2638,7 @@ class CustomFileSelector(QWidget):
             # 更新样式
             card.setStyleSheet(f"""
                 QWidget#FileCard {{
-                    background-color: #f1f3f5;
+                    background-color: #ffffff;
                     border: {scaled_border_width}px solid #e0e0e0;
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding}px;

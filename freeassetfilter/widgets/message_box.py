@@ -33,7 +33,7 @@ class CustomWindow(QWidget):
     
     def __init__(self, title="Custom Window", parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
         # 窗口标题
@@ -89,13 +89,13 @@ class CustomWindow(QWidget):
         
         # 获取主题颜色
         app = QApplication.instance()
-        window_bg_color = "#ffffff"  # 默认白色
-        window_border_color = "#ffffff"  # 默认白色
+        window_bg_color = "#f1f3f5"  # 默认窗口背景色
+        window_border_color = "#f1f3f5"  # 默认窗口边框色
         
         # 尝试从应用实例获取主题颜色
         if hasattr(app, 'settings_manager'):
-            window_bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#ffffff")
-            window_border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#ffffff")
+            window_bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#f1f3f5")
+            window_border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#f1f3f5")
         
         self.window_body.setStyleSheet(f"""
             QWidget {{
@@ -1116,11 +1116,11 @@ class CustomMessageBox(QDialog):
         # 即使有parent，也要确保是独立窗口
         super().__init__(parent)
         # 设置窗口标志为顶级窗口，确保独立显示
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         # 确保窗口不被父窗口裁剪
         self.setWindowFlag(Qt.WindowTransparentForInput, False)  # 允许接收输入
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)  # 保持在最顶层
+        # 移除了保持在最顶层的设置，让窗口可以被其他窗口覆盖
         
         # 获取应用实例和DPI缩放因子
         app = QApplication.instance()

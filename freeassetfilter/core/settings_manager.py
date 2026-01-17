@@ -49,7 +49,7 @@ class SettingsManager:
                     "secondary_color": "#333333",   # 次选色
                     "normal_color": "#e0e0e0",      # 普通色
                     "auxiliary_color": "#f1f3f5",    # 辅助色
-                    "base_color": "#ffffff"        # 底层色
+                    "base_color": "#f1f3f5"        # 底层色
                 }
             },
             "file_selector": {
