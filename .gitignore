@@ -40,3 +40,5 @@ data/timeline/
 Thumbs.db
 *.cube
 data/lut.cube
+pyqt5_style_colors.md
+freeassetfilter/widgets/file_horizontal_card_color_parameters.md

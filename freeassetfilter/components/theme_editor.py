@@ -23,6 +23,7 @@ class ThemeEditor(QScrollArea):
     
     theme_selected = pyqtSignal(dict)  # 主题选中信号
     add_new_design = pyqtSignal()  # 添加新设计信号
+    theme_applied = pyqtSignal()  # 主题应用完成信号，用于关闭窗口
     
     def __init__(self, parent=None):
         """初始化主题编辑器"""
@@ -301,6 +302,9 @@ class ThemeEditor(QScrollArea):
                 debug("保存所有设置到配置文件")
                 self.settings_manager.save_settings()
                 debug("主题颜色保存完成")
+                # 发送主题应用完成信号
+                debug("发送主题应用完成信号")
+                self.theme_applied.emit()
             else:
                 debug("警告: 没有找到设置管理器，无法保存主题颜色")
         else:

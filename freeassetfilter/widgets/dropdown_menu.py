@@ -39,6 +39,11 @@ class CustomDropdownMenu(QWidget):
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(app, 'global_font', QFont())
         
+        # 获取settings_manager实例（如果有）
+        self.settings_manager = None
+        if hasattr(app, 'settings_manager'):
+            self.settings_manager = app.settings_manager
+        
         # 核心属性
         self._items = []  # 列表项数据
         self._current_item = None  # 当前选中项
@@ -84,10 +89,17 @@ class CustomDropdownMenu(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # 设置滚动区域样式表
+        # 获取auxiliary_color，默认#f1f3f5
+        auxiliary_color = "#f1f3f5"
+        if self.settings_manager:
+            auxiliary_color = self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+        
         self.scroll_area.setStyleSheet(
             "QScrollArea { border: none; background-color: transparent; }"+
             "QScrollBar:vertical { background-color: transparent; width: 4px; }"+
-            "QScrollBar::handle:vertical { background-color: #e0e0e0; border-radius: 2px; }"
+            f"QScrollBar::handle:vertical {{ background-color: {auxiliary_color}; border-radius: 2px; }}"
         )
         
         # 创建列表容器
@@ -146,6 +158,12 @@ class CustomDropdownMenu(QWidget):
             
             # 设置样式
             font_size = int(7 * self.dpi_scale)
+            
+            # 获取normal_color，默认#e0e0e0
+            normal_color = "#e0e0e0"
+            if self.settings_manager:
+                normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
+            
             item_button.setStyleSheet(f"""
                 QPushButton {{ 
                     font-size: {font_size}px;
@@ -157,7 +175,7 @@ class CustomDropdownMenu(QWidget):
                     vertical-align: center;
                 }}
                 QPushButton:hover {{ 
-                    background-color: #f0f0f0;
+                    background-color: {normal_color};
                 }}
             """)
             

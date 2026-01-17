@@ -32,14 +32,14 @@ def test_theme_settings():
     
     # 设置各种颜色，包括基础颜色和非基础颜色
     all_colors = {
-        # 基础颜色（之前被允许保存的）
+        # 基础颜色（将被保存的）
         "accent_color": "#0A59F7",
         "secondary_color": "#FFFFFF",
         "normal_color": "#333333",
         "auxiliary_color": "#1E1E1E",
         "base_color": "#212121",
         
-        # 非基础颜色（之前被跳过保存的）
+        # 非基础颜色（将不会被保存的）
         "button_primary_normal": "#0A59F7",
         "button_primary_hover": "#0957f2",
         "button_primary_pressed": "#0954ea",
@@ -77,6 +77,15 @@ def test_theme_settings():
         "window_border": "#3C3C3C"
     }
     
+    # 基础颜色列表（只检查这些颜色是否被保存）
+    base_colors = {
+        "accent_color": "#0A59F7",
+        "secondary_color": "#FFFFFF",
+        "normal_color": "#333333",
+        "auxiliary_color": "#1E1E1E",
+        "base_color": "#212121"
+    }
+    
     # 设置所有颜色
     for color_key, color_value in all_colors.items():
         settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
@@ -97,31 +106,41 @@ def test_theme_settings():
     saved_colors = saved_settings.get("appearance", {}).get("colors", {})
     print(f"保存的颜色数量: {len(saved_colors)}")
     
-    # 检查是否所有颜色都被保存
-    missing_colors = []
-    for color_key in all_colors:
+    # 检查是否所有基础颜色都被保存
+    missing_base_colors = []
+    for color_key in base_colors:
         if color_key not in saved_colors:
-            missing_colors.append(color_key)
+            missing_base_colors.append(color_key)
     
-    if missing_colors:
-        print(f"❌ 以下颜色未被保存: {missing_colors}")
+    if missing_base_colors:
+        print(f"❌ 以下基础颜色未被保存: {missing_base_colors}")
         return False
     else:
-        print("✅ 所有颜色都被保存成功")
+        print("✅ 所有基础颜色都被保存成功")
     
-    # 检查颜色值是否正确
+    # 检查基础颜色值是否正确
     wrong_colors = []
-    for color_key, color_value in all_colors.items():
+    for color_key, color_value in base_colors.items():
         if saved_colors.get(color_key) != color_value:
             wrong_colors.append((color_key, saved_colors.get(color_key), color_value))
     
     if wrong_colors:
-        print("❌ 以下颜色值不正确:")
+        print("❌ 以下基础颜色值不正确:")
         for color_key, saved_value, expected_value in wrong_colors:
             print(f"   {color_key}: 保存值='{saved_value}', 期望值='{expected_value}'")
         return False
     else:
-        print("✅ 所有颜色值都正确")
+        print("✅ 所有基础颜色值都正确")
+    
+    # 验证非基础颜色没有被保存
+    non_base_colors = [color_key for color_key in all_colors if color_key not in base_colors]
+    saved_non_base_colors = [color_key for color_key in saved_colors if color_key not in base_colors]
+    
+    if saved_non_base_colors:
+        print(f"❌ 以下非基础颜色不应该被保存: {saved_non_base_colors}")
+        return False
+    else:
+        print(f"✅ 所有非基础颜色 ({len(non_base_colors)} 种) 都没有被保存，符合预期")
     
     # 步骤4: 重新加载设置，验证是否能正确加载
     print("\n4. 重新加载设置，验证是否能正确加载...")
@@ -136,11 +155,11 @@ def test_theme_settings():
         print("❌ 主题模式加载失败")
         return False
     
-    # 检查所有颜色
+    # 检查所有基础颜色
     loaded_missing_colors = []
     loaded_wrong_colors = []
     
-    for color_key, expected_value in all_colors.items():
+    for color_key, expected_value in base_colors.items():
         loaded_value = settings_manager2.get_setting(f"appearance.colors.{color_key}", None)
         
         if loaded_value is None:
@@ -149,11 +168,11 @@ def test_theme_settings():
             loaded_wrong_colors.append((color_key, loaded_value, expected_value))
     
     if loaded_missing_colors:
-        print(f"❌ 以下颜色加载失败: {loaded_missing_colors}")
+        print(f"❌ 以下基础颜色加载失败: {loaded_missing_colors}")
         return False
     
     if loaded_wrong_colors:
-        print("❌ 以下颜色值加载不正确:")
+        print("❌ 以下基础颜色值加载不正确:")
         for color_key, loaded_value, expected_value in loaded_wrong_colors:
             print(f"   {color_key}: 加载值='{loaded_value}', 期望值='{expected_value}'")
         return False

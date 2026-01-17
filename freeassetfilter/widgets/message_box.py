@@ -399,8 +399,6 @@ class CustomWindow(QWidget):
             # 使用默认颜色
             self.current_colors = {
                 "window_background": "#1E1E1E",
-                "button_normal": "#2D2D2D",
-                "button_text": "#FFFFFF",
                 "text_normal": "#FFFFFF",
                 "input_background": "#2D2D2D",
                 "input_text": "#FFFFFF",
@@ -946,21 +944,6 @@ class CustomWindow(QWidget):
                 border: 1px solid %s;
             }
             
-            /* 按钮样式 */
-            QPushButton {
-                background-color: %s;
-                color: %s;
-                border: 1px solid %s;
-                border-radius: 4px;
-                padding: 6px 12px;
-            }
-            QPushButton:hover {
-                background-color: %s;
-            }
-            QPushButton:pressed {
-                background-color: %s;
-            }
-            
             /* 文字样式 */
             QLabel {
                 color: %s;
@@ -999,11 +982,6 @@ class CustomWindow(QWidget):
         """ % (
             self.current_colors.get("window_background", "#1E1E1E"),
             self.current_colors.get("window_border", "#3C3C3C"),
-            self.current_colors.get("button_normal", "#2D2D2D"),
-            self.current_colors.get("button_text", "#FFFFFF"),
-            self.current_colors.get("button_border", "#5C5C5C"),
-            self.current_colors.get("button_hover", "#3C3C3C"),
-            self.current_colors.get("button_pressed", "#4C4C4C"),
             self.current_colors.get("text_normal", "#FFFFFF"),
             self.current_colors.get("input_background", "#2D2D2D"),
             self.current_colors.get("input_text", "#FFFFFF"),

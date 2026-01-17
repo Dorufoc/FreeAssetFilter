@@ -122,6 +122,18 @@ class SettingsManager:
         debug("开始保存设置")
         debug(f"设置文件路径: {self.settings_file}")
         
+        # 保存前过滤颜色设置，只保留基础颜色
+        if "appearance" in self.settings and "colors" in self.settings["appearance"]:
+            # 定义需要保留的基础颜色键
+            base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color"]
+            # 创建新的颜色字典，只保留基础颜色
+            filtered_colors = {}
+            for color_key in base_color_keys:
+                if color_key in self.settings["appearance"]["colors"]:
+                    filtered_colors[color_key] = self.settings["appearance"]["colors"][color_key]
+            # 替换原有的颜色字典
+            self.settings["appearance"]["colors"] = filtered_colors
+        
         # 显示主题颜色设置
         if "appearance" in self.settings and "colors" in self.settings["appearance"]:
             debug("当前主题颜色设置:")
@@ -215,9 +227,21 @@ class SettingsManager:
         
         for key, value in loaded.items():
             if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-                # 如果是颜色字典，保留所有颜色设置
+                # 如果是颜色字典，只保留基础颜色设置
                 if key == "colors" and "appearance" in merged:
-                    merged[key] = value
+                    # 定义需要保留的基础颜色键
+                    base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color"]
+                    # 创建新的颜色字典，只保留基础颜色
+                    merged_colors = {}
+                    # 首先复制默认的基础颜色
+                    for color_key in base_color_keys:
+                        if color_key in merged[key]:
+                            merged_colors[color_key] = merged[key][color_key]
+                    # 然后用加载的设置中的基础颜色覆盖默认值
+                    for color_key in base_color_keys:
+                        if color_key in value:
+                            merged_colors[color_key] = value[color_key]
+                    merged[key] = merged_colors
                 else:
                     # 其他嵌套字典，递归合并
                     merged[key] = self._merge_settings(merged[key], value)

@@ -102,103 +102,70 @@ class CustomButton(QPushButton):
         auxiliary_color = current_colors.get("auxiliary_color", "#f1f3f5")
         base_color = current_colors.get("base_color", "#ffffff")
         
-        # 计算缺少的颜色
-        if "button_primary_normal" not in current_colors:
-            current_colors["button_primary_normal"] = accent_color
-        if "button_primary_hover" not in current_colors:
-            current_colors["button_primary_hover"] = darken_color(accent_color, 0.02)
-        if "button_primary_pressed" not in current_colors:
-            current_colors["button_primary_pressed"] = darken_color(accent_color, 0.05)
-        if "button_primary_text" not in current_colors:
-            current_colors["button_primary_text"] = base_color
-        if "button_primary_border" not in current_colors:
-            current_colors["button_primary_border"] = accent_color
+        # 窗口颜色
+        current_colors["window_background"] = auxiliary_color  # 辅助色
+        current_colors["window_border"] = normal_color  # 普通色
         
-        if "button_normal_normal" not in current_colors:
-            current_colors["button_normal_normal"] = base_color
-        if "button_normal_hover" not in current_colors:
-            current_colors["button_normal_hover"] = darken_color(base_color, 0.02)
-        if "button_normal_pressed" not in current_colors:
-            current_colors["button_normal_pressed"] = darken_color(base_color, 0.05)
-        if "button_normal_text" not in current_colors:
-            current_colors["button_normal_text"] = secondary_color
-        if "button_normal_border" not in current_colors:
-            current_colors["button_normal_border"] = secondary_color
+        # 强调样式按钮颜色
+        current_colors["button_primary_normal"] = accent_color  # 强调色
+        current_colors["button_primary_hover"] = darken_color(accent_color, 0.02)  # 强调色加深2%
+        current_colors["button_primary_pressed"] = darken_color(accent_color, 0.05)  # 强调色加深5%
+        current_colors["button_primary_text"] = base_color  # 底层色
+        current_colors["button_primary_border"] = accent_color  # 强调色
         
-        if "button_secondary_normal" not in current_colors:
-            current_colors["button_secondary_normal"] = base_color
-        if "button_secondary_hover" not in current_colors:
-            current_colors["button_secondary_hover"] = darken_color(base_color, 0.02)
-        if "button_secondary_pressed" not in current_colors:
-            current_colors["button_secondary_pressed"] = darken_color(base_color, 0.05)
-        if "button_secondary_text" not in current_colors:
-            current_colors["button_secondary_text"] = accent_color
-        if "button_secondary_border" not in current_colors:
-            current_colors["button_secondary_border"] = accent_color
+        # 普通样式按钮颜色
+        current_colors["button_normal_normal"] = base_color  # 底层色
+        current_colors["button_normal_hover"] = darken_color(base_color, 0.02)  # 底层色加深2%
+        current_colors["button_normal_pressed"] = darken_color(base_color, 0.05)  # 底层色加深5%
+        current_colors["button_normal_text"] = secondary_color  # 次选色
+        current_colors["button_normal_border"] = secondary_color  # 次选色
+        
+        # 次选样式按钮颜色
+        current_colors["button_secondary_normal"] = base_color  # 底层色
+        current_colors["button_secondary_hover"] = darken_color(base_color, 0.02)  # 底层色加深2%
+        current_colors["button_secondary_pressed"] = darken_color(base_color, 0.05)  # 底层色加深5%
+        current_colors["button_secondary_text"] = accent_color  # 强调色
+        current_colors["button_secondary_border"] = accent_color  # 强调色
         
         # 文字颜色
-        if "text_normal" not in current_colors:
-            current_colors["text_normal"] = secondary_color
-        if "text_disabled" not in current_colors:
-            current_colors["text_disabled"] = auxiliary_color
-        if "text_highlight" not in current_colors:
-            current_colors["text_highlight"] = accent_color
-        if "text_placeholder" not in current_colors:
-            current_colors["text_placeholder"] = normal_color
+        current_colors["text_normal"] = secondary_color  # 次选色
+        current_colors["text_disabled"] = auxiliary_color  # 辅助色
+        current_colors["text_highlight"] = accent_color  # 强调色
+        current_colors["text_placeholder"] = normal_color  # 普通色
         
         # 输入框颜色
-        if "input_background" not in current_colors:
-            current_colors["input_background"] = base_color
-        if "input_border" not in current_colors:
-            current_colors["input_border"] = normal_color
-        if "input_focus_border" not in current_colors:
-            current_colors["input_focus_border"] = accent_color
-        if "input_text" not in current_colors:
-            current_colors["input_text"] = secondary_color
+        current_colors["input_background"] = base_color  # 底层色
+        current_colors["input_border"] = normal_color  # 普通色
+        current_colors["input_focus_border"] = accent_color  # 强调色
+        current_colors["input_text"] = secondary_color  # 次选色
         
         # 列表颜色
-        if "list_background" not in current_colors:
-            current_colors["list_background"] = auxiliary_color
-        if "list_item_normal" not in current_colors:
-            current_colors["list_item_normal"] = normal_color
-        if "list_item_hover" not in current_colors:
-            current_colors["list_item_hover"] = darken_color(normal_color, 0.02)
-        if "list_item_selected" not in current_colors:
-            current_colors["list_item_selected"] = accent_color
-        if "list_item_text" not in current_colors:
-            current_colors["list_item_text"] = secondary_color
+        current_colors["list_background"] = auxiliary_color  # 辅助色
+        current_colors["list_item_normal"] = normal_color  # 普通色
+        current_colors["list_item_hover"] = darken_color(normal_color, 0.02)  # 普通色加深2%
+        current_colors["list_item_selected"] = accent_color  # 强调色
+        current_colors["list_item_text"] = secondary_color  # 次选色
         
         # 滑块颜色
-        if "slider_track" not in current_colors:
-            current_colors["slider_track"] = base_color
-        if "slider_handle" not in current_colors:
-            current_colors["slider_handle"] = accent_color
-        if "slider_handle_hover" not in current_colors:
-            current_colors["slider_handle_hover"] = accent_color
+        current_colors["slider_track"] = base_color  # 底层色
+        current_colors["slider_handle"] = accent_color  # 强调色
+        current_colors["slider_handle_hover"] = accent_color  # 强调色
         
         # 进度条颜色
-        if "progress_bar_bg" not in current_colors:
-            current_colors["progress_bar_bg"] = base_color
-        if "progress_bar_fg" not in current_colors:
-            current_colors["progress_bar_fg"] = accent_color
+        current_colors["progress_bar_bg"] = base_color  # 底层色
+        current_colors["progress_bar_fg"] = accent_color  # 强调色
         
-        # 窗口颜色
-        if "window_background" not in current_colors:
-            current_colors["window_background"] = auxiliary_color
-        if "window_border" not in current_colors:
-            current_colors["window_border"] = normal_color
-        
-        # 通用按钮颜色（向后兼容）
-        if "button_normal" not in current_colors:
-            current_colors["button_normal"] = base_color
-        if "button_hover" not in current_colors:
-            current_colors["button_hover"] = darken_color(base_color, 0.02)
-        if "button_pressed" not in current_colors:
-            current_colors["button_pressed"] = darken_color(base_color, 0.05)
-        if "button_text" not in current_colors:
-            current_colors["button_text"] = secondary_color
-        if "button_border" not in current_colors:
-            current_colors["button_border"] = secondary_color
+        # 移除通用按钮颜色（向后兼容类）
+        if "button_normal" in current_colors:
+            del current_colors["button_normal"]
+        if "button_hover" in current_colors:
+            del current_colors["button_hover"]
+        if "button_pressed" in current_colors:
+            del current_colors["button_pressed"]
+        if "button_text" in current_colors:
+            del current_colors["button_text"]
+        if "button_border" in current_colors:
+            del current_colors["button_border"]
         
         # 使用最新的DPI缩放因子重新计算按钮高度（保持原始值，因为我们已经在初始化时减半了）
         self._height = int(self._original_height * self.dpi_scale)
@@ -252,11 +219,11 @@ class CustomButton(QPushButton):
         if self.button_type == "primary":
             # 强调色方案
             # 使用主题颜色
-            bg_color = current_colors.get("button_primary_normal", current_colors.get("button_normal", "#2D2D2D"))
-            hover_color = current_colors.get("button_primary_hover", current_colors.get("button_hover", "#3C3C3C"))
-            pressed_color = current_colors.get("button_primary_pressed", current_colors.get("button_pressed", "#4C4C4C"))
-            text_color = current_colors.get("button_primary_text", current_colors.get("button_text", "#FFFFFF"))
-            border_color = current_colors.get("button_primary_border", current_colors.get("button_border", "#5C5C5C"))
+            bg_color = current_colors.get("button_primary_normal", accent_color)
+            hover_color = current_colors.get("button_primary_hover", darken_color(accent_color, 0.02))
+            pressed_color = current_colors.get("button_primary_pressed", darken_color(accent_color, 0.05))
+            text_color = current_colors.get("button_primary_text", base_color)
+            border_color = current_colors.get("button_primary_border", accent_color)
             disabled_bg = "#888888"
             disabled_text = "#FFFFFF"
             disabled_border = "#666666"

@@ -244,12 +244,12 @@ class FreeAssetFilterApp(QMainWindow):
         self.central_widget = QWidget()
         # 获取主题颜色
         app = QApplication.instance()
-        background_color = "#f1f3f5"  # 默认窗口背景色
-        border_color = "#e0e0e0"  # 默认窗口边框色
+        auxiliary_color = "#f1f3f5"  # 默认辅助色
+        normal_color = "#e0e0e0"  # 默认普通色
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#f1f3f5")
-            border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#e0e0e0")
-        self.central_widget.setStyleSheet(f"background-color: {background_color};")
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")  # 辅助色
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")  # 普通色
+        self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
         self.setCentralWidget(self.central_widget)
         
         # 创建主布局：标题 + 三列
@@ -265,12 +265,12 @@ class FreeAssetFilterApp(QMainWindow):
         splitter.setContentsMargins(0, 0, 0, 0)
         
         # 左侧列：文件选择器A
-        left_column = QWidget()
-        left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.left_column = QWidget()
+        self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # 设置边框圆角
         border_radius = 8
-        left_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {border_radius}px;")
-        left_layout = QVBoxLayout(left_column)
+        self.left_column.setStyleSheet(f"background-color: {auxiliary_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        left_layout = QVBoxLayout(self.left_column)
 
 
         
@@ -279,29 +279,29 @@ class FreeAssetFilterApp(QMainWindow):
         left_layout.addWidget(self.file_selector_a)
         
         # 中间列：文件临时存储池
-        middle_column = QWidget()
-        middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        middle_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {border_radius}px;")
-        middle_layout = QVBoxLayout(middle_column)
+        self.middle_column = QWidget()
+        self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.middle_column.setStyleSheet(f"background-color: {auxiliary_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        middle_layout = QVBoxLayout(self.middle_column)
         
         # 添加文件临时存储池组件
         self.file_staging_pool = FileStagingPool()
         middle_layout.addWidget(self.file_staging_pool)
         
         # 右侧列：统一文件预览器
-        right_column = QWidget()
-        right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        right_column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {border_radius}px;")
-        right_layout = QVBoxLayout(right_column)
+        self.right_column = QWidget()
+        self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.right_column.setStyleSheet(f"background-color: {auxiliary_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        right_layout = QVBoxLayout(self.right_column)
         
         # 统一文件预览器
         self.unified_previewer = UnifiedPreviewer()
         right_layout.addWidget(self.unified_previewer, 1)
         
         # 将三列添加到分割器，调整初始比例
-        splitter.addWidget(left_column)
-        splitter.addWidget(middle_column)
-        splitter.addWidget(right_column)
+        splitter.addWidget(self.left_column)
+        splitter.addWidget(self.middle_column)
+        splitter.addWidget(self.right_column)
         
         # 设置分割器初始大小，将三个板块宽度默认值设定为比值334（3:3:4）
         # 计算总宽度（使用逻辑像素）
@@ -371,20 +371,20 @@ class FreeAssetFilterApp(QMainWindow):
         # 获取应用实例
         app = QApplication.instance()
         
-        # 更新中央部件的背景色
+        # 获取基础颜色
+        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")  # 辅助色
+        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")  # 普通色
+        
+        # 更新中央部件的背景色（辅助色）
         if hasattr(self, 'central_widget'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-            border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
-            self.central_widget.setStyleSheet(f"background-color: {background_color};")
+            self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
             
-        # 更新三列的背景色
+        # 更新三列的背景色和边框色（辅助色和普通色）
         columns = [getattr(self, 'left_column', None), getattr(self, 'middle_column', None), getattr(self, 'right_column', None)]
         for column in columns:
             if column:
-                background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-                border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
                 border_radius = 8
-                column.setStyleSheet(f"background-color: {background_color}; border: 1px solid {border_color}; border-radius: {border_radius}px;")
+                column.setStyleSheet(f"background-color: {auxiliary_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         
         # 递归更新所有子组件的样式
         def update_child_widgets(widget):
@@ -408,6 +408,74 @@ class FreeAssetFilterApp(QMainWindow):
         # 如果有文件选择器，更新其样式（如果有update_style方法）
         if hasattr(self, 'file_selector_a') and hasattr(self.file_selector_a, 'update_style') and callable(self.file_selector_a.update_style):
             self.file_selector_a.update_style()
+        
+        # 更新滚动条样式以匹配当前主题
+        theme = app.settings_manager.get_setting("appearance.theme", "default")
+        if theme == "dark":
+            scroll_area_bg = "#2D2D2D"
+            scrollbar_bg = "#3C3C3C"
+            scrollbar_handle = "#555555"
+            scrollbar_handle_hover = "#666666"
+        else:
+            scroll_area_bg = "#ffffff"
+            scrollbar_bg = "#f0f0f0"
+            scrollbar_handle = "#c0c0c0"
+            scrollbar_handle_hover = "#a0a0a0"
+        
+        # 生成滚动条样式
+        scrollbar_style = """
+            /* 滚动区域样式 */
+            QScrollArea {
+                background-color: %s;
+                border: none;
+            }
+            
+            /* 垂直滚动条样式 */
+            QScrollBar:vertical {
+                width: 8px;
+                background: %s;
+                border-radius: 3px;
+            }
+            
+            QScrollBar::handle:vertical {
+                background: %s;
+                border-radius: 3px;
+            }
+            
+            QScrollBar::handle:vertical:hover {
+                background: %s;
+            }
+            
+            QScrollBar::sub-line:vertical,
+            QScrollBar::add-line:vertical {
+                height: 0px;
+            }
+            
+            /* 水平滚动条样式 */
+            QScrollBar:horizontal {
+                height: 8px;
+                background: %s;
+                border-radius: 3px;
+            }
+            
+            QScrollBar::handle:horizontal {
+                background: %s;
+                border-radius: 3px;
+            }
+            
+            QScrollBar::handle:horizontal:hover {
+                background: %s;
+            }
+            
+            QScrollBar::sub-line:horizontal,
+            QScrollBar::add-line:horizontal {
+                width: 0px;
+            }
+        """ % (scroll_area_bg, scrollbar_bg, scrollbar_handle, scrollbar_handle_hover, 
+                  scrollbar_bg, scrollbar_handle, scrollbar_handle_hover)
+        
+        # 设置全局滚动条样式
+        app.setStyleSheet(scrollbar_style)
     
     def show_custom_window_demo(self):
         """

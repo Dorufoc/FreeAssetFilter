@@ -50,8 +50,18 @@ class CustomControlMenu(QWidget):
         self._target_button = None
         self._position = "top"  # 菜单位置："top" 或 "bottom"，默认为上方
         
+        # 获取settings_manager实例（如果有）
+        self.settings_manager = None
+        if hasattr(app, 'settings_manager'):
+            self.settings_manager = app.settings_manager
+        
         # 外观属性，应用DPI缩放
-        self._bg_color = QColor(255, 255, 255)  # 白色背景
+        # 背景颜色：使用base_color
+        self._bg_color = QColor(255, 255, 255)  # 默认白色背景
+        if self.settings_manager:
+            base_color_str = self.settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+            self._bg_color = QColor(base_color_str)
+        
         self._shadow_color = QColor(0, 0, 0, 25)  # 阴影颜色，透明度25/255
         self._shadow_radius = int(1 * self.dpi_scale)  # 阴影半径
         self._border_radius = int(2 * self.dpi_scale)  # 圆角半径
@@ -80,7 +90,14 @@ class CustomControlMenu(QWidget):
         
         # 创建内容容器
         self.content_container = QWidget()
-        self.content_container.setStyleSheet("background-color: transparent;")
+        
+        # 内容容器背景色：使用base_color
+        container_style = "background-color: transparent;"
+        if self.settings_manager:
+            base_color_str = self.settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+            container_style = f"background-color: {base_color_str};"
+        
+        self.content_container.setStyleSheet(container_style)
         self.content_container.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
         
         # 创建内容布局
@@ -250,6 +267,33 @@ class CustomControlMenu(QWidget):
         关闭事件
         """
         super().closeEvent(event)
+    
+    def update_style(self):
+        """
+        更新菜单样式，用于主题变化时
+        """
+        # 获取应用实例和settings_manager
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        settings_manager = None
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        
+        # 更新背景颜色：使用base_color
+        if settings_manager:
+            base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+            self._bg_color = QColor(base_color_str)
+        
+        # 更新内容容器背景色：使用base_color
+        container_style = "background-color: transparent;"
+        if settings_manager:
+            base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+            container_style = f"background-color: {base_color_str};"
+        
+        self.content_container.setStyleSheet(container_style)
+        
+        # 重绘菜单
+        self.update()
     
     def adjustSize(self):
         """
