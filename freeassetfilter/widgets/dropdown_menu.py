@@ -165,6 +165,9 @@ class CustomDropdownMenu(QWidget):
             if self.settings_manager:
                 normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
             
+            # 设置按钮高度，与主按钮保持一致
+            button_height = int(20 * self.dpi_scale)  # 使用与主按钮相同的高度(20px)并应用DPI缩放
+            
             item_button.setStyleSheet(f"""
                 QPushButton {{ 
                     font-size: {font_size}px;
@@ -174,6 +177,7 @@ class CustomDropdownMenu(QWidget):
                     border: none;
                     text-align: left;
                     vertical-align: center;
+                    height: {button_height}px;
                 }}
                 QPushButton:hover {{ 
                     background-color: {normal_color};
