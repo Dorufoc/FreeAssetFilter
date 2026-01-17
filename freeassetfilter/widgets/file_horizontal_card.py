@@ -157,7 +157,8 @@ class CustomFileHorizontalCard(QWidget):
         name_font = QFont(self.global_font)
         name_font.setBold(True)  # 字重600
         self.name_label.setFont(name_font)
-        self.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
+        # 初始设置默认样式，后续会在update_card_style中更新为主题颜色
+        self.name_label.setStyleSheet("background: transparent; border: none;")
         text_layout.addWidget(self.name_label)
         
         # 文件信息标签
@@ -172,7 +173,8 @@ class CustomFileHorizontalCard(QWidget):
         info_font = QFont(self.global_font)
         info_font.setWeight(QFont.Light)  # 可选：设置为轻量字重，与文件名区分
         self.info_label.setFont(info_font)
-        self.info_label.setStyleSheet("background: transparent; border: none; color: #666666;")
+        # 初始设置默认样式，后续会在update_card_style中更新为主题颜色
+        self.info_label.setStyleSheet("background: transparent; border: none;")
         text_layout.addWidget(self.info_label)
         
         card_content_layout.addLayout(text_layout, 1)
@@ -518,6 +520,26 @@ class CustomFileHorizontalCard(QWidget):
         """更新卡片样式"""
         scaled_border_width = int(1 * self.dpi_scale)
         scaled_border_radius = int(1.5 * self.dpi_scale)
+        # 获取应用实例和设置管理器
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        settings_manager = getattr(app, 'settings_manager', None)
+        
+        # 默认颜色设置（防止设置管理器不可用）
+        accent_color = "#1890ff"
+        base_color = "#ffffff"
+        normal_color = "#e0e0e0"
+        secondary_color = "#333333"
+        auxiliary_color = "#f0f8ff"  # 辅助颜色，用于鼠标悬停背景
+        
+        # 从设置管理器获取颜色配置
+        if settings_manager:
+            accent_color = settings_manager.get_setting("appearance.colors.accent_color", accent_color)
+            base_color = settings_manager.get_setting("appearance.colors.base_color", base_color)
+            normal_color = settings_manager.get_setting("appearance.colors.normal_color", normal_color)
+            secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", secondary_color)
+            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
+        
         # 设置组件本身的样式（透明背景）
         self.setStyleSheet("""
             QWidget {
@@ -527,34 +549,34 @@ class CustomFileHorizontalCard(QWidget):
         """)
         # 设置卡片容器的样式
         if self._enable_multiselect and self._is_selected:
-            # 开启多选功能且被选中：背景色变为蓝色
+            # 开启多选功能且被选中：使用主题强调色
             card_style = ""
             card_style += "QWidget {"
-            card_style += "background-color: #1890ff;"
-            card_style += f"border: {scaled_border_width}px solid #1890ff;"
+            card_style += f"background-color: {accent_color};"
+            card_style += f"border: {scaled_border_width}px solid {accent_color};"
             card_style += f"border-radius: {scaled_border_radius}px;"
             card_style += "}"
             self.card_container.setStyleSheet(card_style)
-            # 设置文字颜色
-            self.name_label.setStyleSheet("background: transparent; border: none; color: #ffffff;")
-            self.info_label.setStyleSheet("background: transparent; border: none; color: #ffffff;")
+            # 设置文字颜色（选中状态使用base_color）
+            self.name_label.setStyleSheet(f"background: transparent; border: none; color: {base_color};")
+            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {base_color};")
         else:
-            # 默认状态：纯白色圆角矩形
+            # 默认状态：使用主题base_color
             # 如果未开启多选功能，始终显示默认样式，不考虑选中状态
             card_style = ""
             card_style += "QWidget {"
-            card_style += "background-color: #ffffff;"
-            card_style += f"border: {scaled_border_width}px solid #e0e0e0;"
+            card_style += f"background-color: {base_color};"
+            card_style += f"border: {scaled_border_width}px solid {normal_color};"
             card_style += f"border-radius: {scaled_border_radius}px;"
             card_style += "}"
             card_style += "QWidget:hover {"
-            card_style += "border-color: #4a7abc;"
-            card_style += "background-color: #f0f8ff;"
+            card_style += f"border-color: {accent_color};"
+            card_style += f"background-color: {auxiliary_color};"
             card_style += "}"
             self.card_container.setStyleSheet(card_style)
-            # 设置文字颜色
-            self.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
-            self.info_label.setStyleSheet("background: transparent; border: none; color: #666666;")
+            # 设置文字颜色（默认状态使用secondary_color和normal_color）
+            self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
 
     def mousePressEvent(self, event):
         """处理鼠标按下事件"""
@@ -653,9 +675,16 @@ class CustomFileHorizontalCard(QWidget):
         self.update_card_style()
 
     def set_enable_multiselect(self, enable):
-        """设置是否开启多选功能
+        """
+        设置是否开启多选功能
         
         参数：
             enable (bool): 是否开启多选功能
         """
         self.enable_multiselect = enable
+    
+    def update_style(self):
+        """
+        更新卡片样式，用于主题变化时
+        """
+        self.update_card_style()

@@ -64,19 +64,8 @@ class HoverTooltip(QWidget):
         
         self.label.setFont(font)
         
-        # 设置明确的样式表，覆盖全局样式
-        self.setStyleSheet("""
-            QWidget {
-                background: transparent;
-                border: none;
-            }
-            QLabel {
-                color: #666666;
-                background: transparent;
-                padding: 4px;
-                font-weight: 400;
-            }
-        """)
+        # 应用初始样式
+        self.update_style()
         
         # 定时器
         self.timer = QTimer(self)
@@ -90,6 +79,40 @@ class HoverTooltip(QWidget):
         
         # 初始化隐藏
         self.hide()
+    
+    def update_style(self):
+        """
+        更新组件样式
+        """
+        # 获取应用实例和设置管理器
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            # 回退方案：如果应用实例中没有settings_manager，再创建新实例
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+        
+        # 获取颜色设置
+        current_colors = settings_manager.get_setting("appearance.colors", {})
+        secondary_color = current_colors.get("secondary_color", "#333333")
+        
+        # 设置样式表
+        self.setStyleSheet(f"""
+            QWidget {{
+                background: transparent;
+                border: none;
+            }}
+            QLabel {{
+                color: {secondary_color};
+                background: transparent;
+                padding: 4px;
+                font-weight: 400;
+            }}
+        """)
+        
+        # 重新绘制组件
+        self.update()
     
     def set_target_widget(self, widget):
         """设置要监听的目标控件"""
@@ -468,12 +491,27 @@ class HoverTooltip(QWidget):
         return ""
     
     def paintEvent(self, event):
-        """绘制白色圆角卡片"""
+        """绘制圆角卡片"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # 绘制白色背景
-        brush = QBrush(QColor(255, 255, 255, 255))
+        # 获取颜色设置
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        
+        # 从应用实例获取设置管理器，而不是创建新实例
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            # 回退方案：如果应用实例中没有settings_manager，再创建新实例
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+        
+        current_colors = settings_manager.get_setting("appearance.colors", {})
+        base_color = current_colors.get("base_color", "#ffffff")
+        
+        # 绘制背景
+        brush = QBrush(QColor(base_color))
         painter.setBrush(brush)
         
         # 移除边框

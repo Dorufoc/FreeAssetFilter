@@ -41,12 +41,12 @@ class CustomInputBox(QWidget):
                  width=None, 
                  height=20,
                  border_radius=10,
-                 border_color="#9f9f9f",
-                 background_color="#ffffff",
-                 text_color="#3f3f3f",
-                 placeholder_color="#CCCCCC",
-                 active_border_color="#0078d4",
-                 active_background_color="#ffffff"):
+                 border_color="#f1f3f5",  # 使用auxiliary_color
+                 background_color="#ffffff",  # 使用base_color
+                 text_color="#333333",  # 使用secondary_color
+                 placeholder_color="#e0e0e0",  # 使用normal_color
+                 active_border_color="#007AFF",  # 使用accent_color
+                 active_background_color="#ffffff"):  # 使用base_color
         """
         初始化自定义输入框
         
@@ -139,7 +139,7 @@ class CustomInputBox(QWidget):
         self.line_edit.setPlaceholderText(self.placeholder_text)
         # 为line_edit添加内部边距，确保不会覆盖父控件的边框
         # 获取主题文本颜色
-        text_color = "#000000"
+        text_color = "#333333"  # 使用secondary_color
         
         # 尝试从应用实例获取主题颜色
         app = QApplication.instance()
