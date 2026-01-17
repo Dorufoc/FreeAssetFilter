@@ -21,6 +21,7 @@ FreeAssetFilter 主程序
 
 
 
+from pickle import INT
 import sys
 import os
 import warnings
@@ -73,15 +74,15 @@ class FreeAssetFilterApp(QMainWindow):
         screen = QApplication.primaryScreen()
         # 获取设备像素比（物理像素/逻辑像素）
         self.device_pixel_ratio = screen.devicePixelRatio()
-        print(f"[DEBUG] 设备像素比: {self.device_pixel_ratio:.2f}")
+        #print(f"[DEBUG] 设备像素比: {self.device_pixel_ratio:.2f}")
         
         # 获取系统DPI缩放百分比（例如150%、200%等）
         dpi_scale_percent = int(self.device_pixel_ratio * 100)
-        print(f"[DEBUG] 系统DPI缩放百分比: {dpi_scale_percent}%")
+        #print(f"[DEBUG] 系统DPI缩放百分比: {dpi_scale_percent}%")
         
         # 根据用户要求，将默认缩放调整至系统屏幕缩放值的1.5倍
         target_scale_percent = int(dpi_scale_percent * 1.5)
-        print(f"[DEBUG] 目标DPI缩放百分比: {target_scale_percent}%")
+        #print(f"[DEBUG] 目标DPI缩放百分比: {target_scale_percent}%")
         
         # 根据目标DPI缩放百分比调整基础窗口大小
         base_window_width = 850  # 基础逻辑像素（100%缩放时的大小）
@@ -151,7 +152,7 @@ class FreeAssetFilterApp(QMainWindow):
             from freeassetfilter.core.thumbnail_cleaner import get_thumbnail_cleaner
             thumbnail_cleaner = get_thumbnail_cleaner()
             deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails()
-            print(f"[DEBUG] 退出前自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
+            #print(f"[DEBUG] 退出前自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
 
         # 清理统一预览器中的临时PDF文件
         if hasattr(self, 'unified_previewer'):
@@ -217,7 +218,7 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 如果设备像素比发生变化，更新组件的样式
         if hasattr(self, 'device_pixel_ratio') and self.device_pixel_ratio != current_ratio:
-            print(f"[DEBUG] 设备像素比变化: {self.device_pixel_ratio:.2f} -> {current_ratio:.2f}")
+            #print(f"[DEBUG] 设备像素比变化: {self.device_pixel_ratio:.2f} -> {current_ratio:.2f}")
             self.device_pixel_ratio = current_ratio
             
             # 更新所有子组件的样式
@@ -311,8 +312,8 @@ class FreeAssetFilterApp(QMainWindow):
         middle_width = int(total_width * (3/10))
         right_width = int(total_width * (4/10))
         sizes = [left_width, middle_width, right_width]
-        print(f"[DEBUG] 三列初始宽度比例: 3:3:4")
-        print(f"[DEBUG] 三列初始宽度: {left_width}, {middle_width}, {right_width}")
+        #print(f"[DEBUG] 三列初始宽度比例: 3:3:4")
+        #print(f"[DEBUG] 三列初始宽度: {left_width}, {middle_width}, {right_width}")
         splitter.setSizes(sizes)
         
         # 连接文件选择器的信号到预览器
@@ -616,7 +617,7 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 备份文件路径
         backup_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'staging_pool_backup.json')
-        print(f"[DEBUG] 检查备份文件路径: {backup_file}")
+        #print(f"[DEBUG] 检查备份文件路径: {backup_file}")
         
         # 检查备份文件是否存在
         if os.path.exists(backup_file):
@@ -768,9 +769,10 @@ def main():
                 SetProcessDpiAwareness.argtypes = [ctypes.c_int]
                 PROCESS_PER_MONITOR_DPI_AWARE = 2
                 SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
-                print("[DEBUG] 设置为每显示器DPI感知模式")
+                #print("[DEBUG] 设置为每显示器DPI感知模式")
             else:
-                print("[DEBUG] 设置为每显示器DPI感知v2模式")
+                1==1
+                #print("[DEBUG] 设置为每显示器DPI感知v2模式")
         except (AttributeError, OSError) as e:
             # 如果上述API都不可用，尝试使用SetProcessDPIAware（Windows Vista及以上版本）
             try:
@@ -778,9 +780,10 @@ def main():
                 SetProcessDPIAware = user32.SetProcessDPIAware
                 SetProcessDPIAware.restype = ctypes.c_bool
                 SetProcessDPIAware()
-                print("[DEBUG] 设置为系统DPI感知模式")
+                #print("[DEBUG] 设置为系统DPI感知模式")
             except (AttributeError, OSError) as e2:
-                print(f"[DEBUG] 设置DPI感知失败: {e2}")
+                1==1
+                #print(f"[DEBUG] 设置DPI感知失败: {e2}")
     
     # 设置DPI相关属性
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -791,7 +794,7 @@ def main():
     # 设置全局DPI缩放因子
     dpi_scale_factor = app.primaryScreen().logicalDotsPerInch() / 96.0
     app.dpi_scale_factor = dpi_scale_factor
-    print(f"[DEBUG] 设置全局DPI缩放因子: {dpi_scale_factor:.2f}")
+    #print(f"[DEBUG] 设置全局DPI缩放因子: {dpi_scale_factor:.2f}")
     
     # 设置应用程序图标，用于任务栏显示
     icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
@@ -932,7 +935,7 @@ def main():
         if last_cleanup_time is None or (current_time - last_cleanup_time) > (cache_cleanup_period * 86400):
             # 执行缓存清理
             deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails(cleanup_period_days=cache_cleanup_period)
-            print(f"[DEBUG] 自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
+            #print(f"[DEBUG] 自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
             
             # 更新上次清理时间
             settings_manager.set_setting("file_selector.last_cleanup_time", current_time)
@@ -952,7 +955,7 @@ def main():
         exit_time = time.time()
         settings_manager.set_setting("app.last_exit_time", exit_time)
         settings_manager.save_settings()
-        print(f"[DEBUG] 程序退出时间已记录: {exit_time}")
+        #print(f"[DEBUG] 程序退出时间已记录: {exit_time}")
     
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
