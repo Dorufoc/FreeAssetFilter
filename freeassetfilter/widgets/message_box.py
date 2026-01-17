@@ -89,13 +89,13 @@ class CustomWindow(QWidget):
         
         # 获取主题颜色
         app = QApplication.instance()
-        window_bg_color = "#f1f3f5"  # 默认窗口背景色
-        window_border_color = "#f1f3f5"  # 默认窗口边框色
+        window_bg_color = "#FFFFFF"  # 默认使用base_color
+        window_border_color = "#FFFFFF"  # 默认使用base_color
         
         # 尝试从应用实例获取主题颜色
         if hasattr(app, 'settings_manager'):
-            window_bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#f1f3f5")
-            window_border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#f1f3f5")
+            window_bg_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            window_border_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
         
         self.window_body.setStyleSheet(f"""
             QWidget {{
@@ -584,6 +584,13 @@ class CustomWindow(QWidget):
         
         # 颜色值输入框
         from .input_widgets import CustomInputBox
+        
+        # 获取secondary_color作为文本颜色
+        app = QApplication.instance()
+        secondary_color = "#666666"
+        if hasattr(app, 'settings_manager'):
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
+        
         color_value = CustomInputBox(
             initial_text=self.current_colors.get(color_key, '#ffffff'),
             width=25,
@@ -591,7 +598,7 @@ class CustomWindow(QWidget):
             border_radius=2,
             border_color="#cccccc",
             background_color="#ffffff",
-            text_color="#666666",
+            text_color=secondary_color,
             placeholder_color="#999999",
             active_border_color="#0078d4",
             active_background_color="#ffffff"
@@ -663,21 +670,39 @@ class CustomWindow(QWidget):
     
     def _darken_color(self, color_hex, percentage):
         """
-        将颜色加深指定百分比
+        将颜色加深指定百分比，深色模式下则变浅
         
         Args:
             color_hex (str): 十六进制颜色值，如 "#007AFF"
-            percentage (float): 加深百分比，如 0.02 表示加深2%
+            percentage (float): 加深/变浅百分比，如 0.02 表示加深2%或变浅2%
             
         Returns:
-            str: 加深后的十六进制颜色值
+            str: 处理后的十六进制颜色值
         """
         from PyQt5.QtGui import QColor
+        from PyQt5.QtWidgets import QApplication
+        
+        # 获取当前主题模式
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+        current_theme = settings_manager.get_setting("appearance.theme", "default")
+        is_dark_mode = (current_theme == "dark")
         
         color = QColor(color_hex)
-        r = max(0, int(color.red() * (1 - percentage)))
-        g = max(0, int(color.green() * (1 - percentage)))
-        b = max(0, int(color.blue() * (1 - percentage)))
+        if is_dark_mode:
+            # 深色模式下变浅
+            r = min(255, int(color.red() * (1 + percentage)))
+            g = min(255, int(color.green() * (1 + percentage)))
+            b = min(255, int(color.blue() * (1 + percentage)))
+        else:
+            # 浅色模式下加深
+            r = max(0, int(color.red() * (1 - percentage)))
+            g = max(0, int(color.green() * (1 - percentage)))
+            b = max(0, int(color.blue() * (1 - percentage)))
         
         return f"#{r:02x}{g:02x}{b:02x}"
     
@@ -1169,13 +1194,22 @@ class CustomMessageBox(QDialog):
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(0)
         
+        # 获取主题颜色
+        app = QApplication.instance()
+        base_color = "#FFFFFF"
+        secondary_color = "#333333"
+        
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        
         # 创建窗口主体（带圆角）
         self.window_body = QWidget()
         self.window_body.setStyleSheet(f"""
             QWidget {{
-                background-color: #ffffff;
+                background-color: {base_color};
                 border-radius: {scaled_radius}px;
-                border: 1px solid #ffffff;
+                border: 1px solid {base_color};
             }}
         """)
         
@@ -1198,7 +1232,7 @@ class CustomMessageBox(QDialog):
             QLabel {{
                 font-size: {scaled_title_font_size}px;
                 font-weight: 400;
-                color: #000000;
+                color: {secondary_color};
                 background-color: transparent;
                 padding: {scaled_title_padding};
                 margin: 0;
@@ -1221,7 +1255,7 @@ class CustomMessageBox(QDialog):
         self.text_label.setStyleSheet(f"""
             QLabel {{
                 font-size: {scaled_text_font_size}px;
-                color: #333333;
+                color: {secondary_color};
                 background-color: transparent;
                 padding: 0;
                 margin: 0;
@@ -1252,6 +1286,13 @@ class CustomMessageBox(QDialog):
         self.input_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
         # 输入框
+        
+        # 获取secondary_color作为文本颜色
+        app = QApplication.instance()
+        secondary_color = "#333333"
+        if hasattr(app, 'settings_manager'):
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        
         self.input_line_edit = CustomInputBox(
             parent=self,
             placeholder_text="",
@@ -1259,7 +1300,7 @@ class CustomMessageBox(QDialog):
             border_radius=4,
             border_color="#e0e0e0",
             background_color="#f5f5f5",
-            text_color="#333333",
+            text_color=secondary_color,
             active_border_color="#1890ff",
             active_background_color="#ffffff"
         )

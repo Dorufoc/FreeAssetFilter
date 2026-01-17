@@ -601,20 +601,38 @@ class CustomFileHorizontalCard(QWidget):
             card_style += "}"
             self.card_container.setStyleSheet(card_style)
             
-            # 定义颜色加深函数
+            # 定义颜色加深函数，深色模式下变浅
             def darken_color(color_hex, amount=30):
                 """
-                将十六进制颜色代码加深指定百分比
+                将十六进制颜色代码加深指定百分比，深色模式下则变浅
                 参数：
                     color_hex (str): 十六进制颜色代码，如"#ffffff"
-                    amount (int): 加深百分比，0-100
+                    amount (int): 加深/变浅百分比，0-100
                 返回：
-                    str: 加深后的十六进制颜色代码
+                    str: 处理后的十六进制颜色代码
                 """
+                # 获取当前主题模式
+                from PyQt5.QtWidgets import QApplication
+                app = QApplication.instance()
+                if hasattr(app, 'settings_manager'):
+                    settings_manager = app.settings_manager
+                else:
+                    from freeassetfilter.core.settings_manager import SettingsManager
+                    settings_manager = SettingsManager()
+                current_theme = settings_manager.get_setting("appearance.theme", "default")
+                is_dark_mode = (current_theme == "dark")
+                
                 color = QColor(color_hex)
-                red = max(0, int(color.red() * (100 - amount) / 100))
-                green = max(0, int(color.green() * (100 - amount) / 100))
-                blue = max(0, int(color.blue() * (100 - amount) / 100))
+                if is_dark_mode:
+                    # 深色模式下变浅
+                    red = min(255, int(color.red() * (100 + amount) / 100))
+                    green = min(255, int(color.green() * (100 + amount) / 100))
+                    blue = min(255, int(color.blue() * (100 + amount) / 100))
+                else:
+                    # 浅色模式下加深
+                    red = max(0, int(color.red() * (100 - amount) / 100))
+                    green = max(0, int(color.green() * (100 - amount) / 100))
+                    blue = max(0, int(color.blue() * (100 - amount) / 100))
                 return QColor(red, green, blue).name()
             
             # 设置文字颜色（默认状态使用secondary_color和加深后的normal_color）

@@ -501,8 +501,8 @@ class ModernSettingsWindow(QDialog):
                 dark_colors = {
                     "base_color": "#212121",          # 用户要求的深色底层色
                     "secondary_color": "#FFFFFF",      # 深色模式下文字颜色为白色
-                    "normal_color": "#333333",        # 深色模式下普通色
-                    "auxiliary_color": "#1E1E1E"      # 深色模式下辅助色
+                    "normal_color": "#717171",        # 深色模式下普通色
+                    "auxiliary_color": "#3D3D3D"      # 深色模式下辅助色
                 }
                 # 更新当前设置中的所有颜色
                 for color_key, color_value in dark_colors.items():

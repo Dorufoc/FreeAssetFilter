@@ -63,29 +63,42 @@ class ThemeManager(QObject):
     
     def _darken_color(self, color_hex, percent):
         """
-        将颜色加深指定百分比
+        将颜色加深指定百分比，深色模式下则变浅
         
         参数：
             color_hex (str): 十六进制颜色值
-            percent (int): 加深百分比（1-100）
+            percent (int): 加深/变浅百分比（1-100）
             
         返回：
-            str: 加深后的十六进制颜色值
+            str: 处理后的十六进制颜色值
         """
+        # 获取当前主题模式
+        current_theme = self.settings_manager.get_setting("appearance.theme", "default")
+        is_dark_mode = (current_theme == "dark")
+        
         # 将十六进制颜色转换为RGB
         color = QColor(color_hex)
         r = color.red()
         g = color.green()
         b = color.blue()
         
-        # 计算加深后的RGB值
-        factor = 1 - percent / 100
-        r = max(0, int(r * factor))
-        g = max(0, int(g * factor))
-        b = max(0, int(b * factor))
+        # 计算处理后的RGB值
+        if is_dark_mode:
+            # 深色模式下变浅，使用(1 - 绝对值百分比)
+            # 由于percent是正数，这里直接使用(1 + percent / 100)实现变浅效果
+            factor = 1 + percent / 100
+            r = min(255, int(r * factor))
+            g = min(255, int(g * factor))
+            b = min(255, int(b * factor))
+        else:
+            # 浅色模式下加深
+            factor = 1 - percent / 100
+            r = max(0, int(r * factor))
+            g = max(0, int(g * factor))
+            b = max(0, int(b * factor))
         
         # 转换回十六进制颜色
-        return "#{:02x}{:02x}{:02x}".format(r, g, b)
+        return "#" + "{:02x}{:02x}{:02x}".format(r, g, b)
     
     def toggle_theme(self, is_dark):
         """
@@ -106,15 +119,15 @@ class ThemeManager(QObject):
             dark_colors = {
                 "base_color": "#212121",          # 深色底层色
                 "secondary_color": "#FFFFFF",      # 深色模式下文字颜色为白色
-                "normal_color": "#333333",        # 深色模式下普通色
-                "auxiliary_color": "#1E1E1E"      # 深色模式下辅助色
+                "normal_color": "#8C8C8C",        # 深色模式下普通色
+                "auxiliary_color": "#515151"      # 深色模式下辅助色
             }
         else:  # 浅色主题
             dark_colors = {
                 "base_color": "#FFFFFF",          # 浅色底层色
-                "secondary_color": "#333333",      # 浅色模式下文字颜色为黑色
-                "normal_color": "#e0e0e0",        # 浅色模式下普通色
-                "auxiliary_color": "#f1f3f5"      # 浅色模式下辅助色
+                "secondary_color": "#3F3F3F",      # 浅色模式下文字颜色为黑色
+                "normal_color": "#808080",        # 浅色模式下普通色
+                "auxiliary_color": "#E6E6E6"      # 浅色模式下辅助色
             }
         
         # 更新当前设置中的所有颜色

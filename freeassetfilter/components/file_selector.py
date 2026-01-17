@@ -2401,9 +2401,16 @@ class CustomFileSelector(QWidget):
                 try:
                     from PyQt5.QtSvg import QSvgWidget
                     
-                    # 使用QSvgWidget直接渲染SVG，保持矢量图清晰度
+                    # 读取SVG文件内容并进行颜色替换预处理
+                    with open(icon_path, 'r', encoding='utf-8') as f:
+                        svg_content = f.read()
+                    
+                    # 预处理SVG内容：替换颜色
+                    svg_content = SvgRenderer._replace_svg_colors(svg_content)
+                    
+                    # 使用预处理后的内容创建QSvgWidget
                     svg_widget = QSvgWidget()
-                    svg_widget.load(icon_path)
+                    svg_widget.load(svg_content.encode('utf-8'))
                     svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
                     svg_widget.setStyleSheet('background: transparent; border: none;')
                     return svg_widget

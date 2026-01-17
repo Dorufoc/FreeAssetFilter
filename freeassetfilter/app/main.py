@@ -346,8 +346,8 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(self.global_font)
         # 设置字体大小和边距
-        font_size = 12
-        margin = 10
+        font_size = 6
+        margin = 0
         self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #666; margin-top: {margin}px;")
         main_layout.addWidget(self.status_label)
         #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")

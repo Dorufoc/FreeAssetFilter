@@ -90,9 +90,20 @@ class CustomButton(QPushButton):
         # 从基础颜色计算其他颜色（如果不存在的话）
         def darken_color(color_hex, percentage):
             color = QColor(color_hex)
-            r = max(0, int(color.red() * (1 - percentage)))
-            g = max(0, int(color.green() * (1 - percentage)))
-            b = max(0, int(color.blue() * (1 - percentage)))
+            # 获取当前主题模式
+            current_theme = settings_manager.get_setting("appearance.theme", "default")
+            is_dark_mode = (current_theme == "dark")
+            
+            if is_dark_mode:
+                # 深色模式下变浅
+                r = min(255, int(color.red() * (1 + percentage)))
+                g = min(255, int(color.green() * (1 + percentage)))
+                b = min(255, int(color.blue() * (1 + percentage)))
+            else:
+                # 浅色模式下加深
+                r = max(0, int(color.red() * (1 - percentage)))
+                g = max(0, int(color.green() * (1 - percentage)))
+                b = max(0, int(color.blue() * (1 - percentage)))
             return f"#{r:02x}{g:02x}{b:02x}"
         
         # 获取基础颜色
@@ -488,7 +499,7 @@ class CustomButton(QPushButton):
             # 恢复绘制器状态
             painter.restore()
             
-            # 如果有图标路径，直接使用QSvgRenderer渲染SVG
+            # 如果有图标路径，使用SvgRenderer预处理并渲染SVG
             if self._icon_path and os.path.exists(self._icon_path):
                 painter = QPainter(self)
                 painter.setRenderHint(QPainter.Antialiasing)
@@ -500,8 +511,15 @@ class CustomButton(QPushButton):
                     from PyQt5.QtSvg import QSvgRenderer
                     from PyQt5.QtCore import QRectF
                     
-                    # 使用QSvgRenderer直接渲染SVG，不转换为位图
-                    svg_renderer = QSvgRenderer(self._icon_path)
+                    # 读取SVG文件内容并进行颜色替换预处理
+                    with open(self._icon_path, 'r', encoding='utf-8') as f:
+                        svg_content = f.read()
+                    
+                    # 预处理SVG内容：替换颜色
+                    svg_content = SvgRenderer._replace_svg_colors(svg_content)
+                    
+                    # 使用预处理后的内容创建QSvgRenderer
+                    svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
                     
                     # 计算合适的图标大小，确保图标不会超出按钮范围
                     button_size = min(self.width(), self.height())
