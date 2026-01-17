@@ -52,12 +52,42 @@ class ThemeEditor(QScrollArea):
         # 加载当前主题设置
         self.current_theme = self._load_current_theme()
         
+        # 保存当前深色模式状态
+        self.is_dark_mode = self._is_dark_mode()
+        
         self.selected_theme = None
         
         # 在初始化UI前检查当前主题是否与预设主题匹配
         self._check_current_theme_match()
         
         self.init_ui()
+    
+    def _get_theme_colors(self, accent_color):
+        """
+        根据当前深色模式获取完整的主题颜色集
+        
+        参数：
+            accent_color (str): 强调色
+            
+        返回：
+            list: 包含完整主题颜色的列表 [accent_color, secondary_color, normal_color, auxiliary_color]
+        """
+        if self.is_dark_mode:
+            # 深色模式颜色
+            return [
+                accent_color,       # 强调色保持不变
+                "#FFFFFF",        # secondary_color (文字颜色)
+                "#8C8C8C",        # normal_color
+                "#515151"         # auxiliary_color
+            ]
+        else:
+            # 浅色模式颜色
+            return [
+                accent_color,       # 强调色保持不变
+                "#3F3F3F",        # secondary_color (文字颜色)
+                "#808080",        # normal_color
+                "#E6E6E6"         # auxiliary_color
+            ]
     
     def _check_current_theme_match(self):
         """
@@ -66,25 +96,41 @@ class ThemeEditor(QScrollArea):
         if not self.current_theme:
             return
         
-        # 当前主题颜色列表
-        current_colors = [
-            self.current_theme["accent_color"],
-            self.current_theme["secondary_color"],
-            self.current_theme["normal_color"],
-            self.current_theme["auxiliary_color"]
-        ]
+        # 当前主题强调色
+        current_accent = self.current_theme["accent_color"]
         
-        # 检查是否与预设主题匹配
+        # 检查是否与预设主题匹配（仅比较强调色）
         for theme in self.preset_themes:
-            if theme["colors"] == current_colors:
-                self.selected_theme = theme
+            if theme["colors"][0] == current_accent:
+                # 根据当前深色模式获取完整颜色集
+                full_colors = self._get_theme_colors(theme["colors"][0])
+                self.selected_theme = {
+                    "name": theme["name"],
+                    "colors": full_colors
+                }
                 return
         
-        # 检查是否与自定义主题匹配
+        # 检查是否与自定义主题匹配（仅比较强调色）
         for theme in self.custom_themes:
-            if theme["colors"] == current_colors:
-                self.selected_theme = theme
+            if theme["colors"][0] == current_accent:
+                # 根据当前深色模式获取完整颜色集
+                full_colors = self._get_theme_colors(theme["colors"][0])
+                self.selected_theme = {
+                    "name": theme["name"],
+                    "colors": full_colors
+                }
                 return
+    
+    def _is_dark_mode(self):
+        """
+        检查当前是否为深色模式
+        
+        返回：
+            bool: True为深色模式，False为浅色模式
+        """
+        if self.settings_manager:
+            return self.settings_manager.get_setting("appearance.theme", "default") == "dark"
+        return False
     
     def _load_current_theme(self):
         """
@@ -133,12 +179,15 @@ class ThemeEditor(QScrollArea):
             row = index // 3
             col = index % 3
             
+            # 根据当前深色模式获取完整颜色集
+            card_colors = self._get_theme_colors(theme["colors"][0])
+            
             # 检查是否是当前选中的主题
-            is_selected = self.selected_theme and self.selected_theme["colors"] == theme["colors"]
+            is_selected = self.selected_theme and self.selected_theme["colors"] == card_colors
             
             card = ThemeCard(
                 theme["name"], 
-                theme["colors"], 
+                card_colors, 
                 is_selected=is_selected,
                 parent=self.preset_group
             )
@@ -165,12 +214,15 @@ class ThemeEditor(QScrollArea):
         
         # 添加自定义主题卡片
         for index, theme in enumerate(self.custom_themes):
+            # 根据当前深色模式获取完整颜色集
+            card_colors = self._get_theme_colors(theme["colors"][0])
+            
             # 检查是否是当前选中的主题
-            is_selected = self.selected_theme and self.selected_theme["colors"] == theme["colors"]
+            is_selected = self.selected_theme and self.selected_theme["colors"] == card_colors
             
             card = ThemeCard(
                 theme["name"], 
-                theme["colors"],
+                card_colors,
                 is_selected=is_selected,
                 parent=self.custom_group
             )
@@ -236,25 +288,22 @@ class ThemeEditor(QScrollArea):
         重置按钮点击事件
         重置所有颜色设置为默认值
         """
-        # 默认颜色设置
-        default_colors = {
-            "accent_color": "#007AFF",
-            "secondary_color": "#333333",
-            "normal_color": "#e0e0e0",
-            "auxiliary_color": "#f1f3f5",
-            "base_color": "#f1f3f5"
-        }
+        # 默认强调色设置
+        default_accent_color = "#007AFF"
         
         # 更新设置管理器中的颜色设置
         if self.settings_manager:
-            for color_key, color_value in default_colors.items():
-                self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
+            # 只重置强调色，其他颜色通过深色模式自动获取
+            self.settings_manager.set_setting("appearance.colors.accent_color", default_accent_color)
             
             # 保存设置
             self.settings_manager.save_settings()
             
             # 重新加载当前主题设置
             self.current_theme = self._load_current_theme()
+            
+            # 更新深色模式状态
+            self.is_dark_mode = self._is_dark_mode()
             
             # 更新选中主题
             self.selected_theme = None
@@ -286,19 +335,11 @@ class ThemeEditor(QScrollArea):
             if self.settings_manager:
                 debug("使用设置管理器保存主题颜色")
                 
-                # 定义颜色映射
-                color_mapping = {
-                    "accent_color": self.selected_theme["colors"][0],
-                    "secondary_color": self.selected_theme["colors"][1],
-                    "normal_color": self.selected_theme["colors"][2],
-                    "auxiliary_color": self.selected_theme["colors"][3]
-                }
-                
-                # 保存每个颜色
-                for color_key, color_value in color_mapping.items():
-                    setting_path = f"appearance.colors.{color_key}"
-                    debug(f"设置颜色: {color_key} = {color_value} (路径: {setting_path})")
-                    self.settings_manager.set_setting(setting_path, color_value)
+                # 只保存强调色，其他颜色通过深色模式自动获取
+                accent_color = self.selected_theme["colors"][0]
+                setting_path = "appearance.colors.accent_color"
+                debug(f"设置颜色: accent_color = {accent_color} (路径: {setting_path})")
+                self.settings_manager.set_setting(setting_path, accent_color)
                 
                 # 保存设置到文件
                 debug("保存所有设置到配置文件")

@@ -21,6 +21,9 @@ from .list_widgets import CustomSelectList
 # 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
 
+# 导入主题管理器组件
+from freeassetfilter.components.theme_manager import ThemeManager
+
 
 class ModernSettingsWindow(QDialog):
     """
@@ -52,14 +55,14 @@ class ModernSettingsWindow(QDialog):
         app = parent if hasattr(parent, 'settings_manager') else None
         self.settings_manager = getattr(app, 'settings_manager', None) or SettingsManager()
         
+        # 初始化主题管理器
+        self.theme_manager = ThemeManager(self.settings_manager)
+        
         # 当前设置值
         self.current_settings = {}
         
         # 加载当前设置
         self.load_settings()
-        
-        # 获取主题颜色
-        self._get_theme_colors()
         
         # 统一的设置组样式
         self._update_styles()
@@ -78,7 +81,7 @@ class ModernSettingsWindow(QDialog):
         # 设置窗口整体背景颜色为灰色色块（Figma: #D9D9D9）
         self.setStyleSheet(f"""
             QDialog {{ 
-                background-color: {self.theme_colors['auxiliary_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['auxiliary_color']}; 
             }}
         """)
         
@@ -114,7 +117,7 @@ class ModernSettingsWindow(QDialog):
         # 设置导航栏样式（Figma：白色背景，10px圆角）
         widget.setStyleSheet(f"""
             QWidget {{ 
-                background-color: {self.theme_colors['base_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['base_color']}; 
                 border-radius: 10px;
                 border: none;
             }}
@@ -132,7 +135,7 @@ class ModernSettingsWindow(QDialog):
                 font-family: 'Noto Sans SC'; 
                 font-size: 10px;
                 font-weight: 400;
-                color: {self.theme_colors['secondary_color']};
+                color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 margin-bottom: 15px;
                 padding: 5px;
                 text-align: center;
@@ -151,9 +154,10 @@ class ModernSettingsWindow(QDialog):
         ]
         
         # 卡片式按钮样式（Figma：85x15px，圆角2px）
+        dark2, dark5 = self.theme_manager.get_darkened_auxiliary_colors()
         card_style = f"""
             QPushButton {{ 
-                background-color: {self.theme_colors['auxiliary_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['auxiliary_color']}; 
                 border: none;
                 border-radius: 2px;
                 padding: 0;
@@ -161,18 +165,18 @@ class ModernSettingsWindow(QDialog):
                 width: 85px;
                 text-align: center;
                 font-size: 10px;
-                color: {self.theme_colors['secondary_color']};
+                color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 font-weight: 400;
             }}
             QPushButton:hover {{ 
-                background-color: {self.auxiliary_color_darker_2}; 
+                background-color: {dark2}; 
             }}
             QPushButton:pressed {{ 
-                background-color: {self.auxiliary_color_darker_5}; 
+                background-color: {dark5}; 
             }}
             QPushButton:checked {{ 
-                background-color: {self.theme_colors['accent_color']}; 
-                color: {self.theme_colors['base_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['accent_color']}; 
+                color: {self.theme_manager.get_theme_colors()['base_color']}; 
             }}
         """
         
@@ -204,7 +208,7 @@ class ModernSettingsWindow(QDialog):
         # 设置内容区域样式（Figma：白色背景，10px圆角）
         widget.setStyleSheet(f"""
             QWidget {{ 
-                background-color: {self.theme_colors['base_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['base_color']}; 
                 border-radius: 10px;
                 border: none;
             }}
@@ -222,7 +226,7 @@ class ModernSettingsWindow(QDialog):
                 font-family: 'Noto Sans SC'; 
                 font-size: 14px;
                 font-weight: 600;
-                color: {self.theme_colors['secondary_color']};
+                color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 margin-bottom: 10px;
                 padding: 5px;
             }}
@@ -239,14 +243,14 @@ class ModernSettingsWindow(QDialog):
             }}
             QScrollBar:vertical {{ 
                 width: 6px;
-                background-color: {self.theme_colors['auxiliary_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['auxiliary_color']}; 
             }}
             QScrollBar::handle:vertical {{ 
-                background-color: {self.theme_colors['normal_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['normal_color']}; 
                 border-radius: 3px;
             }}
             QScrollBar::handle:vertical:hover {{ 
-                background-color: {self.theme_colors['accent_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['accent_color']}; 
             }}
         """)
         
@@ -341,7 +345,7 @@ class ModernSettingsWindow(QDialog):
             QLabel {{ 
                 font-size: {scaled_font_size}px;
                 font-weight: 600;
-                color: {self.theme_colors['secondary_color']};
+                color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 margin-bottom: 5px;
                 padding: 2px;
             }}
@@ -358,14 +362,14 @@ class ModernSettingsWindow(QDialog):
             }}
             QScrollBar:vertical {{ 
                 width: 8px;
-                background-color: {self.theme_colors['auxiliary_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['auxiliary_color']}; 
             }}
             QScrollBar::handle:vertical {{ 
-                background-color: {self.theme_colors['normal_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['normal_color']}; 
                 border-radius: 4px;
             }}
             QScrollBar::handle:vertical:hover {{ 
-                background-color: {self.theme_colors['accent_color']}; 
+                background-color: {self.theme_manager.get_theme_colors()['accent_color']}; 
             }}
         """)
         
@@ -484,11 +488,12 @@ class ModernSettingsWindow(QDialog):
         )
         # 扩展开关逻辑，同时更新主题模式和底层色
         def on_theme_toggled(value):
-            # 更新主题模式设置
+            # 使用主题管理器切换主题
+            updated_colors = self.theme_manager.toggle_theme(value)
+            
+            # 更新当前设置
             theme_value = "dark" if value else "default"
             self.current_settings.update({"appearance.theme": theme_value})
-            # 直接更新设置管理器中的主题模式
-            self.settings_manager.set_setting("appearance.theme", theme_value)
             
             # 根据主题模式更新所有相关颜色
             if value:  # 深色主题
@@ -496,8 +501,8 @@ class ModernSettingsWindow(QDialog):
                 dark_colors = {
                     "base_color": "#212121",          # 用户要求的深色底层色
                     "secondary_color": "#FFFFFF",      # 深色模式下文字颜色为白色
-                    "normal_color": "#333333",        # 深色模式下普通色
-                    "auxiliary_color": "#1E1E1E"      # 深色模式下辅助色
+                    "normal_color": "#717171",        # 深色模式下普通色
+                    "auxiliary_color": "#3D3D3D"      # 深色模式下辅助色
                 }
                 # 更新当前设置中的所有颜色
                 for color_key, color_value in dark_colors.items():
@@ -933,23 +938,24 @@ class ModernSettingsWindow(QDialog):
         """
         更新UI显示的主题颜色
         """
-        # 重新获取主题颜色
-        self._get_theme_colors()
-        
         # 更新所有样式
         self._update_styles()
+        
+        # 获取当前主题颜色
+        theme_colors = self.theme_manager.get_theme_colors()
+        dark2, dark5 = self.theme_manager.get_darkened_auxiliary_colors()
         
         # 更新窗口背景
         self.setStyleSheet(f"""
             QDialog {{ 
-                background-color: {self.theme_colors['auxiliary_color']}; 
+                background-color: {theme_colors['auxiliary_color']}; 
             }}
         """)
         
         # 更新导航栏样式
         navigation_style = f"""
             QWidget {{ 
-                background-color: {self.theme_colors['base_color']}; 
+                background-color: {theme_colors['base_color']}; 
                 border-radius: 10px;
                 border: none;
             }}
@@ -962,7 +968,7 @@ class ModernSettingsWindow(QDialog):
                 font-family: 'Noto Sans SC'; 
                 font-size: 10px;
                 font-weight: 400;
-                color: {self.theme_colors['secondary_color']};
+                color: {theme_colors['secondary_color']};
                 margin-bottom: 15px;
                 padding: 5px;
                 text-align: center;
@@ -980,7 +986,7 @@ class ModernSettingsWindow(QDialog):
         # 更新导航按钮样式
         card_style = f"""
             QPushButton {{ 
-                background-color: {self.theme_colors['auxiliary_color']}; 
+                background-color: {theme_colors['auxiliary_color']}; 
                 border: none;
                 border-radius: 2px;
                 padding: 0;
@@ -988,18 +994,18 @@ class ModernSettingsWindow(QDialog):
                 width: 85px;
                 text-align: center;
                 font-size: 10px;
-                color: {self.theme_colors['secondary_color']};
+                color: {theme_colors['secondary_color']};
                 font-weight: 400;
             }}
             QPushButton:hover {{ 
-                background-color: {self.auxiliary_color_darker_2}; 
+                background-color: {dark2}; 
             }}
             QPushButton:pressed {{ 
-                background-color: {self.auxiliary_color_darker_5}; 
+                background-color: {dark5}; 
             }}
             QPushButton:checked {{ 
-                background-color: {self.theme_colors['accent_color']}; 
-                color: {self.theme_colors['base_color']}; 
+                background-color: {theme_colors['accent_color']}; 
+                color: {theme_colors['base_color']}; 
             }}
         """
         for button in self.navigation_buttons:
@@ -1008,7 +1014,7 @@ class ModernSettingsWindow(QDialog):
         # 更新内容区域样式
         content_style = f"""
             QWidget {{ 
-                background-color: {self.theme_colors['base_color']}; 
+                background-color: {theme_colors['base_color']}; 
                 border-radius: 10px;
                 border: none;
             }}
@@ -1021,7 +1027,7 @@ class ModernSettingsWindow(QDialog):
                 font-family: 'Noto Sans SC'; 
                 font-size: 14px;
                 font-weight: 600;
-                color: {self.theme_colors['secondary_color']};
+                color: {theme_colors['secondary_color']};
                 margin-bottom: 10px;
                 padding: 5px;
             }}
@@ -1036,14 +1042,14 @@ class ModernSettingsWindow(QDialog):
             }}
             QScrollBar:vertical {{ 
                 width: 6px;
-                background-color: {self.theme_colors['auxiliary_color']}; 
+                background-color: {theme_colors['auxiliary_color']}; 
             }}
             QScrollBar::handle:vertical {{ 
-                background-color: {self.theme_colors['normal_color']}; 
+                background-color: {theme_colors['normal_color']}; 
                 border-radius: 3px;
             }}
             QScrollBar::handle:vertical:hover {{ 
-                background-color: {self.theme_colors['accent_color']}; 
+                background-color: {theme_colors['accent_color']}; 
             }}
         """
         self.scroll_area.setStyleSheet(scroll_style)
@@ -1056,57 +1062,20 @@ class ModernSettingsWindow(QDialog):
                     if item and isinstance(item.widget(), QGroupBox):
                         item.widget().setStyleSheet(self.group_box_style)
     
-    def _get_theme_colors(self):
-        """
-        获取主题颜色设置
-        """
-        self.theme_colors = {
-            "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#B036EE"),
-            "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
-            "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
-            "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),
-            "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-        }
-        
-        # 计算辅助色加深2%和5%的颜色
-        self.auxiliary_color_darker_2 = self._darken_color(self.theme_colors["auxiliary_color"], 2)
-        self.auxiliary_color_darker_5 = self._darken_color(self.theme_colors["auxiliary_color"], 5)
-    
-    def _darken_color(self, color_hex, percent):
-        """
-        将颜色加深指定百分比
-        
-        Args:
-            color_hex (str): 十六进制颜色值
-            percent (int): 加深百分比（1-100）
-            
-        Returns:
-            str: 加深后的十六进制颜色值
-        """
-        # 将十六进制颜色转换为RGB
-        color = QColor(color_hex)
-        r = color.red()
-        g = color.green()
-        b = color.blue()
-        
-        # 计算加深后的RGB值
-        factor = 1 - percent / 100
-        r = max(0, int(r * factor))
-        g = max(0, int(g * factor))
-        b = max(0, int(b * factor))
-        
-        # 转换回十六进制颜色
-        return "#{:02x}{:02x}{:02x}".format(r, g, b)
+
     
     def _update_styles(self):
         """
         更新所有样式表
         """
+        # 获取当前主题颜色
+        theme_colors = self.theme_manager.get_theme_colors()
+        
         # 更新分组框样式
         self.group_box_style = f"""
             QGroupBox {{
-                background-color: {self.theme_colors['base_color']};
-                border: 1px solid {self.theme_colors['auxiliary_color']};
+                background-color: {theme_colors['base_color']};
+                border: 1px solid {theme_colors['auxiliary_color']};
                 border-radius: 8px;
                 padding: 10px;
                 margin-bottom: 5px;
@@ -1115,12 +1084,12 @@ class ModernSettingsWindow(QDialog):
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 padding: 0px 10px;
-                color: {self.theme_colors['secondary_color']};
+                color: {theme_colors['secondary_color']};
                 font-weight: 600;
                 font-size: 6px;
                 margin-bottom: 0px;
                 top: -2px;
-                background-color: {self.theme_colors['base_color']};
+                background-color: {theme_colors['base_color']};
             }}
         """
     

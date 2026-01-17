@@ -65,11 +65,12 @@ class CustomDropdownMenu(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # 创建主按钮，使用CustomButton，与load_cube_button保持相同高度（默认40px）
+        # 创建主按钮，使用CustomButton，与load_cube_button保持相同高度（默认20px，与ArchiveBrowser中的按钮保持一致）
         self.main_button = CustomButton(
             text="",
             button_type="normal",
-            display_mode="text"
+            display_mode="text",
+            height=20
         )
         
         # 创建下拉菜单
@@ -164,6 +165,9 @@ class CustomDropdownMenu(QWidget):
             if self.settings_manager:
                 normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
             
+            # 设置按钮高度，与主按钮保持一致
+            button_height = int(20 * self.dpi_scale)  # 使用与主按钮相同的高度(20px)并应用DPI缩放
+            
             item_button.setStyleSheet(f"""
                 QPushButton {{ 
                     font-size: {font_size}px;
@@ -173,6 +177,7 @@ class CustomDropdownMenu(QWidget):
                     border: none;
                     text-align: left;
                     vertical-align: center;
+                    height: {button_height}px;
                 }}
                 QPushButton:hover {{ 
                     background-color: {normal_color};
@@ -218,29 +223,41 @@ class CustomDropdownMenu(QWidget):
                 menu_text = menu_item.get('text', '')
                 menu_data = menu_item.get('data', menu_text)
                 
-                # 尝试将menu_text转换为浮点数
-                menu_text_float = None
-                if isinstance(menu_text, str):
-                    try:
-                        menu_text_float = float(menu_text.replace('x', ''))
-                    except ValueError:
-                        pass
-                
-                # 尝试将menu_data转换为浮点数
-                menu_data_float = None
-                if isinstance(menu_data, str):
-                    try:
-                        menu_data_float = float(menu_data.replace('x', ''))
-                    except ValueError:
-                        pass
-                
-                # 比较：精确匹配或浮点数等值匹配
-                if (menu_text == item or 
-                    menu_data == item or 
-                    (item_float is not None and menu_text_float == item_float) or 
-                    (item_float is not None and menu_data_float == item_float)):
-                    self._current_item = menu_item
-                    break
+                # 如果item是字典，比较text或data字段
+                if isinstance(item, dict):
+                    item_text = item.get('text', '')
+                    item_data = item.get('data', item_text)
+                    
+                    if (menu_text == item_text or 
+                        menu_data == item_data or 
+                        menu_text == item_data or 
+                        menu_data == item_text):
+                        self._current_item = menu_item
+                        break
+                else:
+                    # 尝试将menu_text转换为浮点数
+                    menu_text_float = None
+                    if isinstance(menu_text, str):
+                        try:
+                            menu_text_float = float(menu_text.replace('x', ''))
+                        except ValueError:
+                            pass
+                    
+                    # 尝试将menu_data转换为浮点数
+                    menu_data_float = None
+                    if isinstance(menu_data, str):
+                        try:
+                            menu_data_float = float(menu_data.replace('x', ''))
+                        except ValueError:
+                            pass
+                    
+                    # 比较：精确匹配或浮点数等值匹配
+                    if (menu_text == item or 
+                        menu_data == item or 
+                        (item_float is not None and menu_text_float == item_float) or 
+                        (item_float is not None and menu_data_float == item_float)):
+                        self._current_item = menu_item
+                        break
             else:
                 # 处理字符串格式的菜单项
                 if isinstance(menu_item, str):

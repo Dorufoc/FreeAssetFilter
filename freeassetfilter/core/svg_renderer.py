@@ -49,9 +49,44 @@ class SvgRenderer:
             return "#007AFF"
     
     @staticmethod
+    def _get_base_color():
+        """
+        获取应用设置中的底层色(base_color)
+        
+        Returns:
+            str: 底层色的十六进制值，如#FFFFFF
+        """
+        try:
+            settings_manager = SettingsManager()
+            return settings_manager.get_setting("appearance.colors.base_color")
+        except Exception as e:
+            print(f"获取底层色失败: {e}")
+            # 如果获取失败，返回默认底层色
+            return "#f1f3f5"
+    
+    @staticmethod
+    def _get_secondary_color():
+        """
+        获取应用设置中的次选色(secondary_color)
+        
+        Returns:
+            str: 次选色的十六进制值，如#000000
+        """
+        try:
+            settings_manager = SettingsManager()
+            return settings_manager.get_setting("appearance.colors.secondary_color")
+        except Exception as e:
+            print(f"获取次选色失败: {e}")
+            # 如果获取失败，返回默认次选色
+            return "#333333"
+    
+    @staticmethod
     def _replace_svg_colors(svg_content):
         """
-        预处理SVG内容，将所有#0a59f7颜色值替换为应用设置中的accent_color
+        预处理SVG内容，根据应用设置替换颜色值
+        - 将所有#000000颜色值替换为应用设置中的secondary_color
+        - 将所有#FFFFFF颜色值替换为应用设置中的base_color
+        - 将所有#0a59f7颜色值替换为应用设置中的accent_color
         
         Args:
             svg_content (str): SVG内容字符串
@@ -61,12 +96,35 @@ class SvgRenderer:
         """
         try:
             import re
-            # 获取强调色
+            # 获取颜色设置
             accent_color = SvgRenderer._get_accent_color()
+            base_color = SvgRenderer._get_base_color()
+            secondary_color = SvgRenderer._get_secondary_color()
             
-            # 将所有#0a59f7颜色值替换为accent_color
+            processed_svg = svg_content
+            
+            # 1. 为没有指定fill属性且没有class属性的path元素添加默认fill="#000000"
+            # 这样可以确保默认颜色也能被替换，同时不影响已经通过class定义颜色的元素
+            processed_svg = re.sub(r'<path\b(?!.*\bfill\s*=)(?!.*\bclass\s*=)', r'<path fill="#000000"', processed_svg, flags=re.IGNORECASE)
+            
+            # 2. 处理stroke属性中的颜色（如果有）
+            processed_svg = re.sub(r'stroke="#FFFFFF"', f'stroke="{base_color}"', processed_svg, flags=re.IGNORECASE)
+            processed_svg = re.sub(r'stroke="#FFF"', f'stroke="{base_color}"', processed_svg, flags=re.IGNORECASE)
+            processed_svg = re.sub(r'stroke="#000000"', f'stroke="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
+            processed_svg = re.sub(r'stroke="#000"', f'stroke="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
+            
+            # 3. 使用更精确的正则表达式处理fill属性中的颜色
+            # 先处理#FFFFFF和#FFF，替换为base_color
+            processed_svg = re.sub(r'fill="#FFFFFF"', f'fill="{base_color}"', processed_svg, flags=re.IGNORECASE)
+            processed_svg = re.sub(r'fill="#FFF"', f'fill="{base_color}"', processed_svg, flags=re.IGNORECASE)
+            
+            # 再处理#000000和#000，替换为secondary_color
+            processed_svg = re.sub(r'fill="#000000"', f'fill="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
+            processed_svg = re.sub(r'fill="#000"', f'fill="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
+            
+            # 4. 将所有#0a59f7颜色值替换为accent_color
             # 考虑大小写不敏感的情况，如#0A59F7
-            processed_svg = re.sub(r'#0a59f7', accent_color, svg_content, flags=re.IGNORECASE)
+            processed_svg = re.sub(r'#0a59f7', accent_color, processed_svg, flags=re.IGNORECASE)
             
             return processed_svg
         except Exception as e:

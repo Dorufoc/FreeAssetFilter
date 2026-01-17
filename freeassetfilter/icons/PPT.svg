@@ -1,1 +1,49 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256"><defs><style>.a{clip-path:url(#j);}.b{fill:#f6f6f6;}.c{fill:#e67c92;}.d{fill:#cf667c;}.e{fill:#fff;}.f{filter:url(#g);}.g{filter:url(#e);}.h{filter:url(#c);}.i{filter:url(#a);}</style><filter id="a" x="33" y="36" width="191" height="191" filterUnits="userSpaceOnUse"><feOffset dy="3" input="SourceAlpha"/><feGaussianBlur stdDeviation="3" result="b"/><feFlood flood-opacity="0.161"/><feComposite operator="in" in2="b"/><feComposite in="SourceGraphic"/></filter><filter id="c" x="66" y="61" width="133" height="139" filterUnits="userSpaceOnUse"><feOffset dy="3" input="SourceAlpha"/><feGaussianBlur stdDeviation="3" result="d"/><feFlood flood-opacity="0.161"/><feComposite operator="in" in2="d"/><feComposite in="SourceGraphic"/></filter><filter id="e" x="50" y="124" width="80" height="80" filterUnits="userSpaceOnUse"><feOffset dy="3" input="SourceAlpha"/><feGaussianBlur stdDeviation="3" result="f"/><feFlood flood-opacity="0.161"/><feComposite operator="in" in2="f"/><feComposite in="SourceGraphic"/></filter><filter id="g" x="69.697" y="140.319" width="43.585" height="46.681" filterUnits="userSpaceOnUse"><feOffset dy="3" input="SourceAlpha"/><feGaussianBlur stdDeviation="3" result="h"/><feFlood flood-opacity="0.161"/><feComposite operator="in" in2="h"/><feComposite in="SourceGraphic"/></filter><clipPath id="j"><rect width="256" height="256"/></clipPath></defs><g id="i" class="a"><g class="i" transform="matrix(1, 0, 0, 1, 0, 0)"><rect class="b" width="173" height="173" rx="28" transform="translate(42 42)"/></g><g class="h" transform="matrix(1, 0, 0, 1, 0, 0)"><rect class="c" width="115" height="121" rx="57.5" transform="translate(75 67)"/></g><g class="g" transform="matrix(1, 0, 0, 1, 0, 0)"><rect class="d" width="62" height="62" rx="13" transform="translate(59 130)"/></g><g class="f" transform="matrix(1, 0, 0, 1, 0, 0)"><path class="e" d="M-5.7-10.019V0H-11.8V-28.681H2.515a19.614,19.614,0,0,1,5.59.559,7.911,7.911,0,0,1,4.472,3.913,10.088,10.088,0,0,1,1.2,4.859,10.911,10.911,0,0,1-.8,4.149A8.383,8.383,0,0,1,10.772-12a7.4,7.4,0,0,1-2.731,1.548,14.293,14.293,0,0,1-3.934.43Zm0-5.117H2.6a5.346,5.346,0,0,0,3.139-.688Q7.073-16.9,7.073-19.565q0-2.881-2.021-3.7a6.553,6.553,0,0,0-2.322-.3H-5.7Z" transform="translate(90.5 175)"/></g></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <filter id="矩形_21" x="33" y="36" width="191" height="191" filterUnits="userSpaceOnUse">
+      <feOffset dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <filter id="矩形_1" x="66" y="61" width="133" height="139" filterUnits="userSpaceOnUse">
+      <feOffset dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur-2"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur-2"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <filter id="矩形_22" x="50" y="124" width="80" height="80" filterUnits="userSpaceOnUse">
+      <feOffset dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur-3"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur-3"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <filter id="路径_2" x="69.697" y="140.319" width="43.585" height="46.681" filterUnits="userSpaceOnUse">
+      <feOffset dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur-4"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur-4"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <clipPath id="clip-PPT">
+      <rect width="256" height="256"/>
+    </clipPath>
+  </defs>
+  <g id="PPT" clip-path="url(#clip-PPT)">
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_21)">
+      <rect id="矩形_21-2" data-name="矩形 21" width="173" height="173" rx="28" transform="translate(42 42)" fill="#f6f6f6"/>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_1)">
+      <rect id="矩形_1-2" data-name="矩形 1" width="115" height="121" rx="57.5" transform="translate(75 67)" fill="#e67c92"/>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_22)">
+      <rect id="矩形_22-2" data-name="矩形 22" width="62" height="62" rx="13" transform="translate(59 130)" fill="#cf667c"/>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#路径_2)">
+      <path id="路径_2-2" data-name="路径 2" d="M-5.7-10.019V0H-11.8V-28.681H2.515a19.614,19.614,0,0,1,5.59.559,7.911,7.911,0,0,1,4.472,3.913,10.088,10.088,0,0,1,1.2,4.859,10.911,10.911,0,0,1-.8,4.149A8.383,8.383,0,0,1,10.772-12a7.4,7.4,0,0,1-2.731,1.548,14.293,14.293,0,0,1-3.934.43Zm0-5.117H2.6a5.346,5.346,0,0,0,3.139-.688Q7.073-16.9,7.073-19.565q0-2.881-2.021-3.7a6.553,6.553,0,0,0-2.322-.3H-5.7Z" transform="translate(90.5 175)" fill="#fff"/>
+    </g>
+  </g>
+</svg>

@@ -1,1 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="462" height="256" viewBox="0 0 462 256"><defs><style>.a{clip-path:url(#b);}.b{fill:#cecece;}.c,.d{fill:#fff;}.d{stroke:#707070;}.e{stroke:none;}.f{fill:none;}</style><clipPath id="b"><rect width="462" height="256"/></clipPath></defs><g id="a" class="a"><g transform="translate(0.5)"><rect class="b" width="461.5" height="256" rx="128"/><circle class="c" cx="102.4" cy="102.4" r="102.4" transform="translate(25.6 25.6)"/></g><g class="d" transform="translate(410 73)"><rect class="e" width="4" height="5"/><rect class="f" x="0.5" y="0.5" width="3" height="4"/></g></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="462" height="256" viewBox="0 0 462 256">
+  <defs>
+    <clipPath id="clip-关">
+      <rect width="462" height="256"/>
+    </clipPath>
+  </defs>
+  <g id="关" clip-path="url(#clip-关)">
+    <g id="switch_light_on" data-name="switch light/ on" transform="translate(0.5)">
+      <rect id="Rectangle_45" data-name="Rectangle 45" width="461.5" height="256" rx="128" fill="#cecece"/>
+      <circle id="Oval_11" data-name="Oval 11" cx="102.4" cy="102.4" r="102.4" transform="translate(25.6 25.6)" fill="#fff"/>
+    </g>
+    <g id="矩形_27" data-name="矩形 27" transform="translate(410 73)" fill="#fff" stroke="#707070" stroke-width="1">
+      <rect width="4" height="5" stroke="none"/>
+      <rect x="0.5" y="0.5" width="3" height="4" fill="none"/>
+    </g>
+  </g>
+</svg>

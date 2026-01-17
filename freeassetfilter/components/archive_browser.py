@@ -29,14 +29,19 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QApplication,
     QLabel, QScrollArea,
     QGroupBox, QListWidget, QListWidgetItem, QMessageBox,
-    QFrame, QSizePolicy, QFileIconProvider, QComboBox
+    QFrame, QSizePolicy, QFileIconProvider
 )
 
 # 导入自定义控件
 from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.input_widgets import CustomInputBox
+from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
+from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from PyQt5.QtCore import Qt, pyqtSignal, QFileInfo
 from PyQt5.QtGui import QFont, QIcon
+
+# 导入os模块用于路径处理
+import os
 
 # 导入压缩包处理库
 import zipfile
@@ -96,6 +101,9 @@ class ArchiveBrowser(QWidget):
             "ascii", "utf-16", "utf-16le", "utf-16be"
         ]  # 支持的编码列表
         
+        # 初始化悬浮提示工具
+        self.hover_tooltip = HoverTooltip(self)
+        
         # 初始化UI
         self.init_ui()
     
@@ -151,10 +159,14 @@ class ArchiveBrowser(QWidget):
         path_layout.setSpacing(scaled_spacing)
         
         # 返回上一级按钮
-        self.back_btn = CustomButton("返回上一级", button_type="secondary", height=button_height)
+        # 使用与文件选择器相同的unto.svg图标
+        unto_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "unto.svg")
+        self.back_btn = CustomButton(unto_icon_path, button_type="normal", display_mode="icon", tooltip_text="返回上一级目录")
         self.back_btn.clicked.connect(self.go_to_parent)
-        self.back_btn.setEnabled(False)  # 初始禁用
+        # 始终保持启用状态，由go_to_parent方法内部处理是否有上一级
         path_layout.addWidget(self.back_btn)
+        # 添加到悬浮提示目标控件
+        self.hover_tooltip.set_target_widget(self.back_btn)
         
         # 当前路径显示
         self.path_edit = CustomInputBox(height=button_height)
@@ -162,59 +174,52 @@ class ArchiveBrowser(QWidget):
         self.path_edit.set_text("无压缩包路径")
         path_layout.addWidget(self.path_edit, 1)
         
-        main_layout.addLayout(path_layout)
-        
-        # 第二行：压缩包信息
-        info_layout = QHBoxLayout()
-        info_layout.setSpacing(scaled_spacing)
-        
-        # 压缩包类型显示
-        self.type_label = QLabel("压缩包类型: ")
-        self.type_label.setFont(self.global_font)
-        self.type_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
-        info_layout.addWidget(self.type_label)
-        
-        # 加密状态显示
-        self.encryption_label = QLabel("加密状态: 未加密")
-        self.encryption_label.setFont(self.global_font)
-        self.encryption_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
-        info_layout.addWidget(self.encryption_label)
-        
-        info_layout.addStretch(1)
-        
-        main_layout.addLayout(info_layout)
-        
-        # 第三行：编码选择
-        encoding_layout = QHBoxLayout()
-        encoding_layout.setSpacing(scaled_spacing)
-        
-        # 编码选择下拉框
-        encoding_label = QLabel("编码: ")
-        encoding_label.setFont(self.global_font)
-        encoding_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
-        encoding_layout.addWidget(encoding_label)
-        self.encoding_combo = QComboBox()
+        # 编码选择下拉框（放到地址栏后面）
+        self.encoding_combo = CustomDropdownMenu(self, position="bottom")
         
         # 应用与文件选择器一致的尺寸设置方法
         # 设置最小宽度，应用DPI缩放
-        scaled_combo_width = int(150 * self.dpi_scale)
-        self.encoding_combo.setMinimumWidth(scaled_combo_width)
+        scaled_combo_width = int(80 * self.dpi_scale)
+        self.encoding_combo.set_fixed_width(scaled_combo_width)
         
         # 设置字体，与文件选择器的设置方法一致
         combo_font = QFont(self.global_font)
         combo_font.setPointSize(scaled_font_size)
         self.encoding_combo.setFont(combo_font)
         
-        # 添加支持的编码
+        # 添加支持的编码（只显示编码格式本身）
+        encoding_items = []
         for enc in self.supported_encodings:
-            self.encoding_combo.addItem(enc.upper(), enc)
+            encoding_items.append({"text": enc.upper(), "data": enc})
         # 设置默认选择为GBK
-        self.encoding_combo.setCurrentText("GBK")
+        self.encoding_combo.set_items(encoding_items)
+        self.encoding_combo.set_current_item({"text": "GBK", "data": "gbk"})
         # 连接选择变化信号
-        self.encoding_combo.currentIndexChanged.connect(self._on_encoding_changed)
-        encoding_layout.addWidget(self.encoding_combo)
+        self.encoding_combo.itemClicked.connect(self._on_encoding_changed)
+        path_layout.addWidget(self.encoding_combo)
         
-        main_layout.addLayout(encoding_layout)
+        main_layout.addLayout(path_layout)
+        
+        # 第二行：压缩包信息（已隐藏）
+        # info_layout = QHBoxLayout()
+        # info_layout.setSpacing(scaled_spacing)
+        
+        # 压缩包类型显示
+        self.type_label = QLabel("压缩包类型: ")
+        self.type_label.setFont(self.global_font)
+        self.type_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
+        self.type_label.hide()  # 隐藏标签
+        # info_layout.addWidget(self.type_label)
+        
+        # 加密状态显示
+        self.encryption_label = QLabel("加密状态: 未加密")
+        self.encryption_label.setFont(self.global_font)
+        self.encryption_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
+        self.encryption_label.hide()  # 隐藏标签
+        # info_layout.addWidget(self.encryption_label)
+        
+        # info_layout.addStretch(1)
+        # main_layout.addLayout(info_layout)
         
         return panel
     
@@ -369,17 +374,17 @@ class ArchiveBrowser(QWidget):
             # 重置编码为默认值GBK
             self.manual_encoding = "gbk"
             # 更新编码选择下拉框
-            self.encoding_combo.setCurrentText("GBK")
+            self.encoding_combo.set_current_item({"text": "GBK", "data": "gbk"})
             self.refresh()
         else:
             QMessageBox.warning(self, "警告", "无效的压缩包路径")
     
-    def _on_encoding_changed(self, index):
+    def _on_encoding_changed(self, item_data):
         """
         编码选择变化
         """
         # 获取选择的编码
-        self.manual_encoding = self.encoding_combo.currentData()
+        self.manual_encoding = item_data
         # 立即刷新文件列表，应用新编码
         self.refresh()
     
@@ -480,8 +485,8 @@ class ArchiveBrowser(QWidget):
             
             self.files_list.addItem(item)
         
-        # 更新返回按钮状态
-        self.back_btn.setEnabled(bool(self.current_path))
+        # 更新返回按钮状态（注释掉，使按钮始终保持启用状态）
+        # self.back_btn.setEnabled(bool(self.current_path))
         
         # 更新文件计数
         self.file_count_label.setText(f"文件数量: {len(self.archive_content)}")

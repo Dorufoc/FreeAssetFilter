@@ -193,17 +193,28 @@ class CustomSettingItem(QWidget):
             self.secondary_text_label.setFont(self.global_font)
             # 获取主题辅助文本颜色
             app = QApplication.instance()
-            secondary_text_color = "#808080"  # 默认使用normal_color作为默认值
             
-            # 尝试从应用实例获取主题颜色
+            # 尝试获取normal_color
+            normal_color_str = "#808080"  # 默认值
+            
+            # 优先从应用实例获取设置管理器
             if hasattr(app, 'settings_manager'):
-                # 优先获取normal_color
                 normal_color_str = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
-                # 使用QColor将颜色加深30%
-                from PyQt5.QtGui import QColor
-                normal_color = QColor(normal_color_str)
-                # darker(130)表示加深30%（100=不变，>100=加深，<100=变亮）
-                secondary_text_color = normal_color.darker(130).name()
+            else:
+                # 回退方案：直接创建设置管理器实例获取设置
+                from freeassetfilter.core.settings_manager import SettingsManager
+                try:
+                    settings_manager = SettingsManager()
+                    normal_color_str = settings_manager.get_setting("appearance.colors.normal_color", "#808080")
+                except Exception:
+                    # 如果无法创建设置管理器，使用默认值
+                    pass
+            
+            # 使用QColor将颜色加深30%
+            from PyQt5.QtGui import QColor
+            normal_color = QColor(normal_color_str)
+            # darker(130)表示加深30%（100=不变，>100=加深，<100=变亮）
+            secondary_text_color = normal_color.darker(130).name()
             
             self.secondary_text_label.setStyleSheet("""
                 QLabel {
