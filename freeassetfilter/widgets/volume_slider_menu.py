@@ -120,7 +120,14 @@ class VolumeSliderMenu(QWidget):
         # 设置标签样式，确保美观
         # 字体大小根据DPI缩放，颜色与应用风格一致
         font_size = int(6 * self.dpi_scale)
-        self.volume_label.setStyleSheet(f"QLabel {{ font-size: {font_size}px; color: #333333; font-weight: normal; }}")
+        
+        # 获取secondary_color
+        app = QApplication.instance()
+        text_color = "#333333"  # 默认颜色
+        if hasattr(app, 'settings_manager'):
+            text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        
+        self.volume_label.setStyleSheet(f"QLabel {{ font-size: {font_size}px; color: {text_color}; font-weight: normal; }}")
         
         # 添加标签和音量条到容器
         container_layout.addWidget(self.volume_label)
@@ -359,3 +366,25 @@ class VolumeSliderMenu(QWidget):
         """
         super().setStyleSheet(styleSheet)
         self.volume_button.setStyleSheet(styleSheet)
+        
+    def update_style(self):
+        """
+        更新样式，用于主题变化时
+        """
+        # 更新音量标签颜色
+        if hasattr(self, 'volume_label'):
+            app = QApplication.instance()
+            text_color = "#333333"  # 默认颜色
+            if hasattr(app, 'settings_manager'):
+                text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            
+            # 更新标签样式
+            font_size = int(6 * self.dpi_scale)
+            self.volume_label.setStyleSheet(f"QLabel {{ font-size: {font_size}px; color: {text_color}; font-weight: normal; }}")
+        
+        # 更新其他组件样式
+        if hasattr(self, 'volume_button'):
+            self.volume_button.update_style()
+        
+        if hasattr(self, 'volume_menu'):
+            self.volume_menu.update_style()

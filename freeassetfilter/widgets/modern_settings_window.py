@@ -55,30 +55,14 @@ class ModernSettingsWindow(QDialog):
         # 当前设置值
         self.current_settings = {}
         
-        # 统一的设置组样式
-        self.group_box_style = """
-            QGroupBox {
-                background-color: #FFFFFF;
-                border: 1px solid #E0E0E0;
-                border-radius: 8px;
-                padding: 10px;
-                margin-bottom: 5px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                padding: 0px 10px;
-                color: #333333;
-                font-weight: 600;
-                font-size: 6px;
-                margin-bottom: 0px;
-                top: -2px;
-                background-color: white;
-            }
-        """
-        
         # 加载当前设置
         self.load_settings()
+        
+        # 获取主题颜色
+        self._get_theme_colors()
+        
+        # 统一的设置组样式
+        self._update_styles()
         
         # 初始化UI
         self.init_modern_ui()
@@ -92,10 +76,10 @@ class ModernSettingsWindow(QDialog):
         self.resize(419, 268)
         
         # 设置窗口整体背景颜色为灰色色块（Figma: #D9D9D9）
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #D9D9D9;
-            }
+        self.setStyleSheet(f"""
+            QDialog {{ 
+                background-color: {self.theme_colors['auxiliary_color']}; 
+            }}
         """)
         
         # 创建主布局（左侧导航 + 右侧内容）
@@ -128,12 +112,12 @@ class ModernSettingsWindow(QDialog):
         widget.setFixedWidth(97)
         
         # 设置导航栏样式（Figma：白色背景，10px圆角）
-        widget.setStyleSheet("""
-            QWidget {
-                background-color: #FFFFFF;
+        widget.setStyleSheet(f"""
+            QWidget {{ 
+                background-color: {self.theme_colors['base_color']}; 
                 border-radius: 10px;
                 border: none;
-            }
+            }}
         """)
         
         # 导航栏布局
@@ -143,16 +127,16 @@ class ModernSettingsWindow(QDialog):
         
         # 导航标题（Figma："设置"文本）
         title_label = QLabel("设置")
-        title_label.setStyleSheet("""
-            QLabel {
-                font-family: 'Noto Sans SC';
+        title_label.setStyleSheet(f"""
+            QLabel {{ 
+                font-family: 'Noto Sans SC'; 
                 font-size: 10px;
                 font-weight: 400;
-                color: #000000;
+                color: {self.theme_colors['secondary_color']};
                 margin-bottom: 15px;
                 padding: 5px;
                 text-align: center;
-            }
+            }}
         """)
         layout.addWidget(title_label)
         
@@ -167,9 +151,9 @@ class ModernSettingsWindow(QDialog):
         ]
         
         # 卡片式按钮样式（Figma：85x15px，圆角2px）
-        card_style = """
-            QPushButton {
-                background-color: #F3F3F3;
+        card_style = f"""
+            QPushButton {{ 
+                background-color: {self.theme_colors['auxiliary_color']}; 
                 border: none;
                 border-radius: 2px;
                 padding: 0;
@@ -177,19 +161,19 @@ class ModernSettingsWindow(QDialog):
                 width: 85px;
                 text-align: center;
                 font-size: 10px;
-                color: #333333;
+                color: {self.theme_colors['secondary_color']};
                 font-weight: 400;
-            }
-            QPushButton:hover {
-                background-color: #E8E8E8;
-            }
-            QPushButton:pressed {
-                background-color: #E0E0E0;
-            }
-            QPushButton:checked {
-                background-color: #4C9AED;
-                color: #FFFFFF;
-            }
+            }}
+            QPushButton:hover {{ 
+                background-color: {self.auxiliary_color_darker_2}; 
+            }}
+            QPushButton:pressed {{ 
+                background-color: {self.auxiliary_color_darker_5}; 
+            }}
+            QPushButton:checked {{ 
+                background-color: {self.theme_colors['accent_color']}; 
+                color: {self.theme_colors['base_color']}; 
+            }}
         """
         
         # 创建导航按钮
@@ -218,12 +202,12 @@ class ModernSettingsWindow(QDialog):
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # 设置内容区域样式（Figma：白色背景，10px圆角）
-        widget.setStyleSheet("""
-            QWidget {
-                background-color: #FFFFFF;
+        widget.setStyleSheet(f"""
+            QWidget {{ 
+                background-color: {self.theme_colors['base_color']}; 
                 border-radius: 10px;
                 border: none;
-            }
+            }}
         """)
         
         # 内容区域布局
@@ -233,37 +217,37 @@ class ModernSettingsWindow(QDialog):
         
         # 内容标题
         self.content_title = QLabel("外观设置")
-        self.content_title.setStyleSheet("""
-            QLabel {
-                font-family: 'Noto Sans SC';
+        self.content_title.setStyleSheet(f"""
+            QLabel {{ 
+                font-family: 'Noto Sans SC'; 
                 font-size: 14px;
                 font-weight: 600;
-                color: #000000;
+                color: {self.theme_colors['secondary_color']};
                 margin-bottom: 10px;
                 padding: 5px;
-            }
+            }}
         """)
         layout.addWidget(self.content_title)
         
         # 滚动区域
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("""
-            QScrollArea {
+        self.scroll_area.setStyleSheet(f"""
+            QScrollArea {{ 
                 background-color: transparent;
                 border: none;
-            }
-            QScrollBar:vertical {
+            }}
+            QScrollBar:vertical {{ 
                 width: 6px;
-                background-color: transparent;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #CCCCCC;
+                background-color: {self.theme_colors['auxiliary_color']}; 
+            }}
+            QScrollBar::handle:vertical {{ 
+                background-color: {self.theme_colors['normal_color']}; 
                 border-radius: 3px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #999999;
-            }
+            }}
+            QScrollBar::handle:vertical:hover {{ 
+                background-color: {self.theme_colors['accent_color']}; 
+            }}
         """)
         
         # 滚动内容
@@ -353,36 +337,36 @@ class ModernSettingsWindow(QDialog):
         default_font_size = getattr(app, 'default_font_size', 18)
         scaled_font_size = int(default_font_size * 1)
         
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: %dpx;
+        title_label.setStyleSheet(f"""
+            QLabel {{ 
+                font-size: {scaled_font_size}px;
                 font-weight: 600;
-                color: #000000;
+                color: {self.theme_colors['secondary_color']};
                 margin-bottom: 5px;
                 padding: 2px;
-            }
-        """ % scaled_font_size)
+            }}
+        """)
         layout.addWidget(title_label)
         
         # 滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("""
-            QScrollArea {
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{ 
                 background-color: transparent;
                 border: none;
-            }
-            QScrollBar:vertical {
+            }}
+            QScrollBar:vertical {{ 
                 width: 8px;
-                background-color: transparent;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #555;
+                background-color: {self.theme_colors['auxiliary_color']}; 
+            }}
+            QScrollBar::handle:vertical {{ 
+                background-color: {self.theme_colors['normal_color']}; 
                 border-radius: 4px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #777;
-            }
+            }}
+            QScrollBar::handle:vertical:hover {{ 
+                background-color: {self.theme_colors['accent_color']}; 
+            }}
         """)
         
         # 滚动内容
@@ -949,8 +933,196 @@ class ModernSettingsWindow(QDialog):
         """
         更新UI显示的主题颜色
         """
-        # 这里可以添加更新UI显示的代码，例如更新按钮颜色等
-        pass
+        # 重新获取主题颜色
+        self._get_theme_colors()
+        
+        # 更新所有样式
+        self._update_styles()
+        
+        # 更新窗口背景
+        self.setStyleSheet(f"""
+            QDialog {{ 
+                background-color: {self.theme_colors['auxiliary_color']}; 
+            }}
+        """)
+        
+        # 更新导航栏样式
+        navigation_style = f"""
+            QWidget {{ 
+                background-color: {self.theme_colors['base_color']}; 
+                border-radius: 10px;
+                border: none;
+            }}
+        """
+        self.navigation_widget.setStyleSheet(navigation_style)
+        
+        # 更新导航标题样式
+        title_style = f"""
+            QLabel {{ 
+                font-family: 'Noto Sans SC'; 
+                font-size: 10px;
+                font-weight: 400;
+                color: {self.theme_colors['secondary_color']};
+                margin-bottom: 15px;
+                padding: 5px;
+                text-align: center;
+            }}
+        """
+        # 查找导航标题并更新样式
+        for child in self.navigation_widget.children():
+            if isinstance(child, QVBoxLayout):
+                for i in range(child.count()):
+                    item = child.itemAt(i)
+                    if item and isinstance(item.widget(), QLabel):
+                        item.widget().setStyleSheet(title_style)
+                        break
+        
+        # 更新导航按钮样式
+        card_style = f"""
+            QPushButton {{ 
+                background-color: {self.theme_colors['auxiliary_color']}; 
+                border: none;
+                border-radius: 2px;
+                padding: 0;
+                height: 15px;
+                width: 85px;
+                text-align: center;
+                font-size: 10px;
+                color: {self.theme_colors['secondary_color']};
+                font-weight: 400;
+            }}
+            QPushButton:hover {{ 
+                background-color: {self.auxiliary_color_darker_2}; 
+            }}
+            QPushButton:pressed {{ 
+                background-color: {self.auxiliary_color_darker_5}; 
+            }}
+            QPushButton:checked {{ 
+                background-color: {self.theme_colors['accent_color']}; 
+                color: {self.theme_colors['base_color']}; 
+            }}
+        """
+        for button in self.navigation_buttons:
+            button.setStyleSheet(card_style)
+        
+        # 更新内容区域样式
+        content_style = f"""
+            QWidget {{ 
+                background-color: {self.theme_colors['base_color']}; 
+                border-radius: 10px;
+                border: none;
+            }}
+        """
+        self.content_area.setStyleSheet(content_style)
+        
+        # 更新内容标题样式
+        content_title_style = f"""
+            QLabel {{ 
+                font-family: 'Noto Sans SC'; 
+                font-size: 14px;
+                font-weight: 600;
+                color: {self.theme_colors['secondary_color']};
+                margin-bottom: 10px;
+                padding: 5px;
+            }}
+        """
+        self.content_title.setStyleSheet(content_title_style)
+        
+        # 更新滚动区域样式
+        scroll_style = f"""
+            QScrollArea {{ 
+                background-color: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{ 
+                width: 6px;
+                background-color: {self.theme_colors['auxiliary_color']}; 
+            }}
+            QScrollBar::handle:vertical {{ 
+                background-color: {self.theme_colors['normal_color']}; 
+                border-radius: 3px;
+            }}
+            QScrollBar::handle:vertical:hover {{ 
+                background-color: {self.theme_colors['accent_color']}; 
+            }}
+        """
+        self.scroll_area.setStyleSheet(scroll_style)
+        
+        # 更新所有分组框样式
+        for child in self.scroll_content.children():
+            if isinstance(child, QVBoxLayout):
+                for i in range(child.count()):
+                    item = child.itemAt(i)
+                    if item and isinstance(item.widget(), QGroupBox):
+                        item.widget().setStyleSheet(self.group_box_style)
+    
+    def _get_theme_colors(self):
+        """
+        获取主题颜色设置
+        """
+        self.theme_colors = {
+            "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#B036EE"),
+            "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
+            "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
+            "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),
+            "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        }
+        
+        # 计算辅助色加深2%和5%的颜色
+        self.auxiliary_color_darker_2 = self._darken_color(self.theme_colors["auxiliary_color"], 2)
+        self.auxiliary_color_darker_5 = self._darken_color(self.theme_colors["auxiliary_color"], 5)
+    
+    def _darken_color(self, color_hex, percent):
+        """
+        将颜色加深指定百分比
+        
+        Args:
+            color_hex (str): 十六进制颜色值
+            percent (int): 加深百分比（1-100）
+            
+        Returns:
+            str: 加深后的十六进制颜色值
+        """
+        # 将十六进制颜色转换为RGB
+        color = QColor(color_hex)
+        r = color.red()
+        g = color.green()
+        b = color.blue()
+        
+        # 计算加深后的RGB值
+        factor = 1 - percent / 100
+        r = max(0, int(r * factor))
+        g = max(0, int(g * factor))
+        b = max(0, int(b * factor))
+        
+        # 转换回十六进制颜色
+        return "#{:02x}{:02x}{:02x}".format(r, g, b)
+    
+    def _update_styles(self):
+        """
+        更新所有样式表
+        """
+        # 更新分组框样式
+        self.group_box_style = f"""
+            QGroupBox {{
+                background-color: {self.theme_colors['base_color']};
+                border: 1px solid {self.theme_colors['auxiliary_color']};
+                border-radius: 8px;
+                padding: 10px;
+                margin-bottom: 5px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0px 10px;
+                color: {self.theme_colors['secondary_color']};
+                font-weight: 600;
+                font-size: 6px;
+                margin-bottom: 0px;
+                top: -2px;
+                background-color: {self.theme_colors['base_color']};
+            }}
+        """
     
     def load_settings(self):
         """

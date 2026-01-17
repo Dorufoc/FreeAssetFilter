@@ -21,6 +21,9 @@ from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from PyQt5.QtWidgets import QWidget, QLabel
 import os
 
+# 导入设置管理器
+from .settings_manager import SettingsManager
+
 
 class SvgRenderer:
     """
@@ -28,6 +31,48 @@ class SvgRenderer:
     提供高质量的SVG到QPixmap或QSvgWidget转换，确保正确处理RGBA通道
     参考了custom_file_selector.py中_set_file_icon方法的实现
     """
+    
+    @staticmethod
+    def _get_accent_color():
+        """
+        获取应用设置中的强调色(accent_color)
+        
+        Returns:
+            str: 强调色的十六进制值，如#FF0000
+        """
+        try:
+            settings_manager = SettingsManager()
+            return settings_manager.get_setting("appearance.colors.accent_color")
+        except Exception as e:
+            print(f"获取强调色失败: {e}")
+            # 如果获取失败，返回默认强调色
+            return "#007AFF"
+    
+    @staticmethod
+    def _replace_svg_colors(svg_content):
+        """
+        预处理SVG内容，将所有#0a59f7颜色值替换为应用设置中的accent_color
+        
+        Args:
+            svg_content (str): SVG内容字符串
+            
+        Returns:
+            str: 预处理后的SVG内容字符串
+        """
+        try:
+            import re
+            # 获取强调色
+            accent_color = SvgRenderer._get_accent_color()
+            
+            # 将所有#0a59f7颜色值替换为accent_color
+            # 考虑大小写不敏感的情况，如#0A59F7
+            processed_svg = re.sub(r'#0a59f7', accent_color, svg_content, flags=re.IGNORECASE)
+            
+            return processed_svg
+        except Exception as e:
+            print(f"替换SVG颜色失败: {e}")
+            # 如果替换失败，返回原始SVG内容
+            return svg_content
     
     @staticmethod
     def render_svg_to_widget(icon_path, icon_size=120, dpi_scale=1.0):
@@ -59,6 +104,9 @@ class SvgRenderer:
             # 读取SVG文件内容，预处理以确保兼容性
             with open(icon_path, 'r', encoding='utf-8') as f:
                 svg_content = f.read()
+            
+            # 预处理SVG内容：替换颜色
+            svg_content = SvgRenderer._replace_svg_colors(svg_content)
             
             # 预处理SVG内容：将rgba颜色转换为十六进制格式
             import re
@@ -152,8 +200,15 @@ class SvgRenderer:
             label.setAlignment(Qt.AlignCenter)
             label.setFixedSize(icon_size, icon_size)
             
+            # 读取SVG文件内容，预处理以确保兼容性
+            with open(icon_path, 'r', encoding='utf-8') as f:
+                svg_content = f.read()
+            
+            # 预处理SVG内容：替换颜色
+            svg_content = SvgRenderer._replace_svg_colors(svg_content)
+            
             # 使用QSvgRenderer渲染
-            svg_renderer = QSvgRenderer(icon_path)
+            svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
             
             # 使用256x256的超分辨率进行渲染，确保图标清晰
             render_size = 256
@@ -237,9 +292,17 @@ class SvgRenderer:
         
         try:
             # 始终使用SVG渲染，不检查PNG文件
+            
+            # 读取SVG文件内容，预处理以确保兼容性
+            with open(icon_path, 'r', encoding='utf-8') as f:
+                svg_content = f.read()
+            
+            # 预处理SVG内容：替换颜色
+            svg_content = SvgRenderer._replace_svg_colors(svg_content)
+            
             # 使用QSvgRenderer创建一个足够大的pixmap（256x256），然后缩放
             # 这确保了在高DPI屏幕上的清晰度，实现超分辨率渲染
-            svg_renderer = QSvgRenderer(icon_path)
+            svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
             
             # 使用256x256的超分辨率进行渲染，确保图标清晰
             render_size = 256
@@ -489,6 +552,9 @@ class SvgRenderer:
             return pixmap
         
         try:
+            # 预处理SVG内容：替换颜色
+            svg_string = SvgRenderer._replace_svg_colors(svg_string)
+            
             # 预处理SVG内容：将rgba颜色转换为十六进制格式
             import re
             

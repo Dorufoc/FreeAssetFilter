@@ -69,23 +69,26 @@ class CustomProgressBar(QWidget):
         # 外观属性，应用DPI缩放
         # 尝试从应用实例获取主题颜色
         app = QApplication.instance()
+        
+        # 获取辅助颜色auxiliary_color
+        auxiliary_color = "#f1f3f5"  # 默认辅助色
         if hasattr(app, 'settings_manager'):
             settings_manager = app.settings_manager
             # 获取主题颜色
-            bg_color_str = settings_manager.get_setting("appearance.colors.progress_bar_bg", "#3C3C3C")
+            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
             progress_color_str = settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
             handle_color_str = settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
             handle_hover_color_str = settings_manager.get_setting("appearance.colors.slider_handle_hover", "#5EE0D8")
             
             # 使用主题颜色
-            self._bg_color = QColor(bg_color_str)
+            self._bg_color = QColor(auxiliary_color)
             self._progress_color = QColor(progress_color_str)
             self._handle_color = QColor(handle_color_str)
             self._handle_hover_color = QColor(handle_hover_color_str)
             self._handle_pressed_color = QColor(handle_color_str).darker(120)  # 按比例变暗
         else:
             # 使用默认颜色
-            self._bg_color = QColor(229, 231, 233)  # 进度条背景颜色
+            self._bg_color = QColor(auxiliary_color)  # 使用默认辅助色
             self._progress_color = QColor(10, 89, 247)  # #0a59f7
             self._handle_color = QColor(0, 120, 212)  # #0078d4
             self._handle_hover_color = QColor(16, 110, 190)  # #106ebe
@@ -563,22 +566,25 @@ class CustomValueBar(QWidget):
         
         # 尝试从应用实例获取主题颜色
         app = QApplication.instance()
+        
+        # 获取辅助颜色auxiliary_color
+        auxiliary_color = "#f1f3f5"  # 默认辅助色
         if hasattr(app, 'settings_manager'):
             settings_manager = app.settings_manager
             # 获取主题颜色
-            bg_color_str = settings_manager.get_setting("appearance.colors.progress_bar_bg", "#3C3C3C")
+            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
             progress_color_str = settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
             handle_color_str = settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
             handle_hover_color_str = settings_manager.get_setting("appearance.colors.slider_handle_hover", "#5EE0D8")
             
             # 使用主题颜色
-            self._bg_color = QColor(bg_color_str)
+            self._bg_color = QColor(auxiliary_color)
             self._progress_color = QColor(progress_color_str)
             self._handle_border_color = QColor(handle_color_str)
             self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
         else:
             # 使用默认颜色
-            self._bg_color = QColor(99, 99, 99)  # 进度条背景颜色
+            self._bg_color = QColor(auxiliary_color)  # 使用默认辅助色
             self._progress_color = QColor(0, 120, 212)  # 已完成区域颜色（蓝色，与不可交互进度条一致）
             self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
             self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
@@ -914,20 +920,23 @@ class CustomVolumeBar(QWidget):
         self._handle_border_width = int(2 * self.dpi_scale)  # 边框宽度，响应DPI缩放
         
         # 尝试从应用实例获取主题颜色
+        
+        # 获取辅助颜色auxiliary_color
+        auxiliary_color = "#f1f3f5"  # 默认辅助色
         if hasattr(app, 'settings_manager'):
             settings_manager = app.settings_manager
             # 获取主题颜色
-            bg_color_str = settings_manager.get_setting("appearance.colors.progress_bar_bg", "#3C3C3C")
+            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
             progress_color_str = settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
             handle_color_str = settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
             
             # 使用主题颜色
-            self._bg_color = QColor(bg_color_str)
+            self._bg_color = QColor(auxiliary_color)
             self._progress_color = QColor(progress_color_str)
             self._handle_border_color = QColor(handle_color_str)
         else:
             # 使用默认颜色
-            self._bg_color = QColor(99, 99, 99)  # 音量条背景颜色
+            self._bg_color = QColor(auxiliary_color)  # 使用默认辅助色
             self._progress_color = QColor(0, 120, 212)  # #0078d4
             self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
     

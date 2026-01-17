@@ -25,8 +25,10 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, 
     QWidget, QLabel, QGroupBox, QTextEdit, 
     QScrollArea, QHBoxLayout, QMessageBox, QSizePolicy,
-    QDialog, QDialogButtonBox, QComboBox, QLineEdit, QCheckBox
+    QDialog, QDialogButtonBox, QComboBox, QCheckBox
 )
+# 导入自定义输入框组件
+from freeassetfilter.widgets.input_widgets import CustomInputBox
 from PyQt5.QtCore import Qt, QProcess, QTimer
 from PyQt5.QtGui import QFont, QColor
 
@@ -209,8 +211,7 @@ class ComponentLauncher(QMainWindow):
         search_label = QLabel("搜索:")
         filter_layout.addWidget(search_label)
         
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("输入搜索关键词...")
+        self.search_edit = CustomInputBox(placeholder_text="输入搜索关键词...")
         self.search_edit.textChanged.connect(self._filter_logs)
         filter_layout.addWidget(self.search_edit)
         

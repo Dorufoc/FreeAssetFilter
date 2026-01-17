@@ -16,6 +16,8 @@ from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
 # 导入自定义列表组件
 from .list_widgets import CustomSelectList
+# 导入自定义输入框组件
+from .input_widgets import CustomInputBox
 
 
 class CustomWindow(QWidget):
@@ -881,8 +883,7 @@ class CustomWindow(QWidget):
         """)
         controls_layout.addWidget(input_label)
         
-        input_edit = QLineEdit()
-        input_edit.setPlaceholderText("请输入文本...")
+        input_edit = CustomInputBox(placeholder_text="请输入文本...")
         controls_layout.addWidget(input_edit)
         
         # 文本预览
@@ -1251,25 +1252,18 @@ class CustomMessageBox(QDialog):
         self.input_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
         # 输入框
-        self.input_line_edit = QLineEdit()
+        self.input_line_edit = CustomInputBox(
+            parent=self,
+            placeholder_text="",
+            height=int(20 * self.dpi_scale),
+            border_radius=4,
+            border_color="#e0e0e0",
+            background_color="#f5f5f5",
+            text_color="#333333",
+            active_border_color="#1890ff",
+            active_background_color="#ffffff"
+        )
         self.input_line_edit.setFont(self.global_font)
-        # 使用正确的大括号转义方式
-        style_sheet = """
-            QLineEdit {{
-                font-size: {0}px;
-                color: #333333;
-                background-color: #f5f5f5;
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 8px 12px;
-                margin: 0;
-            }}
-            QLineEdit:focus {{
-                border-color: #1890ff;
-                background-color: #ffffff;
-            }}
-        """.format(scaled_text_font_size)
-        self.input_line_edit.setStyleSheet(style_sheet)
         self.input_layout.addWidget(self.input_line_edit)
         self.body_layout.addWidget(self.input_widget)
         
@@ -1494,7 +1488,7 @@ class CustomMessageBox(QDialog):
             placeholder (str): 输入框占位符
         """
         self.input_line_edit.setText(text)
-        self.input_line_edit.setPlaceholderText(placeholder)
+        self.input_line_edit.set_placeholder_text(placeholder)
         if text or placeholder:
             self.input_widget.show()
         else:
@@ -1514,8 +1508,8 @@ class CustomMessageBox(QDialog):
         """
         清空输入框并隐藏
         """
-        self.input_line_edit.clear()
-        self.input_line_edit.setPlaceholderText("")
+        self.input_line_edit.clear_text()
+        self.input_line_edit.set_placeholder_text("")
         self.input_widget.hide()
         self.adjust_size()
     

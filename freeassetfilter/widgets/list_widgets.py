@@ -138,16 +138,20 @@ class CustomSelectListItem(QWidget):
         
         # 获取主题颜色
         app = QApplication.instance()
-        list_item_selected = "#0a59f7"  # 默认选中颜色
-        list_item_text_selected = "#ffffff"  # 默认选中文字颜色
-        list_item_normal = "#ffffff"  # 默认正常背景颜色
-        list_item_text_normal = "#000000"  # 默认正常文字颜色
+        accent_color = "#B036EE"  # 默认强调色
+        base_color = "#ffffff"  # 默认基色
+        secondary_color = "#3F3F3F"  # 默认次要颜色
         
         if hasattr(app, 'settings_manager'):
-            list_item_selected = app.settings_manager.get_setting("appearance.colors.list_item_selected", list_item_selected)
-            list_item_text_selected = app.settings_manager.get_setting("appearance.colors.list_item_text", list_item_text_selected)
-            list_item_normal = app.settings_manager.get_setting("appearance.colors.list_item_normal", list_item_normal)
-            list_item_text_normal = app.settings_manager.get_setting("appearance.colors.list_item_text", list_item_text_normal)
+            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", accent_color)
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", base_color)
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", secondary_color)
+        
+        # 设置颜色变量
+        list_item_selected = accent_color  # 选中状态背景色使用强调色
+        list_item_text_selected = base_color  # 选中状态文字色使用基色
+        list_item_normal = base_color  # 未选中状态背景色使用基色
+        list_item_text_normal = secondary_color  # 未选中状态文字色使用次要颜色
         
         if self.is_selected:
             # 选中状态：主题选中色底，主题文字色，字重600
@@ -287,14 +291,19 @@ class CustomSelectList(QWidget):
         # 确保滚动条可见，将样式应用到滚动区域
         # 获取主题颜色
         app = QApplication.instance()
-        scrollbar_bg = "#f0f0f0"  # 默认滚动条背景颜色
-        scrollbar_handle = "#c0c0c0"  # 默认滚动条手柄颜色
-        scrollbar_handle_hover = "#a0a0a0"  # 默认滚动条手柄悬停颜色
+        auxiliary_color = "#E6E6E6"  # 默认辅助色
+        normal_color = "#808080"  # 默认正常颜色
+        accent_color = "#B036EE"  # 默认强调色
         
         if hasattr(app, 'settings_manager'):
-            scrollbar_bg = app.settings_manager.get_setting("appearance.colors.scrollbar_bg", scrollbar_bg)
-            scrollbar_handle = app.settings_manager.get_setting("appearance.colors.scrollbar_handle", scrollbar_handle)
-            scrollbar_handle_hover = app.settings_manager.get_setting("appearance.colors.scrollbar_handle_hover", scrollbar_handle_hover)
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", normal_color)
+            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", accent_color)
+        
+        # 设置滚动条颜色变量
+        scrollbar_bg = auxiliary_color  # 滚动条背景色使用辅助色
+        scrollbar_handle = normal_color  # 滚动条手柄颜色使用正常颜色
+        scrollbar_handle_hover = accent_color  # 滚动条手柄悬停颜色使用强调色
         
         self.scroll_area.setStyleSheet(f"""
             QScrollArea {{

@@ -75,14 +75,14 @@ class CustomSwitch(QWidget):
                 border-radius: %dpx;
             }
             QPushButton:hover {
-                background-color: rgba(0, 120, 212, 0.1);
+                background-color: transparent;
             }
             QPushButton:pressed {
-                background-color: rgba(0, 120, 212, 0.2);
+                background-color: transparent;
             }
         """ % (self._height // 2))
         
-        # 直接创建QSvgWidget用于渲染SVG
+        # 创建QSvgWidget用于渲染SVG
         from PyQt5.QtSvg import QSvgWidget
         self.svg_widget = QSvgWidget(self)
         self.svg_widget.setStyleSheet("background: transparent;")
@@ -101,7 +101,7 @@ class CustomSwitch(QWidget):
     def _update_switch_icon(self):
         """
         更新开关图标
-        使用QSvgWidget直接渲染SVG，确保高质量显示和纵向居中
+        先使用SvgRenderer类的颜色替换功能处理SVG内容，然后再加载到QSvgWidget中
         """
         is_checked = self.click_button.isChecked()
         
@@ -112,8 +112,15 @@ class CustomSwitch(QWidget):
         else:
             icon_path = os.path.join(icon_dir, '关.svg')
         
-        # 加载SVG文件
-        self.svg_widget.load(icon_path)
+        # 读取SVG文件内容
+        with open(icon_path, 'r', encoding='utf-8') as f:
+            svg_content = f.read()
+        
+        # 使用SvgRenderer类的颜色替换功能处理SVG内容
+        processed_svg = SvgRenderer._replace_svg_colors(svg_content)
+        
+        # 加载处理后的SVG内容到QSvgWidget
+        self.svg_widget.load(processed_svg.encode('utf-8'))
         
         # 计算图标尺寸，保持原始比例
         icon_height = int(self.height() * 0.9)

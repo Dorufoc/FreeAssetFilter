@@ -171,7 +171,7 @@ class CustomFileHorizontalCard(QWidget):
         self.info_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         # 设置字体大小
         info_font = QFont(self.global_font)
-        info_font.setWeight(QFont.Light)  # 可选：设置为轻量字重，与文件名区分
+        info_font.setWeight(QFont.Normal)  # 设置为正常字重
         self.info_label.setFont(info_font)
         # 初始设置默认样式，后续会在update_card_style中更新为主题颜色
         self.info_label.setStyleSheet("background: transparent; border: none;")
@@ -522,6 +522,7 @@ class CustomFileHorizontalCard(QWidget):
         scaled_border_radius = int(1.5 * self.dpi_scale)
         # 获取应用实例和设置管理器
         from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtGui import QColor
         app = QApplication.instance()
         settings_manager = getattr(app, 'settings_manager', None)
         
@@ -574,9 +575,27 @@ class CustomFileHorizontalCard(QWidget):
             card_style += f"background-color: {auxiliary_color};"
             card_style += "}"
             self.card_container.setStyleSheet(card_style)
-            # 设置文字颜色（默认状态使用secondary_color和normal_color）
+            
+            # 定义颜色加深函数
+            def darken_color(color_hex, amount=30):
+                """
+                将十六进制颜色代码加深指定百分比
+                参数：
+                    color_hex (str): 十六进制颜色代码，如"#ffffff"
+                    amount (int): 加深百分比，0-100
+                返回：
+                    str: 加深后的十六进制颜色代码
+                """
+                color = QColor(color_hex)
+                red = max(0, int(color.red() * (100 - amount) / 100))
+                green = max(0, int(color.green() * (100 - amount) / 100))
+                blue = max(0, int(color.blue() * (100 - amount) / 100))
+                return QColor(red, green, blue).name()
+            
+            # 设置文字颜色（默认状态使用secondary_color和加深后的normal_color）
             self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
+            info_text_color = darken_color(normal_color, 30)
+            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {info_text_color};")
 
     def mousePressEvent(self, event):
         """处理鼠标按下事件"""

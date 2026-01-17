@@ -165,11 +165,12 @@ class CustomSettingItem(QWidget):
         scaled_font_size = int(self.default_font_size * self.dpi_scale)
         # 获取主题文本颜色
         app = QApplication.instance()
-        text_color = "#FFFFFF"  # 默认白色文本
+        text_color = "#333333"  # 默认使用secondary_color作为默认值
         
         # 尝试从应用实例获取主题颜色
         if hasattr(app, 'settings_manager'):
-            text_color = app.settings_manager.get_setting("appearance.colors.text_normal", "#FFFFFF")
+            # 优先获取secondary_color
+            text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
         self.main_text_label.setStyleSheet("""
             QLabel {
@@ -187,16 +188,22 @@ class CustomSettingItem(QWidget):
         # 如果有辅助文本，则显示双行模式
         if self.secondary_text:
             # 辅助文本字号为黑色文字大小的1/1.3取整
-            secondary_font_size = int(scaled_font_size / 1.3)
+            secondary_font_size = int(scaled_font_size)
             self.secondary_text_label = QLabel(self.secondary_text)
             self.secondary_text_label.setFont(self.global_font)
             # 获取主题辅助文本颜色
             app = QApplication.instance()
-            secondary_text_color = "#888888"  # 默认禁用文本颜色
+            secondary_text_color = "#808080"  # 默认使用normal_color作为默认值
             
             # 尝试从应用实例获取主题颜色
             if hasattr(app, 'settings_manager'):
-                secondary_text_color = app.settings_manager.get_setting("appearance.colors.text_disabled", "#888888")
+                # 优先获取normal_color
+                normal_color_str = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
+                # 使用QColor将颜色加深30%
+                from PyQt5.QtGui import QColor
+                normal_color = QColor(normal_color_str)
+                # darker(130)表示加深30%（100=不变，>100=加深，<100=变亮）
+                secondary_text_color = normal_color.darker(130).name()
             
             self.secondary_text_label.setStyleSheet("""
                 QLabel {
@@ -374,11 +381,12 @@ class CustomSettingItem(QWidget):
         scaled_font_size = int(self.default_font_size * self.dpi_scale)
         # 获取主题文本颜色
         app = QApplication.instance()
-        text_color = "#FFFFFF"  # 默认白色文本
+        text_color = "#333333"  # 默认使用secondary_color作为默认值
         
         # 尝试从应用实例获取主题颜色
         if hasattr(app, 'settings_manager'):
-            text_color = app.settings_manager.get_setting("appearance.colors.text_normal", "#FFFFFF")
+            # 优先获取secondary_color
+            text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
         self.value_label.setStyleSheet("""
             QLabel {
