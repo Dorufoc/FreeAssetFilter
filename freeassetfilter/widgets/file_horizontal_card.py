@@ -48,17 +48,20 @@ class CustomFileHorizontalCard(QWidget):
         thumbnail_mode (str): 缩略图显示模式，可选值：'icon' 或 'custom'
         dpi_scale (float): DPI缩放因子
         enable_multiselect (bool): 是否开启多选功能
+        single_line_mode (bool): 是否使用单行文本格式
     
     方法：
         set_file_path(file_path): 设置文件路径
         set_selected(selected): 设置选中状态
         set_thumbnail_mode(mode): 设置缩略图显示模式
         set_enable_multiselect(enable): 设置是否开启多选功能
+        set_single_line_mode(enable): 设置是否使用单行文本格式
     
     参数：
         file_path (str): 文件路径
         parent (QWidget): 父部件
         enable_multiselect (bool): 是否开启多选功能，默认值为True
+        single_line_mode (bool): 是否使用单行文本格式，默认值为False
     """
     # 信号定义
     clicked = pyqtSignal(str)
@@ -67,7 +70,7 @@ class CustomFileHorizontalCard(QWidget):
     renameRequested = pyqtSignal(str)  # 重命名请求信号，传递文件路径
     deleteRequested = pyqtSignal(str)  # 删除请求信号，传递文件路径
 
-    def __init__(self, file_path=None, parent=None, enable_multiselect=True, display_name=None):
+    def __init__(self, file_path=None, parent=None, enable_multiselect=True, display_name=None, single_line_mode=False):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
@@ -87,6 +90,7 @@ class CustomFileHorizontalCard(QWidget):
         self._thumbnail_mode = 'icon'  # 默认使用icon模式
         self._enable_multiselect = enable_multiselect  # 是否开启多选功能
         self._display_name = display_name  # 显示名称，优先于文件系统中的文件名
+        self._single_line_mode = single_line_mode  # 是否使用单行文本格式
         
         # 鼠标悬停标志，用于跟踪鼠标是否在卡片区域内
         self._is_mouse_over = False
@@ -142,7 +146,13 @@ class CustomFileHorizontalCard(QWidget):
         # 文字信息区
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(int(4 * self.dpi_scale))
+        
+        # 根据单行模式设置间距
+        if self._single_line_mode:
+            text_layout.setSpacing(0)  # 单行模式下无间距
+        else:
+            text_layout.setSpacing(int(4 * self.dpi_scale))  # 默认垂直间距
+            
         text_layout.setAlignment(Qt.AlignVCenter)
         
         # 文件名标签
@@ -175,7 +185,10 @@ class CustomFileHorizontalCard(QWidget):
         self.info_label.setFont(info_font)
         # 初始设置默认样式，后续会在update_card_style中更新为主题颜色
         self.info_label.setStyleSheet("background: transparent; border: none;")
-        text_layout.addWidget(self.info_label)
+        
+        # 根据单行模式决定是否显示文件信息标签
+        if not self._single_line_mode:
+            text_layout.addWidget(self.info_label)
         
         card_content_layout.addLayout(text_layout, 1)
         
@@ -344,9 +357,21 @@ class CustomFileHorizontalCard(QWidget):
             print(f"Elided file name: '{elided_file_name}'")
             print(f"Elided info text: '{elided_info_text}'")
             
-            # 更新标签文本
-            self.name_label.setText(elided_file_name)
-            self.info_label.setText(elided_info_text)
+            # 根据单行模式更新标签文本
+            if self._single_line_mode:
+                # 单行模式下，将文件信息合并到文件名标签中
+                combined_text = f"{file_name} ({file_size})"
+                # 计算合并文本的截断显示
+                combined_elided_text = name_font_metrics.elidedText(combined_text, Qt.ElideRight, available_width)
+                self.name_label.setText(combined_elided_text)
+                # 隐藏文件信息标签
+                self.info_label.hide()
+            else:
+                # 多行模式下，分别显示文件名和文件信息
+                self.name_label.setText(elided_file_name)
+                self.info_label.setText(elided_info_text)
+                # 显示文件信息标签
+                self.info_label.show()
             
         except Exception as e:
             print(f"加载文件信息失败: {e}")
@@ -701,6 +726,32 @@ class CustomFileHorizontalCard(QWidget):
             enable (bool): 是否开启多选功能
         """
         self.enable_multiselect = enable
+
+    @property
+    def single_line_mode(self):
+        """获取是否使用单行文本格式"""
+        return self._single_line_mode
+
+    @single_line_mode.setter
+    def single_line_mode(self, value):
+        """设置是否使用单行文本格式
+        
+        参数：
+            value (bool): 是否使用单行文本格式
+        """
+        self._single_line_mode = value
+        # 重新加载文件信息以更新显示
+        if self._file_path:
+            self._load_file_info()
+
+    def set_single_line_mode(self, enable):
+        """
+        设置是否使用单行文本格式
+        
+        参数：
+            enable (bool): 是否使用单行文本格式
+        """
+        self.single_line_mode = enable
     
     def update_style(self):
         """

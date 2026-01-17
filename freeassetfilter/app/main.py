@@ -951,11 +951,39 @@ def main():
     
     # 应用程序退出前记录当前时间
     def on_app_exit():
+        import json
+        import os
+        
         # 记录程序退出时间
         exit_time = time.time()
-        settings_manager.set_setting("app.last_exit_time", exit_time)
-        settings_manager.save_settings()
-        #print(f"[DEBUG] 程序退出时间已记录: {exit_time}")
+        
+        # 直接操作JSON文件，只更新app.last_exit_time字段，避免保存整个设置文件
+        settings_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'settings.json')
+        
+        try:
+            # 如果设置文件存在，只更新app.last_exit_time字段
+            if os.path.exists(settings_file):
+                with open(settings_file, 'r', encoding='utf-8') as f:
+                    settings_data = json.load(f)
+                
+                # 确保app部分存在
+                if 'app' not in settings_data:
+                    settings_data['app'] = {}
+                
+                # 更新退出时间
+                settings_data['app']['last_exit_time'] = exit_time
+                
+                # 保存更新后的设置
+                with open(settings_file, 'w', encoding='utf-8') as f:
+                    json.dump(settings_data, f, indent=4, ensure_ascii=False)
+            else:
+                # 文件不存在时，仍然记录时间但不创建文件（遵循原有逻辑）
+                settings_manager.set_setting("app.last_exit_time", exit_time)
+                
+        except Exception as e:
+            # 发生错误时，使用原有方式记录时间（不保存）
+            settings_manager.set_setting("app.last_exit_time", exit_time)
+            print(f"保存退出时间失败: {e}")
     
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
