@@ -654,26 +654,57 @@ class CustomFileSelector(QWidget):
                     original_width, original_height = img.size
                     aspect_ratio = original_width / original_height
                     
-                    # 计算新尺寸，保持原始比例，最大尺寸为128x128
+                    # 计算新尺寸，保持原始比例
+                    # 考虑DPI缩放因子，生成更高分辨率的缩略图
+                    base_size = 64
+                    dpi_scaled_size = base_size * self.dpi_scale
+                    
                     if aspect_ratio > 1:
                         # 宽图，以宽度为基准
-                        new_width = 64
+                        new_width = int(dpi_scaled_size)
                         new_height = int(new_width / aspect_ratio)
                     else:
                         # 高图或正方形，以高度为基准
-                        new_height = 64
+                        new_height = int(dpi_scaled_size)
                         new_width = int(new_height * aspect_ratio)
                     
-                    # 调整大小，保持原始比例
-                    resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    # 获取图像的像素数量，用于判断是否需要进行大文件优化
+                    total_pixels = original_width * original_height
                     
-                    # 创建一个128x128的透明背景
-                    thumbnail = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+                    # 对于超大图像（超过1000万像素），先进行适度下采样，避免内存占用过高
+                    # 同时确保下采样后的尺寸不小于目标尺寸的2倍，以保证最终缩放质量
+                    if total_pixels > 10000000:
+                        # 计算下采样比例，确保下采样后的尺寸至少是目标尺寸的2倍
+                        min_downsample_width = max(new_width * 2, 1024)  # 至少1024像素宽度
+                        min_downsample_height = max(new_height * 2, 1024)
+                        
+                        downsample_ratio = min(original_width / min_downsample_width, original_height / min_downsample_height)
+                        if downsample_ratio > 1:
+                            # 进行下采样
+                            downsampled_width = int(original_width / downsample_ratio)
+                            downsampled_height = int(original_height / downsample_ratio)
+                            
+                            # 使用高质量插值进行下采样
+                            downsampled_img = img.resize((downsampled_width, downsampled_height), Image.Resampling.LANCZOS)
+                            
+                            # 然后从下采样后的图像缩放到最终尺寸
+                            resized_img = downsampled_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                        else:
+                            # 下采样比例小于等于1，直接使用原图缩放到目标尺寸
+                            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    else:
+                        # 对于普通大小的图像，直接使用原图缩放到目标尺寸，避免中间步骤的质量损失
+                        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    
+                    # 创建一个透明背景，尺寸考虑DPI缩放因子
+                    base_background_size = 128
+                    dpi_scaled_background_size = int(base_background_size * self.dpi_scale)
+                    thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
                     
                     # 将调整大小后的图片居中绘制到透明背景上
                     draw = ImageDraw.Draw(thumbnail)
-                    x_offset = (128 - new_width) // 2
-                    y_offset = (128 - new_height) // 2
+                    x_offset = (dpi_scaled_background_size - new_width) // 2
+                    y_offset = (dpi_scaled_background_size - new_height) // 2
                     thumbnail.paste(resized_img, (x_offset, y_offset), resized_img)
                     
                     # 保存缩略图为PNG格式
@@ -757,18 +788,46 @@ class CustomFileSelector(QWidget):
                                     original_height, original_width = frame.shape[:2]
                                     aspect_ratio = original_width / original_height
                                     
-                                    # 计算新尺寸，保持原始比例，最大尺寸为128x128
+                                    # 计算新尺寸，保持原始比例，考虑DPI缩放因子
+                                    base_size = 128
+                                    dpi_scaled_size = int(base_size * self.dpi_scale)
+                                    
                                     if aspect_ratio > 1:
                                         # 宽图，以宽度为基准
-                                        new_width = 128
+                                        new_width = dpi_scaled_size
                                         new_height = int(new_width / aspect_ratio)
                                     else:
                                         # 高图或正方形，以高度为基准
-                                        new_height = 128
+                                        new_height = dpi_scaled_size
                                         new_width = int(new_height * aspect_ratio)
                                     
-                                    # 调整大小，保持原始比例
-                                    resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                                    # 获取帧的像素数量，用于判断是否需要进行大文件优化
+                                    total_pixels = original_width * original_height
+                                    
+                                    # 对于超大视频帧（超过1000万像素），先进行适度下采样，避免内存占用过高
+                                    # 同时确保下采样后的尺寸不小于目标尺寸的2倍，以保证最终缩放质量
+                                    if total_pixels > 10000000:
+                                        # 计算下采样比例，确保下采样后的尺寸至少是目标尺寸的2倍
+                                        min_downsample_width = max(new_width * 2, 1024)  # 至少1024像素宽度
+                                        min_downsample_height = max(new_height * 2, 1024)
+                                        
+                                        downsample_ratio = min(original_width / min_downsample_width, original_height / min_downsample_height)
+                                        if downsample_ratio > 1:
+                                            # 进行下采样
+                                            downsampled_width = int(original_width / downsample_ratio)
+                                            downsampled_height = int(original_height / downsample_ratio)
+                                            
+                                            # 使用高质量插值进行下采样
+                                            downsampled_frame = cv2.resize(frame, (downsampled_width, downsampled_height), interpolation=cv2.INTER_LANCZOS4)
+                                            
+                                            # 然后从下采样后的帧缩放到最终尺寸
+                                            resized_frame = cv2.resize(downsampled_frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+                                        else:
+                                            # 下采样比例小于等于1，直接从原始帧缩放到目标尺寸
+                                            resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+                                    else:
+                                        # 对于普通大小的视频帧，直接从原始帧缩放到目标尺寸，避免中间步骤的质量损失
+                                        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
                                     
                                     # 使用PIL处理，避免cv2.zeros错误
                                     from PIL import Image, ImageDraw
@@ -777,12 +836,13 @@ class CustomFileSelector(QWidget):
                                     # OpenCV图像是BGR格式，需要转换为RGB格式
                                     frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
                                     
-                                    # 创建一个128x128的透明背景
-                                    thumbnail = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+                                    # 创建一个透明背景，尺寸考虑DPI缩放因子
+                                    dpi_scaled_background_size = int(128 * self.dpi_scale)
+                                    thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
                                     
                                     # 将调整大小后的帧居中绘制到透明背景上
-                                    x_offset = (128 - new_width) // 2
-                                    y_offset = (128 - new_height) // 2
+                                    x_offset = (dpi_scaled_background_size - new_width) // 2
+                                    y_offset = (dpi_scaled_background_size - new_height) // 2
                                     thumbnail.paste(frame_pil, (x_offset, y_offset))
                                     
                                     # 保存缩略图
@@ -807,18 +867,46 @@ class CustomFileSelector(QWidget):
                                     original_height, original_width = frame.shape[:2]
                                     aspect_ratio = original_width / original_height
                                     
-                                    # 计算新尺寸，保持原始比例，最大尺寸为128x128
+                                    # 计算新尺寸，保持原始比例，考虑DPI缩放因子
+                                    base_size = 128
+                                    dpi_scaled_size = int(base_size * self.dpi_scale)
+                                    
                                     if aspect_ratio > 1:
                                         # 宽图，以宽度为基准
-                                        new_width = 128
+                                        new_width = dpi_scaled_size
                                         new_height = int(new_width / aspect_ratio)
                                     else:
                                         # 高图或正方形，以高度为基准
-                                        new_height = 128
+                                        new_height = dpi_scaled_size
                                         new_width = int(new_height * aspect_ratio)
                                     
-                                    # 调整大小，保持原始比例
-                                    resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                                    # 获取帧的像素数量，用于判断是否需要进行大文件优化
+                                    total_pixels = original_width * original_height
+                                    
+                                    # 对于超大视频帧（超过1000万像素），先进行适度下采样，避免内存占用过高
+                                    # 同时确保下采样后的尺寸不小于目标尺寸的2倍，以保证最终缩放质量
+                                    if total_pixels > 10000000:
+                                        # 计算下采样比例，确保下采样后的尺寸至少是目标尺寸的2倍
+                                        min_downsample_width = max(new_width * 2, 1024)  # 至少1024像素宽度
+                                        min_downsample_height = max(new_height * 2, 1024)
+                                        
+                                        downsample_ratio = min(original_width / min_downsample_width, original_height / min_downsample_height)
+                                        if downsample_ratio > 1:
+                                            # 进行下采样
+                                            downsampled_width = int(original_width / downsample_ratio)
+                                            downsampled_height = int(original_height / downsample_ratio)
+                                            
+                                            # 使用高质量插值进行下采样
+                                            downsampled_frame = cv2.resize(frame, (downsampled_width, downsampled_height), interpolation=cv2.INTER_LANCZOS4)
+                                            
+                                            # 然后从下采样后的帧缩放到最终尺寸
+                                            resized_frame = cv2.resize(downsampled_frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+                                        else:
+                                            # 下采样比例小于等于1，直接从原始帧缩放到目标尺寸
+                                            resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+                                    else:
+                                        # 对于普通大小的视频帧，直接从原始帧缩放到目标尺寸，避免中间步骤的质量损失
+                                        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
                                     
                                     # 使用PIL处理，避免cv2.zeros错误
                                     from PIL import Image, ImageDraw
@@ -827,12 +915,13 @@ class CustomFileSelector(QWidget):
                                     # OpenCV图像是BGR格式，需要转换为RGB格式
                                     frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
                                     
-                                    # 创建一个128x128的透明背景
-                                    thumbnail = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+                                    # 创建一个透明背景，尺寸考虑DPI缩放因子
+                                    dpi_scaled_background_size = int(128 * self.dpi_scale)
+                                    thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
                                     
                                     # 将调整大小后的帧居中绘制到透明背景上
-                                    x_offset = (128 - new_width) // 2
-                                    y_offset = (128 - new_height) // 2
+                                    x_offset = (dpi_scaled_background_size - new_width) // 2
+                                    y_offset = (dpi_scaled_background_size - new_height) // 2
                                     thumbnail.paste(frame_pil, (x_offset, y_offset))
                                     
                                     # 保存缩略图
@@ -854,18 +943,21 @@ class CustomFileSelector(QWidget):
                                 original_height, original_width = frame.shape[:2]
                                 aspect_ratio = original_width / original_height
                                 
-                                # 计算新尺寸，保持原始比例，最大尺寸为128x128
+                                # 计算新尺寸，保持原始比例，考虑DPI缩放因子
+                                base_size = 128
+                                dpi_scaled_size = int(base_size * self.dpi_scale)
+                                
                                 if aspect_ratio > 1:
                                     # 宽图，以宽度为基准
-                                    new_width = 128
+                                    new_width = dpi_scaled_size
                                     new_height = int(new_width / aspect_ratio)
                                 else:
                                     # 高图或正方形，以高度为基准
-                                    new_height = 128
+                                    new_height = dpi_scaled_size
                                     new_width = int(new_height * aspect_ratio)
                                 
-                                # 调整大小，保持原始比例
-                                resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                                # 调整大小，保持原始比例，使用高质量插值算法
+                                resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
                                 
                                 # 使用PIL处理
                                 try:
@@ -875,12 +967,13 @@ class CustomFileSelector(QWidget):
                                     # OpenCV图像是BGR格式，需要转换为RGB格式
                                     frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
                                     
-                                    # 创建一个128x128的透明背景
-                                    thumbnail_pil = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
+                                    # 创建一个透明背景，尺寸考虑DPI缩放因子
+                                    dpi_scaled_background_size = int(128 * self.dpi_scale)
+                                    thumbnail_pil = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
                                     
                                     # 将调整大小后的帧居中绘制到透明背景上
-                                    x_offset = (128 - new_width) // 2
-                                    y_offset = (128 - new_height) // 2
+                                    x_offset = (dpi_scaled_background_size - new_width) // 2
+                                    y_offset = (dpi_scaled_background_size - new_height) // 2
                                     thumbnail_pil.paste(frame_pil, (x_offset, y_offset))
                                     
                                     # 保存缩略图
@@ -2255,12 +2348,17 @@ class CustomFileSelector(QWidget):
             
             # 加载缩略图
             pixmap = QPixmap(thumbnail_path)
-            # 缩放缩略图以适应scaled_icon_size的大小
+            
+            # 设置设备像素比，确保高DPI屏幕上的清晰度
+            pixmap.setDevicePixelRatio(self.dpi_scale)
+            
+            # 缩放缩略图以适应scaled_icon_size的大小（使用逻辑像素）
             scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
             # 创建一个新的Pixmap，用于绘制叠加图标
             combined_pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
             combined_pixmap.fill(Qt.transparent)
+            combined_pixmap.setDevicePixelRatio(self.dpi_scale)
             
             # 创建画家
             painter = QPainter(combined_pixmap)

@@ -99,6 +99,11 @@ class ImageWidget(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         
+        # 获取应用实例和设备像素比
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        self.device_pixel_ratio = app.primaryScreen().devicePixelRatio() if app else 1.0
+        
         # 初始化所有属性，确保在使用前都被定义
         self.original_image = None
         self.scaled_image = None
@@ -246,18 +251,29 @@ class ImageWidget(QWidget):
         """
         try:
             if self.original_image:
-                # 计算缩放后的大小
-                scaled_size = self.original_image.size() * self.scale_factor
-                self.scaled_image = self.original_image.scaled(
-                    scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
-                self.pixmap = QPixmap.fromImage(self.scaled_image)
+                # 计算缩放后的逻辑大小
+                logical_scaled_size = self.original_image.size() * self.scale_factor
                 
-                # 更新窗口大小
+                # 考虑设备像素比，计算物理像素大小
+                physical_scaled_size = QSize(
+                    int(logical_scaled_size.width() * self.device_pixel_ratio),
+                    int(logical_scaled_size.height() * self.device_pixel_ratio)
+                )
+                
+                # 以物理像素大小渲染图片，确保高DPI屏幕上的清晰度
+                self.scaled_image = self.original_image.scaled(
+                    physical_scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                
+                # 创建pixmap并设置设备像素比
+                self.pixmap = QPixmap.fromImage(self.scaled_image)
+                self.pixmap.setDevicePixelRatio(self.device_pixel_ratio)
+                
+                # 更新窗口大小（使用逻辑像素）
                 parent_size = self.parent().viewport().size() if hasattr(self.parent(), 'viewport') else self.parent().size() if self.parent() else QSize(800, 600)
                 self.setMinimumSize(
-                    max(scaled_size.width(), parent_size.width()),
-                    max(scaled_size.height(), parent_size.height())
+                    max(logical_scaled_size.width(), parent_size.width()),
+                    max(logical_scaled_size.height(), parent_size.height())
                 )
         except Exception as e:
             print(f"更新图片时出错: {e}")
@@ -271,13 +287,18 @@ class ImageWidget(QWidget):
         
         if self.pixmap and self.scaled_image:
             try:
-                # 计算绘制位置（居中）
+                # 计算绘制位置（居中，使用逻辑像素）
                 rect = self.rect()
+                
+                # 计算逻辑尺寸（考虑设备像素比）
+                logical_image_width = self.scaled_image.width() / self.device_pixel_ratio
+                logical_image_height = self.scaled_image.height() / self.device_pixel_ratio
+                
                 image_rect = QRect(
-                    rect.center().x() - self.scaled_image.width() // 2 + self.pan_offset.x(),
-                    rect.center().y() - self.scaled_image.height() // 2 + self.pan_offset.y(),
-                    self.scaled_image.width(),
-                    self.scaled_image.height()
+                    rect.center().x() - logical_image_width // 2 + self.pan_offset.x(),
+                    rect.center().y() - logical_image_height // 2 + self.pan_offset.y(),
+                    logical_image_width,
+                    logical_image_height
                 )
                 
                 # 绘制图片
@@ -493,13 +514,18 @@ class ImageWidget(QWidget):
             if not self.original_image or not self.scaled_image:
                 return False
             
-            # 计算图片显示区域
+            # 计算图片显示区域（使用逻辑像素）
             rect = self.rect()
+            
+            # 计算逻辑尺寸（考虑设备像素比）
+            logical_image_width = self.scaled_image.width() / self.device_pixel_ratio
+            logical_image_height = self.scaled_image.height() / self.device_pixel_ratio
+            
             image_rect = QRect(
-                rect.center().x() - self.scaled_image.width() // 2 + self.pan_offset.x(),
-                rect.center().y() - self.scaled_image.height() // 2 + self.pan_offset.y(),
-                self.scaled_image.width(),
-                self.scaled_image.height()
+                rect.center().x() - logical_image_width // 2 + self.pan_offset.x(),
+                rect.center().y() - logical_image_height // 2 + self.pan_offset.y(),
+                logical_image_width,
+                logical_image_height
             )
             
             return image_rect.contains(pos)
@@ -513,18 +539,25 @@ class ImageWidget(QWidget):
         """
         try:
             if self.original_image and self.scaled_image and self.is_valid_pixel_position(pos):
-                # 计算图片显示区域
+                # 计算图片显示区域（使用逻辑像素）
                 rect = self.rect()
+                
+                # 计算逻辑尺寸（考虑设备像素比）
+                logical_image_width = self.scaled_image.width() / self.device_pixel_ratio
+                logical_image_height = self.scaled_image.height() / self.device_pixel_ratio
+                
                 image_rect = QRect(
-                    rect.center().x() - self.scaled_image.width() // 2 + self.pan_offset.x(),
-                    rect.center().y() - self.scaled_image.height() // 2 + self.pan_offset.y(),
-                    self.scaled_image.width(),
-                    self.scaled_image.height()
+                    rect.center().x() - logical_image_width // 2 + self.pan_offset.x(),
+                    rect.center().y() - logical_image_height // 2 + self.pan_offset.y(),
+                    logical_image_width,
+                    logical_image_height
                 )
                 
-                # 计算鼠标在图片中的位置
-                mouse_in_image = pos - image_rect.topLeft()
-                mouse_in_original = mouse_in_image / self.scale_factor
+                # 计算鼠标在逻辑像素图片中的位置
+                mouse_in_logical_image = pos - image_rect.topLeft()
+                
+                # 转换为原始图片坐标
+                mouse_in_original = mouse_in_logical_image / self.scale_factor
                 
                 # 获取像素颜色
                 x = int(mouse_in_original.x())
