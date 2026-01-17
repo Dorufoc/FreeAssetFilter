@@ -17,11 +17,6 @@ FreeAssetFilter 主程序
 核心功能应用程序，不包含视频播放器功能
 """
 
-
-
-
-
-from pickle import INT
 import sys
 import os
 import warnings

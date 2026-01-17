@@ -2190,7 +2190,6 @@ class CustomFileSelector(QWidget):
                 try:
                     # 使用自定义的图标工具获取最高分辨率图标
                     from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
-                    from PyQt5.QtGui import QPixmap
                     
                     # 获取最高分辨率图标
                     hicon = get_highest_resolution_icon(file_path, desired_size=256)
