@@ -2187,7 +2187,25 @@ class CustomFileSelector(QWidget):
                 # 直接从文件路径获取图标
                 file_path = file_info["path"]
                 
-                # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
+                try:
+                    # 使用自定义的图标工具获取最高分辨率图标
+                    from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
+                    from PyQt5.QtGui import QPixmap
+                    
+                    # 获取最高分辨率图标
+                    hicon = get_highest_resolution_icon(file_path, desired_size=256)
+                    if hicon:
+                        # 转换为QPixmap
+                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None)
+                        DestroyIcon(hicon)  # 释放图标资源
+                        
+                        if pixmap and not pixmap.isNull():
+                            label.setPixmap(pixmap)
+                            return label
+                except Exception as e:
+                    pass
+                
+                # 备用方案：使用QFileIconProvider来获取文件图标
                 from PyQt5.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
                 file_info_qt = QFileInfo(file_path)
