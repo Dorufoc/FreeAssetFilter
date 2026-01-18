@@ -1,12 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="223" viewBox="0 0 256 223">
-  <defs>
-    <clipPath id="clip-条-顶-尾">
-      <rect width="256" height="223"/>
-    </clipPath>
-  </defs>
-  <g id="条-顶-尾" clip-path="url(#clip-条-顶-尾)">
-    <rect id="矩形_1" data-name="矩形 1" width="214" height="557" rx="107" transform="translate(21 -363)" fill="none" opacity="0"/>
-    <rect id="矩形_2" data-name="矩形 2" width="144" height="487" rx="72" transform="translate(56 -328)" fill="none"/>
-    <rect id="矩形_17" data-name="矩形 17" width="81" height="81" rx="40.5" transform="translate(88 47)" fill="none"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="223" viewBox="0 0 256 223"><defs><style>.a{clip-path:url(#b);}.b,.c{fill:none;}.b{opacity:0;}</style><clipPath id="b"><rect width="256" height="223"/></clipPath></defs><g id="a" class="a"><rect class="b" width="214" height="557" rx="107" transform="translate(21 -363)"/><rect class="c" width="144" height="487" rx="72" transform="translate(56 -328)"/><rect class="c" width="81" height="81" rx="40.5" transform="translate(88 47)"/></g></svg>

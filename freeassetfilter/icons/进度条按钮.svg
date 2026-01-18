@@ -1,10 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
-  <defs>
-    <clipPath id="clip-进度条按钮">
-      <rect width="256" height="256"/>
-    </clipPath>
-  </defs>
-  <g id="进度条按钮" clip-path="url(#clip-进度条按钮)">
-    <rect id="矩形_2" data-name="矩形 2" width="177" height="177" rx="88.5" transform="translate(40 40)" fill="#fff"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256"><defs><style>.a{clip-path:url(#b);}.b{fill:#fff;}</style><clipPath id="b"><rect width="256" height="256"/></clipPath></defs><g id="a" class="a"><rect class="b" width="177" height="177" rx="88.5" transform="translate(40 40)"/></g></svg>

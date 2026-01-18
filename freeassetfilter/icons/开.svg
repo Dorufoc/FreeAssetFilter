@@ -1,13 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="462" height="256" viewBox="0 0 462 256">
-  <defs>
-    <clipPath id="clip-开">
-      <rect width="462" height="256"/>
-    </clipPath>
-  </defs>
-  <g id="开" clip-path="url(#clip-开)">
-    <g id="switch_light_on" data-name="switch light/ on" transform="translate(0.5)">
-      <rect id="Rectangle_45" data-name="Rectangle 45" width="461.5" height="256" rx="128" fill="#0a59f7"/>
-      <circle id="Oval_11" data-name="Oval 11" cx="102.4" cy="102.4" r="102.4" transform="translate(231.1 25.6)" fill="#fff"/>
-    </g>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="462" height="256" viewBox="0 0 462 256"><defs><style>.a{clip-path:url(#b);}.b{fill:#0a59f7;}.c{fill:#fff;}</style><clipPath id="b"><rect width="462" height="256"/></clipPath></defs><g id="a" class="a"><g transform="translate(0.5)"><path class="b" d="M128,0H333.5a128,128,0,0,1,0,256H128A128,128,0,0,1,128,0Z"/><circle class="c" cx="102.4" cy="102.4" r="102.4" transform="translate(231.1 25.6)"/></g></g></svg>

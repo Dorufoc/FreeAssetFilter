@@ -145,8 +145,8 @@ class SvgRenderer:
         Returns:
             QWidget: 渲染后的QSvgWidget或QLabel对象，确保控件本身完全不可见
         """
-        # 应用DPI缩放因子到图标大小
-        scaled_icon_size = int(icon_size * dpi_scale)
+        # 使用逻辑像素大小，不再应用DPI缩放因子
+        scaled_icon_size = icon_size
         if not icon_path or not os.path.exists(icon_path):
             # 如果路径无效，返回完全透明的QLabel
             label = QLabel()
@@ -331,16 +331,15 @@ class SvgRenderer:
         Returns:
             QPixmap: 渲染后的QPixmap对象，如果渲染失败返回透明像素图
         """
-        # 应用DPI缩放因子到图标大小
+        # 使用逻辑像素大小，不再应用DPI缩放因子
         if icon_width is not None and icon_height is not None:
             # 如果同时指定了宽度和高度，按照指定尺寸渲染
-            scaled_width = int(icon_width * dpi_scale)
-            scaled_height = int(icon_height * dpi_scale)
+            scaled_width = icon_width
+            scaled_height = icon_height
         else:
             # 否则使用1:1比例
-            scaled_size = int(icon_size * dpi_scale)
-            scaled_width = scaled_size
-            scaled_height = scaled_size
+            scaled_width = icon_size
+            scaled_height = icon_size
         
         if not icon_path or not os.path.exists(icon_path):
             # 如果路径无效，返回透明像素图
@@ -402,8 +401,7 @@ class SvgRenderer:
             # 如果指定了宽度和高度，按指定比例缩放；否则保持1:1比例
             final_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
-            # 设置设备像素比，确保高DPI屏幕上的清晰度
-            final_pixmap.setDevicePixelRatio(dpi_scale)
+            # 不再需要设置设备像素比，Qt会自动处理
             
             if not final_pixmap.isNull():
                 return final_pixmap
@@ -433,8 +431,8 @@ class SvgRenderer:
         Returns:
             QWidget: 渲染后的Widget对象，确保控件本身完全透明
         """
-        # 应用DPI缩放因子到图标大小
-        scaled_icon_size = int(icon_size * dpi_scale)
+        # 使用逻辑像素大小，不再应用DPI缩放因子
+        scaled_icon_size = icon_size
         
         if not icon_path or not os.path.exists(icon_path):
             # 如果路径无效，返回完全透明的QLabel

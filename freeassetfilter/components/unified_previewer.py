@@ -132,19 +132,8 @@ class UnifiedPreviewer(QWidget):
         self.control_layout.setContentsMargins(0, 0, 0, scaled_control_margin)  # 底部添加间距，应用DPI缩放
         self.control_layout.setAlignment(Qt.AlignRight)
         
-        # 创建"全局设置"按钮
-        self.global_settings_button = CustomButton("全局设置", button_type="emphasis")
-        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.global_settings_button.clicked.connect(self._open_global_settings)
+        # 移除全局设置按钮，移到main窗口底部
         
-        # 创建"使用系统默认方式打开"按钮
-        self.open_with_system_button = CustomButton("使用系统默认方式打开", button_type="normal")
-        self.open_with_system_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.open_with_system_button.clicked.connect(self._open_file_with_system)
-        self.open_with_system_button.hide()  # 默认隐藏
-        
-        self.control_layout.addWidget(self.global_settings_button)
-        self.control_layout.addWidget(self.open_with_system_button)
         self.preview_layout.addLayout(self.control_layout)  # 控制栏放在最上方
         
         # 添加默认提示信息
@@ -172,6 +161,13 @@ class UnifiedPreviewer(QWidget):
         self.info_layout.addWidget(self.file_info_widget)
         
         main_layout.addWidget(self.info_group, 1)
+        
+        # 创建"使用系统默认方式打开"按钮并放在最底部
+        self.open_with_system_button = CustomButton("使用系统默认方式打开", button_type="secondary")
+        self.open_with_system_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)  # 设置按钮宽度扩展
+        self.open_with_system_button.clicked.connect(self._open_file_with_system)
+        self.open_with_system_button.hide()  # 默认隐藏
+        main_layout.addWidget(self.open_with_system_button)  # 添加到主布局底部
     
     def set_file(self, file_info):
         """
@@ -562,7 +558,7 @@ class UnifiedPreviewer(QWidget):
             # 加载图片
             photo_viewer.load_image_from_path(file_path)
             
-            self.preview_layout.addWidget(photo_viewer)
+            self.preview_layout.addWidget(photo_viewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = photo_viewer
         except Exception as e:
             # 如果PhotoViewer加载失败，使用简单的QLabel显示
@@ -581,7 +577,7 @@ class UnifiedPreviewer(QWidget):
                 image_label.setAlignment(Qt.AlignCenter)
                 
                 scroll_area.setWidget(image_label)
-                self.preview_layout.addWidget(scroll_area)
+                self.preview_layout.addWidget(scroll_area, 1)  # 设置伸展因子1，使预览组件占据剩余空间
                 self.current_preview_widget = scroll_area
             except Exception as simple_e:
                 error_message = f"图片预览失败: {str(simple_e)}"
@@ -701,7 +697,7 @@ class UnifiedPreviewer(QWidget):
             video_player.idle_event.connect(self._on_video_idle_event)
             
             # 添加到布局
-            self.preview_layout.addWidget(video_player)
+            self.preview_layout.addWidget(video_player, 1)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = video_player
             
             # 记录视频加载时间
@@ -833,7 +829,7 @@ class UnifiedPreviewer(QWidget):
             audio_player = VideoPlayer()
             audio_player.load_media(file_path)
             
-            self.preview_layout.addWidget(audio_player)
+            self.preview_layout.addWidget(audio_player, 1)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = audio_player
         except Exception as e:
             error_message = f"音频预览失败: {str(e)}"
@@ -859,7 +855,7 @@ class UnifiedPreviewer(QWidget):
             # 加载PDF文件，开始渲染
             pdf_previewer.load_file_from_path(file_path)
             
-            self.preview_layout.addWidget(pdf_previewer)
+            self.preview_layout.addWidget(pdf_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = pdf_previewer
         except Exception as e:
             error_message = f"PDF预览失败: {str(e)}"
@@ -1056,7 +1052,7 @@ class UnifiedPreviewer(QWidget):
 
             # 添加创建的组件到布局
             if created_widget:
-                self.preview_layout.addWidget(created_widget)
+                self.preview_layout.addWidget(created_widget, 1)  # 设置伸展因子1，使预览组件占据剩余空间
                 self.current_preview_widget = created_widget
             
         except Exception as e:
@@ -1239,7 +1235,7 @@ class UnifiedPreviewer(QWidget):
             # 设置文件，开始异步读取
             text_previewer.set_file(file_path)
             
-            self.preview_layout.addWidget(text_previewer)
+            self.preview_layout.addWidget(text_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = text_previewer
         except Exception as e:
             error_message = f"文本预览失败: {str(e)}"

@@ -1,10 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
-  <defs>
-    <clipPath id="clip-播放时-按下">
-      <rect width="256" height="256"/>
-    </clipPath>
-  </defs>
-  <g id="播放时-按下" clip-path="url(#clip-播放时-按下)">
-    <path id="多边形_3" data-name="多边形 3" d="M97.7,13.525a9,9,0,0,1,15.594,0L203.22,169.5a9,9,0,0,1-7.8,13.5H15.577a9,9,0,0,1-7.8-13.5Z" transform="translate(234 23) rotate(90)" fill="#fff"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256"><defs><style>.a{clip-path:url(#b);}.b{fill:#fff;}</style><clipPath id="b"><rect width="256" height="256"/></clipPath></defs><g id="a" class="a"><path class="b" d="M97.7,13.525a9,9,0,0,1,15.594,0L203.22,169.5a9,9,0,0,1-7.8,13.5H15.577a9,9,0,0,1-7.8-13.5Z" transform="translate(234 23) rotate(90)"/></g></svg>
