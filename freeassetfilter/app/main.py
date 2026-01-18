@@ -248,7 +248,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # 设置边框圆角
         border_radius = 8
-        self.left_column.setStyleSheet(f"background-color: {auxiliary_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        self.left_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         left_layout = QVBoxLayout(self.left_column)
 
 
@@ -260,7 +260,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 中间列：文件临时存储池
         self.middle_column = QWidget()
         self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.middle_column.setStyleSheet(f"background-color: {auxiliary_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        self.middle_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         middle_layout = QVBoxLayout(self.middle_column)
         
         # 添加文件临时存储池组件
@@ -270,7 +270,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 右侧列：统一文件预览器
         self.right_column = QWidget()
         self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.right_column.setStyleSheet(f"background-color: {auxiliary_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        self.right_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         right_layout = QVBoxLayout(self.right_column)
         
         # 统一文件预览器
@@ -345,7 +345,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 设置字体大小和边距
         font_size = 8
         margin = 0
-        self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #666; margin-top: {margin}px;")
+        self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #888888; margin-top: {margin}px;")
         status_layout.addWidget(self.status_label)
         
         # 添加右侧占位符，将全局设置按钮推到右侧
@@ -416,7 +416,7 @@ class FreeAssetFilterApp(QMainWindow):
         for column in columns:
             if column:
                 border_radius = 8
-                column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {base_color}; border-radius: {border_radius}px;")
+                column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         
         # 递归更新所有子组件的样式
         def update_child_widgets(widget):

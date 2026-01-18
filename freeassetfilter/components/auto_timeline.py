@@ -205,7 +205,9 @@ class TimelineWidget(QWidget):
         # 内容宽度：使用实际内容宽度，而不是控件宽度
         content_width = self.width()
         
+        # 创建与实际内容大小相同的Pixmap，并设置设备像素比
         self.pixmap_cache = QPixmap(content_width, content_height)
+        self.pixmap_cache.setDevicePixelRatio(self.devicePixelRatio())
         self.pixmap_cache.fill(Qt.transparent)
         
         # 在Pixmap上绘制内容

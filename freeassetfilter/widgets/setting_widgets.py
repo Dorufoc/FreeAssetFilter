@@ -124,6 +124,7 @@ class CustomSettingItem(QWidget):
             hover_background = app.settings_manager.get_setting("appearance.colors.list_item_hover", "#3C3C3C")
             hover_border = app.settings_manager.get_setting("appearance.colors.text_highlight", "#4ECDC4")
         
+        self.setObjectName("CustomSettingItem")
         self.setStyleSheet("""
             QWidget#CustomSettingItem {
                 background-color: %s;
@@ -133,6 +134,11 @@ class CustomSettingItem(QWidget):
             QWidget#CustomSettingItem:hover {
                 background-color: %s;
                 border-color: %s;
+            }
+            QWidget#CustomSettingItem > QWidget {
+                background-color: transparent;
+                border: none;
+                border-radius: 0;
             }
         """ % (background_color, scaled_border_width, border_color, scaled_border_radius, hover_background, hover_border))
         
