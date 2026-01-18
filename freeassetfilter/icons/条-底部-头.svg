@@ -1,10 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="79" viewBox="0 0 256 79">
-  <defs>
-    <clipPath id="clip-条-底部-头">
-      <rect width="256" height="79"/>
-    </clipPath>
-  </defs>
-  <g id="条-底部-头" clip-path="url(#clip-条-底部-头)">
-    <path id="路径_11" data-name="路径 11" d="M72,0a72,72,0,0,1,72,72v77A72,72,0,0,1,0,149V72A72,72,0,0,1,72,0Z" transform="translate(56 5)" fill="#cecece"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="79" viewBox="0 0 256 79"><defs><style>.a{clip-path:url(#b);}.b{fill:#cecece;}</style><clipPath id="b"><rect width="256" height="79"/></clipPath></defs><g id="a" class="a"><path class="b" d="M72,0a72,72,0,0,1,72,72v77A72,72,0,0,1,0,149V72A72,72,0,0,1,72,0Z" transform="translate(56 5)"/></g></svg>

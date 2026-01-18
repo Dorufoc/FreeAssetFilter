@@ -99,10 +99,7 @@ class ImageWidget(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         
-        # 获取应用实例和设备像素比
-        from PyQt5.QtWidgets import QApplication
-        app = QApplication.instance()
-        self.device_pixel_ratio = app.primaryScreen().devicePixelRatio() if app else 1.0
+        # 不再需要获取设备像素比，Qt会自动处理
         
         # 初始化所有属性，确保在使用前都被定义
         self.original_image = None
@@ -254,20 +251,13 @@ class ImageWidget(QWidget):
                 # 计算缩放后的逻辑大小
                 logical_scaled_size = self.original_image.size() * self.scale_factor
                 
-                # 考虑设备像素比，计算物理像素大小
-                physical_scaled_size = QSize(
-                    int(logical_scaled_size.width() * self.device_pixel_ratio),
-                    int(logical_scaled_size.height() * self.device_pixel_ratio)
-                )
-                
-                # 以物理像素大小渲染图片，确保高DPI屏幕上的清晰度
+                # 直接使用逻辑像素大小进行缩放，Qt会自动处理DPI
                 self.scaled_image = self.original_image.scaled(
-                    physical_scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    logical_scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
                 
-                # 创建pixmap并设置设备像素比
+                # 创建pixmap，不再需要设置设备像素比
                 self.pixmap = QPixmap.fromImage(self.scaled_image)
-                self.pixmap.setDevicePixelRatio(self.device_pixel_ratio)
                 
                 # 更新窗口大小（使用逻辑像素）
                 parent_size = self.parent().viewport().size() if hasattr(self.parent(), 'viewport') else self.parent().size() if self.parent() else QSize(800, 600)
@@ -290,9 +280,9 @@ class ImageWidget(QWidget):
                 # 计算绘制位置（居中，使用逻辑像素）
                 rect = self.rect()
                 
-                # 计算逻辑尺寸（考虑设备像素比）
-                logical_image_width = self.scaled_image.width() / self.device_pixel_ratio
-                logical_image_height = self.scaled_image.height() / self.device_pixel_ratio
+                # 直接使用逻辑像素尺寸，不再需要考虑设备像素比
+                logical_image_width = self.scaled_image.width()
+                logical_image_height = self.scaled_image.height()
                 
                 image_rect = QRect(
                     rect.center().x() - logical_image_width // 2 + self.pan_offset.x(),
@@ -517,9 +507,9 @@ class ImageWidget(QWidget):
             # 计算图片显示区域（使用逻辑像素）
             rect = self.rect()
             
-            # 计算逻辑尺寸（考虑设备像素比）
-            logical_image_width = self.scaled_image.width() / self.device_pixel_ratio
-            logical_image_height = self.scaled_image.height() / self.device_pixel_ratio
+            # 直接使用逻辑像素尺寸，不再需要考虑设备像素比
+            logical_image_width = self.scaled_image.width()
+            logical_image_height = self.scaled_image.height()
             
             image_rect = QRect(
                 rect.center().x() - logical_image_width // 2 + self.pan_offset.x(),
@@ -542,9 +532,9 @@ class ImageWidget(QWidget):
                 # 计算图片显示区域（使用逻辑像素）
                 rect = self.rect()
                 
-                # 计算逻辑尺寸（考虑设备像素比）
-                logical_image_width = self.scaled_image.width() / self.device_pixel_ratio
-                logical_image_height = self.scaled_image.height() / self.device_pixel_ratio
+                # 直接使用逻辑像素尺寸，不再需要考虑设备像素比
+                logical_image_width = self.scaled_image.width()
+                logical_image_height = self.scaled_image.height()
                 
                 image_rect = QRect(
                     rect.center().x() - logical_image_width // 2 + self.pan_offset.x(),

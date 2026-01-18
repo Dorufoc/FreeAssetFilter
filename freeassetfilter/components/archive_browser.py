@@ -111,6 +111,14 @@ class ArchiveBrowser(QWidget):
         """
         初始化用户界面
         """
+        # 设置组件的大小策略，确保它能正确伸展
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # 设置背景色
+        app = QApplication.instance()
+        background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        self.setStyleSheet(f"background-color: {background_color};")
+        
         # 创建主布局
         main_layout = QVBoxLayout(self)
         scaled_spacing = int(5 * self.dpi_scale)
@@ -127,16 +135,24 @@ class ArchiveBrowser(QWidget):
         main_layout.addWidget(files_area, 1)
         
         # 创建底部状态栏
-        status_bar = self._create_status_bar()
-        main_layout.addWidget(status_bar)
+        #status_bar = self._create_status_bar()
+        #main_layout.addWidget(status_bar)
     
     def _create_control_panel(self):
         """
         创建控制面板
         """
         panel = QGroupBox()
+        app = QApplication.instance()
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        
+        # 隐藏边框，与文件选择器保持一致的样式
+        panel.setStyleSheet("QGroupBox { border: 20dx; }")
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+        base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
         # 使用垂直布局
         main_layout = QVBoxLayout(panel)
         scaled_spacing = int(5 * self.dpi_scale)
@@ -145,7 +161,7 @@ class ArchiveBrowser(QWidget):
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
         # 从app对象获取全局默认字体大小
-        app = QApplication.instance()
+        
         default_font_size = getattr(app, 'default_font_size', 14)
         
         # 应用DPI缩放因子到字体和按钮高度
@@ -179,7 +195,7 @@ class ArchiveBrowser(QWidget):
         
         # 应用与文件选择器一致的尺寸设置方法
         # 设置最小宽度，应用DPI缩放
-        scaled_combo_width = int(80 * self.dpi_scale)
+        scaled_combo_width = int(40 * self.dpi_scale)
         self.encoding_combo.set_fixed_width(scaled_combo_width)
         
         # 设置字体，与文件选择器的设置方法一致
@@ -223,6 +239,52 @@ class ArchiveBrowser(QWidget):
         
         return panel
     
+    def _adjust_color(self, color_hex, percent):
+        """
+        将颜色加深或变淡指定百分比，深色模式下则相反
+        
+        参数：
+            color_hex (str): 十六进制颜色值
+            percent (int): 加深/变淡百分比（1-100）
+            
+        返回：
+            str: 处理后的十六进制颜色值
+        """
+        # 获取当前主题模式
+        from PyQt5.QtWidgets import QApplication
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+        current_theme = settings_manager.get_setting("appearance.theme", "default")
+        is_dark_mode = (current_theme == "dark")
+        
+        # 将十六进制颜色转换为RGB
+        from PyQt5.QtGui import QColor
+        color = QColor(color_hex)
+        r = color.red()
+        g = color.green()
+        b = color.blue()
+        
+        # 计算处理后的RGB值
+        if is_dark_mode:
+            # 深色模式下变浅
+            factor = 1 + percent / 100
+            r = min(255, int(r * factor))
+            g = min(255, int(g * factor))
+            b = min(255, int(b * factor))
+        else:
+            # 浅色模式下加深
+            factor = 1 - percent / 100
+            r = max(0, int(r * factor))
+            g = max(0, int(g * factor))
+            b = max(0, int(b * factor))
+        
+        # 转换回十六进制颜色
+        return "#" + "{:02x}{:02x}{:02x}".format(r, g, b)
+    
     def _create_files_area(self):
         """
         创建文件列表区域
@@ -248,44 +310,67 @@ class ArchiveBrowser(QWidget):
         list_font.setPointSize(scaled_font_size)
         self.files_list.setFont(list_font)
         
+        # 获取颜色设置
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+        
+        current_colors = settings_manager.get_setting("appearance.colors", {
+            "secondary_color": "#FFFFFF",
+            "base_color": "#212121",
+            "auxiliary_color": "#3D3D3D",
+            "normal_color": "#717171",
+            "accent_color": "#B036EE"
+        })
+        
         # 设置列表项高度
         scaled_item_height = int(15 * self.dpi_scale)
-        self.files_list.setStyleSheet(f"QListWidget::item {{ height: {scaled_item_height}px; }}")
+        
+        # 计算选中状态的背景色（accent_color 变深/变淡 30%）
+        selected_bg_color = self._adjust_color(current_colors.get("accent_color", "#B036EE"), 30)
+        
+        # 设置列表样式
+        self.files_list.setStyleSheet(f"""
+            QListWidget {{
+                show-decoration-selected: 0;
+                outline: none;
+            }}
+            QListWidget::item {{
+                height: {scaled_item_height}px;
+                color: {current_colors.get("secondary_color", "#FFFFFF")};
+                background-color: {current_colors.get("base_color", "#212121")};
+                border: 1px solid transparent;
+                outline: none;
+            }}
+            QListWidget::item:hover {{
+                color: {current_colors.get("secondary_color", "#FFFFFF")};
+                background-color: {current_colors.get("auxiliary_color", "#3D3D3D")};
+                border: 1px solid {current_colors.get("normal_color", "#717171")};
+            }}
+            QListWidget::item:selected {{
+                color: {current_colors.get("secondary_color", "#FFFFFF")};
+                background-color: {selected_bg_color};
+                border: 1px solid {current_colors.get("accent_color", "#B036EE")};
+            }}
+            QListWidget::item:selected:focus, QListWidget::item:focus {{
+                outline: none;
+                border: 1px solid {current_colors.get("accent_color", "#B036EE")};
+            }}
+            QListWidget:focus, QListWidget::item:focus, QListWidget::item:selected:focus {{
+                outline: none;
+                selection-background-color: transparent;
+                selection-color: transparent;
+            }}
+        """)
+        
+        # 禁用列表的焦点策略
+        self.files_list.setFocusPolicy(Qt.NoFocus)
         
         scroll_area.setWidget(self.files_list)
         
         return scroll_area
-    
-    def _create_status_bar(self):
-        """
-        创建状态栏
-        """
-        status_bar = QFrame()
-        status_bar.setFrameShape(QFrame.HLine)
-        status_bar.setFrameShadow(QFrame.Sunken)
-        
-        layout = QHBoxLayout(status_bar)
-        
-        # 从app对象获取全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 14)
-        
-        # 应用DPI缩放因子到状态栏
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        scaled_height = int(15 * self.dpi_scale)
-        
-        # 文件计数显示
-        self.file_count_label = QLabel("文件数量: 0")
-        self.file_count_label.setFont(self.global_font)
-        self.file_count_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_height}px; padding: 5px;")
-        layout.addWidget(self.file_count_label)
-        
-        layout.addStretch(1)
-        
-        # 设置状态栏高度
-        status_bar.setFixedHeight(scaled_height)
-        
-        return status_bar
     
     def _detect_encoding(self, filename_bytes):
         """
@@ -489,7 +574,7 @@ class ArchiveBrowser(QWidget):
         # self.back_btn.setEnabled(bool(self.current_path))
         
         # 更新文件计数
-        self.file_count_label.setText(f"文件数量: {len(self.archive_content)}")
+        #self.file_count_label.setText(f"文件数量: {len(self.archive_content)}")
         
         # 发送路径变化信号
         self.path_changed.emit(self.current_path)

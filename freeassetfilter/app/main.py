@@ -67,32 +67,20 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 获取屏幕尺寸
         screen = QApplication.primaryScreen()
-        # 获取设备像素比（物理像素/逻辑像素）
-        self.device_pixel_ratio = screen.devicePixelRatio()
-        #print(f"[DEBUG] 设备像素比: {self.device_pixel_ratio:.2f}")
         
-        # 获取系统DPI缩放百分比（例如150%、200%等）
-        dpi_scale_percent = int(self.device_pixel_ratio * 100)
-        #print(f"[DEBUG] 系统DPI缩放百分比: {dpi_scale_percent}%")
-        
-        # 根据用户要求，将默认缩放调整至系统屏幕缩放值的1.5倍
-        target_scale_percent = int(dpi_scale_percent * 1.5)
-        #print(f"[DEBUG] 目标DPI缩放百分比: {target_scale_percent}%")
-        
-        # 根据目标DPI缩放百分比调整基础窗口大小
+        # 使用逻辑像素设置窗口大小，Qt会自动处理DPI
         base_window_width = 850  # 基础逻辑像素（100%缩放时的大小）
-        # 根据目标DPI缩放百分比调整窗口大小
-        scaled_window_width = int(base_window_width * (target_scale_percent / 100))
-        scaled_window_height = int(scaled_window_width * (10/16))
+        window_width = base_window_width
+        window_height = int(window_width * (10/16))
         
-        # 获取可用屏幕尺寸（物理像素），并转换为逻辑像素
+        # 获取可用屏幕尺寸（逻辑像素）
         available_geometry = screen.availableGeometry()
-        available_width_logical = available_geometry.width() / self.device_pixel_ratio
-        available_height_logical = available_geometry.height() / self.device_pixel_ratio
+        available_width_logical = available_geometry.width()
+        available_height_logical = available_geometry.height()
         
         # 确保窗口大小不超过屏幕可用尺寸（使用逻辑像素）
-        self.window_width = min(scaled_window_width, available_width_logical - 20)  # 留20px边距
-        self.window_height = min(scaled_window_height, available_height_logical - 20)  # 留20px边距
+        self.window_width = min(window_width, available_width_logical - 20)  # 留20px边距
+        self.window_height = min(window_height, available_height_logical - 20)  # 留20px边距
         
         self.setWindowTitle("FreeAssetFilter")
         
@@ -211,21 +199,9 @@ class FreeAssetFilterApp(QMainWindow):
     def resizeEvent(self, event):
         """
         处理窗口大小变化事件
-        - 当DPI发生变化时，也会触发此事件
+        - Qt会自动处理DPI变化
         """
-        # 获取当前屏幕的设备像素比
-        screen = QApplication.primaryScreen()
-        current_ratio = screen.devicePixelRatio()
-        
-        # 如果设备像素比发生变化，更新组件的样式
-        if hasattr(self, 'device_pixel_ratio') and self.device_pixel_ratio != current_ratio:
-            #print(f"[DEBUG] 设备像素比变化: {self.device_pixel_ratio:.2f} -> {current_ratio:.2f}")
-            self.device_pixel_ratio = current_ratio
-            
-            # 更新所有子组件的样式
-            self.update_theme()
-        
-        # 调用父类的resizeEvent
+        # 调用父类的resizeEvent，不再需要检测设备像素比变化
         super().resizeEvent(event)
     
     def _create_file_selector_widget(self):
@@ -251,6 +227,7 @@ class FreeAssetFilterApp(QMainWindow):
         if hasattr(app, 'settings_manager'):
             auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")  # 辅助色
             normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")  # 普通色
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")  # 基础色
         self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
         self.setCentralWidget(self.central_widget)
         
@@ -336,15 +313,68 @@ class FreeAssetFilterApp(QMainWindow):
         # 添加分割器到主布局
         main_layout.addWidget(splitter, 1)
         
+        # 创建状态标签和全局设置按钮的布局
+        status_container = QWidget()
+        status_container_layout = QVBoxLayout(status_container)
+        status_container_layout.setContentsMargins(0, 0, 0, 0)
+        status_container_layout.setAlignment(Qt.AlignCenter)
+        
+        # 创建状态标签和全局设置按钮的水平布局
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 创建GitHub按钮，使用svg图标
+        from freeassetfilter.widgets.button_widgets import CustomButton
+        github_icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'github.svg')
+        self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
+        self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # 连接到GitHub跳转函数
+        def open_github():
+            import webbrowser
+            webbrowser.open("https://github.com/Dorufoc/FreeAssetFilter")
+        self.github_button.clicked.connect(open_github)
+        status_layout.addWidget(self.github_button)
+        
+        # 添加左侧占位符，将状态标签推到居中位置
+        status_layout.addStretch()
+        
         # 状态标签
         self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(self.global_font)
         # 设置字体大小和边距
-        font_size = 6
+        font_size = 8
         margin = 0
         self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #666; margin-top: {margin}px;")
-        main_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.status_label)
+        
+        # 添加右侧占位符，将全局设置按钮推到右侧
+        status_layout.addStretch()
+        
+        # 创建全局设置按钮，使用svg图标
+        from freeassetfilter.widgets.button_widgets import CustomButton
+        setting_icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'setting.svg')
+        self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
+        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # 连接到全局设置函数
+        def open_global_settings():
+            if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, '_open_global_settings'):
+                self.unified_previewer._open_global_settings()
+        self.global_settings_button.clicked.connect(open_global_settings)
+        status_layout.addWidget(self.global_settings_button)
+        
+        # 将水平布局添加到容器的垂直布局中
+        status_container_layout.addLayout(status_layout)
+        
+        # 添加状态容器到主布局
+        main_layout.addWidget(status_container)
+        
+        # 初始化自定义悬浮提示
+        from freeassetfilter.widgets.hover_tooltip import HoverTooltip
+        self.hover_tooltip = HoverTooltip(self)
+        # 将GitHub按钮和全局设置按钮添加为目标控件
+        self.hover_tooltip.set_target_widget(self.github_button)
+        self.hover_tooltip.set_target_widget(self.global_settings_button)
         #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
         
         # 自定义窗口演示按钮已移至组件启动器，此处隐藏
@@ -372,12 +402,12 @@ class FreeAssetFilterApp(QMainWindow):
         """
         # 获取应用实例
         app = QApplication.instance()
-        
         # 获取基础颜色
         auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")  # 辅助色
         normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")  # 普通色
-        
-        # 更新中央部件的背景色（辅助色）
+        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")  # 基础色
+
+        # 更新中央部件的背景色（基础色）
         if hasattr(self, 'central_widget'):
             self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
             
@@ -386,7 +416,7 @@ class FreeAssetFilterApp(QMainWindow):
         for column in columns:
             if column:
                 border_radius = 8
-                column.setStyleSheet(f"background-color: {auxiliary_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+                column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {base_color}; border-radius: {border_radius}px;")
         
         # 递归更新所有子组件的样式
         def update_child_widgets(widget):
@@ -792,10 +822,7 @@ def main():
     
     app = QApplication(sys.argv)
     
-    # 设置全局DPI缩放因子
-    dpi_scale_factor = app.primaryScreen().logicalDotsPerInch() / 96.0
-    app.dpi_scale_factor = dpi_scale_factor
-    #print(f"[DEBUG] 设置全局DPI缩放因子: {dpi_scale_factor:.2f}")
+    # 不再需要设置全局DPI缩放因子，Qt会自动处理
     
     # 设置应用程序图标，用于任务栏显示
     icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')

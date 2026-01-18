@@ -2349,8 +2349,7 @@ class CustomFileSelector(QWidget):
             # 加载缩略图
             pixmap = QPixmap(thumbnail_path)
             
-            # 设置设备像素比，确保高DPI屏幕上的清晰度
-            pixmap.setDevicePixelRatio(self.dpi_scale)
+            # 不再需要设置设备像素比，Qt会自动处理
             
             # 缩放缩略图以适应scaled_icon_size的大小（使用逻辑像素）
             scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -2358,7 +2357,7 @@ class CustomFileSelector(QWidget):
             # 创建一个新的Pixmap，用于绘制叠加图标
             combined_pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
             combined_pixmap.fill(Qt.transparent)
-            combined_pixmap.setDevicePixelRatio(self.dpi_scale)
+
             
             # 创建画家
             painter = QPainter(combined_pixmap)

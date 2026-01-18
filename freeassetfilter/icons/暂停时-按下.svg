@@ -1,11 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
-  <defs>
-    <clipPath id="clip-暂停时-按下">
-      <rect width="256" height="256"/>
-    </clipPath>
-  </defs>
-  <g id="暂停时-按下" clip-path="url(#clip-暂停时-按下)">
-    <rect id="矩形_15" data-name="矩形 15" width="44" height="184" rx="22" transform="translate(58 36)" fill="#fff"/>
-    <rect id="矩形_16" data-name="矩形 16" width="44" height="184" rx="22" transform="translate(155 36)" fill="#fff"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256"><defs><style>.a{clip-path:url(#b);}.b{fill:#fff;}</style><clipPath id="b"><rect width="256" height="256"/></clipPath></defs><g id="a" class="a"><rect class="b" width="44" height="184" rx="22" transform="translate(58 36)"/><rect class="b" width="44" height="184" rx="22" transform="translate(155 36)"/></g></svg>

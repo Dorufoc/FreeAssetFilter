@@ -70,14 +70,14 @@ class CustomDropdownMenu(QWidget):
             text="",
             button_type="normal",
             display_mode="text",
-            height=20
+            #height=20
         )
         
         # 创建下拉菜单
         self.dropdown_menu = CustomControlMenu(self)
         
         # 调整菜单内边距
-        self.dropdown_menu._padding = 0
+        self.dropdown_menu._padding = 2
         
         # 设置阴影半径
         self.dropdown_menu._shadow_radius = 0
@@ -158,7 +158,7 @@ class CustomDropdownMenu(QWidget):
             item_button.setCursor(Qt.PointingHandCursor)  # 设置鼠标指针为手型
             
             # 设置样式
-            font_size = int(7 * self.dpi_scale)
+            font_size = int(8 * self.dpi_scale)
             
             # 获取normal_color，默认#e0e0e0
             normal_color = "#e0e0e0"
@@ -166,7 +166,7 @@ class CustomDropdownMenu(QWidget):
                 normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
             
             # 设置按钮高度，与主按钮保持一致
-            button_height = int(20 * self.dpi_scale)  # 使用与主按钮相同的高度(20px)并应用DPI缩放
+            button_height = int(20 * self.dpi_scale)/2  # 使用与主按钮相同的高度(20px)并应用DPI缩放
             
             item_button.setStyleSheet(f"""
                 QPushButton {{ 

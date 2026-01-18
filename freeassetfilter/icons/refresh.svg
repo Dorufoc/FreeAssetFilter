@@ -1,12 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
-  <defs>
-    <clipPath id="clip-refresh">
-      <rect width="256" height="256"/>
-    </clipPath>
-  </defs>
-  <g id="refresh" clip-path="url(#clip-refresh)">
-    <g id="_Public_ic_public_refresh" data-name="_Public/ic_public_refresh" transform="translate(-1 -1)">
-      <path id="_形状结合" d="M249.337,172.725h0A127.76,127.76,0,0,0,257,129H223.814a5.818,5.818,0,0,0-4.945,8.883L241,173.588a4.66,4.66,0,0,0,8.341-.863Zm5.611-20.784a128.19,128.19,0,1,0-41.275,73.052,8.727,8.727,0,1,0-11.55-13.085,110.23,110.23,0,1,1,35.65-63.076,8.727,8.727,0,1,0,17.175,3.109Z"/>
-    </g>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256"><defs><style>.a{clip-path:url(#b);}</style><clipPath id="b"><rect width="256" height="256"/></clipPath></defs><g id="a" class="a"><g transform="translate(-1 -1)"><path d="M249.337,172.725h0A127.76,127.76,0,0,0,257,129H223.814a5.818,5.818,0,0,0-4.945,8.883L241,173.588a4.66,4.66,0,0,0,8.341-.863Zm5.611-20.784a128.19,128.19,0,1,0-41.275,73.052,8.727,8.727,0,1,0-11.55-13.085,110.23,110.23,0,1,1,35.65-63.076,8.727,8.727,0,1,0,17.175,3.109Z"/></g></g></svg>
