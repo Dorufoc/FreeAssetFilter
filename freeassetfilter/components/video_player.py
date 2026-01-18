@@ -224,11 +224,11 @@ class VideoPlayer(QWidget):
         main_layout.setSpacing(0)
         
         # 媒体显示区域设置
-        self.media_frame.setStyleSheet("background-color: black;")
+        self.media_frame.setStyleSheet("background-color: transparent;")
         self.media_frame.setMinimumSize(150, 100)
         
         # 视频显示区域设置 - MPV将直接渲染到这个窗口
-        self.video_frame.setStyleSheet("background-color: black;")
+        self.video_frame.setStyleSheet("background-color: transparent;")
         self.video_frame.setMinimumSize(150, 100)
         
         # 设置视频显示区域的布局
@@ -237,23 +237,19 @@ class VideoPlayer(QWidget):
         video_layout.setSpacing(0)
         
         # 音频显示区域设置 - 使用QGridLayout实现叠加效果
+        self.audio_stacked_widget.setStyleSheet("background-color: transparent;")
         audio_layout = QGridLayout(self.audio_stacked_widget)
         audio_layout.setContentsMargins(0, 0, 0, 0)
         audio_layout.setSpacing(0)
         
-        # 音频背景设置
-        self.background_label.setStyleSheet("background-color: black;")
+        # 音频背景设置 - 移除背景色和模糊效果，避免边框视觉
+        self.background_label.setStyleSheet("background-color: transparent;")
         self.background_label.setScaledContents(True)
         self.background_label.setAlignment(Qt.AlignCenter)
         self.background_label.setMinimumSize(150, 100)
         
-        # 添加模糊效果
-        self.blur_effect = QGraphicsBlurEffect()
-        self.blur_effect.setBlurRadius(20)
-        self.background_label.setGraphicsEffect(self.blur_effect)
-        
-        # 背景遮罩
-        self.overlay_widget.setStyleSheet("background-color: rgba(0, 0, 0, 0.5);")
+        # 背景遮罩 - 设置为完全透明，移除边框效果
+        self.overlay_widget.setStyleSheet("background-color: transparent;")
         
         # 从app对象获取全局默认字体大小
         app = QApplication.instance()
@@ -302,11 +298,10 @@ class VideoPlayer(QWidget):
         scaled_cover_size = int(50 * self.dpi_scale)
         self.cover_label.setFixedSize(scaled_cover_size, scaled_cover_size)
         self.cover_label.setAlignment(Qt.AlignCenter)
-        # 设置封面的圆角矩形遮罩
+        # 设置封面的圆角矩形遮罩，使用透明背景
         self.cover_label.setStyleSheet(f"""
-            background-color: #333333;
+            background-color: transparent;
             border-radius: {int(scaled_cover_size * 0.1)}px;
-            border: {int(1 * self.dpi_scale)}px solid rgba(255, 255, 255, 0.3);
         """)
         
         # 添加歌曲信息到容器（封面在最上面）
@@ -339,10 +334,10 @@ class VideoPlayer(QWidget):
         
         # 控制按钮区域 - 根据Figma设计稿更新样式，应用DPI缩放
         control_container = QWidget()
-        # 应用DPI缩放因子到控制栏样式
+        # 应用DPI缩放因子到控制栏样式，使用透明背景和无边框
         scaled_border_radius = int(17.5 * self.dpi_scale)
         scaled_border = int(0.5 * self.dpi_scale)
-        control_container.setStyleSheet(f"background-color: #FFFFFF; border: {scaled_border}px solid #FFFFFF; border-radius: {scaled_border_radius}px {scaled_border_radius}px {scaled_border_radius}px {scaled_border_radius}px;")
+        control_container.setStyleSheet(f"background-color: transparent; border: none; border-radius: {scaled_border_radius}px {scaled_border_radius}px {scaled_border_radius}px {scaled_border_radius}px;")
         self.control_layout = QHBoxLayout(control_container)
         scaled_margin = int(7.5 * self.dpi_scale)
         scaled_spacing = int(7.5 * self.dpi_scale)
@@ -371,7 +366,7 @@ class VideoPlayer(QWidget):
         # 进度条和时间标签 - 从主布局移动到播放按钮右侧
         # 创建一个垂直布局容器，用于放置进度条、时间标签和音量控件
         progress_time_container = QWidget()
-        progress_time_container.setStyleSheet("background-color: #FFFFFF; border: 1px solid #FFFFFF;")
+        progress_time_container.setStyleSheet("background-color: transparent; border: none;")
         progress_time_layout = QVBoxLayout(progress_time_container)
         progress_time_layout.setContentsMargins(0, 0, 0, 0)
         progress_time_layout.setSpacing(2)
@@ -399,12 +394,12 @@ class VideoPlayer(QWidget):
         scaled_border = int(0.5 * self.dpi_scale)
         self.time_label.setStyleSheet(f"""
             color: #000000;
-            background-color: #FFFFFF;
+            background-color: transparent;
             padding: 0 {scaled_padding}px;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             font-size: {scaled_font_size}px;
             text-align: left;
-            border: {scaled_border}px solid #FFFFFF;
+            border: none;
         """)
         bottom_layout.addWidget(self.time_label)
         
@@ -1394,6 +1389,11 @@ class VideoPlayer(QWidget):
             
             # 设置到cover_label
             self.cover_label.setPixmap(pixmap)
+            # 确保显示音频图标时没有边框
+            self.cover_label.setStyleSheet(f"""
+                background-color: transparent;
+                border-radius: {int(scaled_cover_size * 0.1)}px;
+            """)
             
         except Exception as e:
             print(f"[VideoPlayer] 更新音频格式图标失败: {e}")
