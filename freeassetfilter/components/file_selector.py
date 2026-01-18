@@ -2990,7 +2990,7 @@ class CustomFileSelector(QWidget):
                                 "size": file_stat.st_size,
                                 "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
                                 "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
-                                "suffix": os.path.splitext(file_name)[1].lower()
+                                "suffix": os.path.splitext(file_name)[1].lower()[1:] if os.path.splitext(file_name)[1] else ""
                             }
                             
                             # 发出文件选择信号用于预览
@@ -3043,7 +3043,7 @@ class CustomFileSelector(QWidget):
                 "size": file_stat.st_size,
                 "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
                 "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
-                "suffix": os.path.splitext(file_name)[1].lower()
+                "suffix": os.path.splitext(file_name)[1].lower()[1:] if os.path.splitext(file_name)[1] else ""
             }
             
             debug(f"创建的文件信息: {file_info}")

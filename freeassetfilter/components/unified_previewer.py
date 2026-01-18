@@ -432,29 +432,13 @@ class UnifiedPreviewer(QWidget):
                 widget = item.widget()
                 if widget is not None:
                     widget.deleteLater()
-        # 删除临时PDF文件（如果存在）
+        # 重置临时PDF文件路径，但不删除缓存文件
         print("=== 进入_clear_preview方法 ===")
         print(f"hasattr(temp_pdf_path): {hasattr(self, 'temp_pdf_path')}")
         if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path:
             print(f"temp_pdf_path值: {self.temp_pdf_path}")
             print(f"temp_pdf_path存在: {os.path.exists(self.temp_pdf_path) if self.temp_pdf_path else False}")
-            
-            # 获取文件名部分，不包含时间戳
-            temp_file_name = os.path.basename(self.temp_pdf_path)
-            base_name = temp_file_name.split('_')[0]  # 获取基础文件名
-            temp_dir = os.path.dirname(self.temp_pdf_path)
-            
-            # 删除所有同名但不同时间戳的临时文件
-            import glob
-            old_pdf_files = glob.glob(os.path.join(temp_dir, f"{base_name}_*_temp.pdf"))
-            for old_file in old_pdf_files:
-                if os.path.exists(old_file):
-                    try:
-                        os.remove(old_file)
-                        print(f"已删除旧临时PDF文件: {old_file}")
-                    except Exception as e:
-                        print(f"删除旧临时PDF文件失败: {e}")
-            
+            # 只重置路径，不删除缓存文件，以便下次预览时可以复用
             self.temp_pdf_path = None
             print("已重置temp_pdf_path为None")
         print("=== 退出_clear_preview方法 ===")
@@ -476,25 +460,15 @@ class UnifiedPreviewer(QWidget):
             return
         
         try:
-            # 如果是文档类型预览，先清理旧的临时PDF文件
+            # 如果是文档类型预览，只重置路径，不删除缓存文件
             if preview_type == "document":
                 # 清理旧的临时PDF文件
                 if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path:
                     try:
-                        # 获取文件名部分，不包含时间戳
-                        temp_file_name = os.path.basename(self.temp_pdf_path)
-                        base_name = temp_file_name.split('_')[0]  # 获取基础文件名
-                        temp_dir = os.path.dirname(self.temp_pdf_path)
-                        
-                        # 删除所有同名但不同时间戳的临时文件
-                        import glob
-                        old_pdf_files = glob.glob(os.path.join(temp_dir, f"{base_name}_*_temp.pdf"))
-                        for old_file in old_pdf_files:
-                            if os.path.exists(old_file):
-                                os.remove(old_file)
-                                print(f"已删除旧临时PDF文件: {old_file}")
+                        # 只重置路径，不删除缓存文件，以便下次预览时可以复用
+                        print(f"重置临时PDF路径: {self.temp_pdf_path}")
                     except Exception as e:
-                        print(f"删除旧临时PDF文件失败: {e}")
+                        print(f"处理临时PDF文件失败: {e}")
                     finally:
                         self.temp_pdf_path = None
                 # 对于文档类型，需要重新转换
@@ -555,7 +529,7 @@ class UnifiedPreviewer(QWidget):
         # 显示错误信息
         error_label = QLabel(error_message)
         error_label.setAlignment(Qt.AlignCenter)
-        error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+        error_label.setStyleSheet("color: red; font-weight: bold;")
         error_layout.addWidget(error_label)
         
         # 添加复制按钮
@@ -1071,7 +1045,7 @@ class UnifiedPreviewer(QWidget):
                 default_font_size = getattr(app, 'default_font_size', 14)
                 dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
                 scaled_font_size = int(default_font_size * dpi_scale)
-                info_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999; font-weight: normal; word-wrap: true;")
+                info_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999; font-weight: normal;")
                 
                 info_layout.addWidget(info_label)
                 
@@ -1099,7 +1073,7 @@ class UnifiedPreviewer(QWidget):
             full_error_message = f"创建预览组件失败: {str(e)}"
             error_label = QLabel(full_error_message)
             error_label.setAlignment(Qt.AlignCenter)
-            error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+            error_label.setStyleSheet("color: red; font-weight: bold;")
             error_layout.addWidget(error_label)
             
             # 添加复制按钮
@@ -1146,7 +1120,7 @@ class UnifiedPreviewer(QWidget):
             full_error_message = f"预览失败: {error_message}"
             error_label = QLabel(full_error_message)
             error_label.setAlignment(Qt.AlignCenter)
-            error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+            error_label.setStyleSheet("color: red; font-weight: bold;")
             error_layout.addWidget(error_label)
             
             # 添加复制按钮
@@ -1294,116 +1268,171 @@ class UnifiedPreviewer(QWidget):
             file_name = os.path.basename(file_path)
             base_name = os.path.splitext(file_name)[0]
             
-            # 生成更唯一的临时文件名，包含时间戳以避免缓存问题
-            import time
-            timestamp = int(time.time())
-            temp_pdf_name = f"{base_name}_{timestamp}_temp.pdf"
+            # 使用稳定的临时文件名，不包含时间戳，便于缓存管理
+            temp_pdf_name = f"{base_name}_temp.pdf"
             self.temp_pdf_path = os.path.join(temp_dir, temp_pdf_name)
             print(f"临时PDF路径: {self.temp_pdf_path}")
             
-            # 转换前删除所有可能存在的同名PDF文件（不管时间戳）
-            import glob
-            old_pdf_files = glob.glob(os.path.join(temp_dir, f"{base_name}_*_temp.pdf"))
-            for old_file in old_pdf_files:
-                if os.path.exists(old_file):
-                    try:
-                        os.remove(old_file)
-                        print(f"已删除旧临时PDF文件: {old_file}")
-                    except Exception as e:
-                        print(f"删除旧临时PDF文件失败: {e}")
-            
-            print(f"正在将文档转换为PDF: {file_path} -> {self.temp_pdf_path}")
-            
-            # 找到便携版LibreOffice的路径
-            # __file__ = freeassetfilter/components/unified_previewer.py
-            # 三个dirname：freeassetfilter/components → freeassetfilter → 项目根目录
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            libreoffice_exe = os.path.join(project_root, "data", "LibreOfficePortable", "App", "LibreOffice", "program", "soffice.exe")
-            
-            if not os.path.exists(libreoffice_exe):
-                # 关闭进度条弹窗
-                self._on_file_read_finished()
-                # 在预览器窗口内显示LibreOffice缺失提示（普通信息样式）
-                self._clear_preview()
+            # 检查是否已存在PDF缓存文件
+            if os.path.exists(self.temp_pdf_path):
+                print(f"找到已存在的PDF缓存文件，直接使用: {self.temp_pdf_path}")
+                # 直接使用已存在的PDF文件
+            else:
+                # 缓存不存在，需要转换文档为PDF
+                print(f"缓存不存在，正在将文档转换为PDF: {file_path} -> {self.temp_pdf_path}")
                 
-                # 创建普通信息容器
-                info_container = QWidget()
-                info_container.setStyleSheet("background-color: transparent;")
-                info_layout = QVBoxLayout(info_container)
-                info_layout.setSpacing(10)
-                info_layout.setContentsMargins(0, 0, 0, 0)
+                # 找到便携版LibreOffice的路径
+                # __file__ = freeassetfilter/components/unified_previewer.py
+                # 三个dirname：freeassetfilter/components → freeassetfilter → 项目根目录
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                libreoffice_exe = os.path.join(project_root, "data", "LibreOfficePortable", "App", "LibreOffice", "program", "soffice.exe")
                 
-                # 显示普通信息
-                info_message = "LibreOffice组件缺失\n\n预览Office类文件需要LibreOffice组件支持。\n\n请将LibreOfficePortable解压后放置于:\nFreeassetfilter/data文件夹内\n\n文件夹结构应为：\nFreeAssetFliter/data/LibreOfficePortable/..."
-                info_label = QLabel(info_message)
-                info_label.setAlignment(Qt.AlignCenter)
+                if not os.path.exists(libreoffice_exe):
+                    # 关闭进度条弹窗
+                    self._on_file_read_finished()
+                    # 在预览器窗口内显示LibreOffice缺失提示（普通信息样式）
+                    self._clear_preview()
+                    
+                    # 创建普通信息容器
+                    info_container = QWidget()
+                    info_container.setStyleSheet("background-color: transparent;")
+                    info_layout = QVBoxLayout(info_container)
+                    info_layout.setSpacing(10)
+                    info_layout.setContentsMargins(0, 0, 0, 0)
+                    
+                    # 显示普通信息
+                    info_message = "LibreOffice组件缺失\n\n预览Office类文件需要LibreOffice组件支持。\n\n请将LibreOfficePortable解压后放置于:\nFreeassetfilter/data文件夹内\n\n文件夹结构应为：\nFreeAssetFliter/data/LibreOfficePortable/..."
+                    info_label = QLabel(info_message)
+                    info_label.setAlignment(Qt.AlignCenter)
+                    
+                    # 启用自动换行，确保文本根据宽度调整
+                    info_label.setWordWrap(True)
+                    
+                    # 使用全局统一字体大小
+                    app = QApplication.instance()
+                    default_font_size = getattr(app, 'default_font_size', 14)
+                    dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+                    scaled_font_size = int(default_font_size * dpi_scale)
+                    info_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999; font-weight: normal;")
+                    
+                    info_layout.addWidget(info_label)
+                    
+                    self.preview_layout.addWidget(info_container)
+                    self.current_preview_widget = info_container
+                    self.current_preview_type = "info"
+                    return
                 
-                # 启用自动换行，确保文本根据宽度调整
-                info_label.setWordWrap(True)
+                # 使用LibreOffice将文档转换为PDF
+                # 修正命令参数格式，添加超时处理和内存限制
+                cmd = [
+                    libreoffice_exe,
+                    "--headless",
+                    "--convert-to", "pdf:writer_pdf_Export",
+                    "--outdir", temp_dir,
+                    "--nofirststartwizard",  # 禁用首次启动向导
+                    "--norestore",  # 禁用恢复功能
+                    "--minimized",  # 最小化启动
+                    file_path
+                ]
                 
-                # 使用全局统一字体大小
-                app = QApplication.instance()
-                default_font_size = getattr(app, 'default_font_size', 14)
-                dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-                scaled_font_size = int(default_font_size * dpi_scale)
-                info_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999; font-weight: normal; word-wrap: true;")
+                print(f"执行命令: {' '.join(cmd)}")
                 
-                info_layout.addWidget(info_label)
+                # 设置超时时间为300秒（5分钟），处理大文件
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    
+                    # 输出LibreOffice的执行结果，便于调试
+                    if result.stdout:
+                        print(f"LibreOffice输出: {result.stdout}")
+                    if result.stderr:
+                        print(f"LibreOffice错误: {result.stderr}")
+                    print(f"LibreOffice返回码: {result.returncode}")
+                    
+                    if result.returncode != 0:
+                        error_msg = f"文档转换失败: {result.stderr}" if result.stderr else f"文档转换失败，返回码: {result.returncode}"
+                        self._show_error_with_copy_button(error_msg)
+                        return
+                except subprocess.TimeoutExpired:
+                    # 处理转换超时情况
+                    error_msg = f"文档转换超时，可能文件过大或内容复杂"
+                    self._show_error_with_copy_button(error_msg)
+                    return
+                except Exception as e:
+                    # 处理其他异常
+                    error_msg = f"文档转换异常: {str(e)}"
+                    self._show_error_with_copy_button(error_msg)
+                    return
                 
-                self.preview_layout.addWidget(info_container)
-                self.current_preview_widget = info_container
-                self.current_preview_type = "info"
-                return
-            
-            # 使用LibreOffice将文档转换为PDF
-            cmd = [
-                libreoffice_exe,
-                "--headless",
-                "--convert-to", "pdf:writer_pdf_Export",
-                "--outdir", temp_dir,
-                file_path
-            ]
-            
-            print(f"执行命令: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                error_msg = f"文档转换失败: {result.stderr}" if result.stderr else f"文档转换失败，返回码: {result.returncode}"
-                self._show_error_with_copy_button(error_msg)
-                return
-            
-            # 检查PDF文件是否生成
-            # 先获取所有可能的生成文件
-            import glob
-            generated_pdfs = glob.glob(os.path.join(temp_dir, f"{base_name}*.pdf"))
-            
-            if generated_pdfs:
-                # 找到所有生成的PDF文件
-                for pdf_path in generated_pdfs:
-                    print(f"找到生成的PDF: {pdf_path}")
-                    # 如果不是我们想要的临时文件名，重命名为临时文件名
-                    if pdf_path != self.temp_pdf_path:
+                # 检查PDF文件是否生成
+                # 首先查找默认生成的PDF文件（基础文件名 + .pdf）
+                default_pdf_path = os.path.join(temp_dir, f"{base_name}.pdf")
+                
+                if os.path.exists(default_pdf_path):
+                    print(f"找到默认生成的PDF文件: {default_pdf_path}")
+                    # 如果生成的文件名不是我们想要的临时文件名，重命名它
+                    if default_pdf_path != self.temp_pdf_path:
                         try:
                             # 删除已存在的临时文件（如果有）
                             if os.path.exists(self.temp_pdf_path):
                                 os.remove(self.temp_pdf_path)
                             # 重命名为临时文件名
-                            os.rename(pdf_path, self.temp_pdf_path)
+                            os.rename(default_pdf_path, self.temp_pdf_path)
                             print(f"将PDF重命名为: {self.temp_pdf_path}")
                         except Exception as e:
                             print(f"重命名PDF失败: {e}")
                             # 如果重命名失败，直接使用生成的PDF路径
-                            self.temp_pdf_path = pdf_path
-                            break
-            elif not os.path.exists(self.temp_pdf_path):
-                # 没有找到任何生成的PDF文件
-                error_msg = f"PDF生成失败，未找到预期的PDF文件"
-                self._show_error_with_copy_button(error_msg)
-                return
-            
-            print(f"文档转换成功: {self.temp_pdf_path}")
-            
-            print(f"文档转换成功: {self.temp_pdf_path}")
+                            self.temp_pdf_path = default_pdf_path
+                elif os.path.exists(self.temp_pdf_path):
+                    print(f"PDF文件已生成: {self.temp_pdf_path}")
+                else:
+                    # 如果直接查找指定路径的PDF文件失败，尝试搜索所有生成的PDF文件
+                    print("直接查找指定路径的PDF文件失败，尝试搜索所有生成的PDF文件")
+                    import glob
+                    import time
+                    
+                    # 查找所有可能的生成文件，使用更宽松的匹配模式
+                    generated_pdfs = glob.glob(os.path.join(temp_dir, "*.pdf"))
+                    
+                    if generated_pdfs:
+                        # 输出所有找到的PDF文件，便于调试
+                        for pdf_path in generated_pdfs:
+                            print(f"找到PDF文件: {pdf_path}")
+                        
+                        # 尝试找到最可能是我们需要的PDF文件
+                        # 1. 优先匹配基础文件名的PDF
+                        base_matches = [f for f in generated_pdfs if base_name in os.path.basename(f)]
+                        if base_matches:
+                            # 按修改时间排序，选择最新的
+                            base_matches.sort(key=os.path.getmtime, reverse=True)
+                            found_pdf = base_matches[0]
+                            print(f"找到与基础文件名匹配的最新PDF: {found_pdf}")
+                        else:
+                            # 2. 如果没有基础文件名匹配，使用最新生成的PDF
+                            found_pdf = max(generated_pdfs, key=os.path.getmtime)
+                            print(f"使用最新生成的PDF: {found_pdf}")
+                        
+                        try:
+                            # 将找到的PDF文件重命名为我们想要的临时文件名
+                            if found_pdf != self.temp_pdf_path:
+                                # 删除已存在的临时文件（如果有）
+                                if os.path.exists(self.temp_pdf_path):
+                                    os.remove(self.temp_pdf_path)
+                                # 重命名为临时文件名
+                                os.rename(found_pdf, self.temp_pdf_path)
+                                print(f"将PDF重命名为: {self.temp_pdf_path}")
+                        except Exception as e:
+                            print(f"重命名PDF失败: {e}")
+                            # 如果重命名失败，直接使用找到的PDF路径
+                            self.temp_pdf_path = found_pdf
+                    else:
+                        # 没有找到任何生成的PDF文件
+                        error_msg = f"PDF生成失败，未找到预期的PDF文件"
+                        self._show_error_with_copy_button(error_msg)
+                        return
+                
+                print(f"文档转换成功: {self.temp_pdf_path}")
+                
+                print(f"文档转换成功: {self.temp_pdf_path}")
             
             # 使用现有的PDF预览方法显示转换后的PDF
             # 注意：这里不再立即关闭进度条弹窗，而是等待PDF渲染完成后关闭
@@ -1412,7 +1441,7 @@ class UnifiedPreviewer(QWidget):
             import traceback
             error_label = QLabel(f"文档预览失败: {str(e)}\n\n详细错误:\n{traceback.format_exc()}")
             error_label.setAlignment(Qt.AlignCenter)
-            error_label.setStyleSheet("color: red; font-weight: bold; word-wrap: true;")
+            error_label.setStyleSheet("color: red; font-weight: bold;")
             self.preview_layout.addWidget(error_label)
             self.current_preview_widget = error_label
     def _open_global_settings(self):
