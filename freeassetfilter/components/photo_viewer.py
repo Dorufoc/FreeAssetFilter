@@ -31,6 +31,8 @@ from PyQt5.QtCore import (
     QThread
 )
 
+# PIL支持已移除以提高性能
+
 
 class RawProcessor(QThread):
     """
@@ -73,7 +75,11 @@ class RawProcessor(QThread):
                         use_camera_wb=True
                     )
             
-            # 将numpy数组转换为QImage
+            # 获取设备像素比，用于高DPI显示
+            from PyQt5.QtGui import QGuiApplication
+            device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
+            
+            # 将numpy数组转换为QImage，考虑高DPI缩放
             height, width, channel = rgb.shape
             bytes_per_line = 3 * width
             # 注意numpy数组是RGB格式，而QImage需要BGR格式
@@ -83,6 +89,8 @@ class RawProcessor(QThread):
             bgr[:, :, 2] = rgb[:, :, 0]  # R
             
             qimage = QImage(bgr.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            # 设置设备像素比，确保高DPI显示正确
+            qimage.setDevicePixelRatio(device_pixel_ratio)
             self.processing_complete.emit(qimage, self.image_path)
         except Exception as e:
             print(f"加载RAW图片时出错: {e}")
@@ -186,6 +194,9 @@ class ImageWidget(QWidget):
             else:
                 # 常规图片格式，使用QImage直接加载
                 self.original_image = QImage(image_path)
+                # 设置设备像素比，确保高DPI显示正确
+                from PyQt5.QtGui import QGuiApplication
+                self.original_image.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             
             if not self.original_image.isNull():
                 # 保存当前文件路径
@@ -244,20 +255,31 @@ class ImageWidget(QWidget):
     
     def update_image(self):
         """
-        更新缩放后的图片
+        更新缩放后的图片，使用高DPI优化处理
         """
         try:
             if self.original_image:
-                # 计算缩放后的逻辑大小
+                # 获取设备像素比
+                from PyQt5.QtGui import QGuiApplication
+                device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
+                
+                # 计算缩放后的逻辑大小（使用逻辑像素）
                 logical_scaled_size = self.original_image.size() * self.scale_factor
                 
-                # 直接使用逻辑像素大小进行缩放，Qt会自动处理DPI
+                # 使用Qt内置快速缩放，避免性能问题
                 self.scaled_image = self.original_image.scaled(
                     logical_scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
                 
-                # 创建pixmap，不再需要设置设备像素比
+                # 设置QImage的设备像素比（关键步骤）
+                self.scaled_image.setDevicePixelRatio(device_pixel_ratio)
+                
+                # 创建pixmap并设置正确的设备像素比
                 self.pixmap = QPixmap.fromImage(self.scaled_image)
+                self.pixmap.setDevicePixelRatio(device_pixel_ratio)
+                
+                # 计算逻辑大小用于布局（使用逻辑像素）
+                logical_scaled_size = self.original_image.size() * self.scale_factor
                 
                 # 更新窗口大小（使用逻辑像素）
                 parent_size = self.parent().viewport().size() if hasattr(self.parent(), 'viewport') else self.parent().size() if self.parent() else QSize(800, 600)
@@ -273,6 +295,9 @@ class ImageWidget(QWidget):
         绘制图片
         """
         painter = QPainter(self)
+        # 设置基础渲染质量（避免过度渲染导致性能问题）
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        
         painter.fillRect(self.rect(), QColor(40, 40, 40))
         
         if self.pixmap and self.scaled_image:

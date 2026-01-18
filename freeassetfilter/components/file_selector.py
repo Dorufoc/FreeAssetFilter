@@ -183,6 +183,28 @@ class CustomFileSelector(QWidget):
         except Exception as e:
             print(f"保存路径失败: {e}")
     
+    def _hex_to_rgba(self, hex_color, alpha):
+        """
+        将十六进制颜色转换为带透明度的RGBA格式
+        
+        Args:
+            hex_color: 十六进制颜色字符串，格式为#RRGGBB
+            alpha: 透明度值，范围0-255
+            
+        Returns:
+            带透明度的RGBA颜色字符串，格式为rgba(R, G, B, A)
+        """
+        # 移除#号
+        hex_color = hex_color.lstrip('#')
+        
+        # 将十六进制转换为RGB
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        
+        # 返回RGBA格式
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    
     def init_ui(self):
         """
         初始化用户界面
@@ -193,7 +215,7 @@ class CustomFileSelector(QWidget):
         app = QApplication.instance()
         background_color = "#f1f3f5"  # 默认窗口背景色
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#f1f3f5")
+            background_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#f1f3f5")
         self.setStyleSheet(f"background-color: {background_color};")
         # 应用DPI缩放因子到布局参数
         scaled_spacing = int(2.5 * self.dpi_scale)
@@ -220,8 +242,15 @@ class CustomFileSelector(QWidget):
         panel = QGroupBox()
         
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        # 隐藏边框
-        panel.setStyleSheet("QGroupBox { border: none; }")
+        
+        # 获取设置管理器中的颜色值
+        app = QApplication.instance()
+        base_color = "#212121"  # 默认base_color
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        
+        # 设置面板样式：隐藏边框，使用base_color作为背景色
+        panel.setStyleSheet(f"QGroupBox {{ border: none; background-color: {base_color}; }}")
         
         # 使用垂直布局来容纳多行控件
         main_layout = QVBoxLayout(panel)
@@ -333,17 +362,25 @@ class CustomFileSelector(QWidget):
         """
         创建文件列表区域
         """
+        # 获取设置管理器中的颜色值
+        app = QApplication.instance()
+        base_color = "#212121"  # 默认base_color
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        
         # 创建滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 关闭水平滚动条
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 垂直滚动条按需显示
         # 设置 QScrollArea 背景色
-        #scroll_area.setStyleSheet("QScrollArea { border: 0px solid #e0e0e0; background-color: #ffffff; }")
+        scroll_area.setStyleSheet(f"QScrollArea {{ border: 0px solid {base_color}; background-color: {base_color}; }}")
+        # 设置视口背景色
+        scroll_area.viewport().setStyleSheet(f"background-color: {base_color};")
         # 创建文件容器
         self.files_container = QWidget()
         self.files_layout = QGridLayout(self.files_container)
-        self.files_container.setStyleSheet("QWidget { border: 0px solid #e0e0e0; }")# 控制文件容器边框
+        self.files_container.setStyleSheet(f"QWidget {{ border: 0px solid #e0e0e0; background-color: {base_color}; }}")# 控制文件容器边框
         # 应用DPI缩放因子到卡片间距和边距
         scaled_card_spacing = int(5 * self.dpi_scale)
         scaled_card_margin = int(5 * self.dpi_scale)
@@ -2110,23 +2147,31 @@ class CustomFileSelector(QWidget):
         card.setMinimumSize(scaled_card_width, scaled_card_height)
         card.setMaximumSize(scaled_card_width, scaled_card_height)
         
-        # 设置卡片样式
-        card.setStyleSheet(f"""
-            QWidget#FileCard {{
-                background-color: #ffffff;
-                border: {scaled_border_width}px solid #e0e0e0;
-                border-radius: {scaled_border_radius}px;
-                padding: {scaled_padding}px;
-                text-align: center;
-            }}
-            QWidget#FileCard:hover {{
-                border-color: #4a7abc;
-                background-color: #f0f8ff;
-            }}
-        """)
+        # 获取设置管理器中的颜色值
+        app = QApplication.instance()
+        auxiliary_color = "#ffffff"
+        base_color = "#e0e0e0"
+        normal_color = "#4a7abc"
+        accent_color = "#1890ff"
+        
+        if hasattr(app, 'settings_manager'):
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#ffffff")
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#e0e0e0")
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#4a7abc")
+            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
         
         # 保存文件信息到卡片
         card.file_info = file_info
+
+        # 设置卡片样式
+        # 设置卡片样式
+        css = f"QWidget#FileCard {{ background-color: {auxiliary_color}; border: {scaled_border_width}px solid {base_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ border-color: {normal_color}; background-color: {self._hex_to_rgba(accent_color, 10)}; }}"
+        # 记录初始颜色
+        initial_bg = self.get_color_from_style(css, 'background')
+        initial_border = self.get_color_from_style(css, 'border')
+        self.debug_color_change('初始化', card, '背景色', 'none', initial_bg)
+        self.debug_color_change('初始化', card, '边框色', 'none', initial_border)
+        card.setStyleSheet(css)
         
         # 检查文件是否已被选中
         file_path = file_info["path"]
@@ -2172,7 +2217,11 @@ class CustomFileSelector(QWidget):
         name_label.setFont(temp_font)
         #print(f"[DEBUG] 文件卡片文件名标签设置字体: {name_label.font().family()}, 大小: {name_label.font().pointSize()}")
         # 确保标签透明，仅显示文本
-        name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
+        app = QApplication.instance()
+        secondary_color = "#333333"
+        if hasattr(app, 'settings_manager'):
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
         layout.addWidget(name_label, alignment=Qt.AlignCenter)
         
         # 创建文件大小标签
@@ -2192,7 +2241,11 @@ class CustomFileSelector(QWidget):
         size_label.setFont(temp_font)
         #print(f"[DEBUG] 文件卡片大小标签设置字体: {size_label.font().family()}, 大小: {size_label.font().pointSize()}")
         # 确保标签透明，仅显示文本
-        size_label.setStyleSheet("background: transparent; border: none; color: #666666;")
+        app = QApplication.instance()
+        normal_color = "#666666"
+        if hasattr(app, 'settings_manager'):
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#666666")
+        size_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
         layout.addWidget(size_label, alignment=Qt.AlignCenter)
         
         # 创建修改时间标签
@@ -2210,7 +2263,11 @@ class CustomFileSelector(QWidget):
         modified_label.setFont(temp_font)
         #print(f"[DEBUG] 文件卡片修改时间标签设置字体: {modified_label.font().family()}, 大小: {modified_label.font().pointSize()}")
         # 确保标签透明，仅显示文本
-        modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
+        app = QApplication.instance()
+        normal_color = "#888888"
+        if hasattr(app, 'settings_manager'):
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#888888")
+        modified_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
         layout.addWidget(modified_label, alignment=Qt.AlignCenter)
         
         # 保存标签引用到卡片对象
@@ -2223,34 +2280,60 @@ class CustomFileSelector(QWidget):
         scaled_border_radius = int(8 * self.dpi_scale)
         scaled_border_width = int(2 * self.dpi_scale)
         scaled_padding = int(8 * self.dpi_scale)
+        
+        # 获取设置管理器中的颜色值
+        app = QApplication.instance()
+        
+        # 直接获取设置管理器实例，确保能获取到设置
+        from freeassetfilter.core.settings_manager import SettingsManager
+        settings_manager = SettingsManager()
+        
+        # 从设置管理器中获取颜色值
+        accent_color = settings_manager.get_setting("appearance.colors.accent_color")
+        secondary_color = settings_manager.get_setting("appearance.colors.secondary_color")
+        auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color")
+        base_color = settings_manager.get_setting("appearance.colors.base_color")
+        normal_color = settings_manager.get_setting("appearance.colors.normal_color")
+
         if card.is_selected:
-            card.setStyleSheet(f"""
-                QWidget#FileCard {{
-                    background-color: #e6f7ff;
-                    border: {scaled_border_width}px solid #1890ff;
-                    border-radius: {scaled_border_radius}px;
-                    padding: {scaled_padding}px;
-                    text-align: center;
-                }}
-                QWidget#FileCard:hover {{
-                    background-color: #bae7ff;
-                    border-color: #40a9ff;
-                }}
-            """)
+            # 记录选中前的颜色
+            old_style = card.styleSheet()
+            old_bg = self.get_color_from_style(old_style, 'background')
+            old_border = self.get_color_from_style(old_style, 'border')
+            
+            # 更新样式，确保包含hover效果
+            card.setStyleSheet(f"QWidget#FileCard {{ background-color: {self._hex_to_rgba(accent_color, 155)}; border: {scaled_border_width}px solid {accent_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ background-color: {self._hex_to_rgba(accent_color, 155)}; border: {scaled_border_width}px solid {accent_color}; }}")
+            
+            # 记录选中后的颜色
+            new_style = card.styleSheet()
+            new_bg = self.get_color_from_style(new_style, 'background')
+            new_border = self.get_color_from_style(new_style, 'border')
+            self.debug_color_change('选中', card, '背景色', old_bg, new_bg)
+            self.debug_color_change('选中', card, '边框色', old_border, new_border)
+            # 更新文本颜色为secondary_color
+            card.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+            card.detail_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+            card.modified_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
         else:
-            card.setStyleSheet(f"""
-                QWidget#FileCard {{
-                    background-color: #ffffff;
-                    border: {scaled_border_width}px solid #e0e0e0;
-                    border-radius: {scaled_border_radius}px;
-                    padding: {scaled_padding}px;
-                    text-align: center;
-                }}
-                QWidget#FileCard:hover {{
-                    border-color: #4a7abc;
-                    background-color: #f0f8ff;
-                }}
-            """)
+            # 获取设置管理器中的颜色值
+            app = QApplication.instance()
+            
+            # 直接获取设置管理器实例，确保能获取到设置
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+            
+            # 从设置管理器中获取颜色值，不使用硬编码默认值
+            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color")
+            base_color = settings_manager.get_setting("appearance.colors.base_color")
+            normal_color = settings_manager.get_setting("appearance.colors.normal_color")
+            accent_color = settings_manager.get_setting("appearance.colors.accent_color")
+            secondary_color = settings_manager.get_setting("appearance.colors.secondary_color")
+
+            card.setStyleSheet(f"QWidget#FileCard {{ background-color: {auxiliary_color}; border: {scaled_border_width}px solid {base_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ border-color: {normal_color}; background-color: {self._hex_to_rgba(accent_color, 10)}; }}")
+            # 更新文本颜色为normal_color
+            card.name_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
+            card.detail_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
+            card.modified_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
         
         # 安装事件过滤器，用于处理鼠标事件
         card.installEventFilter(self)
@@ -2349,7 +2432,8 @@ class CustomFileSelector(QWidget):
             # 加载缩略图
             pixmap = QPixmap(thumbnail_path)
             
-            # 不再需要设置设备像素比，Qt会自动处理
+            # 设置正确的设备像素比
+            pixmap.setDevicePixelRatio(self.devicePixelRatio())
             
             # 缩放缩略图以适应scaled_icon_size的大小（使用逻辑像素）
             scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -2714,11 +2798,21 @@ class CustomFileSelector(QWidget):
                 if event.mimeData().hasUrls():
                     event.acceptProposedAction()
                     # 添加拖拽视觉反馈：蓝色加粗虚线边框
-                    self.setStyleSheet(f"background-color: #f1f3f5; border: 3px dashed #1890ff; border-radius: {int(8 * self.dpi_scale)}px;")
+                    app = QApplication.instance()
+                    secondary_color = "#f1f3f5"
+                    accent_color = "#1890ff"
+                    if hasattr(app, 'settings_manager'):
+                        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#f1f3f5")
+                        accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+                    self.setStyleSheet(f"background-color: {secondary_color}; border: 3px dashed {accent_color}; border-radius: {int(8 * self.dpi_scale)}px;")
                     return True
             elif event.type() == QEvent.DragLeave:
                 # 恢复原始样式，移除边框
-                self.setStyleSheet("background-color: #f1f3f5; border: none;")
+                app = QApplication.instance()
+                secondary_color = "#f1f3f5"
+                if hasattr(app, 'settings_manager'):
+                    secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#f1f3f5")
+                self.setStyleSheet(f"background-color: {secondary_color}; border: none;")
                 return True
             elif event.type() == QEvent.Drop:
                 # 将事件传递给主控件处理
@@ -2732,6 +2826,26 @@ class CustomFileSelector(QWidget):
         
         return super().eventFilter(obj, event)
     
+    def debug_color_change(self, action, card, color_type, old_value, new_value):
+        import datetime
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        print(f"[{timestamp}] [CardColorDebug] 文件: {card.file_info['name']} - {action} {color_type}: {old_value} -> {new_value}")
+
+    def get_color_from_style(self, style, color_type):
+        import re
+        if color_type == 'background':
+            # 支持匹配rgba格式和hex格式
+            match = re.search(r'background-color:\s*([^;]+);', style)
+        elif color_type == 'border':
+            # 优先匹配border-color属性
+            match = re.search(r'border-color:\s*([^;]+);', style)
+            if not match:
+                # 如果没有border-color属性，再匹配border属性中的颜色，支持rgba和hex格式
+                match = re.search(r'border:\s*[^#]+(#[\w]+|rgba?\([^)]+\));', style)
+        else:
+            return 'unknown'
+        return match.group(1) if match else 'unknown'
+
     def _toggle_selection(self, card, emit_preview=False):
         """
         切换文件的选中状态
@@ -2758,35 +2872,56 @@ class CustomFileSelector(QWidget):
             self.selected_files[file_dir].discard(file_path)
             card.is_selected = False
             # 更新样式
-            card.setStyleSheet(f"""
-                QWidget#FileCard {{
-                    background-color: #ffffff;
-                    border: {scaled_border_width}px solid #e0e0e0;
-                    border-radius: {scaled_border_radius}px;
-                    padding: {scaled_padding}px;
-                    text-align: center;
-                }}
-                QWidget#FileCard:hover {{
-                    border-color: #4a7abc;
-                    background-color: #f0f8ff;
-                }}
-            """)
+            # 获取设置管理器中的颜色值
+            app = QApplication.instance()
+            auxiliary_color = "#ffffff"
+            base_color = "#e0e0e0"
+            normal_color = "#4a7abc"
+            accent_color = "#1890ff"
+            
+            if hasattr(app, 'settings_manager'):
+                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+                secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+                auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#ffffff")
+                base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#e0e0e0")
+                normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#4a7abc")            
+            
+            # 记录取消选中前的颜色
+            old_style = card.styleSheet()
+            old_bg = self.get_color_from_style(old_style, 'background')
+            old_border = self.get_color_from_style(old_style, 'border')
+            
+            card.setStyleSheet(f"QWidget#FileCard {{ background-color: {auxiliary_color}; border: {scaled_border_width}px solid {base_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ border-color: {normal_color}; background-color: {self._hex_to_rgba(accent_color, 10)}; }}")
+            
+            # 记录取消选中后的颜色
+            new_style = card.styleSheet()
+            new_bg = self.get_color_from_style(new_style, 'background')
+            new_border = self.get_color_from_style(new_style, 'border')
+            self.debug_color_change('取消选中', card, '背景色', old_bg, new_bg)
+            self.debug_color_change('取消选中', card, '边框色', old_border, new_border)
+            # 更新文本颜色为normal_color
+            card.name_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
+            card.detail_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
+            card.modified_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
             # 发出选择状态改变信号
             self.file_selection_changed.emit(card.file_info, False)
         else:
             # 选中文件
             self.selected_files[file_dir].add(file_path)
             card.is_selected = True
-            # 更新样式
-            card.setStyleSheet(f"""
-                QWidget#FileCard {{
-                    background-color: #e6f7ff;
-                    border: {scaled_border_width}px solid #1890ff;
-                    border-radius: {scaled_border_radius}px;
-                    padding: {scaled_padding}px;
-                    text-align: center;
-                }}
-            """)
+            # 获取设置管理器中的颜色值
+            app = QApplication.instance()
+            accent_color = "#1890ff"
+            secondary_color = "#333333"
+            if hasattr(app, 'settings_manager'):
+                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+                secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            # 更新样式，确保包含hover效果
+            card.setStyleSheet(f"QWidget#FileCard {{ background-color: {self._hex_to_rgba(accent_color, 155)}; border: {scaled_border_width}px solid {accent_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ background-color: {self._hex_to_rgba(accent_color, 155)}; border: {scaled_border_width}px solid {accent_color}; }}")
+            # 更新文本颜色为secondary_color
+            card.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+            card.detail_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+            card.modified_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
             # 发出选择信号（仅当emit_preview为True时）
             if emit_preview:
                 self.file_selected.emit(card.file_info)
@@ -3077,40 +3212,51 @@ class CustomFileSelector(QWidget):
                 # 更新卡片样式
                 scaled_border_radius = int(8 * self.dpi_scale)
                 scaled_padding = int(8 * self.dpi_scale)
+                # 获取设置管理器中的颜色值
+                app = QApplication.instance()
+                auxiliary_color = "#ffffff"
+                base_color = "#e0e0e0"
+                normal_color = "#4a7abc"
+                accent_color = "#1890ff"
+                secondary_color = "#333333"
+                
+                if hasattr(app, 'settings_manager'):
+                    auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#ffffff")
+                    base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#e0e0e0")
+                    normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#4a7abc")
+                    accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+                    secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+                
                 if is_selected:
                     widget.setStyleSheet(f"QWidget#FileCard {{\n" \
-                        f"    background-color: #e8f4fc;\n" \
-                        f"    border: 2px solid #4a7abc;\n" \
+                        f"    background-color: {self._hex_to_rgba(accent_color, 155)};\n" \
+                        f"    border: 2px solid {accent_color};\n" \
                         f"    border-radius: {scaled_border_radius}px;\n" \
                         f"    padding: {scaled_padding}px;\n" \
                         f"    text-align: center;\n" \
-                        f"}}\n" \
-                        f"QWidget#FileCard:hover {{\n" \
-                        f"    border-color: #4a7abc;\n" \
-                        f"    background-color: #e8f4fc;\n" \
                         f"}}\n")
                     # 更新标签样式
-                    widget.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
-                    widget.detail_label.setStyleSheet("background: transparent; border: none; color: #666666;")
+                    widget.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+                    widget.detail_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
                     if hasattr(widget, 'modified_label'):
-                        widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
+                        widget.modified_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
                 else:
                     widget.setStyleSheet(f"QWidget#FileCard {{\n" \
-                        f"    background-color: #f1f3f5;\n" \
-                        f"    border: 2px solid #e0e0e0;\n" \
+                        f"    background-color: {auxiliary_color};\n" \
+                        f"    border: 2px solid {base_color};\n" \
                         f"    border-radius: {scaled_border_radius}px;\n" \
                         f"    padding: {scaled_padding}px;\n" \
                         f"    text-align: center;\n" \
                         f"}}\n" \
                         f"QWidget#FileCard:hover {{\n" \
-                        f"    border-color: #4a7abc;\n" \
-                        f"    background-color: #f0f8ff;\n" \
+                        f"    border-color: {normal_color};\n" \
+                        f"    background-color: {self._hex_to_rgba(accent_color, 10)};\n" \
                         f"}}\n")
                     # 恢复标签样式
-                    widget.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
-                    widget.detail_label.setStyleSheet("background: transparent; border: none; color: #666666;")
+                    widget.name_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
+                    widget.detail_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
                     if hasattr(widget, 'modified_label'):
-                        widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
+                        widget.modified_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
     
     def _show_timeline_window(self):
         """

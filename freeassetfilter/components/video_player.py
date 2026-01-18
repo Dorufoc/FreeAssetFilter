@@ -1386,6 +1386,8 @@ class VideoPlayer(QWidget):
             # 创建QPixmap用于显示
             pixmap = QPixmap(scaled_cover_size, scaled_cover_size)
             pixmap.fill(Qt.transparent)
+            from PyQt5.QtGui import QGuiApplication
+            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             
             # 使用QPainter绘制SVG
             painter = QPainter(pixmap)
@@ -1424,6 +1426,8 @@ class VideoPlayer(QWidget):
                 image_data.seek(0)
                 pixmap = QPixmap()
                 pixmap.loadFromData(image_data.read())
+                from PyQt5.QtGui import QGuiApplication
+                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 
                 # 应用圆角矩形遮罩到中央封面
                 rounded_pixmap = QPixmap(scaled_cover_size, scaled_cover_size)
@@ -1457,6 +1461,8 @@ class VideoPlayer(QWidget):
                 bg_image_data.seek(0)
                 bg_pixmap = QPixmap()
                 bg_pixmap.loadFromData(bg_image_data.read())
+                from PyQt5.QtGui import QGuiApplication
+                bg_pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 
                 # 设置背景封面并应用高斯模糊效果
                 self.background_label.setPixmap(bg_pixmap)
@@ -1508,6 +1514,8 @@ class VideoPlayer(QWidget):
         # 创建默认背景
         default_pixmap = QPixmap(size, size)
         default_pixmap.fill(QColor(51, 51, 51))  # 深灰色背景
+        from PyQt5.QtGui import QGuiApplication
+        default_pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         
         # 设置到封面标签
         self.cover_label.setPixmap(default_pixmap)

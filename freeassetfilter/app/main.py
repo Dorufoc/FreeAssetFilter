@@ -17,10 +17,41 @@ FreeAssetFilter 主程序
 核心功能应用程序，不包含视频播放器功能
 """
 
+# 导入必要的模块用于异常处理
 import sys
 import os
 import warnings
 import time
+import traceback
+import faulthandler
+
+# 启用faulthandler，捕获C++层崩溃
+faulthandler.enable()
+
+# 定义异常处理函数
+def handle_exception(exc_type, exc_value, exc_traceback):
+    """
+    处理未捕获的Python异常
+    
+    Args:
+        exc_type: 异常类型
+        exc_value: 异常值
+        exc_traceback: 异常回溯信息
+    """
+    if issubclass(exc_type, KeyboardInterrupt):
+        # 如果是用户中断，使用系统默认的异常处理
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    
+    print("\n=== 检测到未捕获的异常 ===")
+    print(f"异常类型: {exc_type.__name__}")
+    print(f"异常值: {exc_value}")
+    print("异常堆栈:")
+    traceback.print_tb(exc_traceback)
+    print("==========================\n")
+
+# 将系统异常钩子绑定到自定义处理函数
+sys.excepthook = handle_exception
 
 # 忽略sipPyTypeDict相关的弃用警告
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="PyQt5")
@@ -98,7 +129,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.move(window_geometry.topLeft())
         
         # 设置程序图标
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'FAF-main.ico')
+        icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
         self.setWindowIcon(QIcon(icon_path))
         
         # 用于生成唯一的文件选择器实例ID
@@ -325,7 +356,7 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 创建GitHub按钮，使用svg图标
         from freeassetfilter.widgets.button_widgets import CustomButton
-        github_icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'github.svg')
+        github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
         self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
         self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         # 连接到GitHub跳转函数
@@ -353,7 +384,7 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 创建全局设置按钮，使用svg图标
         from freeassetfilter.widgets.button_widgets import CustomButton
-        setting_icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', 'setting.svg')
+        setting_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
         self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
         self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         # 连接到全局设置函数
@@ -517,9 +548,9 @@ class FreeAssetFilterApp(QMainWindow):
         window_width = 400
         window_height = 300
         
-        # 创建自定义窗口实例
-        custom_window = CustomWindow("自定义窗口演示", self)
-        custom_window.setGeometry(200, 200, window_width, window_height)
+        # 创建自定义窗口实例，并将其赋值给self，防止被垃圾回收
+        self.custom_window = CustomWindow("自定义窗口演示", self)
+        self.custom_window.setGeometry(200, 200, window_width, window_height)
         
         # 添加示例控件
         
@@ -536,7 +567,7 @@ class FreeAssetFilterApp(QMainWindow):
                 text-align: center;
             }}
         """)
-        custom_window.add_widget(title_label)
+        self.custom_window.add_widget(title_label)
         
         # 2. 添加说明文本
         info_label = QLabel("这个窗口具有以下特点：\n\n" \
@@ -556,15 +587,15 @@ class FreeAssetFilterApp(QMainWindow):
             }}
         """)
         info_label.setWordWrap(True)
-        custom_window.add_widget(info_label)
+        self.custom_window.add_widget(info_label)
         
         # 3. 添加自定义按钮
         demo_button = CustomButton("示例按钮")
-        demo_button.clicked.connect(lambda: QMessageBox.information(custom_window, "提示", "自定义按钮被点击了！"))
-        custom_window.add_widget(demo_button)
+        demo_button.clicked.connect(lambda: QMessageBox.information(self.custom_window, "提示", "自定义按钮被点击了！"))
+        self.custom_window.add_widget(demo_button)
         
         # 显示窗口
-        custom_window.show()
+        self.custom_window.show()
     
     def handle_file_selection_changed(self, file_info, is_selected):
         """

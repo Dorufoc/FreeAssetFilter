@@ -302,6 +302,15 @@ class UnifiedPreviewer(QWidget):
             debug("清除当前预览组件")
             self._clear_preview()
             
+            # 检查并终止现有线程（如果存在）
+            if hasattr(self, '_preview_thread') and self._preview_thread and self._preview_thread.isRunning():
+                debug("发现正在运行的后台线程，尝试取消并终止")
+                self._preview_thread.cancel()
+                # 等待线程终止，最多等待1秒
+                self._preview_thread.wait(1000)
+                if self._preview_thread.isRunning():
+                    debug("线程终止超时")
+            
             # 创建后台加载线程
             debug(f"创建后台加载线程，预览类型: {preview_type}, 文件路径: {file_path}")
             self._preview_thread = self.PreviewLoaderThread(file_path, preview_type)
@@ -573,6 +582,8 @@ class UnifiedPreviewer(QWidget):
                 # 创建图片标签
                 image_label = QLabel()
                 pixmap = QPixmap(file_path)
+                from PyQt5.QtGui import QGuiApplication
+                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 image_label.setPixmap(pixmap)
                 image_label.setAlignment(Qt.AlignCenter)
                 

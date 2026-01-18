@@ -328,8 +328,14 @@ class ArchiveBrowser(QWidget):
         # 设置列表项高度
         scaled_item_height = int(15 * self.dpi_scale)
         
-        # 计算选中状态的背景色（accent_color 变深/变淡 30%）
-        selected_bg_color = self._adjust_color(current_colors.get("accent_color", "#B036EE"), 30)
+        # 获取强调色并设置透明度为0.4
+        from PyQt5.QtGui import QColor
+        accent_color = current_colors.get("accent_color", "#B036EE")
+        qcolor = QColor(accent_color)
+        # 设置alpha通道为155
+        qcolor.setAlpha(155)
+        # 转换为CSS rgba格式
+        selected_bg_color = f"rgba({qcolor.red()}, {qcolor.green()}, {qcolor.blue()}, 0.4)"
         
         # 设置列表样式
         self.files_list.setStyleSheet(f"""
@@ -339,24 +345,24 @@ class ArchiveBrowser(QWidget):
             }}
             QListWidget::item {{
                 height: {scaled_item_height}px;
-                color: {current_colors.get("secondary_color", "#FFFFFF")};
-                background-color: {current_colors.get("base_color", "#212121")};
+                color: {current_colors.get('secondary_color', '#FFFFFF')};
+                background-color: {current_colors.get('base_color', '#212121')};
                 border: 1px solid transparent;
                 outline: none;
             }}
             QListWidget::item:hover {{
-                color: {current_colors.get("secondary_color", "#FFFFFF")};
-                background-color: {current_colors.get("auxiliary_color", "#3D3D3D")};
-                border: 1px solid {current_colors.get("normal_color", "#717171")};
+                color: {current_colors.get('secondary_color', '#FFFFFF')};
+                background-color: {current_colors.get('auxiliary_color', '#3D3D3D')};
+                border: 1px solid {current_colors.get('normal_color', '#717171')};
             }}
             QListWidget::item:selected {{
-                color: {current_colors.get("secondary_color", "#FFFFFF")};
+                color: {current_colors.get('secondary_color', '#FFFFFF')};
                 background-color: {selected_bg_color};
-                border: 1px solid {current_colors.get("accent_color", "#B036EE")};
+                border: 1px solid {accent_color};
             }}
             QListWidget::item:selected:focus, QListWidget::item:focus {{
                 outline: none;
-                border: 1px solid {current_colors.get("accent_color", "#B036EE")};
+                border: 1px solid {accent_color};
             }}
             QListWidget:focus, QListWidget::item:focus, QListWidget::item:selected:focus {{
                 outline: none;

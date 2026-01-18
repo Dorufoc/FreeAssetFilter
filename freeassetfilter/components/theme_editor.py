@@ -36,17 +36,17 @@ class ThemeEditor(QScrollArea):
         
         # 预设主题数据
         self.preset_themes = [
-            {"name": "活力蓝", "colors": ["#0A59F7", "#3F3F3F", "#808080", "#E6E6E6"]},
-            {"name": "热情红", "colors": ["#FC5454", "#3F3F3F", "#808080", "#E6E6E6"]},
-            {"name": "蜂蜜黄", "colors": ["#F0C54D", "#3F3F3F", "#808080", "#E6E6E6"]},
-            {"name": "宝石青", "colors": ["#58D9C0", "#3F3F3F", "#808080", "#E6E6E6"]},
-            {"name": "魅力紫", "colors": ["#B036EE", "#3F3F3F", "#808080", "#E6E6E6"]},
-            {"name": "清雅墨", "colors": ["#383F4C", "#3F3F3F", "#808080", "#E6E6E6"]}
+            {"name": "活力蓝", "colors": ["#0A59F7"]},
+            {"name": "热情红", "colors": ["#FC5454"]},
+            {"name": "蜂蜜黄", "colors": ["#F0C54D"]},
+            {"name": "宝石青", "colors": ["#58D9C0"]},
+            {"name": "魅力紫", "colors": ["#B036EE"]},
+            {"name": "清雅墨", "colors": ["#383F4C"]}
         ]
         
         # 自定义主题数据
         self.custom_themes = [
-            {"name": "自定义设计1", "colors": ["#27BE24", "#000000", "#808080", "#D9D9D9"]}
+            {"name": "自定义设计1", "colors": ["#27BE24"]}
         ]
         
         # 加载当前主题设置
@@ -77,16 +77,16 @@ class ThemeEditor(QScrollArea):
             return [
                 accent_color,       # 强调色保持不变
                 "#FFFFFF",        # secondary_color (文字颜色)
-                "#8C8C8C",        # normal_color
-                "#515151"         # auxiliary_color
+                "#717171",        # normal_color
+                "#313131"         # auxiliary_color
             ]
         else:
             # 浅色模式颜色
             return [
                 accent_color,       # 强调色保持不变
-                "#3F3F3F",        # secondary_color (文字颜色)
-                "#808080",        # normal_color
-                "#E6E6E6"         # auxiliary_color
+                "#333333",        # secondary_color (文字颜色)
+                "#e0e0e0",        # normal_color
+                "#f3f3f3"         # auxiliary_color
             ]
     
     def _check_current_theme_match(self):

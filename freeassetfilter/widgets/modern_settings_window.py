@@ -527,7 +527,7 @@ class ModernSettingsWindow(QDialog):
                     "base_color": "#FFFFFF",          # 用户要求的浅色底层色
                     "secondary_color": "#333333",      # 浅色模式下文字颜色为黑色
                     "normal_color": "#e0e0e0",        # 浅色模式下普通色
-                    "auxiliary_color": "#f1f3f5"      # 浅色模式下辅助色
+                    "auxiliary_color": "#f1f3f3"      # 浅色模式下辅助色
                 }
                 # 更新当前设置中的所有颜色
                 for color_key, color_value in light_colors.items():
