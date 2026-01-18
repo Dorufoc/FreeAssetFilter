@@ -431,15 +431,26 @@ class UnifiedPreviewer(QWidget):
         # 删除临时PDF文件（如果存在）
         print("=== 进入_clear_preview方法 ===")
         print(f"hasattr(temp_pdf_path): {hasattr(self, 'temp_pdf_path')}")
-        if hasattr(self, 'temp_pdf_path'):
+        if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path:
             print(f"temp_pdf_path值: {self.temp_pdf_path}")
             print(f"temp_pdf_path存在: {os.path.exists(self.temp_pdf_path) if self.temp_pdf_path else False}")
-            if self.temp_pdf_path and os.path.exists(self.temp_pdf_path):
-                try:
-                    os.remove(self.temp_pdf_path)
-                    print(f"已删除临时PDF文件: {self.temp_pdf_path}")
-                except Exception as e:
-                    print(f"删除临时PDF文件失败: {e}")
+            
+            # 获取文件名部分，不包含时间戳
+            temp_file_name = os.path.basename(self.temp_pdf_path)
+            base_name = temp_file_name.split('_')[0]  # 获取基础文件名
+            temp_dir = os.path.dirname(self.temp_pdf_path)
+            
+            # 删除所有同名但不同时间戳的临时文件
+            import glob
+            old_pdf_files = glob.glob(os.path.join(temp_dir, f"{base_name}_*_temp.pdf"))
+            for old_file in old_pdf_files:
+                if os.path.exists(old_file):
+                    try:
+                        os.remove(old_file)
+                        print(f"已删除旧临时PDF文件: {old_file}")
+                    except Exception as e:
+                        print(f"删除旧临时PDF文件失败: {e}")
+            
             self.temp_pdf_path = None
             print("已重置temp_pdf_path为None")
         print("=== 退出_clear_preview方法 ===")
@@ -464,10 +475,20 @@ class UnifiedPreviewer(QWidget):
             # 如果是文档类型预览，先清理旧的临时PDF文件
             if preview_type == "document":
                 # 清理旧的临时PDF文件
-                if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path and os.path.exists(self.temp_pdf_path):
+                if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path:
                     try:
-                        os.remove(self.temp_pdf_path)
-                        print(f"已删除旧临时PDF文件: {self.temp_pdf_path}")
+                        # 获取文件名部分，不包含时间戳
+                        temp_file_name = os.path.basename(self.temp_pdf_path)
+                        base_name = temp_file_name.split('_')[0]  # 获取基础文件名
+                        temp_dir = os.path.dirname(self.temp_pdf_path)
+                        
+                        # 删除所有同名但不同时间戳的临时文件
+                        import glob
+                        old_pdf_files = glob.glob(os.path.join(temp_dir, f"{base_name}_*_temp.pdf"))
+                        for old_file in old_pdf_files:
+                            if os.path.exists(old_file):
+                                os.remove(old_file)
+                                print(f"已删除旧临时PDF文件: {old_file}")
                     except Exception as e:
                         print(f"删除旧临时PDF文件失败: {e}")
                     finally:
@@ -1268,9 +1289,24 @@ class UnifiedPreviewer(QWidget):
             
             file_name = os.path.basename(file_path)
             base_name = os.path.splitext(file_name)[0]
-            temp_pdf_name = f"{base_name}_temp.pdf"
+            
+            # 生成更唯一的临时文件名，包含时间戳以避免缓存问题
+            import time
+            timestamp = int(time.time())
+            temp_pdf_name = f"{base_name}_{timestamp}_temp.pdf"
             self.temp_pdf_path = os.path.join(temp_dir, temp_pdf_name)
             print(f"临时PDF路径: {self.temp_pdf_path}")
+            
+            # 转换前删除所有可能存在的同名PDF文件（不管时间戳）
+            import glob
+            old_pdf_files = glob.glob(os.path.join(temp_dir, f"{base_name}_*_temp.pdf"))
+            for old_file in old_pdf_files:
+                if os.path.exists(old_file):
+                    try:
+                        os.remove(old_file)
+                        print(f"已删除旧临时PDF文件: {old_file}")
+                    except Exception as e:
+                        print(f"删除旧临时PDF文件失败: {e}")
             
             print(f"正在将文档转换为PDF: {file_path} -> {self.temp_pdf_path}")
             
