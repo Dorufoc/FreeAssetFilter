@@ -273,6 +273,7 @@ class VideoPlayer(QWidget):
         """)
         self.song_name_label.setAlignment(Qt.AlignCenter)
         self.song_name_label.setWordWrap(True)
+        self.song_name_label.setMaximumWidth(350)  # 设置最大宽度限制，确保在容器内正确换行
         
         # 作者名称标签
         self.artist_name_label = QLabel("作者名")
@@ -288,6 +289,7 @@ class VideoPlayer(QWidget):
         """)
         self.artist_name_label.setAlignment(Qt.AlignCenter)
         self.artist_name_label.setWordWrap(True)
+        self.artist_name_label.setMaximumWidth(350)  # 设置最大宽度限制，确保在容器内正确换行
         
         # 音频显示容器
         audio_container_layout = QVBoxLayout(self.audio_container)
@@ -315,6 +317,7 @@ class VideoPlayer(QWidget):
         # 设置音频容器样式
         self.audio_container.setStyleSheet("background-color: transparent;")
         self.audio_container.setMinimumSize(150, 100)
+        self.audio_container.setMaximumWidth(400)  # 设置最大宽度限制，防止布局错乱
         
         # 构建音频叠加布局 - 将所有部件放在同一网格位置
         audio_layout.addWidget(self.background_label, 0, 0)
@@ -1340,108 +1343,62 @@ class VideoPlayer(QWidget):
         Args:
             file_path: 音频文件路径
         """
-        # 初始化默认值
-        song_name = os.path.basename(file_path)
-        artist_name = "未知艺术家"
+        # 根据需求，只显示音频格式图标，不显示其他信息
+        # 所以我们不需要提取和更新歌曲名、艺术家名等信息
         cover_data = None  # 封面数据
         
+        # 直接更新为音频格式图标
+        self._update_audio_icon()
+        
+        # 隐藏歌曲名和艺术家名标签
+        self.song_name_label.hide()
+        self.artist_name_label.hide()
+    
+    def _update_audio_icon(self):
+        """
+        更新音频格式图标显示
+        """
         try:
-            # 根据文件扩展名选择不同的提取方法
-            file_ext = os.path.splitext(file_path)[1].lower()
+            # 获取图标路径
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            icons_path = os.path.join(current_dir, '..', 'icons')
+            icons_path = os.path.abspath(icons_path)
             
-            if file_ext == '.mp3':
-                # MP3文件处理
-                audio = ID3(file_path)
-                # 获取元数据
-                if 'TIT2' in audio:
-                    song_name = audio['TIT2'].text[0]
-                if 'TPE1' in audio:
-                    artist_name = audio['TPE1'].text[0]
-                # 提取封面
-                if 'APIC:' in audio:
-                    cover_data = audio['APIC:'].data
-                elif 'APIC' in audio:
-                    cover_data = audio['APIC'].data
+            # 音频格式图标路径
+            icon_name = "音乐.svg"
+            icon_path = os.path.join(icons_path, icon_name)
             
-            elif file_ext in ['.m4a', '.mp4']:
-                # M4A/MP4文件处理
-                audio = MP4(file_path)
-                # 获取元数据
-                if '\xa9nam' in audio:
-                    song_name = audio['\xa9nam'][0]
-                if '\xa9ART' in audio:
-                    artist_name = audio['\xa9ART'][0]
-                # 提取封面
-                if 'covr' in audio:
-                    cover_data = audio['covr'][0]
+            # 检查文件是否存在
+            if not os.path.exists(icon_path):
+                print(f"[VideoPlayer] 音频图标文件不存在: {icon_path}")
+                return
             
-            elif file_ext == '.flac':
-                # FLAC文件处理
-                audio = FLAC(file_path)
-                # 获取元数据
-                if 'title' in audio:
-                    song_name = audio['title'][0]
-                if 'artist' in audio:
-                    artist_name = audio['artist'][0]
-                # 提取封面
-                for picture in audio.pictures:
-                    if picture.type == 3:  # 封面图片
-                        cover_data = picture.data
-                        break
+            # 计算缩放后的图标大小
+            scaled_cover_size = int(50 * self.dpi_scale)
             
-            elif file_ext == '.ogg':
-                # OGG文件处理
-                audio = OggVorbis(file_path)
-                # 获取元数据
-                if 'title' in audio:
-                    song_name = audio['title'][0]
-                if 'artist' in audio:
-                    artist_name = audio['artist'][0]
-                # OGG文件通常没有内置封面
+            # 加载SVG图标并设置到cover_label
+            from PyQt5.QtSvg import QSvgRenderer
+            from PyQt5.QtGui import QPainter
             
-            elif file_ext == '.wav':
-                # WAV文件处理
-                audio = WAVE(file_path)
-                # WAV文件通常没有内置元数据，使用文件名作为歌曲名
-                song_name = os.path.basename(file_path).replace('.wav', '')
-                # WAV文件通常没有内置封面
+            # 创建SVG渲染器
+            svg_renderer = QSvgRenderer(icon_path)
             
-            elif file_ext == '.aiff':
-                # AIFF文件处理
-                audio = AIFF(file_path)
-                if 'title' in audio:
-                    song_name = audio['title'][0]
-                if 'artist' in audio:
-                    artist_name = audio['artist'][0]
-                # AIFF文件通常没有内置封面
+            # 创建QPixmap用于显示
+            pixmap = QPixmap(scaled_cover_size, scaled_cover_size)
+            pixmap.fill(Qt.transparent)
             
-            elif file_ext == '.ape':
-                # APE文件处理
-                audio = APEv2(file_path)
-                if 'Title' in audio:
-                    song_name = audio['Title'][0]
-                if 'Artist' in audio:
-                    artist_name = audio['Artist'][0]
-                # 提取封面（APE文件封面处理可能需要额外库支持，这里简化处理）
+            # 使用QPainter绘制SVG
+            painter = QPainter(pixmap)
+            svg_renderer.render(painter)
+            painter.end()
             
-            elif file_ext == '.wma':
-                # WMA文件处理
-                audio = ASF(file_path)
-                if 'Title' in audio:
-                    song_name = audio['Title']
-                if 'Author' in audio:
-                    artist_name = audio['Author']
-                # WMA文件封面处理复杂，这里简化处理
-        
+            # 设置到cover_label
+            self.cover_label.setPixmap(pixmap)
+            
         except Exception as e:
-            print(f"[VideoPlayer] 提取音频元数据失败: {e}")
-        
-        # 更新封面显示
-        self._update_cover(cover_data)
-        
-        # 更新UI显示
-        self.song_name_label.setText(song_name)
-        self.artist_name_label.setText(artist_name)
+            print(f"[VideoPlayer] 更新音频格式图标失败: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _update_cover(self, cover_data):
         """
