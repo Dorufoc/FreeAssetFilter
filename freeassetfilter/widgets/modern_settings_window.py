@@ -114,12 +114,18 @@ class ModernSettingsWindow(QDialog):
         # 设置导航栏宽度（根据Figma设计：97px）
         widget.setFixedWidth(97)
         
-        # 设置导航栏样式（Figma：白色背景，10px圆角）
+        # 设置导航栏样式（与main窗口保持一致的边框配色方案）
+        widget.setObjectName("navigationContainer")
         widget.setStyleSheet(f"""
-            QWidget {{ 
+            QWidget#navigationContainer {{ 
                 background-color: {self.theme_manager.get_theme_colors()['base_color']}; 
-                border-radius: 10px;
+                border-radius: 8px;
+                border: 1px solid {self.theme_manager.get_theme_colors()['normal_color']};
+            }}
+            QWidget#navigationContainer > QWidget {{ 
+                background-color: transparent;
                 border: none;
+                border-radius: 0;
             }}
         """)
         
@@ -205,12 +211,18 @@ class ModernSettingsWindow(QDialog):
         widget = QWidget()
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
-        # 设置内容区域样式（Figma：白色背景，10px圆角）
+        # 设置内容区域样式（与main窗口保持一致的边框配色方案）
+        widget.setObjectName("contentContainer")
         widget.setStyleSheet(f"""
-            QWidget {{ 
+            QWidget#contentContainer {{ 
                 background-color: {self.theme_manager.get_theme_colors()['base_color']}; 
-                border-radius: 10px;
+                border-radius: 8px;
+                border: 1px solid {self.theme_manager.get_theme_colors()['normal_color']};
+            }}
+            QWidget#contentContainer > QWidget {{ 
+                background-color: transparent;
                 border: none;
+                border-radius: 0;
             }}
         """)
         
@@ -502,7 +514,7 @@ class ModernSettingsWindow(QDialog):
                     "base_color": "#212121",          # 用户要求的深色底层色
                     "secondary_color": "#FFFFFF",      # 深色模式下文字颜色为白色
                     "normal_color": "#717171",        # 深色模式下普通色
-                    "auxiliary_color": "#3D3D3D"      # 深色模式下辅助色
+                    "auxiliary_color": "#313131"      # 深色模式下辅助色
                 }
                 # 更新当前设置中的所有颜色
                 for color_key, color_value in dark_colors.items():
@@ -512,7 +524,7 @@ class ModernSettingsWindow(QDialog):
             else:  # 浅色主题
                 # 定义浅色主题的完整颜色集
                 light_colors = {
-                    "base_color": "#f1f3f5",          # 用户要求的浅色底层色
+                    "base_color": "#FFFFFF",          # 用户要求的浅色底层色
                     "secondary_color": "#333333",      # 浅色模式下文字颜色为黑色
                     "normal_color": "#e0e0e0",        # 浅色模式下普通色
                     "auxiliary_color": "#f1f3f5"      # 浅色模式下辅助色

@@ -19,6 +19,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPainter, QPixmap, QImage
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from PyQt5.QtWidgets import QWidget, QLabel
+from PyQt5.QtGui import QGuiApplication
 import os
 
 # 导入设置管理器
@@ -154,6 +155,7 @@ class SvgRenderer:
             label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
             label.setAttribute(Qt.WA_TranslucentBackground, True)
             pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
+            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
             label.setPixmap(pixmap)
             return label
@@ -299,6 +301,7 @@ class SvgRenderer:
             else:
                 # 如果加载失败，创建一个默认的透明图标
                 pixmap = QPixmap(icon_size, icon_size)
+                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 pixmap.fill(Qt.transparent)
                 label.setPixmap(pixmap)
             
@@ -310,6 +313,7 @@ class SvgRenderer:
             label.setAlignment(Qt.AlignCenter)
             label.setFixedSize(icon_size, icon_size)
             pixmap = QPixmap(icon_size, icon_size)
+            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
             label.setPixmap(pixmap)
             return label
@@ -344,6 +348,7 @@ class SvgRenderer:
         if not icon_path or not os.path.exists(icon_path):
             # 如果路径无效，返回透明像素图
             pixmap = QPixmap(scaled_width, scaled_height)
+            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
             return pixmap
         
@@ -364,6 +369,7 @@ class SvgRenderer:
             # 使用256x256的超分辨率进行渲染，确保图标清晰
             render_size = 256
             pixmap = QPixmap(render_size, render_size)
+            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
             
             painter = QPainter(pixmap)
@@ -401,7 +407,8 @@ class SvgRenderer:
             # 如果指定了宽度和高度，按指定比例缩放；否则保持1:1比例
             final_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
-            # 不再需要设置设备像素比，Qt会自动处理
+            # 设置设备像素比，确保在高分屏上正确渲染
+            final_pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             
             if not final_pixmap.isNull():
                 return final_pixmap
@@ -413,6 +420,7 @@ class SvgRenderer:
         
         # 如果所有方法都失败，返回透明像素图
         pixmap = QPixmap(scaled_width, scaled_height)
+        pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         pixmap.fill(Qt.transparent)
         return pixmap
     
@@ -441,6 +449,7 @@ class SvgRenderer:
             label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
             label.setAttribute(Qt.WA_TranslucentBackground, True)
             pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
+            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
             label.setPixmap(pixmap)
             return label
@@ -518,6 +527,7 @@ class SvgRenderer:
             
             # 创建一个透明的QPixmap用于绘制最终结果
             final_pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
+            final_pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             final_pixmap.fill(Qt.transparent)
             
             # 创建画家
@@ -607,6 +617,7 @@ class SvgRenderer:
         if not svg_string:
             # 如果SVG字符串为空，返回透明像素图
             pixmap = QPixmap(icon_size, icon_size)
+            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
             return pixmap
         
@@ -672,6 +683,7 @@ class SvgRenderer:
             
             # 创建一个透明背景的QPixmap
             pixmap = QPixmap(render_size, render_size)
+            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
             
             # 创建画家，设置透明背景和高质量渲染
@@ -698,5 +710,6 @@ class SvgRenderer:
         
         # 如果所有方法都失败，返回透明像素图
         pixmap = QPixmap(icon_size, icon_size)
+        pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         pixmap.fill(Qt.transparent)
         return pixmap

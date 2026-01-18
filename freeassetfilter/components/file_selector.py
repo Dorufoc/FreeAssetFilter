@@ -2356,6 +2356,7 @@ class CustomFileSelector(QWidget):
             
             # 创建一个新的Pixmap，用于绘制叠加图标
             combined_pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
+            combined_pixmap.setDevicePixelRatio(self.devicePixelRatio())
             combined_pixmap.fill(Qt.transparent)
 
             

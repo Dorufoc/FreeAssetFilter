@@ -543,6 +543,8 @@ def hicon_to_pixmap(hicon, size, qt_app):
                 # 如果图像已经是目标大小，直接返回
                 if width == size and height == size:
                     pixmap = QPixmap.fromImage(qimage)
+                    from PyQt5.QtGui import QGuiApplication
+                    pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                     return pixmap
                 
                 # 使用PIL进行高质量缩放和处理
@@ -588,6 +590,8 @@ def hicon_to_pixmap(hicon, size, qt_app):
                 
                 # 转换为QPixmap
                 pixmap = QPixmap.fromImage(processed_qimage)
+                from PyQt5.QtGui import QGuiApplication
+                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 
                 return pixmap
             finally:
@@ -674,6 +678,8 @@ def hicon_to_pixmap(hicon, size, qt_app):
                     
                     # 创建最终Pixmap
                     pixmap = QPixmap.fromImage(scaled_qimage)
+                    from PyQt5.QtGui import QGuiApplication
+                    pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                     
                     return pixmap
                 finally:
