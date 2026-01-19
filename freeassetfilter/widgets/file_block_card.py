@@ -147,9 +147,8 @@ class FileBlockCard(QWidget):
         suffix = self.file_info.get("suffix", "").lower()
         
         try:
-            if not is_dir and suffix in ["lnk", "exe"]:
-                base_icon_size = int(38 * self.dpi_scale)
-                scaled_icon_size = int(base_icon_size * 0.8)
+            if not is_dir and suffix in ["lnk", "exe", "url"]:
+                scaled_icon_size = int(38 * self.dpi_scale)
                 
                 try:
                     from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
@@ -172,7 +171,6 @@ class FileBlockCard(QWidget):
                 scaled_icon_size = int(base_icon_size * 1.0)
                 
                 pixmap = QPixmap(thumbnail_path)
-                pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self._set_icon_pixmap(pixmap, scaled_icon_size)
                 return
             

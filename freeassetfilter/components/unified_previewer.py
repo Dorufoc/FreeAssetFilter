@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox, QApplication
+    QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox, QApplication, QSplitter
 )
 
 # 导入自定义按钮
@@ -159,42 +159,37 @@ class UnifiedPreviewer(QWidget):
         scaled_font_size = int(6 * self.dpi_scale)
         scaled_control_margin = int(2 * self.dpi_scale)
         
-        # 创建主布局
+        # 创建主布局 - 使用QSplitter实现可拖拽调整
         main_layout = QVBoxLayout(self)
-        # 获取主题颜色
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
+        background_color = "#2D2D2D"
         if hasattr(app, 'settings_manager'):
             background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
         self.setStyleSheet(f"background-color: {background_color};")
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
-        # 创建标题
-        #title_label = QLabel("统一文件预览器")
-        # 只设置字体大小和粗细，不指定字体名称，使用全局字体
-        font = QFont("", scaled_font_size, QFont.Bold)
-        #title_label.setFont(font)
-        #main_layout.addWidget(title_label)
+        # 创建垂直分割器，实现预览区域和文件信息区域的拖拽调整
+        self.content_splitter = QSplitter(Qt.Vertical)
+        self.content_splitter.setContentsMargins(0, 0, 0, 0)
+        self.content_splitter.setHandleWidth(int(4 * self.dpi_scale))
         
         # 创建预览内容区域
         self.preview_area = QWidget()
+        self.preview_area.setStyleSheet(f"background-color: {background_color};")
         self.preview_layout = QVBoxLayout(self.preview_area)
         
         # 创建预览控制栏（右上角按钮）- 放在预览组件上方
         self.control_layout = QHBoxLayout()
-        self.control_layout.setContentsMargins(0, 0, 0, scaled_control_margin)  # 底部添加间距，应用DPI缩放
+        self.control_layout.setContentsMargins(0, 0, 0, scaled_control_margin)
         self.control_layout.setAlignment(Qt.AlignRight)
         
-        # 移除全局设置按钮，移到main窗口底部
-        
-        self.preview_layout.addLayout(self.control_layout)  # 控制栏放在最上方
+        self.preview_layout.addLayout(self.control_layout)
         
         # 添加默认提示信息
         self.default_label = QLabel("请选择一个文件进行预览")
         self.default_label.setAlignment(Qt.AlignCenter)
         
-        # 从app对象获取全局默认字体大小和DPI缩放因子
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 14)
         dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -203,10 +198,12 @@ class UnifiedPreviewer(QWidget):
         self.default_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999;")
         self.preview_layout.addWidget(self.default_label)
         
-        main_layout.addWidget(self.preview_area, 2)
+        # 将预览区域添加到分割器
+        self.content_splitter.addWidget(self.preview_area)
         
         # 创建文件信息区域
         self.info_group = QGroupBox(" ")
+        self.info_group.setStyleSheet(f"background-color: {background_color};")
         self.info_layout = QVBoxLayout(self.info_group)
         self.info_layout.setContentsMargins(5, 5, 5, 5)
         
@@ -214,14 +211,24 @@ class UnifiedPreviewer(QWidget):
         self.file_info_widget = self.file_info_viewer.get_ui()
         self.info_layout.addWidget(self.file_info_widget)
         
-        main_layout.addWidget(self.info_group, 1)
+        # 将文件信息区域添加到分割器
+        self.content_splitter.addWidget(self.info_group)
+        
+        # 设置分割器初始比例 (预览区域:文件信息区域 = 2:1)
+        total_height = 600  # 默认总高度
+        preview_height = int(total_height * (2/3))
+        info_height = int(total_height * (1/3))
+        self.content_splitter.setSizes([preview_height, info_height])
+        
+        # 将分割器添加到主布局
+        main_layout.addWidget(self.content_splitter, 1)
         
         # 创建"使用系统默认方式打开"按钮并放在最底部
         self.open_with_system_button = CustomButton("使用系统默认方式打开", button_type="secondary")
-        self.open_with_system_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)  # 设置按钮宽度扩展
+        self.open_with_system_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.open_with_system_button.clicked.connect(self._open_file_with_system)
-        self.open_with_system_button.hide()  # 默认隐藏
-        main_layout.addWidget(self.open_with_system_button)  # 添加到主布局底部
+        self.open_with_system_button.hide()
+        main_layout.addWidget(self.open_with_system_button)
     
     def set_file(self, file_info):
         """

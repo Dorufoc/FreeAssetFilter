@@ -227,42 +227,34 @@ class ImageWidget(QWidget):
     
     def calculate_fit_scale(self):
         """
-        计算自适应缩放因子，使图片填充整个控件区域
-        使用"填充"模式：图片填满整个视口，可能裁剪部分内容
+        计算自适应缩放因子，使图片完全显示在控件区域内
+        使用"适应"模式：图片完整显示，可能留白
         """
         try:
             if self.original_image:
-                # 获取设备像素比
                 from PyQt5.QtGui import QGuiApplication
                 device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
                 
-                # 获取可用空间大小（逻辑像素）
                 if hasattr(self.parent(), 'viewport') and self.parent().viewport():
                     viewport_size = self.parent().viewport().size()
                 else:
                     viewport_size = self.size()
                 
-                # 视口已经是逻辑像素大小，不需要再除以device_pixel_ratio
                 available_logical_width = viewport_size.width()
                 available_logical_height = viewport_size.height()
                 
-                # 获取图片的原始像素尺寸（QImage返回的是像素尺寸）
                 image_width = self.original_image.width()
                 image_height = self.original_image.height()
                 
                 if image_width > 0 and image_height > 0:
-                    # 计算缩放因子，使图片填充整个视口
                     width_ratio = available_logical_width / image_width
                     height_ratio = available_logical_height / image_height
                     
-                    # 选择较大的缩放因子，确保图片填满整个区域（可能裁剪）
-                    self.scale_factor = max(width_ratio, height_ratio)
+                    self.scale_factor = min(width_ratio, height_ratio)
                     
-                    # 确保不小于最小缩放比例
                     self.scale_factor = max(self.scale_factor, self.min_scale)
         except Exception as e:
             print(f"计算自适应缩放时出错: {e}")
-            # 使用默认缩放因子
             self.scale_factor = 1.0
     
     def update_image(self):
