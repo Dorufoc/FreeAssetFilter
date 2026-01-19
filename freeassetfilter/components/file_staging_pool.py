@@ -210,7 +210,7 @@ class FileStagingPool(QWidget):
         export_layout = QHBoxLayout()
         
         # 导入/导出数据按钮
-        self.import_export_btn = CustomButton("导入/导出数据", button_type="normal")
+        self.import_export_btn = CustomButton("导入/导出数据", button_type="secondary")
         self.import_export_btn.clicked.connect(self.show_import_export_dialog)
         export_layout.addWidget(self.import_export_btn)
         
