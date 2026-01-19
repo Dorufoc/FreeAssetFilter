@@ -42,11 +42,13 @@ class FileBlockCard(QWidget):
     - clicked: 点击信号，传递file_info
     - right_clicked: 右键点击信号，传递file_info
     - double_clicked: 双击信号，传递file_info
+    - selection_changed: 选中状态变化信号，传递(file_info, is_selected)
     """
     
     clicked = pyqtSignal(dict)
     right_clicked = pyqtSignal(dict)
     double_clicked = pyqtSignal(dict)
+    selection_changed = pyqtSignal(dict, bool)
     
     def __init__(self, file_info, dpi_scale=1.0, parent=None):
         """
@@ -66,6 +68,7 @@ class FileBlockCard(QWidget):
         
         self.file_info = file_info
         self.dpi_scale = dpi_scale
+        self._flexible_width = None
         
         self._is_selected = False
         self._is_hovered = False
@@ -78,6 +81,8 @@ class FileBlockCard(QWidget):
         """设置UI布局和控件"""
         self.setObjectName("FileBlockCard")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
         
         scaled_min_width = int(35 * self.dpi_scale)
         scaled_max_width = int(50 * self.dpi_scale)
@@ -96,17 +101,17 @@ class FileBlockCard(QWidget):
         """初始化颜色配置"""
         try:
             settings_manager = SettingsManager()
-            self.auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#ffffff")
-            self.base_color = settings_manager.get_setting("appearance.colors.base_color", "#e0e0e0")
-            self.normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#4a7abc")
-            self.accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
-            self.secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            self.base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
+            self.auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+            self.normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+            self.accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
+            self.secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
         except Exception:
-            self.auxiliary_color = "#ffffff"
-            self.base_color = "#e0e0e0"
-            self.normal_color = "#4a7abc"
-            self.accent_color = "#1890ff"
-            self.secondary_color = "#333333"
+            self.base_color = "#212121"
+            self.auxiliary_color = "#3D3D3D"
+            self.normal_color = "#717171"
+            self.accent_color = "#B036EE"
+            self.secondary_color = "#FFFFFF"
     
     def _create_layout(self):
         """创建卡片布局"""
@@ -124,7 +129,7 @@ class FileBlockCard(QWidget):
         self.icon_label.setAlignment(Qt.AlignCenter)
         self.icon_label.setStyleSheet("background: transparent; border: none;")
         
-        scaled_icon_size = int(24 * self.dpi_scale)
+        scaled_icon_size = int(32 * self.dpi_scale)
         self.icon_label.setFixedSize(scaled_icon_size, scaled_icon_size)
         
         self._update_icon()
@@ -133,27 +138,105 @@ class FileBlockCard(QWidget):
     
     def _update_icon(self):
         """更新文件图标"""
-        icon_path = self._get_icon_path()
+        file_path = self.file_info.get("path", "")
+        if not file_path:
+            self._set_default_icon()
+            return
         
-        if icon_path and os.path.exists(icon_path):
-            scaled_icon_size = int(24 * self.dpi_scale)
-            svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale)
+        is_dir = self.file_info.get("is_dir", False)
+        suffix = self.file_info.get("suffix", "").lower()
+        
+        try:
+            if not is_dir and suffix in ["lnk", "exe"]:
+                base_icon_size = int(32 * self.dpi_scale)
+                scaled_icon_size = int(base_icon_size * 0.8)
+                
+                try:
+                    from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
+                    hicon = get_highest_resolution_icon(file_path, desired_size=256)
+                    if hicon:
+                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None)
+                        DestroyIcon(hicon)
+                        if pixmap and not pixmap.isNull():
+                            self._set_icon_pixmap(pixmap, scaled_icon_size)
+                            return
+                except Exception:
+                    pass
             
-            for child in self.icon_label.findChildren(QLabel):
-                child.deleteLater()
-            for child in self.icon_label.findChildren(QSvgWidget):
-                child.deleteLater()
+            thumbnail_path = self._get_thumbnail_path(file_path)
+            is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
+            is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
             
-            if isinstance(svg_widget, QSvgWidget):
-                svg_widget.setParent(self.icon_label)
-                svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
-                svg_widget.show()
+            if (is_photo or is_video) and os.path.exists(thumbnail_path):
+                base_icon_size = int(32 * self.dpi_scale)
+                scaled_icon_size = int(base_icon_size * 0.85)
+                
+                pixmap = QPixmap(thumbnail_path)
+                pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self._set_icon_pixmap(pixmap, scaled_icon_size)
+                return
+            
+            icon_path = self._get_icon_path()
+            if icon_path and os.path.exists(icon_path):
+                base_icon_size = int(32 * self.dpi_scale)
+                
+                svg_widget = None
+                if icon_path.endswith("未知底板.svg"):
+                    display_suffix = suffix.upper()
+                    if len(display_suffix) > 5:
+                        display_suffix = "FILE"
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale)
+                elif icon_path.endswith("压缩文件.svg"):
+                    display_suffix = "." + suffix
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale)
+                else:
+                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, base_icon_size, self.dpi_scale)
+                
+                if isinstance(svg_widget, QSvgWidget):
+                    for child in self.icon_label.findChildren((QLabel, QSvgWidget)):
+                        child.deleteLater()
+                    svg_widget.setParent(self.icon_label)
+                    svg_widget.setFixedSize(base_icon_size, base_icon_size)
+                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                    svg_widget.show()
+                elif isinstance(svg_widget, QLabel):
+                    for child in self.icon_label.findChildren((QLabel, QSvgWidget)):
+                        child.deleteLater()
+                    svg_widget.setParent(self.icon_label)
+                    svg_widget.setFixedSize(base_icon_size, base_icon_size)
+                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                    svg_widget.show()
+                else:
+                    self._set_default_icon()
             else:
-                self.icon_label.setPixmap(svg_widget.pixmap())
-        else:
-            pixmap = QPixmap(self.icon_label.size())
-            pixmap.fill(Qt.transparent)
-            self.icon_label.setPixmap(pixmap)
+                self._set_default_icon()
+        except Exception as e:
+            print(f"更新文件图标失败: {e}")
+            self._set_default_icon()
+    
+    def _set_icon_pixmap(self, pixmap, size):
+        """设置图标Pixmap"""
+        scaled_size = int(size * self.devicePixelRatio())
+        if scaled_size > 0:
+            scaled_pixmap = pixmap.scaled(scaled_size, scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
+            self.icon_label.setPixmap(scaled_pixmap)
+    
+    def _set_default_icon(self):
+        """设置默认图标"""
+        pixmap = QPixmap(self.icon_label.size())
+        pixmap.fill(Qt.transparent)
+        self.icon_label.setPixmap(pixmap)
+    
+    def _get_thumbnail_path(self, file_path):
+        """获取缩略图路径"""
+        import hashlib
+        thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+        md5_hash = hashlib.md5(file_path.encode('utf-8'))
+        file_hash = md5_hash.hexdigest()[:16]
+        return os.path.join(thumb_dir, f"{file_hash}.png")
     
     def _get_icon_path(self):
         """获取文件图标路径"""
@@ -164,12 +247,12 @@ class FileBlockCard(QWidget):
         
         suffix = self.file_info.get("suffix", "").lower()
         
-        video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
+        video_formats = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf", "3gp", "vob", "m2ts", "ts", "mts"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
-        document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
-        font_formats = ["ttf", "otf", "woff", "woff2", "eot", "svg"]
-        archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "tar.gz", "tar.bz2", "tar.xz", "tar.lzma", "iso", "cab", "arj", "lzh", "ace", "z"]
+        document_formats = ["pdf", "ppt", "pptx", "xls", "xlsx", "doc", "docx", "txt", "md", "rst", "rtf"]
+        font_formats = ["ttf", "otf", "woff", "woff2", "eot"]
+        archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "iso", "cab", "arj"]
         
         if suffix in video_formats:
             return os.path.join(icon_dir, "视频.svg")
@@ -177,11 +260,11 @@ class FileBlockCard(QWidget):
             return os.path.join(icon_dir, "图像.svg")
         elif suffix == "pdf":
             return os.path.join(icon_dir, "PDF.svg")
-        elif suffix in ["ppt", "pptx", "ppsx"]:
+        elif suffix in ["ppt", "pptx"]:
             return os.path.join(icon_dir, "PPT.svg")
-        elif suffix in ["xls", "xlsx", "csv"]:
+        elif suffix in ["xls", "xlsx"]:
             return os.path.join(icon_dir, "表格.svg")
-        elif suffix in ["doc", "docx", "wps"]:
+        elif suffix in ["doc", "docx"]:
             return os.path.join(icon_dir, "Word文档.svg")
         elif suffix in font_formats:
             return os.path.join(icon_dir, "字体.svg")
@@ -190,7 +273,7 @@ class FileBlockCard(QWidget):
         elif suffix in archive_formats:
             return os.path.join(icon_dir, "压缩文件.svg")
         else:
-            return os.path.join(icon_dir, "文档.svg")
+            return os.path.join(icon_dir, "未知底板.svg")
     
     def _create_labels(self):
         """创建文本标签"""
@@ -225,6 +308,8 @@ class FileBlockCard(QWidget):
         self.time_label.setStyleSheet("background: transparent; border: none;")
         self._update_time_label()
         self.layout.addWidget(self.time_label)
+        
+        self._update_label_styles()
     
     def _update_name_label(self):
         """更新文件名显示"""
@@ -303,7 +388,8 @@ class FileBlockCard(QWidget):
         self.clicked.emit(self.file_info)
     
     def _on_right_click(self, event):
-        """处理右键点击"""
+        """处理右键点击 - 切换选中状态"""
+        self.set_selected(not self._is_selected)
         self.right_clicked.emit(self.file_info)
     
     def _on_double_click(self, event):
@@ -311,37 +397,39 @@ class FileBlockCard(QWidget):
         self.double_clicked.emit(self.file_info)
     
     def _update_styles(self):
-        """更新卡片样式"""
+        """更新卡片和标签的完整样式"""
+        self._update_card_style()
+        self._update_label_styles()
+    
+    def _update_card_style(self):
+        """更新卡片背景色和边框样式"""
+        from PyQt5.QtGui import QColor
+        
         scaled_border_radius = int(6 * self.dpi_scale)
         scaled_border_width = int(1 * self.dpi_scale)
         
         if self._is_selected:
-            self.setStyleSheet(f"""
-                background-color: {self._hex_to_rgba(self.accent_color, 30)};
-                border: {scaled_border_width}px solid {self.accent_color};
-                border-radius: {scaled_border_radius}px;
-            """)
-            self.name_label.setStyleSheet(f"color: {self.secondary_color}; background: transparent; border: none;")
-            self.size_label.setStyleSheet(f"color: {self.secondary_color}; background: transparent; border: none;")
-            self.time_label.setStyleSheet(f"color: {self.secondary_color}; background: transparent; border: none;")
+            qcolor = QColor(self.accent_color)
+            r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+            bg_color = f"rgba({r}, {g}, {b}, 102)"
+            border_color = self.accent_color
         elif self._is_hovered:
-            self.setStyleSheet(f"""
-                background-color: {self._hex_to_rgba(self.accent_color, 10)};
-                border: {scaled_border_width}px solid {self.normal_color};
-                border-radius: {scaled_border_radius}px;
-            """)
-            self.name_label.setStyleSheet(f"color: {self.normal_color}; background: transparent; border: none;")
-            self.size_label.setStyleSheet(f"color: {self.normal_color}; background: transparent; border: none;")
-            self.time_label.setStyleSheet(f"color: {self.normal_color}; background: transparent; border: none;")
+            bg_color = self.auxiliary_color
+            border_color = self.normal_color
         else:
-            self.setStyleSheet(f"""
-                background-color: {self.auxiliary_color};
-                border: {scaled_border_width}px solid {self.base_color};
-                border-radius: {scaled_border_radius}px;
-            """)
-            self.name_label.setStyleSheet(f"color: {self.secondary_color}; background: transparent; border: none;")
-            self.size_label.setStyleSheet(f"color: {self.secondary_color}; background: transparent; border: none;")
-            self.time_label.setStyleSheet(f"color: {self.secondary_color}; background: transparent; border: none;")
+            bg_color = self.base_color
+            border_color = "transparent"
+        
+        self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.update()
+    
+    def _update_label_styles(self):
+        """更新标签颜色样式"""
+        label_style = f"color: {self.secondary_color}; background: transparent; border: none;"
+        self.name_label.setStyleSheet(label_style)
+        self.size_label.setStyleSheet(label_style)
+        self.time_label.setStyleSheet(label_style)
     
     def _hex_to_rgba(self, hex_color, alpha):
         """将十六进制颜色转换为RGBA格式"""
@@ -360,10 +448,12 @@ class FileBlockCard(QWidget):
         Args:
             selected (bool): 是否选中
         """
-        self._is_selected = selected
-        if selected:
-            self._is_hovered = False
-        self._update_styles()
+        if self._is_selected != selected:
+            self._is_selected = selected
+            if selected:
+                self._is_hovered = False
+            self._update_styles()
+            self.selection_changed.emit(self.file_info, selected)
     
     def is_selected(self):
         """获取卡片选中状态"""
@@ -384,5 +474,22 @@ class FileBlockCard(QWidget):
     
     def sizeHint(self):
         """返回建议的大小"""
-        base_width = int(42 * self.dpi_scale)
+        if self._flexible_width is not None:
+            base_width = self._flexible_width
+        else:
+            base_width = int(42 * self.dpi_scale)
         return QSize(base_width, int(80 * self.dpi_scale))
+    
+    def set_flexible_width(self, width):
+        """
+        设置卡片动态宽度
+        
+        Args:
+            width (int): 可用宽度（像素）
+        """
+        self._flexible_width = width
+        min_width = int(35 * self.dpi_scale)
+        max_width = int(500 * self.dpi_scale)
+        constrained_width = max(min_width, min(width, max_width))
+        self.setFixedWidth(constrained_width)
+        self.updateGeometry()

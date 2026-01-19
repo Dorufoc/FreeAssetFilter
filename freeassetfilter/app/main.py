@@ -305,7 +305,7 @@ class FreeAssetFilterApp(QMainWindow):
         right_layout = QVBoxLayout(self.right_column)
         
         # 统一文件预览器
-        self.unified_previewer = UnifiedPreviewer()
+        self.unified_previewer = UnifiedPreviewer(self)
         right_layout.addWidget(self.unified_previewer, 1)
         
         # 将三列添加到分割器，调整初始比例
@@ -325,12 +325,10 @@ class FreeAssetFilterApp(QMainWindow):
         #print(f"[DEBUG] 三列初始宽度: {left_width}, {middle_width}, {right_width}")
         splitter.setSizes(sizes)
         
-        # 连接文件选择器的信号到预览器
-        self.file_selector_a.file_right_clicked.connect(self.unified_previewer.set_file)
-        # 添加左键点击信号连接，用于预览
+        # 连接文件选择器的左键点击信号到预览器
         self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
         
-        # 连接文件选择器的信号到文件临时存储池，根据选择状态自动添加/删除文件
+        # 连接文件选择器的选中状态变化信号到存储池（自动添加/移除）
         self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
         
         # 连接文件临时存储池的信号到预览器
@@ -431,10 +429,11 @@ class FreeAssetFilterApp(QMainWindow):
         """
         更新应用主题，当主题颜色更改时调用
         """
-        # 获取应用实例
         app = QApplication.instance()
-        # 获取基础颜色
-        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")  # 辅助色
+        if app is None:
+            return
+        
+        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
         normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")  # 普通色
         base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")  # 基础色
 
@@ -606,10 +605,8 @@ class FreeAssetFilterApp(QMainWindow):
             is_selected (bool): 是否被选中
         """
         if is_selected:
-            # 文件被选中，添加到临时存储池
             self.file_staging_pool.add_file(file_info)
         else:
-            # 文件被取消选择，从临时存储池移除
             self.file_staging_pool.remove_file(file_info['path'])
     
     def handle_remove_from_selector(self, file_info):
@@ -637,36 +634,12 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 2. 如果文件在当前目录显示，直接更新文件卡片的视觉状态
         if self.file_selector_a.current_path == file_dir:
-            # 遍历当前目录显示的所有文件卡片，找到对应文件的卡片
             for i in range(self.file_selector_a.files_layout.count()):
                 widget = self.file_selector_a.files_layout.itemAt(i).widget()
-                if widget is not None and hasattr(widget, 'file_info'):
-                    # 检查是否是目标文件
+                if widget is not None and hasattr(widget, 'objectName') and widget.objectName() == "FileBlockCard":
                     if widget.file_info['path'] == file_path:
-                        # 直接更新卡片的选中状态和样式，不调用toggle_selection
-                        widget.is_selected = False
-                        # 设置文件卡片样式
-                        border_radius = 8
-                        border_width = 2
-                        padding = 8
-                        widget.setStyleSheet(f"""
-                            QWidget#FileCard {{
-                                background-color: #f1f3f5;
-                                border: {border_width}px solid #e0e0e0;
-                                border-radius: {border_radius}px;
-                                padding: {padding}px;
-                                text-align: center;
-                            }}
-                            QWidget#FileCard:hover {{
-                                border-color: #4a7abc;
-                                background-color: #f0f8ff;
-                            }}
-                        """)
-                        # 恢复标签样式
-                        widget.name_label.setStyleSheet("background: transparent; border: none; color: #333333;")
-                        widget.detail_label.setStyleSheet("background: transparent; border: none; color: #666666;")
-                        if hasattr(widget, 'modified_label'):
-                            widget.modified_label.setStyleSheet("background: transparent; border: none; color: #888888;")
+                        widget.set_selected(False)
+                        break
     
     def check_and_restore_backup(self):
         """
@@ -762,7 +735,13 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 检查设置是否允许恢复上次路径
         app = QApplication.instance()
-        settings_manager = getattr(app, 'settings_manager')
+        if app is None:
+            return
+        
+        settings_manager = getattr(app, 'settings_manager', None)
+        if settings_manager is None:
+            return
+            
         if settings_manager.get_setting("file_selector.restore_last_path", True):
             # 恢复文件选择器的目录
             last_path = selector_state.get('last_path', 'All')

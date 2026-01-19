@@ -20,6 +20,7 @@ import platform
 import sys
 import time
 import ctypes
+import threading
 from ctypes import *
 from PyQt5.QtCore import QObject
 
@@ -229,6 +230,9 @@ class MPVPlayerCore(QObject):
         # MPV实例
         self._mpv = None
         
+        # 线程同步锁，防止MPV实例访问冲突
+        self._mpv_lock = threading.RLock()
+        
         # 事件处理相关
         self._event_thread = None
         self._event_thread_running = False
@@ -388,12 +392,21 @@ class MPVPlayerCore(QObject):
         事件处理循环，用于处理MPV事件
         """
         try:
-            while self._event_thread_running and self._mpv:
-                # 等待事件，超时100ms，避免阻塞线程
-                event = libmpv.mpv_wait_event(self._mpv, 0.1)
+            while self._event_thread_running:
+                # 使用锁保护MPV实例访问，防止与cleanup方法产生竞争条件
+                with self._mpv_lock:
+                    if not self._mpv:
+                        break
+                    # 等待事件，超时100ms，避免阻塞线程
+                    event = libmpv.mpv_wait_event(self._mpv, 0.1)
+                
+                # 检查事件指针是否有效
+                if not event:
+                    continue
                 
                 # 获取事件类型（事件指针的第一个成员）
-                event_type = c_int.from_address(event).value
+                with self._mpv_lock:
+                    event_type = c_int.from_address(event).value
                 
                 # 1. 事件处理前检查：媒体切换状态过滤
                 if self._media_changing:
@@ -410,8 +423,9 @@ class MPVPlayerCore(QObject):
                     ]
                     
                     if event_type not in critical_events:
-                        event_name = libmpv.mpv_event_name(event_type)
-                        event_name_str = event_name.decode('utf-8') if event_name else f"未知事件({event_type})"
+                        with self._mpv_lock:
+                            event_name = libmpv.mpv_event_name(event_type)
+                            event_name_str = event_name.decode('utf-8') if event_name else f"未知事件({event_type})"
                         print(f"[MPVPlayerCore] 媒体正在切换，忽略非关键事件: {event_name_str}")
                         continue
                 
@@ -492,6 +506,7 @@ class MPVPlayerCore(QObject):
                             print(f"[MPVPlayerCore] 播放结束状态设置完成")
                         except Exception as e:
                             print(f"[MPVPlayerCore] 警告: 设置播放结束状态失败 - {e}")
+                        
                 elif event_type == MPV_EVENT_FILE_LOADED:
                     # 处理媒体文件加载完成事件
                     print(f"[MPVPlayerCore] 收到FILE_LOADED事件")
@@ -527,18 +542,18 @@ class MPVPlayerCore(QObject):
                         
                         # 清除待处理的LUT设置
                         self._pending_cube_apply = None
-                    
-                    # 媒体加载完成后，检查并恢复播放状态
-                    try:
-                        # 如果媒体正在改变，不恢复播放状态
-                        if not is_media_changing:
-                            # 如果是循环播放触发的FILE_LOADED事件，确保继续播放
-                            if self._is_playing:
-                                print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复播放状态")
-                                # 多次尝试设置播放状态，提高成功率
-                                play_attempts = 0
-                                while play_attempts < 3:
-                                    play_attempts += 1
+                        
+                        # 媒体加载完成后，检查并恢复播放状态
+                        try:
+                            # 如果媒体正在改变，不恢复播放状态
+                            if not is_media_changing:
+                                # 如果是循环播放触发的FILE_LOADED事件，确保继续播放
+                                if self._is_playing:
+                                    print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复播放状态")
+                                    # 多次尝试设置播放状态，提高成功率
+                                    play_attempts = 0
+                                    while play_attempts < 3:
+                                        play_attempts += 1
                                     try:
                                         self._set_property_bool('pause', False)
                                         current_pause = self._get_property_bool('pause')
@@ -547,33 +562,34 @@ class MPVPlayerCore(QObject):
                                     except Exception as e:
                                         print(f"[MPVPlayerCore] FILE_LOADED事件：设置播放状态失败 - {e}")
                                     time.sleep(0.1)
-                    except Exception as e:
-                        print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放状态时发生异常 - {e}")
-                    
-                    # 强制刷新视频，防止黑屏
-                    try:
-                        # 保存当前播放速度
-                        current_speed = self._get_property_double('speed')
+                        except Exception as e:
+                            print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放状态时发生异常 - {e}")
+                            
+                            # 强制刷新视频，防止黑屏
+                            try:
+                                # 保存当前播放速度
+                                current_speed = self._get_property_double('speed')
+                                
+                                # 先设置播放速度为1.1，然后立即恢复为1.0
+                                # 这种方式可以触发视频刷新，同时避免在媒体刚加载时的错误
+                                self._execute_command(['set', 'speed', '1.1'])
+                                self._execute_command(['set', 'speed', '1.0'])
+                                print(f"[MPVPlayerCore] FILE_LOADED事件：通过调整播放速度刷新视频")
+                                
+                                # 恢复之前的播放速度
+                                self._set_property_double('speed', current_speed)
+                                print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放速度为: {current_speed}x")
+                            except Exception as e:
+                                # 忽略刷新错误，因为这不会影响播放功能
+                                pass
                         
-                        # 先设置播放速度为1.1，然后立即恢复为1.0
-                        # 这种方式可以触发视频刷新，同时避免在媒体刚加载时的错误
-                        self._execute_command(['set', 'speed', '1.1'])
-                        self._execute_command(['set', 'speed', '1.0'])
-                        print(f"[MPVPlayerCore] FILE_LOADED事件：通过调整播放速度刷新视频")
-                        
-                        # 恢复之前的播放速度
-                        self._set_property_double('speed', current_speed)
-                        print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放速度为: {current_speed}x")
-                    except Exception as e:
-                        # 忽略刷新错误，因为这不会影响播放功能
-                        pass
-                    
-                    # 媒体加载完成后，确保idle事件处理恢复正常
-                    if self._idle_events_ignored:
-                        print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复idle事件处理")
-                        self._idle_events_ignored = False
-                        self._idle_ignore_until = 0.0
-                        self._idle_event_timestamps.clear()
+                        # 媒体加载完成后，确保idle事件处理恢复正常
+                        if self._idle_events_ignored:
+                            print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复idle事件处理")
+                            self._idle_events_ignored = False
+                            self._idle_ignore_until = 0.0
+                            self._idle_event_timestamps.clear()
+                
                 elif event_type == MPV_EVENT_IDLE:
                     # 处理idle事件（播放结束后可能进入此状态）
                     current_time = time.time()
@@ -663,15 +679,16 @@ class MPVPlayerCore(QObject):
                             pass
                 else:
                     # 处理其他事件
-                    event_name = libmpv.mpv_event_name(event_type)
-                    if event_name:
-                        event_name_str = event_name.decode('utf-8')
-                        print(f"[MPVPlayerCore] 收到事件: {event_name_str} (类型: {event_type})")
+                    with self._mpv_lock:
+                        event_name = libmpv.mpv_event_name(event_type)
+                        if event_name:
+                            event_name_str = event_name.decode('utf-8')
+                            print(f"[MPVPlayerCore] 收到事件: {event_name_str} (类型: {event_type})")
                     
         except Exception as e:
-            print(f"[MPVPlayerCore] 错误: 事件循环异常 - {e}")
-            import traceback
-            traceback.print_exc()
+                print(f"[MPVPlayerCore] 错误: 事件循环异常 - {e}")
+                import traceback
+                traceback.print_exc()
         finally:
             self._event_thread_running = False
             print("[MPVPlayerCore] 事件处理线程已退出")
@@ -690,25 +707,25 @@ class MPVPlayerCore(QObject):
             # 1. 设置停止标志
             self._event_thread_running = False
             
-            # 2. 唤醒MPV的事件循环，确保mpv_wait_event能够返回
-            if self._mpv:
-                try:
-                    # 使用非阻塞方式唤醒事件循环，避免在停止过程中阻塞
-                    import threading
-                    def wakeup_mpv():
-                        try:
-                            # 直接调用MPV API唤醒事件循环
-                            libmpv.mpv_wakeup(self._mpv)
-                            print("[MPVPlayerCore] 已直接调用mpv_wakeup唤醒事件循环")
-                        except Exception as e:
-                            print(f"[MPVPlayerCore] 直接唤醒MPV事件循环失败 - {e}")
-                    
-                    # 在单独线程中执行唤醒操作，避免阻塞主线程
-                    wakeup_thread = threading.Thread(target=wakeup_mpv, daemon=True)
-                    wakeup_thread.start()
-                    wakeup_thread.join(timeout=0.5)
-                except Exception as e:
-                    print(f"[MPVPlayerCore] 唤醒MPV事件循环失败 - {e}")
+            # 2. 唤醒MPV的事件循环，确保mpv_wait_event能够返回（使用锁保护）
+            with self._mpv_lock:
+                if self._mpv:
+                    try:
+                        # 使用非阻塞方式唤醒事件循环，避免在停止过程中阻塞
+                        def wakeup_mpv():
+                            try:
+                                # 直接调用MPV API唤醒事件循环
+                                libmpv.mpv_wakeup(self._mpv)
+                                print("[MPVPlayerCore] 已直接调用mpv_wakeup唤醒事件循环")
+                            except Exception as e:
+                                print(f"[MPVPlayerCore] 直接唤醒MPV事件循环失败 - {e}")
+                        
+                        # 在单独线程中执行唤醒操作，避免阻塞主线程
+                        wakeup_thread = threading.Thread(target=wakeup_mpv, daemon=True)
+                        wakeup_thread.start()
+                        wakeup_thread.join(timeout=0.5)
+                    except Exception as e:
+                        print(f"[MPVPlayerCore] 唤醒MPV事件循环失败 - {e}")
             
             # 3. 等待线程退出，最多等待3秒
             start_wait_time = time.time()
@@ -1769,14 +1786,15 @@ class MPVPlayerCore(QObject):
             # 清除窗口绑定
             self.clear_window()
             
-            # 释放MPV实例
-            if self._mpv:
-                try:
-                    libmpv.mpv_terminate_destroy(self._mpv)
-                    print("[MPVPlayerCore] MPV实例已销毁")
-                except Exception as e:
-                    print(f"[MPVPlayerCore] 错误: 销毁MPV实例失败 - {e}")
-                self._mpv = None
+            # 释放MPV实例（使用锁保护，防止与事件线程竞争）
+            with self._mpv_lock:
+                if self._mpv:
+                    try:
+                        libmpv.mpv_terminate_destroy(self._mpv)
+                        print("[MPVPlayerCore] MPV实例已销毁")
+                    except Exception as e:
+                        print(f"[MPVPlayerCore] 错误: 销毁MPV实例失败 - {e}")
+                    self._mpv = None
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 清理资源失败 - {e}")
     

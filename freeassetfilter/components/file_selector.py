@@ -42,6 +42,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
+from freeassetfilter.widgets.file_block_card import FileBlockCard
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
@@ -119,11 +120,30 @@ class CustomFileSelector(QWidget):
         self.resize_timer.setInterval(150)  # 150毫秒延迟，平衡响应速度和刷新频率
         self.resize_timer.timeout.connect(self.refresh_files)  # 定时器超时后刷新
         
+        # 添加定期检查卡片布局的定时器
+        self.layout_check_timer = QTimer(self)
+        self.layout_check_timer.setInterval(5000)  # 每5000ms检查一次
+        self.layout_check_timer.timeout.connect(self._check_card_layout)
+        
+        # 懒加载相关属性
+        self._pending_files = []  # 待加载的文件列表
+        self._loaded_count = 0  # 已加载的卡片数量
+        self._batch_size = 20  # 每批加载的卡片数量
+        self._is_loading = False  # 是否正在加载
+        self._all_files_count = 0  # 文件总数
+        self._lazy_load_timer = QTimer(self)  # 分批加载定时器
+        self._lazy_load_timer.setSingleShot(True)
+        self._lazy_load_timer.setInterval(16)  # 每16ms加载一批（约60fps）
+        self._lazy_load_timer.timeout.connect(self._load_next_batch)
+        
         # 初始化悬浮详细信息组件
         self.hover_tooltip = HoverTooltip(self)
         
         # 初始化UI
         self.init_ui()
+        
+        # 启动定期检查卡片布局的定时器
+        self.layout_check_timer.start()
         
         # 启用拖拽功能
         self.setAcceptDrops(True)
@@ -182,28 +202,6 @@ class CustomFileSelector(QWidget):
                 json.dump({"last_path": self.current_path}, f)
         except Exception as e:
             print(f"保存路径失败: {e}")
-    
-    def _hex_to_rgba(self, hex_color, alpha):
-        """
-        将十六进制颜色转换为带透明度的RGBA格式
-        
-        Args:
-            hex_color: 十六进制颜色字符串，格式为#RRGGBB
-            alpha: 透明度值，范围0-255
-            
-        Returns:
-            带透明度的RGBA颜色字符串，格式为rgba(R, G, B, A)
-        """
-        # 移除#号
-        hex_color = hex_color.lstrip('#')
-        
-        # 将十六进制转换为RGB
-        r = int(hex_color[0:2], 16)
-        g = int(hex_color[2:4], 16)
-        b = int(hex_color[4:6], 16)
-        
-        # 返回RGBA格式
-        return f"rgba({r}, {g}, {b}, {alpha})"
     
     def init_ui(self):
         """
@@ -380,7 +378,8 @@ class CustomFileSelector(QWidget):
         # 创建文件容器
         self.files_container = QWidget()
         self.files_layout = QGridLayout(self.files_container)
-        self.files_container.setStyleSheet(f"QWidget {{ border: 0px solid #e0e0e0; background-color: {base_color}; }}")# 控制文件容器边框
+        self.files_container.setObjectName("FilesContainer")
+        self.files_container.setStyleSheet(f"#FilesContainer {{ border: 0px solid #e0e0e0; background-color: {base_color}; }}")# 控制文件容器边框
         # 应用DPI缩放因子到卡片间距和边距
         scaled_card_spacing = int(5 * self.dpi_scale)
         scaled_card_margin = int(5 * self.dpi_scale)
@@ -1812,73 +1811,104 @@ class CustomFileSelector(QWidget):
         Args:
             callback (callable, optional): 文件卡片生成完成后的回调函数
         """
-        # 生成带时间戳的debug信息
         import datetime
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             print(f"[{timestamp}] [CustomFileSelector.refresh_files] {msg}")
         
         debug("开始刷新文件列表")
-        # 更新路径输入框
         self.path_edit.setText(self.current_path)
         debug(f"更新路径输入框为: {self.current_path}")
         
-        # 更新盘符选择器
         self._update_drive_selector()
         debug("更新盘符选择器")
         
-        # 清空现有文件卡片
         self._clear_files_layout()
         debug("清空现有文件卡片")
         
-        # 获取文件列表
         files = self._get_files()
         debug(f"获取到 {len(files)} 个文件")
         
-        # 应用排序
         files = self._sort_files(files)
         debug("应用排序")
         
-        # 应用筛选
         files = self._filter_files(files)
         debug(f"应用筛选后剩余 {len(files)} 个文件")
         
-        # 创建文件卡片
-        self._create_file_cards(files)
-        debug("创建文件卡片完成")
+        self._all_files_count = len(files)
+        self._pending_files = files
+        self._loaded_count = 0
+        self._is_loading = True
+        self._refresh_callback = callback
         
-        # 更新选中文件计数
-        #self._update_selected_count()
+        debug(f"开始懒加载，共 {self._all_files_count} 个文件，每批 {self._batch_size} 个")
         
-        # 调用回调函数
+        self._lazy_load_timer.start()
+        
         if callback:
-            debug(f"调用回调函数: {callback}")
             callback()
+    
+    def _load_next_batch(self):
+        """分批加载下一批卡片"""
+        if not self._pending_files:
+            self._is_loading = False
+            print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
+            return
+        
+        batch = self._pending_files[:self._batch_size]
+        self._pending_files = self._pending_files[self._batch_size:]
+        
+        self._create_file_cards_batch(batch)
+        self._loaded_count += len(batch)
+        
+        remaining = len(self._pending_files)
+        if remaining > 0:
+            self._lazy_load_timer.start()
+        else:
+            self._is_loading = False
+            print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
+    
+    def _load_remaining_on_scroll(self):
+        """滚动时加载剩余的卡片"""
+        if not self._pending_files or self._is_loading:
+            return
+        
+        self._is_loading = True
+        while self._pending_files:
+            batch = self._pending_files[:self._batch_size]
+            self._pending_files = self._pending_files[self._batch_size:]
+            self._create_file_cards_batch(batch)
+            self._loaded_count += len(batch)
+            
+            if len(self._pending_files) > 0:
+                break
+        
+        if self._pending_files:
+            self._is_loading = False
+            self._lazy_load_timer.start()
+        else:
+            self._is_loading = False
+            print(f"[DEBUG] 滚动加载完成，共加载 {self._loaded_count} 个卡片")
     
     def _clear_files_layout(self):
         """
         彻底清空文件布局，确保所有旧卡片被删除
         """
-        # 首先停止所有正在运行的定时器，避免在清空过程中触发刷新
         self.resize_timer.stop()
+        self._lazy_load_timer.stop()
+        self._pending_files = []
+        self._loaded_count = 0
+        self._is_loading = False
         
-        # 遍历所有布局项，按相反顺序删除，确保索引稳定
         while self.files_layout.count() > 0:
-            # 获取布局项
             item = self.files_layout.itemAt(0)
             if item is not None:
-                # 移除布局项
                 self.files_layout.removeItem(item)
-                
-                # 如果是widget项，彻底删除
                 widget = item.widget()
                 if widget is not None:
-                    # 断开所有信号连接
                     widget.disconnect()
-                    # 删除widget
                     widget.deleteLater()
         
-        # 重置布局状态，确保后续添加卡片时从正确位置开始
         self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
     
     def _get_files(self):
@@ -2013,7 +2043,6 @@ class CustomFileSelector(QWidget):
         实时捕获窗口宽度，通过数值运算确定卡片数量
         完全基于视口宽度动态计算，没有固定限制
         """
-        # 更可靠地获取滚动区域
         scroll_area = None
         parent_widget = self.files_container.parent()
         while parent_widget and not isinstance(parent_widget, QScrollArea):
@@ -2021,77 +2050,258 @@ class CustomFileSelector(QWidget):
         if parent_widget:
             scroll_area = parent_widget
         else:
-            # 如果无法获取滚动区域，返回默认值
             return 3
         
         viewport_width = scroll_area.viewport().width()
+        print(f"[DEBUG] _calculate_max_columns: 视口宽度={viewport_width}")
         
-        # 定义卡片属性，应用DPI缩放
-        card_width = int(70 * self.dpi_scale)  # 卡片固定宽度，考虑DPI缩放
-        spacing = int(5 * self.dpi_scale)  # 卡片之间的间距，考虑DPI缩放
-        actual_margin = int(5 * self.dpi_scale)  # 单边实际边距，与布局设置一致
-        margin = actual_margin * 2  # 左右边距总和
+        card_width = int(70 * self.dpi_scale)
+        spacing = int(5 * self.dpi_scale)
+        actual_margin = int(5 * self.dpi_scale)
+        margin = actual_margin * 2
         
-        # 可用宽度 = 视口宽度 - 左右边距
         available_width = viewport_width - margin
+        print(f"[DEBUG] 可用宽度={available_width}, card_width={card_width}, spacing={spacing}")
         
-        # 初始列数计算：从1列开始尝试
         columns = 1
         max_possible_columns = 0
         
-        # 循环计算最大可能的列数
-        # 总宽度公式：列数 * 卡片宽度 + (列数 - 1) * 间距
         while True:
-            # 计算当前列数下的总宽度
             total_width = columns * card_width + (columns - 1) * spacing
-            
-            # 如果总宽度不超过可用宽度，尝试增加列数
             if total_width <= available_width:
                 max_possible_columns = columns
                 columns += 1
             else:
-                # 总宽度超过可用宽度，退出循环
                 break
         
-        # 确保至少有1列，并且如果接近3列的宽度，强制使用3列
-        # 当可用宽度 >= 3列总宽度 - 10px（容错范围）时，强制使用3列
         three_columns_width = 3 * card_width + 2 * spacing
         if available_width >= three_columns_width - 10:
             max_possible_columns = max(max_possible_columns, 3)
         
-        # 确保至少有1列
         max_possible_columns = max(1, max_possible_columns)
-        
-        # 打印调试信息，便于监控计算过程
-        #print(f"[DEBUG] 文件选择器 - 视口宽度: {viewport_width}px, 可用宽度: {available_width}px, 最大列数: {max_possible_columns}")
-        #print(f"[DEBUG] 文件选择器 - 卡片宽度: {card_width}px, 间距: {spacing}px, 边距总和: {margin}px")
-        #print(f"[DEBUG] 文件选择器 - 3列总宽度: {3*card_width + 2*spacing}px, 2列总宽度: {2*card_width + 1*spacing}px")
-        #print(f"[DEBUG] 文件选择器 - DPI缩放因子: {self.dpi_scale}")
-        #print(f"[DEBUG] 文件选择器 - 3列所需最小宽度: {3*card_width + 2*spacing + margin}px")
+        print(f"[DEBUG] 计算得到列数={max_possible_columns}")
         
         return max_possible_columns
     
     def _create_file_cards(self, files):
         """
-        创建文件卡片
+        创建文件卡片（完全加载，用于非懒加载场景）
         """
         row = 0
         col = 0
         
-        # 根据视口宽度计算每行最大卡片数量
         max_cols = self._calculate_max_columns()
         
         for file in files:
             card = self._create_file_card(file)
             self.files_layout.addWidget(card, row, col)
             
-            # 为文件卡片添加悬浮信息功能
             self.hover_tooltip.set_target_widget(card)
             
             col += 1
             if col >= max_cols:
                 col = 0
                 row += 1
+        
+        self._last_max_cols = max_cols
+        self._update_all_cards_width()
+    
+    def _create_file_cards_batch(self, files):
+        """
+        批量创建文件卡片（用于懒加载）
+        
+        Args:
+            files: 文件列表
+        """
+        max_cols = self._calculate_max_columns()
+        
+        current_count = self.files_layout.count()
+        row = current_count // max_cols
+        col = current_count % max_cols
+        
+        for file in files:
+            card = self._create_file_card(file)
+            self.files_layout.addWidget(card, row, col)
+            
+            self.hover_tooltip.set_target_widget(card)
+            
+            col += 1
+            if col >= max_cols:
+                col = 0
+                row += 1
+        
+        if not hasattr(self, '_last_max_cols') or self._last_max_cols != max_cols:
+            self._last_max_cols = max_cols
+            self._rearrange_cards(max_cols)
+        else:
+            self._last_max_cols = max_cols
+            self._update_all_cards_width()
+    
+    def _calculate_card_width(self):
+        """
+        计算每个卡片可用的动态宽度
+        
+        计算公式:
+        容器总宽度 - (卡片列数 + 1) * 间距 - 容器边距 * 2
+        -----------------------------------------------
+                              卡片列数
+        """
+        container_width = self.files_container.width()
+        print(f"[DEBUG] _calculate_card_width: 容器宽度={container_width}")
+        
+        if container_width <= 0:
+            print(f"[DEBUG] 容器宽度为0，跳过计算")
+            return None
+        
+        max_cols = self._calculate_max_columns()
+        if max_cols <= 0:
+            print(f"[DEBUG] 列数为0，跳过计算")
+            return None
+        
+        spacing = self.files_layout.spacing()
+        margins = self.files_layout.contentsMargins()
+        total_margin = margins.left() + margins.right()
+        
+        available_width = container_width - (max_cols + 1) * spacing - total_margin
+        card_width = available_width // max_cols
+        
+        print(f"[DEBUG] 卡片计算: available_width={available_width}, card_width={card_width}, max_cols={max_cols}")
+        
+        return card_width
+    
+    def _rearrange_cards(self, max_cols):
+        """
+        重新排列卡片到新的行列位置
+        
+        Args:
+            max_cols (int): 新的列数
+        """
+        print(f"[DEBUG] _rearrange_cards: 重新排列卡片，新列数={max_cols}")
+        
+        cards = []
+        for i in range(self.files_layout.count()):
+            item = self.files_layout.itemAt(i)
+            if item is not None:
+                widget = item.widget()
+                if widget is not None and hasattr(widget, 'objectName') and widget.objectName() == "FileBlockCard":
+                    cards.append(widget)
+        
+        if not cards:
+            return
+        
+        for i, card in enumerate(cards):
+            row = i // max_cols
+            col = i % max_cols
+            self.files_layout.addWidget(card, row, col)
+            print(f"[DEBUG] 卡片 {i} 移动到 ({row}, {col})")
+    
+    def _update_all_cards_width(self):
+        """更新所有卡片的动态宽度，并重新排列卡片"""
+        print(f"[DEBUG] _update_all_cards_width 被调用")
+        
+        container_width = self.files_container.width()
+        if container_width <= 0:
+            print(f"[DEBUG] 容器宽度为0，50ms后重试")
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(50, self._update_all_cards_width)
+            return
+        
+        max_cols = self._calculate_max_columns()
+        if max_cols <= 0:
+            print(f"[DEBUG] 列数为0，跳过更新")
+            return
+        
+        spacing = self.files_layout.spacing()
+        margins = self.files_layout.contentsMargins()
+        total_margin = margins.left() + margins.right()
+        
+        available_width = container_width - (max_cols + 1) * spacing - total_margin
+        card_width = available_width // max_cols
+        
+        print(f"[DEBUG] 更新: 容器宽度={container_width}, 列数={max_cols}, 卡片宽度={card_width}")
+        
+        if hasattr(self, '_last_max_cols') and self._last_max_cols != max_cols:
+            print(f"[DEBUG] 列数变化: {self._last_max_cols} -> {max_cols}，重新排列卡片")
+            self._rearrange_cards(max_cols)
+        
+        self._last_max_cols = max_cols
+        
+        for i in range(self.files_layout.count()):
+            item = self.files_layout.itemAt(i)
+            if item is not None:
+                widget = item.widget()
+                if widget is not None and hasattr(widget, 'objectName') and widget.objectName() == "FileBlockCard":
+                    if hasattr(widget, 'set_flexible_width'):
+                        widget.set_flexible_width(card_width)
+    
+    def _check_card_layout(self):
+        """
+        定期检查卡片布局状态，确保卡片宽度和数量符合当前显示区域
+        如果布局不正确，则自动调整
+        """
+        if not self.files_container.width() > 0:
+            return
+        
+        container_width = self.files_container.width()
+        max_cols = self._calculate_max_columns()
+        
+        if max_cols <= 0:
+            return
+        
+        spacing = self.files_layout.spacing()
+        margins = self.files_layout.contentsMargins()
+        total_margin = margins.left() + margins.right()
+        
+        available_width = container_width - (max_cols + 1) * spacing - total_margin
+        card_width = available_width // max_cols
+        
+        needs_update = False
+        needs_rearrange = False
+        
+        if hasattr(self, '_last_max_cols') and self._last_max_cols != max_cols:
+            needs_rearrange = True
+        
+        if hasattr(self, '_last_card_width') and self._last_card_width != card_width:
+            needs_update = True
+        
+        if not hasattr(self, '_last_container_width'):
+            self._last_container_width = container_width
+        
+        if not hasattr(self, '_last_max_cols'):
+            self._last_max_cols = max_cols
+        
+        if not hasattr(self, '_last_card_width'):
+            self._last_card_width = card_width
+        
+        if container_width != self._last_container_width:
+            self._last_container_width = container_width
+        
+        if needs_rearrange:
+            print(f"[DEBUG] 定期检查: 检测到列数变化，重新排列卡片")
+            self._rearrange_cards(max_cols)
+            self._last_max_cols = max_cols
+        
+        if needs_update:
+            print(f"[DEBUG] 定期检查: 检测到卡片宽度变化，更新卡片宽度")
+            for i in range(self.files_layout.count()):
+                item = self.files_layout.itemAt(i)
+                if item is not None:
+                    widget = item.widget()
+                    if widget is not None and hasattr(widget, 'objectName') and widget.objectName() == "FileBlockCard":
+                        if hasattr(widget, 'set_flexible_width'):
+                            widget.set_flexible_width(card_width)
+            self._last_card_width = card_width
+        
+        if not needs_rearrange and not needs_update:
+            current_card_width = self._calculate_card_width()
+            if current_card_width is not None:
+                for i in range(self.files_layout.count()):
+                    item = self.files_layout.itemAt(i)
+                    if item is not None:
+                        widget = item.widget()
+                        if widget is not None and hasattr(widget, 'objectName') and widget.objectName() == "FileBlockCard":
+                            if hasattr(widget, '_flexible_width') and widget._flexible_width != current_card_width:
+                                widget.set_flexible_width(current_card_width)
     
     def event(self, event):
         """
@@ -2106,242 +2316,79 @@ class CustomFileSelector(QWidget):
     
     def _create_file_card(self, file_info):
         """
-        创建单个文件卡片
+        创建单个文件卡片（使用FileBlockCard）
         """
-        # 应用DPI缩放因子到卡片尺寸和样式
-        scaled_card_width = int(70 * self.dpi_scale)
-        scaled_border_radius = int(4 * self.dpi_scale)
-        scaled_border_width = int(1 * self.dpi_scale)
-        scaled_padding = int(4 * self.dpi_scale)
-        
-        # 应用DPI缩放因子到内部元素
-        scaled_spacing = int(2.5 * self.dpi_scale)
-        scaled_margin = int(2.5 * self.dpi_scale)
-        scaled_icon_size = int(40 * self.dpi_scale)
-        # 使用全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        
-        # 计算文字标签高度
-        temp_font = QFont(self.global_font)  # 复制全局字体
-        temp_font.setPointSize(scaled_font_size)  # 设置字体大小，应用DPI缩放
-        font_metrics = QFontMetrics(temp_font)
-        font_height = font_metrics.height()
-        
-        # 计算各个元素的总高度
-        # 图标高度 + 文件名高度 + 文件大小高度 + 修改时间高度 + 间距总和 + 边距总和
-        total_height = scaled_icon_size  # 图标高度
-        total_height += font_height * 3  # 三个文字标签的高度
-        total_height += scaled_spacing * 3  # 三个间距（图标与文件名、文件名与大小、大小与修改时间）
-        total_height += scaled_margin * 2  # 上下边距
-        total_height += scaled_padding * 2  # 上下内边距
-        
-        # 确保总高度有一个合理的最小值
-        scaled_card_height = max(int(90 * self.dpi_scale), total_height)
-        
-        # 创建卡片容器
-        card = QWidget()
-        card.setObjectName("FileCard")
-        card.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        card.setMinimumSize(scaled_card_width, scaled_card_height)
-        card.setMaximumSize(scaled_card_width, scaled_card_height)
-        
-        # 获取设置管理器中的颜色值
-        app = QApplication.instance()
-        auxiliary_color = "#ffffff"
-        base_color = "#e0e0e0"
-        normal_color = "#4a7abc"
-        accent_color = "#1890ff"
-        
-        if hasattr(app, 'settings_manager'):
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#ffffff")
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#e0e0e0")
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#4a7abc")
-            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
-        
-        # 保存文件信息到卡片
-        card.file_info = file_info
-
-        # 设置卡片样式
-        # 设置卡片样式
-        css = f"QWidget#FileCard {{ background-color: {auxiliary_color}; border: {scaled_border_width}px solid {base_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ border-color: {normal_color}; background-color: {self._hex_to_rgba(accent_color, 10)}; }}"
-        # 记录初始颜色
-        initial_bg = self.get_color_from_style(css, 'background')
-        initial_border = self.get_color_from_style(css, 'border')
-        self.debug_color_change('初始化', card, '背景色', 'none', initial_bg)
-        self.debug_color_change('初始化', card, '边框色', 'none', initial_border)
-        card.setStyleSheet(css)
-        
-        # 检查文件是否已被选中
         file_path = file_info["path"]
         file_dir = os.path.dirname(file_path)
-        card.is_selected = False
         
-        if file_dir in self.selected_files and file_path in self.selected_files[file_dir]:
-            card.is_selected = True
+        file_dict = {
+            "name": file_info["name"],
+            "path": file_info["path"],
+            "is_dir": file_info["is_dir"],
+            "size": file_info["size"],
+            "created": file_info["created"],
+            "suffix": file_info.get("suffix", "")
+        }
         
-        # 计算文本最大宽度
-        scaled_max_width = int(55 * self.dpi_scale)
+        card = FileBlockCard(file_dict, dpi_scale=self.dpi_scale, parent=self)
+        card.setObjectName("FileBlockCard")
         
-        # 创建卡片布局
-        layout = QVBoxLayout(card)
-        layout.setSpacing(scaled_spacing)
-        layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
-        layout.setAlignment(Qt.AlignCenter)
+        file_dir = os.path.dirname(file_path)
+        is_selected = file_dir in self.selected_files and file_path in self.selected_files[file_dir]
+        if is_selected:
+            card.set_selected(True)
         
-        # 设置图标或缩略图
-        icon_display = self._set_file_icon(file_info)
-        # 确保标签透明，仅显示图标或缩略图
-        if hasattr(icon_display, 'setStyleSheet'):
-            icon_display.setStyleSheet('background: transparent; border: none;')
-        # 添加到布局
-        layout.addWidget(icon_display, alignment=Qt.AlignCenter)
-        
-        # 创建文件名标签
-        name_label = QLabel()
-        # 设置文本
-        text = file_info["name"]
-        # 使用全局字体计算文本宽度
-        temp_font = QFont(self.global_font)  # 复制全局字体
-        temp_font.setPointSize(scaled_font_size)  # 设置字体大小，应用DPI缩放
-        font_metrics = QFontMetrics(temp_font)
-        # 限制文本宽度，根据卡片宽度调整，应用DPI缩放
-        elided_text = font_metrics.elidedText(text, Qt.ElideRight, scaled_max_width)
-        name_label.setText(elided_text)
-        name_label.setAlignment(Qt.AlignCenter)
-        name_label.setWordWrap(False)
-        # 根据字体高度设置最大高度
-        name_label.setMaximumHeight(font_height)
-        # 使用全局字体，并设置字体大小
-        name_label.setFont(temp_font)
-        #print(f"[DEBUG] 文件卡片文件名标签设置字体: {name_label.font().family()}, 大小: {name_label.font().pointSize()}")
-        # 确保标签透明，仅显示文本
-        app = QApplication.instance()
-        secondary_color = "#333333"
-        if hasattr(app, 'settings_manager'):
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-        name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-        layout.addWidget(name_label, alignment=Qt.AlignCenter)
-        
-        # 创建文件大小标签
-        size_label = QLabel()
         if file_info["is_dir"]:
-            size_label.setText("文件夹")
+            card.clicked.connect(lambda f, p=file_path: self._on_folder_clicked(p))
         else:
-            size_label.setText(self._format_size(file_info["size"]))
-        size_label.setAlignment(Qt.AlignCenter)
-        # 使用全局字体，并设置字体大小，应用DPI缩放
-        temp_font = QFont(self.global_font)
-        # 使用全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-        scaled_size_font_size = int(default_font_size * self.dpi_scale // 1.3)
-        temp_font.setPointSize(scaled_size_font_size)
-        size_label.setFont(temp_font)
-        #print(f"[DEBUG] 文件卡片大小标签设置字体: {size_label.font().family()}, 大小: {size_label.font().pointSize()}")
-        # 确保标签透明，仅显示文本
-        app = QApplication.instance()
-        normal_color = "#666666"
-        if hasattr(app, 'settings_manager'):
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#666666")
-        size_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-        layout.addWidget(size_label, alignment=Qt.AlignCenter)
+            card.clicked.connect(lambda f: self.file_selected.emit(f))
+        card.right_clicked.connect(lambda f: self._on_card_right_clicked(f, file_path))
+        card.double_clicked.connect(lambda f: self._on_card_double_clicked(f, file_path))
+        card.selection_changed.connect(lambda f, s: self._on_card_selection_changed(f, s, file_path))
         
-        # 创建修改时间标签
-        modified_label = QLabel()
-        modified_time = QDateTime.fromString(file_info["modified"], Qt.ISODate)
-        modified_label.setText(modified_time.toString("yyyy-MM-dd"))
-        modified_label.setAlignment(Qt.AlignCenter)
-        # 使用全局字体，并设置字体大小，应用DPI缩放
-        temp_font = QFont(self.global_font)
-        # 使用全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-        scaled_modified_font_size = int(default_font_size * self.dpi_scale // 1.3)
-        temp_font.setPointSize(scaled_modified_font_size)
-        modified_label.setFont(temp_font)
-        #print(f"[DEBUG] 文件卡片修改时间标签设置字体: {modified_label.font().family()}, 大小: {modified_label.font().pointSize()}")
-        # 确保标签透明，仅显示文本
-        app = QApplication.instance()
-        normal_color = "#888888"
-        if hasattr(app, 'settings_manager'):
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#888888")
-        modified_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-        layout.addWidget(modified_label, alignment=Qt.AlignCenter)
-        
-        # 保存标签引用到卡片对象
-        card.name_label = name_label
-        card.detail_label = size_label
-        card.modified_label = modified_label
-        card.icon_display = icon_display
-        
-        # 根据is_selected属性设置初始样式，应用DPI缩放
-        scaled_border_radius = int(8 * self.dpi_scale)
-        scaled_border_width = int(2 * self.dpi_scale)
-        scaled_padding = int(8 * self.dpi_scale)
-        
-        # 获取设置管理器中的颜色值
-        app = QApplication.instance()
-        
-        # 直接获取设置管理器实例，确保能获取到设置
-        from freeassetfilter.core.settings_manager import SettingsManager
-        settings_manager = SettingsManager()
-        
-        # 从设置管理器中获取颜色值
-        accent_color = settings_manager.get_setting("appearance.colors.accent_color")
-        secondary_color = settings_manager.get_setting("appearance.colors.secondary_color")
-        auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color")
-        base_color = settings_manager.get_setting("appearance.colors.base_color")
-        normal_color = settings_manager.get_setting("appearance.colors.normal_color")
-
-        if card.is_selected:
-            # 记录选中前的颜色
-            old_style = card.styleSheet()
-            old_bg = self.get_color_from_style(old_style, 'background')
-            old_border = self.get_color_from_style(old_style, 'border')
-            
-            # 更新样式，确保包含hover效果
-            card.setStyleSheet(f"QWidget#FileCard {{ background-color: {self._hex_to_rgba(accent_color, 155)}; border: {scaled_border_width}px solid {accent_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ background-color: {self._hex_to_rgba(accent_color, 155)}; border: {scaled_border_width}px solid {accent_color}; }}")
-            
-            # 记录选中后的颜色
-            new_style = card.styleSheet()
-            new_bg = self.get_color_from_style(new_style, 'background')
-            new_border = self.get_color_from_style(new_style, 'border')
-            self.debug_color_change('选中', card, '背景色', old_bg, new_bg)
-            self.debug_color_change('选中', card, '边框色', old_border, new_border)
-            # 更新文本颜色为secondary_color
-            card.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-            card.detail_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-            card.modified_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-        else:
-            # 获取设置管理器中的颜色值
-            app = QApplication.instance()
-            
-            # 直接获取设置管理器实例，确保能获取到设置
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-            
-            # 从设置管理器中获取颜色值，不使用硬编码默认值
-            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color")
-            base_color = settings_manager.get_setting("appearance.colors.base_color")
-            normal_color = settings_manager.get_setting("appearance.colors.normal_color")
-            accent_color = settings_manager.get_setting("appearance.colors.accent_color")
-            secondary_color = settings_manager.get_setting("appearance.colors.secondary_color")
-
-            card.setStyleSheet(f"QWidget#FileCard {{ background-color: {auxiliary_color}; border: {scaled_border_width}px solid {base_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ border-color: {normal_color}; background-color: {self._hex_to_rgba(accent_color, 10)}; }}")
-            # 更新文本颜色为normal_color
-            card.name_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-            card.detail_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-            card.modified_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-        
-        # 安装事件过滤器，用于处理鼠标事件
-        card.installEventFilter(self)
-        
-        # 将卡片添加到悬浮信息组件的目标控件列表
         self.hover_tooltip.set_target_widget(card)
         
         return card
+    
+    def _on_card_clicked(self, file_info, file_path):
+        """处理卡片左键点击"""
+        self.file_selected.emit(file_info)
+    
+    def _on_folder_clicked(self, file_path):
+        """处理文件夹左键点击 - 直接进入目录"""
+        self.path_edit.setText(file_path)
+        self.go_to_path()
+    
+    def _on_card_right_clicked(self, file_info, file_path):
+        """处理卡片右键点击 - 切换选中状态"""
+        self.file_right_clicked.emit(file_info)
+    
+    def _on_card_selection_changed(self, file_info, is_selected, file_path):
+        """
+        处理卡片选中状态变化
+        
+        Args:
+            file_info (dict): 文件信息
+            is_selected (bool): 是否选中
+            file_path (str): 文件路径
+        """
+        file_dir = os.path.dirname(file_path)
+        if is_selected:
+            if file_dir not in self.selected_files:
+                self.selected_files[file_dir] = set()
+            self.selected_files[file_dir].add(file_path)
+        else:
+            if file_dir in self.selected_files:
+                self.selected_files[file_dir].discard(file_path)
+        self.file_selection_changed.emit(file_info, is_selected)
+    
+    def _on_card_double_clicked(self, file_info, file_path):
+        """处理卡片双击"""
+        if file_info["is_dir"]:
+            self.path_edit.setText(file_info["path"])
+            self.go_to_path()
+        else:
+            self._open_file(file_path)
     
     def _set_file_icon(self, file_info):
         """
@@ -2625,16 +2672,6 @@ class CustomFileSelector(QWidget):
                     label.setPixmap(base_pixmap)
                     
                     return label
-        else:
-            # 如果没有对应的SVG图标，创建一个默认的透明图标
-            scaled_icon_size = int(40 * self.dpi_scale)
-            label = QLabel()
-            label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(scaled_icon_size, scaled_icon_size)
-            pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
-            pixmap.fill(Qt.transparent)
-            label.setPixmap(pixmap)
-            return label
     
     def _get_file_type_pixmap(self, file_info, icon_size=24):
         """
@@ -2760,37 +2797,26 @@ class CustomFileSelector(QWidget):
         事件过滤器，处理文件卡片的鼠标事件和滚动区域的大小变化事件
         """
         # 处理文件卡片的鼠标事件
-        if obj.objectName() == "FileCard":
+        if obj.objectName() == "FileBlockCard":
             if event.type() == QEvent.MouseButtonPress:
-                # 处理鼠标点击事件
                 if event.button() == Qt.LeftButton:
-                    # 左键点击：如果是文件则预览，文件夹则打开
-                    # 生成带时间戳的debug信息
-                    import datetime
-                    def debug(msg):
-                        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-                        print(f"[{timestamp}] [CustomFileSelector] {msg}")
-                    
                     if obj.file_info["is_dir"]:
-                        # 文件夹：打开文件夹，不发出预览信号
-                        debug("左键点击文件夹，准备打开")
-                        self._open_file(obj)
+                        self.go_to_path(obj.file_info["path"])
                     else:
-                        # 文件：打开文件并发出预览信号
-                        debug("左键点击文件，准备打开并预览")
-                        self._open_file(obj)
-                        # 发出文件选择信号用于预览
-                        debug(f"发出file_selected信号，文件信息: {obj.file_info}")
+                        self._open_file_by_path(obj.file_info["path"])
                         self.file_selected.emit(obj.file_info)
                     return True
                 elif event.button() == Qt.RightButton:
-                    # 右键点击：选中/取消选中，不发出预览信号
+                    return False
+                else:
+                    return False
+            elif event.type() == QEvent.MouseButtonDblClick:
+                if event.button() == Qt.LeftButton:
                     if obj.file_info["is_dir"]:
-                        # 文件夹：选中/取消选中
-                        self._toggle_selection(obj)
+                        self.go_to_path(obj.file_info["path"])
                     else:
-                        # 文件：选中/取消选中
-                        self._toggle_selection(obj)
+                        self._open_file_by_path(obj.file_info["path"])
+                        self.file_selected.emit(obj.file_info)
                     return True
         # 处理文件容器的拖放事件
         elif obj == self.files_container:
@@ -2818,118 +2844,15 @@ class CustomFileSelector(QWidget):
                 # 将事件传递给主控件处理
                 self.dropEvent(event)
                 return True
-        # 处理大小变化事件：包括视口和文件容器的大小变化
         elif event.type() == QEvent.Resize:
-            # 使用防抖机制，避免频繁刷新
-            self.resize_timer.start()
+            print(f"[DEBUG] resize事件触发 from {obj.objectName() if hasattr(obj, 'objectName') else str(obj)}")
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(50, self._update_all_cards_width)
+            if self._pending_files and not self._is_loading:
+                QTimer.singleShot(100, self._load_remaining_on_scroll)
             return True
         
         return super().eventFilter(obj, event)
-    
-    def debug_color_change(self, action, card, color_type, old_value, new_value):
-        import datetime
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        print(f"[{timestamp}] [CardColorDebug] 文件: {card.file_info['name']} - {action} {color_type}: {old_value} -> {new_value}")
-
-    def get_color_from_style(self, style, color_type):
-        import re
-        if color_type == 'background':
-            # 支持匹配rgba格式和hex格式
-            match = re.search(r'background-color:\s*([^;]+);', style)
-        elif color_type == 'border':
-            # 优先匹配border-color属性
-            match = re.search(r'border-color:\s*([^;]+);', style)
-            if not match:
-                # 如果没有border-color属性，再匹配border属性中的颜色，支持rgba和hex格式
-                match = re.search(r'border:\s*[^#]+(#[\w]+|rgba?\([^)]+\));', style)
-        else:
-            return 'unknown'
-        return match.group(1) if match else 'unknown'
-
-    def _toggle_selection(self, card, emit_preview=False):
-        """
-        切换文件的选中状态
-        
-        Args:
-            card: 文件卡片对象
-            emit_preview: 是否发出预览信号，默认为False
-        """
-        file_path = card.file_info["path"]
-        file_dir = os.path.dirname(file_path)
-        
-        # 如果当前目录不在selected_files中，添加它
-        if file_dir not in self.selected_files:
-            self.selected_files[file_dir] = set()
-        
-        # 应用DPI缩放因子到样式值
-        scaled_border_radius = int(8 * self.dpi_scale)
-        scaled_border_width = int(2 * self.dpi_scale)
-        scaled_padding = int(8 * self.dpi_scale)
-        
-        # 切换选中状态
-        if file_path in self.selected_files[file_dir]:
-            # 取消选中
-            self.selected_files[file_dir].discard(file_path)
-            card.is_selected = False
-            # 更新样式
-            # 获取设置管理器中的颜色值
-            app = QApplication.instance()
-            auxiliary_color = "#ffffff"
-            base_color = "#e0e0e0"
-            normal_color = "#4a7abc"
-            accent_color = "#1890ff"
-            
-            if hasattr(app, 'settings_manager'):
-                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
-                secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-                auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#ffffff")
-                base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#e0e0e0")
-                normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#4a7abc")            
-            
-            # 记录取消选中前的颜色
-            old_style = card.styleSheet()
-            old_bg = self.get_color_from_style(old_style, 'background')
-            old_border = self.get_color_from_style(old_style, 'border')
-            
-            card.setStyleSheet(f"QWidget#FileCard {{ background-color: {auxiliary_color}; border: {scaled_border_width}px solid {base_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ border-color: {normal_color}; background-color: {self._hex_to_rgba(accent_color, 10)}; }}")
-            
-            # 记录取消选中后的颜色
-            new_style = card.styleSheet()
-            new_bg = self.get_color_from_style(new_style, 'background')
-            new_border = self.get_color_from_style(new_style, 'border')
-            self.debug_color_change('取消选中', card, '背景色', old_bg, new_bg)
-            self.debug_color_change('取消选中', card, '边框色', old_border, new_border)
-            # 更新文本颜色为normal_color
-            card.name_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-            card.detail_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-            card.modified_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-            # 发出选择状态改变信号
-            self.file_selection_changed.emit(card.file_info, False)
-        else:
-            # 选中文件
-            self.selected_files[file_dir].add(file_path)
-            card.is_selected = True
-            # 获取设置管理器中的颜色值
-            app = QApplication.instance()
-            accent_color = "#1890ff"
-            secondary_color = "#333333"
-            if hasattr(app, 'settings_manager'):
-                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
-                secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            # 更新样式，确保包含hover效果
-            card.setStyleSheet(f"QWidget#FileCard {{ background-color: {self._hex_to_rgba(accent_color, 155)}; border: {scaled_border_width}px solid {accent_color}; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px; text-align: center; }} QWidget#FileCard:hover {{ background-color: {self._hex_to_rgba(accent_color, 155)}; border: {scaled_border_width}px solid {accent_color}; }}")
-            # 更新文本颜色为secondary_color
-            card.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-            card.detail_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-            card.modified_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-            # 发出选择信号（仅当emit_preview为True时）
-            if emit_preview:
-                self.file_selected.emit(card.file_info)
-            # 发出选择状态改变信号
-            self.file_selection_changed.emit(card.file_info, True)
-        
-        # 更新选中文件计数
-        #self._update_selected_count()
     
     def _show_context_menu(self, card, pos):
         """
@@ -2957,7 +2880,6 @@ class CustomFileSelector(QWidget):
         """
         打开文件
         """
-        # 生成带时间戳的debug信息
         import datetime
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -2969,11 +2891,34 @@ class CustomFileSelector(QWidget):
         if os.path.exists(file_path):
             if card.file_info["is_dir"]:
                 debug(f"打开目录，进入新路径: {file_path}")
-                # 如果是目录，进入该目录
                 self.current_path = file_path
                 self.refresh_files()
             else:
                 debug(f"打开文件，文件信息: {card.file_info}")
+    
+    def _open_file_by_path(self, file_path):
+        """
+        通过文件路径打开文件或文件夹
+        
+        Args:
+            file_path: 文件或文件夹路径
+        """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileSelector] {msg}")
+        
+        is_dir = os.path.isdir(file_path)
+        debug(f"打开文件: {file_path}, 是否为目录: {is_dir}")
+        
+        if os.path.exists(file_path):
+            if is_dir:
+                debug(f"打开目录，进入新路径: {file_path}")
+                self.current_path = file_path
+                self.path_edit.setText(file_path)
+                self.refresh_files()
+            else:
+                debug(f"打开文件: {file_path}")
     
     def _show_properties(self, card):
         """
@@ -3201,62 +3146,12 @@ class CustomFileSelector(QWidget):
         """
         更新文件选择状态，确保UI显示正确的选中状态
         """
-        # 遍历当前目录显示的所有文件卡片，更新选中状态
         for i in range(self.files_layout.count()):
             widget = self.files_layout.itemAt(i).widget()
             if widget is not None and hasattr(widget, 'file_info'):
                 file_path = widget.file_info['path']
-                # 检查文件是否被选中
                 is_selected = self.current_path in self.selected_files and file_path in self.selected_files[self.current_path]
-                widget.is_selected = is_selected
-                # 更新卡片样式
-                scaled_border_radius = int(8 * self.dpi_scale)
-                scaled_padding = int(8 * self.dpi_scale)
-                # 获取设置管理器中的颜色值
-                app = QApplication.instance()
-                auxiliary_color = "#ffffff"
-                base_color = "#e0e0e0"
-                normal_color = "#4a7abc"
-                accent_color = "#1890ff"
-                secondary_color = "#333333"
-                
-                if hasattr(app, 'settings_manager'):
-                    auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#ffffff")
-                    base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#e0e0e0")
-                    normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#4a7abc")
-                    accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
-                    secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-                
-                if is_selected:
-                    widget.setStyleSheet(f"QWidget#FileCard {{\n" \
-                        f"    background-color: {self._hex_to_rgba(accent_color, 155)};\n" \
-                        f"    border: 2px solid {accent_color};\n" \
-                        f"    border-radius: {scaled_border_radius}px;\n" \
-                        f"    padding: {scaled_padding}px;\n" \
-                        f"    text-align: center;\n" \
-                        f"}}\n")
-                    # 更新标签样式
-                    widget.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-                    widget.detail_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-                    if hasattr(widget, 'modified_label'):
-                        widget.modified_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-                else:
-                    widget.setStyleSheet(f"QWidget#FileCard {{\n" \
-                        f"    background-color: {auxiliary_color};\n" \
-                        f"    border: 2px solid {base_color};\n" \
-                        f"    border-radius: {scaled_border_radius}px;\n" \
-                        f"    padding: {scaled_padding}px;\n" \
-                        f"    text-align: center;\n" \
-                        f"}}\n" \
-                        f"QWidget#FileCard:hover {{\n" \
-                        f"    border-color: {normal_color};\n" \
-                        f"    background-color: {self._hex_to_rgba(accent_color, 10)};\n" \
-                        f"}}\n")
-                    # 恢复标签样式
-                    widget.name_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-                    widget.detail_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
-                    if hasattr(widget, 'modified_label'):
-                        widget.modified_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
+                widget.set_selected(is_selected)
     
     def _show_timeline_window(self):
         """
