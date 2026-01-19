@@ -14,15 +14,15 @@ from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
 # 导入自定义控件
-from .setting_widgets import CustomSettingItem
-from .button_widgets import CustomButton
-from .list_widgets import CustomSelectList
+from freeassetfilter.widgets.setting_widgets import CustomSettingItem
+from freeassetfilter.widgets.button_widgets import CustomButton
+from freeassetfilter.widgets.list_widgets import CustomSelectList
 
 # 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
 
 # 导入主题管理器组件
-from freeassetfilter.components.theme_manager import ThemeManager
+from freeassetfilter.core.theme_manager import ThemeManager
 
 
 class ModernSettingsWindow(QDialog):
@@ -563,7 +563,7 @@ class ModernSettingsWindow(QDialog):
         
         # 字体样式选择
         from PyQt5.QtGui import QFontDatabase
-        from .dropdown_menu import CustomDropdownMenu
+        from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
         font_db = QFontDatabase()
         font_families = font_db.families()
         
@@ -625,7 +625,7 @@ class ModernSettingsWindow(QDialog):
         
         # 字体样式选择
         from PyQt5.QtGui import QFontDatabase
-        from .dropdown_menu import CustomDropdownMenu
+        from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
         font_db = QFontDatabase()
         font_families = font_db.families()
         
@@ -900,7 +900,7 @@ class ModernSettingsWindow(QDialog):
         buttons_layout.setAlignment(Qt.AlignCenter)
         
         # 导入CustomButton
-        from .button_widgets import CustomButton
+        from freeassetfilter.widgets.button_widgets import CustomButton
         
         # 重置按钮（次选按钮）
         reset_button = CustomButton("重置", button_type="secondary", height=20)

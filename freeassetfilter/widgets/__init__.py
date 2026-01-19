@@ -11,6 +11,8 @@ from .input_widgets import CustomInputBox
 from .message_box import CustomWindow, CustomMessageBox
 # 导入自定义文件横向卡片组件
 from .file_horizontal_card import CustomFileHorizontalCard
+# 导入文件块卡片组件
+from .file_block_card import FileBlockCard
 # 导入悬浮详细信息组件
 from .hover_tooltip import HoverTooltip
 # 导入自定义表格组件
@@ -22,6 +24,7 @@ __all__ = [
     'CustomWindow',
     'CustomMessageBox',
     'CustomFileHorizontalCard',
+    'FileBlockCard',
     'HoverTooltip',
     'CustomTimelineTable',
     'CustomMatrixTable'

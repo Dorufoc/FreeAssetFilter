@@ -16,7 +16,7 @@ from .setting_widgets import CustomSettingItem
 from .switch_widgets import CustomSwitch
 from .hover_tooltip import HoverTooltip
 from .table_widgets import CustomTimelineTable
-from .modern_settings_window import ModernSettingsWindow
+from freeassetfilter.components.settings_window import ModernSettingsWindow
 
 # Re-export all widgets
 __all__ = [

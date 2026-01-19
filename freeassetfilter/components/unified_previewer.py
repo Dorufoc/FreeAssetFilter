@@ -91,7 +91,10 @@ class UnifiedPreviewer(QWidget):
         self.idle_detection_timer = QTimer(self)
         self.idle_detection_timer.setInterval(1000)  # 每秒清理一次过期事件
         self.idle_detection_timer.timeout.connect(self._cleanup_idle_events)
-        
+
+        # 保存主窗口引用，避免循环导入和运行时查找
+        self.main_window = parent
+
         # 初始化UI
         self.init_ui()
     
@@ -1451,25 +1454,23 @@ class UnifiedPreviewer(QWidget):
             error_label.setStyleSheet("color: red; font-weight: bold;")
             self.preview_layout.addWidget(error_label)
             self.current_preview_widget = error_label
+
     def _open_global_settings(self):
         """
         打开全局设置窗口
         使用ModernSettingsWindow替代原来的设置窗口
         """
-        from freeassetfilter.widgets.modern_settings_window import ModernSettingsWindow
-        from freeassetfilter.app.main import FreeAssetFilterApp
-        
-        # 查找主窗口作为父对象，确保设置窗口随主窗口关闭而销毁
-        parent_widget = self
-        while parent_widget is not None and not isinstance(parent_widget, FreeAssetFilterApp):
-            parent_widget = parent_widget.parent()
-        
+        from freeassetfilter.components.settings_window import ModernSettingsWindow
+
+        # 使用保存的主窗口引用，避免循环导入
+        parent_widget = self.main_window if self.main_window is not None else self
+
         # 创建现代设置窗口实例，使用主窗口作为父对象
-        settings_window = ModernSettingsWindow(parent_widget if parent_widget is not None else self)
-        
+        settings_window = ModernSettingsWindow(parent_widget)
+
         # 连接设置保存信号到更新主题方法
         settings_window.settings_saved.connect(lambda: self._update_appearance_after_settings_change())
-        
+
         # 显示设置窗口
         settings_window.exec_()
     
