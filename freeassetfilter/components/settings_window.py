@@ -7,7 +7,8 @@ FreeAssetFilter 现代化设置窗口
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QTabWidget, QPushButton, QGroupBox, QSizePolicy, QDialog
+    QTabWidget, QPushButton, QGroupBox, QSizePolicy, QDialog,
+    QApplication
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
@@ -41,19 +42,29 @@ class ModernSettingsWindow(QDialog):
     settings_saved = pyqtSignal(dict)  # 设置保存信号
     
     def __init__(self, parent=None):
-        # 使用Qt.Dialog | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint 标志
-        # 这样可以让对话框支持最大化、最小化和关闭按钮
         super().__init__(parent, Qt.Dialog | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint)
         
-        # 设置窗口标题
         self.setWindowTitle("设置")
-        
-        # 隐藏窗口右下角的拖动区域样式
         self.setSizeGripEnabled(False)
         
-        # 获取设置管理器
-        app = parent if hasattr(parent, 'settings_manager') else None
-        self.settings_manager = getattr(app, 'settings_manager', None) or SettingsManager()
+        self.settings_manager = None
+        if parent is not None:
+            try:
+                if hasattr(parent, 'settings_manager'):
+                    self.settings_manager = parent.settings_manager
+            except (RuntimeError, AttributeError):
+                pass
+        
+        if self.settings_manager is None:
+            try:
+                app = QApplication.instance()
+                if app is not None and hasattr(app, 'settings_manager'):
+                    self.settings_manager = app.settings_manager
+            except (RuntimeError, AttributeError):
+                pass
+        
+        if self.settings_manager is None:
+            self.settings_manager = SettingsManager()
         
         # 初始化主题管理器
         self.theme_manager = ThemeManager(self.settings_manager)
@@ -248,23 +259,53 @@ class ModernSettingsWindow(QDialog):
         # 滚动区域
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet(f"""
-            QScrollArea {{ 
-                background-color: transparent;
+        base_color = self.theme_manager.get_theme_colors()['base_color']
+        auxiliary_color = self.theme_manager.get_theme_colors()['auxiliary_color']
+        normal_color = self.theme_manager.get_theme_colors()['normal_color']
+        secondary_color = self.theme_manager.get_theme_colors()['secondary_color']
+        accent_color = self.theme_manager.get_theme_colors()['accent_color']
+        
+        scrollbar_style = f"""
+            QScrollArea {{
+                border: 0px solid transparent;
+                background-color: {base_color};
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: {base_color};
+            }}
+            QScrollBar:vertical {{
+                width: 6px;
+                background-color: {auxiliary_color};
+                border: 0px solid transparent;
+                border-radius: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {normal_color};
+                min-height: 15px;
+                border-radius: 3px;
                 border: none;
             }}
-            QScrollBar:vertical {{ 
-                width: 6px;
-                background-color: {self.theme_manager.get_theme_colors()['auxiliary_color']}; 
+            QScrollBar::handle:vertical:hover {{
+                background-color: {secondary_color};
+                border: none;
             }}
-            QScrollBar::handle:vertical {{ 
-                background-color: {self.theme_manager.get_theme_colors()['normal_color']}; 
-                border-radius: 3px;
+            QScrollBar::handle:vertical:pressed {{
+                background-color: {accent_color};
+                border: none;
             }}
-            QScrollBar::handle:vertical:hover {{ 
-                background-color: {self.theme_manager.get_theme_colors()['accent_color']}; 
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0px;
+                border: none;
             }}
-        """)
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: none;
+                border: 0px solid transparent;
+                border: none;
+            }}
+        """
+        self.scroll_area.setStyleSheet(scrollbar_style)
         
         # 滚动内容
         self.scroll_content = QWidget()
@@ -498,53 +539,30 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.SWITCH_TYPE,
             initial_value=self.settings_manager.get_setting("appearance.theme", "default") == "dark"
         )
-        # 扩展开关逻辑，同时更新主题模式和底层色
         def on_theme_toggled(value):
-            # 使用主题管理器切换主题
-            updated_colors = self.theme_manager.toggle_theme(value)
-            
-            # 更新当前设置
             theme_value = "dark" if value else "default"
             self.current_settings.update({"appearance.theme": theme_value})
             
-            # 根据主题模式更新所有相关颜色
-            if value:  # 深色主题
-                # 定义深色主题的完整颜色集
+            current_accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
+            
+            if value:
                 dark_colors = {
-                    "base_color": "#212121",          # 用户要求的深色底层色
-                    "secondary_color": "#FFFFFF",      # 深色模式下文字颜色为白色
-                    "normal_color": "#717171",        # 深色模式下普通色
-                    "auxiliary_color": "#313131"      # 深色模式下辅助色
+                    "base_color": "#212121",
+                    "secondary_color": "#FFFFFF",
+                    "normal_color": "#717171",
+                    "auxiliary_color": "#313331"
                 }
-                # 更新当前设置中的所有颜色
                 for color_key, color_value in dark_colors.items():
                     self.current_settings.update({f"appearance.colors.{color_key}": color_value})
-                    # 直接更新设置管理器中的颜色
-                    self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
-            else:  # 浅色主题
-                # 定义浅色主题的完整颜色集
+            else:
                 light_colors = {
-                    "base_color": "#FFFFFF",          # 用户要求的浅色底层色
-                    "secondary_color": "#333333",      # 浅色模式下文字颜色为黑色
-                    "normal_color": "#e0e0e0",        # 浅色模式下普通色
-                    "auxiliary_color": "#f1f3f3"      # 浅色模式下辅助色
+                    "base_color": "#FFFFFF",
+                    "secondary_color": "#333333",
+                    "normal_color": "#e0e0e0",
+                    "auxiliary_color": "#f1f3f3"
                 }
-                # 更新当前设置中的所有颜色
                 for color_key, color_value in light_colors.items():
                     self.current_settings.update({f"appearance.colors.{color_key}": color_value})
-                    # 直接更新设置管理器中的颜色
-                    self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
-            
-            # 保存所有设置到文件
-            self.settings_manager.save_settings()
-            
-            # 应用主题更新到UI
-            app = self.parent() if self.parent() else None
-            if hasattr(app, 'update_theme'):
-                app.update_theme()
-            
-            # 发出设置保存信号，通知其他组件
-            self.settings_saved.emit(self.current_settings)
         
         self.theme_switch.switch_toggled.connect(on_theme_toggled)
         theme_layout.addWidget(self.theme_switch)
@@ -872,121 +890,98 @@ class ModernSettingsWindow(QDialog):
         from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton
         from PyQt5.QtCore import Qt
         
-        # 创建原生Qt对话框
         theme_window = QDialog(self)
         theme_window.setWindowTitle("主题设置")
         theme_window.resize(450, 350)
         
-        # 设置对话框标志
         theme_window.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowCloseButtonHint)
         
-        # 创建主布局
         main_layout = QVBoxLayout(theme_window)
         
-        # 创建主题编辑器
         self.theme_editor = ThemeEditor()
         
-        # 连接主题选择信号
-        self.theme_editor.theme_selected.connect(self._apply_selected_theme)
-        
-        # 连接主题应用完成信号到窗口关闭方法
-        self.theme_editor.theme_applied.connect(theme_window.close)
-        
-        # 添加主题编辑器到布局
         main_layout.addWidget(self.theme_editor)
         
-        # 创建按钮布局
         buttons_layout = QHBoxLayout()
         buttons_layout.setAlignment(Qt.AlignCenter)
         
-        # 导入CustomButton
         from freeassetfilter.widgets.button_widgets import CustomButton
         
-        # 重置按钮（次选按钮）
         reset_button = CustomButton("重置", button_type="secondary", height=20)
         reset_button.clicked.connect(lambda: self.theme_editor.on_reset_clicked())
         buttons_layout.addWidget(reset_button)
         
-        # 应用按钮（强调按钮）
-        apply_button = CustomButton("应用", button_type="primary", height=20)
-        apply_button.clicked.connect(lambda: self.theme_editor.on_apply_clicked())
-        buttons_layout.addWidget(apply_button)
+        confirm_button = CustomButton("确定", button_type="primary", height=20)
+        confirm_button.clicked.connect(lambda: self._on_theme_confirmed(theme_window))
+        buttons_layout.addWidget(confirm_button)
         
-        # 添加按钮布局到主布局
         main_layout.addLayout(buttons_layout)
         
-        # 显示对话框
-        theme_window.show()
+        theme_window.exec_()
+    
+    def _on_theme_confirmed(self, theme_window):
+        """
+        主题颜色确认按钮点击事件
+        将选中的主题强调色应用到 current_settings，并关闭对话框
+        """
+        theme = self.theme_editor.get_selected_theme()
+        if theme and "colors" in theme:
+            accent_color = theme["colors"][0]
+            self.current_settings.update({f"appearance.colors.accent_color": accent_color})
+        
+        theme_window.close()
         
     def _apply_selected_theme(self, theme):
         """
-        应用选中的主题颜色
+        应用选中的主题强调色
         """
         if theme and "colors" in theme:
-            # 更新设置管理器中的颜色设置
-            for color_key, color_value in {
-                "accent_color": theme["colors"][0],
-                "secondary_color": theme["colors"][1],
-                "normal_color": theme["colors"][2],
-                "auxiliary_color": theme["colors"][3]
-            }.items():
-                self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
+            accent_color = theme["colors"][0]
+            self.current_settings.update({f"appearance.colors.accent_color": accent_color})
             
-            # 保存设置
-            self.settings_manager.save_settings()
-            
-            # 发送设置保存信号
-            self.settings_saved.emit(self.current_settings)
-            
-            # 应用主题更新
             self._update_theme_display()
-            
-            # 更新应用程序主题
-            app = self.parent() if hasattr(self, 'parent') and self.parent() else None
-            if hasattr(app, 'update_theme'):
-                app.update_theme()
     
     def _update_theme_display(self):
         """
         更新UI显示的主题颜色
         """
-        # 更新所有样式
         self._update_styles()
         
-        # 获取当前主题颜色
-        theme_colors = self.theme_manager.get_theme_colors()
-        dark2, dark5 = self.theme_manager.get_darkened_auxiliary_colors()
+        base_color = self.current_settings.get("appearance.colors.base_color", "#FFFFFF")
+        secondary_color = self.current_settings.get("appearance.colors.secondary_color", "#333333")
+        normal_color = self.current_settings.get("appearance.colors.normal_color", "#e0e0e0")
+        auxiliary_color = self.current_settings.get("appearance.colors.auxiliary_color", "#f1f3f3")
+        accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
         
-        # 更新窗口背景
+        dark2 = self._darken_color(auxiliary_color, 0.1)
+        dark5 = self._darken_color(auxiliary_color, 0.2)
+        
         self.setStyleSheet(f"""
             QDialog {{ 
-                background-color: {theme_colors['auxiliary_color']}; 
+                background-color: {auxiliary_color}; 
             }}
         """)
         
-        # 更新导航栏样式
         navigation_style = f"""
             QWidget {{ 
-                background-color: {theme_colors['base_color']}; 
+                background-color: {base_color}; 
                 border-radius: 10px;
                 border: none;
             }}
         """
         self.navigation_widget.setStyleSheet(navigation_style)
         
-        # 更新导航标题样式
         title_style = f"""
             QLabel {{ 
                 font-family: 'Noto Sans SC'; 
                 font-size: 10px;
                 font-weight: 400;
-                color: {theme_colors['secondary_color']};
+                color: {secondary_color};
                 margin-bottom: 15px;
                 padding: 5px;
                 text-align: center;
             }}
         """
-        # 查找导航标题并更新样式
         for child in self.navigation_widget.children():
             if isinstance(child, QVBoxLayout):
                 for i in range(child.count()):
@@ -995,10 +990,9 @@ class ModernSettingsWindow(QDialog):
                         item.widget().setStyleSheet(title_style)
                         break
         
-        # 更新导航按钮样式
         card_style = f"""
             QPushButton {{ 
-                background-color: {theme_colors['auxiliary_color']}; 
+                background-color: {auxiliary_color}; 
                 border: none;
                 border-radius: 2px;
                 padding: 0;
@@ -1006,7 +1000,7 @@ class ModernSettingsWindow(QDialog):
                 width: 85px;
                 text-align: center;
                 font-size: 10px;
-                color: {theme_colors['secondary_color']};
+                color: {secondary_color};
                 font-weight: 400;
             }}
             QPushButton:hover {{ 
@@ -1016,30 +1010,28 @@ class ModernSettingsWindow(QDialog):
                 background-color: {dark5}; 
             }}
             QPushButton:checked {{ 
-                background-color: {theme_colors['accent_color']}; 
-                color: {theme_colors['base_color']}; 
+                background-color: {accent_color}; 
+                color: {base_color}; 
             }}
         """
         for button in self.navigation_buttons:
             button.setStyleSheet(card_style)
         
-        # 更新内容区域样式
         content_style = f"""
             QWidget {{ 
-                background-color: {theme_colors['base_color']}; 
+                background-color: {base_color}; 
                 border-radius: 10px;
                 border: none;
             }}
         """
         self.content_area.setStyleSheet(content_style)
         
-        # 更新内容标题样式
         content_title_style = f"""
             QLabel {{ 
                 font-family: 'Noto Sans SC'; 
                 font-size: 14px;
                 font-weight: 600;
-                color: {theme_colors['secondary_color']};
+                color: {secondary_color};
                 margin-bottom: 10px;
                 padding: 5px;
             }}
@@ -1047,6 +1039,9 @@ class ModernSettingsWindow(QDialog):
         self.content_title.setStyleSheet(content_title_style)
         
         # 更新滚动区域样式
+        normal_color = self.current_settings.get("appearance.colors.normal_color", "#e0e0e0")
+        accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
+        
         scroll_style = f"""
             QScrollArea {{ 
                 background-color: transparent;
@@ -1054,14 +1049,14 @@ class ModernSettingsWindow(QDialog):
             }}
             QScrollBar:vertical {{ 
                 width: 6px;
-                background-color: {theme_colors['auxiliary_color']}; 
+                background-color: {auxiliary_color}; 
             }}
             QScrollBar::handle:vertical {{ 
-                background-color: {theme_colors['normal_color']}; 
+                background-color: {normal_color}; 
                 border-radius: 3px;
             }}
             QScrollBar::handle:vertical:hover {{ 
-                background-color: {theme_colors['accent_color']}; 
+                background-color: {accent_color}; 
             }}
         """
         self.scroll_area.setStyleSheet(scroll_style)
@@ -1076,18 +1071,40 @@ class ModernSettingsWindow(QDialog):
     
 
     
+    def _darken_color(self, color_hex, factor):
+        """
+        使颜色变暗
+        
+        Args:
+            color_hex: 十六进制颜色值，如 "#RRGGBB"
+            factor: 变暗因子，0.0-1.0
+            
+        Returns:
+            str: 变暗后的十六进制颜色值
+        """
+        color_hex = color_hex.lstrip('#')
+        r = int(color_hex[0:2], 16)
+        g = int(color_hex[2:4], 16)
+        b = int(color_hex[4:6], 16)
+        
+        r = max(0, int(r * (1 - factor)))
+        g = max(0, int(g * (1 - factor)))
+        b = max(0, int(b * (1 - factor)))
+        
+        return f"#{r:02x}{g:02x}{b:02x}"
+    
     def _update_styles(self):
         """
         更新所有样式表
         """
-        # 获取当前主题颜色
-        theme_colors = self.theme_manager.get_theme_colors()
+        base_color = self.current_settings.get("appearance.colors.base_color", "#FFFFFF")
+        secondary_color = self.current_settings.get("appearance.colors.secondary_color", "#333333")
+        auxiliary_color = self.current_settings.get("appearance.colors.auxiliary_color", "#f1f3f3")
         
-        # 更新分组框样式
         self.group_box_style = f"""
             QGroupBox {{
-                background-color: {theme_colors['base_color']};
-                border: 1px solid {theme_colors['auxiliary_color']};
+                background-color: {base_color};
+                border: 1px solid {auxiliary_color};
                 border-radius: 8px;
                 padding: 10px;
                 margin-bottom: 5px;
@@ -1096,12 +1113,12 @@ class ModernSettingsWindow(QDialog):
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 padding: 0px 10px;
-                color: {theme_colors['secondary_color']};
+                color: {secondary_color};
                 font-weight: 600;
                 font-size: 6px;
                 margin-bottom: 0px;
                 top: -2px;
-                background-color: {theme_colors['base_color']};
+                background-color: {base_color};
             }}
         """
     
@@ -1130,18 +1147,34 @@ class ModernSettingsWindow(QDialog):
         """
         保存设置
         """
-        # 更新设置管理器中的设置
         for key, value in self.current_settings.items():
             self.settings_manager.set_setting(key, value)
         
-        # 保存设置到文件
         self.settings_manager.save_settings()
         
-        # 发出设置保存信号
+        app = self.parent() if self.parent() else None
+        
+        if app and hasattr(app, 'unified_previewer'):
+            try:
+                app.unified_previewer.stop_preview()
+            except Exception:
+                pass
+        
+        self._apply_theme_if_needed()
+        
         self.settings_saved.emit(self.current_settings)
         
-        # 关闭窗口
         self.close()
+    
+    def _apply_theme_if_needed(self):
+        """
+        如果主题设置有变更，应用主题更新
+        """
+        theme_key = "appearance.theme"
+        if theme_key in self.current_settings:
+            app = self.parent() if self.parent() else None
+            if hasattr(app, 'update_theme'):
+                app.update_theme()
     
     def reset_settings(self):
         """

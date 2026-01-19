@@ -121,6 +121,15 @@ class ThemeEditor(QScrollArea):
                 }
                 return
     
+    def get_selected_theme(self):
+        """
+        获取当前选中的主题
+        
+        Returns:
+            dict: 选中的主题信息，包含 name 和 colors，或 None
+        """
+        return self.selected_theme
+    
     def _is_dark_mode(self):
         """
         检查当前是否为深色模式

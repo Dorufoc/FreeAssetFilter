@@ -94,9 +94,60 @@ class UnifiedPreviewer(QWidget):
 
         # 保存主窗口引用，避免循环导入和运行时查找
         self.main_window = parent
+        
+        self._current_settings_window = None
 
         # 初始化UI
         self.init_ui()
+    
+    def stop_preview(self):
+        """
+        安全停止所有预览组件，释放资源
+        在主题更新或设置保存前调用，避免阻塞
+        """
+        try:
+            if hasattr(self, 'current_preview_widget') and self.current_preview_widget:
+                from freeassetfilter.components.video_player import VideoPlayer
+                
+                if isinstance(self.current_preview_widget, VideoPlayer):
+                    try:
+                        self.current_preview_widget.idle_event.disconnect(self._on_video_idle_event)
+                    except (TypeError, RuntimeError):
+                        pass
+                    
+                    player_core = None
+                    if hasattr(self.current_preview_widget, 'player_core'):
+                        player_core = self.current_preview_widget.player_core
+                    
+                    if player_core and hasattr(player_core, '_event_thread_running'):
+                        player_core._event_thread_running = False
+                    
+                    if self.idle_detection_timer and self.idle_detection_timer.isActive():
+                        self.idle_detection_timer.stop()
+                    
+                    self.idle_events.clear()
+                    self.idle_detection_enabled = False
+                    
+                    old_widget = self.current_preview_widget
+                    self.preview_layout.removeWidget(old_widget)
+                    self.current_preview_widget = None
+                    
+                    old_widget.hide()
+                    old_widget.setParent(None)
+                
+                else:
+                    old_widget = self.current_preview_widget
+                    self.preview_layout.removeWidget(old_widget)
+                    self.current_preview_widget.setParent(None)
+                    self.current_preview_widget = None
+            
+            self.current_file_info = None
+            self.is_loading_preview = False
+            
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] 停止预览组件失败: {str(e)}")
+            traceback.print_exc()
     
     def init_ui(self):
         """
@@ -582,12 +633,78 @@ class UnifiedPreviewer(QWidget):
                 scroll_area = QScrollArea()
                 scroll_area.setWidgetResizable(True)
                 
+                app = QApplication.instance()
+                base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+                auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
+                normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+                secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
+                
+                scrollbar_style = f"""
+                    QScrollArea {{
+                        border: 0px solid transparent;
+                        background-color: {base_color};
+                    }}
+                    QScrollArea > QWidget > QWidget {{
+                        background-color: {base_color};
+                    }}
+                    QScrollBar:vertical {{
+                        width: 6px;
+                        background-color: {auxiliary_color};
+                        border: 0px solid transparent;
+                        border-radius: 0px;
+                    }}
+                    QScrollBar::handle:vertical {{
+                        background-color: {normal_color};
+                        min-height: 15px;
+                        border-radius: 3px;
+                        border: none;
+                    }}
+                    QScrollBar::handle:vertical:hover {{
+                        background-color: {secondary_color};
+                        border: none;
+                    }}
+                    QScrollBar::handle:vertical:pressed {{
+                        background-color: {accent_color};
+                        border: none;
+                    }}
+                    QScrollBar::add-line:vertical,
+                    QScrollBar::sub-line:vertical {{
+                        height: 0px;
+                        border: none;
+                    }}
+                    QScrollBar::add-page:vertical,
+                    QScrollBar::sub-page:vertical {{
+                        background: none;
+                        border: 0px solid transparent;
+                        border: none;
+                    }}
+                """
+                scroll_area.setStyleSheet(scrollbar_style)
+                
                 # 创建图片标签
                 image_label = QLabel()
                 pixmap = QPixmap(file_path)
+                
+                # 正确处理DPI缩放
                 from PyQt5.QtGui import QGuiApplication
-                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
-                image_label.setPixmap(pixmap)
+                device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
+                
+                # 计算实际需要的物理像素大小（适应容器大小）
+                container_size = scroll_area.viewport().size()
+                available_width = container_size.width() - 20  # 留出边距
+                available_height = container_size.height() - 20
+                
+                # 缩放pixmap到可用的物理像素大小
+                scaled_pixmap = pixmap.scaled(
+                    int(available_width * device_pixel_ratio),
+                    int(available_height * device_pixel_ratio),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+                scaled_pixmap.setDevicePixelRatio(device_pixel_ratio)
+                
+                image_label.setPixmap(scaled_pixmap)
                 image_label.setAlignment(Qt.AlignCenter)
                 
                 scroll_area.setWidget(image_label)
@@ -1462,32 +1579,112 @@ class UnifiedPreviewer(QWidget):
         """
         from freeassetfilter.components.settings_window import ModernSettingsWindow
 
-        # 使用保存的主窗口引用，避免循环导入
-        parent_widget = self.main_window if self.main_window is not None else self
+        parent_widget = None
+        try:
+            if self.main_window is not None:
+                try:
+                    if hasattr(self.main_window, 'isVisible') and self.main_window.isVisible():
+                        parent_widget = self.main_window
+                except (RuntimeError, AttributeError):
+                    pass
+        except Exception:
+            pass
+        
+        if parent_widget is None:
+            try:
+                if hasattr(self, 'isVisible') and self.isVisible():
+                    parent_widget = self
+            except (RuntimeError, AttributeError):
+                pass
+        
+        if parent_widget is None:
+            app = QApplication.instance()
+            if app is not None:
+                try:
+                    for widget in app.topLevelWidgets():
+                        if hasattr(widget, 'isVisible') and widget.isVisible():
+                            parent_widget = widget
+                            break
+                except (RuntimeError, AttributeError):
+                    pass
+        
+        if parent_widget is None:
+            return
 
-        # 创建现代设置窗口实例，使用主窗口作为父对象
-        settings_window = ModernSettingsWindow(parent_widget)
-
-        # 连接设置保存信号到更新主题方法
-        settings_window.settings_saved.connect(lambda: self._update_appearance_after_settings_change())
-
-        # 显示设置窗口
-        settings_window.exec_()
+        try:
+            if self._current_settings_window is not None:
+                try:
+                    if self._current_settings_window.isVisible():
+                        self._current_settings_window.close()
+                except (RuntimeError, AttributeError):
+                    pass
+                self._current_settings_window = None
+            
+            self._current_settings_window = ModernSettingsWindow(parent_widget)
+            self._current_settings_window.settings_saved.connect(self._update_appearance_after_settings_change)
+            self._current_settings_window.finished.connect(self._on_settings_window_closed)
+            self._current_settings_window.exec_()
+        except (RuntimeError, AttributeError):
+            self._current_settings_window = None
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] 打开设置窗口失败: {str(e)}")
+            traceback.print_exc()
+            self._current_settings_window = None
+    
+    def _on_settings_window_closed(self, result):
+        """设置窗口关闭时的处理"""
+        try:
+            self._current_settings_window = None
+        except (RuntimeError, AttributeError):
+            pass
     
     def _update_appearance_after_settings_change(self):
         """
         设置更新后更新应用外观
         """
-        # 获取应用实例
-        app = QApplication.instance()
-        
-        # 如果有更新主题的方法，调用它
-        if hasattr(app, 'update_theme') and callable(app.update_theme):
-            app.update_theme()
-        
-        # 更新当前窗口的主题
-        if hasattr(self, 'parent') and self.parent() and hasattr(self.parent(), 'update_theme'):
-            self.parent().update_theme()
+        try:
+            app = QApplication.instance()
+            
+            if hasattr(app, 'update_theme') and callable(app.update_theme):
+                app.update_theme()
+            
+            if hasattr(self, 'parent') and self.parent() and hasattr(self.parent(), 'update_theme'):
+                self.parent().update_theme()
+            
+            if self._current_settings_window is not None:
+                try:
+                    if self._current_settings_window.isVisible():
+                        self._refresh_settings_window()
+                except (RuntimeError, AttributeError):
+                    pass
+        except (RuntimeError, AttributeError):
+            pass
+    
+    def _refresh_settings_window(self):
+        """刷新设置窗口样式"""
+        try:
+            if self._current_settings_window is None or not self._current_settings_window.isVisible():
+                return
+            
+            settings_window = self._current_settings_window
+            
+            app = QApplication.instance()
+            if app is None:
+                return
+            
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+            
+            try:
+                settings_window.setStyleSheet(f"""
+                    QDialog {{ 
+                        background-color: {auxiliary_color}; 
+                    }}
+                """)
+            except (RuntimeError, AttributeError):
+                pass
+        except (RuntimeError, AttributeError):
+            pass
 
 # 测试代码
 if __name__ == "__main__":

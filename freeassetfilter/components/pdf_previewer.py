@@ -430,15 +430,21 @@ class PDFPreviewWidget(QWidget):
             # 获取页面
             page = self.pdf_document[page_num]
             
-            # 设置渲染参数
-            mat = fitz.Matrix(self.zoom, self.zoom)
+            # 获取设备像素比
+            from PyQt5.QtGui import QGuiApplication
+            device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
+            
+            # 设置渲染参数（考虑DPI）
+            render_zoom = self.zoom * device_pixel_ratio
+            mat = fitz.Matrix(render_zoom, render_zoom)
             pix = page.get_pixmap(matrix=mat, alpha=False)
             
             # 将Pixmap转换为QImage
             qimage = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
             
-            # 将QImage转换为QPixmap
+            # 将QImage转换为QPixmap并设置DPI
             pixmap = QPixmap.fromImage(qimage)
+            pixmap.setDevicePixelRatio(device_pixel_ratio)
             
             # 创建页面标签并添加到布局
             page_label = QLabel()

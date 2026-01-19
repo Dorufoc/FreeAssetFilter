@@ -360,39 +360,80 @@ class CustomFileSelector(QWidget):
         """
         创建文件列表区域
         """
-        # 获取设置管理器中的颜色值
         app = QApplication.instance()
-        base_color = "#212121"  # 默认base_color
+        base_color = "#212121"
+        auxiliary_color = "#313131"
+        normal_color = "#717171"
+        secondary_color = "#FFFFFF"
+        accent_color = "#F0C54D"
+        
         if hasattr(app, 'settings_manager'):
             base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
         
-        # 创建滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 关闭水平滚动条
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 垂直滚动条按需显示
-        # 设置 QScrollArea 背景色
-        scroll_area.setStyleSheet(f"QScrollArea {{ border: 0px solid {base_color}; background-color: {base_color}; }}")
-        # 设置视口背景色
-        scroll_area.viewport().setStyleSheet(f"background-color: {base_color};")
-        # 创建文件容器
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        scrollbar_style = f"""
+            QScrollArea {{
+                border: 0px solid transparent;
+                background-color: {base_color};
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: {base_color};
+            }}
+            QScrollBar:vertical {{
+                width: 6px;
+                background-color: {auxiliary_color};
+                border: 0px solid transparent;
+                border-radius: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {normal_color};
+                min-height: 15px;
+                border-radius: 3px;
+                border: none;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {secondary_color};
+                border: none;
+            }}
+            QScrollBar::handle:vertical:pressed {{
+                background-color: {accent_color};
+                border: none;
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0px;
+                border: none;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: none;
+                border: 0px solid transparent;
+                border: none;
+            }}
+        """
+        scroll_area.setStyleSheet(scrollbar_style)
+        
         self.files_container = QWidget()
         self.files_layout = QGridLayout(self.files_container)
         self.files_container.setObjectName("FilesContainer")
-        self.files_container.setStyleSheet(f"#FilesContainer {{ border: 0px solid #e0e0e0; background-color: {base_color}; }}")# 控制文件容器边框
-        # 应用DPI缩放因子到卡片间距和边距
+        self.files_container.setStyleSheet(f"#FilesContainer {{ border: 0px solid #e0e0e0; background-color: {base_color}; }}")
         scaled_card_spacing = int(5 * self.dpi_scale)
         scaled_card_margin = int(5 * self.dpi_scale)
-        self.files_layout.setSpacing(scaled_card_spacing)  # 卡片间距随DPI调整
-        self.files_layout.setContentsMargins(scaled_card_margin, scaled_card_margin, scaled_card_margin, scaled_card_margin)  # 卡片边距随DPI调整
-        # 左对齐，按用户要求调整
+        self.files_layout.setSpacing(scaled_card_spacing)
+        self.files_layout.setContentsMargins(scaled_card_margin, scaled_card_margin, scaled_card_margin, scaled_card_margin)
         self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         
         scroll_area.setWidget(self.files_container)
         
-        # 使用事件过滤器监听滚动区域大小变化
         scroll_area.viewport().installEventFilter(self)
-        # 同时监听文件容器的大小变化
         self.files_container.installEventFilter(self)
         
         return scroll_area
@@ -404,8 +445,13 @@ class CustomFileSelector(QWidget):
         status_bar = QFrame()
         status_bar.setFrameShape(QFrame.HLine)
         status_bar.setFrameShadow(QFrame.Sunken)
-        # 隐藏边框
-        status_bar.setStyleSheet("QFrame { border: none; }")
+        
+        app = QApplication.instance()
+        base_color = "#FFFFFF"
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        
+        status_bar.setStyleSheet(f"QFrame {{ border: none; background-color: {base_color}; }}")
         layout = QHBoxLayout(status_bar)
         
 
@@ -2417,8 +2463,9 @@ class CustomFileSelector(QWidget):
                     # 获取最高分辨率图标
                     hicon = get_highest_resolution_icon(file_path, desired_size=256)
                     if hicon:
-                        # 转换为QPixmap
-                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None)
+                        # 转换为QPixmap，传入正确的DPI缩放因子
+                        # 注意：传入base_icon_size作为逻辑像素大小，使pixmap填满label
+                        pixmap = hicon_to_pixmap(hicon, base_icon_size, None, self.devicePixelRatio())
                         DestroyIcon(hicon)  # 释放图标资源
                         
                         if pixmap and not pixmap.isNull():
@@ -2446,12 +2493,19 @@ class CustomFileSelector(QWidget):
                 # 使用最大尺寸获取图标
                 high_res_pixmap = icon.pixmap(max_width, max_height)
                 
-                # 使用高质量缩放算法缩放到目标大小
-                pixmap = high_res_pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                # 使用高质量缩放算法缩放到目标大小，同时处理DPI
+                # 注意：使用base_icon_size使pixmap填满label
+                scaled_pixmap = high_res_pixmap.scaled(
+                    base_icon_size * self.devicePixelRatio(), 
+                    base_icon_size * self.devicePixelRatio(), 
+                    Qt.KeepAspectRatio, 
+                    Qt.SmoothTransformation
+                )
+                scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
                 
                 # 检查是否获取到有效图标
-                if not pixmap.isNull():
-                    label.setPixmap(pixmap)
+                if not scaled_pixmap.isNull():
+                    label.setPixmap(scaled_pixmap)
                     return label
         
         # 检查是否存在已生成的缩略图
@@ -2469,33 +2523,41 @@ class CustomFileSelector(QWidget):
         
         if use_thumbnail:
             # 应用DPI缩放因子到图标大小
-            scaled_icon_size = int(40 * self.dpi_scale)
+            base_icon_size = int(40 * self.dpi_scale)
+            scaled_icon_size = base_icon_size
             
             # 创建标签显示缩略图
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(scaled_icon_size, scaled_icon_size)
+            label.setFixedSize(base_icon_size, base_icon_size)
             
             # 加载缩略图
             pixmap = QPixmap(thumbnail_path)
             
-            # 设置正确的设备像素比
-            pixmap.setDevicePixelRatio(self.devicePixelRatio())
+            # 计算实际像素大小
+            actual_size = int(base_icon_size * self.devicePixelRatio())
             
-            # 缩放缩略图以适应scaled_icon_size的大小（使用逻辑像素）
-            scaled_pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # 使用高质量缩放算法缩放到实际像素大小
+            scaled_pixmap = pixmap.scaled(
+                actual_size, actual_size, 
+                Qt.KeepAspectRatio, 
+                Qt.SmoothTransformation
+            )
+            scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
             
-            # 创建一个新的Pixmap，用于绘制叠加图标
-            combined_pixmap = QPixmap(scaled_icon_size, scaled_icon_size)
-            combined_pixmap.setDevicePixelRatio(self.devicePixelRatio())
+            # 创建一个新的Pixmap用于绘制叠加图标
+            combined_pixmap = QPixmap(base_icon_size, base_icon_size)
             combined_pixmap.fill(Qt.transparent)
-
             
             # 创建画家
             painter = QPainter(combined_pixmap)
             
+            # 计算绘制位置（居中）
+            draw_x = (base_icon_size - scaled_pixmap.width() // self.devicePixelRatio()) // 2
+            draw_y = (base_icon_size - scaled_pixmap.height() // self.devicePixelRatio()) // 2
+            
             # 绘制缩略图
-            painter.drawPixmap((scaled_icon_size - scaled_pixmap.width()) // 2, (scaled_icon_size - scaled_pixmap.height()) // 2, scaled_pixmap)
+            painter.drawPixmap(draw_x, draw_y, scaled_pixmap)
             
             # 加载并绘制对应的文件类型图标
             try:
@@ -2503,18 +2565,16 @@ class CustomFileSelector(QWidget):
                 scaled_overlay_icon_size = int(24 * self.dpi_scale)
                 scaled_margin = int(4 * self.dpi_scale)
                 
-                # 使用现有的_get_file_type_pixmap方法获取文件类型图标，传递缩放后的图标大小
+                # 使用现有的_get_file_type_pixmap方法获取文件类型图标
                 file_type_pixmap = self._get_file_type_pixmap(file_info, icon_size=scaled_overlay_icon_size)
                 
                 # 绘制缩小的图标在右下角
-                # 计算绘制位置，右下角对齐
-                x = scaled_icon_size - scaled_overlay_icon_size - scaled_margin
-                y = scaled_icon_size - scaled_overlay_icon_size - scaled_margin
+                x = base_icon_size - scaled_overlay_icon_size - scaled_margin
+                y = base_icon_size - scaled_overlay_icon_size - scaled_margin
                 
                 # 绘制文件类型图标
                 painter.drawPixmap(x, y, file_type_pixmap)
             except Exception as e:
-                # 如果叠加图标失败，不影响主要缩略图显示
                 print(f"叠加文件类型图标失败: {e}")
             finally:
                 painter.end()
@@ -2750,6 +2810,20 @@ class CustomFileSelector(QWidget):
             else:
                 # 未知文件类型使用未知底板图标
                 icon_path = os.path.join(icon_dir, "未知底板.svg")
+
+        # 对于未知文件类型和压缩文件类型，需要传递后缀名信息
+        if icon_path and (icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg")):
+            suffix_text = ""
+            if icon_path.endswith("压缩文件.svg"):
+                suffix_text = "." + file_info["suffix"]
+            else:
+                suffix_text = file_info["suffix"].upper()
+                if len(suffix_text) > 6:
+                    suffix_text = "FILE"
+            
+            widget = SvgRenderer.render_unknown_file_icon(icon_path, suffix_text, icon_size, 1.0)
+            pixmap = widget.grab(widget.rect())
+            return pixmap
 
         # 使用SvgRenderer工具渲染SVG图标为QPixmap，传递DPI缩放因子
         return SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, self.dpi_scale)

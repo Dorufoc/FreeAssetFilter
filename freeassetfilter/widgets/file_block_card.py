@@ -90,7 +90,7 @@ class FileBlockCard(QWidget):
         self.setMaximumWidth(scaled_max_width)
         
         app = QApplication.instance()
-        self.default_font_size = getattr(app, 'default_font_size', 9) if app else 9
+        self.default_font_size = getattr(app, 'default_font_size', 8) if app else 8
         
         self._init_colors()
         self._create_layout()
@@ -129,7 +129,7 @@ class FileBlockCard(QWidget):
         self.icon_label.setAlignment(Qt.AlignCenter)
         self.icon_label.setStyleSheet("background: transparent; border: none;")
         
-        scaled_icon_size = int(32 * self.dpi_scale)
+        scaled_icon_size = int(38 * self.dpi_scale)
         self.icon_label.setFixedSize(scaled_icon_size, scaled_icon_size)
         
         self._update_icon()
@@ -148,7 +148,7 @@ class FileBlockCard(QWidget):
         
         try:
             if not is_dir and suffix in ["lnk", "exe"]:
-                base_icon_size = int(32 * self.dpi_scale)
+                base_icon_size = int(38 * self.dpi_scale)
                 scaled_icon_size = int(base_icon_size * 0.8)
                 
                 try:
@@ -168,8 +168,8 @@ class FileBlockCard(QWidget):
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
             
             if (is_photo or is_video) and os.path.exists(thumbnail_path):
-                base_icon_size = int(32 * self.dpi_scale)
-                scaled_icon_size = int(base_icon_size * 0.85)
+                base_icon_size = int(38 * self.dpi_scale)
+                scaled_icon_size = int(base_icon_size * 1.0)
                 
                 pixmap = QPixmap(thumbnail_path)
                 pixmap = pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -178,7 +178,7 @@ class FileBlockCard(QWidget):
             
             icon_path = self._get_icon_path()
             if icon_path and os.path.exists(icon_path):
-                base_icon_size = int(32 * self.dpi_scale)
+                base_icon_size = int(38 * self.dpi_scale)
                 
                 svg_widget = None
                 if icon_path.endswith("未知底板.svg"):
@@ -405,7 +405,7 @@ class FileBlockCard(QWidget):
         """更新卡片背景色和边框样式"""
         from PyQt5.QtGui import QColor
         
-        scaled_border_radius = int(6 * self.dpi_scale)
+        scaled_border_radius = int(8 * self.dpi_scale)
         scaled_border_width = int(1 * self.dpi_scale)
         
         if self._is_selected:
@@ -418,7 +418,7 @@ class FileBlockCard(QWidget):
             border_color = self.normal_color
         else:
             bg_color = self.base_color
-            border_color = "transparent"
+            border_color = self.auxiliary_color
         
         self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
         self.setAttribute(Qt.WA_StyledBackground, True)

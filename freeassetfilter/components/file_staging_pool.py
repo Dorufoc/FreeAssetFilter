@@ -131,6 +131,55 @@ class FileStagingPool(QWidget):
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
+        app = QApplication.instance()
+        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
+        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+        accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
+        
+        scrollbar_style = f"""
+            QScrollArea {{
+                border: 0px solid transparent;
+                background-color: {base_color};
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: {base_color};
+            }}
+            QScrollBar:vertical {{
+                width: 6px;
+                background-color: {auxiliary_color};
+                border: 0px solid transparent;
+                border-radius: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {normal_color};
+                min-height: 15px;
+                border-radius: 3px;
+                border: none;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {secondary_color};
+                border: none;
+            }}
+            QScrollBar::handle:vertical:pressed {{
+                background-color: {accent_color};
+                border: none;
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0px;
+                border: none;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: none;
+                border: 0px solid transparent;
+                border: none;
+            }}
+        """
+        self.scroll_area.setStyleSheet(scrollbar_style)
+        
         # 创建卡片容器和布局
         self.cards_container = QWidget()
         self.cards_layout = QVBoxLayout(self.cards_container)

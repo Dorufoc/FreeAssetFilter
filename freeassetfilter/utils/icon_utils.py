@@ -411,23 +411,28 @@ def get_highest_resolution_icon(file_path, desired_size=256):
     except Exception as e:
         return None
 
-def hicon_to_pixmap(hicon, size, qt_app):
+def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
     """
     将HICON转换为QPixmap
     
     参数:
         hicon: HICON - 图标句柄
-        size: int - 目标大小
+        size: int - 目标大小（逻辑像素）
         qt_app: QApplication - Qt应用实例
+        device_pixel_ratio: float - 设备像素比，如果不指定则使用系统主屏幕的DPI
     
     返回:
         QPixmap - 如果转换成功则返回Pixmap，否则返回None
     """
     try:
-        from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QTransform
+        from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QTransform, QGuiApplication
         from PyQt5.QtCore import Qt, QPoint
         from PIL import Image, ImageFilter, ImageEnhance
         import io
+        
+        # 获取设备像素比
+        if device_pixel_ratio is None:
+            device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
         
         # 使用Windows API获取图标信息
         class ICONINFO(ctypes.Structure):
@@ -669,17 +674,18 @@ def hicon_to_pixmap(hicon, size, qt_app):
                     # 创建QImage
                     qimage = QImage(buffer, width, height, width * 4, QImage.Format_ARGB32)
                     
-                    # 使用Qt的高质量缩放
+                    # 使用Qt的高质量缩放，将图像缩放到实际需要的像素大小
+                    # size是逻辑像素大小，实际像素大小 = size * device_pixel_ratio
+                    actual_size = int(size * device_pixel_ratio)
                     scaled_qimage = qimage.scaled(
-                        size, size, 
+                        actual_size, actual_size, 
                         Qt.KeepAspectRatio, 
                         Qt.SmoothTransformation
                     )
                     
-                    # 创建最终Pixmap
+                    # 创建最终Pixmap，设置正确的设备像素比
                     pixmap = QPixmap.fromImage(scaled_qimage)
-                    from PyQt5.QtGui import QGuiApplication
-                    pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
+                    pixmap.setDevicePixelRatio(device_pixel_ratio)
                     
                     return pixmap
                 finally:

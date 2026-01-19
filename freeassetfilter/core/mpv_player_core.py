@@ -704,57 +704,51 @@ class MPVPlayerCore(QObject):
                 
             print("[MPVPlayerCore] 正在停止事件处理线程...")
             
-            # 1. 设置停止标志
             self._event_thread_running = False
             
-            # 2. 唤醒MPV的事件循环，确保mpv_wait_event能够返回（使用锁保护）
+            mpv_handle = None
             with self._mpv_lock:
                 if self._mpv:
-                    try:
-                        # 使用非阻塞方式唤醒事件循环，避免在停止过程中阻塞
-                        def wakeup_mpv():
-                            try:
-                                # 直接调用MPV API唤醒事件循环
-                                libmpv.mpv_wakeup(self._mpv)
-                                print("[MPVPlayerCore] 已直接调用mpv_wakeup唤醒事件循环")
-                            except Exception as e:
-                                print(f"[MPVPlayerCore] 直接唤醒MPV事件循环失败 - {e}")
-                        
-                        # 在单独线程中执行唤醒操作，避免阻塞主线程
-                        wakeup_thread = threading.Thread(target=wakeup_mpv, daemon=True)
-                        wakeup_thread.start()
-                        wakeup_thread.join(timeout=0.5)
-                    except Exception as e:
-                        print(f"[MPVPlayerCore] 唤醒MPV事件循环失败 - {e}")
+                    mpv_handle = self._mpv
             
-            # 3. 等待线程退出，最多等待3秒
+            if mpv_handle:
+                try:
+                    def wakeup_mpv():
+                        try:
+                            libmpv.mpv_wakeup(mpv_handle)
+                        except Exception:
+                            pass
+                    
+                    wakeup_thread = threading.Thread(target=wakeup_mpv, daemon=True)
+                    wakeup_thread.start()
+                    wakeup_thread.join(timeout=0.3)
+                except Exception:
+                    pass
+            
             start_wait_time = time.time()
-            while self._event_thread and self._event_thread.is_alive() and time.time() - start_wait_time < 3.0:
+            while self._event_thread and self._event_thread.is_alive() and time.time() - start_wait_time < 2.0:
                 self._event_thread.join(timeout=0.1)
                 
-                # 定期再次尝试唤醒
-                if self._mpv and self._event_thread and self._event_thread.is_alive():
-                    try:
-                        libmpv.mpv_wakeup(self._mpv)
-                    except:
-                        pass
+                if self._event_thread and self._event_thread.is_alive():
+                    mpv_handle = None
+                    with self._mpv_lock:
+                        if self._mpv:
+                            mpv_handle = self._mpv
+                    if mpv_handle:
+                        try:
+                            libmpv.mpv_wakeup(mpv_handle)
+                        except Exception:
+                            pass
             
-            # 4. 检查线程是否已退出
             if self._event_thread and self._event_thread.is_alive():
                 print("[MPVPlayerCore] 事件处理线程未能及时退出")
-                print("[MPVPlayerCore] 警告: 事件处理线程未能在超时时间内退出")
-                print("[MPVPlayerCore] 线程是daemon线程，会在主程序退出时自动退出")
+                self._event_thread = None
             else:
                 print("[MPVPlayerCore] 事件处理线程已成功退出")
-                # 确保线程对象被正确重置
                 self._event_thread = None
             
             print("[MPVPlayerCore] 事件处理线程停止完成")
-        except Exception as e:
-            print(f"[MPVPlayerCore] 停止事件处理线程失败 - {e}")
-            import traceback
-            traceback.print_exc()
-            # 确保状态被正确重置
+        except Exception:
             self._event_thread_running = False
             self._event_thread = None
     

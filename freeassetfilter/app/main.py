@@ -135,6 +135,10 @@ class FreeAssetFilterApp(QMainWindow):
         # 用于生成唯一的文件选择器实例ID
         self.file_selector_counter = 0
         
+        # 主题更新状态标志，防止重复调用
+        self._update_theme_in_progress = False
+        self._theme_update_queued = False
+        
         # 获取全局字体
         global_font = getattr(app, 'global_font', QFont())
         # 创建全局字体的副本，避免修改全局字体对象
@@ -425,119 +429,337 @@ class FreeAssetFilterApp(QMainWindow):
         # 简单的信息显示，使用状态标签
         self.status_label.setText(f"{title}: {message}")
     
-    def update_theme(self):
+    def _backup_ui_state(self):
         """
-        更新应用主题，当主题颜色更改时调用
+        备份当前UI状态到JSON文件，包括文件选择器路径和文件存储池信息
+        
+        Returns:
+            bool: 是否成功备份
+        """
+        import json
+        import os
+        from datetime import datetime
+        
+        try:
+            backup_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+            os.makedirs(backup_dir, exist_ok=True)
+            
+            backup_file = os.path.join(backup_dir, 'ui_state_backup.json')
+            
+            backup_data = {
+                'timestamp': datetime.now().isoformat(),
+                'file_selector': {
+                    'current_path': None,
+                    'selected_files': {}
+                },
+                'file_staging_pool': {
+                    'items': []
+                },
+                'splitter_sizes': [100, 100, 100]
+            }
+            
+            old_file_selector = getattr(self, 'file_selector_a', None)
+            old_staging_pool = getattr(self, 'file_staging_pool', None)
+            
+            if old_file_selector:
+                try:
+                    if hasattr(old_file_selector, 'current_path'):
+                        backup_data['file_selector']['current_path'] = old_file_selector.current_path
+                    if hasattr(old_file_selector, 'selected_files'):
+                        selected = old_file_selector.selected_files
+                        if isinstance(selected, dict):
+                            backup_data['file_selector']['selected_files'] = {
+                                k: list(v) for k, v in selected.items()
+                            }
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            if old_staging_pool:
+                try:
+                    if hasattr(old_staging_pool, 'items'):
+                        backup_data['file_staging_pool']['items'] = list(old_staging_pool.items)
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            if hasattr(self, '_splitter'):
+                try:
+                    backup_data['splitter_sizes'] = list(self._splitter.sizes())
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            with open(backup_file, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+            
+            return True
+        except Exception:
+            return False
+    
+    def _restore_ui_state(self):
+        """
+        从JSON文件恢复UI状态，包括文件选择器路径和文件存储池信息
+        
+        Returns:
+            bool: 是否成功恢复
+        """
+        import json
+        import os
+        
+        try:
+            backup_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'ui_state_backup.json')
+            
+            if not os.path.exists(backup_file):
+                return False
+            
+            with open(backup_file, 'r', encoding='utf-8') as f:
+                backup_data = json.load(f)
+            
+            new_file_selector = getattr(self, 'file_selector_a', None)
+            new_staging_pool = getattr(self, 'file_staging_pool', None)
+            
+            if new_file_selector:
+                try:
+                    if 'current_path' in backup_data['file_selector']:
+                        new_file_selector.current_path = backup_data['file_selector']['current_path']
+                    if 'selected_files' in backup_data['file_selector']:
+                        raw_selected = backup_data['file_selector']['selected_files']
+                        if isinstance(raw_selected, dict):
+                            new_file_selector.selected_files = {
+                                k: set(v) if isinstance(v, list) else v
+                                for k, v in raw_selected.items()
+                            }
+                    if hasattr(new_file_selector, '_refresh_file_list'):
+                        new_file_selector._refresh_file_list()
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            if new_staging_pool:
+                try:
+                    if 'items' in backup_data['file_staging_pool']:
+                        items_data = backup_data['file_staging_pool']['items']
+                        if hasattr(new_staging_pool, 'add_file'):
+                            for item_data in items_data:
+                                try:
+                                    if isinstance(item_data, dict) and 'path' in item_data:
+                                        if item_data not in new_staging_pool.items:
+                                            new_staging_pool.add_file(item_data)
+                                except Exception:
+                                    continue
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            if 'splitter_sizes' in backup_data and hasattr(self, '_splitter'):
+                try:
+                    old_sizes = backup_data['splitter_sizes']
+                    if sum(old_sizes) > 0:
+                        self._splitter.setSizes(old_sizes)
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            return True
+        except Exception:
+            return False
+    
+    def _rebuild_main_layout(self):
+        """
+        重建主布局，用于主题切换时确保所有组件使用正确样式
         """
         app = QApplication.instance()
         if app is None:
-            return
+            return False
+        
+        if not self.isVisible():
+            return False
+        
+        self._backup_ui_state()
         
         auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")  # 普通色
-        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")  # 基础色
+        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
+        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        border_radius = 8
+        
+        old_central_widget = getattr(self, 'central_widget', None)
+        old_staging_pool = getattr(self, 'file_staging_pool', None)
+        old_file_selector = getattr(self, 'file_selector_a', None)
+        old_preview_items = []
+        old_selected_files = []
 
-        # 更新中央部件的背景色（基础色）
-        if hasattr(self, 'central_widget'):
-            self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
-            
-        # 更新三列的背景色和边框色（辅助色和普通色）
-        columns = [getattr(self, 'left_column', None), getattr(self, 'middle_column', None), getattr(self, 'right_column', None)]
-        for column in columns:
-            if column:
-                border_radius = 8
-                column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        if old_staging_pool and hasattr(old_staging_pool, '_all_items'):
+            try:
+                old_preview_items = list(old_staging_pool._all_items)
+            except (RuntimeError, AttributeError):
+                pass
         
-        # 递归更新所有子组件的样式
-        def update_child_widgets(widget):
-            for child in widget.findChildren(QWidget):
-                # 检查子组件是否有update_style方法
-                if hasattr(child, 'update_style') and callable(child.update_style):
-                    child.update_style()
-                # 递归更新子组件的子组件
-                update_child_widgets(child)
+        if old_file_selector and hasattr(old_file_selector, 'selected_files'):
+            try:
+                old_selected_files = list(old_file_selector.selected_files)
+            except (RuntimeError, AttributeError):
+                pass
         
-        update_child_widgets(self.central_widget)
+        old_splitter_sizes = [100, 100, 100]
+        if hasattr(self, '_splitter'):
+            try:
+                old_splitter_sizes = list(self._splitter.sizes())
+            except (RuntimeError, AttributeError):
+                pass
         
-        # 如果有统一预览器，更新其样式（如果有update_style方法）
-        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'update_style') and callable(self.unified_previewer.update_style):
-            self.unified_previewer.update_style()
+        try:
+            if old_central_widget:
+                old_central_widget.deleteLater()
+        except (RuntimeError, AttributeError):
+            pass
         
-        # 如果有文件临时存储池，更新其样式（如果有update_style方法）
-        if hasattr(self, 'file_staging_pool') and hasattr(self.file_staging_pool, 'update_style') and callable(self.file_staging_pool.update_style):
-            self.file_staging_pool.update_style()
+        self.central_widget = QWidget()
+        self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
+        self.setCentralWidget(self.central_widget)
         
-        # 如果有文件选择器，更新其样式（如果有update_style方法）
-        if hasattr(self, 'file_selector_a') and hasattr(self.file_selector_a, 'update_style') and callable(self.file_selector_a.update_style):
-            self.file_selector_a.update_style()
+        main_layout = QVBoxLayout(self.central_widget)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         
-        # 更新滚动条样式以匹配当前主题
-        theme = app.settings_manager.get_setting("appearance.theme", "default")
-        if theme == "dark":
-            scroll_area_bg = "#2D2D2D"
-            scrollbar_bg = "#3C3C3C"
-            scrollbar_handle = "#555555"
-            scrollbar_handle_hover = "#666666"
-        else:
-            scroll_area_bg = "#ffffff"
-            scrollbar_bg = "#f0f0f0"
-            scrollbar_handle = "#c0c0c0"
-            scrollbar_handle_hover = "#a0a0a0"
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setContentsMargins(0, 0, 0, 0)
+        self._splitter = splitter
         
-        # 生成滚动条样式
-        scrollbar_style = """
-            /* 滚动区域样式 */
-            QScrollArea {
-                background-color: %s;
-                border: none;
-            }
-            
-            /* 垂直滚动条样式 */
-            QScrollBar:vertical {
-                width: 8px;
-                background: %s;
-                border-radius: 3px;
-            }
-            
-            QScrollBar::handle:vertical {
-                background: %s;
-                border-radius: 3px;
-            }
-            
-            QScrollBar::handle:vertical:hover {
-                background: %s;
-            }
-            
-            QScrollBar::sub-line:vertical,
-            QScrollBar::add-line:vertical {
-                height: 0px;
-            }
-            
-            /* 水平滚动条样式 */
-            QScrollBar:horizontal {
-                height: 8px;
-                background: %s;
-                border-radius: 3px;
-            }
-            
-            QScrollBar::handle:horizontal {
-                background: %s;
-                border-radius: 3px;
-            }
-            
-            QScrollBar::handle:horizontal:hover {
-                background: %s;
-            }
-            
-            QScrollBar::sub-line:horizontal,
-            QScrollBar::add-line:horizontal {
-                width: 0px;
-            }
-        """ % (scroll_area_bg, scrollbar_bg, scrollbar_handle, scrollbar_handle_hover, 
-                  scrollbar_bg, scrollbar_handle, scrollbar_handle_hover)
+        self.left_column = QWidget()
+        self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.left_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        left_layout = QVBoxLayout(self.left_column)
         
-        # 设置全局滚动条样式
-        app.setStyleSheet(scrollbar_style)
+        self.file_selector_a = self._create_file_selector_widget()
+        left_layout.addWidget(self.file_selector_a)
+        
+        self.middle_column = QWidget()
+        self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.middle_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        middle_layout = QVBoxLayout(self.middle_column)
+        
+        self.file_staging_pool = FileStagingPool()
+        middle_layout.addWidget(self.file_staging_pool)
+        
+        self.right_column = QWidget()
+        self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.right_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        right_layout = QVBoxLayout(self.right_column)
+        
+        self.unified_previewer = UnifiedPreviewer(self)
+        right_layout.addWidget(self.unified_previewer, 1)
+        
+        splitter.addWidget(self.left_column)
+        splitter.addWidget(self.middle_column)
+        splitter.addWidget(self.right_column)
+        
+        total_width = self.window_width - 40
+        left_width = int(total_width * (3/10))
+        middle_width = int(total_width * (3/10))
+        right_width = int(total_width * (4/10))
+        splitter.setSizes([left_width, middle_width, right_width])
+        
+        self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
+        self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
+        self.file_staging_pool.item_right_clicked.connect(self.unified_previewer.set_file)
+        self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
+        self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
+        
+        main_layout.addWidget(splitter, 1)
+        
+        status_container = QWidget()
+        status_container_layout = QVBoxLayout(status_container)
+        status_container_layout.setContentsMargins(0, 0, 0, 0)
+        status_container_layout.setAlignment(Qt.AlignCenter)
+        
+        status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        
+        from freeassetfilter.widgets.button_widgets import CustomButton
+        github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
+        self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
+        self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        def open_github():
+            import webbrowser
+            webbrowser.open("https://github.com/Dorufoc/FreeAssetFilter")
+        self.github_button.clicked.connect(open_github)
+        status_layout.addWidget(self.github_button)
+        
+        status_layout.addStretch()
+        
+        self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setFont(self.global_font)
+        font_size = 8
+        self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #888888; margin-top: 0px;")
+        status_layout.addWidget(self.status_label)
+        
+        status_layout.addStretch()
+        
+        setting_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
+        self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
+        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        def open_global_settings():
+            if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, '_open_global_settings'):
+                self.unified_previewer._open_global_settings()
+        self.global_settings_button.clicked.connect(open_global_settings)
+        status_layout.addWidget(self.global_settings_button)
+        
+        status_container_layout.addLayout(status_layout)
+        main_layout.addWidget(status_container)
+        
+        from freeassetfilter.widgets.hover_tooltip import HoverTooltip
+        self.hover_tooltip = HoverTooltip(self)
+        self.hover_tooltip.set_target_widget(self.github_button)
+        self.hover_tooltip.set_target_widget(self.global_settings_button)
+        
+        try:
+            if old_preview_items:
+                for item in old_preview_items:
+                    if hasattr(self.file_staging_pool, '_all_items'):
+                        if item not in self.file_staging_pool._all_items:
+                            try:
+                                self.file_staging_pool._all_items.append(item)
+                                self.file_staging_pool._update_staging_area()
+                            except (RuntimeError, AttributeError):
+                                pass
+            
+            if old_selected_files and hasattr(self.file_selector_a, 'selected_files'):
+                try:
+                    self.file_selector_a.selected_files = list(old_selected_files)
+                    self.file_selector_a._refresh_file_list()
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            if sum(old_splitter_sizes) > 0:
+                splitter.setSizes(old_splitter_sizes)
+        except (RuntimeError, AttributeError):
+            pass
+        
+        self._restore_ui_state()
+        
+        return True
+    
+    def update_theme(self, delayed=False):
+        """
+        更新应用主题，通过重建主布局确保所有组件使用正确样式
+        
+        Args:
+            delayed: 是否延迟执行，用于防止在窗口关闭时调用
+        """
+        if not delayed and self._update_theme_in_progress:
+            if not self._theme_update_queued:
+                self._theme_update_queued = True
+                QTimer.singleShot(50, lambda: self.update_theme(delayed=True))
+            return
+        
+        self._update_theme_in_progress = True
+        self._theme_update_queued = False
+        
+        try:
+            success = self._rebuild_main_layout()
+            if not success:
+                self._update_theme_in_progress = False
+                return
+        except (RuntimeError, AttributeError):
+            pass
+        finally:
+            self._update_theme_in_progress = False
     
     def show_custom_window_demo(self):
         """

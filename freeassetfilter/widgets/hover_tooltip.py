@@ -329,17 +329,21 @@ class HoverTooltip(QWidget):
                 
                 # 构建悬浮信息文本
                 tooltip_text = f"文件名: {file_name}\n"
-                tooltip_text += f"文件大小: {size_str}\n"
+                if not file_info.isDir():
+                    tooltip_text += f"文件大小: {size_str}\n"
                 tooltip_text += f"文件类型: {file_type}\n"
                 tooltip_text += f"路径: {file_path}\n"
-                tooltip_text += f"创建日期: {created_time}\n"
-                tooltip_text += f"修改日期: {modified_time}"
+                if file_info.isDir():
+                    tooltip_text += f"修改日期: {modified_time}"
+                else:
+                    tooltip_text += f"创建日期: {created_time}\n"
+                    tooltip_text += f"修改日期: {modified_time}"
                 
                 return tooltip_text
             
-            # 特殊处理文件选择器中的文件卡片（QWidget#FileCard）
-            if direct_widget.objectName() == "FileCard" or (hasattr(direct_widget.parent(), "objectName") and direct_widget.parent().objectName() == "FileCard"):
-                card = direct_widget if direct_widget.objectName() == "FileCard" else direct_widget.parent()
+            # 特殊处理文件选择器中的文件卡片（QWidget#FileBlockCard）
+            if direct_widget.objectName() == "FileBlockCard" or (hasattr(direct_widget.parent(), "objectName") and direct_widget.parent().objectName() == "FileBlockCard"):
+                card = direct_widget if direct_widget.objectName() == "FileBlockCard" else direct_widget.parent()
                 if hasattr(card, "file_info"):
                     file_info = card.file_info
                     file_name = file_info["name"]
@@ -380,11 +384,15 @@ class HoverTooltip(QWidget):
                     
                     # 构建悬浮信息文本
                     tooltip_text = f"文件名: {file_name}\n"
-                    tooltip_text += f"文件大小: {size_str}\n"
+                    if not file_info["is_dir"]:
+                        tooltip_text += f"文件大小: {size_str}\n"
                     tooltip_text += f"文件类型: {file_type}\n"
                     tooltip_text += f"路径: {file_path}\n"
-                    tooltip_text += f"创建日期: {created_time}\n"
-                    tooltip_text += f"修改日期: {modified_time}"
+                    if file_info["is_dir"]:
+                        tooltip_text += f"修改日期: {modified_time}"
+                    else:
+                        tooltip_text += f"创建日期: {created_time}\n"
+                        tooltip_text += f"修改日期: {modified_time}"
                     
                     return tooltip_text
             
