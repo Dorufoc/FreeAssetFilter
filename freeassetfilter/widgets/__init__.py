@@ -17,6 +17,8 @@ from .file_block_card import FileBlockCard
 from .hover_tooltip import HoverTooltip
 # 导入自定义表格组件
 from .table_widgets import CustomTimelineTable, CustomMatrixTable
+# 导入自定义进度条组件
+from .progress_widgets import D_ProgressBar
 
 __all__ = [
     'CustomButton',
@@ -27,5 +29,6 @@ __all__ = [
     'FileBlockCard',
     'HoverTooltip',
     'CustomTimelineTable',
-    'CustomMatrixTable'
+    'CustomMatrixTable',
+    'D_ProgressBar'
 ]

@@ -1243,7 +1243,7 @@ class FileInfoBrowser:
         显示加载状态对话框（使用自定义提示弹窗）
         """
         from freeassetfilter.widgets.message_box import CustomMessageBox
-        from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+        from freeassetfilter.widgets.progress_widgets import D_ProgressBar
         from PyQt5.QtCore import Qt
         
         # 创建自定义提示弹窗
@@ -1255,8 +1255,8 @@ class FileInfoBrowser:
         self.loading_dialog.set_text("正在计算校验码和获取详细信息...")
         
         # 添加不可交互进度条
-        self.progress_bar = CustomProgressBar(is_interactive=False)
-        self.progress_bar.setValue(50)  # 显示中间状态
+        self.progress_bar = D_ProgressBar(is_interactive=False)
+        self.progress_bar.setValue(500)  # 显示中间状态 (0-1000)
         self.loading_dialog.set_progress(self.progress_bar)
         
         # 显示对话框

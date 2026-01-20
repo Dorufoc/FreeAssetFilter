@@ -29,7 +29,8 @@ from PyQt5.QtWidgets import (
 )
 
 # 导入自定义控件
-from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox, CustomProgressBar
+from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox
+from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from PyQt5.QtCore import (
@@ -237,7 +238,7 @@ class FileStagingPool(QWidget):
         export_layout.addWidget(clear_btn)
         
         # 进度条
-        self.progress_bar = CustomProgressBar()
+        self.progress_bar = D_ProgressBar()
         self.progress_bar.setInteractive(False)  # 禁用交互，只用于显示进度
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
@@ -732,7 +733,7 @@ class FileStagingPool(QWidget):
         progress_msg_box.set_text("正在导出文件，请稍候...")
         
         # 创建并配置进度条
-        export_progress_bar = CustomProgressBar()
+        export_progress_bar = D_ProgressBar()
         export_progress_bar.setInteractive(False)  # 禁用交互
         export_progress_bar.setRange(0, len(all_files))
         export_progress_bar.setValue(0)

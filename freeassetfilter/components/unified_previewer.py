@@ -35,7 +35,8 @@ from PyQt5.QtGui import QFont
 from freeassetfilter.core.file_info_browser import FileInfoBrowser
 from freeassetfilter.components.folder_content_list import FolderContentList
 from freeassetfilter.components.archive_browser import ArchiveBrowser
-from freeassetfilter.widgets.D_widgets import CustomMessageBox, CustomProgressBar
+from freeassetfilter.widgets.D_widgets import CustomMessageBox
+from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 
 class UnifiedPreviewer(QWidget):
     """
@@ -1032,8 +1033,8 @@ class UnifiedPreviewer(QWidget):
             self.progress_dialog = None
         
         # 创建进度条
-        progress_bar = CustomProgressBar(is_interactive=False)
-        progress_bar.setRange(0, 100)
+        progress_bar = D_ProgressBar(is_interactive=False)
+        progress_bar.setRange(0, 1000)
         progress_bar.setValue(0)
         
         # 创建进度条弹窗

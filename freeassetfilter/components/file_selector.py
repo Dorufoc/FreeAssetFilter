@@ -529,7 +529,8 @@ class CustomFileSelector(QWidget):
             return
         
         # 使用自定义提示窗口来显示进度
-        from freeassetfilter.widgets.D_widgets import CustomMessageBox, CustomProgressBar
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
+        from freeassetfilter.widgets.progress_widgets import D_ProgressBar
         
         # 创建自定义提示窗口
         progress_msg = CustomMessageBox(self)
@@ -537,7 +538,7 @@ class CustomFileSelector(QWidget):
         progress_msg.set_text(f"正在生成缩略图... (0/{len(files_to_generate)})")
         
         # 创建并配置自定义进度条
-        progress_bar = CustomProgressBar()
+        progress_bar = D_ProgressBar()
         progress_bar.setRange(0, len(files_to_generate))
         progress_bar.setValue(0)
         progress_bar.setInteractive(False)  # 禁用交互，只用于显示进度
@@ -3244,7 +3245,7 @@ class CustomFileSelector(QWidget):
         显示时间线窗口：先生成CSV文件，再显示时间线
         """
         from freeassetfilter.components.auto_timeline import AutoTimeline
-        from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+        from freeassetfilter.widgets.progress_widgets import D_ProgressBar
         from freeassetfilter.core.timeline_generator import FolderScanner
         
         # 创建自定义提示弹窗
@@ -3254,8 +3255,8 @@ class CustomFileSelector(QWidget):
         progress_dialog.set_text("正在生成CSV文件，请稍候...")
         
         # 创建进度条
-        progress_bar = CustomProgressBar(is_interactive=False)
-        progress_bar.setRange(0, 100)
+        progress_bar = D_ProgressBar(is_interactive=False)
+        progress_bar.setRange(0, 1000)
         progress_bar.setValue(0)
         progress_dialog.set_progress(progress_bar)
         
