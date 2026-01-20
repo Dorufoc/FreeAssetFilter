@@ -568,6 +568,8 @@ class ModernSettingsWindow(QDialog):
                 }
                 for color_key, color_value in light_colors.items():
                     self.current_settings.update({f"appearance.colors.{color_key}": color_value})
+            
+            self._update_styles()
         
         self.theme_switch.switch_toggled.connect(on_theme_toggled)
         theme_layout.addWidget(self.theme_switch)
