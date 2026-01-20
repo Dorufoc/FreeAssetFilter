@@ -101,7 +101,15 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 使用逻辑像素设置窗口大小，Qt会自动处理DPI
         base_window_width = 850  # 基础逻辑像素（100%缩放时的大小）
-        window_width = base_window_width
+        
+        # 获取系统缩放因子并设置为1.5倍
+        screen = QApplication.primaryScreen()
+        logical_dpi = screen.logicalDotsPerInch()
+        physical_dpi = screen.physicalDotsPerInch()
+        system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
+        
+        # 设置默认大小为系统缩放的1.5倍
+        window_width = int(base_window_width * system_scale * 1.5)
         window_height = int(window_width * (10/16))
         
         # 获取可用屏幕尺寸（逻辑像素）
@@ -375,8 +383,10 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(self.global_font)
-        # 设置字体大小和边距
-        font_size = 8
+        # 设置字体大小和边距，应用DPI缩放因子
+        app = QApplication.instance()
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        font_size = int(8 * dpi_scale)
         margin = 0
         self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #888888; margin-top: {margin}px;")
         status_layout.addWidget(self.status_label)
@@ -689,7 +699,10 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setFont(self.global_font)
-        font_size = 8
+        # 设置字体大小，应用DPI缩放因子
+        app = QApplication.instance()
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        font_size = int(8 * dpi_scale)
         self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #888888; margin-top: 0px;")
         status_layout.addWidget(self.status_label)
         
@@ -1058,7 +1071,12 @@ def main():
     
     app = QApplication(sys.argv)
     
-    # 不再需要设置全局DPI缩放因子，Qt会自动处理
+    # 设置全局DPI缩放因子为系统缩放的1.5倍
+    screen = QApplication.primaryScreen()
+    logical_dpi = screen.logicalDotsPerInch()
+    physical_dpi = screen.physicalDotsPerInch()
+    system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
+    app.dpi_scale_factor = system_scale * 1.5
     
     # 设置应用程序图标，用于任务栏显示
     icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')

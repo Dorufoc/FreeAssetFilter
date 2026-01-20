@@ -285,7 +285,8 @@ class FileBlockCard(QWidget):
     
     def _create_labels(self):
         """创建文本标签"""
-        scaled_font_size = int(self.default_font_size * self.dpi_scale)
+        # 将文字大小保持默认为系统缩放的1.0倍
+        scaled_font_size = int(self.default_font_size * 1.0)
         small_font_size = int(scaled_font_size * 0.85)
         
         font = QFont()
@@ -325,7 +326,8 @@ class FileBlockCard(QWidget):
         font = self.name_label.font()
         font_metrics = QFontMetrics(font)
         
-        max_width = int(45 * self.dpi_scale)
+        # 扩大文件名显示宽度，以显示更多内容
+        max_width = int(60 * self.dpi_scale)
         elided_text = font_metrics.elidedText(text, Qt.ElideRight, max_width)
         self.name_label.setText(elided_text)
     
