@@ -439,6 +439,23 @@ class UnifiedPreviewer(QWidget):
         """
         清除当前预览内容，确保所有组件都被正确释放，但保留控制栏
         """
+        # 先停止后台线程，避免在清理过程中发生访问冲突
+        if hasattr(self, '_preview_thread') and self._preview_thread and self._preview_thread.isRunning():
+            self._preview_thread.cancel()
+            # 等待线程结束，最多等待500ms
+            self._preview_thread.wait(500)
+            # 如果线程仍在运行，强制终止
+            if self._preview_thread.isRunning():
+                self._preview_thread.terminate()
+                self._preview_thread.wait(100)
+            # 断开信号连接，防止线程完成时触发信号
+            try:
+                self._preview_thread.preview_created.disconnect(self._on_preview_created)
+                self._preview_thread.preview_error.disconnect(self._on_preview_error)
+                self._preview_thread.preview_progress.disconnect(self._on_progress_updated)
+            except:
+                pass
+        
         # 先移除默认标签（如果存在），避免重复添加
         if hasattr(self, 'default_label') and self.default_label and self.default_label.parent() is self.preview_area:
             self.preview_layout.removeWidget(self.default_label)

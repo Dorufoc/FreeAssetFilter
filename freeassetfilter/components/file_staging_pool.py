@@ -285,6 +285,9 @@ class FileStagingPool(QWidget):
         card.renameRequested.connect(lambda path: self.on_card_rename_requested(path, file_info))
         card.deleteRequested.connect(lambda path: self.on_card_delete_requested(path, file_info))
         
+        # 将卡片容器添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(card.card_container)
+        
         # 在拉伸因子之前添加卡片，确保拉伸因子始终在最后
         # 先移除拉伸因子
         if self.cards_layout.count() > 0 and self.cards_layout.itemAt(self.cards_layout.count() - 1).spacerItem():

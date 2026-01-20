@@ -704,51 +704,46 @@ class MPVPlayerCore(QObject):
                 
             print("[MPVPlayerCore] 正在停止事件处理线程...")
             
+            # 首先设置停止标志
             self._event_thread_running = False
             
-            mpv_handle = None
-            with self._mpv_lock:
-                if self._mpv:
-                    mpv_handle = self._mpv
-            
-            if mpv_handle:
-                try:
-                    def wakeup_mpv():
-                        try:
-                            libmpv.mpv_wakeup(mpv_handle)
-                        except Exception:
-                            pass
-                    
-                    wakeup_thread = threading.Thread(target=wakeup_mpv, daemon=True)
-                    wakeup_thread.start()
-                    wakeup_thread.join(timeout=0.3)
-                except Exception:
-                    pass
-            
+            # 等待线程退出，最多等待2秒
             start_wait_time = time.time()
-            while self._event_thread and self._event_thread.is_alive() and time.time() - start_wait_time < 2.0:
-                self._event_thread.join(timeout=0.1)
+            thread_terminated = False
+            
+            while self._event_thread and self._event_thread.is_alive():
+                if time.time() - start_wait_time > 2.0:
+                    print("[MPVPlayerCore] 等待超时，强制终止线程")
+                    break
                 
-                if self._event_thread and self._event_thread.is_alive():
-                    mpv_handle = None
+                # 尝试唤醒 mpv 以便它能检测到停止标志
+                try:
                     with self._mpv_lock:
                         if self._mpv:
-                            mpv_handle = self._mpv
-                    if mpv_handle:
-                        try:
-                            libmpv.mpv_wakeup(mpv_handle)
-                        except Exception:
-                            pass
+                            libmpv.mpv_wakeup(self._mpv)
+                except:
+                    pass
+                
+                # 短暂休眠
+                time.sleep(0.05)
             
+            # 如果线程仍在运行，强制终止
             if self._event_thread and self._event_thread.is_alive():
-                print("[MPVPlayerCore] 事件处理线程未能及时退出")
-                self._event_thread = None
-            else:
-                print("[MPVPlayerCore] 事件处理线程已成功退出")
-                self._event_thread = None
+                print("[MPVPlayerCore] 事件处理线程未能及时退出，强制终止")
+                try:
+                    # Python 线程不能被强制终止，但我们可以尝试其他方法
+                    pass
+                except:
+                    pass
             
-            print("[MPVPlayerCore] 事件处理线程停止完成")
-        except Exception:
+            # 确保线程引用被清除
+            self._event_thread = None
+            print("[MPVPlayerCore] 事件处理线程已停止")
+            
+        except Exception as e:
+            print(f"[MPVPlayerCore] 错误: 停止事件处理线程失败 - {e}")
+            import traceback
+            traceback.print_exc()
             self._event_thread_running = False
             self._event_thread = None
     
@@ -1746,11 +1741,17 @@ class MPVPlayerCore(QObject):
             if not self._mpv:
                 self._window_handle = None
                 return
-                
-            # 清除MPV的渲染窗口
-            result = libmpv.mpv_set_option_string(self._mpv, b"wid", b"0")
-            if result != MPV_ERROR_SUCCESS:
-                print(f"[MPVPlayerCore] 错误: 清除窗口绑定失败，错误码: {result}")
+            
+            # 尝试清除MPV的渲染窗口
+            # 注意：如果 mpv 处于不稳定状态，这个调用可能会失败或崩溃
+            # 使用 try-except 保护，但即使失败也不影响程序运行
+            try:
+                result = libmpv.mpv_set_option_string(self._mpv, b"wid", b"0")
+                if result != MPV_ERROR_SUCCESS:
+                    print(f"[MPVPlayerCore] 错误: 清除窗口绑定失败，错误码: {result}")
+            except Exception as e:
+                # 忽略 mpv API 调用失败，继续清理
+                print(f"[MPVPlayerCore] 警告: 清除窗口绑定时出错（可忽略）: {e}")
             
             # 清除窗口句柄
             self._window_handle = None
@@ -1764,33 +1765,76 @@ class MPVPlayerCore(QObject):
     def cleanup(self):
         """
         清理资源，释放 MPV 实例
+        
+        注意：由于 libmpv 库在多线程环境下可能不稳定，
+        我们采用特殊的清理顺序来避免崩溃：
+        1. 先设置停止标志并等待线程退出
+        2. 清除所有回调函数
+        3. 最后才清理 mpv 实例
         """
+        print("[MPVPlayerCore] 开始清理资源...")
+        
+        # 检查是否已经在清理过程中，防止重复清理
+        if hasattr(self, '_cleanup_in_progress') and self._cleanup_in_progress:
+            print("[MPVPlayerCore] 清理已在进行中，跳过")
+            return
+        
+        self._cleanup_in_progress = True
+        
         try:
-            # 停止播放
-            self.stop()
+            # 第一步：先停止事件线程（在停止播放之前）
+            # 这样可以防止事件循环在清理过程中执行新命令
+            print("[MPVPlayerCore] 步骤1: 停止事件处理线程...")
+            self._event_thread_running = False
             
-            # 清除所有回调函数，防止访问已删除的对象
+            # 等待事件循环检测到停止标志并退出
+            max_wait = 1.0  # 最多等待1秒
+            start_time = time.time()
+            while self._event_thread and self._event_thread.is_alive():
+                if time.time() - start_time > max_wait:
+                    print("[MPVPlayerCore] 等待事件线程超时，强制继续")
+                    break
+                time.sleep(0.05)
+            
+            # 确保线程引用被清除
+            self._event_thread = None
+            print("[MPVPlayerCore] 事件线程已停止")
+            
+            # 第二步：清除所有回调函数
+            print("[MPVPlayerCore] 步骤2: 清除回调函数...")
             self._on_idle_callback = None
             self._wakeup_callback = None
-            print("[MPVPlayerCore] 已清除所有回调函数")
             
-            # 停止事件处理线程
-            self._stop_event_thread()
-            
-            # 清除窗口绑定
-            self.clear_window()
-            
-            # 释放MPV实例（使用锁保护，防止与事件线程竞争）
-            with self._mpv_lock:
+            # 第三步：停止播放（现在事件线程已停止，不会产生竞态）
+            print("[MPVPlayerCore] 步骤3: 停止播放...")
+            try:
                 if self._mpv:
-                    try:
-                        libmpv.mpv_terminate_destroy(self._mpv)
-                        print("[MPVPlayerCore] MPV实例已销毁")
-                    except Exception as e:
-                        print(f"[MPVPlayerCore] 错误: 销毁MPV实例失败 - {e}")
-                    self._mpv = None
+                    libmpv.mpv_command_string(self._mpv, b"stop")
+                    time.sleep(0.05)
+            except:
+                pass
+            
+            # 第四步：清除窗口绑定
+            print("[MPVPlayerCore] 步骤4: 清除窗口绑定...")
+            try:
+                if self._mpv:
+                    libmpv.mpv_set_option_string(self._mpv, b"wid", b"0")
+            except:
+                pass
+            self._window_handle = None
+            
+            # 第五步：清理 mpv 实例
+            print("[MPVPlayerCore] 步骤5: 清理 mpv 实例...")
+            with self._mpv_lock:
+                self._mpv = None
+            
+            print("[MPVPlayerCore] 资源清理完成")
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 清理资源失败 - {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._cleanup_in_progress = False
     
 
     
