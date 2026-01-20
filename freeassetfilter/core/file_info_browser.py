@@ -135,6 +135,9 @@ class FileInfoBrowser:
             secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
             accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
         
+        # 保存颜色到实例变量，供其他方法使用
+        self.secondary_color = secondary_color
+        
         scrollbar_style = f"""
             QScrollArea {{
                 border: 0px solid transparent;
@@ -174,6 +177,37 @@ class FileInfoBrowser:
                 border: 0px solid transparent;
                 border: none;
             }}
+            QScrollBar:horizontal {{
+                height: 6px;
+                background-color: {auxiliary_color};
+                border: 0px solid transparent;
+                border-radius: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background-color: {normal_color};
+                min-width: 15px;
+                border-radius: 3px;
+                border: none;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background-color: {secondary_color};
+                border: none;
+            }}
+            QScrollBar::handle:horizontal:pressed {{
+                background-color: {accent_color};
+                border: none;
+            }}
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {{
+                width: 0px;
+                border: none;
+            }}
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {{
+                background: none;
+                border: 0px solid transparent;
+                border: none;
+            }}
         """
         scroll_area.setStyleSheet(scrollbar_style)
         scroll_area.setWidgetResizable(True)
@@ -203,8 +237,8 @@ class FileInfoBrowser:
         self.info_group = QGroupBox("文件信息")
         self.info_group.setFont(self.global_font)
         self.info_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # 设置组框标题左对齐，应用DPI缩放
-        self.info_group.setStyleSheet(f"QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {scaled_title_left}px; }}")
+        # 设置组框标题左对齐，应用DPI缩放和颜色
+        self.info_group.setStyleSheet(f"QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {scaled_title_left}px; color: {secondary_color}; }}")
         
         # 使用QFormLayout替代QGridLayout，更适合表单布局
         self.info_layout = QFormLayout(self.info_group)
@@ -269,12 +303,13 @@ class FileInfoBrowser:
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
             widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            widget.setStyleSheet(f"color: {secondary_color};")
             
             # 为MD5、SHA1、SHA256添加点击事件（仅当值为"点击查看"时）
             if key in ["MD5", "SHA1", "SHA256"]:
                 if widget.text() == "点击查看":
                     widget.setCursor(QCursor(Qt.PointingHandCursor))
-                    widget.setStyleSheet("color: #1a73e8; text-decoration: underline;")
+                    widget.setStyleSheet(f"color: {secondary_color}; text-decoration: underline;")
                     widget.mousePressEvent = lambda event, key=key: self._load_detailed_info()
                 else:
                     # 如果已经有值，则使用普通样式
@@ -288,6 +323,7 @@ class FileInfoBrowser:
             label_widget.setFixedWidth(max_label_width)  # 统一设置为最大宽度
             label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)  # 固定宽度，高度自适应
             label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            label_widget.setStyleSheet(f"color: {secondary_color};")
             
             # 连接右键菜单信号
             self._connect_context_menu(label_widget, key)
@@ -315,9 +351,9 @@ class FileInfoBrowser:
         custom_group.setFont(self.global_font)
         custom_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
-        # 设置组框标题左对齐，应用DPI缩放
+        # 设置组框标题左对齐，应用DPI缩放和颜色
         scaled_title_left = int(12 * self.dpi_scale)
-        custom_group.setStyleSheet(f"QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {scaled_title_left}px; }}")
+        custom_group.setStyleSheet(f"QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {scaled_title_left}px; color: {secondary_color}; }}")
         
         custom_layout = QVBoxLayout(custom_group)
         
@@ -1400,9 +1436,9 @@ class FileInfoBrowser:
                         from PyQt5.QtCore import Qt
                         from PyQt5.QtGui import QCursor
                         if str(value) == "点击查看":
-                            # 设置为可点击的蓝色链接样式
+                            # 设置为可点击的链接样式
                             self.basic_info_labels[key].setCursor(QCursor(Qt.PointingHandCursor))
-                            self.basic_info_labels[key].setStyleSheet("color: #1a73e8; text-decoration: underline;")
+                            self.basic_info_labels[key].setStyleSheet(f"color: {self.secondary_color}; text-decoration: underline;")
                             # 重新绑定点击事件
                             self.basic_info_labels[key].mousePressEvent = lambda event, key=key: self._load_detailed_info()
                         else:
@@ -1473,6 +1509,7 @@ class FileInfoBrowser:
                 label_widget.setFixedWidth(max_label_width)  # 统一设置为最大宽度
                 label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)  # 固定宽度，高度自适应
                 label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                label_widget.setStyleSheet(f"color: {self.secondary_color};")
                 
                 # 创建值标签
                 value_widget = QLabel(str(value))
@@ -1483,6 +1520,7 @@ class FileInfoBrowser:
                 value_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 宽度扩展，高度自适应
                 value_widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
                 value_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                value_widget.setStyleSheet(f"color: {self.secondary_color};")
                 
                 # 连接右键菜单信号
                 self._connect_context_menu(label_widget, key)
@@ -1581,6 +1619,7 @@ class FileInfoBrowser:
                 label_widget.setMinimumWidth(60)  # 设置标签文本的最小宽度
                 label_widget.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)  # 标签文本居中
                 label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)  # 固定宽度，高度自适应
+                label_widget.setStyleSheet(f"color: {self.secondary_color};")
                 
                 value_widget = QLabel(str(value))
                 value_widget.setWordWrap(True)
@@ -1588,6 +1627,7 @@ class FileInfoBrowser:
                 value_widget.setMinimumWidth(80)  # 设置标签的最小宽度
                 value_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)  # 宽度扩展，高度自适应
                 value_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # 设置统一的对齐方式
+                value_widget.setStyleSheet(f"color: {self.secondary_color};")
                 
                 # 为标签和值添加右键菜单
                 label_widget.setContextMenuPolicy(Qt.CustomContextMenu)

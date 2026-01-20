@@ -188,6 +188,15 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 清理统一预览器中的临时PDF文件
         if hasattr(self, 'unified_previewer'):
+            # 先停止任何正在运行的预览线程
+            if hasattr(self.unified_previewer, '_preview_thread') and self.unified_previewer._preview_thread:
+                if self.unified_previewer._preview_thread.isRunning():
+                    self.unified_previewer._preview_thread.cancel()
+                    self.unified_previewer._preview_thread.wait(500)
+                    if self.unified_previewer._preview_thread.isRunning():
+                        self.unified_previewer._preview_thread.terminate()
+                        self.unified_previewer._preview_thread.wait(100)
+            # 然后清理预览
             self.unified_previewer._clear_preview()
         
         # 统一清理：删除整个temp文件夹
