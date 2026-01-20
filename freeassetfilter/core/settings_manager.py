@@ -49,7 +49,8 @@ class SettingsManager:
                     "secondary_color": "#333333",   # 次选色
                     "normal_color": "#e0e0e0",      # 普通色
                     "auxiliary_color": "#f1f3f5",    # 辅助色
-                    "base_color": "#FFFFFF"        # 底层色
+                    "base_color": "#FFFFFF",        # 底层色
+                    "custom_design_color": "#27BE24"  # 自定义设计颜色
                 }
             },
             "file_selector": {
@@ -125,7 +126,7 @@ class SettingsManager:
         # 保存前过滤颜色设置，只保留基础颜色
         if "appearance" in self.settings and "colors" in self.settings["appearance"]:
             # 定义需要保留的基础颜色键
-            base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color"]
+            base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color", "custom_design_color"]
             # 创建新的颜色字典，只保留基础颜色
             filtered_colors = {}
             for color_key in base_color_keys:
@@ -214,6 +215,7 @@ class SettingsManager:
         
         if "appearance.colors" in key_path:
             debug(f"设置完成: {key_path} = {value}")
+            self.save_settings()
     
     def _merge_settings(self, default, loaded):
         """
@@ -234,7 +236,7 @@ class SettingsManager:
                 # 如果是颜色字典，只保留基础颜色设置
                 if key == "colors" and "appearance" in merged:
                     # 定义需要保留的基础颜色键
-                    base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color"]
+                    base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color", "custom_design_color"]
                     # 创建新的颜色字典，只保留基础颜色
                     merged_colors = {}
                     # 首先复制默认的基础颜色

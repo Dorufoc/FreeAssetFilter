@@ -199,12 +199,22 @@ class FileStagingPool(QWidget):
         # 存储卡片对象
         self.cards = []
         
-        # 创建统计信息
+        # 创建统计信息容器
+        stats_container = QWidget()
+        stats_container.setStyleSheet("background-color: transparent; border: none;")
+        stats_container_layout = QHBoxLayout(stats_container)
+        stats_container_layout.setContentsMargins(0, 0, 0, 0)
+        stats_container_layout.setSpacing(0)
+        
         self.stats_label = QLabel("0个条目")
-        self.stats_label.setAlignment(Qt.AlignRight)
+        self.stats_label.setAlignment(Qt.AlignCenter)
         # 使用全局字体，不单独设置过大的字体大小
         self.stats_label.setFont(self.global_font)
-        main_layout.addWidget(self.stats_label)
+        # 使用 secondary_color 作为文本颜色
+        self.stats_label.setStyleSheet(f"color: {secondary_color};")
+        stats_container_layout.addWidget(self.stats_label)
+        
+        main_layout.addWidget(stats_container)
         
         # 创建导出功能区
         export_layout = QHBoxLayout()

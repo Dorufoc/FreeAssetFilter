@@ -66,7 +66,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
 )
-from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtCore import Qt, QUrl, QEvent
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
 from PyQt5.QtGui import QFont, QIcon
@@ -235,9 +235,64 @@ class FreeAssetFilterApp(QMainWindow):
         """
         处理窗口大小变化事件
         - Qt会自动处理DPI变化
+        - 监听窗口尺寸变化，稳定后重新计算卡片尺寸
         """
-        # 调用父类的resizeEvent，不再需要检测设备像素比变化
         super().resizeEvent(event)
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(50, self._on_resize_stabilized)
+    
+    def _on_resize_stabilized(self):
+        """
+        窗口尺寸稳定后的回调
+        - 使用连续检测机制确保窗口尺寸已完全稳定
+        """
+        self._check_and_update_cards(retry_count=0)
+    
+    def _check_and_update_cards(self, retry_count=0):
+        """
+        检测并更新卡片尺寸
+        - 连续检测窗口尺寸是否稳定
+        """
+        if not hasattr(self, 'file_selector_a') or not self.file_selector_a:
+            return
+        
+        if not hasattr(self.file_selector_a, '_update_all_cards_width'):
+            return
+        
+        container = self.file_selector_a.files_container
+        current_width = container.width()
+        
+        if current_width <= 0:
+            max_retries = 15
+            if retry_count < max_retries:
+                from PyQt5.QtCore import QTimer
+                from PyQt5.QtWidgets import QApplication
+                QApplication.processEvents()
+                QTimer.singleShot(30, lambda: self._check_and_update_cards(retry_count + 1))
+            return
+        
+        self.file_selector_a._update_all_cards_width()
+    
+    def changeEvent(self, event):
+        """
+        处理窗口状态变化事件
+        - 监听窗口最大化/窗口化状态变化
+        - 状态变化时重新计算文件选择器卡片尺寸
+        """
+        if event.type() == QEvent.WindowStateChange:
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(200, self._on_window_state_changed)
+        super().changeEvent(event)
+    
+    def _on_window_state_changed(self):
+        """
+        窗口状态变化后的回调
+        - 延迟执行确保布局完成
+        - 连续检测直到窗口尺寸稳定
+        """
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+        self._check_and_update_cards(retry_count=0)
     
     def _create_file_selector_widget(self):
         """
