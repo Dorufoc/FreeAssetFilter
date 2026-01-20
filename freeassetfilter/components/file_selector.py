@@ -3012,18 +3012,18 @@ class CustomFileSelector(QWidget):
         """
         file_info = card.file_info
         
-        # 创建属性对话框
+        app = QApplication.instance()
+        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        
         dialog = QDialog(self)
         dialog.setWindowTitle("文件属性")
         dialog.setMinimumWidth(400)
         
         layout = QVBoxLayout(dialog)
         
-        # 创建属性表格
         group_box = QGroupBox("基本信息")
         grid = QGridLayout(group_box)
         
-        # 添加属性行
         properties = [
             ("名称", file_info["name"]),
             ("路径", file_info["path"]),
@@ -3037,6 +3037,7 @@ class CustomFileSelector(QWidget):
             grid.addWidget(QLabel(label + ":"), i, 0, Qt.AlignRight)
             value_label = QLabel(value)
             value_label.setWordWrap(True)
+            value_label.setStyleSheet(f"color: {secondary_color}; background: transparent; border: none;")
             grid.addWidget(value_label, i, 1)
         
         layout.addWidget(group_box)

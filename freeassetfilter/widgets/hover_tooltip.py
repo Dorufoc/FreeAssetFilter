@@ -175,13 +175,12 @@ class HoverTooltip(QWidget):
             target = ref()
             if target and target.isVisible():
                 visible_widgets.append(target)
-        print(f"可见的目标控件: {[w.__class__.__name__ for w in visible_widgets]}")
+        
         if not visible_widgets:
             return
         
         # 获取当前鼠标位置的控件
         widget = QApplication.widgetAt(self.last_mouse_pos)
-        print(f"鼠标位置的控件: {widget.__class__.__name__ if widget else 'None'}")
         if not widget:
             return
         
@@ -193,13 +192,11 @@ class HoverTooltip(QWidget):
                 current_widget = target
                 break
         
-        print(f"找到的目标控件: {current_widget.__class__.__name__ if current_widget else 'None'}")
         if not current_widget:
             return
         
         # 获取鼠标位置的文本内容
         text = self.get_text_at_position()
-        print(f"获取到的文本: '{text}'")
         if not text:
             return
         
@@ -290,8 +287,11 @@ class HoverTooltip(QWidget):
                 from PyQt5.QtCore import QFileInfo
                 file_info = QFileInfo(file_path)
                 
-                # 文件大小
-                if file_info.isDir():
+                # 判断是文件夹还是文件
+                is_dir = file_info.isDir()
+                
+                # 格式化文件大小
+                if is_dir:
                     size_str = "文件夹"
                 else:
                     file_size = file_info.size()
@@ -305,39 +305,33 @@ class HoverTooltip(QWidget):
                         size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
                 
                 # 文件类型
-                if file_info.isDir():
+                if is_dir:
                     file_type = "文件夹"
                 else:
                     file_type = f".{file_info.suffix()}"
                 
                 # 路径
-                file_path = file_info.absoluteFilePath()
+                abs_path = file_info.absoluteFilePath()
                 
                 # 日期格式化
                 if file_info.exists():
-                    if file_info.isFile():
-                        # 对于文件，尝试获取创建和修改日期
-                        created_time = file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if file_info.birthTime().isValid() else "未知"
-                        modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
-                    else:  # 对于文件夹
+                    if is_dir:
                         created_time = "文件夹"
                         modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
+                    else:
+                        created_time = file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if file_info.birthTime().isValid() else "未知"
+                        modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
                 else:
-                    # 如果文件不存在，显示默认信息
                     created_time = "文件不存在"
                     modified_time = "文件不存在"
                 
-                # 构建悬浮信息文本
-                tooltip_text = f"文件名: {file_name}\n"
-                if not file_info.isDir():
-                    tooltip_text += f"文件大小: {size_str}\n"
-                tooltip_text += f"文件类型: {file_type}\n"
-                tooltip_text += f"路径: {file_path}\n"
-                if file_info.isDir():
-                    tooltip_text += f"修改日期: {modified_time}"
-                else:
-                    tooltip_text += f"创建日期: {created_time}\n"
-                    tooltip_text += f"修改日期: {modified_time}"
+                # 构建悬浮信息文本（与FileBlockCard格式一致）
+                tooltip_text = f"名称: {file_name}\n"
+                tooltip_text += f"路径: {abs_path}\n"
+                tooltip_text += f"类型: {file_type}\n"
+                tooltip_text += f"大小: {size_str}\n"
+                tooltip_text += f"修改时间: {modified_time}\n"
+                tooltip_text += f"创建时间: {created_time}"
                 
                 return tooltip_text
             
@@ -349,10 +343,11 @@ class HoverTooltip(QWidget):
                     file_name = file_info["name"]
                     file_path = file_info["path"]
                     file_size = file_info["size"]
-                    file_type = "文件夹" if file_info["is_dir"] else f".{file_info['suffix']}"
+                    is_dir = file_info["is_dir"]
+                    file_type = "文件夹" if is_dir else f".{file_info['suffix']}"
                     
                     # 格式化文件大小
-                    if file_info["is_dir"]:
+                    if is_dir:
                         size_str = "文件夹"
                     else:
                         if file_size < 1024:
@@ -370,29 +365,23 @@ class HoverTooltip(QWidget):
                     
                     # 日期格式化
                     if qfile_info.exists():
-                        if qfile_info.isFile():
-                            # 对于文件，尝试获取创建和修改日期
-                            created_time = qfile_info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if qfile_info.birthTime().isValid() else "未知"
-                            modified_time = qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if qfile_info.lastModified().isValid() else "未知"
-                        else:  # 对于文件夹
+                        if is_dir:
                             created_time = "文件夹"
                             modified_time = qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if qfile_info.lastModified().isValid() else "未知"
+                        else:
+                            created_time = qfile_info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if qfile_info.birthTime().isValid() else "未知"
+                            modified_time = qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if qfile_info.lastModified().isValid() else "未知"
                     else:
-                        # 如果文件不存在，显示默认信息
                         created_time = "文件不存在"
                         modified_time = "文件不存在"
                     
-                    # 构建悬浮信息文本
-                    tooltip_text = f"文件名: {file_name}\n"
-                    if not file_info["is_dir"]:
-                        tooltip_text += f"文件大小: {size_str}\n"
-                    tooltip_text += f"文件类型: {file_type}\n"
+                    # 构建悬浮信息文本（与CustomFileHorizontalCard格式一致）
+                    tooltip_text = f"名称: {file_name}\n"
                     tooltip_text += f"路径: {file_path}\n"
-                    if file_info["is_dir"]:
-                        tooltip_text += f"修改日期: {modified_time}"
-                    else:
-                        tooltip_text += f"创建日期: {created_time}\n"
-                        tooltip_text += f"修改日期: {modified_time}"
+                    tooltip_text += f"类型: {file_type}\n"
+                    tooltip_text += f"大小: {size_str}\n"
+                    tooltip_text += f"修改时间: {modified_time}\n"
+                    tooltip_text += f"创建时间: {created_time}"
                     
                     return tooltip_text
             
@@ -490,7 +479,51 @@ class HoverTooltip(QWidget):
                     else:
                         import os
                         file_name = os.path.basename(file_path)
-                    return f"{file_name}\n{file_path}"
+                    
+                    # 获取完整文件信息
+                    from PyQt5.QtCore import QFileInfo
+                    file_info = QFileInfo(file_path)
+                    
+                    # 判断是文件夹还是文件
+                    is_dir = file_info.isDir()
+                    
+                    # 格式化文件大小
+                    if is_dir:
+                        size_str = "文件夹"
+                    else:
+                        file_size = file_info.size()
+                        if file_size < 1024:
+                            size_str = f"{file_size} B"
+                        elif file_size < 1024 * 1024:
+                            size_str = f"{file_size / 1024:.2f} KB"
+                        elif file_size < 1024 * 1024 * 1024:
+                            size_str = f"{file_size / (1024 * 1024):.2f} MB"
+                        else:
+                            size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
+                    
+                    # 文件类型
+                    if is_dir:
+                        file_type = "文件夹"
+                    else:
+                        file_type = f".{file_info.suffix()}"
+                    
+                    # 路径
+                    abs_path = file_info.absoluteFilePath()
+                    
+                    # 日期格式化
+                    if file_info.exists():
+                        if is_dir:
+                            created_time = "文件夹"
+                            modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
+                        else:
+                            created_time = file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if file_info.birthTime().isValid() else "未知"
+                            modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
+                    else:
+                        created_time = "文件不存在"
+                        modified_time = "文件不存在"
+                    
+                    # 构建悬浮信息文本
+                    return f"名称: {file_name}\n路径: {abs_path}\n类型: {file_type}\n大小: {size_str}\n修改时间: {modified_time}\n创建时间: {created_time}"
                 
                 if hasattr(parent, "text") and parent.text():
                     return parent.text()
@@ -517,13 +550,16 @@ class HoverTooltip(QWidget):
         
         current_colors = settings_manager.get_setting("appearance.colors", {})
         base_color = current_colors.get("base_color", "#ffffff")
+        normal_color = current_colors.get("normal_color", "#333333")
+        
+        # 绘制边框
+        border_pen = QPen(QColor(normal_color))
+        border_pen.setWidth(1)
+        painter.setPen(border_pen)
         
         # 绘制背景
         brush = QBrush(QColor(base_color))
         painter.setBrush(brush)
-        
-        # 移除边框
-        painter.setPen(QPen(Qt.transparent))
         
         # 绘制圆角矩形
         rect = QRect(0, 0, self.width() - 1, self.height() - 1)
