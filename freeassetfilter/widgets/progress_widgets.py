@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QScrollArea
 )
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
-from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
+from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QLinearGradient
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
 # 用于SVG渲染
@@ -569,11 +569,13 @@ class CustomValueBar(QWidget):
         
         # 根据方向设置最小和最大尺寸，应用DPI缩放
         if self._orientation == self.Horizontal:
-            self.setMinimumSize(scaled_min_width, scaled_min_height)
+            self.setMinimumWidth(scaled_min_width)
             self.setMaximumHeight(scaled_min_height)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         else:  # Vertical
             self.setMinimumSize(scaled_square_dim, scaled_min_width)
             self.setMaximumWidth(scaled_square_dim)
+            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         
         # 进度条属性
         self._minimum = 0
@@ -610,6 +612,11 @@ class CustomValueBar(QWidget):
             self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
         
         self._handle_border_width = int(1 * self.dpi_scale)  # 边框宽度，响应DPI缩放
+        
+        # 渐变背景支持
+        self._gradient_mode = False
+        self._gradient_colors = []
+        self._dynamic_handle_color = False
     
     def setRange(self, minimum, maximum):
         """
@@ -785,7 +792,13 @@ class CustomValueBar(QWidget):
                 bar_length, self._bar_size
             )
             
-            painter.setBrush(QBrush(self._bg_color))
+            if self._gradient_mode and len(self._gradient_colors) >= 2:
+                gradient = QLinearGradient(self._handle_radius, 0, self.width() - self._handle_radius, 0)
+                for i, color in enumerate(self._gradient_colors):
+                    gradient.setColorAt(i / (len(self._gradient_colors) - 1), color)
+                painter.setBrush(QBrush(gradient))
+            else:
+                painter.setBrush(QBrush(self._bg_color))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
             
@@ -800,7 +813,10 @@ class CustomValueBar(QWidget):
                 progress_length, self._bar_size
             )
             
-            painter.setBrush(QBrush(self._progress_color))
+            if self._gradient_mode:
+                painter.setBrush(Qt.NoBrush)
+            else:
+                painter.setBrush(QBrush(self._progress_color))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
             
@@ -819,7 +835,11 @@ class CustomValueBar(QWidget):
             # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
             # 绘制外圆（边框）
             painter.setBrush(Qt.NoBrush)  # 无边框填充
-            painter.setPen(QPen(self._handle_border_color, self._handle_border_width))
+            if self._dynamic_handle_color and self._dynamic_handle_color_func:
+                handle_border = self._dynamic_handle_color_func(self._value)
+            else:
+                handle_border = self._handle_border_color
+            painter.setPen(QPen(handle_border, self._handle_border_width))
             painter.drawEllipse(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
             
             # 绘制内圆（填充）
@@ -905,6 +925,68 @@ class CustomValueBar(QWidget):
         """
         鼠标离开事件
         """
+        self.update()
+    
+    def set_progress_color(self, color):
+        """
+        设置进度条已完成部分的颜色
+        
+        Args:
+            color (QColor): 进度颜色
+        """
+        self._progress_color = QColor(color)
+        self.update()
+    
+    def set_bg_color(self, color):
+        """
+        设置进度条背景颜色
+        
+        Args:
+            color (QColor): 背景颜色
+        """
+        self._bg_color = QColor(color)
+        self.update()
+    
+    def set_handle_border_color(self, color):
+        """
+        设置滑块边框颜色
+        
+        Args:
+            color (QColor): 边框颜色
+        """
+        self._handle_border_color = QColor(color)
+        self.update()
+    
+    def set_gradient_mode(self, enabled):
+        """
+        设置是否使用渐变背景
+        
+        Args:
+            enabled (bool): 是否启用渐变模式
+        """
+        self._gradient_mode = enabled
+        self.update()
+    
+    def set_gradient_colors(self, colors):
+        """
+        设置渐变背景颜色列表
+        
+        Args:
+            colors (list): QColor颜色列表，至少需要2个颜色
+        """
+        self._gradient_colors = colors
+        self.update()
+    
+    def set_dynamic_handle_color(self, enabled, color=None):
+        """
+        设置滑块边框颜色是否动态变化
+        
+        Args:
+            enabled (bool): 是否启用动态颜色
+            color (QColor): 动态颜色计算函数，接收当前值参数返回QColor
+        """
+        self._dynamic_handle_color = enabled
+        self._dynamic_handle_color_func = color
         self.update()
 
 

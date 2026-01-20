@@ -381,7 +381,8 @@ class CustomFileSelector(QWidget):
         
         scrollbar_style = f"""
             QScrollArea {{
-                border: 0px solid transparent;
+                border: 1px solid {normal_color};
+                border-radius: 8px;
                 background-color: {base_color};
             }}
             QScrollArea > QWidget > QWidget {{
@@ -424,7 +425,7 @@ class CustomFileSelector(QWidget):
         self.files_container = QWidget()
         self.files_layout = QGridLayout(self.files_container)
         self.files_container.setObjectName("FilesContainer")
-        self.files_container.setStyleSheet(f"#FilesContainer {{ border: 0px solid #e0e0e0; background-color: {base_color}; }}")
+        self.files_container.setStyleSheet(f"#FilesContainer {{ border: none; background-color: {base_color}; }}")
         scaled_card_spacing = int(5 * self.dpi_scale)
         scaled_card_margin = int(5 * self.dpi_scale)
         self.files_layout.setSpacing(scaled_card_spacing)
@@ -2245,7 +2246,18 @@ class CustomFileSelector(QWidget):
         """更新所有卡片的动态宽度，并重新排列卡片"""
         print(f"[DEBUG] _update_all_cards_width 被调用")
         
-        container_width = self.files_container.width()
+        scroll_area = None
+        parent_widget = self.files_container.parent()
+        while parent_widget and not isinstance(parent_widget, QScrollArea):
+            parent_widget = parent_widget.parent()
+        if parent_widget:
+            scroll_area = parent_widget
+        
+        if scroll_area:
+            container_width = scroll_area.viewport().width()
+        else:
+            container_width = self.files_container.width()
+        
         if container_width <= 0:
             print(f"[DEBUG] 容器宽度为0，50ms后重试")
             from PyQt5.QtCore import QTimer
@@ -2264,7 +2276,7 @@ class CustomFileSelector(QWidget):
         available_width = container_width - (max_cols + 1) * spacing - total_margin
         card_width = available_width // max_cols
         
-        print(f"[DEBUG] 更新: 容器宽度={container_width}, 列数={max_cols}, 卡片宽度={card_width}")
+        print(f"[DEBUG] 更新: 视口宽度={container_width}, 列数={max_cols}, 卡片宽度={card_width}")
         
         if hasattr(self, '_last_max_cols') and self._last_max_cols != max_cols:
             print(f"[DEBUG] 列数变化: {self._last_max_cols} -> {max_cols}，重新排列卡片")
