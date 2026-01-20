@@ -490,8 +490,8 @@ class SvgRenderer:
                         font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
                         font.setFamily(font_family)
                 
-                # 计算合适的字体大小
-                base_font_size = int(scaled_icon_size * 0.18)
+                # 计算合适的字体大小（0.18 * 1.3 = 0.234，即容器大小的23.4%）
+                base_font_size = int(scaled_icon_size * 0.234)
                 font.setPointSize(base_font_size)
                 font.setBold(True)
                 
@@ -556,8 +556,8 @@ class SvgRenderer:
                         font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
                         font.setFamily(font_family)
                 
-                # 计算合适的字体大小
-                base_font_size = int(scaled_icon_size * 0.35)
+                # 计算合适的字体大小（0.35 * 1.3 = 0.455，即容器大小的45.5%）
+                base_font_size = int(scaled_icon_size * 0.455)
                 font.setPointSize(base_font_size)
                 font.setBold(True)
                 

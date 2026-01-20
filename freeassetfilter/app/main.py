@@ -570,6 +570,10 @@ class FreeAssetFilterApp(QMainWindow):
         if not self.isVisible():
             return False
         
+        if hasattr(app, 'global_font'):
+            self.global_font = QFont(app.global_font)
+            self.setFont(self.global_font)
+        
         self._backup_ui_state()
         
         auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")

@@ -160,6 +160,10 @@ class SettingsManager:
         Returns:
             对应路径的设置值，如果路径不存在则返回默认值
         """
+        # 如果 settings 尚未加载（为 None），直接返回默认值
+        if self.settings is None:
+            return default
+        
         keys = key_path.split(".")
         value = self.settings
         
@@ -168,8 +172,8 @@ class SettingsManager:
             for key in keys:
                 value = value[key]
             return value
-        except KeyError:
-            # 设置项不存在，使用默认值
+        except (KeyError, TypeError):
+            # 设置项不存在或 value 为 None，使用默认值
             if default is not None:
                 # 将默认值添加到设置中
                 self.set_setting(key_path, default)

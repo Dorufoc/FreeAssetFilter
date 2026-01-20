@@ -49,8 +49,14 @@ class CustomProgressBar(QWidget):
         self._orientation = self.Horizontal
         
         # 设置默认尺寸，应用DPI缩放
+        # 尺寸关系：进度条高度 = 滑块半径，滑块直径 = 2 × 进度条高度
+        # 这样滑块比进度条大，视觉上更协调
+        self._bar_height = int(3 * self.dpi_scale)  # 进度条高度
+        self._handle_radius = self._bar_height  # 滑块半径 = 进度条高度
+        self._bar_radius = self._bar_height // 2  # 圆角半径 = 进度条高度的一半
+        
         scaled_min_width = int(50 * self.dpi_scale)
-        scaled_min_height = int(14 * self.dpi_scale)
+        scaled_min_height = self._bar_height + self._handle_radius * 2  # 总高度 = 进度条高度 + 2×滑块半径
         self.setMinimumSize(scaled_min_width, scaled_min_height)
         self.setMaximumHeight(scaled_min_height)
         
@@ -93,9 +99,6 @@ class CustomProgressBar(QWidget):
             self._handle_color = QColor(0, 120, 212)  # #0078d4
             self._handle_hover_color = QColor(16, 110, 190)  # #106ebe
             self._handle_pressed_color = QColor(0, 90, 158)  # #005a9e
-        self._handle_radius = int(3 * self.dpi_scale)
-        self._bar_height = int(3 * self.dpi_scale)
-        self._bar_radius = int(2 * self.dpi_scale)
         
         # SVG 图标路径
         icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
@@ -120,13 +123,12 @@ class CustomProgressBar(QWidget):
             
             # 应用DPI缩放因子到尺寸限制
             scaled_min_width = int(200 * self.dpi_scale)
-            scaled_min_height = int(7 * self.dpi_scale)
-            scaled_square_dim = int(7 * self.dpi_scale)
+            scaled_square_dim = self._bar_height + self._handle_radius * 2
             
             # 根据新方向更新尺寸限制
             if orientation == self.Horizontal:
-                self.setMinimumSize(scaled_min_width, scaled_min_height)
-                self.setMaximumHeight(scaled_min_height)
+                self.setMinimumSize(scaled_min_width, self._bar_height + self._handle_radius * 2)
+                self.setMaximumHeight(self._bar_height + self._handle_radius * 2)
             else:  # Vertical
                 self.setMinimumSize(scaled_square_dim, scaled_min_width)
                 self.setMaximumWidth(scaled_square_dim)
@@ -320,28 +322,34 @@ class CustomProgressBar(QWidget):
                     transform.rotate(90)
                     rotated_pixmap = temp_pixmap.transformed(transform, QtCore.SmoothTransformation)
                     
-                    # 计算垂直居中位置
-                    middle_y = (rect.height() - self._handle_radius * 2) // 2
+                    # 计算对齐位置（进度条中心与滑块中心对齐）
+                    # bar_y + bar_height/2 = handle_center_y + handle_radius
+                    # handle_center_y = bar_y + bar_height/2 - handle_radius
+                    # 由于 bar_height = handle_radius:
+                    # handle_center_y = bar_y + handle_radius/2 - handle_radius = bar_y - handle_radius/2
+                    offset_y = (self._bar_height - self._handle_radius * 2) // 2
+                    handle_center_y = bar_y + offset_y
                     
-                    # 计算中间矩形
+                    # 计算中间矩形（进度条填充区域）
                     middle_rect = QRect(
-                        self._handle_radius, middle_y, 
-                        progress_width, self._handle_radius * 2
+                        self._handle_radius, bar_y, 
+                        progress_width, self._bar_height
                     )
                     
                     # 拉伸渲染旋转后的 pixmap 到中间矩形
                     painter.drawPixmap(middle_rect, rotated_pixmap)
                     
                     # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标（逆时针旋转90度）
-                    head_x = -self._handle_radius // 2  # 向左偏移一点
+                    head_x = self._handle_radius  # 从起始位置开始
                     
                     if not self._head_pixmap.isNull():
                         # 保存当前画家状态
                         painter.save()
                         
-                        # 计算旋转中心
+                        # 计算旋转中心（进度条中心与滑块中心对齐）
+                        # center_y = bar_y + bar_height/2
                         center_x = head_x + self._handle_radius
-                        center_y = middle_y + self._handle_radius
+                        center_y = bar_y + self._bar_height // 2
                         
                         # 移动坐标原点到旋转中心
                         painter.translate(center_x, center_y)
@@ -365,9 +373,10 @@ class CustomProgressBar(QWidget):
                         # 保存当前画家状态
                         painter.save()
                         
-                        # 计算旋转中心
+                        # 计算旋转中心（进度条中心与滑块中心对齐）
+                        # center_y = bar_y + bar_height/2
                         center_x = handle_x + self._handle_radius
-                        center_y = middle_y + self._handle_radius
+                        center_y = bar_y + self._bar_height // 2
                         
                         # 移动坐标原点到旋转中心
                         painter.translate(center_x, center_y)
@@ -388,7 +397,7 @@ class CustomProgressBar(QWidget):
                             self._handle_color
                         ))
                         painter.setPen(Qt.NoPen)  # 去除滑块边框
-                        painter.drawEllipse(handle_x, middle_y, self._handle_radius * 2, self._handle_radius * 2)
+                        painter.drawEllipse(handle_x, handle_center_y, self._handle_radius * 2, self._handle_radius * 2)
                 else:
                     # 不可交互进度条 - 使用纯色填充，类似CustomValueBar
                     progress_rect = QRect(
@@ -425,27 +434,33 @@ class CustomProgressBar(QWidget):
                     icon_size = self._handle_radius * 2
                     temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
                     
-                    # 计算水平居中位置
-                    middle_x = (rect.width() - self._handle_radius * 2) // 2
+                    # 计算对齐位置（进度条中心与滑块中心对齐）
+                    # bar_x + bar_height/2 = handle_center_x + handle_radius
+                    # handle_center_x = bar_x + bar_height/2 - handle_radius
+                    # 由于 bar_height = handle_radius:
+                    # handle_center_x = bar_x + handle_radius/2 - handle_radius = bar_x - handle_radius/2
+                    offset_x = (self._bar_height - self._handle_radius * 2) // 2
+                    handle_center_x = bar_x + offset_x
                     
-                    # 计算中间矩形 - 从顶部开始向下延伸
+                    # 计算中间矩形 - 从顶部开始向下延伸（使用进度条高度）
                     middle_rect = QRect(
-                        middle_x, self._handle_radius, 
-                        self._handle_radius * 2, progress_height
+                        bar_x, self._handle_radius, 
+                        self._bar_height, progress_height
                     )
                     
                     # 拉伸渲染 pixmap 到中间矩形
                     painter.drawPixmap(middle_rect, temp_pixmap)
                     
                     # 绘制已完成区域的起始点 - 使用条-顶-头.svg图标
-                    head_y = -self._handle_radius // 2  # 向上偏移一点
+                    head_y = self._handle_radius  # 从起始位置开始
                     
                     if not self._head_pixmap.isNull():
                         # 保存当前画家状态
                         painter.save()
                         
-                        # 计算旋转中心
-                        center_x = middle_x + self._handle_radius
+                        # 计算旋转中心（进度条中心与滑块中心对齐）
+                        # center_x = bar_x + bar_height/2
+                        center_x = bar_x + self._bar_height // 2
                         center_y = head_y + self._handle_radius
                         
                         # 移动坐标原点到旋转中心
@@ -467,8 +482,9 @@ class CustomProgressBar(QWidget):
                         # 保存当前画家状态
                         painter.save()
                         
-                        # 计算旋转中心
-                        center_x = middle_x + self._handle_radius
+                        # 计算旋转中心（进度条中心与滑块中心对齐）
+                        # center_x = bar_x + bar_height/2
+                        center_x = bar_x + self._bar_height // 2
                         center_y = handle_y + self._handle_radius
                         
                         # 移动坐标原点到旋转中心
@@ -487,7 +503,7 @@ class CustomProgressBar(QWidget):
                             self._handle_color
                         ))
                         painter.setPen(Qt.NoPen)  # 去除滑块边框
-                        painter.drawEllipse(middle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+                        painter.drawEllipse(handle_center_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
                 else:
                     # 不可交互进度条 - 使用纯色填充，类似CustomValueBar
                     progress_rect = QRect(
@@ -539,10 +555,17 @@ class CustomValueBar(QWidget):
         # 交互属性
         self._interactive = interactive
         
+        # 设置尺寸参数
+        # 尺寸关系：进度条高度 = 滑块半径，滑块直径 = 2 × 进度条高度
+        # 这样滑块比进度条大，视觉上更协调
+        self._bar_size = int(3 * self.dpi_scale)  # 进度条尺寸（横向为高度，竖向为宽度）
+        self._handle_radius = self._bar_size  # 滑块半径 = 进度条尺寸
+        self._bar_radius = self._bar_size // 2  # 圆角半径 = 进度条尺寸的一半
+        
         # 应用DPI缩放因子到尺寸
         scaled_min_width = int(100 * self.dpi_scale)
-        scaled_min_height = int(14 * self.dpi_scale)
-        scaled_square_dim = int(14 * self.dpi_scale)
+        scaled_min_height = self._bar_size + self._handle_radius * 2  # 总高度 = 进度条尺寸 + 2×滑块半径
+        scaled_square_dim = self._bar_size + self._handle_radius * 2
         
         # 根据方向设置最小和最大尺寸，应用DPI缩放
         if self._orientation == self.Horizontal:
@@ -559,10 +582,7 @@ class CustomValueBar(QWidget):
         self._is_pressed = False
         self._last_pos = 0
         
-        # 外观属性，应用DPI缩放
-        self._handle_radius = int(3 * self.dpi_scale)
-        self._bar_size = int(3 * self.dpi_scale)  # 横向时为高度，竖向时为宽度
-        self._bar_radius = int(2 * self.dpi_scale)
+        # 外观属性，应用DPI缩放（尺寸参数已在上面设置）
         
         # 尝试从应用实例获取主题颜色
         app = QApplication.instance()
@@ -788,8 +808,13 @@ class CustomValueBar(QWidget):
             handle_x = self._handle_radius + progress_length
             # 确保滑块不会超出数值条范围
             handle_x = min(handle_x, self.width() - self._handle_radius * 2)
-            # 精确计算滑块Y坐标，使其与数值控制条的中线对齐
-            handle_y = (rect.height() - self._handle_radius * 2) // 2
+            # 计算对齐位置（进度条中心与滑块中心对齐）
+            # bar_y + bar_size/2 = handle_y + handle_radius
+            # handle_y = bar_y + bar_size/2 - handle_radius
+            # 由于 bar_size = handle_radius:
+            # handle_y = bar_y + handle_radius/2 - handle_radius = bar_y - handle_radius/2
+            offset_y = (self._bar_size - self._handle_radius * 2) // 2
+            handle_y = bar_y + offset_y
             
             # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
             # 绘制外圆（边框）
@@ -846,8 +871,13 @@ class CustomValueBar(QWidget):
             # 确保滑块不会超出数值条范围
             handle_y = max(handle_y, self._handle_radius)
             handle_y = min(handle_y, rect.height() - self._handle_radius * 2)
-            # 精确计算滑块X坐标，使其与数值控制条的中线对齐
-            handle_x = (rect.width() - self._handle_radius * 2) // 2
+            # 计算对齐位置（进度条中心与滑块中心对齐）
+            # bar_x + bar_size/2 = handle_x + handle_radius
+            # handle_x = bar_x + bar_size/2 - handle_radius
+            # 由于 bar_size = handle_radius:
+            # handle_x = bar_x + handle_radius/2 - handle_radius = bar_x - handle_radius/2
+            offset_x = (self._bar_size - self._handle_radius * 2) // 2
+            handle_x = bar_x + offset_x
             
             # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
             # 绘制外圆（边框）
@@ -887,11 +917,23 @@ class CustomVolumeBar(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._handle_radius = 12
+        
+        # 获取应用实例和DPI缩放因子
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 设置尺寸参数
+        # 尺寸关系：进度条高度 = 滑块半径，滑块直径 = 2 × 进度条高度
+        # 这样滑块比进度条大，视觉上更协调
+        self._bar_height = int(6 * self.dpi_scale)  # 进度条高度（比一般的进度条大一点）
+        self._handle_radius = self._bar_height  # 滑块半径 = 进度条高度
+        self._bar_radius = self._bar_height // 2  # 圆角半径 = 进度条高度的一半
+        
         # 设置最小尺寸为滑块直径加上一定余量，确保滑块始终可见
-        min_width = self._handle_radius * 3  # 滑块直径 + 两侧余量
-        self.setMinimumSize(min_width, 28)
-        self.setMaximumHeight(28)
+        scaled_min_width = int(self._handle_radius * 3)  # 滑块直径 + 两侧余量
+        scaled_height = self._bar_height + self._handle_radius * 2  # 总高度 = 进度条高度 + 2×滑块半径
+        self.setMinimumSize(scaled_min_width, scaled_height)
+        self.setMaximumHeight(scaled_height)
         
         # 音量条属性
         self._minimum = 0
@@ -899,21 +941,6 @@ class CustomVolumeBar(QWidget):
         self._value = 50  # 默认音量50%
         self._is_pressed = False
         self._last_pos = 0
-        
-        # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 应用DPI缩放因子到尺寸
-        self._handle_radius = int(12 * self.dpi_scale)
-        self._bar_height = int(12 * self.dpi_scale)
-        self._bar_radius = int(6 * self.dpi_scale)
-        
-        # 设置最小尺寸为滑块直径加上一定余量，确保滑块始终可见
-        scaled_min_width = int(self._handle_radius * 3)  # 滑块直径 + 两侧余量
-        scaled_height = int(40 * self.dpi_scale)
-        self.setMinimumSize(scaled_min_width, scaled_height)
-        self.setMaximumHeight(scaled_height)
         
         # 圆形滑块颜色属性
         self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
@@ -1065,8 +1092,13 @@ class CustomVolumeBar(QWidget):
         handle_x = min(handle_x, max_handle_x)
         # 确保滑块不会小于最小值
         handle_x = max(handle_x, self._handle_radius)
-        # 精确计算滑块Y坐标，使其与音量条的中线对齐
-        handle_y = (rect.height() - self._handle_radius * 2) // 2
+        # 计算对齐位置（进度条中心与滑块中心对齐）
+        # bar_y + bar_height/2 = handle_y + handle_radius
+        # handle_y = bar_y + bar_height/2 - handle_radius
+        # 由于 bar_height = handle_radius:
+        # handle_y = bar_y + handle_radius/2 - handle_radius = bar_y - handle_radius/2
+        offset_y = (self._bar_height - self._handle_radius * 2) // 2
+        handle_y = bar_y + offset_y
         
         # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
         # 绘制外圆（边框）

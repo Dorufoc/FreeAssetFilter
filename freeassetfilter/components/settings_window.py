@@ -18,12 +18,17 @@ from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 from freeassetfilter.widgets.setting_widgets import CustomSettingItem
 from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.list_widgets import CustomSelectList
+from freeassetfilter.widgets.message_box import CustomMessageBox
 
 # 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
 
 # 导入主题管理器组件
 from freeassetfilter.core.theme_manager import ThemeManager
+
+# 导入系统模块
+import os
+import sys
 
 
 class ModernSettingsWindow(QDialog):
@@ -1147,6 +1152,8 @@ class ModernSettingsWindow(QDialog):
         """
         保存设置
         """
+        font_changed = self._check_font_changed()
+        
         for key, value in self.current_settings.items():
             self.settings_manager.set_setting(key, value)
         
@@ -1162,9 +1169,37 @@ class ModernSettingsWindow(QDialog):
         
         self._apply_theme_if_needed()
         
+        if font_changed:
+            self._show_font_change_reminder()
+        
         self.settings_saved.emit(self.current_settings)
         
         self.close()
+    
+    def _check_font_changed(self):
+        """
+        检查字体设置是否有变更
+        
+        Returns:
+            bool: 如果字体设置有变更返回 True，否则返回 False
+        """
+        original_font_style = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
+        original_font_size = self.settings_manager.get_setting("font.size", 20)
+        
+        current_font_style = self.current_settings.get("font.style", original_font_style)
+        current_font_size = self.current_settings.get("font.size", original_font_size)
+        
+        return current_font_style != original_font_style or current_font_size != original_font_size
+    
+    def _show_font_change_reminder(self):
+        """
+        如果字体设置有变更，显示提示弹窗
+        """
+        msg_box = CustomMessageBox(self)
+        msg_box.set_title("提示")
+        msg_box.set_text("当前字体修改将在下次启动后生效")
+        msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+        msg_box.exec_()
     
     def _apply_theme_if_needed(self):
         """
@@ -1180,21 +1215,64 @@ class ModernSettingsWindow(QDialog):
         """
         重置设置为默认值
         """
-        # 重置设置管理器
-        self.settings_manager.reset_to_defaults()
+        # 询问用户是否确认重置
+        confirm_box = CustomMessageBox(self)
+        confirm_box.set_title("确认重置")
+        confirm_box.set_text("重置后所有设置将恢复为默认值，此操作不可撤销。\n是否继续？")
+        confirm_box.set_buttons(["确认重置", "取消"], Qt.Vertical, ["warning", "secondary"])
         
-        # 重新加载设置
-        self.load_settings()
+        # 获取当前设置文件路径
+        settings_file = self.settings_manager.settings_file
         
-        # 更新UI显示
-        self._fill_tab_content("appearance")
-        self.settings_manager.save_settings()
+        if confirm_box.exec_() == 0:
+            # 删除设置文件
+            if os.path.exists(settings_file):
+                try:
+                    os.remove(settings_file)
+                    print(f"已删除设置文件: {settings_file}")
+                except Exception as e:
+                    print(f"删除设置文件失败: {e}")
+            
+            # 清除内存中的设置缓存，强制重新加载
+            self.settings_manager.settings = None
+            
+            # 显示重启提示窗口
+            self._show_restart_required_dialog()
+    
+    def _show_restart_required_dialog(self):
+        """
+        显示重启提示窗口
+        """
+        restart_box = CustomMessageBox(self)
+        restart_box.set_title("重启程序")
+        restart_box.set_text("设置已重置，更改将在下次启动后生效。")
+        restart_box.set_buttons(["立即重启程序"], Qt.Vertical, ["warning"])
         
-        # 发送设置保存信号
-        self.settings_saved.emit(self.current_settings)
+        # 连接按钮点击事件
+        restart_box.buttonClicked.connect(lambda idx: self._restart_application(restart_box))
         
-        # 关闭窗口
-        self.close()
+        restart_box.exec_()
+    
+    def _restart_application(self, dialog):
+        """
+        关闭提示窗口并重启程序
+        """
+        dialog.close()
+        
+        app = QApplication.instance()
+        if app:
+            app.quit()
+        
+        # 使用 subprocess 重新启动程序
+        import subprocess
+        import os
+        python_executable = sys.executable
+        # settings_window.py 位于 freeassetfilter/components/，需要向上两级到 freeassetfilter/，然后进入 app/
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script_path = os.path.join(project_root, "app", "main.py")
+        subprocess.Popen([python_executable, script_path])
+        
+        sys.exit(0)
 
 
 # 更新 __init__.py 文件，导出新控件

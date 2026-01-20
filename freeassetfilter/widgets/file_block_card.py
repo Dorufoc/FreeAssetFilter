@@ -206,6 +206,14 @@ class FileBlockCard(QWidget):
                     svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                     svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                     svg_widget.show()
+                elif isinstance(svg_widget, QWidget):
+                    for child in self.icon_label.findChildren((QLabel, QSvgWidget, QWidget)):
+                        child.deleteLater()
+                    svg_widget.setParent(self.icon_label)
+                    svg_widget.setFixedSize(base_icon_size, base_icon_size)
+                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                    svg_widget.show()
                 else:
                     self._set_default_icon()
             else:
@@ -264,6 +272,8 @@ class FileBlockCard(QWidget):
             return os.path.join(icon_dir, "表格.svg")
         elif suffix in ["doc", "docx"]:
             return os.path.join(icon_dir, "Word文档.svg")
+        elif suffix in document_formats:
+            return os.path.join(icon_dir, "文档.svg")
         elif suffix in font_formats:
             return os.path.join(icon_dir, "字体.svg")
         elif suffix in audio_formats:

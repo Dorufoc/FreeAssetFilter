@@ -119,22 +119,22 @@ class CustomButton(QPushButton):
         
         # 强调样式按钮颜色
         current_colors["button_primary_normal"] = accent_color  # 强调色
-        current_colors["button_primary_hover"] = darken_color(accent_color, 0.02)  # 强调色加深2%
-        current_colors["button_primary_pressed"] = darken_color(accent_color, 0.05)  # 强调色加深5%
+        current_colors["button_primary_hover"] = darken_color(accent_color, 0.1)  # 强调色加深10%
+        current_colors["button_primary_pressed"] = darken_color(accent_color, 0.2)  # 强调色加深20%
         current_colors["button_primary_text"] = base_color  # 底层色
         current_colors["button_primary_border"] = accent_color  # 强调色
         
         # 普通样式按钮颜色
         current_colors["button_normal_normal"] = base_color  # 底层色
-        current_colors["button_normal_hover"] = darken_color(base_color, 0.02)  # 底层色加深2%
-        current_colors["button_normal_pressed"] = darken_color(base_color, 0.05)  # 底层色加深5%
+        current_colors["button_normal_hover"] = darken_color(base_color, 0.1)  # 底层色加深10%
+        current_colors["button_normal_pressed"] = darken_color(base_color, 0.2)  # 底层色加深20%
         current_colors["button_normal_text"] = secondary_color  # 次选色
         current_colors["button_normal_border"] = secondary_color  # 次选色
         
         # 次选样式按钮颜色
         current_colors["button_secondary_normal"] = base_color  # 底层色
-        current_colors["button_secondary_hover"] = darken_color(base_color, 0.02)  # 底层色加深2%
-        current_colors["button_secondary_pressed"] = darken_color(base_color, 0.05)  # 底层色加深5%
+        current_colors["button_secondary_hover"] = darken_color(base_color, 0.1)  # 底层色加深10%
+        current_colors["button_secondary_pressed"] = darken_color(base_color, 0.2)  # 底层色加深20%
         current_colors["button_secondary_text"] = accent_color  # 强调色
         current_colors["button_secondary_border"] = accent_color  # 强调色
         
@@ -153,7 +153,7 @@ class CustomButton(QPushButton):
         # 列表颜色
         current_colors["list_background"] = auxiliary_color  # 辅助色
         current_colors["list_item_normal"] = normal_color  # 普通色
-        current_colors["list_item_hover"] = darken_color(normal_color, 0.02)  # 普通色加深2%
+        current_colors["list_item_hover"] = darken_color(normal_color, 0.1)  # 普通色加深10%
         current_colors["list_item_selected"] = accent_color  # 强调色
         current_colors["list_item_text"] = secondary_color  # 次选色
         
@@ -231,8 +231,8 @@ class CustomButton(QPushButton):
             # 强调色方案
             # 使用主题颜色
             bg_color = current_colors.get("button_primary_normal", accent_color)
-            hover_color = current_colors.get("button_primary_hover", darken_color(accent_color, 0.02))
-            pressed_color = current_colors.get("button_primary_pressed", darken_color(accent_color, 0.05))
+            hover_color = current_colors.get("button_primary_hover", darken_color(accent_color, 0.1))
+            pressed_color = current_colors.get("button_primary_pressed", darken_color(accent_color, 0.2))
             text_color = current_colors.get("button_primary_text", base_color)
             border_color = current_colors.get("button_primary_border", accent_color)
             disabled_bg = "#888888"

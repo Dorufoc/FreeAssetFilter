@@ -472,10 +472,18 @@ class CustomFileHorizontalCard(QWidget):
                     svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                     svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                     svg_widget.show()
+                elif isinstance(svg_widget, QWidget):
+                    for child in self.icon_display.findChildren((QLabel, QSvgWidget, QWidget)):
+                        child.deleteLater()
+                    svg_widget.setParent(self.card_container)
+                    svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                    svg_widget.show()
                 else:
                     self._set_default_icon()
                 
-                if isinstance(svg_widget, (QSvgWidget, QLabel)) and svg_widget.parent() == self.card_container:
+                if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)) and svg_widget.parent() == self.card_container:
                     self.card_container.layout().removeWidget(self.icon_display)
                     if isinstance(self.icon_display, QLabel):
                         self.icon_display.deleteLater()
