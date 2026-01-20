@@ -987,6 +987,10 @@ class FreeAssetFilterApp(QMainWindow):
                 
                 if is_confirmed:
                     self.restore_backup(backup_data)
+                else:
+                    # 如果选择不恢复，确保显示ALL路径
+                    self.file_selector_a.current_path = "All"
+                    self.file_selector_a.refresh_files()
     
     def restore_backup(self, backup_data):
         """
@@ -1036,32 +1040,25 @@ class FreeAssetFilterApp(QMainWindow):
         if unlinked_files:
             self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
         
-        # 检查设置是否允许恢复上次路径
-        app = QApplication.instance()
-        if app is None:
-            return
+        # 当恢复文件列表时，无论设置如何，都将文件选择器的路径设置为文件所在的路径
+        target_path = "All"
         
-        settings_manager = getattr(app, 'settings_manager', None)
-        if settings_manager is None:
-            return
-            
-        if settings_manager.get_setting("file_selector.restore_last_path", True):
-            # 恢复文件选择器的目录
+        # 如果有恢复的文件，选择第一个文件所在的目录作为目标路径
+        if items:
+            # 遍历找到第一个存在的文件路径
+            for item in items:
+                if os.path.exists(item.get('path', '')):
+                    target_path = os.path.dirname(item['path'])
+                    break
+        else:
+            # 如果没有恢复的文件，但有选择器状态中的路径，使用该路径
             last_path = selector_state.get('last_path', 'All')
             if last_path and (last_path == 'All' or os.path.exists(last_path)):
-                self.file_selector_a.current_path = last_path
-                # 刷新文件列表，显示恢复的目录内容
-                self.file_selector_a.refresh_files()
-            else:
-                # 如果恢复的目录不存在，刷新当前目录的文件显示，确保选中状态正确
-                if hasattr(self.file_selector_a, 'current_path'):
-                    # 调用refresh_files方法，使用异步方式刷新文件列表
-                    # 这将确保文件选择器使用后台线程读取文件，避免阻塞主线程
-                    self.file_selector_a.refresh_files()
-        else:
-            # 如果设置不允许恢复上次路径，确保显示All界面
-            self.file_selector_a.current_path = "All"
-            self.file_selector_a.refresh_files()
+                target_path = last_path
+        
+        # 设置文件选择器路径并刷新
+        self.file_selector_a.current_path = target_path
+        self.file_selector_a.refresh_files()
     
     def show_info(self, title, message):
         """
