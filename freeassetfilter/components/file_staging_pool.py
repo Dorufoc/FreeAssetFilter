@@ -54,9 +54,11 @@ class FileStagingPool(QWidget):
     item_right_clicked = pyqtSignal(dict)  # 当项目被右键点击时发出
     item_left_clicked = pyqtSignal(dict)  # 当项目被左键点击时发出
     remove_from_selector = pyqtSignal(dict)  # 当需要从选择器中移除文件时发出
+    file_added_to_pool = pyqtSignal(dict)  # 当文件被添加到储存池时发出
     update_progress = pyqtSignal(int)  # 更新进度条信号
     export_finished = pyqtSignal(int, int, list)  # 导出完成信号
     folder_size_calculated = pyqtSignal(dict)  # 文件夹体积计算完成信号
+    navigate_to_path = pyqtSignal(str, dict)  # 当需要导航到某个路径时发出，第二个参数是可选的文件信息
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -260,46 +262,35 @@ class FileStagingPool(QWidget):
         Args:
             file_info (dict): 文件或文件夹信息字典
         """
-        # 检查文件是否已存在
+        file_path = os.path.normpath(file_info["path"])
         for item in self.items:
-            if item["path"] == file_info["path"]:
-                return  # 文件已存在，不重复添加
+            if os.path.normpath(item["path"]) == file_path:
+                return
         
-        # 添加前端显示文件名字段，默认为原始文件名（如果不存在）
         if "display_name" not in file_info:
             file_info["display_name"] = file_info["name"]
-        # 添加原始文件名字段，用于保存原始文件名和重命名记录（如果不存在）
         if "original_name" not in file_info:
             file_info["original_name"] = file_info["name"]
         
-        # 添加到项目列表
         self.items.append(file_info)
         
-        # 创建横向卡片，传递display_name
         card = CustomFileHorizontalCard(file_info["path"], display_name=file_info["display_name"])
         
-        # 连接信号
         card.clicked.connect(lambda path: self.on_card_clicked(path, card, file_info))
         card.doubleClicked.connect(lambda path: self.on_item_double_clicked(path))
         card.selectionChanged.connect(lambda selected, path: self.on_card_selection_changed(selected, path, file_info))
         card.renameRequested.connect(lambda path: self.on_card_rename_requested(path, file_info))
         card.deleteRequested.connect(lambda path: self.on_card_delete_requested(path, file_info))
         
-        # 将卡片容器添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(card.card_container)
         
-        # 在拉伸因子之前添加卡片，确保拉伸因子始终在最后
-        # 先移除拉伸因子
         if self.cards_layout.count() > 0 and self.cards_layout.itemAt(self.cards_layout.count() - 1).spacerItem():
             self.cards_layout.takeAt(self.cards_layout.count() - 1)
         
-        # 添加到卡片布局
         self.cards_layout.addWidget(card)
         
-        # 重新添加拉伸因子
         self.cards_layout.addStretch(1)
         
-        # 存储卡片对象
         self.cards.append((card, file_info))
         
         # 如果是文件夹，启动线程计算体积
@@ -311,6 +302,9 @@ class FileStagingPool(QWidget):
         
         # 实时保存备份
         self.save_backup()
+        
+        # 发出信号通知文件选择器该文件已被添加到储存池
+        self.file_added_to_pool.emit(file_info)
     
 
     
@@ -321,35 +315,27 @@ class FileStagingPool(QWidget):
         Args:
             file_path (str): 文件路径
         """
-        # 查找并移除项目
+        file_path = os.path.normpath(file_path)
         for i, (card, file_info) in enumerate(self.cards):
-            if file_info["path"] == file_path:
-                # 保存文件信息用于发出信号
+            if os.path.normpath(file_info["path"]) == file_path:
                 removed_file = file_info
                 
-                # 从项目列表中移除
                 self.items.pop(i)
                 
-                # 从卡片布局中移除
                 self.cards_layout.removeWidget(card)
                 card.deleteLater()
                 
-                # 从卡片列表中移除
                 self.cards.pop(i)
                 
-                # 发出信号通知文件选择器取消选中
                 self.remove_from_selector.emit(removed_file)
                 break
         
-        # 确保拉伸因子存在
         has_stretch = any(self.cards_layout.itemAt(i).spacerItem() for i in range(self.cards_layout.count()))
         if not has_stretch:
             self.cards_layout.addStretch(1)
         
-        # 更新统计信息
         self.update_stats()
         
-        # 实时保存备份
         self.save_backup()
     
     def clear_all(self):
@@ -1510,12 +1496,16 @@ class FileStagingPool(QWidget):
             # 单个文件
             file_info = self._get_file_info(file_path)
             if file_info:
-                self.add_file(file_info)
+                # 发射信号，通知主窗口导航到文件所在目录
+                file_dir = os.path.dirname(file_path)
+                # 将file_info作为参数传递给信号
+                self.navigate_to_path.emit(file_dir, file_info)
         elif os.path.isdir(file_path):
             # 文件夹：直接添加文件夹到存储池
             file_info = self._get_file_info(file_path)
             if file_info:
-                self.add_file(file_info)
+                # 发射信号，通知主窗口导航到该文件夹
+                self.navigate_to_path.emit(file_path, file_info)
     
     def _get_file_info(self, file_path):
         """

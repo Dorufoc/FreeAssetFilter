@@ -458,6 +458,12 @@ class FileBlockCard(QWidget):
         Args:
             selected (bool): 是否选中
         """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [FileBlockCard.set_selected] {msg}")
+        
+        debug(f"设置选中状态: {selected}, 当前状态: {self._is_selected}, 文件: {self.file_info['path']}")
         if self._is_selected != selected:
             self._is_selected = selected
             if selected:

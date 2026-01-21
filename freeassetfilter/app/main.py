@@ -331,6 +331,7 @@ class FreeAssetFilterApp(QMainWindow):
         app = QApplication.instance()
         auxiliary_color = "#f1f3f5"  # 默认辅助色
         normal_color = "#e0e0e0"  # 默认普通色
+        base_color = "#212121"  # 默认基础色
         if hasattr(app, 'settings_manager'):
             auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")  # 辅助色
             normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")  # 普通色
@@ -414,6 +415,12 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 连接文件临时存储池的信号到处理方法，用于从文件选择器中删除文件
         self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
+        
+        # 连接文件临时存储池的信号到处理方法，用于通知文件选择器文件已被添加到储存池
+        self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
+        
+        # 连接文件临时存储池的导航信号到处理方法，用于更新文件选择器的路径
+        self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
         
         # 添加分割器到主布局
         main_layout.addWidget(splitter, 1)
@@ -907,10 +914,14 @@ class FreeAssetFilterApp(QMainWindow):
             file_info (dict): 文件信息
             is_selected (bool): 是否被选中
         """
+        file_path = os.path.normpath(file_info['path'])
+        
         if is_selected:
-            self.file_staging_pool.add_file(file_info)
+            existing_paths = [os.path.normpath(item['path']) for item in self.file_staging_pool.items]
+            if file_path not in existing_paths:
+                self.file_staging_pool.add_file(file_info)
         else:
-            self.file_staging_pool.remove_file(file_info['path'])
+            self.file_staging_pool.remove_file(file_path)
     
     def handle_remove_from_selector(self, file_info):
         """
@@ -919,30 +930,62 @@ class FreeAssetFilterApp(QMainWindow):
         Args:
             file_info (dict): 文件信息
         """
-        file_path = file_info['path']
-        file_dir = os.path.dirname(file_path)
+        file_path = os.path.normpath(file_info['path'])
+        file_dir = os.path.normpath(os.path.dirname(file_path))
         
-        # 1. 首先从selected_files中移除文件，无论是否在当前目录
         if file_dir in self.file_selector_a.selected_files:
             self.file_selector_a.selected_files[file_dir].discard(file_path)
             
-            # 如果目录下没有选中的文件了，删除该目录的键
             if not self.file_selector_a.selected_files[file_dir]:
                 del self.file_selector_a.selected_files[file_dir]
-            
-            # 更新文件选择器的选中文件计数
-            #current_selected = len(self.file_selector_a.selected_files.get(self.file_selector_a.current_path, set()))
-            #total_selected = sum(len(files) for files in self.file_selector_a.selected_files.values())
-            #self.file_selector_a.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
         
-        # 2. 如果文件在当前目录显示，直接更新文件卡片的视觉状态
-        if self.file_selector_a.current_path == file_dir:
-            for i in range(self.file_selector_a.files_layout.count()):
-                widget = self.file_selector_a.files_layout.itemAt(i).widget()
-                if widget is not None and hasattr(widget, 'objectName') and widget.objectName() == "FileBlockCard":
-                    if widget.file_info['path'] == file_path:
-                        widget.set_selected(False)
-                        break
+        self.file_selector_a._update_file_selection_state()
+    
+    def handle_navigate_to_path(self, path, file_info=None):
+        """
+        处理导航到指定路径的请求，更新文件选择器的当前路径
+        
+        Args:
+            path (str): 要导航到的路径
+            file_info (dict, optional): 文件信息，如果提供则导航后将其添加到暂存池
+        """
+        if hasattr(self, 'file_selector_a') and self.file_selector_a:
+            path = os.path.normpath(path)
+            self.file_selector_a.current_path = path
+            
+            def on_files_refreshed():
+                if file_info:
+                    self.file_staging_pool.add_file(file_info)
+                self.file_selector_a._update_file_selection_state()
+            
+            self.file_selector_a.refresh_files(callback=on_files_refreshed)
+    
+    def handle_file_added_to_pool(self, file_info):
+        """
+        处理文件被添加到储存池的事件，将文件添加到文件选择器的选中文件列表中
+        
+        Args:
+            file_info (dict): 文件信息
+        """
+        file_path = os.path.normpath(file_info['path'])
+        file_dir = os.path.normpath(os.path.dirname(file_path))
+        
+        if file_dir not in self.file_selector_a.selected_files:
+            self.file_selector_a.selected_files[file_dir] = set()
+        
+        if file_path not in self.file_selector_a.selected_files[file_dir]:
+            self.file_selector_a.selected_files[file_dir].add(file_path)
+            
+            def on_files_refreshed():
+                self.file_selector_a._update_file_selection_state()
+            
+            if self.file_selector_a.current_path == file_dir:
+                if self.file_selector_a._is_loading:
+                    self.file_selector_a._refresh_callback = on_files_refreshed
+                else:
+                    self.file_selector_a._update_file_selection_state()
+            else:
+                self.file_selector_a._update_file_selection_state()
     
     def check_and_restore_backup(self):
         """
