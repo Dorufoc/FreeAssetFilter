@@ -295,6 +295,11 @@ class CustomFileHorizontalCard(QWidget):
             self._thumbnail_mode = mode
             self._set_file_icon()
 
+    def refresh_thumbnail(self):
+        """刷新缩略图显示"""
+        print(f"[DEBUG] CustomFileHorizontalCard.refresh_thumbnail 被调用: {self._file_path}")
+        self._set_file_icon()
+
     def _load_file_info(self):
         """
         加载文件信息
@@ -430,15 +435,23 @@ class CustomFileHorizontalCard(QWidget):
             is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
             
+            print(f"[DEBUG] _set_file_icon: file={self._file_path}, suffix={suffix}, is_photo={is_photo}, is_video={is_video}")
+            print(f"[DEBUG] thumbnail_path={thumbnail_path}, exists={os.path.exists(thumbnail_path)}")
+            
             use_thumbnail = False
             if (is_photo or is_video) and os.path.exists(thumbnail_path):
                 use_thumbnail = True
             
             if use_thumbnail:
                 scaled_icon_size = int(40 * self.dpi_scale)
-                pixmap = QPixmap(thumbnail_path)
-                self._set_icon_pixmap(pixmap, scaled_icon_size)
-                return
+                from PyQt5.QtGui import QImage
+                image = QImage(thumbnail_path)
+                print(f"[DEBUG] QImage加载结果: isNull={image.isNull()}")
+                if not image.isNull():
+                    pixmap = QPixmap.fromImage(image)
+                    print(f"[DEBUG] 成功加载缩略图: {thumbnail_path}")
+                    self._set_icon_pixmap(pixmap, scaled_icon_size)
+                    return
             
             icon_path = self._get_file_icon_path(suffix, file_info.isDir())
             if icon_path and os.path.exists(icon_path):
@@ -534,11 +547,46 @@ class CustomFileHorizontalCard(QWidget):
         logical_size = int(size)
         physical_size = int(size * self.devicePixelRatio())
         if logical_size > 0 and physical_size > 0:
-            if isinstance(self.icon_display, QLabel):
-                self.icon_display.setFixedSize(logical_size, logical_size)
+            if not isinstance(self.icon_display, QLabel):
+                self._create_icon_label()
+            
+            self.icon_display.setFixedSize(logical_size, logical_size)
+            
+            self.icon_display.clear()
+            
             scaled_pixmap = pixmap.scaled(physical_size, physical_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
             self.icon_display.setPixmap(scaled_pixmap)
+
+    def _create_icon_label(self):
+        """创建新的QLabel用于显示图标"""
+        old_icon_display = self.icon_display
+        
+        if old_icon_display.parent() == self.card_container:
+            card_layout = self.card_container.layout()
+            card_layout.removeWidget(old_icon_display)
+        
+        old_icon_display.hide()
+        
+        def recursive_delete(widget):
+            """递归删除所有子组件"""
+            for child in widget.findChildren((QLabel, QSvgWidget, QWidget)):
+                if child.parent() == widget:
+                    recursive_delete(child)
+                    child.hide()
+                    child.deleteLater()
+        
+        recursive_delete(old_icon_display)
+        old_icon_display.deleteLater()
+        
+        self.icon_display = QLabel()
+        self.icon_display.setAlignment(Qt.AlignCenter)
+        self.icon_display.setFixedSize(old_icon_display.size())
+        self.icon_display.setStyleSheet('background: transparent; border: none;')
+        
+        card_layout = self.card_container.layout()
+        card_layout.insertWidget(0, self.icon_display, alignment=Qt.AlignVCenter)
+        self.icon_display.show()
 
     def _set_default_icon(self):
         """设置默认图标"""
@@ -559,22 +607,21 @@ class CustomFileHorizontalCard(QWidget):
 
     def update_card_style(self):
         """更新卡片样式"""
-        scaled_border_width = int(1 * self.dpi_scale)
-        scaled_border_radius = int(1.5 * self.dpi_scale)
-        # 获取应用实例和设置管理器
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QColor
+        
+        scaled_border_width = int(1 * self.dpi_scale)
+        scaled_border_radius = int(8 * self.dpi_scale)
+        
         app = QApplication.instance()
         settings_manager = getattr(app, 'settings_manager', None)
         
-        # 默认颜色设置（防止设置管理器不可用）
         accent_color = "#1890ff"
         base_color = "#ffffff"
         normal_color = "#e0e0e0"
         secondary_color = "#333333"
-        auxiliary_color = "#f0f8ff"  # 辅助颜色，用于鼠标悬停背景
+        auxiliary_color = "#f0f8ff"
         
-        # 从设置管理器获取颜色配置
         if settings_manager:
             accent_color = settings_manager.get_setting("appearance.colors.accent_color", accent_color)
             base_color = settings_manager.get_setting("appearance.colors.base_color", base_color)
@@ -582,53 +629,42 @@ class CustomFileHorizontalCard(QWidget):
             secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", secondary_color)
             auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
         
-        # 设置组件本身的样式（透明背景）
         self.setStyleSheet("""
             QWidget {
                 background: transparent;
                 border: none;
             }
         """)
-        # 设置卡片容器的样式
+        
         if self._enable_multiselect and self._is_selected:
-            # 开启多选功能且被选中：使用主题强调色
+            qcolor = QColor(accent_color)
+            r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+            bg_color = f"rgba({r}, {g}, {b}, 102)"
+            
             card_style = ""
             card_style += "QWidget {"
-            card_style += f"background-color: {accent_color};"
+            card_style += f"background-color: {bg_color};"
             card_style += f"border: {scaled_border_width}px solid {accent_color};"
             card_style += f"border-radius: {scaled_border_radius}px;"
             card_style += "}"
             self.card_container.setStyleSheet(card_style)
-            # 设置文字颜色（选中状态使用base_color）
-            self.name_label.setStyleSheet(f"background: transparent; border: none; color: {base_color};")
-            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {base_color};")
+            
+            self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
         else:
-            # 默认状态：使用主题base_color
-            # 如果未开启多选功能，始终显示默认样式，不考虑选中状态
             card_style = ""
             card_style += "QWidget {"
             card_style += f"background-color: {base_color};"
-            card_style += f"border: {scaled_border_width}px solid {normal_color};"
+            card_style += f"border: {scaled_border_width}px solid {auxiliary_color};"
             card_style += f"border-radius: {scaled_border_radius}px;"
             card_style += "}"
             card_style += "QWidget:hover {"
-            card_style += f"border-color: {accent_color};"
             card_style += f"background-color: {auxiliary_color};"
+            card_style += f"border-color: {normal_color};"
             card_style += "}"
             self.card_container.setStyleSheet(card_style)
             
-            # 定义颜色加深函数，深色模式下变浅
             def darken_color(color_hex, amount=30):
-                """
-                将十六进制颜色代码加深指定百分比，深色模式下则变浅
-                参数：
-                    color_hex (str): 十六进制颜色代码，如"#ffffff"
-                    amount (int): 加深/变浅百分比，0-100
-                返回：
-                    str: 处理后的十六进制颜色代码
-                """
-                # 获取当前主题模式
-                from PyQt5.QtWidgets import QApplication
                 app = QApplication.instance()
                 if hasattr(app, 'settings_manager'):
                     settings_manager = app.settings_manager
@@ -638,23 +674,26 @@ class CustomFileHorizontalCard(QWidget):
                 current_theme = settings_manager.get_setting("appearance.theme", "default")
                 is_dark_mode = (current_theme == "dark")
                 
-                color = QColor(color_hex)
+                color = color_hex.lstrip('#')
+                r = int(color[0:2], 16)
+                g = int(color[2:4], 16)
+                b = int(color[4:6], 16)
+                
                 if is_dark_mode:
-                    # 深色模式下变浅
-                    red = min(255, int(color.red() * (100 + amount) / 100))
-                    green = min(255, int(color.green() * (100 + amount) / 100))
-                    blue = min(255, int(color.blue() * (100 + amount) / 100))
+                    r = min(255, r + int(255 * amount / 100))
+                    g = min(255, g + int(255 * amount / 100))
+                    b = min(255, b + int(255 * amount / 100))
                 else:
-                    # 浅色模式下加深
-                    red = max(0, int(color.red() * (100 - amount) / 100))
-                    green = max(0, int(color.green() * (100 - amount) / 100))
-                    blue = max(0, int(color.blue() * (100 - amount) / 100))
-                return QColor(red, green, blue).name()
+                    r = max(0, r - int(255 * amount / 100))
+                    g = max(0, g - int(255 * amount / 100))
+                    b = max(0, b - int(255 * amount / 100))
+                
+                return f"#{r:02x}{g:02x}{b:02x}"
             
-            # 设置文字颜色（默认状态使用secondary_color和加深后的normal_color）
-            self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
-            info_text_color = darken_color(normal_color, 30)
-            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {info_text_color};")
+            secondary_color_dark = darken_color(secondary_color)
+            
+            self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color_dark};")
+            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
 
     def mousePressEvent(self, event):
         """处理鼠标按下事件"""

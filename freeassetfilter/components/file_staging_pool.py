@@ -29,7 +29,8 @@ from PyQt5.QtWidgets import (
 )
 
 # 导入自定义控件
-from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox, CustomProgressBar
+from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox
+from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from PyQt5.QtCore import (
@@ -100,20 +101,17 @@ class FileStagingPool(QWidget):
         """
         初始化用户界面
         """
-        # 应用DPI缩放因子到布局参数（调整为原始的一半）
-        scaled_spacing = int(5 * self.dpi_scale)
         scaled_margin = int(5 * self.dpi_scale)
+        scaled_h_margin = int(3 * self.dpi_scale)
         
-        # 创建主布局
         main_layout = QVBoxLayout(self)
-        # 获取主题颜色
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
+        background_color = "#2D2D2D"
         if hasattr(app, 'settings_manager'):
             background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
         self.setStyleSheet(f"background-color: {background_color};")
-        main_layout.setSpacing(scaled_spacing)
-        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        main_layout.setSpacing(scaled_margin)
+        main_layout.setContentsMargins(scaled_h_margin, scaled_margin, scaled_h_margin, scaled_margin)
         
         # 创建标题和控制区
         title_layout = QHBoxLayout()
@@ -140,13 +138,21 @@ class FileStagingPool(QWidget):
         secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
         accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
         
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_border_width = int(1 * self.dpi_scale)
+        
+        scaled_padding = int(3 * self.dpi_scale)
+        
         scrollbar_style = f"""
             QScrollArea {{
-                border: 0px solid transparent;
+                border: {scaled_border_width}px solid {normal_color};
+                border-radius: {scaled_border_radius}px;
                 background-color: {base_color};
+                padding: {scaled_padding}px;
             }}
             QScrollArea > QWidget > QWidget {{
-                background-color: {base_color};
+                background-color: transparent;
+                border: none;
             }}
             QScrollBar:vertical {{
                 width: 6px;
@@ -185,8 +191,8 @@ class FileStagingPool(QWidget):
         # 创建卡片容器和布局
         self.cards_container = QWidget()
         self.cards_layout = QVBoxLayout(self.cards_container)
-        self.cards_layout.setSpacing(int(5 * self.dpi_scale))
-        self.cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.cards_layout.setSpacing(int(3 * self.dpi_scale))
+        self.cards_layout.setContentsMargins(int(3 * self.dpi_scale), 0, int(3 * self.dpi_scale), 0)
         # 设置布局上对齐
         self.cards_layout.setAlignment(Qt.AlignTop)
         # 添加拉伸因子，确保卡片上对齐且不被拉伸
@@ -239,7 +245,7 @@ class FileStagingPool(QWidget):
         export_layout.addWidget(clear_btn)
         
         # 进度条
-        self.progress_bar = CustomProgressBar()
+        self.progress_bar = D_ProgressBar()
         self.progress_bar.setInteractive(False)  # 禁用交互，只用于显示进度
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
@@ -296,10 +302,15 @@ class FileStagingPool(QWidget):
         # 如果是文件夹，启动线程计算体积
         if file_info["is_dir"]:
             self._calculate_folder_size(file_info["path"])
-        
+        else:
+            # 如果是图片或视频文件，异步生成缩略图
+            suffix = file_info.get("suffix", "").lower()
+            if self._is_media_file(suffix):
+                self._generate_thumbnail_async(file_info["path"])
+
         # 更新统计信息
         self.update_stats()
-        
+
         # 实时保存备份
         self.save_backup()
         
@@ -718,7 +729,7 @@ class FileStagingPool(QWidget):
         progress_msg_box.set_text("正在导出文件，请稍候...")
         
         # 创建并配置进度条
-        export_progress_bar = CustomProgressBar()
+        export_progress_bar = D_ProgressBar()
         export_progress_bar.setInteractive(False)  # 禁用交互
         export_progress_bar.setRange(0, len(all_files))
         export_progress_bar.setValue(0)
@@ -1648,6 +1659,71 @@ class FileStagingPool(QWidget):
         thread = threading.Thread(target=calculate_size_thread)
         thread.daemon = True
         thread.start()
+
+    def _is_media_file(self, suffix):
+        """判断是否为图片或视频文件"""
+        image_formats = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'svg']
+        video_formats = ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
+        return suffix in image_formats or suffix in video_formats
+
+    def _get_thumbnail_path(self, file_path):
+        """获取文件的缩略图路径"""
+        import hashlib
+        thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+        os.makedirs(thumb_dir, exist_ok=True)
+        md5_hash = hashlib.md5(file_path.encode('utf-8'))
+        file_hash = md5_hash.hexdigest()[:16]
+        return os.path.join(thumb_dir, f"{file_hash}.png")
+
+    def _generate_thumbnail_async(self, file_path):
+        """异步生成缩略图"""
+        from PyQt5.QtCore import QThreadPool, QRunnable
+
+        class ThumbnailGenerator(QRunnable):
+            def __init__(self, file_path, callback):
+                super().__init__()
+                self.file_path = file_path
+                self.callback = callback
+
+            def run(self):
+                thumb_path = self._generate_thumbnail(self.file_path)
+                if thumb_path:
+                    self.callback(thumb_path)
+
+            def _generate_thumbnail(self, file_path):
+                try:
+                    suffix = os.path.splitext(file_path)[1].lower().lstrip('.')
+                    if suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif']:
+                        from PIL import Image
+                        img = Image.open(file_path)
+                        img.thumbnail((200, 200))
+                        thumb_path = self._get_thumbnail_path(file_path)
+                        img.save(thumb_path, 'PNG')
+                        return thumb_path
+                    elif suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']:
+                        try:
+                            import cv2
+                            cap = cv2.VideoCapture(file_path)
+                            ret, frame = cap.read()
+                            if ret:
+                                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                from PIL import Image
+                                img = Image.fromarray(frame)
+                                img.thumbnail((200, 200))
+                                thumb_path = self._get_thumbnail_path(file_path)
+                                img.save(thumb_path, 'PNG')
+                                cap.release()
+                                return thumb_path
+                        except ImportError:
+                            print("OpenCV is not installed")
+                        except Exception as e:
+                            print(f"生成缩略图失败: {file_path}, 错误: {e}")
+                except Exception as e:
+                    print(f"生成缩略图失败: {file_path}, 错误: {e}")
+                return False
+
+        generator = ThumbnailGenerator(file_path, lambda x: None)
+        QThreadPool.globalInstance().start(generator)
     
     def calculate_total_file_size(self, files):
         """

@@ -60,6 +60,11 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyT
 # 添加父目录到Python路径，确保包能被正确导入
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+try:
+    import pillow_avif
+except ImportError:
+    pass
+
 from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 
 from PyQt5.QtWidgets import (

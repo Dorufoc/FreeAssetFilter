@@ -18,6 +18,8 @@ from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 from .list_widgets import CustomSelectList
 # 导入自定义输入框组件
 from .input_widgets import CustomInputBox
+# 导入自定义进度条组件
+from .progress_widgets import D_ProgressBar
 
 
 class CustomWindow(QWidget):

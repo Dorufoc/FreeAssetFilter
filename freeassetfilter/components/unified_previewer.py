@@ -35,7 +35,8 @@ from PyQt5.QtGui import QFont
 from freeassetfilter.core.file_info_browser import FileInfoBrowser
 from freeassetfilter.components.folder_content_list import FolderContentList
 from freeassetfilter.components.archive_browser import ArchiveBrowser
-from freeassetfilter.widgets.D_widgets import CustomMessageBox, CustomProgressBar
+from freeassetfilter.widgets.D_widgets import CustomMessageBox
+from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 
 class UnifiedPreviewer(QWidget):
     """
@@ -293,7 +294,7 @@ class UnifiedPreviewer(QWidget):
         preview_type = None
         if self.current_file_info["is_dir"]:
             preview_type = "dir"
-        elif file_type in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]:
+        elif file_type in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "avif", "heic", "cr2", "cr3", "nef", "arw", "dng", "orf"]:
             preview_type = "image"
         elif file_type in ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb", "m2ts", "ts", "mts"]:
             preview_type = "video"
@@ -637,106 +638,56 @@ class UnifiedPreviewer(QWidget):
             file_path (str): 图片文件路径
         """
         try:
-            # 使用专业的PhotoViewer组件进行图片预览
+            file_ext = os.path.splitext(file_path)[1].lower()
+
+            if file_ext == '.gif':
+                from freeassetfilter.components.photo_viewer import GifViewer
+                gif_viewer = GifViewer()
+                if gif_viewer.load_gif(file_path):
+                    self.preview_layout.addWidget(gif_viewer, 1)
+                    self.current_preview_widget = gif_viewer
+                    return
+
+            elif file_ext == '.webp':
+                if self._is_animated_image(file_path):
+                    from freeassetfilter.components.photo_viewer import GifViewer
+                    gif_viewer = GifViewer()
+                    if gif_viewer.load_gif(file_path):
+                        self.preview_layout.addWidget(gif_viewer, 1)
+                        self.current_preview_widget = gif_viewer
+                        return
+
             from freeassetfilter.components.photo_viewer import PhotoViewer
             
-            # 创建PhotoViewer实例
             photo_viewer = PhotoViewer()
-            # 加载图片
             photo_viewer.load_image_from_path(file_path)
             
-            self.preview_layout.addWidget(photo_viewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
+            self.preview_layout.addWidget(photo_viewer, 1)
             self.current_preview_widget = photo_viewer
         except Exception as e:
-            # 如果PhotoViewer加载失败，使用简单的QLabel显示
-            try:
-                from PyQt5.QtGui import QPixmap
-                from PyQt5.QtWidgets import QLabel, QScrollArea
-                
-                # 创建滚动区域
-                scroll_area = QScrollArea()
-                scroll_area.setWidgetResizable(True)
-                
-                app = QApplication.instance()
-                base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
-                auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
-                normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
-                secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
-                
-                scrollbar_style = f"""
-                    QScrollArea {{
-                        border: 0px solid transparent;
-                        background-color: {base_color};
-                    }}
-                    QScrollArea > QWidget > QWidget {{
-                        background-color: {base_color};
-                    }}
-                    QScrollBar:vertical {{
-                        width: 6px;
-                        background-color: {auxiliary_color};
-                        border: 0px solid transparent;
-                        border-radius: 0px;
-                    }}
-                    QScrollBar::handle:vertical {{
-                        background-color: {normal_color};
-                        min-height: 15px;
-                        border-radius: 3px;
-                        border: none;
-                    }}
-                    QScrollBar::handle:vertical:hover {{
-                        background-color: {secondary_color};
-                        border: none;
-                    }}
-                    QScrollBar::handle:vertical:pressed {{
-                        background-color: {accent_color};
-                        border: none;
-                    }}
-                    QScrollBar::add-line:vertical,
-                    QScrollBar::sub-line:vertical {{
-                        height: 0px;
-                        border: none;
-                    }}
-                    QScrollBar::add-page:vertical,
-                    QScrollBar::sub-page:vertical {{
-                        background: none;
-                        border: 0px solid transparent;
-                        border: none;
-                    }}
-                """
-                scroll_area.setStyleSheet(scrollbar_style)
-                
-                # 创建图片标签
-                image_label = QLabel()
-                pixmap = QPixmap(file_path)
-                
-                # 正确处理DPI缩放
-                from PyQt5.QtGui import QGuiApplication
-                device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
-                
-                # 计算实际需要的物理像素大小（适应容器大小）
-                container_size = scroll_area.viewport().size()
-                available_width = container_size.width() - 20  # 留出边距
-                available_height = container_size.height() - 20
-                
-                # 缩放pixmap到可用的物理像素大小
-                scaled_pixmap = pixmap.scaled(
-                    int(available_width * device_pixel_ratio),
-                    int(available_height * device_pixel_ratio),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                )
-                scaled_pixmap.setDevicePixelRatio(device_pixel_ratio)
-                
-                image_label.setPixmap(scaled_pixmap)
-                image_label.setAlignment(Qt.AlignCenter)
-                
-                scroll_area.setWidget(image_label)
-                self.preview_layout.addWidget(scroll_area, 1)  # 设置伸展因子1，使预览组件占据剩余空间
-                self.current_preview_widget = scroll_area
-            except Exception as simple_e:
-                error_message = f"图片预览失败: {str(simple_e)}"
-                self._show_error_with_copy_button(error_message)
+            self._show_error_with_copy_button(f"图片预览失败: {str(e)}")
+
+    def _is_animated_image(self, file_path):
+        """
+        检测图片是否为动画格式
+        
+        Args:
+            file_path (str): 图片文件路径
+            
+        Returns:
+            bool: 是否为动画图片
+        """
+        try:
+            from PIL import Image
+            with Image.open(file_path) as img:
+                try:
+                    return getattr(img, 'is_animated', False) or img.n_frames > 1
+                except AttributeError:
+                    return False
+        except ImportError:
+            return False
+        except Exception:
+            return False
     
     def _cleanup_idle_events(self):
         """
@@ -1032,8 +983,8 @@ class UnifiedPreviewer(QWidget):
             self.progress_dialog = None
         
         # 创建进度条
-        progress_bar = CustomProgressBar(is_interactive=False)
-        progress_bar.setRange(0, 100)
+        progress_bar = D_ProgressBar(is_interactive=False)
+        progress_bar.setRange(0, 1000)
         progress_bar.setValue(0)
         
         # 创建进度条弹窗

@@ -384,6 +384,7 @@ class CustomFileSelector(QWidget):
                 border: 1px solid {normal_color};
                 border-radius: 8px;
                 background-color: {base_color};
+                padding: 3px;
             }}
             QScrollArea > QWidget > QWidget {{
                 background-color: {base_color};
@@ -481,44 +482,52 @@ class CustomFileSelector(QWidget):
     def _generate_thumbnails(self):
         """
         生成当前目录下所有照片和视频的缩略图
+        同时也为文件存储池中的照片和视频生成缩略图
         """
-        # 获取当前目录下的所有文件
-        files = self._get_files()
-        
-        # 筛选出需要生成缩略图的文件（图片和视频）
-        media_files = []
-        # 支持的图片格式
         image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
-        # 支持的视频格式
         video_formats = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"]
         
+        files_to_generate = []
+        
+        files = self._get_files()
         for file in files:
             if not file["is_dir"]:
-                suffix = file["suffix"].lower()  # 转换为小写，确保不区分大小写
-                # 只有图片和视频格式才生成缩略图
+                suffix = file["suffix"].lower()
                 if suffix in image_formats or suffix in video_formats:
-                    media_files.append(file)
+                    thumbnail_path = self._get_thumbnail_path(file["path"])
+                    if not os.path.exists(thumbnail_path):
+                        files_to_generate.append({
+                            "path": file["path"],
+                            "name": file["name"],
+                            "source": "selector"
+                        })
         
-        if not media_files:
-            # 当前目录下没有需要生成缩略图的媒体文件
-            from freeassetfilter.widgets.D_widgets import CustomMessageBox
-            info_msg = CustomMessageBox(self)
-            info_msg.set_title("提示")
-            info_msg.set_text("当前目录下没有需要生成缩略图的媒体文件")
-            info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            info_msg.buttonClicked.connect(info_msg.close)
-            info_msg.exec_()
-            return
+        staging_pool_files = []
+        staging_pool = self._get_staging_pool()
+        if staging_pool and hasattr(staging_pool, 'items'):
+            for item in staging_pool.items:
+                if not item.get("is_dir", False):
+                    file_path = item.get("path", "")
+                    if not file_path:
+                        continue
+                    
+                    suffix = item.get("suffix", "").lower()
+                    if not suffix:
+                        suffix = os.path.splitext(file_path)[1].lower()
+                    
+                    if suffix in image_formats or suffix in video_formats:
+                        thumbnail_path = self._get_thumbnail_path(file_path)
+                        if not os.path.exists(thumbnail_path):
+                            staging_pool_files.append({
+                                "path": file_path,
+                                "name": item.get("name", os.path.basename(file_path)),
+                                "source": "staging_pool"
+                            })
         
-        # 筛选出需要生成缩略图的文件（缩略图不存在的文件）
-        files_to_generate = []
-        for file in media_files:
-            thumbnail_path = self._get_thumbnail_path(file["path"])
-            if not os.path.exists(thumbnail_path):
-                files_to_generate.append(file)
+        if staging_pool_files:
+            files_to_generate.extend(staging_pool_files)
         
         if not files_to_generate:
-            # 所有文件都已有缩略图，无需重新生成
             from freeassetfilter.widgets.D_widgets import CustomMessageBox
             info_msg = CustomMessageBox(self)
             info_msg.set_title("提示")
@@ -528,79 +537,122 @@ class CustomFileSelector(QWidget):
             info_msg.exec_()
             return
         
-        # 使用自定义提示窗口来显示进度
-        from freeassetfilter.widgets.D_widgets import CustomMessageBox, CustomProgressBar
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
+        from freeassetfilter.widgets.progress_widgets import D_ProgressBar
         
-        # 创建自定义提示窗口
         progress_msg = CustomMessageBox(self)
         progress_msg.set_title("生成缩略图")
         progress_msg.set_text(f"正在生成缩略图... (0/{len(files_to_generate)})")
         
-        # 创建并配置自定义进度条
-        progress_bar = CustomProgressBar()
+        progress_bar = D_ProgressBar()
         progress_bar.setRange(0, len(files_to_generate))
         progress_bar.setValue(0)
-        progress_bar.setInteractive(False)  # 禁用交互，只用于显示进度
+        progress_bar.setInteractive(False)
         progress_msg.set_progress(progress_bar)
         
-        # 设置只有一个取消按钮
         progress_msg.set_buttons(["取消"], Qt.Horizontal, ["normal"])
         
-        # 记录是否取消的标志
         is_canceled = False
         
-        # 连接取消按钮的信号
         def on_cancel_clicked():
             nonlocal is_canceled
             is_canceled = True
         
         progress_msg.buttonClicked.connect(on_cancel_clicked)
         
-        # 显示自定义提示窗口
         progress_msg.show()
         
-        # 开始生成缩略图
         generated_count = 0
         success_count = 0
         
-        for i, file in enumerate(files_to_generate):
-            # 检查是否取消
+        for file_data in files_to_generate:
             if is_canceled:
                 break
             
             try:
-                # 生成缩略图
-                result = self._create_thumbnail(file["path"])
+                result = self._create_thumbnail(file_data["path"])
                 generated_count += 1
                 if result:
                     success_count += 1
+                    if file_data["source"] == "staging_pool":
+                        self._refresh_staging_pool_card(file_data["path"])
                 
-                # 更新进度条和文本
                 progress_bar.setValue(generated_count)
                 progress_msg.set_text(f"正在生成缩略图... ({generated_count}/{len(files_to_generate)})")
                 
-                # 处理事件，防止界面冻结
                 QApplication.processEvents()
             except Exception as e:
-                print(f"生成缩略图失败: {file['path']}, 错误: {e}")
+                print(f"生成缩略图失败: {file_data['path']}, 错误: {e}")
                 generated_count += 1
                 progress_bar.setValue(generated_count)
                 progress_msg.set_text(f"正在生成缩略图... ({generated_count}/{len(files_to_generate)})")
                 QApplication.processEvents()
         
-        # 关闭自定义提示窗口
         progress_msg.close()
         
-        # 显示结果
+        staging_pool_count = len([f for f in files_to_generate if f["source"] == "staging_pool"])
+        selector_count = len([f for f in files_to_generate if f["source"] == "selector"])
+        
+        result_parts = []
+        if selector_count > 0:
+            result_parts.append(f"当前目录: {selector_count} 个")
+        if staging_pool_count > 0:
+            result_parts.append(f"存储池: {staging_pool_count} 个")
+        
+        result_text = f"缩略图生成完成！成功: {success_count}, 总数: {generated_count}"
+        if result_parts:
+            result_text += f"\n（{'，'.join(result_parts)}）"
+        
+        # 先刷新文件列表和存储池显示
+        self.refresh_files()
+        staging_pool_for_refresh = self._get_staging_pool()
+        if staging_pool_for_refresh:
+            self._refresh_staging_pool_thumbnails(staging_pool_for_refresh)
+        
         result_msg = CustomMessageBox(self)
         result_msg.set_title("提示")
-        result_msg.set_text(f"缩略图生成完成！成功: {success_count}, 总数: {generated_count}")
+        result_msg.set_text(result_text)
         result_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
         result_msg.buttonClicked.connect(result_msg.close)
         result_msg.exec_()
-        
-        # 刷新文件列表，显示新生成的缩略图
-        self.refresh_files()
+
+    def _get_staging_pool(self):
+        """获取文件存储池组件"""
+        try:
+            parent = self.parent()
+            while parent:
+                if hasattr(parent, 'file_staging_pool'):
+                    return parent.file_staging_pool
+                parent = parent.parent()
+        except Exception as e:
+            print(f"获取文件存储池失败: {e}")
+        return None
+
+    def _refresh_staging_pool_thumbnails(self, staging_pool):
+        """刷新存储池中的缩略图显示"""
+        import os
+        try:
+            print(f"[DEBUG] 开始刷新存储池缩略图，卡片数量: {len(staging_pool.cards)}")
+            for i, (card, file_info) in enumerate(staging_pool.cards):
+                print(f"[DEBUG] 刷新卡片 {i}: {file_info.get('path', 'Unknown')}")
+                card.refresh_thumbnail()
+            print(f"[DEBUG] 存储池缩略图刷新完成")
+        except Exception as e:
+            print(f"刷新存储池缩略图失败: {e}")
+
+    def _refresh_staging_pool_card(self, file_path):
+        """刷新存储池中指定文件的卡片缩略图"""
+        try:
+            staging_pool = self._get_staging_pool()
+            if not staging_pool:
+                return
+            
+            for card, file_info in staging_pool.cards:
+                if file_info.get("path") == file_path:
+                    card.refresh_thumbnail()
+                    break
+        except Exception as e:
+            print(f"刷新存储池单个卡片缩略图失败: {e}")
         
     def _clear_thumbnail_cache(self):
         """
@@ -646,6 +698,11 @@ class CustomFileSelector(QWidget):
                         
                         # 刷新文件列表，恢复默认图标显示
                         self.refresh_files()
+                        
+                        # 同步刷新存储池的缩略图显示
+                        staging_pool = self._get_staging_pool()
+                        if staging_pool:
+                            self._refresh_staging_pool_thumbnails(staging_pool)
                         
                         # 清理成功提示
                         success_msg = CustomMessageBox(self)
@@ -706,7 +763,7 @@ class CustomFileSelector(QWidget):
             suffix = os.path.splitext(file_path)[1].lower()
             thumbnail_path = self._get_thumbnail_path(file_path)
             
-            image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif"]
+            image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif", ".heic"]
             # 支持的raw格式
             raw_formats = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf"]
             
@@ -716,18 +773,29 @@ class CustomFileSelector(QWidget):
                     from PIL import Image, ImageDraw
                     
                     if suffix in raw_formats:
-                        # 使用rawpy处理raw图像
                         import rawpy
                         import numpy as np
-                        
+
                         with rawpy.imread(file_path) as raw:
-                            # 处理raw图像，使用默认参数
                             rgb = raw.postprocess()
-                        
-                        # 将numpy数组转换为PIL Image
+
                         img = Image.fromarray(rgb)
+                    elif suffix in [".avif", ".heic"]:
+                        try:
+                            import pillow_avif
+                        except ImportError:
+                            pass
+                        try:
+                            import pillow_heif
+                            pillow_heif.register_heif_opener()
+                        except ImportError:
+                            pass
+                        try:
+                            img = Image.open(file_path)
+                        except Exception as img_error:
+                            print(f"无法生成图片缩略图: {file_path}, 错误: {img_error}")
+                            return False
                     else:
-                        # 使用PIL打开普通图片
                         img = Image.open(file_path)
                     
                     # 转换为RGBA模式，支持透明背景
@@ -739,7 +807,7 @@ class CustomFileSelector(QWidget):
                     
                     # 计算新尺寸，保持原始比例
                     # 考虑DPI缩放因子，生成更高分辨率的缩略图
-                    base_size = 64
+                    base_size = 128
                     dpi_scaled_size = base_size * self.dpi_scale
                     
                     if aspect_ratio > 1:
@@ -2628,7 +2696,7 @@ class CustomFileSelector(QWidget):
             return label
         
         # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
@@ -2789,7 +2857,7 @@ class CustomFileSelector(QWidget):
             QPixmap: 文件类型图标
         """
         # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
@@ -3435,7 +3503,7 @@ class CustomFileSelector(QWidget):
         显示时间线窗口：先生成CSV文件，再显示时间线
         """
         from freeassetfilter.components.auto_timeline import AutoTimeline
-        from freeassetfilter.widgets.progress_widgets import CustomProgressBar
+        from freeassetfilter.widgets.progress_widgets import D_ProgressBar
         from freeassetfilter.core.timeline_generator import FolderScanner
         
         # 创建自定义提示弹窗
@@ -3445,8 +3513,8 @@ class CustomFileSelector(QWidget):
         progress_dialog.set_text("正在生成CSV文件，请稍候...")
         
         # 创建进度条
-        progress_bar = CustomProgressBar(is_interactive=False)
-        progress_bar.setRange(0, 100)
+        progress_bar = D_ProgressBar(is_interactive=False)
+        progress_bar.setRange(0, 1000)
         progress_bar.setValue(0)
         progress_dialog.set_progress(progress_bar)
         

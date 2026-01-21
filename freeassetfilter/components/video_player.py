@@ -29,7 +29,8 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize, QPoint
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage, QCursor
 from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.widgets.D_widgets import CustomValueBar, CustomButton
+from freeassetfilter.widgets.D_widgets import CustomButton
+from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.widgets.control_menu import CustomControlMenu
 from freeassetfilter.widgets.volume_slider_menu import VolumeSliderMenu
@@ -163,7 +164,7 @@ class VideoPlayer(QWidget):
         self.cover_label = QLabel()  # 歌曲封面显示标签
         
         # 控制组件
-        self.progress_slider = CustomValueBar(interactive=False)  # 视频进度条仅用于显示，不允许交互
+        self.progress_slider = D_ProgressBar(is_interactive=False)
         self.time_label = QLabel("00:00 / 00:00")
         self.play_button = None
         
@@ -388,12 +389,16 @@ class VideoPlayer(QWidget):
         scaled_spacing = int(5 * self.dpi_scale)
         bottom_layout.setSpacing(scaled_spacing)
         
+        # 获取secondary_color
+        settings_manager = SettingsManager()
+        secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#000000")
+
         # 时间标签样式，应用DPI缩放
         scaled_padding = int(2.5 * self.dpi_scale)
         scaled_font_size = int(8 * self.dpi_scale)
         scaled_border = int(0.5 * self.dpi_scale)
         self.time_label.setStyleSheet(f"""
-            color: #000000;
+            color: {secondary_color};
             background-color: transparent;
             padding: 0 {scaled_padding}px;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;

@@ -50,51 +50,118 @@ class RawProcessor(QThread):
             import rawpy
             import numpy as np
             
-            # 获取文件大小（字节）
             file_size = os.path.getsize(self.image_path)
-            # 大文件阈值（10MB）
             large_file_threshold = 10 * 1024 * 1024
             
-            # 根据文件大小设置不同的处理参数
             if file_size > large_file_threshold:
-                # 大文件使用更激进的优化参数
                 with rawpy.imread(self.image_path) as raw:
-                    # 使用性能优化参数
                     rgb = raw.postprocess(
-                        half_size=True,  # 降采样到一半大小
-                        output_bps=8,    # 输出8位图像
-                        no_auto_bright=True,  # 关闭自动亮度调整
-                        use_camera_wb=True,   # 使用相机白平衡
-                        gamma=(2.222, 4.5)  # 标准gamma设置
+                        half_size=True,
+                        output_bps=8,
+                        no_auto_bright=True,
+                        use_camera_wb=True,
+                        gamma=(2.222, 4.5)
                     )
             else:
-                # 小文件使用标准参数
                 with rawpy.imread(self.image_path) as raw:
                     rgb = raw.postprocess(
-                        output_bps=8,  # 输出8位图像
+                        output_bps=8,
                         use_camera_wb=True
                     )
             
-            # 获取设备像素比，用于高DPI显示
             from PyQt5.QtGui import QGuiApplication
             device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
             
-            # 将numpy数组转换为QImage，考虑高DPI缩放
             height, width, channel = rgb.shape
             bytes_per_line = 3 * width
-            # 注意numpy数组是RGB格式，而QImage需要BGR格式
             bgr = np.zeros((height, width, 3), dtype=np.uint8)
-            bgr[:, :, 0] = rgb[:, :, 2]  # B
-            bgr[:, :, 1] = rgb[:, :, 1]  # G
-            bgr[:, :, 2] = rgb[:, :, 0]  # R
+            bgr[:, :, 0] = rgb[:, :, 2]
+            bgr[:, :, 1] = rgb[:, :, 1]
+            bgr[:, :, 2] = rgb[:, :, 0]
             
             qimage = QImage(bgr.data, width, height, bytes_per_line, QImage.Format_RGB888)
-            # 注意：不设置devicePixelRatio，保持QImage的原始像素尺寸
-            # devicePixelRatio只在QPixmap上设置，用于正确显示
             self.processing_complete.emit(qimage, self.image_path)
         except Exception as e:
             print(f"加载RAW图片时出错: {e}")
             self.processing_failed.emit(f"加载RAW图片时出错: {e}")
+
+
+class HeifAvifProcessor(QThread):
+    """
+    HEIC/AVIF文件异步处理器
+    """
+    processing_complete = pyqtSignal(QImage, str)
+    processing_failed = pyqtSignal(str)
+    
+    def __init__(self, image_path):
+        super().__init__()
+        self.image_path = image_path
+    
+    def run(self):
+        try:
+            from PIL import Image
+            import numpy as np
+            
+            try:
+                import pillow_avif
+            except ImportError:
+                pass
+            
+            try:
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+            except ImportError:
+                pass
+            
+            img = Image.open(self.image_path)
+            
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGBA')
+            elif img.mode == 'L':
+                img = img.convert('RGB')
+            elif img.mode in ('RGBX', 'RGBa'):
+                img = img.convert('RGBA')
+            elif img.mode == '1':
+                img = img.convert('RGB')
+            else:
+                img = img.convert('RGB')
+            
+            file_size = os.path.getsize(self.image_path)
+            large_file_threshold = 20 * 1024 * 1024
+            
+            if file_size > large_file_threshold:
+                max_dimension = 2048
+                if img.width > max_dimension or img.height > max_dimension:
+                    ratio = min(max_dimension / img.width, max_dimension / img.height)
+                    new_width = int(img.width * ratio)
+                    new_height = int(img.height * ratio)
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            img_array = np.array(img)
+            height, width = img_array.shape[:2]
+            
+            img_bytes = img_array.tobytes()
+            
+            if img.mode == 'RGBA':
+                qimage = QImage(
+                    img_bytes, width, height,
+                    width * 4, QImage.Format_RGBA8888
+                )
+            else:
+                qimage = QImage(
+                    img_bytes, width, height,
+                    width * 3, QImage.Format_RGB888
+                )
+            
+            if qimage.isNull():
+                raise Exception("QImage创建失败")
+            
+            self.processing_complete.emit(qimage, self.image_path)
+        except Exception as e:
+            print(f"加载HEIC/AVIF图片时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            self.processing_failed.emit(f"加载HEIC/AVIF图片时出错: {e}")
 
 
 class ImageWidget(QWidget):
@@ -126,6 +193,7 @@ class ImageWidget(QWidget):
         
         # RAW处理器
         self.raw_processor = None
+        self.heif_avif_processor = None
         
         # 像素信息
         self.pixel_info = {
@@ -133,6 +201,25 @@ class ImageWidget(QWidget):
             'r': 0, 'g': 0, 'b': 0,
             'hex': '#000000'
         }
+    
+    def _on_heif_avif_processing_complete(self, qimage, image_path):
+        """
+        HEIC/AVIF文件处理完成槽函数
+        """
+        if not qimage.isNull():
+            self.current_file_path = image_path
+            self.original_image = qimage
+            self.pan_offset = QPoint()
+            QTimer.singleShot(100, self._delayed_fit_scale)
+        
+        self.heif_avif_processor = None
+    
+    def _on_heif_avif_processing_failed(self, error_msg):
+        """
+        HEIC/AVIF文件处理失败槽函数
+        """
+        print(error_msg)
+        self.heif_avif_processor = None
     
     def _on_raw_processing_complete(self, qimage, image_path):
         """
@@ -173,39 +260,39 @@ class ImageWidget(QWidget):
             if not os.path.exists(image_path):
                 return False
             
-            # 获取文件扩展名
             file_ext = os.path.splitext(image_path)[1].lower()
-            # 支持的raw格式列表
             raw_formats = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf']
+            heif_avif_formats = ['.heic', '.heif', '.avif']
             
             if file_ext in raw_formats:
-                # 使用异步RAW处理器加载
                 if self.raw_processor is not None and self.raw_processor.isRunning():
-                    # 如果有正在运行的处理器，先停止
                     self.raw_processor.quit()
                     self.raw_processor.wait()
                 
-                # 创建并启动新的RAW处理器
                 self.raw_processor = RawProcessor(image_path)
                 self.raw_processor.processing_complete.connect(self._on_raw_processing_complete)
                 self.raw_processor.processing_failed.connect(self._on_raw_processing_failed)
                 self.raw_processor.start()
                 
-                # 返回True表示已成功启动处理
+                return True
+            elif file_ext in heif_avif_formats:
+                if self.heif_avif_processor is not None and self.heif_avif_processor.isRunning():
+                    self.heif_avif_processor.quit()
+                    self.heif_avif_processor.wait()
+                
+                self.heif_avif_processor = HeifAvifProcessor(image_path)
+                self.heif_avif_processor.processing_complete.connect(self._on_heif_avif_processing_complete)
+                self.heif_avif_processor.processing_failed.connect(self._on_heif_avif_processing_failed)
+                self.heif_avif_processor.start()
+                
                 return True
             else:
-                # 常规图片格式，使用QImage直接加载
                 self.original_image = QImage(image_path)
-                # 注意：不设置devicePixelRatio，保持QImage的原始像素尺寸
-                # devicePixelRatio只在QPixmap上设置，用于正确显示
             
             if not self.original_image.isNull():
-                # 保存当前文件路径
                 self.current_file_path = image_path
-                # 重置平移参数
                 self.pan_offset = QPoint()
                 
-                # 使用QTimer延迟执行自适应缩放，确保图片渲染完成且布局稳定
                 QTimer.singleShot(100, self._delayed_fit_scale)
                 return True
             return False
