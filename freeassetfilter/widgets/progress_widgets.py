@@ -629,13 +629,17 @@ class D_ProgressBar(QWidget):
 
             accent_color = QColor(accent_color_str)
             secondary_color = QColor(secondary_color_str)
+            base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#222222")
+            base_color = QColor(base_color_str)
+
+
 
             self._track_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
             self._bg_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
             self._progress_color = QColor(accent_color_str)
-            self._handle_color = QColor(secondary_color_str)
-            self._handle_hover_color = QColor(secondary_color_str).lighter(110)
-            self._handle_pressed_color = QColor(secondary_color_str).darker(120)
+            self._handle_color = QColor(base_color_str)
+            self._handle_hover_color = QColor(base_color_str).lighter(110)
+            self._handle_pressed_color = QColor(base_color_str).darker(120)
             self._handle_border_color = QColor(accent_color_str)
         else:
             accent_color = QColor("#B036EE")
