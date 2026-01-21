@@ -2486,8 +2486,14 @@ class CustomFileSelector(QWidget):
         card = FileBlockCard(file_dict, dpi_scale=self.dpi_scale, parent=self)
         card.setObjectName("FileBlockCard")
         
+        file_path_norm = os.path.normpath(file_path)
         file_dir_check = os.path.normpath(os.path.dirname(file_path))
-        is_selected = file_dir_check in self.selected_files and file_path in self.selected_files[file_dir_check]
+        # 检查文件是否在任何目录的选中列表中
+        is_selected = False
+        for dir_path, file_set in self.selected_files.items():
+            if file_path_norm in file_set:
+                is_selected = True
+                break
         debug(f"文件选中状态: {is_selected}")
         if is_selected:
             debug(f"设置卡片为选中状态")
@@ -2527,18 +2533,32 @@ class CustomFileSelector(QWidget):
             is_selected (bool): 是否选中
             file_path (str): 文件路径
         """
-        file_dir = os.path.dirname(file_path)
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileSelector._on_card_selection_changed] {msg}")
+        
+        file_path_norm = os.path.normpath(file_path)
+        file_dir_norm = os.path.normpath(os.path.dirname(file_path))
+        debug(f"文件选择状态变化: 路径={file_path_norm}, 目录={file_dir_norm}, 选中={is_selected}")
+        
         if is_selected:
-            if file_dir not in self.selected_files:
-                self.selected_files[file_dir] = set()
+            if file_dir_norm not in self.selected_files:
+                self.selected_files[file_dir_norm] = set()
             # 检查文件是否已经被选中，如果是则不重复发出信号
-            if file_path not in self.selected_files[file_dir]:
-                self.selected_files[file_dir].add(file_path)
+            if file_path_norm not in self.selected_files[file_dir_norm]:
+                self.selected_files[file_dir_norm].add(file_path_norm)
+                debug(f"添加文件到选中集合，发出选择变化信号")
                 self.file_selection_changed.emit(file_info, is_selected)
+            else:
+                debug(f"文件已在选中集合中，跳过信号")
         else:
-            if file_dir in self.selected_files and file_path in self.selected_files[file_dir]:
-                self.selected_files[file_dir].discard(file_path)
+            if file_dir_norm in self.selected_files and file_path_norm in self.selected_files[file_dir_norm]:
+                self.selected_files[file_dir_norm].discard(file_path_norm)
+                debug(f"从选中集合移除文件，发出选择变化信号")
                 self.file_selection_changed.emit(file_info, is_selected)
+            else:
+                debug(f"文件不在选中集合中，无需处理")
     
     def _on_card_double_clicked(self, file_info, file_path):
         """处理卡片双击"""
@@ -3486,17 +3506,28 @@ class CustomFileSelector(QWidget):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             print(f"[{timestamp}] [CustomFileSelector._update_file_selection_state] {msg}")
         
-        debug(f"开始更新选中状态，卡片数量: {self.files_layout.count()}")
+        debug(f"开始更新选中状态，卡片数量: {self.files_layout.count()}, selected_files: {self.selected_files}")
         for i in range(self.files_layout.count()):
             widget = self.files_layout.itemAt(i).widget()
             if widget is not None and hasattr(widget, 'file_info'):
                 file_path = widget.file_info['path']
+                file_path_norm = os.path.normpath(file_path)
                 # 获取文件所在的目录（规范化路径，确保与selected_files中的键匹配）
                 file_dir = os.path.normpath(os.path.dirname(file_path))
                 # 检查文件是否在任何目录的选中列表中
-                is_selected = file_dir in self.selected_files and file_path in self.selected_files[file_dir]
-                debug(f"卡片 {i}: 文件={file_path}, 目录={file_dir}, 选中={is_selected}")
-                widget.set_selected(is_selected)
+                is_selected = False
+                # 遍历所有目录的选中文件集，检查文件路径是否在其中
+                for dir_path, file_set in self.selected_files.items():
+                    debug(f"  检查目录: {dir_path}, 文件集大小: {len(file_set)}")
+                    if file_path_norm in file_set:
+                        is_selected = True
+                        debug(f"  找到匹配! 文件在选中集合中")
+                        break
+                debug(f"卡片 {i}: 文件={file_path_norm}, 目录={file_dir}, 选中={is_selected}")
+                current_widget_selected = widget.is_selected()
+                if current_widget_selected != is_selected:
+                    debug(f"  选中状态变化: {current_widget_selected} -> {is_selected}")
+                    widget.set_selected(is_selected)
     
     def _show_timeline_window(self):
         """

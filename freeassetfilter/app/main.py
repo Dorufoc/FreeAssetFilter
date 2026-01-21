@@ -919,13 +919,24 @@ class FreeAssetFilterApp(QMainWindow):
             file_info (dict): 文件信息
             is_selected (bool): 是否被选中
         """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [handle_file_selection_changed] {msg}")
+        
         file_path = os.path.normpath(file_info['path'])
+        debug(f"文件选择状态变化: 路径={file_path}, 选中={is_selected}")
         
         if is_selected:
             existing_paths = [os.path.normpath(item['path']) for item in self.file_staging_pool.items]
+            debug(f"储存池现有路径: {existing_paths}")
             if file_path not in existing_paths:
+                debug(f"文件不在储存池中，准备添加")
                 self.file_staging_pool.add_file(file_info)
+            else:
+                debug(f"文件已在储存池中，跳过添加")
         else:
+            debug(f"取消选中，准备从储存池移除")
             self.file_staging_pool.remove_file(file_path)
     
     def handle_remove_from_selector(self, file_info):
@@ -935,15 +946,26 @@ class FreeAssetFilterApp(QMainWindow):
         Args:
             file_info (dict): 文件信息
         """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [handle_remove_from_selector] {msg}")
+        
         file_path = os.path.normpath(file_info['path'])
         file_dir = os.path.normpath(os.path.dirname(file_path))
+        debug(f"从选择器移除文件: 路径={file_path}, 目录={file_dir}")
+        debug(f"移除前的selected_files: {self.file_selector_a.selected_files}")
         
         if file_dir in self.file_selector_a.selected_files:
             self.file_selector_a.selected_files[file_dir].discard(file_path)
+            debug(f"从集合中移除文件，剩余文件: {self.file_selector_a.selected_files[file_dir]}")
             
             if not self.file_selector_a.selected_files[file_dir]:
                 del self.file_selector_a.selected_files[file_dir]
+                debug(f"目录集合为空，删除目录条目")
         
+        debug(f"移除后的selected_files: {self.file_selector_a.selected_files}")
+        debug(f"调用_update_file_selection_state")
         self.file_selector_a._update_file_selection_state()
     
     def handle_navigate_to_path(self, path, file_info=None):
@@ -1064,8 +1086,8 @@ class FreeAssetFilterApp(QMainWindow):
                 self.file_staging_pool.add_file(file_info)
                 
                 # 更新文件选择器的选中状态
-                file_path = file_info['path']
-                file_dir = os.path.dirname(file_path)
+                file_path = os.path.normpath(file_info['path'])
+                file_dir = os.path.normpath(os.path.dirname(file_path))
                 
                 # 确保文件选择器的selected_files字典中存在该目录
                 if file_dir not in self.file_selector_a.selected_files:
