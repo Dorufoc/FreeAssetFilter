@@ -99,20 +99,17 @@ class FileStagingPool(QWidget):
         """
         初始化用户界面
         """
-        # 应用DPI缩放因子到布局参数（调整为原始的一半）
-        scaled_spacing = int(5 * self.dpi_scale)
         scaled_margin = int(5 * self.dpi_scale)
+        scaled_h_margin = int(3 * self.dpi_scale)
         
-        # 创建主布局
         main_layout = QVBoxLayout(self)
-        # 获取主题颜色
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
+        background_color = "#2D2D2D"
         if hasattr(app, 'settings_manager'):
             background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
         self.setStyleSheet(f"background-color: {background_color};")
-        main_layout.setSpacing(scaled_spacing)
-        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        main_layout.setSpacing(scaled_margin)
+        main_layout.setContentsMargins(scaled_h_margin, scaled_margin, scaled_h_margin, scaled_margin)
         
         # 创建标题和控制区
         title_layout = QHBoxLayout()
@@ -139,13 +136,21 @@ class FileStagingPool(QWidget):
         secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
         accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
         
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_border_width = int(1 * self.dpi_scale)
+        
+        scaled_padding = int(3 * self.dpi_scale)
+        
         scrollbar_style = f"""
             QScrollArea {{
-                border: 0px solid transparent;
+                border: {scaled_border_width}px solid {normal_color};
+                border-radius: {scaled_border_radius}px;
                 background-color: {base_color};
+                padding: {scaled_padding}px;
             }}
             QScrollArea > QWidget > QWidget {{
-                background-color: {base_color};
+                background-color: transparent;
+                border: none;
             }}
             QScrollBar:vertical {{
                 width: 6px;
@@ -184,8 +189,8 @@ class FileStagingPool(QWidget):
         # 创建卡片容器和布局
         self.cards_container = QWidget()
         self.cards_layout = QVBoxLayout(self.cards_container)
-        self.cards_layout.setSpacing(int(5 * self.dpi_scale))
-        self.cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.cards_layout.setSpacing(int(3 * self.dpi_scale))
+        self.cards_layout.setContentsMargins(int(3 * self.dpi_scale), 0, int(3 * self.dpi_scale), 0)
         # 设置布局上对齐
         self.cards_layout.setAlignment(Qt.AlignTop)
         # 添加拉伸因子，确保卡片上对齐且不被拉伸
@@ -351,7 +356,7 @@ class FileStagingPool(QWidget):
             if os.path.exists(thumbnail_path):
                 return True
 
-            image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif"]
+            image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif", ".heic"]
             raw_formats = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf"]
 
             if suffix in image_formats or suffix in raw_formats:
@@ -365,6 +370,21 @@ class FileStagingPool(QWidget):
                         with rawpy.imread(file_path) as raw:
                             rgb = raw.postprocess()
                         img = Image.fromarray(rgb)
+                    elif suffix in [".avif", ".heic"]:
+                        try:
+                            import pillow_avif
+                        except ImportError:
+                            pass
+                        try:
+                            import pillow_heif
+                            pillow_heif.register_heif_opener()
+                        except ImportError:
+                            pass
+                        try:
+                            img = Image.open(file_path)
+                        except Exception as img_error:
+                            print(f"无法生成图片缩略图: {file_path}, 错误: {img_error}")
+                            return False
                     else:
                         img = Image.open(file_path)
 

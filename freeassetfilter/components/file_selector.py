@@ -384,6 +384,7 @@ class CustomFileSelector(QWidget):
                 border: 1px solid {normal_color};
                 border-radius: 8px;
                 background-color: {base_color};
+                padding: 3px;
             }}
             QScrollArea > QWidget > QWidget {{
                 background-color: {base_color};
@@ -762,7 +763,7 @@ class CustomFileSelector(QWidget):
             suffix = os.path.splitext(file_path)[1].lower()
             thumbnail_path = self._get_thumbnail_path(file_path)
             
-            image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif"]
+            image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif", ".heic"]
             # 支持的raw格式
             raw_formats = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf"]
             
@@ -772,18 +773,29 @@ class CustomFileSelector(QWidget):
                     from PIL import Image, ImageDraw
                     
                     if suffix in raw_formats:
-                        # 使用rawpy处理raw图像
                         import rawpy
                         import numpy as np
-                        
+
                         with rawpy.imread(file_path) as raw:
-                            # 处理raw图像，使用默认参数
                             rgb = raw.postprocess()
-                        
-                        # 将numpy数组转换为PIL Image
+
                         img = Image.fromarray(rgb)
+                    elif suffix in [".avif", ".heic"]:
+                        try:
+                            import pillow_avif
+                        except ImportError:
+                            pass
+                        try:
+                            import pillow_heif
+                            pillow_heif.register_heif_opener()
+                        except ImportError:
+                            pass
+                        try:
+                            img = Image.open(file_path)
+                        except Exception as img_error:
+                            print(f"无法生成图片缩略图: {file_path}, 错误: {img_error}")
+                            return False
                     else:
-                        # 使用PIL打开普通图片
                         img = Image.open(file_path)
                     
                     # 转换为RGBA模式，支持透明背景
@@ -2652,7 +2664,7 @@ class CustomFileSelector(QWidget):
             return label
         
         # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
@@ -2813,7 +2825,7 @@ class CustomFileSelector(QWidget):
             QPixmap: 文件类型图标
         """
         # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "cr2", "cr3", "nef", "arw", "dng", "orf"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
