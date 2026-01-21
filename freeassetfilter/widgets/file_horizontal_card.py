@@ -295,6 +295,11 @@ class CustomFileHorizontalCard(QWidget):
             self._thumbnail_mode = mode
             self._set_file_icon()
 
+    def refresh_thumbnail(self):
+        """刷新缩略图显示"""
+        print(f"[DEBUG] CustomFileHorizontalCard.refresh_thumbnail 被调用: {self._file_path}")
+        self._set_file_icon()
+
     def _load_file_info(self):
         """
         加载文件信息
@@ -430,15 +435,23 @@ class CustomFileHorizontalCard(QWidget):
             is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
             
+            print(f"[DEBUG] _set_file_icon: file={self._file_path}, suffix={suffix}, is_photo={is_photo}, is_video={is_video}")
+            print(f"[DEBUG] thumbnail_path={thumbnail_path}, exists={os.path.exists(thumbnail_path)}")
+            
             use_thumbnail = False
             if (is_photo or is_video) and os.path.exists(thumbnail_path):
                 use_thumbnail = True
             
             if use_thumbnail:
                 scaled_icon_size = int(40 * self.dpi_scale)
-                pixmap = QPixmap(thumbnail_path)
-                self._set_icon_pixmap(pixmap, scaled_icon_size)
-                return
+                from PyQt5.QtGui import QImage
+                image = QImage(thumbnail_path)
+                print(f"[DEBUG] QImage加载结果: isNull={image.isNull()}")
+                if not image.isNull():
+                    pixmap = QPixmap.fromImage(image)
+                    print(f"[DEBUG] 成功加载缩略图: {thumbnail_path}")
+                    self._set_icon_pixmap(pixmap, scaled_icon_size)
+                    return
             
             icon_path = self._get_file_icon_path(suffix, file_info.isDir())
             if icon_path and os.path.exists(icon_path):
@@ -534,11 +547,46 @@ class CustomFileHorizontalCard(QWidget):
         logical_size = int(size)
         physical_size = int(size * self.devicePixelRatio())
         if logical_size > 0 and physical_size > 0:
-            if isinstance(self.icon_display, QLabel):
-                self.icon_display.setFixedSize(logical_size, logical_size)
+            if not isinstance(self.icon_display, QLabel):
+                self._create_icon_label()
+            
+            self.icon_display.setFixedSize(logical_size, logical_size)
+            
+            self.icon_display.clear()
+            
             scaled_pixmap = pixmap.scaled(physical_size, physical_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
             self.icon_display.setPixmap(scaled_pixmap)
+
+    def _create_icon_label(self):
+        """创建新的QLabel用于显示图标"""
+        old_icon_display = self.icon_display
+        
+        if old_icon_display.parent() == self.card_container:
+            card_layout = self.card_container.layout()
+            card_layout.removeWidget(old_icon_display)
+        
+        old_icon_display.hide()
+        
+        def recursive_delete(widget):
+            """递归删除所有子组件"""
+            for child in widget.findChildren((QLabel, QSvgWidget, QWidget)):
+                if child.parent() == widget:
+                    recursive_delete(child)
+                    child.hide()
+                    child.deleteLater()
+        
+        recursive_delete(old_icon_display)
+        old_icon_display.deleteLater()
+        
+        self.icon_display = QLabel()
+        self.icon_display.setAlignment(Qt.AlignCenter)
+        self.icon_display.setFixedSize(old_icon_display.size())
+        self.icon_display.setStyleSheet('background: transparent; border: none;')
+        
+        card_layout = self.card_container.layout()
+        card_layout.insertWidget(0, self.icon_display, alignment=Qt.AlignVCenter)
+        self.icon_display.show()
 
     def _set_default_icon(self):
         """设置默认图标"""

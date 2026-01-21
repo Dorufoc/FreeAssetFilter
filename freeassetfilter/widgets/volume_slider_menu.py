@@ -11,7 +11,7 @@ from PyQt5.QtGui import QIcon, QFont
 
 # 导入现有的自定义控件
 from .control_menu import CustomControlMenu
-from .progress_widgets import CustomValueBar
+from .progress_widgets import D_ProgressBar
 from .button_widgets import CustomButton
 from freeassetfilter.core.svg_renderer import SvgRenderer
 import os
@@ -86,9 +86,9 @@ class VolumeSliderMenu(QWidget):
         self.volume_menu.setStyleSheet("QWidget { border: none; background-color: transparent; }")
         
         # 创建音量条
-        self.volume_slider = CustomValueBar(
-            orientation=CustomValueBar.Vertical,
-            interactive=True
+        self.volume_slider = D_ProgressBar(
+            orientation=D_ProgressBar.Vertical,
+            is_interactive=True
         )
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self._volume)

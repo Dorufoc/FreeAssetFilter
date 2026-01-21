@@ -306,12 +306,196 @@ class FileStagingPool(QWidget):
         # 如果是文件夹，启动线程计算体积
         if file_info["is_dir"]:
             self._calculate_folder_size(file_info["path"])
-        
+        else:
+            # 如果是图片或视频文件，异步生成缩略图
+            suffix = file_info.get("suffix", "").lower()
+            if self._is_media_file(suffix):
+                self._generate_thumbnail_async(file_info["path"])
+
         # 更新统计信息
         self.update_stats()
-        
+
         # 实时保存备份
         self.save_backup()
+
+    def _is_media_file(self, suffix):
+        """判断是否为图片或视频文件"""
+        image_formats = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'svg']
+        video_formats = ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
+        return suffix in image_formats or suffix in video_formats
+
+    def _get_thumbnail_path(self, file_path):
+        """获取文件的缩略图路径"""
+        import hashlib
+        thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+        os.makedirs(thumb_dir, exist_ok=True)
+        md5_hash = hashlib.md5(file_path.encode('utf-8'))
+        file_hash = md5_hash.hexdigest()[:16]
+        return os.path.join(thumb_dir, f"{file_hash}.png")
+
+    def _generate_thumbnail_async(self, file_path):
+        """异步生成缩略图（在线程中执行）"""
+        import threading
+        thread = threading.Thread(target=self._create_thumbnail, args=(file_path,))
+        thread.daemon = True
+        thread.start()
+
+    def _create_thumbnail(self, file_path):
+        """为单个文件创建缩略图"""
+        try:
+            import cv2
+
+            suffix = os.path.splitext(file_path)[1].lower()
+            thumbnail_path = self._get_thumbnail_path(file_path)
+
+            if os.path.exists(thumbnail_path):
+                return True
+
+            image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif"]
+            raw_formats = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf"]
+
+            if suffix in image_formats or suffix in raw_formats:
+                try:
+                    from PIL import Image, ImageDraw
+
+                    if suffix in raw_formats:
+                        import rawpy
+                        import numpy as np
+
+                        with rawpy.imread(file_path) as raw:
+                            rgb = raw.postprocess()
+                        img = Image.fromarray(rgb)
+                    else:
+                        img = Image.open(file_path)
+
+                    img = img.convert("RGBA")
+                    original_width, original_height = img.size
+                    aspect_ratio = original_width / original_height
+
+                    base_size = 128
+                    dpi_scaled_size = base_size * self.dpi_scale
+
+                    if aspect_ratio > 1:
+                        new_width = int(dpi_scaled_size)
+                        new_height = int(new_width / aspect_ratio)
+                    else:
+                        new_height = int(dpi_scaled_size)
+                        new_width = int(new_height * aspect_ratio)
+
+                    total_pixels = original_width * original_height
+
+                    if total_pixels > 10000000:
+                        min_downsample_width = max(new_width * 2, 1024)
+                        min_downsample_height = max(new_height * 2, 1024)
+                        downsample_ratio = min(original_width / min_downsample_width, original_height / min_downsample_height)
+                        if downsample_ratio > 1:
+                            downsampled_width = int(original_width / downsample_ratio)
+                            downsampled_height = int(original_height / downsample_ratio)
+                            downsampled_img = img.resize((downsampled_width, downsampled_height), Image.Resampling.LANCZOS)
+                            resized_img = downsampled_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                        else:
+                            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    else:
+                        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                    base_background_size = 128
+                    dpi_scaled_background_size = int(base_background_size * self.dpi_scale)
+                    thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
+                    draw = ImageDraw.Draw(thumbnail)
+                    x_offset = (dpi_scaled_background_size - new_width) // 2
+                    y_offset = (dpi_scaled_background_size - new_height) // 2
+                    thumbnail.paste(resized_img, (x_offset, y_offset), resized_img)
+                    thumbnail.save(thumbnail_path, format='PNG', quality=85)
+                    return True
+                except Exception as pil_e:
+                    print(f"无法生成缩略图: {file_path}, PIL处理失败: {pil_e}")
+                    return False
+            else:
+                cap = cv2.VideoCapture(file_path)
+                if cap.isOpened():
+                    try:
+                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        frame_positions = []
+                        min_valid_frame = 1
+                        max_valid_frame = max(min_valid_frame, total_frames - 1) if total_frames > 1 else min_valid_frame
+
+                        if total_frames > 10:
+                            middle_frame = total_frames // 2
+                            frame_positions.append(middle_frame)
+                            frame_positions.append(middle_frame - 10)
+                            frame_positions.append(middle_frame + 10)
+                            frame_positions.append(total_frames // 3)
+                            frame_positions.append(total_frames // 4)
+                            frame_positions.append(total_frames // 5 * 4)
+                        elif total_frames > 5:
+                            frame_positions.append(total_frames // 2)
+                            frame_positions.append(total_frames // 3)
+                            frame_positions.append(total_frames - 1)
+
+                        frame_positions.extend([1, 5, 10])
+
+                        valid_frame_positions = list(set([pos for pos in frame_positions if min_valid_frame <= pos <= max_valid_frame]))
+
+                        if total_frames > 10:
+                            middle_frame = total_frames // 2
+                            if middle_frame in valid_frame_positions:
+                                valid_frame_positions.remove(middle_frame)
+                                valid_frame_positions.insert(0, middle_frame)
+
+                        for frame_pos in valid_frame_positions:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+                            ret, frame = cap.read()
+                            if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
+                                try:
+                                    original_height, original_width = frame.shape[:2]
+                                    aspect_ratio = original_width / original_height
+
+                                    base_size = 128
+                                    dpi_scaled_size = int(base_size * self.dpi_scale)
+
+                                    if aspect_ratio > 1:
+                                        new_width = dpi_scaled_size
+                                        new_height = int(new_width / aspect_ratio)
+                                    else:
+                                        new_height = dpi_scaled_size
+                                        new_width = int(new_height * aspect_ratio)
+
+                                    total_pixels = original_width * original_height
+
+                                    if total_pixels > 10000000:
+                                        min_downsample_width = max(new_width * 2, 1024)
+                                        min_downsample_height = max(new_height * 2, 1024)
+                                        downsample_ratio = min(original_width / min_downsample_width, original_height / min_downsample_height)
+                                        if downsample_ratio > 1:
+                                            downsampled_width = int(original_width / downsample_ratio)
+                                            downsampled_height = int(original_height / downsample_ratio)
+                                            downsampled_frame = cv2.resize(frame, (downsampled_width, downsampled_height), interpolation=cv2.INTER_LANCZOS4)
+                                            resized_frame = cv2.resize(downsampled_frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+                                        else:
+                                            resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+                                    else:
+                                        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+
+                                    from PIL import Image, ImageDraw
+                                    frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
+                                    dpi_scaled_background_size = int(128 * self.dpi_scale)
+                                    thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
+                                    x_offset = (dpi_scaled_background_size - new_width) // 2
+                                    y_offset = (dpi_scaled_background_size - new_height) // 2
+                                    thumbnail.paste(frame_pil, (x_offset, y_offset))
+                                    thumbnail.save(thumbnail_path, format='PNG', quality=85)
+                                    return True
+                                except Exception as e:
+                                    continue
+                        return False
+                    finally:
+                        cap.release()
+                return False
+        except ImportError:
+            print("OpenCV is not installed")
+        except Exception as e:
+            print(f"生成缩略图失败: {file_path}, 错误: {e}")
+        return False
     
 
     
