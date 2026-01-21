@@ -164,20 +164,26 @@ class UnifiedPreviewer(QWidget):
         main_layout = QVBoxLayout(self)
         app = QApplication.instance()
         background_color = "#2D2D2D"
+        base_color = "#212121"
+        normal_color = "#717171"
         if hasattr(app, 'settings_manager'):
             background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-        self.setStyleSheet(f"background-color: {background_color};")
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+        self.setStyleSheet(f"background-color: {background_color}; border: none;")
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
         # 创建垂直分割器，实现预览区域和文件信息区域的拖拽调整
         self.content_splitter = QSplitter(Qt.Vertical)
         self.content_splitter.setContentsMargins(0, 0, 0, 0)
-        self.content_splitter.setHandleWidth(int(4 * self.dpi_scale))
+        self.content_splitter.setHandleWidth(10)
+        self.content_splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {base_color}; }}")
         
         # 创建预览内容区域
         self.preview_area = QWidget()
-        self.preview_area.setStyleSheet(f"background-color: {background_color};")
+        self.preview_area.setObjectName("PreviewArea")
+        self.preview_area.setStyleSheet(f"#PreviewArea {{ background-color: {background_color}; border: 1px solid {normal_color}; }}")
         self.preview_layout = QVBoxLayout(self.preview_area)
         
         # 创建预览控制栏（右上角按钮）- 放在预览组件上方
@@ -204,7 +210,8 @@ class UnifiedPreviewer(QWidget):
         
         # 创建文件信息区域
         self.info_group = QGroupBox(" ")
-        self.info_group.setStyleSheet(f"background-color: {background_color};")
+        self.info_group.setObjectName("InfoGroup")
+        self.info_group.setStyleSheet(f"#InfoGroup {{ background-color: {background_color}; border: 1px solid {normal_color}; }}")
         self.info_layout = QVBoxLayout(self.info_group)
         self.info_layout.setContentsMargins(5, 5, 5, 5)
         
