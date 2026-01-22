@@ -278,6 +278,10 @@ class FileStagingPool(QWidget):
         if "original_name" not in file_info:
             file_info["original_name"] = file_info["name"]
         
+        # 确保文件夹有 size_calculating 标记
+        if file_info.get("is_dir") and "size_calculating" not in file_info:
+            file_info["size_calculating"] = True
+        
         self.items.append(file_info)
         
         card = CustomFileHorizontalCard(file_info["path"], display_name=file_info["display_name"])
@@ -440,12 +444,20 @@ class FileStagingPool(QWidget):
         
         # 计算所有文件大小总和
         total_size = 0
+        calculating_count = 0
         for item in self.items:
-            if "size" in item and item["size"] is not None:
+            size_calc = item.get("size_calculating")
+            if size_calc is True:
+                calculating_count += 1
+            elif "size" in item and item["size"] is not None:
                 total_size += item["size"]
         
         formatted_size = self._format_file_size(total_size)
-        self.stats_label.setText(f" {total_items}个条目 | {formatted_size}")
+        
+        if calculating_count > 0:
+            self.stats_label.setText(f" {total_items}个条目 | {formatted_size} (正在计算{calculating_count}个文件夹...)")
+        else:
+            self.stats_label.setText(f" {total_items}个条目 | {formatted_size}")
     
     def on_card_clicked(self, path, card, file_info):
         """
@@ -654,74 +666,88 @@ class FileStagingPool(QWidget):
             info_msg.exec_()
             return
         
-        # 选择目标目录
-        target_dir = QFileDialog.getExistingDirectory(self, "选择导出目录")
-        if not target_dir:
+        # 检查是否有文件正在计算体积
+        calculating_count = 0
+        for item in self.items:
+            if item.get("size_calculating") is True:
+                calculating_count += 1
+        
+        if calculating_count > 0:
+            warning_msg = CustomMessageBox(self)
+            warning_msg.set_title("数据未准备就绪")
+            warning_msg.set_text(f"有 {calculating_count} 个文件夹正在计算体积，请等待计算完成后再导出。")
+            warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            warning_msg.buttonClicked.connect(warning_msg.close)
+            warning_msg.exec_()
             return
         
         # 获取所有文件信息
         all_files = self.items
         
-        # Windows系统的MAXPATH限制为260字符
-        MAX_PATH = 260
-        
-        # 检查每个文件的实际导出路径长度
-        for file_info in all_files:
-            # 生成目标文件路径
-            target_path = os.path.join(target_dir, file_info["display_name"])
+        # 选择目标目录
+        while True:
+            target_dir = QFileDialog.getExistingDirectory(self, "选择导出目录")
+            if not target_dir:
+                return
             
-            # 检查路径长度
-            if len(target_path) > MAX_PATH:
+            # 计算待导出文件的总大小
+            total_file_size = self.calculate_total_file_size(all_files)
+            
+            # 获取目标目录的总容量和可用空间
+            total_space, free_space = self.get_directory_space(target_dir)
+            
+            if total_space is None or free_space is None:
+                # 获取空间信息失败，可能是网络存储或远程目录
                 warning_msg = CustomMessageBox(self)
-                warning_msg.set_title("错误")
-                warning_msg.set_text(f"导出路径过长！\n"
-                                    f"文件：{file_info['display_name']}\n"
-                                    f"路径：{target_path}\n"
-                                    f"长度：{len(target_path)}字符，超过Windows系统{MAX_PATH}字符限制。")
-                warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                warning_msg.buttonClicked.connect(warning_msg.close)
+                warning_msg.set_title("警告")
+                warning_msg.set_text("无法获取目标目录的可用空间信息，可能是网络存储或远程目录。\n"
+                                    "是否继续导出操作？")
+                warning_msg.set_buttons(["继续", "重新选择", "取消"], Qt.Horizontal, ["primary", "normal", "normal"])
+                
+                user_choice = -1
+                def on_button_clicked(button_index):
+                    nonlocal user_choice
+                    user_choice = button_index
+                    warning_msg.close()
+                
+                warning_msg.buttonClicked.connect(on_button_clicked)
                 warning_msg.exec_()
-                return
+                
+                if user_choice == 0:  # 继续
+                    break
+                elif user_choice == 1:  # 重新选择
+                    continue
+                else:  # 取消
+                    return
+            else:
+                # 检查可用空间是否足够
+                if free_space < total_file_size:
+                    # 空间不足，显示错误提示
+                    error_msg = CustomMessageBox(self)
+                    error_msg.set_title("空间不足")
+                    error_msg.set_text(f"目标目录可用空间不足！\n"
+                                      f"待导出文件总大小：{self._format_file_size(total_file_size)}\n"
+                                      f"目标目录可用空间：{self._format_file_size(free_space)}\n"
+                                      f"所需额外空间：{self._format_file_size(total_file_size - free_space)}")
+                    error_msg.set_buttons(["重新选择", "取消"], Qt.Horizontal, ["primary", "normal"])
+                    
+                    user_choice = -1
+                    def on_error_button_clicked(button_index):
+                        nonlocal user_choice
+                        user_choice = button_index
+                        error_msg.close()
+                    
+                    error_msg.buttonClicked.connect(on_error_button_clicked)
+                    error_msg.exec_()
+                    
+                    if user_choice == 0:  # 重新选择
+                        continue
+                    else:  # 取消
+                        return
+                else:
+                    break
         
-        # 计算待导出文件的总大小
-        total_file_size = self.calculate_total_file_size(all_files)
-        
-        # 获取目标目录的总容量和可用空间
-        total_space, free_space = self.get_directory_space(target_dir)
-        
-        if total_space is None or free_space is None:
-            # 获取空间信息失败，可能是网络存储或远程目录
-            warning_msg = CustomMessageBox(self)
-            warning_msg.set_title("警告")
-            warning_msg.set_text("无法获取目标目录的可用空间信息，可能是网络存储或远程目录。\n"
-                                "是否继续导出操作？")
-            warning_msg.set_buttons(["继续", "取消"], Qt.Horizontal, ["primary", "normal"])
-            
-            user_choice = -1
-            def on_button_clicked(button_index):
-                nonlocal user_choice
-                user_choice = button_index
-                warning_msg.close()
-            
-            warning_msg.buttonClicked.connect(on_button_clicked)
-            warning_msg.exec_()
-            
-            if user_choice != 0:  # 0表示继续
-                return
-        else:
-            # 检查可用空间是否足够
-            if free_space < total_file_size:
-                # 空间不足，显示错误提示
-                error_msg = CustomMessageBox(self)
-                error_msg.set_title("空间不足")
-                error_msg.set_text(f"目标目录可用空间不足！\n"
-                                f"待导出文件总大小：{self._format_file_size(total_file_size)}\n"
-                                f"目标目录可用空间：{self._format_file_size(free_space)}\n"
-                                f"所需额外空间：{self._format_file_size(total_file_size - free_space)}")
-                error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                error_msg.buttonClicked.connect(error_msg.close)
-                error_msg.exec_()
-                return
+        # Windows系统的MAXPATH限制为260字符
         
         # 创建带进度条的自定义提示窗口
         progress_msg_box = CustomMessageBox(self)
@@ -1539,6 +1565,7 @@ class FileStagingPool(QWidget):
                 "path": file_path,
                 "is_dir": is_dir,
                 "size": None if is_dir else file_stat.st_size,
+                "size_calculating": True if is_dir else False,
                 "modified": datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
                 "created": datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
                 "suffix": os.path.splitext(file_name)[1].lower() if not is_dir else "",
@@ -1652,6 +1679,7 @@ class FileStagingPool(QWidget):
             for file_info in self.items:
                 if file_info["path"] == folder_path:
                     file_info["size"] = total_size
+                    file_info["size_calculating"] = False
                     self.folder_size_calculated.emit(file_info)
                     break
         
@@ -1735,9 +1763,15 @@ class FileStagingPool(QWidget):
         Returns:
             int: 总大小字节数
         """
+        import time
+        
         total_size = 0
+        calculating_folders = []
+        
         for file_info in files:
-            if "size" in file_info and file_info["size"] is not None:
+            if file_info.get("size_calculating") is True:
+                calculating_folders.append(file_info["path"])
+            elif "size" in file_info and file_info["size"] is not None:
                 total_size += file_info["size"]
             else:
                 # 如果没有size信息，尝试获取
@@ -1746,13 +1780,45 @@ class FileStagingPool(QWidget):
                         file_size = os.path.getsize(file_info["path"])
                         total_size += file_size
                     elif os.path.isdir(file_info["path"]):
-                        # 递归计算目录大小
-                        for root, dirs, files_in_dir in os.walk(file_info["path"]):
-                            for file in files_in_dir:
-                                file_path = os.path.join(root, file)
-                                total_size += os.path.getsize(file_path)
+                        calculating_folders.append(file_info["path"])
                 except Exception as e:
                     print(f"计算文件大小失败: {str(e)}")
+        
+        # 等待正在计算中的文件夹
+        max_wait_time = 30
+        wait_interval = 0.5
+        elapsed_time = 0
+        
+        while calculating_folders and elapsed_time < max_wait_time:
+            time.sleep(wait_interval)
+            elapsed_time += wait_interval
+            
+            still_calculating = []
+            for folder_path in calculating_folders:
+                for item in self.items:
+                    if item["path"] == folder_path:
+                        if item.get("size_calculating") is True:
+                            still_calculating.append(folder_path)
+                        elif item.get("size") is not None:
+                            total_size += item["size"]
+                        break
+                else:
+                    try:
+                        if os.path.isdir(folder_path):
+                            folder_size = 0
+                            for root, dirs, files_in_dir in os.walk(folder_path):
+                                for file in files_in_dir:
+                                    file_path = os.path.join(root, file)
+                                    folder_size += os.path.getsize(file_path)
+                            total_size += folder_size
+                    except Exception as e:
+                        print(f"同步计算文件夹大小时失败: {str(e)}")
+            
+            calculating_folders = still_calculating
+        
+        if calculating_folders:
+            print(f"警告: {len(calculating_folders)}个文件夹体积计算超时，这些文件夹大小将被忽略")
+        
         return total_size
     
     def copy_files(self, files, target_dir):
