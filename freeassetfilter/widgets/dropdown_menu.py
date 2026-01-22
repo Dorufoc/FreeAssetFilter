@@ -10,9 +10,10 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApp
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QSize, QRect
 from PyQt5.QtGui import QFont, QFontMetrics
 
-# 导入现有的自定义控件
 from .control_menu import CustomControlMenu
 from .button_widgets import CustomButton
+from .scroll_bar import D_ScrollBar
+from .smooth_scroller import SmoothScroller
 import os
 
 
@@ -91,16 +92,14 @@ class CustomDropdownMenu(QWidget):
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
-        # 设置滚动区域样式表
-        # 获取auxiliary_color，默认#f1f3f5
-        auxiliary_color = "#f1f3f5"
-        if self.settings_manager:
-            auxiliary_color = self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
+        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
         
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
+        
+        # 设置滚动区域样式表
         self.scroll_area.setStyleSheet(
-            "QScrollArea { border: none; background-color: transparent; }"+
-            "QScrollBar:vertical { background-color: transparent; width: 4px; }"+
-            f"QScrollBar::handle:vertical {{ background-color: {auxiliary_color}; border-radius: 2px; }}"
+            "QScrollArea { border: none; background-color: transparent; }"
         )
         
         # 创建列表容器

@@ -17,6 +17,8 @@ from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 # 导入自定义控件
 from freeassetfilter.widgets.setting_widgets import CustomSettingItem
 from freeassetfilter.widgets.button_widgets import CustomButton
+from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.message_box import CustomMessageBox
 
@@ -284,7 +286,13 @@ class ModernSettingsWindow(QDialog):
             }}
         """
         self.scroll_area.setStyleSheet(scrollbar_style)
-
+        
+        # 使用动画滚动条
+        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
+        self.scroll_area.verticalScrollBar().set_colors(normal_color, secondary_color, accent_color, auxiliary_color)
+        
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
+        
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
@@ -1038,7 +1046,14 @@ class ModernSettingsWindow(QDialog):
             }}
         """
         self.scroll_area.setStyleSheet(scroll_style)
-
+        
+        # 使用动画滚动条
+        hover_color = secondary_color
+        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
+        self.scroll_area.verticalScrollBar().set_colors(normal_color, hover_color, accent_color, auxiliary_color)
+        
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
+        
         # 更新所有分组框样式
         for child in self.scroll_content.children():
             if isinstance(child, QVBoxLayout):

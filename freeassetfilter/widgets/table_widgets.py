@@ -5,10 +5,13 @@ FreeAssetFilter 自定义表格控件
 用于时间线左侧的自定义表格实现
 """
 
-from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea
+from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea, QVBoxLayout, QWidget, QGridLayout
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtWidgets import QApplication
+
+from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
 
 class CustomTimelineTable(QTableWidget):
@@ -251,6 +254,11 @@ class CustomMatrixTable(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
+        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
+        
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
         
         # 创建内容窗口
         self.content_widget = QWidget()

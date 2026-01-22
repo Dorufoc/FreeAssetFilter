@@ -8,7 +8,7 @@ FreeAssetFilter 按钮类自定义控件
 from PyQt5.QtWidgets import (
     QPushButton, QWidget, QSizePolicy, QApplication, QStyleOptionButton
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QTimer
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QTimer, QPropertyAnimation, pyqtProperty, QEasingCurve, QParallelAnimationGroup
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QStyle
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
@@ -26,7 +26,61 @@ class CustomButton(QPushButton):
     - 悬停和点击效果
     - 支持强调色和次选色方案
     - 支持文字和图标两种显示模式
+    - 支持非线性动画过渡效果
     """
+    
+    @pyqtProperty(QColor)
+    def anim_bg_color(self):
+        return self._anim_bg_color
+    
+    @anim_bg_color.setter
+    def anim_bg_color(self, color):
+        self._anim_bg_color = color
+        self._update_button_style()
+    
+    @pyqtProperty(QColor)
+    def anim_border_color(self):
+        return self._anim_border_color
+    
+    @anim_border_color.setter
+    def anim_border_color(self, color):
+        self._anim_border_color = color
+        self._update_button_style()
+    
+    @pyqtProperty(QColor)
+    def anim_text_color(self):
+        return self._anim_text_color
+    
+    @anim_text_color.setter
+    def anim_text_color(self, color):
+        self._anim_text_color = color
+        self._update_button_style()
+    
+    def _update_button_style(self):
+        """根据当前动画颜色更新按钮样式"""
+        if not hasattr(self, '_style_colors') or not self._style_colors:
+            return
+            
+        scaled_border_radius = self._height // 2
+        scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
+        scaled_font_size = int(getattr(QApplication.instance(), 'default_font_size', 18) * self.dpi_scale)
+        
+        if self.button_type == "primary":
+            border_width = int(0.5 * self.dpi_scale)
+        else:
+            border_width = int(1 * self.dpi_scale)
+        
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self._anim_bg_color.name()};
+                color: {self._anim_text_color.name()};
+                border: {border_width}px solid {self._anim_border_color.name()};
+                border-radius: {scaled_border_radius}px;
+                padding: {scaled_padding};
+                font-size: {scaled_font_size}px;
+                font-weight: 600;
+            }}
+        """)
     
     def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text", height=20, tooltip_text=""):
         """
@@ -66,8 +120,296 @@ class CustomButton(QPushButton):
         
         self.update_style()
         
+        # 初始化动画属性
+        self._init_animations()
+        
         # 延迟渲染图标，确保按钮尺寸已确定
         QTimer.singleShot(0, self._render_icon)
+    
+    def _init_animations(self):
+        """初始化按钮状态切换动画"""
+        # 获取颜色配置
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+        
+        current_colors = settings_manager.get_setting("appearance.colors", {})
+        
+        def darken_color(color_hex, percentage):
+            color = QColor(color_hex)
+            current_theme = settings_manager.get_setting("appearance.theme", "default")
+            is_dark_mode = (current_theme == "dark")
+            
+            if is_dark_mode:
+                r = min(255, int(color.red() * (1 + percentage)))
+                g = min(255, int(color.green() * (1 + percentage)))
+                b = min(255, int(color.blue() * (1 + percentage)))
+            else:
+                r = max(0, int(color.red() * (1 - percentage)))
+                g = max(0, int(color.green() * (1 - percentage)))
+                b = max(0, int(color.blue() * (1 - percentage)))
+            return QColor(r, g, b)
+        
+        accent_color = current_colors.get("accent_color", "#007AFF")
+        secondary_color = current_colors.get("secondary_color", "#333333")
+        base_color = current_colors.get("base_color", "#ffffff")
+        
+        # 根据按钮类型设置颜色
+        if self.button_type == "primary":
+            normal_bg = QColor(accent_color)
+            hover_bg = darken_color(accent_color, 0.1)
+            pressed_bg = darken_color(accent_color, 0.2)
+            normal_border = QColor(accent_color)
+            hover_border = QColor(accent_color)
+            pressed_border = QColor(accent_color)
+            if self._display_mode == "icon":
+                normal_text = QColor(accent_color)
+                hover_text = QColor(accent_color)
+                pressed_text = QColor(pressed_bg)
+            else:
+                normal_text = QColor(base_color)
+                hover_text = QColor(base_color)
+                pressed_text = QColor(base_color)
+        elif self.button_type == "normal":
+            normal_bg = QColor(base_color)
+            hover_bg = darken_color(base_color, 0.1)
+            pressed_bg = darken_color(base_color, 0.2)
+            normal_border = QColor(base_color)
+            hover_border = QColor(base_color)
+            pressed_border = QColor(base_color)
+            if self._display_mode == "icon":
+                normal_text = QColor(base_color)
+                hover_text = QColor(base_color)
+                pressed_text = QColor(pressed_bg)
+            else:
+                normal_text = QColor(secondary_color)
+                hover_text = QColor(secondary_color)
+                pressed_text = QColor(secondary_color)
+        elif self.button_type == "warning":
+            normal_bg = QColor(current_colors.get("notification_error", "#F44336"))
+            hover_bg = QColor("#E63946")
+            pressed_bg = QColor("#D62828")
+            normal_border = QColor(current_colors.get("notification_error", "#F44336"))
+            hover_border = QColor("#E63946")
+            pressed_border = QColor("#D62828")
+            if self._display_mode == "icon":
+                normal_text = QColor(current_colors.get("notification_error", "#F44336"))
+                hover_text = QColor(current_colors.get("notification_error", "#F44336"))
+                pressed_text = QColor(pressed_bg)
+            else:
+                normal_text = QColor(current_colors.get("notification_text", "#FFFFFF"))
+                hover_text = QColor(current_colors.get("notification_text", "#FFFFFF"))
+                pressed_text = QColor(current_colors.get("notification_text", "#FFFFFF"))
+        else:  # secondary
+            normal_bg = QColor(base_color)
+            hover_bg = darken_color(base_color, 0.1)
+            pressed_bg = darken_color(base_color, 0.2)
+            normal_border = QColor(accent_color)
+            hover_border = QColor(accent_color)
+            pressed_border = QColor(accent_color)
+            if self._display_mode == "icon":
+                normal_text = QColor(base_color)
+                hover_text = QColor(base_color)
+                pressed_text = QColor(pressed_bg)
+            else:
+                normal_text = QColor(accent_color)
+                hover_text = QColor(accent_color)
+                pressed_text = QColor(accent_color)
+        
+        # 存储颜色配置供样式更新使用
+        self._style_colors = {
+            'normal_bg': normal_bg,
+            'hover_bg': hover_bg,
+            'pressed_bg': pressed_bg,
+            'normal_border': normal_border,
+            'hover_border': hover_border,
+            'pressed_border': pressed_border,
+            'normal_text': normal_text,
+            'hover_text': hover_text,
+            'pressed_text': pressed_text
+        }
+        
+        # 初始化动画颜色属性
+        self._anim_bg_color = QColor(normal_bg)
+        self._anim_border_color = QColor(normal_border)
+        self._anim_text_color = QColor(normal_text)
+        
+        # 创建悬停进入动画
+        self._hover_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_hover_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_hover_bg.setStartValue(normal_bg)
+        self._anim_hover_bg.setEndValue(hover_bg)
+        self._anim_hover_bg.setDuration(150)
+        self._anim_hover_bg.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._anim_hover_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_hover_border.setStartValue(normal_border)
+        self._anim_hover_border.setEndValue(hover_border)
+        self._anim_hover_border.setDuration(150)
+        self._anim_hover_border.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._anim_hover_text = QPropertyAnimation(self, b"anim_text_color")
+        self._anim_hover_text.setStartValue(normal_text)
+        self._anim_hover_text.setEndValue(hover_text)
+        self._anim_hover_text.setDuration(150)
+        self._anim_hover_text.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._hover_anim_group.addAnimation(self._anim_hover_bg)
+        self._hover_anim_group.addAnimation(self._anim_hover_border)
+        self._hover_anim_group.addAnimation(self._anim_hover_text)
+        
+        # 创建悬停离开动画（返回正常状态）
+        self._leave_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_leave_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_leave_bg.setStartValue(hover_bg)
+        self._anim_leave_bg.setEndValue(normal_bg)
+        self._anim_leave_bg.setDuration(200)
+        self._anim_leave_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_leave_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_leave_border.setStartValue(hover_border)
+        self._anim_leave_border.setEndValue(normal_border)
+        self._anim_leave_border.setDuration(200)
+        self._anim_leave_border.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_leave_text = QPropertyAnimation(self, b"anim_text_color")
+        self._anim_leave_text.setStartValue(hover_text)
+        self._anim_leave_text.setEndValue(normal_text)
+        self._anim_leave_text.setDuration(200)
+        self._anim_leave_text.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._leave_anim_group.addAnimation(self._anim_leave_bg)
+        self._leave_anim_group.addAnimation(self._anim_leave_border)
+        self._leave_anim_group.addAnimation(self._anim_leave_text)
+        
+        # 创建按下动画
+        self._press_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_press_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_press_bg.setStartValue(hover_bg)
+        self._anim_press_bg.setEndValue(pressed_bg)
+        self._anim_press_bg.setDuration(80)
+        self._anim_press_bg.setEasingCurve(QEasingCurve.OutQuad)
+        
+        self._anim_press_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_press_border.setStartValue(hover_border)
+        self._anim_press_border.setEndValue(pressed_border)
+        self._anim_press_border.setDuration(80)
+        self._anim_press_border.setEasingCurve(QEasingCurve.OutQuad)
+        
+        self._anim_press_text = QPropertyAnimation(self, b"anim_text_color")
+        self._anim_press_text.setStartValue(hover_text)
+        self._anim_press_text.setEndValue(pressed_text)
+        self._anim_press_text.setDuration(80)
+        self._anim_press_text.setEasingCurve(QEasingCurve.OutQuad)
+        
+        self._press_anim_group.addAnimation(self._anim_press_bg)
+        self._press_anim_group.addAnimation(self._anim_press_border)
+        self._press_anim_group.addAnimation(self._anim_press_text)
+        
+        # 创建释放动画（返回悬停状态）
+        self._release_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_release_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_release_bg.setStartValue(pressed_bg)
+        self._anim_release_bg.setEndValue(hover_bg)
+        self._anim_release_bg.setDuration(150)
+        self._anim_release_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_release_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_release_border.setStartValue(pressed_border)
+        self._anim_release_border.setEndValue(hover_border)
+        self._anim_release_border.setDuration(150)
+        self._anim_release_border.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_release_text = QPropertyAnimation(self, b"anim_text_color")
+        self._anim_release_text.setStartValue(pressed_text)
+        self._anim_release_text.setEndValue(hover_text)
+        self._anim_release_text.setDuration(150)
+        self._anim_release_text.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._release_anim_group.addAnimation(self._anim_release_bg)
+        self._release_anim_group.addAnimation(self._anim_release_border)
+        self._release_anim_group.addAnimation(self._anim_release_text)
+        
+        # 应用初始样式
+        self._update_button_style()
+    
+    def enterEvent(self, event):
+        """鼠标进入事件，触发动画"""
+        # 先停止可能正在进行的动画
+        self._leave_anim_group.stop()
+        self._hover_anim_group.stop()
+        self._release_anim_group.stop()
+        
+        # 根据当前状态决定动画
+        colors = self._style_colors
+        if self._anim_bg_color == colors['pressed_bg']:
+            # 如果当前是按下状态，释放到悬停
+            self._release_anim_group.start()
+        else:
+            # 否则从当前状态动画到悬停状态
+            self._anim_hover_bg.setStartValue(self._anim_bg_color)
+            self._anim_hover_bg.setEndValue(colors['hover_bg'])
+            self._anim_hover_border.setStartValue(self._anim_border_color)
+            self._anim_hover_border.setEndValue(colors['hover_border'])
+            self._anim_hover_text.setStartValue(self._anim_text_color)
+            self._anim_hover_text.setEndValue(colors['hover_text'])
+            self._hover_anim_group.start()
+        
+        super().enterEvent(event)
+    
+    def leaveEvent(self, event):
+        """鼠标离开事件，触发动画"""
+        self._hover_anim_group.stop()
+        self._press_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_leave_bg.setStartValue(self._anim_bg_color)
+        self._anim_leave_bg.setEndValue(colors['normal_bg'])
+        self._anim_leave_border.setStartValue(self._anim_border_color)
+        self._anim_leave_border.setEndValue(colors['normal_border'])
+        self._anim_leave_text.setStartValue(self._anim_text_color)
+        self._anim_leave_text.setEndValue(colors['normal_text'])
+        self._leave_anim_group.start()
+        
+        super().leaveEvent(event)
+    
+    def mousePressEvent(self, event):
+        """鼠标按下事件，触发动画"""
+        self._hover_anim_group.stop()
+        self._leave_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_press_bg.setStartValue(self._anim_bg_color)
+        self._anim_press_bg.setEndValue(colors['pressed_bg'])
+        self._anim_press_border.setStartValue(self._anim_border_color)
+        self._anim_press_border.setEndValue(colors['pressed_border'])
+        self._anim_press_text.setStartValue(self._anim_text_color)
+        self._anim_press_text.setEndValue(colors['pressed_text'])
+        self._press_anim_group.start()
+        
+        super().mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """鼠标释放事件，触发动画"""
+        self._press_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_release_bg.setStartValue(self._anim_bg_color)
+        self._anim_release_bg.setEndValue(colors['hover_bg'])
+        self._anim_release_border.setStartValue(self._anim_border_color)
+        self._anim_release_border.setEndValue(colors['hover_border'])
+        self._anim_release_text.setStartValue(self._anim_text_color)
+        self._anim_release_text.setEndValue(colors['hover_text'])
+        self._release_anim_group.start()
+        
+        super().mouseReleaseEvent(event)
     
     def update_style(self):
         """
@@ -407,6 +749,134 @@ class CustomButton(QPushButton):
                     border-color: {disabled_border};
                 }}
             """)
+        
+        # 更新动画颜色配置
+        self._update_anim_colors(current_colors, accent_color, secondary_color, base_color)
+    
+    def _update_anim_colors(self, current_colors, accent_color, secondary_color, base_color):
+        """更新动画颜色配置"""
+        if not hasattr(self, '_style_colors'):
+            return
+        
+        def get_color(color_hex):
+            return QColor(color_hex)
+        
+        def darken_color_qcolor(color_hex, percentage):
+            color = QColor(color_hex)
+            current_theme = current_colors.get("theme", "default") if "theme" in current_colors else "default"
+            is_dark_mode = (current_theme == "dark")
+            
+            if is_dark_mode:
+                r = min(255, int(color.red() * (1 + percentage)))
+                g = min(255, int(color.green() * (1 + percentage)))
+                b = min(255, int(color.blue() * (1 + percentage)))
+            else:
+                r = max(0, int(color.red() * (1 - percentage)))
+                g = max(0, int(color.green() * (1 - percentage)))
+                b = max(0, int(color.blue() * (1 - percentage)))
+            return QColor(r, g, b)
+        
+        if self.button_type == "primary":
+            normal_bg = get_color(current_colors.get("button_primary_normal", accent_color))
+            hover_bg = get_color(current_colors.get("button_primary_hover", darken_color_qcolor(accent_color, 0.1)))
+            pressed_bg = get_color(current_colors.get("button_primary_pressed", darken_color_qcolor(accent_color, 0.2)))
+            normal_border = get_color(current_colors.get("button_primary_border", accent_color))
+            hover_border = get_color(current_colors.get("button_primary_border", accent_color))
+            pressed_border = get_color(current_colors.get("button_primary_border", accent_color))
+            if self._display_mode == "icon":
+                normal_text = get_color(current_colors.get("button_primary_normal", accent_color))
+                hover_text = get_color(current_colors.get("button_primary_normal", accent_color))
+                pressed_text = pressed_bg
+            else:
+                normal_text = get_color(current_colors.get("button_primary_text", base_color))
+                hover_text = get_color(current_colors.get("button_primary_text", base_color))
+                pressed_text = get_color(current_colors.get("button_primary_text", base_color))
+        elif self.button_type == "normal":
+            normal_bg = get_color(current_colors.get("button_normal_normal", base_color))
+            hover_bg = get_color(current_colors.get("button_normal_hover", darken_color_qcolor(base_color, 0.1)))
+            pressed_bg = get_color(current_colors.get("button_normal_pressed", darken_color_qcolor(base_color, 0.2)))
+            normal_border = normal_bg
+            hover_border = hover_bg
+            pressed_border = pressed_bg
+            if self._display_mode == "icon":
+                normal_text = get_color(current_colors.get("button_normal_normal", base_color))
+                hover_text = get_color(current_colors.get("button_normal_normal", base_color))
+                pressed_text = pressed_bg
+            else:
+                normal_text = get_color(current_colors.get("button_normal_text", secondary_color))
+                hover_text = get_color(current_colors.get("button_normal_text", secondary_color))
+                pressed_text = get_color(current_colors.get("button_normal_text", secondary_color))
+        elif self.button_type == "warning":
+            normal_bg = get_color(current_colors.get("button_warning_normal", current_colors.get("notification_error", "#F44336")))
+            hover_bg = get_color(current_colors.get("button_warning_hover", "#E63946"))
+            pressed_bg = get_color(current_colors.get("button_warning_pressed", "#D62828"))
+            normal_border = get_color(current_colors.get("button_warning_border", current_colors.get("notification_error", "#F44336")))
+            hover_border = get_color(current_colors.get("button_warning_border", current_colors.get("notification_error", "#F44336")))
+            pressed_border = get_color(current_colors.get("button_warning_border", current_colors.get("notification_error", "#F44336")))
+            if self._display_mode == "icon":
+                normal_text = get_color(current_colors.get("button_warning_normal", current_colors.get("notification_error", "#F44336")))
+                hover_text = get_color(current_colors.get("button_warning_normal", current_colors.get("notification_error", "#F44336")))
+                pressed_text = pressed_bg
+            else:
+                normal_text = get_color(current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF")))
+                hover_text = get_color(current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF")))
+                pressed_text = get_color(current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF")))
+        else:  # secondary
+            normal_bg = get_color(current_colors.get("button_secondary_normal", base_color))
+            hover_bg = get_color(current_colors.get("button_secondary_hover", darken_color_qcolor(base_color, 0.1)))
+            pressed_bg = get_color(current_colors.get("button_secondary_pressed", darken_color_qcolor(base_color, 0.2)))
+            normal_border = get_color(current_colors.get("button_secondary_border", accent_color))
+            hover_border = get_color(current_colors.get("button_secondary_border", accent_color))
+            pressed_border = get_color(current_colors.get("button_secondary_border", accent_color))
+            if self._display_mode == "icon":
+                normal_text = get_color(current_colors.get("button_secondary_normal", base_color))
+                hover_text = get_color(current_colors.get("button_secondary_normal", base_color))
+                pressed_text = pressed_bg
+            else:
+                normal_text = get_color(current_colors.get("button_secondary_text", accent_color))
+                hover_text = get_color(current_colors.get("button_secondary_text", accent_color))
+                pressed_text = get_color(current_colors.get("button_secondary_text", accent_color))
+        
+        self._style_colors = {
+            'normal_bg': normal_bg,
+            'hover_bg': hover_bg,
+            'pressed_bg': pressed_bg,
+            'normal_border': normal_border,
+            'hover_border': hover_border,
+            'pressed_border': pressed_border,
+            'normal_text': normal_text,
+            'hover_text': hover_text,
+            'pressed_text': pressed_text
+        }
+        
+        # 更新动画的起始和结束值
+        self._anim_hover_bg.setStartValue(normal_bg)
+        self._anim_hover_bg.setEndValue(hover_bg)
+        self._anim_hover_border.setStartValue(normal_border)
+        self._anim_hover_border.setEndValue(hover_border)
+        self._anim_hover_text.setStartValue(normal_text)
+        self._anim_hover_text.setEndValue(hover_text)
+        
+        self._anim_leave_bg.setStartValue(hover_bg)
+        self._anim_leave_bg.setEndValue(normal_bg)
+        self._anim_leave_border.setStartValue(hover_border)
+        self._anim_leave_border.setEndValue(normal_border)
+        self._anim_leave_text.setStartValue(hover_text)
+        self._anim_leave_text.setEndValue(normal_text)
+        
+        self._anim_press_bg.setStartValue(hover_bg)
+        self._anim_press_bg.setEndValue(pressed_bg)
+        self._anim_press_border.setStartValue(hover_border)
+        self._anim_press_border.setEndValue(pressed_border)
+        self._anim_press_text.setStartValue(hover_text)
+        self._anim_press_text.setEndValue(pressed_text)
+        
+        self._anim_release_bg.setStartValue(pressed_bg)
+        self._anim_release_bg.setEndValue(hover_bg)
+        self._anim_release_border.setStartValue(pressed_border)
+        self._anim_release_border.setEndValue(hover_border)
+        self._anim_release_text.setStartValue(pressed_text)
+        self._anim_release_text.setEndValue(hover_text)
     
     def set_primary(self, is_primary):
         """
@@ -547,3 +1017,6 @@ class CustomButton(QPushButton):
         else:
             # 文字模式，调用父类绘制文字
             super().paintEvent(event)
+
+
+from freeassetfilter.widgets.scroll_bar import D_ScrollBar

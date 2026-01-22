@@ -14,6 +14,9 @@ from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
+from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
 import os
@@ -294,9 +297,14 @@ class CustomSelectList(QWidget):
         
         # 滚动区域
         self.scroll_area = QScrollArea(self)
-        self.scroll_area.setWidgetResizable(True)  # 启用自动调整大小
+        self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
+        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
+        
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
         
         # 滚动区域内容控件
         self.content_widget = QWidget()
@@ -311,55 +319,7 @@ class CustomSelectList(QWidget):
         # 设置固定尺寸
         self.setFixedSize(self.default_width, self.default_height)
         
-        # 确保滚动条可见，将样式应用到滚动区域
-        # 获取主题颜色
-        app = QApplication.instance()
-        auxiliary_color = "#E6E6E6"  # 默认辅助色
-        normal_color = "#808080"  # 默认正常颜色
-        accent_color = "#B036EE"  # 默认强调色
-        
-        if hasattr(app, 'settings_manager'):
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", normal_color)
-            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", accent_color)
-        
-        # 设置滚动条颜色变量
-        scrollbar_bg = auxiliary_color  # 滚动条背景色使用辅助色
-        scrollbar_handle = normal_color  # 滚动条手柄颜色使用正常颜色
-        scrollbar_handle_hover = accent_color  # 滚动条手柄悬停颜色使用强调色
-        
-        self.scroll_area.setStyleSheet(f"""
-            QScrollArea {{
-                border: none;
-            }}
-            QScrollBar:vertical {{
-                width: 2px;
-                background: {scrollbar_bg};
-                border-radius: 0.5px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {scrollbar_handle};
-                border-radius: 0.5px;
-                min-height: 10px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {scrollbar_handle_hover};
-            }}
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {{
-                height: 0px;
-            }}
-            QScrollBar::up-arrow:vertical,
-            QScrollBar::down-arrow:vertical {{
-                height: 0px;
-            }}
-            QScrollBar::add-page:vertical,
-            QScrollBar::sub-page:vertical {{
-                background: none;
-            }}
-        """)
-        
-        # 确保滚动条总是显示，用于测试
+        # 确保滚动条总是显示
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
     
     def add_item(self, text, icon_path=""):

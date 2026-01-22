@@ -37,6 +37,8 @@ from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
+from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PyQt5.QtCore import Qt, pyqtSignal, QFileInfo
 from PyQt5.QtGui import QFont, QIcon
 
@@ -292,8 +294,13 @@ class ArchiveBrowser(QWidget):
         # 创建滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 关闭水平滚动条
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)  # 垂直滚动条按需显示
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
+        scroll_area.verticalScrollBar().apply_theme_from_settings()
+        
+        SmoothScroller.apply_to_scroll_area(scroll_area)
         
         # 创建文件列表
         self.files_list = QListWidget()

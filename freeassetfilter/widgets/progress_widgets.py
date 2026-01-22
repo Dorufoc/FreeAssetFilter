@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
     QScrollArea
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QPointF
+from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QPointF, QPropertyAnimation, QEasingCurve, pyqtProperty, QTime
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QLinearGradient
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 from PyQt5.QtSvg import QSvgRenderer
@@ -579,16 +579,75 @@ class D_ProgressBar(QWidget):
         self._minimum = 0
         self._maximum = 1000
         self._value = 0
+        self._display_value_storage = 0
         self._is_pressed = False
+        self._animation_suspended = False
         self._is_hovered = False
         self._last_pos = 0
+        self._last_set_value_time = 0
 
         self._handle_border_width = max(1, int(2 * self.dpi_scale))
         self._handle_border_color = QColor("#FFFFFF")
 
+        self._animation_duration = 500
+        self._animation = QPropertyAnimation(self, b"_display_value")
+        self._animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._animation.valueChanged.connect(self._on_animation_value_changed)
+        self._animation.finished.connect(self._on_animation_finished)
+
         self._init_sizes()
         self._init_colors()
         self._init_icons()
+
+    def _get_display_value(self):
+        """获取动画显示值"""
+        return self._display_value_storage
+
+    def _set_display_value(self, value):
+        """设置动画显示值"""
+        self._display_value_storage = value
+        self.update()
+
+    _display_value = pyqtProperty(int, fget=_get_display_value, fset=_set_display_value)
+
+    def _on_animation_value_changed(self, value):
+        """动画值变化时的回调"""
+        pass
+
+    def _on_animation_finished(self):
+        """动画结束时的回调"""
+        self.valueChanged.emit(self._value)
+
+    def setAnimationDuration(self, duration):
+        """
+        设置动画持续时间
+
+        Args:
+            duration (int): 动画持续时间（毫秒）
+        """
+        self._animation_duration = duration
+        self._animation.setDuration(duration)
+
+    def setAnimationEasingCurve(self, easing_curve):
+        """
+        设置动画缓动曲线
+
+        Args:
+            easing_curve (QEasingCurve): 缓动曲线类型
+        """
+        self._animation.setEasingCurve(easing_curve)
+
+    def setAnimationEnabled(self, enabled):
+        """
+        启用或禁用动画
+
+        Args:
+            enabled (bool): 是否启用动画
+        """
+        if enabled:
+            self._animation.setDuration(self._animation_duration)
+        else:
+            self._animation.setDuration(0)
 
     def _init_sizes(self):
         """初始化尺寸参数"""
@@ -742,12 +801,13 @@ class D_ProgressBar(QWidget):
             self._value = maximum
         self.update()
 
-    def setValue(self, value):
+    def setValue(self, value, use_animation=None):
         """
         设置进度条值
 
         Args:
             value (int): 进度值
+            use_animation (bool): 是否使用动画，为None时使用_animation_suspended设置
         """
         if value < self._minimum:
             value = self._minimum
@@ -756,8 +816,36 @@ class D_ProgressBar(QWidget):
 
         if self._value != value:
             self._value = value
-            self.update()
-            self.valueChanged.emit(value)
+
+            should_use_animation = use_animation if use_animation is not None else not self._animation_suspended
+
+            if not should_use_animation:
+                self._display_value_storage = value
+                self.update()
+            else:
+                current_time = QTime.currentTime()
+                last_time = self._last_set_value_time
+                if isinstance(last_time, int) or not isinstance(last_time, QTime):
+                    self._display_value_storage = value
+                    self.update()
+                elif last_time.msecsTo(current_time) < 50:
+                    self._display_value_storage = value
+                    self.update()
+                else:
+                    if self._animation.state() == QPropertyAnimation.Running:
+                        current = self._animation.currentValue()
+                        remaining = max(1, self._animation_duration - self._animation.currentTime())
+                        self._animation.stop()
+                        self._animation.setStartValue(current)
+                        self._animation.setEndValue(value)
+                        self._animation.setDuration(remaining)
+                    else:
+                        self._animation.stop()
+                        self._animation.setStartValue(self._display_value)
+                        self._animation.setEndValue(value)
+                        self._animation.setDuration(self._animation_duration)
+                    self._animation.start()
+                self._last_set_value_time = current_time
 
     def value(self):
         """
@@ -909,6 +997,11 @@ class D_ProgressBar(QWidget):
 
         if event.button() == Qt.LeftButton:
             self._is_pressed = True
+
+            if self._animation.state() == QPropertyAnimation.Running:
+                self._animation.stop()
+
+            self._display_value_storage = self._value
             self._update_value_from_event(event)
             self.userInteracting.emit()
 
@@ -1034,7 +1127,7 @@ class D_ProgressBar(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
 
-        progress_ratio = self._value / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
+        progress_ratio = self._display_value / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
         progress_width = int(bar_width * progress_ratio)
 
         if progress_width > 0:
@@ -1079,7 +1172,7 @@ class D_ProgressBar(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
 
-        progress_ratio = self._value / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
+        progress_ratio = self._display_value / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
         progress_height = int(bar_height * progress_ratio)
 
         if progress_height > 0:

@@ -9,8 +9,9 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QGridL
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont
 
-# 导入独立的ThemeCard控件
 from freeassetfilter.widgets.theme_card import ThemeCard
+from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
 class ThemeEditor(QScrollArea):
     """
@@ -186,6 +187,11 @@ class ThemeEditor(QScrollArea):
         self.setWidgetResizable(True)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        self.setVerticalScrollBar(D_ScrollBar(self, Qt.Vertical))
+        self.verticalScrollBar().apply_theme_from_settings()
+        
+        SmoothScroller.apply(self)
         
         base_color = "#FFFFFF"
         if self.settings_manager:

@@ -33,6 +33,8 @@ from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
+from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo
 )
@@ -187,6 +189,12 @@ class FileStagingPool(QWidget):
             }}
         """
         self.scroll_area.setStyleSheet(scrollbar_style)
+        
+        # 使用动画滚动条
+        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
+        self.scroll_area.verticalScrollBar().set_colors(normal_color, secondary_color, accent_color, auxiliary_color)
+        
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
         
         # 创建卡片容器和布局
         self.cards_container = QWidget()
@@ -756,7 +764,7 @@ class FileStagingPool(QWidget):
         
         # 创建并配置进度条
         export_progress_bar = D_ProgressBar()
-        export_progress_bar.setInteractive(False)  # 禁用交互
+        export_progress_bar.setInteractive(False)
         export_progress_bar.setRange(0, len(all_files))
         export_progress_bar.setValue(0)
         

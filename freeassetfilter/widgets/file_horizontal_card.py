@@ -18,10 +18,10 @@ from PyQt5.QtWidgets import (
 )
 from .button_widgets import CustomButton
 from PyQt5.QtCore import (
-    Qt, pyqtSignal, QFileInfo, QEvent, QPropertyAnimation, QEasingCurve
+    Qt, pyqtSignal, QFileInfo, QEvent, QPropertyAnimation, QEasingCurve, pyqtProperty, QParallelAnimationGroup
 )
 from PyQt5.QtGui import (
-    QFont, QFontMetrics, QPixmap
+    QFont, QFontMetrics, QPixmap, QColor
 )
 from PyQt5.QtSvg import QSvgWidget
 # 导入悬浮详细信息组件
@@ -70,6 +70,44 @@ class CustomFileHorizontalCard(QWidget):
     selectionChanged = pyqtSignal(bool, str)
     renameRequested = pyqtSignal(str)  # 重命名请求信号，传递文件路径
     deleteRequested = pyqtSignal(str)  # 删除请求信号，传递文件路径
+    
+    @pyqtProperty(QColor)
+    def anim_bg_color(self):
+        return self._anim_bg_color
+    
+    @anim_bg_color.setter
+    def anim_bg_color(self, color):
+        self._anim_bg_color = color
+        self._apply_animated_style()
+    
+    @pyqtProperty(QColor)
+    def anim_border_color(self):
+        return self._anim_border_color
+    
+    @anim_border_color.setter
+    def anim_border_color(self, color):
+        self._anim_border_color = color
+        self._apply_animated_style()
+    
+    def _apply_animated_style(self):
+        """应用动画颜色到卡片样式"""
+        if not hasattr(self, '_style_colors'):
+            return
+        
+        scaled_border_width = int(1 * self.dpi_scale)
+        scaled_border_radius = int(8 * self.dpi_scale)
+        
+        r, g, b, a = self._anim_bg_color.red(), self._anim_bg_color.green(), self._anim_bg_color.blue(), self._anim_bg_color.alpha()
+        bg_color = f"rgba({r}, {g}, {b}, {a})"
+        border_color = self._anim_border_color.name()
+        
+        card_style = ""
+        card_style += "QWidget {"
+        card_style += f"background-color: {bg_color};"
+        card_style += f"border: {scaled_border_width}px solid {border_color};"
+        card_style += f"border-radius: {scaled_border_radius}px;"
+        card_style += "}"
+        self.card_container.setStyleSheet(card_style)
 
     def __init__(self, file_path=None, parent=None, enable_multiselect=True, display_name=None, single_line_mode=False):
         super().__init__(parent)
@@ -252,6 +290,8 @@ class CustomFileHorizontalCard(QWidget):
         
         # 连接resizeEvent，确保覆盖层始终覆盖整个卡片容器
         self.card_container.resizeEvent = self.on_card_container_resize
+        # 初始化动画
+        self._init_animations()
         # 初始化卡片样式
         self.update_card_style()
         
@@ -280,10 +320,44 @@ class CustomFileHorizontalCard(QWidget):
             selected (bool): 是否选中
         """
         if self._enable_multiselect:
-            # 只有开启多选功能时，才处理选中状态的变化
-            self._is_selected = selected
+            if self._is_selected != selected:
+                self._is_selected = selected
+                if selected:
+                    self._trigger_select_animation()
+                else:
+                    self._trigger_deselect_animation()
+                self.selectionChanged.emit(selected, self._file_path)
+    
+    def _trigger_select_animation(self):
+        """触发选中动画"""
+        if not hasattr(self, '_style_colors'):
             self.update_card_style()
-            self.selectionChanged.emit(selected, self._file_path)
+            return
+        
+        self._hover_anim_group.stop()
+        self._leave_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_select_bg.setStartValue(self._anim_bg_color)
+        self._anim_select_bg.setEndValue(colors['selected_bg'])
+        self._anim_select_border.setStartValue(self._anim_border_color)
+        self._anim_select_border.setEndValue(colors['selected_border'])
+        self._select_anim_group.start()
+    
+    def _trigger_deselect_animation(self):
+        """触发取消选中动画"""
+        if not hasattr(self, '_style_colors'):
+            self.update_card_style()
+            return
+        
+        self._select_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_deselect_bg.setStartValue(self._anim_bg_color)
+        self._anim_deselect_bg.setEndValue(colors['normal_bg'])
+        self._anim_deselect_border.setStartValue(self._anim_border_color)
+        self._anim_deselect_border.setEndValue(colors['normal_border'])
+        self._deselect_anim_group.start()
 
     def set_thumbnail_mode(self, mode):
         """
@@ -604,7 +678,119 @@ class CustomFileHorizontalCard(QWidget):
             return f"{size / (1024 * 1024):.2f} MB"
         else:
             return f"{size / (1024 * 1024 * 1024):.2f} GB"
-
+    
+    def _init_animations(self):
+        """初始化卡片状态切换动画"""
+        from PyQt5.QtWidgets import QApplication
+        from freeassetfilter.core.settings_manager import SettingsManager
+        
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            settings_manager = SettingsManager()
+        
+        accent_color_hex = settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+        base_color_hex = settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+        normal_color_hex = settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
+        secondary_color_hex = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        auxiliary_color_hex = settings_manager.get_setting("appearance.colors.auxiliary_color", "#f0f8ff")
+        
+        accent_qcolor = QColor(accent_color_hex)
+        base_qcolor = QColor(base_color_hex)
+        normal_qcolor = QColor(normal_color_hex)
+        auxiliary_qcolor = QColor(auxiliary_color_hex)
+        
+        normal_bg = QColor(base_qcolor)
+        hover_bg = QColor(auxiliary_qcolor)
+        selected_bg = QColor(accent_qcolor)
+        selected_bg.setAlpha(102)
+        normal_border = QColor(auxiliary_qcolor)
+        hover_border = QColor(normal_qcolor)
+        selected_border = QColor(accent_qcolor)
+        
+        self._style_colors = {
+            'normal_bg': normal_bg,
+            'hover_bg': hover_bg,
+            'selected_bg': selected_bg,
+            'normal_border': normal_border,
+            'hover_border': hover_border,
+            'selected_border': selected_border
+        }
+        
+        self._anim_bg_color = QColor(normal_bg)
+        self._anim_border_color = QColor(normal_border)
+        
+        self._hover_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_hover_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_hover_bg.setStartValue(normal_bg)
+        self._anim_hover_bg.setEndValue(hover_bg)
+        self._anim_hover_bg.setDuration(150)
+        self._anim_hover_bg.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._anim_hover_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_hover_border.setStartValue(normal_border)
+        self._anim_hover_border.setEndValue(hover_border)
+        self._anim_hover_border.setDuration(150)
+        self._anim_hover_border.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._hover_anim_group.addAnimation(self._anim_hover_bg)
+        self._hover_anim_group.addAnimation(self._anim_hover_border)
+        
+        self._leave_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_leave_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_leave_bg.setStartValue(hover_bg)
+        self._anim_leave_bg.setEndValue(normal_bg)
+        self._anim_leave_bg.setDuration(200)
+        self._anim_leave_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_leave_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_leave_border.setStartValue(hover_border)
+        self._anim_leave_border.setEndValue(normal_border)
+        self._anim_leave_border.setDuration(200)
+        self._anim_leave_border.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._leave_anim_group.addAnimation(self._anim_leave_bg)
+        self._leave_anim_group.addAnimation(self._anim_leave_border)
+        
+        self._select_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_select_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_select_bg.setStartValue(normal_bg)
+        self._anim_select_bg.setEndValue(selected_bg)
+        self._anim_select_bg.setDuration(180)
+        self._anim_select_bg.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._anim_select_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_select_border.setStartValue(normal_border)
+        self._anim_select_border.setEndValue(selected_border)
+        self._anim_select_border.setDuration(180)
+        self._anim_select_border.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._select_anim_group.addAnimation(self._anim_select_bg)
+        self._select_anim_group.addAnimation(self._anim_select_border)
+        
+        self._deselect_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_deselect_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_deselect_bg.setStartValue(selected_bg)
+        self._anim_deselect_bg.setEndValue(normal_bg)
+        self._anim_deselect_bg.setDuration(200)
+        self._anim_deselect_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_deselect_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_deselect_border.setStartValue(selected_border)
+        self._anim_deselect_border.setEndValue(normal_border)
+        self._anim_deselect_border.setDuration(200)
+        self._anim_deselect_border.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._deselect_anim_group.addAnimation(self._anim_deselect_bg)
+        self._deselect_anim_group.addAnimation(self._anim_deselect_border)
+        
+        self._apply_animated_style()
+    
     def update_card_style(self):
         """更新卡片样式"""
         from PyQt5.QtWidgets import QApplication
@@ -721,9 +907,9 @@ class CustomFileHorizontalCard(QWidget):
         from PyQt5.QtCore import QEvent
         
         if event.type() == QEvent.Enter:
-            # 鼠标进入卡片容器或覆盖层，直接显示按钮
             if not self._is_mouse_over:
                 self._is_mouse_over = True
+                self._trigger_hover_animation()
                 # 确保覆盖层大小与卡片容器一致
                 self.on_card_container_resize(None)
                 # 强制刷新布局，确保按钮位置正确
@@ -732,13 +918,51 @@ class CustomFileHorizontalCard(QWidget):
                 self.overlay_widget.setWindowOpacity(1.0)
                 self.overlay_widget.show()
         elif event.type() == QEvent.Leave:
-            # 鼠标离开卡片容器或覆盖层，直接隐藏按钮
             if self._is_mouse_over:
                 self._is_mouse_over = False
+                self._trigger_leave_animation()
                 self.overlay_widget.hide()
                 self.overlay_widget.setWindowOpacity(0.0)
         
         return super().eventFilter(obj, event)
+    
+    def _trigger_hover_animation(self):
+        """触发悬停动画"""
+        if not hasattr(self, '_style_colors'):
+            return
+        
+        self._leave_anim_group.stop()
+        
+        colors = self._style_colors
+        if self._is_selected:
+            self._anim_hover_bg.setStartValue(self._anim_bg_color)
+            self._anim_hover_bg.setEndValue(colors['selected_bg'])
+            self._anim_hover_border.setStartValue(self._anim_border_color)
+            self._anim_hover_border.setEndValue(colors['selected_border'])
+        else:
+            self._anim_hover_bg.setStartValue(self._anim_bg_color)
+            self._anim_hover_bg.setEndValue(colors['hover_bg'])
+            self._anim_hover_border.setStartValue(self._anim_border_color)
+            self._anim_hover_border.setEndValue(colors['hover_border'])
+        
+        self._hover_anim_group.start()
+    
+    def _trigger_leave_animation(self):
+        """触发离开动画"""
+        if not hasattr(self, '_style_colors'):
+            return
+        
+        if self._is_selected:
+            return
+        
+        self._hover_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_leave_bg.setStartValue(self._anim_bg_color)
+        self._anim_leave_bg.setEndValue(colors['normal_bg'])
+        self._anim_leave_border.setStartValue(self._anim_border_color)
+        self._anim_leave_border.setEndValue(colors['normal_border'])
+        self._leave_anim_group.start()
     
     def on_card_container_resize(self, event):
         """当卡片容器大小改变时，调整覆盖层的大小"""

@@ -43,10 +43,54 @@ from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
 from freeassetfilter.widgets.file_block_card import FileBlockCard
+from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
+from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.components.auto_timeline import AutoTimeline
+
+
+class ThumbnailGeneratorThread(QThread):
+    """
+    缩略图生成后台线程
+    在后台线程中生成缩略图，避免阻塞UI
+    """
+    progress_updated = pyqtSignal(int, int, dict)  # 当前索引、总數、文件信息
+    thumbnail_created = pyqtSignal(dict)  # 文件信息
+    finished = pyqtSignal(int, int)  # 成功数、总數
+    error_occurred = pyqtSignal(str, Exception)  # 文件路径、错误
+
+    def __init__(self, file_selector, files_to_generate):
+        super().__init__()
+        self.file_selector = file_selector
+        self.files_to_generate = files_to_generate
+        self._is_cancelled = False
+
+    def run(self):
+        success_count = 0
+        total_count = len(self.files_to_generate)
+
+        for index, file_data in enumerate(self.files_to_generate):
+            if self._is_cancelled:
+                break
+
+            try:
+                result = self.file_selector._create_thumbnail(file_data["path"])
+                if result:
+                    success_count += 1
+                    self.thumbnail_created.emit(file_data)
+
+                self.progress_updated.emit(index + 1, total_count, file_data)
+            except Exception as e:
+                self.error_occurred.emit(file_data["path"], e)
+                self.progress_updated.emit(index + 1, total_count, file_data)
+
+        self.finished.emit(success_count, total_count)
+
+    def cancel(self):
+        self._is_cancelled = True
 
 
 class CustomFileSelector(QWidget):
@@ -379,6 +423,11 @@ class CustomFileSelector(QWidget):
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
+        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
+        scroll_area.verticalScrollBar().apply_theme_from_settings()
+        
+        SmoothScroller.apply_to_scroll_area(scroll_area)
+        
         scrollbar_style = f"""
             QScrollArea {{
                 border: 1px solid {normal_color};
@@ -388,37 +437,6 @@ class CustomFileSelector(QWidget):
             }}
             QScrollArea > QWidget > QWidget {{
                 background-color: {base_color};
-            }}
-            QScrollBar:vertical {{
-                width: 6px;
-                background-color: {auxiliary_color};
-                border: 0px solid transparent;
-                border-radius: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background-color: {normal_color};
-                min-height: 15px;
-                border-radius: 3px;
-                border: none;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background-color: {secondary_color};
-                border: none;
-            }}
-            QScrollBar::handle:vertical:pressed {{
-                background-color: {accent_color};
-                border: none;
-            }}
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {{
-                height: 0px;
-                border: none;
-            }}
-            QScrollBar::add-page:vertical,
-            QScrollBar::sub-page:vertical {{
-                background: none;
-                border: 0px solid transparent;
-                border: none;
             }}
         """
         scroll_area.setStyleSheet(scrollbar_style)
@@ -483,12 +501,13 @@ class CustomFileSelector(QWidget):
         """
         生成当前目录下所有照片和视频的缩略图
         同时也为文件存储池中的照片和视频生成缩略图
+        使用后台线程处理，避免阻塞UI
         """
         image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
         video_formats = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"]
-        
+
         files_to_generate = []
-        
+
         files = self._get_files()
         for file in files:
             if not file["is_dir"]:
@@ -501,7 +520,7 @@ class CustomFileSelector(QWidget):
                             "name": file["name"],
                             "source": "selector"
                         })
-        
+
         staging_pool_files = []
         staging_pool = self._get_staging_pool()
         if staging_pool and hasattr(staging_pool, 'items'):
@@ -510,11 +529,11 @@ class CustomFileSelector(QWidget):
                     file_path = item.get("path", "")
                     if not file_path:
                         continue
-                    
+
                     suffix = item.get("suffix", "").lower()
                     if not suffix:
                         suffix = os.path.splitext(file_path)[1].lower()
-                    
+
                     if suffix in image_formats or suffix in video_formats:
                         thumbnail_path = self._get_thumbnail_path(file_path)
                         if not os.path.exists(thumbnail_path):
@@ -523,10 +542,10 @@ class CustomFileSelector(QWidget):
                                 "name": item.get("name", os.path.basename(file_path)),
                                 "source": "staging_pool"
                             })
-        
+
         if staging_pool_files:
             files_to_generate.extend(staging_pool_files)
-        
+
         if not files_to_generate:
             from freeassetfilter.widgets.D_widgets import CustomMessageBox
             info_msg = CustomMessageBox(self)
@@ -536,85 +555,85 @@ class CustomFileSelector(QWidget):
             info_msg.buttonClicked.connect(info_msg.close)
             info_msg.exec_()
             return
-        
+
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
         from freeassetfilter.widgets.progress_widgets import D_ProgressBar
-        
+
         progress_msg = CustomMessageBox(self)
         progress_msg.set_title("生成缩略图")
         progress_msg.set_text(f"正在生成缩略图... (0/{len(files_to_generate)})")
-        
+
         progress_bar = D_ProgressBar()
         progress_bar.setRange(0, len(files_to_generate))
         progress_bar.setValue(0)
         progress_bar.setInteractive(False)
         progress_msg.set_progress(progress_bar)
-        
+
         progress_msg.set_buttons(["取消"], Qt.Horizontal, ["normal"])
-        
+
         is_canceled = False
-        
+
         def on_cancel_clicked():
             nonlocal is_canceled
             is_canceled = True
-        
+            if hasattr(self, '_thumbnail_thread') and self._thumbnail_thread.isRunning():
+                self._thumbnail_thread.cancel()
+                self._thumbnail_thread.wait()
+            progress_msg.close()
+
         progress_msg.buttonClicked.connect(on_cancel_clicked)
-        
+
         progress_msg.show()
-        
-        generated_count = 0
-        success_count = 0
-        
-        for file_data in files_to_generate:
-            if is_canceled:
-                break
-            
-            try:
-                result = self._create_thumbnail(file_data["path"])
-                generated_count += 1
-                if result:
-                    success_count += 1
-                    if file_data["source"] == "staging_pool":
-                        self._refresh_staging_pool_card(file_data["path"])
-                
-                progress_bar.setValue(generated_count)
-                progress_msg.set_text(f"正在生成缩略图... ({generated_count}/{len(files_to_generate)})")
-                
-                QApplication.processEvents()
-            except Exception as e:
-                print(f"生成缩略图失败: {file_data['path']}, 错误: {e}")
-                generated_count += 1
-                progress_bar.setValue(generated_count)
-                progress_msg.set_text(f"正在生成缩略图... ({generated_count}/{len(files_to_generate)})")
-                QApplication.processEvents()
-        
-        progress_msg.close()
-        
-        staging_pool_count = len([f for f in files_to_generate if f["source"] == "staging_pool"])
-        selector_count = len([f for f in files_to_generate if f["source"] == "selector"])
-        
-        result_parts = []
-        if selector_count > 0:
-            result_parts.append(f"当前目录: {selector_count} 个")
-        if staging_pool_count > 0:
-            result_parts.append(f"存储池: {staging_pool_count} 个")
-        
-        result_text = f"缩略图生成完成！成功: {success_count}, 总数: {generated_count}"
-        if result_parts:
-            result_text += f"\n（{'，'.join(result_parts)}）"
-        
-        # 先刷新文件列表和存储池显示
-        self.refresh_files()
-        staging_pool_for_refresh = self._get_staging_pool()
-        if staging_pool_for_refresh:
-            self._refresh_staging_pool_thumbnails(staging_pool_for_refresh)
-        
-        result_msg = CustomMessageBox(self)
-        result_msg.set_title("提示")
-        result_msg.set_text(result_text)
-        result_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-        result_msg.buttonClicked.connect(result_msg.close)
-        result_msg.exec_()
+
+        self._thumbnail_thread = ThumbnailGeneratorThread(self, files_to_generate)
+
+        def on_progress_updated(current, total, file_data):
+            progress_bar.setValue(current, use_animation=False)
+            progress_msg.set_text(f"正在生成缩略图... ({current}/{total})")
+            progress_msg.repaint()
+            QApplication.processEvents()
+
+        def on_thumbnail_created(file_data):
+            if file_data["source"] == "staging_pool":
+                self._refresh_staging_pool_card(file_data["path"])
+
+        def on_error_occurred(file_path, error):
+            print(f"生成缩略图失败: {file_path}, 错误: {error}")
+
+        def on_finished(success_count, total_count):
+            progress_msg.close()
+
+            staging_pool_count = len([f for f in files_to_generate if f["source"] == "staging_pool"])
+            selector_count = len([f for f in files_to_generate if f["source"] == "selector"])
+
+            result_parts = []
+            if selector_count > 0:
+                result_parts.append(f"当前目录: {selector_count} 个")
+            if staging_pool_count > 0:
+                result_parts.append(f"存储池: {staging_pool_count} 个")
+
+            result_text = f"缩略图生成完成！成功: {success_count}, 总数: {total_count}"
+            if result_parts:
+                result_text += f"\n（{'，'.join(result_parts)}）"
+
+            self.refresh_files()
+            staging_pool_for_refresh = self._get_staging_pool()
+            if staging_pool_for_refresh:
+                self._refresh_staging_pool_thumbnails(staging_pool_for_refresh)
+
+            result_msg = CustomMessageBox(self)
+            result_msg.set_title("提示")
+            result_msg.set_text(result_text)
+            result_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            result_msg.buttonClicked.connect(result_msg.close)
+            result_msg.exec_()
+
+        self._thumbnail_thread.progress_updated.connect(on_progress_updated)
+        self._thumbnail_thread.thumbnail_created.connect(on_thumbnail_created)
+        self._thumbnail_thread.error_occurred.connect(on_error_occurred)
+        self._thumbnail_thread.finished.connect(on_finished)
+
+        self._thumbnail_thread.start()
 
     def _get_staging_pool(self):
         """获取文件存储池组件"""
@@ -660,85 +679,99 @@ class CustomFileSelector(QWidget):
         """
         import shutil
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
-        
-        # 确认对话框
+
+        if not self or not hasattr(self, 'isVisible') or not self.isVisible():
+            return
+
         confirm_msg = CustomMessageBox(self)
         confirm_msg.set_title("确认清理")
         confirm_msg.set_text("确定要清理所有缩略图缓存吗？这将删除所有生成的缩略图，并恢复默认图标显示。")
         confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
-        
-        # 记录确认结果
+
         is_confirmed = False
-        
+
         def on_confirm_clicked(button_index):
             nonlocal is_confirmed
-            is_confirmed = (button_index == 0)  # 0表示确定按钮
+            is_confirmed = (button_index == 0)
             confirm_msg.close()
-        
+
         confirm_msg.buttonClicked.connect(on_confirm_clicked)
         confirm_msg.exec_()
-        
+
         if is_confirmed:
+            if not self or not hasattr(self, 'isVisible') or not self.isVisible():
+                return
+
             try:
-                # 获取缩略图存储目录
                 thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
-                
-                # 检查目录是否存在
+
                 if os.path.exists(thumb_dir):
-                    # 计算要删除的文件数量
                     import glob
                     thumbnail_files = glob.glob(os.path.join(thumb_dir, "*.png"))
                     file_count = len(thumbnail_files)
-                    
+
                     if file_count > 0:
-                        # 删除目录下所有.png文件
                         for file_path in thumbnail_files:
                             if os.path.isfile(file_path):
-                                os.remove(file_path)
-                        
-                        # 刷新文件列表，恢复默认图标显示
-                        self.refresh_files()
-                        
-                        # 同步刷新存储池的缩略图显示
-                        staging_pool = self._get_staging_pool()
-                        if staging_pool:
-                            self._refresh_staging_pool_thumbnails(staging_pool)
-                        
-                        # 清理成功提示
-                        success_msg = CustomMessageBox(self)
-                        success_msg.set_title("清理成功")
-                        success_msg.set_text(f"已成功清理 {file_count} 个缩略图缓存文件。")
-                        success_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                        
-                        def on_success_ok_clicked():
-                            success_msg.close()
-                        
-                        success_msg.buttonClicked.connect(on_success_ok_clicked)
-                        success_msg.exec_()
+                                try:
+                                    os.remove(file_path)
+                                except Exception:
+                                    continue
+
+                        if self and hasattr(self, 'refresh_files'):
+                            try:
+                                self.refresh_files()
+                            except Exception:
+                                pass
+
+                        staging_pool = None
+                        if self and hasattr(self, '_get_staging_pool'):
+                            try:
+                                staging_pool = self._get_staging_pool()
+                            except Exception:
+                                pass
+
+                        if staging_pool and hasattr(staging_pool, 'cards'):
+                            try:
+                                self._refresh_staging_pool_thumbnails(staging_pool)
+                            except Exception:
+                                pass
+
+                        if self and hasattr(self, 'isVisible') and self.isVisible():
+                            success_msg = CustomMessageBox(self)
+                            success_msg.set_title("清理成功")
+                            success_msg.set_text(f"已成功清理 {file_count} 个缩略图缓存文件。")
+                            success_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+
+                            def on_success_ok_clicked():
+                                success_msg.close()
+
+                            success_msg.buttonClicked.connect(on_success_ok_clicked)
+                            success_msg.exec_()
                     else:
-                        # 缓存目录为空提示
-                        empty_msg = CustomMessageBox(self)
-                        empty_msg.set_title("提示")
-                        empty_msg.set_text("缩略图缓存目录为空，无需清理。")
-                        empty_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                        
-                        def on_empty_ok_clicked():
-                            empty_msg.close()
-                        
-                        empty_msg.buttonClicked.connect(on_empty_ok_clicked)
-                        empty_msg.exec_()
+                        if self and hasattr(self, 'isVisible') and self.isVisible():
+                            empty_msg = CustomMessageBox(self)
+                            empty_msg.set_title("提示")
+                            empty_msg.set_text("缩略图缓存目录为空，无需清理。")
+                            empty_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+
+                            def on_empty_ok_clicked():
+                                empty_msg.close()
+
+                            empty_msg.buttonClicked.connect(on_empty_ok_clicked)
+                            empty_msg.exec_()
                 else:
-                    # 缓存目录不存在提示
-                    not_exist_msg = CustomMessageBox(self)
-                    not_exist_msg.set_title("提示")
-                    not_exist_msg.set_text("缩略图缓存目录不存在，无需清理。")
-                    not_exist_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                    
-                    def on_not_exist_ok_clicked():
-                        not_exist_msg.close()
-                    
-                    not_exist_msg.buttonClicked.connect(on_not_exist_ok_clicked)
-                    not_exist_msg.exec_()
+                    if self and hasattr(self, 'isVisible') and self.isVisible():
+                        not_exist_msg = CustomMessageBox(self)
+                        not_exist_msg.set_title("提示")
+                        not_exist_msg.set_text("缩略图缓存目录不存在，无需清理。")
+                        not_exist_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+
+                        def on_not_exist_ok_clicked():
+                            not_exist_msg.close()
+
+                        not_exist_msg.buttonClicked.connect(on_not_exist_ok_clicked)
+                        not_exist_msg.exec_()
             except Exception as e:
                 print(f"清理缩略图缓存失败: {e}")
                 # 清理失败错误提示
@@ -1209,196 +1242,135 @@ class CustomFileSelector(QWidget):
         """
         显示收藏夹对话框
         """
-        # 使用全局默认字体大小
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 9)
         scaled_font_size = int(default_font_size * self.dpi_scale)
         
-        # 创建自定义提示窗
+        base_color = "#FFFFFF"
+        auxiliary_color = "#E6E6E6"
+        normal_color = "#808080"
+        secondary_color = "#333333"
+        accent_color = "#1890ff"
+        
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#E6E6E6")
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+        
         dialog = CustomMessageBox(self)
         dialog.set_title("收藏夹")
         
-        # 准备列表项
-        list_items = []
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
+        scroll_area.verticalScrollBar().apply_theme_from_settings()
+        
+        SmoothScroller.apply_to_scroll_area(scroll_area)
+        
+        scrollbar_style = f"""
+            QScrollArea {{
+                border: 1px solid {normal_color};
+                border-radius: 8px;
+                background-color: {base_color};
+                padding: 3px;
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: {base_color};
+            }}
+        """
+        scroll_area.setStyleSheet(scrollbar_style)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        scroll_area.setMinimumWidth(int(400 * self.dpi_scale))
+        
+        list_content = QWidget()
+        list_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        list_content_layout = QVBoxLayout(list_content)
+        list_content_layout.setContentsMargins(0, 0, 0, 0)
+        list_content_layout.setSpacing(int(4 * self.dpi_scale))
+        
+        favorites_cards = []
+        
         for favorite in self.favorites:
-            text = favorite['name'] + ' - ' + favorite['path']
-            list_items.append(text)
+            card = CustomFileHorizontalCard(
+                file_path=favorite['path'],
+                parent=list_content,
+                enable_multiselect=False,
+                display_name=favorite['name'],
+                single_line_mode=False
+            )
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            list_content_layout.addWidget(card)
+            favorites_cards.append({'card': card, 'favorite': favorite})
+            
+            card.clicked.connect(lambda path, fav=favorite, d=dialog: self._on_favorite_card_clicked(path, fav, d, favorites_cards))
+            card.renameRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_rename(f, d, fc))
+            card.deleteRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_delete(f, d, fc))
         
-        # 设置列表
-        dialog.set_list(list_items, selection_mode="single", default_width=185, default_height=100)
+        list_content.setLayout(list_content_layout)
         
-        # 获取列表实例
-        favorites_list = dialog._list
+        scroll_area.setWidget(list_content)
+        dialog.list_layout.addWidget(scroll_area)
+        dialog.list_widget.show()
         
-        # 双击列表项跳转到对应路径
-        favorites_list.itemDoubleClicked.connect(lambda index: self._on_favorite_double_clicked_custom(index, favorites_list, dialog))
+        def refresh_favorites_display():
+            while list_content_layout.count():
+                item = list_content_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            favorites_cards.clear()
+            
+            for favorite in self.favorites:
+                card = CustomFileHorizontalCard(
+                    file_path=favorite['path'],
+                    parent=list_content,
+                    enable_multiselect=False,
+                    display_name=favorite['name'],
+                    single_line_mode=False
+                )
+                card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                list_content_layout.addWidget(card)
+                favorites_cards.append({'card': card, 'favorite': favorite})
+                
+                card.clicked.connect(lambda path, fav=favorite, d=dialog: self._on_favorite_card_clicked(path, fav, d, favorites_cards))
+                card.renameRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_rename(f, d, fc))
+                card.deleteRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_delete(f, d, fc))
         
-        # 右键菜单
-        favorites_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        favorites_list.customContextMenuRequested.connect(lambda pos: self._show_favorite_context_menu_custom(pos, favorites_list, dialog))
-        
-        # 添加按钮
         dialog.set_buttons(["添加当前路径到收藏夹", "关闭"], Qt.Horizontal, ["primary", "secondary"])
         
-        # 连接按钮点击信号
         def on_button_clicked(button_index):
-            if button_index == 0:  # 添加当前路径到收藏夹
-                self._add_current_path_to_favorites_custom(dialog, favorites_list)
-            elif button_index == 1:  # 关闭
+            if button_index == 0:
+                self._add_current_path_to_favorites_custom(dialog, refresh_favorites_display)
+            elif button_index == 1:
                 dialog.close()
         
         dialog.buttonClicked.connect(on_button_clicked)
         
-        # 显示窗口
         dialog.exec_()
-        
-    def _on_favorite_double_clicked_custom(self, index, favorites_list, dialog):
-        """
-        双击收藏夹项时跳转到对应路径（自定义列表版本）
-        """
-        if 0 <= index < len(self.favorites):
-            favorite = self.favorites[index]
-            if os.path.exists(favorite['path']):
-                self.current_path = favorite['path']
-                self.refresh_files()
-                # 关闭收藏夹对话框
-                dialog.close()
     
-    def _show_favorite_context_menu_custom(self, pos, favorites_list, dialog):
+    def _on_favorite_card_clicked(self, path, favorite, dialog, favorites_cards):
         """
-        显示收藏夹项的右键菜单（自定义列表版本）
+        点击收藏夹卡片时跳转到对应路径
         """
-        # 获取选中的索引
-        selected_indices = favorites_list.get_selected_indices()
-        if not selected_indices:
-            return
-        
-        index = selected_indices[0]
-        
-        # 创建右键菜单
-        menu = QMenu(favorites_list)
-        
-        # 重命名菜单项
-        rename_action = QAction("重命名", self)
-        rename_action.triggered.connect(lambda: self._rename_favorite_custom(index, favorites_list))
-        menu.addAction(rename_action)
-        
-        # 删除菜单项
-        delete_action = QAction("删除", self)
-        delete_action.triggered.connect(lambda: self._delete_favorite_custom(index, favorites_list))
-        menu.addAction(delete_action)
-        
-        # 显示菜单
-        menu.exec_(favorites_list.mapToGlobal(pos))
+        if os.path.exists(favorite['path']):
+            self.current_path = favorite['path']
+            self.refresh_files()
+            dialog.close()
     
-    def _rename_favorite_custom(self, index, favorites_list):
+    def _on_favorite_rename(self, favorite, dialog, favorites_cards):
         """
-        重命名收藏夹项（自定义列表版本）
+        重命名收藏夹项
         """
-        if 0 <= index < len(self.favorites):
-            favorite = self.favorites[index]
-            
-            # 使用CustomMessageBox的输入模式获取新名称
-            from freeassetfilter.widgets.D_widgets import CustomMessageBox
-            input_dialog = CustomMessageBox(self)
-            input_dialog.set_title("重命名收藏夹")
-            input_dialog.set_text("请输入新名称:")
-            input_dialog.set_input(text=favorite['name'])
-            input_dialog.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
-            
-            # 记录结果
-            result = None
-            def on_button_clicked(button_index):
-                nonlocal result
-                result = button_index
-                input_dialog.close()
-            
-            input_dialog.buttonClicked.connect(on_button_clicked)
-            input_dialog.exec_()
-            
-            if result == 0:  # 0表示确定按钮
-                new_name = input_dialog.get_input()
-                if new_name.strip():
-                    # 更新收藏夹列表
-                    self.favorites[index]['name'] = new_name.strip()
-                    self._save_favorites()
-                    
-                    # 更新列表显示
-                    favorites_list.clear_items()
-                    for favorite in self.favorites:
-                        text = favorite['name'] + ' - ' + favorite['path']
-                        favorites_list.add_item(text)
-    
-    def _delete_favorite_custom(self, index, favorites_list):
-        """
-        删除收藏夹项（自定义列表版本）
-        """
-        if 0 <= index < len(self.favorites):
-            favorite = self.favorites[index]
-            name = favorite['name']
-            path = favorite['path']
-            
-            # 创建并配置自定义确认窗口
-            from freeassetfilter.widgets.D_widgets import CustomMessageBox
-            msg_box = CustomMessageBox(self)
-            msg_box.set_title("删除收藏夹")
-            msg_box.set_text(f"确定要删除收藏夹项 '{name}' 吗?")
-            msg_box.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
-            
-            # 记录结果
-            result = None
-            
-            def on_button_clicked(button_index):
-                nonlocal result
-                result = button_index
-                msg_box.close()
-            
-            msg_box.buttonClicked.connect(on_button_clicked)
-            msg_box.exec_()
-            
-            if result == 0:  # 0表示确定按钮
-                # 从收藏夹列表中删除
-                self.favorites = [f for f in self.favorites if not (f['path'] == path and f['name'] == name)]
-                self._save_favorites()
-                
-                # 更新列表显示
-                favorites_list.clear_items()
-                for favorite in self.favorites:
-                    text = favorite['name'] + ' - ' + favorite['path']
-                    favorites_list.add_item(text)
-    
-    def _add_current_path_to_favorites_custom(self, dialog, favorites_list):
-        """
-        添加当前路径到收藏夹（自定义列表版本）
-        """
-        current_path = self.current_path
-        
-        # 检查当前路径是否已经在收藏夹中
-        for favorite in self.favorites:
-            if favorite['path'] == current_path:
-                from freeassetfilter.widgets.D_widgets import CustomMessageBox
-                # 创建并配置自定义提示窗口
-                msg_box = CustomMessageBox(self)
-                msg_box.set_title("提示")
-                msg_box.set_text("该路径已在收藏夹中")
-                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                # 连接按钮点击事件
-                msg_box.buttonClicked.connect(msg_box.close)
-                msg_box.exec_()
-                return
-        
-        # 获取当前目录名称作为默认名称
-        default_name = os.path.basename(current_path) or current_path
-        
-        # 使用CustomMessageBox的输入模式获取收藏夹名称
-        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         input_dialog = CustomMessageBox(self)
-        input_dialog.set_title("添加到收藏夹")
-        input_dialog.set_text("请输入收藏名称:")
-        input_dialog.set_input(text=default_name)
+        input_dialog.set_title("重命名收藏夹")
+        input_dialog.set_text("请输入新名称:")
+        input_dialog.set_input(text=favorite['name'])
         input_dialog.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
         
-        # 记录结果
         result = None
         def on_button_clicked(button_index):
             nonlocal result
@@ -1408,21 +1380,105 @@ class CustomFileSelector(QWidget):
         input_dialog.buttonClicked.connect(on_button_clicked)
         input_dialog.exec_()
         
-        if result == 0:  # 0表示确定按钮
+        if result == 0:
+            new_name = input_dialog.get_input()
+            if new_name.strip():
+                for f in self.favorites:
+                    if f['path'] == favorite['path'] and f['name'] == favorite['name']:
+                        f['name'] = new_name.strip()
+                        break
+                self._save_favorites()
+                
+                for item in favorites_cards:
+                    if item['favorite']['path'] == favorite['path'] and item['favorite']['name'] == favorite['name']:
+                        item['favorite']['name'] = new_name.strip()
+                        item['card'].set_file_path(favorite['path'], new_name.strip())
+                        break
+    
+    def _on_favorite_delete(self, favorite, dialog, favorites_cards):
+        """
+        删除收藏夹项
+        """
+        msg_box = CustomMessageBox(self)
+        msg_box.set_title("删除收藏夹")
+        msg_box.set_text(f"确定要删除收藏夹项 '{favorite['name']}' 吗?")
+        msg_box.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
+        
+        result = None
+        def on_button_clicked(button_index):
+            nonlocal result
+            result = button_index
+            msg_box.close()
+        
+        msg_box.buttonClicked.connect(on_button_clicked)
+        msg_box.exec_()
+        
+        if result == 0:
+            self.favorites = [f for f in self.favorites if not (f['path'] == favorite['path'] and f['name'] == favorite['name'])]
+            self._save_favorites()
+            
+            for item in favorites_cards:
+                if item['favorite']['path'] == favorite['path'] and item['favorite']['name'] == favorite['name']:
+                    item['card'].deleteLater()
+                    favorites_cards.remove(item)
+                    break
+    
+    def _add_current_path_to_favorites_custom(self, dialog, refresh_callback):
+        """
+        添加当前路径到收藏夹（卡片版本）
+        """
+        current_path = self.current_path
+        
+        for favorite in self.favorites:
+            if favorite['path'] == current_path:
+                from freeassetfilter.widgets.D_widgets import CustomMessageBox
+                msg_box = CustomMessageBox(self)
+                msg_box.set_title("提示")
+                msg_box.set_text("该路径已在收藏夹中")
+                msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                msg_box.buttonClicked.connect(msg_box.close)
+                msg_box.exec_()
+                return
+        
+        default_name = os.path.basename(current_path) or current_path
+        
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
+        input_dialog = CustomMessageBox(self)
+        input_dialog.set_title("添加到收藏夹")
+        input_dialog.set_text("请输入收藏名称:")
+        input_dialog.set_input(text=default_name)
+        input_dialog.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
+        
+        result = None
+        def on_button_clicked(button_index):
+            nonlocal result
+            result = button_index
+            input_dialog.close()
+        
+        input_dialog.buttonClicked.connect(on_button_clicked)
+        input_dialog.exec_()
+        
+        if result == 0:
             name = input_dialog.get_input()
             if name.strip():
-                # 添加到收藏夹列表
                 self.favorites.append({
                     'name': name.strip(),
                     'path': current_path
                 })
                 self._save_favorites()
+                refresh_callback()
                 
-                # 更新列表显示
-                favorites_list.clear_items()
-                for favorite in self.favorites:
-                    text = favorite['name'] + ' - ' + favorite['path']
-                    favorites_list.add_item(text)
+                success_msg = CustomMessageBox(self)
+                success_msg.set_title("添加成功")
+                success_msg.set_text(f"已添加 '{name.strip()}' 到收藏夹")
+                success_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                
+                def on_success_ok():
+                    success_msg.close()
+                    dialog.close()
+                
+                success_msg.buttonClicked.connect(on_success_ok)
+                success_msg.exec_()
     
     def _on_favorite_double_clicked(self, item, dialog):
         """

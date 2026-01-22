@@ -19,7 +19,7 @@ import sys
 import os
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy, QApplication
-from PyQt5.QtCore import Qt, pyqtSignal, QEvent, QSize
+from PyQt5.QtCore import Qt, pyqtSignal, QEvent, QSize, QPropertyAnimation, pyqtProperty, QEasingCurve, QParallelAnimationGroup
 from PyQt5.QtGui import QFont, QFontMetrics, QPixmap, QColor, QPainter
 from PyQt5.QtSvg import QSvgWidget
 
@@ -37,6 +37,7 @@ class FileBlockCard(QWidget):
     - 三种状态：未选中态、hover态、选中态
     - 选中态不响应hover效果
     - 支持左键点击、右键点击、左键双击
+    - 支持非线性动画过渡效果
     
     信号：
     - clicked: 点击信号，传递file_info
@@ -49,6 +50,38 @@ class FileBlockCard(QWidget):
     right_clicked = pyqtSignal(dict)
     double_clicked = pyqtSignal(dict)
     selection_changed = pyqtSignal(dict, bool)
+    
+    @pyqtProperty(QColor)
+    def anim_bg_color(self):
+        return self._anim_bg_color
+    
+    @anim_bg_color.setter
+    def anim_bg_color(self, color):
+        self._anim_bg_color = color
+        self._apply_animated_style()
+    
+    @pyqtProperty(QColor)
+    def anim_border_color(self):
+        return self._anim_border_color
+    
+    @anim_border_color.setter
+    def anim_border_color(self, color):
+        self._anim_border_color = color
+        self._apply_animated_style()
+    
+    def _apply_animated_style(self):
+        """应用动画颜色到卡片样式"""
+        if not hasattr(self, '_style_colors'):
+            return
+        
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_border_width = int(1 * self.dpi_scale)
+        
+        r, g, b, a = self._anim_bg_color.red(), self._anim_bg_color.green(), self._anim_bg_color.blue(), self._anim_bg_color.alpha()
+        bg_color = f"rgba({r}, {g}, {b}, {a})"
+        border_color = self._anim_border_color.name()
+        
+        self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
     
     def __init__(self, file_info, dpi_scale=1.0, parent=None):
         """
@@ -75,6 +108,7 @@ class FileBlockCard(QWidget):
         
         self._setup_ui()
         self._setup_signals()
+        self._init_animations()
         self._update_styles()
     
     def _setup_ui(self):
@@ -387,11 +421,11 @@ class FileBlockCard(QWidget):
             elif event.type() == QEvent.Enter:
                 if not self._is_selected:
                     self._is_hovered = True
-                    self._update_styles()
+                    self._trigger_hover_animation()
                 return True
             elif event.type() == QEvent.Leave:
                 self._is_hovered = False
-                self._update_styles()
+                self._trigger_leave_animation()
                 return True
         return super().eventFilter(obj, event)
     
@@ -407,6 +441,143 @@ class FileBlockCard(QWidget):
     def _on_double_click(self, event):
         """处理双击"""
         self.double_clicked.emit(self.file_info)
+    
+    def _init_animations(self):
+        """初始化卡片状态切换动画"""
+        base_qcolor = QColor(self.base_color)
+        auxiliary_qcolor = QColor(self.auxiliary_color)
+        normal_qcolor = QColor(self.normal_color)
+        accent_qcolor = QColor(self.accent_color)
+        
+        normal_bg = QColor(base_qcolor)
+        hover_bg = QColor(auxiliary_qcolor)
+        selected_bg = QColor(accent_qcolor)
+        selected_bg.setAlpha(102)
+        normal_border = QColor(auxiliary_qcolor)
+        hover_border = QColor(normal_qcolor)
+        selected_border = QColor(accent_qcolor)
+        
+        self._style_colors = {
+            'normal_bg': normal_bg,
+            'hover_bg': hover_bg,
+            'selected_bg': selected_bg,
+            'normal_border': normal_border,
+            'hover_border': hover_border,
+            'selected_border': selected_border
+        }
+        
+        self._anim_bg_color = QColor(normal_bg)
+        self._anim_border_color = QColor(normal_border)
+        
+        self._hover_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_hover_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_hover_bg.setStartValue(normal_bg)
+        self._anim_hover_bg.setEndValue(hover_bg)
+        self._anim_hover_bg.setDuration(150)
+        self._anim_hover_bg.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._anim_hover_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_hover_border.setStartValue(normal_border)
+        self._anim_hover_border.setEndValue(hover_border)
+        self._anim_hover_border.setDuration(150)
+        self._anim_hover_border.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._hover_anim_group.addAnimation(self._anim_hover_bg)
+        self._hover_anim_group.addAnimation(self._anim_hover_border)
+        
+        self._leave_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_leave_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_leave_bg.setStartValue(hover_bg)
+        self._anim_leave_bg.setEndValue(normal_bg)
+        self._anim_leave_bg.setDuration(200)
+        self._anim_leave_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_leave_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_leave_border.setStartValue(hover_border)
+        self._anim_leave_border.setEndValue(normal_border)
+        self._anim_leave_border.setDuration(200)
+        self._anim_leave_border.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._leave_anim_group.addAnimation(self._anim_leave_bg)
+        self._leave_anim_group.addAnimation(self._anim_leave_border)
+        
+        self._select_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_select_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_select_bg.setStartValue(normal_bg)
+        self._anim_select_bg.setEndValue(selected_bg)
+        self._anim_select_bg.setDuration(180)
+        self._anim_select_bg.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._anim_select_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_select_border.setStartValue(normal_border)
+        self._anim_select_border.setEndValue(selected_border)
+        self._anim_select_border.setDuration(180)
+        self._anim_select_border.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._select_anim_group.addAnimation(self._anim_select_bg)
+        self._select_anim_group.addAnimation(self._anim_select_border)
+        
+        self._deselect_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_deselect_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_deselect_bg.setStartValue(selected_bg)
+        self._anim_deselect_bg.setEndValue(normal_bg)
+        self._anim_deselect_bg.setDuration(200)
+        self._anim_deselect_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_deselect_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_deselect_border.setStartValue(selected_border)
+        self._anim_deselect_border.setEndValue(normal_border)
+        self._anim_deselect_border.setDuration(200)
+        self._anim_deselect_border.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._deselect_anim_group.addAnimation(self._anim_deselect_bg)
+        self._deselect_anim_group.addAnimation(self._anim_deselect_border)
+        
+        self._apply_animated_style()
+    
+    def _trigger_hover_animation(self):
+        """触发悬停动画"""
+        if not hasattr(self, '_style_colors'):
+            self._update_styles()
+            return
+        
+        self._leave_anim_group.stop()
+        
+        colors = self._style_colors
+        if self._is_selected:
+            self._anim_hover_bg.setStartValue(self._anim_bg_color)
+            self._anim_hover_bg.setEndValue(colors['selected_bg'])
+            self._anim_hover_border.setStartValue(self._anim_border_color)
+            self._anim_hover_border.setEndValue(colors['selected_border'])
+        else:
+            self._anim_hover_bg.setStartValue(self._anim_bg_color)
+            self._anim_hover_bg.setEndValue(colors['hover_bg'])
+            self._anim_hover_border.setStartValue(self._anim_border_color)
+            self._anim_hover_border.setEndValue(colors['hover_border'])
+        
+        self._hover_anim_group.start()
+    
+    def _trigger_leave_animation(self):
+        """触发离开动画"""
+        if not hasattr(self, '_style_colors'):
+            self._update_styles()
+            return
+        
+        if self._is_selected:
+            return
+        
+        self._hover_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_leave_bg.setStartValue(self._anim_bg_color)
+        self._anim_leave_bg.setEndValue(colors['normal_bg'])
+        self._anim_leave_border.setStartValue(self._anim_border_color)
+        self._anim_leave_border.setEndValue(colors['normal_border'])
+        self._leave_anim_group.start()
     
     def _update_styles(self):
         """更新卡片和标签的完整样式"""
@@ -470,8 +641,42 @@ class FileBlockCard(QWidget):
             self._is_selected = selected
             if selected:
                 self._is_hovered = False
-            self._update_styles()
+                self._trigger_select_animation()
+            else:
+                self._trigger_deselect_animation()
+            self._update_label_styles()
             self.selection_changed.emit(self.file_info, selected)
+    
+    def _trigger_select_animation(self):
+        """触发选中动画"""
+        if not hasattr(self, '_style_colors'):
+            self._update_styles()
+            return
+        
+        self._hover_anim_group.stop()
+        self._leave_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_select_bg.setStartValue(self._anim_bg_color)
+        self._anim_select_bg.setEndValue(colors['selected_bg'])
+        self._anim_select_border.setStartValue(self._anim_border_color)
+        self._anim_select_border.setEndValue(colors['selected_border'])
+        self._select_anim_group.start()
+    
+    def _trigger_deselect_animation(self):
+        """触发取消选中动画"""
+        if not hasattr(self, '_style_colors'):
+            self._update_styles()
+            return
+        
+        self._select_anim_group.stop()
+        
+        colors = self._style_colors
+        self._anim_deselect_bg.setStartValue(self._anim_bg_color)
+        self._anim_deselect_bg.setEndValue(colors['normal_bg'])
+        self._anim_deselect_border.setStartValue(self._anim_border_color)
+        self._anim_deselect_border.setEndValue(colors['normal_border'])
+        self._deselect_anim_group.start()
     
     def is_selected(self):
         """获取卡片选中状态"""

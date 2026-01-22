@@ -353,15 +353,12 @@ class VideoPlayer(QWidget):
             display_mode="icon"
         )
         
-        # 初始化鼠标悬停状态变量
+        # 初始化鼠标悬停状态变量（保留但不再使用，由CustomButton动画系统接管）
         self._is_mouse_over_play_button = False
         
         # 设置播放按钮SVG图标
         self._update_play_button_icon()
         self.play_button.clicked.connect(self.toggle_play_pause)
-        # 连接鼠标事件
-        self.play_button.enterEvent = lambda event: self._update_mouse_hover_state(True)
-        self.play_button.leaveEvent = lambda event: self._update_mouse_hover_state(False)
         self.control_layout.addWidget(self.play_button)
         
         # 进度条和时间标签 - 从主布局移动到播放按钮右侧
@@ -567,14 +564,6 @@ class VideoPlayer(QWidget):
             print(f"[VideoPlayer] 更新播放按钮图标失败: {e}")
             import traceback
             traceback.print_exc()
-    
-    def _update_mouse_hover_state(self, is_hovering):
-        """
-        更新鼠标悬停状态
-        """
-        self._is_mouse_over_play_button = is_hovering
-        # 可以在此处添加悬停效果，如果需要的话
-        pass
     
     def toggle_play_pause(self):
         """

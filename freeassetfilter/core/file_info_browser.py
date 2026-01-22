@@ -116,6 +116,9 @@ class FileInfoBrowser:
         from PyQt5.QtCore import Qt
         from PyQt5.QtGui import QFont, QCursor
         
+        from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+        from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+        
         # 创建滚动区域，作为主容器
         scroll_area = QScrollArea()
         
@@ -214,6 +217,14 @@ class FileInfoBrowser:
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # 使用动画滚动条
+        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
+        scroll_area.setHorizontalScrollBar(D_ScrollBar(scroll_area, Qt.Horizontal))
+        scroll_area.verticalScrollBar().set_colors(normal_color, secondary_color, accent_color, auxiliary_color)
+        scroll_area.horizontalScrollBar().set_colors(normal_color, secondary_color, accent_color, auxiliary_color)
+        
+        SmoothScroller.apply_to_scroll_area(scroll_area)
         
         # 应用DPI缩放因子到布局参数
         scaled_margin = int(6 * self.dpi_scale)
