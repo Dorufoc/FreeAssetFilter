@@ -51,7 +51,7 @@ class CustomSelectListItem(QWidget):
         # 应用DPI缩放
         scaled_icon_size = int(6 * self.dpi_scale)
         scaled_margin = int(2 * self.dpi_scale)  # 外部边距
-        text_margin = int(1.5 * self.dpi_scale)  # 1.5dx文本边距
+        text_margin = int(6 * self.dpi_scale)  # 6dx文本边距
         
         # 主布局
         main_layout = QHBoxLayout(self)
@@ -133,50 +133,73 @@ class CustomSelectListItem(QWidget):
     def update_style(self):
         """
         更新列表项样式
+        支持未选中、hover、选中三种状态
         """
-        scaled_radius = int(2 * self.dpi_scale)
-        
-        # 获取主题颜色
+        from PyQt5.QtGui import QColor
+
         app = QApplication.instance()
-        accent_color = "#B036EE"  # 默认强调色
-        base_color = "#ffffff"  # 默认基色
-        secondary_color = "#3F3F3F"  # 默认次要颜色
-        
-        if hasattr(app, 'settings_manager'):
-            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", accent_color)
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", base_color)
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", secondary_color)
-        
-        # 设置颜色变量
-        list_item_selected = accent_color  # 选中状态背景色使用强调色
-        list_item_text_selected = base_color  # 选中状态文字色使用基色
-        list_item_normal = base_color  # 未选中状态背景色使用基色
-        list_item_text_normal = secondary_color  # 未选中状态文字色使用次要颜色
-        
+        settings_manager = getattr(app, 'settings_manager', None)
+
+        accent_color = "#B036EE"
+        base_color = "#ffffff"
+        normal_color = "#808080"
+        secondary_color = "#3F3F3F"
+        auxiliary_color = "#E6E6E6"
+
+        if settings_manager:
+            accent_color = settings_manager.get_setting("appearance.colors.accent_color", accent_color)
+            base_color = settings_manager.get_setting("appearance.colors.base_color", base_color)
+            normal_color = settings_manager.get_setting("appearance.colors.normal_color", normal_color)
+            secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", secondary_color)
+            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
+
+        qcolor = QColor(accent_color)
+        r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+        selected_bg = f"rgba({r}, {g}, {b}, 102)"
+
+        scaled_radius = int(8 * self.dpi_scale)
+        scaled_border = int(1 * self.dpi_scale)
+
         if self.is_selected:
-            # 选中状态：主题选中色底，主题文字色，字重600
-            self.setStyleSheet(f"""
-                QWidget {{
-                    background-color: {list_item_selected};
-                    border-radius: {scaled_radius}px;
-                    color: {list_item_text_selected};
-                }}
+            card_style = ""
+            card_style += "QWidget {"
+            card_style += f"background-color: {selected_bg};"
+            card_style += f"border: {scaled_border}px solid {accent_color};"
+            card_style += f"border-radius: {scaled_radius}px;"
+            card_style += "}"
+            card_style += "QWidget:hover {"
+            card_style += f"background-color: {selected_bg};"
+            card_style += f"border: {scaled_border}px solid {accent_color};"
+            card_style += f"border-radius: {scaled_radius}px;"
+            card_style += "}"
+            self.setStyleSheet(card_style)
+
+            self.text_label.setStyleSheet(f"""
                 QLabel {{
-                    color: {list_item_text_selected};
-                    font-weight: 600;
+                    color: {secondary_color};
+                    background: transparent;
+                    border: none;
                 }}
             """.strip())
         else:
-            # 未选中状态：主题正常色底，主题文字色，字重恢复默认
-            self.setStyleSheet(f"""
-                QWidget {{
-                    background-color: {list_item_normal};
-                    border-radius: {scaled_radius}px;
-                    color: {list_item_text_normal};
-                }}
+            card_style = ""
+            card_style += "QWidget {"
+            card_style += f"background-color: {base_color};"
+            card_style += f"border: {scaled_border}px solid {auxiliary_color};"
+            card_style += f"border-radius: {scaled_radius}px;"
+            card_style += "}"
+            card_style += "QWidget:hover {"
+            card_style += f"background-color: {auxiliary_color};"
+            card_style += f"border: {scaled_border}px solid {normal_color};"
+            card_style += f"border-radius: {scaled_radius}px;"
+            card_style += "}"
+            self.setStyleSheet(card_style)
+
+            self.text_label.setStyleSheet(f"""
                 QLabel {{
-                    color: {list_item_text_normal};
-                    font-weight: normal;
+                    color: {secondary_color};
+                    background: transparent;
+                    border: none;
                 }}
             """.strip())
     

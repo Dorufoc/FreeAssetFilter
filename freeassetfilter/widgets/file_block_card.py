@@ -377,6 +377,8 @@ class FileBlockCard(QWidget):
                     self._on_click(event)
                 elif event.button() == Qt.RightButton:
                     self._on_right_click(event)
+                else:
+                    return False
                 return True
             elif event.type() == QEvent.MouseButtonDblClick:
                 if event.button() == Qt.LeftButton:

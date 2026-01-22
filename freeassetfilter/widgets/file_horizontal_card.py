@@ -699,7 +699,7 @@ class CustomFileHorizontalCard(QWidget):
         """处理鼠标按下事件"""
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self._file_path)
-            super().mousePressEvent(event)
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         """处理鼠标双击事件"""
