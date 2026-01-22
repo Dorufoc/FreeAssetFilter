@@ -197,12 +197,8 @@ class CustomButton(QPushButton):
         
         # 应用最新的DPI缩放因子到按钮样式参数
         # 计算适合的圆角半径，确保在各种尺寸下都合适
-        # 对于图标按钮，使用高度的一半作为圆角半径
-        # 对于文字按钮，使用固定的圆角半径（20px）
-        if self._display_mode == "icon":
-            scaled_border_radius = self._height // 2
-        else:
-            scaled_border_radius = int(10 * self.dpi_scale)
+        # 所有按钮都使用高度的一半作为圆角半径，确保圆角完整覆盖边缘
+        scaled_border_radius = self._height // 2
         scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
         scaled_font_size = int(default_font_size * self.dpi_scale)
         scaled_border_width = int(1 * self.dpi_scale)  # 边框宽度随DPI缩放

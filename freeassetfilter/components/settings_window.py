@@ -8,7 +8,7 @@ FreeAssetFilter 现代化设置窗口
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QTabWidget, QPushButton, QGroupBox, QSizePolicy, QDialog,
-    QApplication
+    QApplication, QSplitter
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
@@ -90,34 +90,54 @@ class ModernSettingsWindow(QDialog):
         """
         初始化现代化设置窗口UI
         """
-        # 设置窗口大小（根据Figma设计调整）
         self.setMinimumSize(419, 268)
         self.resize(419, 268)
-        
-        # 设置窗口整体背景颜色为灰色色块（Figma: #D9D9D9）
+
         self.setStyleSheet(f"""
             QDialog {{ 
                 background-color: {self.theme_manager.get_theme_colors()['auxiliary_color']}; 
             }}
         """)
-        
-        # 创建主布局（左侧导航 + 右侧内容）
+
+        app = QApplication.instance()
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        handle_width = int(10)
+        base_color = self.theme_manager.get_theme_colors()['base_color']
+        normal_color = self.theme_manager.get_theme_colors()['normal_color']
+        secondary_color = self.theme_manager.get_theme_colors()['secondary_color']
+        accent_color = self.theme_manager.get_theme_colors()['accent_color']
+        auxiliary_color = self.theme_manager.get_theme_colors()['auxiliary_color']
         main_layout = QHBoxLayout(self)
         self.content_layout = main_layout
-        
-        # 设置主布局边距和间距
         main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
-        
-        # 左侧导航栏
+        main_layout.setSpacing(0)
+
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.setContentsMargins(0, 0, 0, 0)
+        main_splitter.setHandleWidth(handle_width)
+        main_splitter.setStyleSheet(f"""
+            QSplitter::handle {{
+                background-color: {auxiliary_color};
+                width: {handle_width}px;
+            }}
+            QSplitter::handle:hover {{
+                background-color: {accent_color};
+            }}
+        """)
+
         self.navigation_widget = self._create_navigation_widget()
-        main_layout.addWidget(self.navigation_widget, 0)
-        
-        # 右侧内容区域
+        main_splitter.addWidget(self.navigation_widget)
+
         self.content_area = self._create_content_area()
-        main_layout.addWidget(self.content_area, 1)
-        
-        # 默认填充第一个标签页内容
+        main_splitter.addWidget(self.content_area)
+
+        min_nav_width = int(80 * dpi_scale)
+        main_splitter.setSizes([min_nav_width, 300])
+        main_splitter.setStretchFactor(1, 1)
+
+        self._main_splitter = main_splitter
+        main_layout.addWidget(main_splitter, 1)
+
         self._fill_tab_content("appearance")
     
     def _create_navigation_widget(self):
@@ -125,12 +145,13 @@ class ModernSettingsWindow(QDialog):
         创建左侧导航栏
         """
         widget = QWidget()
-        widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        
-        # 设置导航栏宽度（根据Figma设计：97px）
-        widget.setFixedWidth(97)
-        
-        # 设置导航栏样式（与main窗口保持一致的边框配色方案）
+        widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Expanding)
+
+        app = QApplication.instance()
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        min_width = int(80 * dpi_scale)
+        widget.setMinimumWidth(min_width)
+
         widget.setObjectName("navigationContainer")
         widget.setStyleSheet(f"""
             QWidget#navigationContainer {{ 
@@ -138,34 +159,26 @@ class ModernSettingsWindow(QDialog):
                 border-radius: 8px;
                 border: 1px solid {self.theme_manager.get_theme_colors()['normal_color']};
             }}
-            QWidget#navigationContainer > QWidget {{ 
-                background-color: transparent;
-                border: none;
-                border-radius: 0;
-            }}
         """)
         
-        # 导航栏布局
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(5, 15, 5, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 15, 8, 10)
+        layout.setSpacing(8)
         
-        # 导航标题（Figma："设置"文本）
         title_label = QLabel("设置")
+        title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         title_label.setStyleSheet(f"""
             QLabel {{ 
                 font-family: 'Noto Sans SC'; 
-                font-size: 10px;
-                font-weight: 400;
+                font-size: 14px;
+                font-weight: 600;
                 color: {self.theme_manager.get_theme_colors()['secondary_color']};
-                margin-bottom: 15px;
+                margin-bottom: 10px;
                 padding: 5px;
-                text-align: center;
             }}
         """)
         layout.addWidget(title_label)
         
-        # 导航选项卡片
         self.navigation_buttons = []
         self.navigation_items = [
             {"text": "外观", "id": "appearance"},
@@ -175,47 +188,16 @@ class ModernSettingsWindow(QDialog):
             {"text": "通用", "id": "general"}
         ]
         
-        # 卡片式按钮样式（Figma：85x15px，圆角2px）
-        dark2, dark5 = self.theme_manager.get_darkened_auxiliary_colors()
-        card_style = f"""
-            QPushButton {{ 
-                background-color: {self.theme_manager.get_theme_colors()['auxiliary_color']}; 
-                border: none;
-                border-radius: 2px;
-                padding: 0;
-                height: 15px;
-                width: 85px;
-                text-align: center;
-                font-size: 10px;
-                color: {self.theme_manager.get_theme_colors()['secondary_color']};
-                font-weight: 400;
-            }}
-            QPushButton:hover {{ 
-                background-color: {dark2}; 
-            }}
-            QPushButton:pressed {{ 
-                background-color: {dark5}; 
-            }}
-            QPushButton:checked {{ 
-                background-color: {self.theme_manager.get_theme_colors()['accent_color']}; 
-                color: {self.theme_manager.get_theme_colors()['base_color']}; 
-            }}
-        """
-        
-        # 创建导航按钮
         for i, item in enumerate(self.navigation_items):
-            button = QPushButton(item["text"])
-            button.setCheckable(True)
-            button.setStyleSheet(card_style)
+            if i == 0:
+                button = CustomButton(item["text"], button_type="primary", display_mode="text", height=20)
+            else:
+                button = CustomButton(item["text"], button_type="normal", display_mode="text", height=20)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             button.clicked.connect(lambda checked, idx=i: self._on_navigation_clicked(idx))
             self.navigation_buttons.append(button)
             layout.addWidget(button)
         
-        # 默认选中第一个按钮
-        if self.navigation_buttons:
-            self.navigation_buttons[0].setChecked(True)
-        
-        # 添加占位符
         layout.addStretch()
         
         return widget
@@ -226,8 +208,7 @@ class ModernSettingsWindow(QDialog):
         """
         widget = QWidget()
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
-        # 设置内容区域样式（与main窗口保持一致的边框配色方案）
+
         widget.setObjectName("contentContainer")
         widget.setStyleSheet(f"""
             QWidget#contentContainer {{ 
@@ -235,19 +216,12 @@ class ModernSettingsWindow(QDialog):
                 border-radius: 8px;
                 border: 1px solid {self.theme_manager.get_theme_colors()['normal_color']};
             }}
-            QWidget#contentContainer > QWidget {{ 
-                background-color: transparent;
-                border: none;
-                border-radius: 0;
-            }}
         """)
-        
-        # 内容区域布局
+
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(5)
-        
-        # 内容标题
+
         self.content_title = QLabel("外观设置")
         self.content_title.setStyleSheet(f"""
             QLabel {{ 
@@ -260,8 +234,7 @@ class ModernSettingsWindow(QDialog):
             }}
         """)
         layout.addWidget(self.content_title)
-        
-        # 滚动区域
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         base_color = self.theme_manager.get_theme_colors()['base_color']
@@ -269,7 +242,7 @@ class ModernSettingsWindow(QDialog):
         normal_color = self.theme_manager.get_theme_colors()['normal_color']
         secondary_color = self.theme_manager.get_theme_colors()['secondary_color']
         accent_color = self.theme_manager.get_theme_colors()['accent_color']
-        
+
         scrollbar_style = f"""
             QScrollArea {{
                 border: 0px solid transparent;
@@ -311,23 +284,19 @@ class ModernSettingsWindow(QDialog):
             }}
         """
         self.scroll_area.setStyleSheet(scrollbar_style)
-        
-        # 滚动内容
+
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll_layout.setSpacing(15)
-        # 设置布局对齐方式为向上对齐
         self.scroll_layout.setAlignment(Qt.AlignTop)
-        
+
         self.scroll_area.setWidget(self.scroll_content)
-        # 让滚动区域填满整个显示区域
         layout.addWidget(self.scroll_area, 1)
-        
-        # 底部按钮区域
+
         self.buttons_widget = self._create_buttons_widget()
         layout.addWidget(self.buttons_widget)
-        
+
         return widget
     
     def _create_appearance_tab(self):
@@ -480,15 +449,17 @@ class ModernSettingsWindow(QDialog):
         Args:
             index (int): 选中的导航项索引
         """
-        # 导航项ID映射
         nav_ids = ["appearance", "file_selector", "file_staging", "player", "general"]
         
         if 0 <= index < len(nav_ids):
-            # 更新按钮状态
             for i, button in enumerate(self.navigation_buttons):
-                button.setChecked(i == index)
+                if i == index:
+                    button.button_type = "primary"
+                    button.update_style()
+                else:
+                    button.button_type = "normal"
+                    button.update_style()
             
-            # 根据选中的导航项填充内容
             self._fill_tab_content(nav_ids[index])
     
     def _fill_tab_content(self, tab_id):
@@ -636,9 +607,9 @@ class ModernSettingsWindow(QDialog):
         )
         self.font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"font.size": value}))
         font_layout.addWidget(self.font_size_bar)
-        
+
         self.scroll_layout.addWidget(font_group)
-    
+
     def _add_font_settings(self):
         """
         添加字体设置项
@@ -708,9 +679,9 @@ class ModernSettingsWindow(QDialog):
         )
         self.font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"font.size": value}))
         font_layout.addWidget(self.font_size_bar)
-        
+
         self.scroll_layout.addWidget(font_group)
-    
+
     def _add_file_selector_settings(self):
         """
         添加文件选择器设置项
@@ -778,9 +749,9 @@ class ModernSettingsWindow(QDialog):
             self.current_settings.update({"file_selector.return_shortcut": "middle_click"})
         self.return_shortcut_setting.button_clicked.connect(on_return_shortcut_clicked)
         file_selector_layout.addWidget(self.return_shortcut_setting)
-        
+
         self.scroll_layout.addWidget(file_selector_group)
-    
+
     def _add_file_staging_settings(self):
         """
         添加文件暂存池设置项
@@ -840,9 +811,9 @@ class ModernSettingsWindow(QDialog):
         )
         self.delete_original_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.delete_original_after_export": value}))
         file_staging_layout.addWidget(self.delete_original_switch)
-        
+
         self.scroll_layout.addWidget(file_staging_group)
-    
+
     def _add_player_settings(self):
         """
         添加播放器设置项
@@ -874,9 +845,9 @@ class ModernSettingsWindow(QDialog):
         )
         self.volume_bar.value_changed.connect(lambda value: self.current_settings.update({"player.volume": value}))
         player_layout.addWidget(self.volume_bar)
-        
+
         self.scroll_layout.addWidget(player_group)
-    
+
     def _add_general_settings(self):
         """
         添加通用设置项
@@ -884,11 +855,11 @@ class ModernSettingsWindow(QDialog):
         general_group = QGroupBox("通用设置")
         general_group.setStyleSheet(self.group_box_style)
         general_layout = QVBoxLayout(general_group)
-        
+
         # 通用设置项可以在这里添加
-        
+
         self.scroll_layout.addWidget(general_group)
-    
+
     def _open_theme_color_settings(self):
         """
         打开主题颜色设置窗口
@@ -1067,7 +1038,7 @@ class ModernSettingsWindow(QDialog):
             }}
         """
         self.scroll_area.setStyleSheet(scroll_style)
-        
+
         # 更新所有分组框样式
         for child in self.scroll_content.children():
             if isinstance(child, QVBoxLayout):
@@ -1135,6 +1106,9 @@ class ModernSettingsWindow(QDialog):
         """
         self.current_settings = {
             "appearance.theme": self.settings_manager.get_setting("appearance.theme", "default"),
+            "appearance.colors.base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF"),
+            "appearance.colors.secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
+            "appearance.colors.auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f3"),
             "font.size": self.settings_manager.get_setting("font.size", 20),
             "font.style": self.settings_manager.get_setting("font.style", "Microsoft YaHei"),
             "file_selector.auto_clear_thumbnail_cache": self.settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True),

@@ -16,7 +16,7 @@ from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush
 # 导入现有自定义控件
 from .input_widgets import CustomInputBox
 from .button_widgets import CustomButton
-from .progress_widgets import CustomValueBar
+from .progress_widgets import D_ProgressBar
 from .switch_widgets import CustomSwitch
 
 # 用于SVG渲染
@@ -346,8 +346,11 @@ class CustomSettingItem(QWidget):
         self.input_box = CustomInputBox(
             placeholder_text=placeholder,
             initial_text=initial_text,
-            height=8  # 固定高度，与按钮匹配
+            height=20  # 合理高度，确保输入框正常显示
         )
+        
+        # 确保输入框有合适的尺寸策略，能够正确扩展
+        self.input_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
         # 创建按钮
         button_text = self.kwargs.get('button_text', '确定')
@@ -387,7 +390,7 @@ class CustomSettingItem(QWidget):
         max_value = self.kwargs.get('max_value', 100)
         initial_value = self.kwargs.get('initial_value', 50)
         
-        self.value_bar = CustomValueBar(orientation=CustomValueBar.Horizontal)
+        self.value_bar = D_ProgressBar(orientation=D_ProgressBar.Horizontal)
         self.value_bar.setRange(min_value, max_value)
         self.value_bar.setValue(initial_value)
         
