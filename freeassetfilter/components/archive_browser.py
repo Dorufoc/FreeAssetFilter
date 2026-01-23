@@ -37,7 +37,7 @@ from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PyQt5.QtCore import Qt, pyqtSignal, QFileInfo
 from PyQt5.QtGui import QFont, QIcon

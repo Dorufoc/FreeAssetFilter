@@ -33,7 +33,7 @@ from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo

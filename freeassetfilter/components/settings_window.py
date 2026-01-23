@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 # 导入自定义控件
 from freeassetfilter.widgets.setting_widgets import CustomSettingItem
 from freeassetfilter.widgets.button_widgets import CustomButton
-from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.message_box import CustomMessageBox

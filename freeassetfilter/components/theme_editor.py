@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont
 
 from freeassetfilter.widgets.theme_card import ThemeCard
-from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
 class ThemeEditor(QScrollArea):

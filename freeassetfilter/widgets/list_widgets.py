@@ -14,7 +14,7 @@ from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
-from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
 # 用于SVG渲染

@@ -116,7 +116,7 @@ class FileInfoBrowser:
         from PyQt5.QtCore import Qt
         from PyQt5.QtGui import QFont, QCursor
         
-        from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+        from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
         from freeassetfilter.widgets.smooth_scroller import SmoothScroller
         
         # 创建滚动区域，作为主容器

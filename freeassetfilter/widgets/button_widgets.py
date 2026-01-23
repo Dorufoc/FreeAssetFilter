@@ -1019,4 +1019,4 @@ class CustomButton(QPushButton):
             super().paintEvent(event)
 
 
-from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar

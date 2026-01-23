@@ -47,7 +47,7 @@ from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCar
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-from freeassetfilter.widgets.scroll_bar import D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.components.auto_timeline import AutoTimeline
 

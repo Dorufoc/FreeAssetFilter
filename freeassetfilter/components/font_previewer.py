@@ -266,6 +266,9 @@ class FontPreviewer(QMainWindow):
         self.font_widget.font_info_changed.connect(self.update_font_info)
         scroll_area.setWidget(self.font_widget)
         
+        from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+        SmoothScroller.apply_to_scroll_area(scroll_area)
+        
         main_layout.addWidget(scroll_area, 1)
         
         # 2. 信息和控制面�?

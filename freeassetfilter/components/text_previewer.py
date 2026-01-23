@@ -829,6 +829,9 @@ class TextPreviewer(QMainWindow):
         self.text_widget = TextPreviewWidget()
         scroll_area.setWidget(self.text_widget)
         
+        from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+        SmoothScroller.apply_to_scroll_area(scroll_area)
+        
         main_layout.addWidget(scroll_area, 1)
     
     def open_file(self):

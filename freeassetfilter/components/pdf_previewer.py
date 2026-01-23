@@ -35,6 +35,7 @@ from PyQt5.QtCore import (
 
 # 导入自定义控件
 from freeassetfilter.widgets.D_widgets import CustomButton, CustomValueBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
 # 尝试导入PyMuPDF (fitz)库，作为PDF渲染引擎
 try:
@@ -164,6 +165,9 @@ class PDFPreviewWidget(QWidget):
         self.pages_container.setStyleSheet("background-color: transparent;")
         
         self.preview_container.setWidget(self.pages_container)
+        
+        SmoothScroller.apply_to_scroll_area(self.preview_container)
+        
         layout.addWidget(self.preview_container, 1)
         
         # 页面控制按钮

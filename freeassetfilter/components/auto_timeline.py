@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
 # 导入自定义按钮组件
 from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.table_widgets import CustomMatrixTable
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QDateTime, QThread, QRectF, QPoint, QTimer
 )
@@ -784,6 +785,8 @@ class AutoTimeline(QWidget):
         self.scroll_area.setWidget(self.timeline_draw_area)
         self.scroll_area.setWidgetResizable(True)
         self.splitter.addWidget(self.scroll_area)
+        
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
         
         # 设置初始比例
         self.splitter.setSizes([330, 600])  # 调整左侧表格初始宽度为三列总和

@@ -105,8 +105,10 @@ class FolderContentList(QWidget):
         self.content_list.setAlternatingRowColors(True)
         self.content_list.setFont(self.global_font)
         self.content_list.setStyleSheet(f"font-size: {scaled_font_size}px;")
-        # 移除所有交互事件
-        # 只保留列表显示功能
+        
+        from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+        SmoothScroller.apply(self.content_list)
+        
         main_layout.addWidget(self.content_list)
         
         # 创建底部状态栏

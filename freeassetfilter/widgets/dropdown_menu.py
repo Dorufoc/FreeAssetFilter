@@ -12,7 +12,7 @@ from PyQt5.QtGui import QFont, QFontMetrics
 
 from .control_menu import CustomControlMenu
 from .button_widgets import CustomButton
-from .scroll_bar import D_ScrollBar
+from .smooth_scroller import D_ScrollBar
 from .smooth_scroller import SmoothScroller
 import os
 

@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
 )
 # 导入自定义输入框组件
 from freeassetfilter.widgets.input_widgets import CustomInputBox
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PyQt5.QtCore import Qt, QProcess, QTimer
 from PyQt5.QtGui import QFont, QColor
 
@@ -184,6 +185,8 @@ class ComponentLauncher(QMainWindow):
         components_scroll.setWidget(components_group)
         components_scroll.setMinimumHeight(300)
         components_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        SmoothScroller.apply_to_scroll_area(components_scroll)
         
         main_layout.addWidget(components_scroll, 2)
         

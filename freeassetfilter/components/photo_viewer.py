@@ -33,6 +33,8 @@ from PyQt5.QtCore import (
 
 # PIL支持已移除以提高性能
 
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+
 
 class RawProcessor(QThread):
     """
@@ -812,6 +814,8 @@ class PhotoViewer(QWidget):
         
         self.image_widget = ImageWidget()
         self.scroll_area.setWidget(self.image_widget)
+        
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
         
         main_layout.addWidget(self.scroll_area, 1)
     
