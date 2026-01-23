@@ -208,12 +208,15 @@ class CustomProgressBar(QWidget):
         """
         if self._is_interactive and event.button() == Qt.LeftButton:
             self._is_pressed = True
+            self._animation.stop()
+            self._animation_suspended = True
+            self._display_value_storage = self._value
             if self._orientation == self.Horizontal:
                 self._last_pos = event.pos().x()
-                self._update_value_from_pos(self._last_pos)
-            else:  # Vertical
+                self._update_value_from_pos(self._last_pos, use_animation=False)
+            else:
                 self._last_pos = event.pos().y()
-                self._update_value_from_pos(self._last_pos)
+                self._update_value_from_pos(self._last_pos, use_animation=False)
             self.userInteracting.emit()
     
     def mouseMoveEvent(self, event):
@@ -223,10 +226,9 @@ class CustomProgressBar(QWidget):
         if self._is_interactive and self._is_pressed:
             if self._orientation == self.Horizontal:
                 self._last_pos = event.pos().x()
-                self._update_value_from_pos(self._last_pos)
-            else:  # Vertical
+            else:
                 self._last_pos = event.pos().y()
-                self._update_value_from_pos(self._last_pos)
+            self._update_value_from_pos(self._last_pos, use_animation=False)
     
     def mouseReleaseEvent(self, event):
         """
@@ -234,51 +236,51 @@ class CustomProgressBar(QWidget):
         """
         if self._is_interactive and self._is_pressed and event.button() == Qt.LeftButton:
             self._is_pressed = False
+            self._animation_suspended = False
             self.userInteractionEnded.emit()
     
-    def _update_value_from_pos(self, pos):
+    def _update_value_from_pos(self, pos, use_animation=True):
         """
         根据鼠标位置更新进度值
-        
+
         Args:
             pos (int): 鼠标坐标（横向为X坐标，纵向为Y坐标）
+            use_animation (bool): 是否使用动画过渡
         """
         if self._orientation == self.Horizontal:
-            # 横向处理
-            # 计算进度条总宽度
             bar_length = self.width() - (self._handle_radius * 2)
-            # 计算鼠标在进度条上的相对位置
             relative_pos = pos - self._handle_radius
             if relative_pos < 0:
                 relative_pos = 0
             elif relative_pos > bar_length:
                 relative_pos = bar_length
-            
-            # 计算对应的进度值
+
             if bar_length > 0:
                 ratio = relative_pos / bar_length
             else:
                 ratio = 0.0
             value = int(self._minimum + ratio * (self._maximum - self._minimum))
-        else:  # Vertical
-            # 纵向处理 - 滑动方向修正：向上滑动数值增加，向下滑动数值减少
-            # 计算进度条总高度
+        else:
             bar_length = self.height() - (self._handle_radius * 2)
-            # 计算鼠标在进度条上的相对位置
             relative_pos = pos - self._handle_radius
             if relative_pos < 0:
                 relative_pos = 0
             elif relative_pos > bar_length:
                 relative_pos = bar_length
-            
-            # 计算对应的进度值 - 反向映射：relative_pos越大，值越小
+
             if bar_length > 0:
                 ratio = 1.0 - (relative_pos / bar_length)
             else:
                 ratio = 0.0
             value = int(self._minimum + ratio * (self._maximum - self._minimum))
-        
-        self.setValue(value)
+
+        if not use_animation:
+            self._display_value_storage = value
+            self._value = value
+            self.update()
+            self.valueChanged.emit(value)
+        else:
+            self.setValue(value)
     
     def paintEvent(self, event):
         """
@@ -584,12 +586,11 @@ class D_ProgressBar(QWidget):
         self._animation_suspended = False
         self._is_hovered = False
         self._last_pos = 0
-        self._last_set_value_time = 0
 
         self._handle_border_width = max(1, int(2 * self.dpi_scale))
         self._handle_border_color = QColor("#FFFFFF")
 
-        self._animation_duration = 500
+        self._animation_duration = 150
         self._animation = QPropertyAnimation(self, b"_display_value")
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.valueChanged.connect(self._on_animation_value_changed)
@@ -820,32 +821,15 @@ class D_ProgressBar(QWidget):
             should_use_animation = use_animation if use_animation is not None else not self._animation_suspended
 
             if not should_use_animation:
+                self._animation.stop()
                 self._display_value_storage = value
                 self.update()
             else:
-                current_time = QTime.currentTime()
-                last_time = self._last_set_value_time
-                if isinstance(last_time, int) or not isinstance(last_time, QTime):
-                    self._display_value_storage = value
-                    self.update()
-                elif last_time.msecsTo(current_time) < 50:
-                    self._display_value_storage = value
-                    self.update()
-                else:
-                    if self._animation.state() == QPropertyAnimation.Running:
-                        current = self._animation.currentValue()
-                        remaining = max(1, self._animation_duration - self._animation.currentTime())
-                        self._animation.stop()
-                        self._animation.setStartValue(current)
-                        self._animation.setEndValue(value)
-                        self._animation.setDuration(remaining)
-                    else:
-                        self._animation.stop()
-                        self._animation.setStartValue(self._display_value)
-                        self._animation.setEndValue(value)
-                        self._animation.setDuration(self._animation_duration)
-                    self._animation.start()
-                self._last_set_value_time = current_time
+                self._animation.stop()
+                self._animation.setStartValue(self._display_value)
+                self._animation.setEndValue(value)
+                self._animation.setDuration(self._animation_duration)
+                self._animation.start()
 
     def value(self):
         """
@@ -1065,8 +1049,10 @@ class D_ProgressBar(QWidget):
         Args:
             pos (int): 鼠标坐标
         """
+        rect = self.rect()
+        
         if self._orientation == self.Horizontal:
-            bar_length = max(0, self.width() - self._handle_radius * 2)
+            bar_length = max(0, rect.width() - self._handle_radius * 2)
             relative_pos = max(0, min(pos - self._handle_radius, bar_length))
 
             if bar_length > 0:
@@ -1074,7 +1060,7 @@ class D_ProgressBar(QWidget):
             else:
                 ratio = 0.0
         else:
-            bar_length = max(0, self.height() - self._handle_radius * 2)
+            bar_length = max(0, rect.height() - self._handle_radius * 2)
             relative_pos = max(0, min(pos - self._handle_radius, bar_length))
 
             if bar_length > 0:
@@ -1491,7 +1477,7 @@ class CustomValueBar(QWidget):
             )
             
             if self._gradient_mode and len(self._gradient_colors) >= 2:
-                gradient = QLinearGradient(self._handle_radius, 0, self.width() - self._handle_radius, 0)
+                gradient = QLinearGradient(self._handle_radius, 0, rect.width() - self._handle_radius, 0)
                 for i, color in enumerate(self._gradient_colors):
                     gradient.setColorAt(i / (len(self._gradient_colors) - 1), color)
                 painter.setBrush(QBrush(gradient))
@@ -1521,7 +1507,7 @@ class CustomValueBar(QWidget):
             # 绘制圆形滑块
             handle_x = self._handle_radius + progress_length
             # 确保滑块不会超出数值条范围
-            handle_x = min(handle_x, self.width() - self._handle_radius * 2)
+            handle_x = min(handle_x, rect.width() - self._handle_radius * 2)
             # 计算对齐位置（进度条中心与滑块中心对齐）
             # bar_y + bar_size/2 = handle_y + handle_radius
             # handle_y = bar_y + bar_size/2 - handle_radius
