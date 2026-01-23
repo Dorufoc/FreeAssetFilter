@@ -134,6 +134,10 @@ class CustomFileHorizontalCard(QWidget):
         # 鼠标悬停标志，用于跟踪鼠标是否在卡片区域内
         self._is_mouse_over = False
         
+        self._touch_drag_threshold = int(10 * self.dpi_scale)
+        self._touch_start_pos = None
+        self._is_touch_dragging = False
+        
         # 初始化UI
         self.init_ui()
         
@@ -884,8 +888,26 @@ class CustomFileHorizontalCard(QWidget):
     def mousePressEvent(self, event):
         """处理鼠标按下事件"""
         if event.button() == Qt.LeftButton:
-            self.clicked.emit(self._file_path)
+            self._touch_start_pos = event.pos()
+            self._is_touch_dragging = False
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """处理鼠标移动事件"""
+        if self._touch_start_pos is not None:
+            delta = event.pos() - self._touch_start_pos
+            if abs(delta.x()) > self._touch_drag_threshold or abs(delta.y()) > self._touch_drag_threshold:
+                self._is_touch_dragging = True
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """处理鼠标释放事件"""
+        if event.button() == Qt.LeftButton:
+            if self._touch_start_pos is not None and not self._is_touch_dragging:
+                self.clicked.emit(self._file_path)
+            self._touch_start_pos = None
+            self._is_touch_dragging = False
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         """处理鼠标双击事件"""
@@ -923,6 +945,8 @@ class CustomFileHorizontalCard(QWidget):
                 self._trigger_leave_animation()
                 self.overlay_widget.hide()
                 self.overlay_widget.setWindowOpacity(0.0)
+            self._touch_start_pos = None
+            self._is_touch_dragging = False
         
         return super().eventFilter(obj, event)
     

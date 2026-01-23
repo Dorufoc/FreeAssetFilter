@@ -106,6 +106,10 @@ class FileBlockCard(QWidget):
         self._is_selected = False
         self._is_hovered = False
         
+        self._touch_drag_threshold = int(10 * self.dpi_scale)
+        self._touch_start_pos = None
+        self._is_touch_dragging = False
+        
         self._setup_ui()
         self._setup_signals()
         self._init_animations()
@@ -408,11 +412,25 @@ class FileBlockCard(QWidget):
         if obj == self:
             if event.type() == QEvent.MouseButtonPress:
                 if event.button() == Qt.LeftButton:
-                    self._on_click(event)
+                    self._touch_start_pos = event.pos()
+                    self._is_touch_dragging = False
                 elif event.button() == Qt.RightButton:
                     self._on_right_click(event)
                 else:
                     return False
+                return True
+            elif event.type() == QEvent.MouseMove:
+                if self._touch_start_pos is not None:
+                    delta = event.pos() - self._touch_start_pos
+                    if abs(delta.x()) > self._touch_drag_threshold or abs(delta.y()) > self._touch_drag_threshold:
+                        self._is_touch_dragging = True
+                return True
+            elif event.type() == QEvent.MouseButtonRelease:
+                if event.button() == Qt.LeftButton:
+                    if self._touch_start_pos is not None and not self._is_touch_dragging:
+                        self._on_click(event)
+                    self._touch_start_pos = None
+                    self._is_touch_dragging = False
                 return True
             elif event.type() == QEvent.MouseButtonDblClick:
                 if event.button() == Qt.LeftButton:
@@ -426,6 +444,8 @@ class FileBlockCard(QWidget):
             elif event.type() == QEvent.Leave:
                 self._is_hovered = False
                 self._trigger_leave_animation()
+                self._touch_start_pos = None
+                self._is_touch_dragging = False
                 return True
         return super().eventFilter(obj, event)
     

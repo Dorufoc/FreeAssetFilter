@@ -20,7 +20,7 @@ class D_ScrollBar(QScrollBar):
     - 支持垂直和水平方向
     - 支持非线性动画过渡效果
     - 支持触摸惯性滚动
-    - 支持滚轮平滑滚动和 overshoot 效果
+    - 支持滚轮平滑滚动
     """
     
     scroll_finished = pyqtSignal()
@@ -87,9 +87,6 @@ class D_ScrollBar(QScrollBar):
         self._last_wheel_time = 0
         self._wheel_speed_boost = 1.0
         self._max_boost = 3.0
-        self._overshoot_threshold = 150
-        self._is_overshooting = False
-        self._overshoot_direction = 0
     
     def set_colors(self, normal_color, hover_color, pressed_color, auxiliary_color=None):
         """
@@ -306,9 +303,6 @@ class D_ScrollBar(QScrollBar):
         self._velocity *= self._friction
         
         if abs(self._velocity) < self._min_velocity:
-            if self._is_overshooting:
-                self._snap_to_boundary()
-                return
             self._animation_timer.stop()
             self._is_scrolling = False
             self.scroll_finished.emit()
@@ -319,33 +313,9 @@ class D_ScrollBar(QScrollBar):
         max_val = self.maximum()
         min_val = self.minimum()
         
-        if new_value < -self._overshoot_threshold:
-            self._is_overshooting = True
-            self._overshoot_direction = 1
-        elif new_value > max_val + self._overshoot_threshold:
-            self._is_overshooting = True
-            self._overshoot_direction = -1
-        elif self._is_overshooting and self._overshoot_direction != 0:
-            if (self._overshoot_direction == 1 and new_value >= min_val) or \
-               (self._overshoot_direction == -1 and new_value <= max_val):
-                self._is_overshooting = False
-                self._overshoot_direction = 0
-                new_value = min_val if new_value < (min_val + max_val) // 2 else max_val
+        new_value = max(min_val, min(max_val, new_value))
         
         self.setValue(int(new_value))
-    
-    def _snap_to_boundary(self):
-        """吸附到边界位置"""
-        current = self.value()
-        max_val = self.maximum()
-        min_val = self.minimum()
-        target = min_val if current < (min_val + max_val) // 2 else max_val
-        self.setValue(target)
-        self._is_overshooting = False
-        self._overshoot_direction = 0
-        self._animation_timer.stop()
-        self._is_scrolling = False
-        self.scroll_finished.emit()
     
     def set_friction(self, friction):
         """
@@ -355,15 +325,6 @@ class D_ScrollBar(QScrollBar):
             friction: 摩擦力 (0.0-1.0)，越大停止越慢
         """
         self._friction = max(0.0, min(1.0, friction))
-    
-    def set_overshoot_threshold(self, threshold):
-        """
-        设置 overshoot 阈值
-        
-        Args:
-            threshold: 超出边界的像素值
-        """
-        self._overshoot_threshold = max(0, threshold)
 
 
 def _get_target_widget(widget):
@@ -396,9 +357,9 @@ class SmoothScroller:
         
         properties = scroller.scrollerProperties()
         
-        properties.setScrollMetric(QScrollerProperties.OvershootDragResistanceFactor, 0.2)
-        properties.setScrollMetric(QScrollerProperties.OvershootDragDistanceFactor, 0.1)
-        properties.setScrollMetric(QScrollerProperties.OvershootScrollTime, 200)
+        properties.setScrollMetric(QScrollerProperties.OvershootDragResistanceFactor, 1.0)
+        properties.setScrollMetric(QScrollerProperties.OvershootDragDistanceFactor, 0.0)
+        properties.setScrollMetric(QScrollerProperties.OvershootScrollTime, 0)
         properties.setScrollMetric(QScrollerProperties.DecelerationFactor, 0.8)
         properties.setScrollMetric(QScrollerProperties.DragVelocitySmoothingFactor, 0.6)
         
@@ -441,9 +402,9 @@ class SmoothScroller:
         
         properties.setScrollMetric(QScrollerProperties.DragVelocitySmoothingFactor, 0.9)
         properties.setScrollMetric(QScrollerProperties.DecelerationFactor, 0.5)
-        properties.setScrollMetric(QScrollerProperties.OvershootDragResistanceFactor, 0.3)
-        properties.setScrollMetric(QScrollerProperties.OvershootDragDistanceFactor, 0.2)
-        properties.setScrollMetric(QScrollerProperties.OvershootScrollTime, 300)
+        properties.setScrollMetric(QScrollerProperties.OvershootDragResistanceFactor, 1.0)
+        properties.setScrollMetric(QScrollerProperties.OvershootDragDistanceFactor, 0.0)
+        properties.setScrollMetric(QScrollerProperties.OvershootScrollTime, 0)
         
         scroller.setScrollerProperties(properties)
         
@@ -460,8 +421,8 @@ class SmoothScroller:
         
         properties.setScrollMetric(QScrollerProperties.DragVelocitySmoothingFactor, 0.4)
         properties.setScrollMetric(QScrollerProperties.DecelerationFactor, 0.9)
-        properties.setScrollMetric(QScrollerProperties.OvershootDragResistanceFactor, 0.0)
-        properties.setScrollMetric(QScrollerProperties.OvershootScrollTime, 100)
+        properties.setScrollMetric(QScrollerProperties.OvershootDragResistanceFactor, 1.0)
+        properties.setScrollMetric(QScrollerProperties.OvershootScrollTime, 0)
         
         scroller.setScrollerProperties(properties)
         
