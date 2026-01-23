@@ -389,6 +389,38 @@ class CustomFileSelector(QWidget):
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.filter_btn)
         
+        # 排序方式按钮
+        import os
+        list_bullet_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "list_bullet.svg")
+        self.sort_btn = CustomButton(list_bullet_icon_path, button_type="normal", display_mode="icon", tooltip_text="排序方式")
+        nav_layout.addWidget(self.sort_btn)
+        # 添加到悬浮信息目标控件
+        self.hover_tooltip.set_target_widget(self.sort_btn)
+        
+        # 排序方式下拉菜单
+        self.sort_menu = CustomDropdownMenu(self, position="bottom")
+        scaled_sort_width = int(50 * self.dpi_scale)
+        self.sort_menu.set_fixed_width(scaled_sort_width)
+        sort_items = [
+            {"text": "名称升序", "data": ("name", "asc")},
+            {"text": "名称降序", "data": ("name", "desc")},
+            {"text": "大小升序", "data": ("size", "asc")},
+            {"text": "大小降序", "data": ("size", "desc")},
+            {"text": "修改时间升序", "data": ("modified", "asc")},
+            {"text": "修改时间降序", "data": ("modified", "desc")},
+            {"text": "创建时间升序", "data": ("created", "asc")},
+            {"text": "创建时间降序", "data": ("created", "desc")}
+        ]
+        self.sort_menu.set_items(sort_items, default_item=sort_items[0])
+        self.sort_menu.set_target_button(self.sort_btn)
+        self.sort_menu.itemClicked.connect(self._on_sort_item_clicked)
+        
+        def show_sort_menu():
+            self.sort_menu.set_target_button(self.sort_btn)
+            self.sort_menu.show_menu()
+        
+        self.sort_btn.clicked.connect(show_sort_menu)
+        
         # 时间线按钮 - 移到第二行最后并自适应填充剩余空间
         timeline_btn = CustomButton("时间线", button_type="primary")
         timeline_btn.clicked.connect(self._show_timeline_window)
@@ -1935,18 +1967,30 @@ class CustomFileSelector(QWidget):
         """
         改变排序方式
         """
-        # 排序选项映射，文本对应排序方式
         sort_mapping = {
             "名称升序": ("name", "asc"),
             "名称降序": ("name", "desc"),
             "大小升序": ("size", "asc"),
             "大小降序": ("size", "desc"),
+            "修改时间升序": ("modified", "asc"),
+            "修改时间降序": ("modified", "desc"),
             "创建时间升序": ("created", "asc"),
             "创建时间降序": ("created", "desc")
         }
         
         self.sort_by, self.sort_order = sort_mapping.get(sort_text, ("name", "asc"))
         self.refresh_files()
+    
+    def _on_sort_item_clicked(self, item_data):
+        """
+        处理排序选项点击事件
+        
+        Args:
+            item_data: 点击的排序选项数据，格式为 (sort_by, sort_order)
+        """
+        if isinstance(item_data, tuple) and len(item_data) == 2:
+            self.sort_by, self.sort_order = item_data
+            self.refresh_files()
     
     def change_view_mode(self, index):
         """
