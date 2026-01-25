@@ -33,7 +33,7 @@ from freeassetfilter.widgets.D_widgets import CustomButton
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.widgets.control_menu import CustomControlMenu
-from freeassetfilter.widgets.volume_slider_menu import VolumeSliderMenu
+from freeassetfilter.widgets.D_volume_control import DVolumeControl
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.core.settings_manager import SettingsManager
 
@@ -175,7 +175,7 @@ class VideoPlayer(QWidget):
         self.speed_menu_timer = None  # 菜单关闭定时器
         
         # 使用自定义音量条浮动菜单
-        self.volume_slider_menu = None  # 音量条浮动菜单组件
+        self.volume_control = None  # 自定义音量控制组件
         
         # 状态标志
         self._user_interacting = False
@@ -409,27 +409,27 @@ class VideoPlayer(QWidget):
         bottom_layout.addStretch(1)
         
         # 音量图标按钮设置，应用DPI缩放
-        # 创建音量条浮动菜单组件
-        self.volume_slider_menu = VolumeSliderMenu(self)
-        
+        # 创建自定义音量控制组件
+        self.volume_control = DVolumeControl(self)
+
         # 加载保存的音量设置
         saved_volume = self.load_volume_setting()
         # 设置初始音量
         self._current_volume = saved_volume
         self._previous_volume = saved_volume
-        self.volume_slider_menu.set_volume(saved_volume)
+        self.volume_control.set_volume(saved_volume)
         # 将音量设置到播放器核心
         self.set_volume(saved_volume)
-        
-        # 设置音量条浮动菜单的信号连接
-        self.volume_slider_menu.valueChanged.connect(self.set_volume)
-        self.volume_slider_menu.mutedChanged.connect(self._on_muted_changed)
-        
-        # 连接音量条的用户交互结束信号，用于保存音量设置
-        self.volume_slider_menu.volume_slider.userInteractionEnded.connect(lambda: self.save_volume_setting(self._current_volume))
-        
-        # 添加音量条浮动菜单到布局
-        bottom_layout.addWidget(self.volume_slider_menu)
+
+        # 设置自定义音量控制组件的信号连接
+        self.volume_control.valueChanged.connect(self.set_volume)
+        self.volume_control.mutedChanged.connect(self._on_muted_changed)
+
+        # 连接用户交互结束信号，用于保存音量设置
+        self.volume_control._d_volume._progress_bar.userInteractionEnded.connect(lambda: self.save_volume_setting(self._current_volume))
+
+        # 添加自定义音量控制组件到布局
+        bottom_layout.addWidget(self.volume_control)
         
         # 添加倍速控制下拉菜单，应用DPI缩放
         self.speed_dropdown = CustomDropdownMenu(self)
@@ -1626,20 +1626,20 @@ class VideoPlayer(QWidget):
             
             self._current_volume = volume
             self._previous_volume = volume
-            
-        # 更新音量条浮动菜单的状态
-        if hasattr(self, 'volume_slider_menu') and self.volume_slider_menu:
-            self.volume_slider_menu.set_volume(volume)
-            
+
+        # 更新自定义音量控制组件的状态
+        if hasattr(self, 'volume_control') and self.volume_control:
+            self.volume_control.set_volume(volume)
+
         # 更新静音状态
         if volume == 0:
             self._is_muted = True
-            if hasattr(self, 'volume_slider_menu') and self.volume_slider_menu:
-                self.volume_slider_menu.set_muted(True)
+            if hasattr(self, 'volume_control') and self.volume_control:
+                self.volume_control.set_muted(True)
         else:
             self._is_muted = False
-            if hasattr(self, 'volume_slider_menu') and self.volume_slider_menu:
-                self.volume_slider_menu.set_muted(False)
+            if hasattr(self, 'volume_control') and self.volume_control:
+                self.volume_control.set_muted(False)
     
     def set_speed(self, speed):
         """

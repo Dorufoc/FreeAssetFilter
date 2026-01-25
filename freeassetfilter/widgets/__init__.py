@@ -19,6 +19,10 @@ from .hover_tooltip import HoverTooltip
 from .table_widgets import CustomTimelineTable, CustomMatrixTable
 # 导入自定义进度条组件
 from .progress_widgets import D_ProgressBar
+# 导入音量控制悬浮菜单组件
+from .D_volume import D_Volume
+# 导入自定义音量控制组件
+from .D_volume_control import DVolumeControl
 
 __all__ = [
     'CustomButton',
@@ -30,5 +34,7 @@ __all__ = [
     'HoverTooltip',
     'CustomTimelineTable',
     'CustomMatrixTable',
-    'D_ProgressBar'
+    'D_ProgressBar',
+    'D_Volume',
+    'DVolumeControl'
 ]

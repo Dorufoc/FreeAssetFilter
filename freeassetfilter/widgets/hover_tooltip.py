@@ -8,8 +8,8 @@ FreeAssetFilter 悬浮详细信息组件
 
 import weakref
 from PyQt5.QtWidgets import QWidget, QLabel, QApplication
-from PyQt5.QtCore import Qt, QPoint, QTimer, QRect, pyqtSignal, QEvent
-from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase
+from PyQt5.QtCore import Qt, QPoint, QTimer, QRect, QEvent, QPropertyAnimation, QEasingCurve, pyqtProperty, QByteArray
+from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase, QTransform
 
 
 class HoverTooltip(QWidget):
@@ -76,8 +76,25 @@ class HoverTooltip(QWidget):
         # 鼠标位置跟踪
         self.last_mouse_pos = QPoint()
         self.target_widgets = []  # 存储目标控件的弱引用列表
-        
+
+        # 动画相关属性
+        self._is_animating = False
+        self._fade_duration = 200
+        self._opacity_value = 1.0
+        self._scale_value = 1.0
+
+        self._fade_animation = QPropertyAnimation(self, b"_tooltip_opacity")
+        self._fade_animation.setDuration(self._fade_duration)
+        self._fade_animation.setEasingCurve(QEasingCurve.InOutQuad)
+        self._fade_animation.finished.connect(self._on_animation_finished)
+
+        self._scale_animation = QPropertyAnimation(self, QByteArray(b"_tooltip_scale"))
+        self._scale_animation.setDuration(self._fade_duration)
+        self._scale_animation.setEasingCurve(QEasingCurve.InOutQuad)
+
         # 初始化隐藏
+        self._opacity_value = 1.0
+        self._scale_value = 1.0
         self.hide()
     
     def update_style(self):
@@ -113,6 +130,106 @@ class HoverTooltip(QWidget):
         
         # 重新绘制组件
         self.update()
+
+    def _get_opacity(self):
+        """获取透明度"""
+        return self._opacity_value
+
+    def _set_opacity(self, opacity):
+        """设置透明度"""
+        self._opacity_value = max(0.0, min(1.0, opacity))
+        self.setWindowOpacity(self._opacity_value)
+
+    _tooltip_opacity = pyqtProperty(float, _get_opacity, _set_opacity)
+
+    def _get_scale(self):
+        """获取缩放比例"""
+        return self._scale_value
+
+    def _set_scale(self, scale):
+        """设置缩放比例"""
+        self._scale_value = max(0.01, min(2.0, scale))
+        self.update_transform()
+
+    _tooltip_scale = pyqtProperty(float, _get_scale, _set_scale)
+
+    def update_transform(self):
+        """更新缩放变换"""
+        transform = QTransform()
+        center_x = self.width() / 2
+        center_y = self.height() / 2
+        transform.translate(center_x, center_y)
+        transform.scale(self._scale_value, self._scale_value)
+        transform.translate(-center_x, -center_y)
+        self.setGraphicsEffect(None)
+
+    def paintEvent(self, event):
+        """重写paintEvent应用缩放效果"""
+        if abs(self._scale_value - 1.0) > 0.01:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+            transform = QTransform()
+            center_x = self.width() / 2
+            center_y = self.height() / 2
+            transform.translate(center_x, center_y)
+            transform.scale(self._scale_value, self._scale_value)
+            transform.translate(-center_x, -center_y)
+
+            painter.setTransform(transform)
+            super().paintEvent(event)
+        else:
+            super().paintEvent(event)
+
+    def _on_animation_finished(self):
+        """动画结束处理"""
+        if self._opacity_value <= 0.01:
+            super().hide()
+            self._opacity_value = 1.0
+        else:
+            pass
+        self._is_animating = False
+
+    def _fade_in(self):
+        """淡入显示（透明度0→1，缩放0.5→1）"""
+        if self._is_animating:
+            return
+
+        self._is_animating = True
+        self._fade_animation.stop()
+        self._scale_animation.stop()
+
+        self._opacity_value = 0.0
+        self._scale_value = 0.5
+        self.setWindowOpacity(0.0)
+
+        super().show()
+
+        self._fade_animation.setStartValue(0.0)
+        self._fade_animation.setEndValue(1.0)
+        self._fade_animation.start()
+
+        self._scale_animation.setStartValue(0.5)
+        self._scale_animation.setEndValue(1.0)
+        self._scale_animation.start()
+
+    def _fade_out(self):
+        """淡出隐藏（透明度1→0，缩放1→0.5）"""
+        if self._is_animating:
+            return
+
+        self._is_animating = True
+        self._fade_animation.stop()
+        self._scale_animation.stop()
+
+        self._fade_animation.setStartValue(self._get_opacity())
+        self._fade_animation.setEndValue(0.0)
+        self._fade_animation.start()
+
+        self._scale_animation.setStartValue(self._get_scale())
+        self._scale_animation.setEndValue(0.5)
+        self._scale_animation.start()
     
     def set_target_widget(self, widget):
         """设置要监听的目标控件"""
@@ -143,22 +260,22 @@ class HoverTooltip(QWidget):
                 # 鼠标移动时更新位置并重置定时器
                 self.last_mouse_pos = event.globalPos()
                 self.timer.start()
-                self.hide()
+                self._fade_out()
             elif event_type == QEvent.Enter:
                 # 鼠标进入时启动定时器
                 self.last_mouse_pos = event.globalPos()
                 self.timer.start()
             elif event_type == QEvent.Leave:
                 # 鼠标离开时隐藏并停止定时器
-                self.hide()
+                self._fade_out()
                 self.timer.stop()
             elif event_type == QEvent.MouseButtonPress or event_type == QEvent.MouseButtonRelease:
                 # 点击时隐藏并停止定时器，不影响控件的点击事件
-                self.hide()
+                self._fade_out()
                 self.timer.stop()
             elif event_type == QEvent.MouseButtonDblClick:
                 # 双击时隐藏并停止定时器，不影响控件的双击事件
-                self.hide()
+                self._fade_out()
                 self.timer.stop()
         
         # 返回False确保事件继续传播到目标控件
@@ -226,7 +343,7 @@ class HoverTooltip(QWidget):
             pos.setY(screen_rect.height() - self.height() - margin)
         
         self.move(pos)
-        self.show()
+        self._fade_in()
     
     def get_text_at_position(self, widget=None):
         """获取鼠标位置的文本内容"""

@@ -70,6 +70,10 @@ class SettingsManager:
             "player": {
                 "speed": 1.0,
                 "volume": 100
+            },
+            "developer": {
+                "debug_mode": False,
+                "log_level": "info"
             }
         }
         

@@ -162,11 +162,11 @@ class ModernSettingsWindow(QDialog):
                 border: 1px solid {self.theme_manager.get_theme_colors()['normal_color']};
             }}
         """)
-        
+
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 15, 8, 10)
         layout.setSpacing(8)
-        
+
         title_label = QLabel("设置")
         title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         title_label.setStyleSheet(f"""
@@ -180,16 +180,86 @@ class ModernSettingsWindow(QDialog):
             }}
         """)
         layout.addWidget(title_label)
-        
+
+        nav_scroll_area = QScrollArea()
+        nav_scroll_area.setWidgetResizable(True)
+        nav_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        nav_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        base_color = self.theme_manager.get_theme_colors()['base_color']
+        auxiliary_color = self.theme_manager.get_theme_colors()['auxiliary_color']
+        normal_color = self.theme_manager.get_theme_colors()['normal_color']
+        secondary_color = self.theme_manager.get_theme_colors()['secondary_color']
+        accent_color = self.theme_manager.get_theme_colors()['accent_color']
+
+        nav_scrollbar_style = f"""
+            QScrollArea {{
+                border: 0px solid transparent;
+                background-color: transparent;
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: transparent;
+            }}
+            QScrollBar:vertical {{
+                width: 6px;
+                background-color: {auxiliary_color};
+                border: 0px solid transparent;
+                border-radius: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {normal_color};
+                min-height: 15px;
+                border-radius: 3px;
+                border: none;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {secondary_color};
+                border: none;
+            }}
+            QScrollBar::handle:vertical:pressed {{
+                background-color: {accent_color};
+                border: none;
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0px;
+                border: none;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: none;
+                border: 0px solid transparent;
+                border: none;
+            }}
+        """
+        nav_scroll_area.setStyleSheet(nav_scrollbar_style)
+
+        nav_scroll_area.setVerticalScrollBar(D_ScrollBar(nav_scroll_area, Qt.Vertical))
+        nav_scroll_area.verticalScrollBar().set_colors(normal_color, secondary_color, accent_color, auxiliary_color)
+
+        SmoothScroller.apply_to_scroll_area(nav_scroll_area)
+
+        nav_content = QWidget()
+        nav_content.setStyleSheet(f"""
+            QWidget {{
+                background-color: transparent;
+            }}
+        """)
+        nav_layout = QVBoxLayout(nav_content)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(8)
+        nav_layout.setAlignment(Qt.AlignTop)
+
         self.navigation_buttons = []
         self.navigation_items = [
             {"text": "外观", "id": "appearance"},
             {"text": "文件选择器", "id": "file_selector"},
             {"text": "文件暂存池", "id": "file_staging"},
             {"text": "播放器", "id": "player"},
-            {"text": "通用", "id": "general"}
+            {"text": "通用", "id": "general"},
+            {"text": "开发者设置", "id": "developer"}
         ]
-        
+
         for i, item in enumerate(self.navigation_items):
             if i == 0:
                 button = CustomButton(item["text"], button_type="primary", display_mode="text", height=20)
@@ -198,10 +268,11 @@ class ModernSettingsWindow(QDialog):
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             button.clicked.connect(lambda checked, idx=i: self._on_navigation_clicked(idx))
             self.navigation_buttons.append(button)
-            layout.addWidget(button)
-        
-        layout.addStretch()
-        
+            nav_layout.addWidget(button)
+
+        nav_scroll_area.setWidget(nav_content)
+        layout.addWidget(nav_scroll_area, 1)
+
         return widget
     
     def _create_content_area(self):
@@ -457,7 +528,7 @@ class ModernSettingsWindow(QDialog):
         Args:
             index (int): 选中的导航项索引
         """
-        nav_ids = ["appearance", "file_selector", "file_staging", "player", "general"]
+        nav_ids = ["appearance", "file_selector", "file_staging", "player", "general", "developer"]
         
         if 0 <= index < len(nav_ids):
             for i, button in enumerate(self.navigation_buttons):
@@ -483,7 +554,8 @@ class ModernSettingsWindow(QDialog):
             "file_selector": "文件选择器设置",
             "file_staging": "文件暂存池设置",
             "player": "播放器设置",
-            "general": "通用设置"
+            "general": "通用设置",
+            "developer": "开发者设置"
         }
         
         if tab_id in title_mapping:
@@ -506,6 +578,8 @@ class ModernSettingsWindow(QDialog):
             self._add_player_settings()
         elif tab_id == "general":
             self._add_general_settings()
+        elif tab_id == "developer":
+            self._add_developer_settings()
     
     def _add_appearance_settings(self):
         """
@@ -867,6 +941,49 @@ class ModernSettingsWindow(QDialog):
         # 通用设置项可以在这里添加
 
         self.scroll_layout.addWidget(general_group)
+
+    def _add_developer_settings(self):
+        """
+        添加开发者设置项
+        """
+        developer_group = QGroupBox("开发者选项")
+        developer_group.setStyleSheet(self.group_box_style)
+        developer_layout = QVBoxLayout(developer_group)
+
+        hover_test_group = QGroupBox("hover类测试")
+        hover_test_group.setStyleSheet(self.group_box_style)
+        hover_test_layout = QVBoxLayout(hover_test_group)
+
+        self.hover_menu_test_button = CustomButton("测试 Hover Menu", button_type="secondary")
+        self.hover_menu_test_button.clicked.connect(self._run_hover_menu_test)
+        hover_test_layout.addWidget(self.hover_menu_test_button)
+
+        self.hover_tooltip_test_button = CustomButton("测试 Hover Tooltip", button_type="secondary")
+        self.hover_tooltip_test_button.clicked.connect(self._run_hover_tooltip_test)
+        hover_test_layout.addWidget(self.hover_tooltip_test_button)
+
+        developer_layout.addWidget(hover_test_group)
+        self.scroll_layout.addWidget(developer_group)
+
+    def _run_hover_menu_test(self):
+        """
+        运行 Hover Menu 测试程序
+        """
+        import subprocess
+        import sys
+        test_script = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "test", "test_D_hover_menu.py")
+        if os.path.exists(test_script):
+            subprocess.Popen([sys.executable, test_script])
+
+    def _run_hover_tooltip_test(self):
+        """
+        运行 Hover Tooltip 测试程序
+        """
+        import subprocess
+        import sys
+        test_script = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "test", "20260118", "test_hover_tooltip_interactive.py")
+        if os.path.exists(test_script):
+            subprocess.Popen([sys.executable, test_script])
 
     def _open_theme_color_settings(self):
         """
