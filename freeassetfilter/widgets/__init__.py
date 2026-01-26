@@ -23,6 +23,8 @@ from .progress_widgets import D_ProgressBar
 from .D_volume import D_Volume
 # 导入自定义音量控制组件
 from .D_volume_control import DVolumeControl
+# 导入菜单列表控件
+from .menu_list import D_MenuList, D_MenuListItem
 
 __all__ = [
     'CustomButton',
@@ -36,5 +38,7 @@ __all__ = [
     'CustomMatrixTable',
     'D_ProgressBar',
     'D_Volume',
-    'DVolumeControl'
+    'DVolumeControl',
+    'D_MenuList',
+    'D_MenuListItem'
 ]

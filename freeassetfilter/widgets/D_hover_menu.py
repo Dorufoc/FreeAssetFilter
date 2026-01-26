@@ -267,7 +267,18 @@ class D_HoverMenu(QWidget):
             self._content_widget.adjustSize() if hasattr(self._content_widget, 'adjustSize') else None
 
             content_size = self._content_widget.sizeHint()
-            self.setFixedSize(content_size.width(), content_size.height())
+            content_width = content_size.width()
+            content_height = content_size.height()
+
+            if hasattr(self._content_widget, '_list_widget'):
+                list_widget = self._content_widget._list_widget
+                # 使用实际宽度而不是 sizeHint
+                actual_width = list_widget.width() if list_widget.width() > 0 else list_widget.minimumWidth()
+                if actual_width > 0:
+                    content_width = actual_width
+
+            self.setFixedWidth(content_width)
+            self.setFixedHeight(content_height)
 
     def set_target_widget(self, widget):
         """

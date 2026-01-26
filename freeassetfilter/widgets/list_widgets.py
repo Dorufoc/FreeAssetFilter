@@ -51,15 +51,15 @@ class CustomSelectListItem(QWidget):
         """
         初始化列表项UI
         """
-        # 应用DPI缩放
-        scaled_icon_size = int(6 * self.dpi_scale)
-        scaled_margin = int(2 * self.dpi_scale)  # 外部边距
-        text_margin = int(6 * self.dpi_scale)  # 6dx文本边距
+        # 应用DPI缩放 - 紧凑布局
+        scaled_icon_size = int(3 * self.dpi_scale)  # 图标大小
+        item_margin = int(1.5 * self.dpi_scale)  # 条目边距（左右）
+        text_margin = int(1 * self.dpi_scale)  # 文本边距
         
         # 主布局
         main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
-        main_layout.setSpacing(scaled_margin)
+        main_layout.setContentsMargins(item_margin, item_margin, item_margin, item_margin)
+        main_layout.setSpacing(item_margin)
         
         # 图标标签
         self.icon_label = QLabel(self)
@@ -67,18 +67,18 @@ class CustomSelectListItem(QWidget):
         self.icon_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.icon_label)
         
-        # 文本容器 - 用于实现6dx边距
+        # 文本容器 - 用于实现文本边距
         text_container = QWidget()
         text_container.setObjectName("textContainer")
         text_container_layout = QVBoxLayout(text_container)
-        # 设置6dx固定边距，应用缩放因子
+        # 设置文本边距，应用缩放因子
         text_container_layout.setContentsMargins(text_margin, text_margin, text_margin, text_margin)
         text_container_layout.setSpacing(0)
         
         # 文本标签
         self.text_label = QLabel(self.text)
         self.text_label.setFont(self.global_font)
-        self.text_label.setAlignment(Qt.AlignVCenter)
+        self.text_label.setAlignment(Qt.AlignCenter)  # 居中显示
         self.text_label.setWordWrap(True)  # 允许文本换行
         self.text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         text_container_layout.addWidget(self.text_label)
@@ -89,7 +89,7 @@ class CustomSelectListItem(QWidget):
         # 计算合适的高度：考虑字体高度、边距和图标大小
         font_metrics = self.text_label.fontMetrics()
         font_height = font_metrics.height()
-        # 高度 = 图标大小（24px） + 上下边距（2*8px） + 文本边距（2*6px） + 额外空间
+        # 优化高度计算：减少额外空间
         min_height = int(max(font_height + 2 * (scaled_margin + text_margin), scaled_icon_size + 2 * scaled_margin) * self.dpi_scale)
         self.setMinimumHeight(min_height)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
@@ -160,7 +160,7 @@ class CustomSelectListItem(QWidget):
         r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
         selected_bg = f"rgba({r}, {g}, {b}, 102)"
 
-        scaled_radius = int(8 * self.dpi_scale)
+        scaled_radius = int(1 * self.dpi_scale)  # 圆角半径进一步减小
         scaled_border = int(1 * self.dpi_scale)
 
         if self.is_selected:
@@ -228,6 +228,15 @@ class CustomSelectListItem(QWidget):
         if event.button() == Qt.LeftButton:
             self.doubleClicked.emit(self.index)
         super().mouseDoubleClickEvent(event)
+    
+    def heightHint(self):
+        """
+        返回建议高度
+        
+        Returns:
+            int: 建议高度
+        """
+        return self.minimumHeight()
 
 
 class CustomSelectList(QWidget):
@@ -316,11 +325,12 @@ class CustomSelectList(QWidget):
         self.scroll_area.setWidget(self.content_widget)
         main_layout.addWidget(self.scroll_area)
         
-        # 设置固定尺寸
-        self.setFixedSize(self.default_width, self.default_height)
+        # 设置尺寸策略，允许宽度自适应
+        self.setMinimumWidth(self.min_width)
+        self.setFixedHeight(self.default_height)
         
-        # 确保滚动条总是显示
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        # 根据需要显示滚动条
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     
     def add_item(self, text, icon_path=""):
         """
@@ -343,9 +353,12 @@ class CustomSelectList(QWidget):
         self.items.append(item_widget)
         self.content_layout.addWidget(item_widget)
         
-        # 设置间距，应用DPI缩放
-        scaled_spacing = int(1 * self.dpi_scale)
+        # 设置间距，应用DPI缩放 - 条目外边距
+        scaled_spacing = int(1.5 * self.dpi_scale)
         self.content_layout.setSpacing(scaled_spacing)
+        
+        # 自动调整宽度以适应内容
+        self.adjust_width_to_content()
     
     def add_items(self, items):
         """
@@ -363,6 +376,9 @@ class CustomSelectList(QWidget):
                 text = item.get("text", "")
                 icon_path = item.get("icon_path", "")
                 self.add_item(text, icon_path)
+        
+        # 批量添加后自动调整宽度
+        self.adjust_width_to_content()
     
     def _on_item_clicked(self, index):
         """
@@ -420,7 +436,20 @@ class CustomSelectList(QWidget):
             list: 选中索引列表
         """
         return self.selected_indices.copy()
-    
+
+    def set_current_item(self, index):
+        """
+        设置当前选中项（单选模式）
+
+        Args:
+            index (int): 要选中的索引，-1表示不选中任何项
+        """
+        self.clear_selection()
+        if 0 <= index < len(self.items):
+            self.items[index].set_selected(True)
+            self.selected_indices.append(index)
+            self.selectionChanged.emit(self.selected_indices)
+
     def set_selected_indices(self, indices):
         """
         设置选中索引列表
@@ -455,27 +484,138 @@ class CustomSelectList(QWidget):
         
         # 发出信号
         self.selectionChanged.emit(self.selected_indices)
+        
+        # 清空后调整宽度到最小值
+        self.adjust_width_to_content()
     
     def set_default_size(self, width, height):
         """
         设置默认尺寸
-        
+
         Args:
             width (int): 默认宽度
             height (int): 默认高度
         """
         self.default_width = int(width * self.dpi_scale)
         self.default_height = int(height * self.dpi_scale)
-        self.setFixedSize(self.default_width, self.default_height)
-    
+        self.setFixedHeight(self.default_height)
+
     def set_minimum_size(self, width, height):
         """
         设置最小尺寸
-        
+
         Args:
             width (int): 最小宽度
             height (int): 最小高度
         """
         self.min_width = int(width * self.dpi_scale)
         self.min_height = int(height * self.dpi_scale)
-        self.setMinimumSize(self.min_width, self.min_height)
+        self.setMinimumWidth(self.min_width)
+        self.setFixedHeight(self.min_height)
+    
+    def adjust_width_to_content(self):
+        """
+        根据内容自动调整宽度
+        计算所有列表项中最长的文本，并据此调整控件宽度
+        """
+        if not self.items:
+            # 如果没有项目，使用最小宽度
+            self.setFixedWidth(self.min_width)
+            return
+        
+        # 计算所需宽度
+        calculated_width = self._calculate_content_width()
+        
+        # 应用计算出的宽度
+        self.setFixedWidth(calculated_width)
+    
+    def _calculate_content_width(self):
+        """
+        计算内容所需宽度
+        
+        Returns:
+            int: 计算出的宽度
+        """
+        from PyQt5.QtGui import QFontMetrics
+        
+        app = QApplication.instance()
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        global_font = getattr(app, 'global_font', QFont())
+        
+        font_metrics = QFontMetrics(global_font)
+        
+        max_text_width = 0
+        has_icon = False
+        
+        # 遍历所有项目，找到最长的文本
+        for item in self.items:
+            text = item.text if hasattr(item, 'text') else ""
+            if text:
+                # 计算文本宽度（考虑换行，取最长的一行）
+                lines = text.split('\n')
+                for line in lines:
+                    text_width = font_metrics.horizontalAdvance(line)
+                    max_text_width = max(max_text_width, text_width)
+            
+            # 检查是否有图标
+            if hasattr(item, 'icon_path') and item.icon_path:
+                has_icon = True
+        
+        # 使用与CustomSelectListItem一致的极紧凑布局参数
+        icon_size = int(3 * dpi_scale) if has_icon else 0  # 图标大小
+        margin = int(0 * dpi_scale)  # 外部边距
+        text_margin = int(1 * dpi_scale)  # 文本容器边距
+        
+        # 总宽度 = 左边距 + 图标宽度 + 图标间距 + 左文本边距 + 文本宽度 + 右文本边距 + 右边距
+        calculated_width = margin * 2  # 左右边距
+        if has_icon:
+            calculated_width += icon_size + margin  # 图标宽度 + 图标与文本间距
+        calculated_width += text_margin * 2  # 文本容器左右边距
+        calculated_width += max_text_width  # 文本宽度
+        
+        # 确保宽度不小于最小宽度和默认宽度
+        calculated_width = max(calculated_width, self.min_width, self.default_width)
+        
+        return calculated_width
+    
+    def sizeHint(self):
+        """
+        返回建议尺寸
+        
+        Returns:
+            QSize: 建议尺寸
+        """
+        app = QApplication.instance()
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        global_font = getattr(app, 'global_font', QFont())
+        
+        from PyQt5.QtGui import QFontMetrics
+        font_metrics = QFontMetrics(global_font)
+        
+        max_text_width = 0
+        total_height = 0
+        
+        if self.items:
+            for item in self.items:
+                text = item.text if hasattr(item, 'text') else ""
+                if text:
+                    # 计算文本宽度（考虑换行，取最长的一行）
+                    lines = text.split('\n')
+                    for line in lines:
+                        text_width = font_metrics.horizontalAdvance(line)
+                        max_text_width = max(max_text_width, text_width)
+                
+                item_height = item.heightHint() if hasattr(item, 'heightHint') else item.minimumHeight()
+                total_height += item_height
+        
+        # 使用计算内容宽度的方法来获取精确的宽度
+        calculated_width = self._calculate_content_width()
+        
+        # 计算总高度（包括项目间距）
+        if self.items:
+            spacing = int(1 * dpi_scale)
+            total_height += spacing * (len(self.items) - 1)
+        
+        calculated_height = max(total_height, self.min_height, self.default_height)
+        
+        return QSize(calculated_width, calculated_height)

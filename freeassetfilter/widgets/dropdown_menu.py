@@ -179,7 +179,7 @@ class CustomDropdownMenu(QWidget):
                     padding: 2px 3px;
                     background-color: transparent;
                     border: none;
-                    text-align: left;
+                    text-align: center;
                     vertical-align: center;
                     height: {button_height}px;
                 }}
