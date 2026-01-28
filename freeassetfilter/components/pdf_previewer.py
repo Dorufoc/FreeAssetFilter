@@ -24,13 +24,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
     QFileDialog, QLabel, QScrollArea, QGroupBox, QGridLayout,
-    QComboBox, QFrame, QMessageBox
+    QComboBox, QFrame, QMessageBox, QSizePolicy
 )
 from PyQt5.QtGui import (
     QFont, QIcon, QPixmap, QImage
 )
 from PyQt5.QtCore import (
-    Qt, QSize, QEvent, pyqtSignal
+    Qt, QSize, QEvent, pyqtSignal, QPoint
 )
 
 # 导入自定义控件
@@ -74,6 +74,7 @@ class PDFPreviewWidget(QWidget):
         self.pdf_document = None
         self.zoom = 1.0
         self.total_pages = 0
+        self.current_page = 0
         self.rendered_pages = []
         self.preview_container = None
         self.pages_container = None
@@ -82,6 +83,10 @@ class PDFPreviewWidget(QWidget):
         self.zoom_slider = None
         self.prev_button = None
         self.next_button = None
+        self._middle_click_dragging = False
+        self._middle_click_start_pos = None
+        self._scrollbar_start_values = None
+        self._scroller = None
         
         # 初始化UI
         self.init_ui()
@@ -112,23 +117,21 @@ class PDFPreviewWidget(QWidget):
         toolbar_layout.setSpacing(scaled_spacing)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.page_label = QLabel("页数: 0")
-        self.page_label.setFont(self.global_font)
-        self.page_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: {secondary_color}; font-weight: 500;")
-        toolbar_layout.addWidget(self.page_label)
+        icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
+        prev_icon_path = os.path.join(icon_dir, "arrow_up.svg")
+        next_icon_path = os.path.join(icon_dir, "arrow_down.svg")
         
-        scaled_button_border_radius = int(4 * self.dpi_scale)
-        scaled_button_padding_v = int(6 * self.dpi_scale)
-        scaled_button_padding_h = int(12 * self.dpi_scale)
-        
-        self.prev_button = CustomButton("上一页", button_type="secondary")
-        self.prev_button.setFont(self.global_font)
+        self.prev_button = CustomButton(prev_icon_path, button_type="normal", display_mode="icon", tooltip_text="上一页")
         self.prev_button.clicked.connect(self.prev_page)
         self.prev_button.setEnabled(False)
         toolbar_layout.addWidget(self.prev_button)
         
-        self.next_button = CustomButton("下一页", button_type="secondary")
-        self.next_button.setFont(self.global_font)
+        self.page_label = QLabel("0/0")
+        self.page_label.setFont(self.global_font)
+        self.page_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: {secondary_color}; font-weight: 500;")
+        toolbar_layout.addWidget(self.page_label)
+        
+        self.next_button = CustomButton(next_icon_path, button_type="normal", display_mode="icon", tooltip_text="下一页")
         self.next_button.clicked.connect(self.next_page)
         self.next_button.setEnabled(False)
         toolbar_layout.addWidget(self.next_button)
@@ -143,7 +146,7 @@ class PDFPreviewWidget(QWidget):
         self.zoom_slider = D_ProgressBar(orientation=D_ProgressBar.Horizontal, is_interactive=True)
         self.zoom_slider.setRange(50, 300)
         self.zoom_slider.setValue(100)
-        self.zoom_slider.setFixedWidth(int(150 * self.dpi_scale))
+        self.zoom_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.zoom_slider.valueChanged.connect(self.change_zoom)
         toolbar_layout.addWidget(self.zoom_slider)
         
@@ -151,8 +154,9 @@ class PDFPreviewWidget(QWidget):
         
         self.preview_container = QScrollArea()
         self.preview_container.setWidgetResizable(True)
-        scaled_min_height = int(250 * self.dpi_scale)
-        self.preview_container.setMinimumHeight(scaled_min_height)
+        scaled_min_width = int(100 * self.dpi_scale)
+        scaled_min_height = int(100 * self.dpi_scale)
+        self.preview_container.setMinimumSize(scaled_min_width, scaled_min_height)
         self.preview_container.setStyleSheet('''.QScrollArea {
             background-color: transparent;
             border: none;
@@ -163,15 +167,21 @@ class PDFPreviewWidget(QWidget):
         
         self.pages_container = QWidget()
         self.pages_layout = QVBoxLayout(self.pages_container)
-        self.pages_layout.setAlignment(Qt.AlignTop)
+        self.pages_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.pages_layout.setSpacing(scaled_spacing)
         self.pages_layout.setContentsMargins(0, 0, 0, 0)
         self.pages_container.setStyleSheet("background-color: transparent;")
+        self.pages_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
         self.preview_container.setWidget(self.pages_container)
         
+        self.preview_container.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.preview_container.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.preview_container.setVerticalScrollBar(D_ScrollBar(self.preview_container, Qt.Vertical))
         self.preview_container.verticalScrollBar().apply_theme_from_settings()
+        self.preview_container.setHorizontalScrollBar(D_ScrollBar(self.preview_container, Qt.Horizontal))
+        self.preview_container.horizontalScrollBar().apply_theme_from_settings()
+        self.preview_container.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
         SmoothScroller.apply_to_scroll_area(self.preview_container)
         
         layout.addWidget(self.preview_container, 1)
@@ -245,6 +255,59 @@ class PDFPreviewWidget(QWidget):
         except Exception as e:
             print(f"重新计算缩放值时出错: {e}")
     
+    def mousePressEvent(self, event):
+        """
+        鼠标按下事件 - 处理中键拖动
+        """
+        if event.button() == Qt.MiddleButton and self.pdf_document:
+            self._middle_click_dragging = True
+            self._middle_click_start_pos = event.pos()
+            self._scrollbar_start_values = (
+                self.preview_container.horizontalScrollBar().value(),
+                self.preview_container.verticalScrollBar().value()
+            )
+            self.setCursor(Qt.ClosedHandCursor)
+        else:
+            super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """
+        鼠标移动事件 - 处理中键拖动
+        """
+        if self._middle_click_dragging and self._middle_click_start_pos:
+            delta_x = self._middle_click_start_pos.x() - event.pos().x()
+            delta_y = self._middle_click_start_pos.y() - event.pos().y()
+            
+            h_scroll = self.preview_container.horizontalScrollBar()
+            v_scroll = self.preview_container.verticalScrollBar()
+            
+            h_scroll.setValue(self._scrollbar_start_values[0] + delta_x)
+            v_scroll.setValue(self._scrollbar_start_values[1] + delta_y)
+        else:
+            super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        """
+        鼠标释放事件 - 结束中键拖动
+        """
+        if event.button() == Qt.MiddleButton and self._middle_click_dragging:
+            self._middle_click_dragging = False
+            self._middle_click_start_pos = None
+            self._scrollbar_start_values = None
+            self.setCursor(Qt.ArrowCursor)
+        else:
+            super().mouseReleaseEvent(event)
+    
+    def mouseDoubleClickEvent(self, event):
+        """
+        鼠标双击事件 - 重置缩放为默认适合大小
+        """
+        if self.pdf_document:
+            self.zoom = self.base_zoom
+            self.zoom_slider.setValue(100)
+            self.update_preview()
+        super().mouseDoubleClickEvent(event)
+    
     def set_file(self, file_path):
         """
         设置要预览的PDF文件
@@ -302,6 +365,7 @@ class PDFPreviewWidget(QWidget):
                     
                     # 默认缩放为100%，即适合大小
                     self.zoom = self.base_zoom
+                    self.current_page = 1
                     
                     # 更新UI
                     self.update_page_info()
@@ -393,14 +457,15 @@ class PDFPreviewWidget(QWidget):
             # 创建页面标签并添加到布局
             page_label = QLabel()
             page_label.setPixmap(pixmap)
-            page_label.setAlignment(Qt.AlignCenter)
+            page_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            page_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             
             # 使用DPI缩放因子调整页面样式
             scaled_border_radius = int(8 * self.dpi_scale)
             scaled_padding = int(20 * self.dpi_scale)
             page_label.setStyleSheet(f"background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px; padding: {scaled_padding}px;")
             
-            self.pages_layout.addWidget(page_label, alignment=Qt.AlignCenter)
+            self.pages_layout.addWidget(page_label, alignment=Qt.AlignVCenter | Qt.AlignLeft)
             self.rendered_pages.append(page_label)
             
         except Exception as e:
@@ -418,7 +483,7 @@ class PDFPreviewWidget(QWidget):
         """
         try:
             if self.pdf_document:
-                self.page_label.setText(f"页数: {self.total_pages}")
+                self.page_label.setText(f"{self.current_page}/{self.total_pages}")
         except Exception as e:
             print(f"更新页码信息时出错: {e}")
     
@@ -465,14 +530,10 @@ class PDFPreviewWidget(QWidget):
         上一页
         """
         try:
-            # 滚动到上一页位置
-            scroll_bar = self.preview_container.verticalScrollBar()
-            current_pos = scroll_bar.value()
-            page_height = 0
-            if self.rendered_pages:
-                scaled_spacing = int(8 * self.dpi_scale)  # 与布局间距保持一致
-                page_height = self.rendered_pages[0].height() + scaled_spacing  # 页面高度 + 间距
-            scroll_bar.setValue(max(0, current_pos - page_height))
+            if self.current_page > 1:
+                self.current_page -= 1
+                self._scroll_to_page(self.current_page)
+                self.update_page_info()
         except Exception as e:
             print(f"上一页操作时出错: {e}")
     
@@ -481,16 +542,66 @@ class PDFPreviewWidget(QWidget):
         下一页
         """
         try:
-            # 滚动到下一页位置
-            scroll_bar = self.preview_container.verticalScrollBar()
-            current_pos = scroll_bar.value()
-            page_height = 0
-            if self.rendered_pages:
-                scaled_spacing = int(8 * self.dpi_scale)  # 与布局间距保持一致
-                page_height = self.rendered_pages[0].height() + scaled_spacing  # 页面高度 + 间距
-            scroll_bar.setValue(current_pos + page_height)
+            if self.current_page < self.total_pages:
+                self.current_page += 1
+                self._scroll_to_page(self.current_page)
+                self.update_page_info()
         except Exception as e:
             print(f"下一页操作时出错: {e}")
+    
+    def _scroll_to_page(self, page_num):
+        """
+        滚动到指定页码（平滑滚动）
+        
+        Args:
+            page_num (int): 页码（从1开始）
+        """
+        try:
+            if 1 <= page_num <= len(self.rendered_pages):
+                from PyQt5.QtWidgets import QScroller
+                target_page = self.rendered_pages[page_num - 1]
+                target_pos = target_page.y() - int(10 * self.dpi_scale)
+                target_y = max(0, target_pos)
+                
+                if self._scroller is None:
+                    self._scroller = QScroller.scroller(self.preview_container)
+                
+                if self._scroller:
+                    self._scroller.stop()
+                    self._scroller.scrollTo(QPoint(0, target_y), 300)
+                else:
+                    scroll_bar = self.preview_container.verticalScrollBar()
+                    scroll_bar.setValue(target_y)
+        except Exception as e:
+            print(f"滚动到指定页码时出错: {e}")
+    
+    def _on_scroll_changed(self, value):
+        """
+        滚动位置变化时自动检测当前可见页面
+        """
+        try:
+            if not self.pdf_document or not self.rendered_pages:
+                return
+            
+            viewport_top = value
+            viewport_bottom = value + self.preview_container.viewport().height()
+            
+            visible_page = self.current_page
+            for i, page_widget in enumerate(self.rendered_pages):
+                page_top = page_widget.y()
+                page_bottom = page_top + page_widget.height()
+                page_center = (page_top + page_bottom) // 2
+                
+                if page_top <= viewport_bottom and page_bottom >= viewport_top:
+                    if page_center >= viewport_top and page_center <= viewport_bottom:
+                        visible_page = i + 1
+                        break
+            
+            if visible_page != self.current_page:
+                self.current_page = visible_page
+                self.update_page_info()
+        except Exception as e:
+            print(f"检测当前页面时出错: {e}")
     
     def __del__(self):
         """

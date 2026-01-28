@@ -214,7 +214,7 @@ class FileInfoBrowser:
         """
         scroll_area.setStyleSheet(scrollbar_style)
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
@@ -240,6 +240,7 @@ class FileInfoBrowser:
         main_widget = QWidget()
         main_widget.setFont(self.global_font)
         main_widget.setStyleSheet(f"background-color: {background_color};")
+        main_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(scaled_spacing)
@@ -248,15 +249,14 @@ class FileInfoBrowser:
         self.info_group = QGroupBox(" ")
         self.info_group.setFont(self.global_font)
         self.info_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # 设置组框标题左对齐，应用DPI缩放和颜色
         self.info_group.setStyleSheet(f"QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left; left: {scaled_title_left}px; color: {secondary_color}; }} QGroupBox {{ border: none; }}")
         
         # 使用QFormLayout替代QGridLayout，更适合表单布局
         self.info_layout = QFormLayout(self.info_group)
         self.info_layout.setContentsMargins(scaled_group_margin, scaled_group_top_margin, scaled_group_right_margin, scaled_group_bottom_margin)  # 左边距减少5px，让标签左移
-        self.info_layout.setSpacing(scaled_info_spacing)  # 调整间距，适合左对齐布局
-        self.info_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # 标签左对齐
-        self.info_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)  # 表单左对齐
+        self.info_layout.setSpacing(scaled_info_spacing)
+        self.info_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.info_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
         
         # 基本信息标签
         self.basic_info_labels = {
@@ -288,21 +288,6 @@ class FileInfoBrowser:
         # 存储基本信息控件的引用
         self.basic_info_widgets = {}
         
-        # 首先计算所有标签的最大宽度
-        from PyQt5.QtGui import QFontMetrics
-        font_metrics = QFontMetrics(self.global_font)
-        max_label_width = 0
-        
-        # 计算所有基本信息标签的最大宽度
-        for key in basic_info_order:
-            label_text = key + f":" 
-            width = font_metrics.width(label_text)
-            if width > max_label_width:
-                max_label_width = width
-        
-        # 增加一些边距，确保文本有足够空间
-        max_label_width += 10
-        
         for key in basic_info_order:
             # 获取或创建值标签
             if key not in self.basic_info_labels:
@@ -312,7 +297,8 @@ class FileInfoBrowser:
             widget.setWordWrap(True)
             widget.setFont(self.global_font)
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
+            widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            widget.setMinimumWidth(0)
             widget.setContextMenuPolicy(Qt.CustomContextMenu)
             widget.setStyleSheet(f"color: {secondary_color}; border: none;")
             
@@ -325,14 +311,13 @@ class FileInfoBrowser:
                 else:
                     # 如果已经有值，则使用普通样式
                     widget.setCursor(QCursor(Qt.ArrowCursor))
-                    widget.setStyleSheet("border: none;")
+                    widget.setStyleSheet(f"color: {secondary_color}; border: none;")
             
             # 创建标签文本
             label_widget = QLabel(key + ":")
             label_widget.setFont(self.global_font)
-            label_widget.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)  # 标签文本居中
-            label_widget.setFixedWidth(max_label_width)  # 统一设置为最大宽度
-            label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)  # 固定宽度，高度自适应
+            label_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            label_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
             label_widget.setStyleSheet(f"color: {secondary_color}; border: none;")
             
@@ -377,10 +362,11 @@ class FileInfoBrowser:
         self.custom_tags_browser = QTextBrowser()
         self.custom_tags_browser.setFont(self.global_font)
         self.custom_tags_browser.setPlainText("当前功能暂未开发完成，敬请期待！")
+        self.custom_tags_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
         # 应用DPI缩放因子到最小高度
         scaled_min_height = int(80 * self.dpi_scale)
-        self.custom_tags_browser.setMinimumHeight(scaled_min_height)  # 设置最小高度
+        self.custom_tags_browser.setMinimumHeight(scaled_min_height)
         
         custom_layout.addWidget(self.custom_tags_browser)
         
@@ -1446,18 +1432,23 @@ class FileInfoBrowser:
                     if key in ["MD5", "SHA1", "SHA256"]:
                         from PyQt5.QtCore import Qt
                         from PyQt5.QtGui import QCursor
+                        from PyQt5.QtWidgets import QSizePolicy
+                        widget = self.basic_info_labels[key]
                         if str(value) == "点击查看":
                             # 设置为可点击的链接样式
-                            self.basic_info_labels[key].setCursor(QCursor(Qt.PointingHandCursor))
-                            self.basic_info_labels[key].setStyleSheet(f"color: {self.secondary_color}; text-decoration: underline; border: none;")
+                            widget.setCursor(QCursor(Qt.PointingHandCursor))
+                            widget.setStyleSheet(f"color: {self.secondary_color}; text-decoration: underline; border: none;")
                             # 重新绑定点击事件
-                            self.basic_info_labels[key].mousePressEvent = lambda event, key=key: self._load_detailed_info()
+                            widget.mousePressEvent = lambda event, key=key: self._load_detailed_info()
                         else:
                             # 如果已经有值，则使用普通样式
-                            self.basic_info_labels[key].setCursor(QCursor(Qt.ArrowCursor))
-                            self.basic_info_labels[key].setStyleSheet("border: none;")
+                            widget.setCursor(QCursor(Qt.ArrowCursor))
+                            widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                            # 确保换行和尺寸策略正确
+                            widget.setWordWrap(True)
+                            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
                             # 移除点击事件
-                            self.basic_info_labels[key].mousePressEvent = lambda event: super(type(self.basic_info_labels[key]), self.basic_info_labels[key]).mousePressEvent(event)
+                            widget.mousePressEvent = lambda event: super(type(widget), widget).mousePressEvent(event)
         
         # 更新自定义标签
         if hasattr(self, 'custom_tags_browser'):
@@ -1483,42 +1474,14 @@ class FileInfoBrowser:
             # 导入需要的PyQt组件
             from PyQt5.QtWidgets import QLabel, QSizePolicy
             from PyQt5.QtCore import Qt
-            from PyQt5.QtGui import QFontMetrics
-            
-            # 计算所有标签的最大宽度（包括基本信息和详细信息）
-            font_metrics = QFontMetrics(self.global_font)
-            max_label_width = 0
-            
-            # 首先计算基本信息标签的最大宽度
-            for key in self.basic_info_labels.keys():
-                label_text = key + f":" 
-                width = font_metrics.width(label_text)
-                if width > max_label_width:
-                    max_label_width = width
-            
-            # 然后计算详细信息标签的最大宽度
-            for key in self.file_info["details"].keys():
-                label_text = key + f":" 
-                width = font_metrics.width(label_text)
-                if width > max_label_width:
-                    max_label_width = width
-            
-            # 增加一些边距，确保文本有足够空间
-            max_label_width += 10
-            
-            # 为基本信息标签统一设置最大宽度
-            for key, widget_pair in self.basic_info_widgets.items():
-                label_widget = widget_pair["label"]
-                label_widget.setFixedWidth(max_label_width)
             
             # 为详细信息创建标签和值
             for key, value in self.file_info["details"].items():
                 # 创建标签文本
                 label_widget = QLabel(key + ":")
                 label_widget.setFont(self.global_font)
-                label_widget.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)  # 标签文本居中
-                label_widget.setFixedWidth(max_label_width)  # 统一设置为最大宽度
-                label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)  # 固定宽度，高度自适应
+                label_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                label_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
                 label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
                 label_widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
                 
@@ -1526,10 +1489,9 @@ class FileInfoBrowser:
                 value_widget = QLabel(str(value))
                 value_widget.setWordWrap(True)
                 value_widget.setFont(self.global_font)
-                scaled_min_width = int(300 * self.dpi_scale)  # 足够的最小宽度，应用DPI缩放
-                value_widget.setMinimumWidth(scaled_min_width)
-                value_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 宽度扩展，高度自适应
-                value_widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 顶部对齐
+                value_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                value_widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+                value_widget.setMinimumWidth(0)
                 value_widget.setContextMenuPolicy(Qt.CustomContextMenu)
                 value_widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
                 
