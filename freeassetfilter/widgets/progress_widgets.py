@@ -1113,7 +1113,7 @@ class D_ProgressBar(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
 
-        progress_ratio = self._display_value / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
+        progress_ratio = (self._display_value - self._minimum) / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
         progress_width = int(bar_width * progress_ratio)
 
         if progress_width > 0:
@@ -1130,7 +1130,7 @@ class D_ProgressBar(QWidget):
             painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
 
         if self._is_interactive:
-            handle_x = bar_x + progress_width - self._bar_radius - self._handle_radius
+            handle_x = bar_x + progress_width - self._handle_radius
             handle_x = max(bar_x, min(handle_x, rect.width() - self._handle_radius * 2))
             handle_y = bar_y + self._bar_height // 2 - self._handle_radius
             self._paint_handle(painter, handle_x, handle_y)
@@ -1158,7 +1158,7 @@ class D_ProgressBar(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
 
-        progress_ratio = self._display_value / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
+        progress_ratio = (self._display_value - self._minimum) / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
         progress_height = int(bar_height * progress_ratio)
 
         if progress_height > 0:
@@ -1175,7 +1175,7 @@ class D_ProgressBar(QWidget):
             painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
 
         if self._is_interactive:
-            handle_y = bar_y + bar_height - progress_height - self._bar_radius - self._handle_radius
+            handle_y = bar_y + bar_height - progress_height - self._handle_radius
             handle_y = max(bar_y, min(handle_y, rect.height() - self._handle_radius * 2))
             handle_x = bar_x + self._bar_height // 2 - self._handle_radius
             self._paint_handle(painter, handle_x, handle_y)

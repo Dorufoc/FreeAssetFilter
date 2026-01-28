@@ -34,8 +34,9 @@ from PyQt5.QtCore import (
 )
 
 # 导入自定义控件
-from freeassetfilter.widgets.D_widgets import CustomButton, CustomValueBar
-from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+from freeassetfilter.widgets.D_widgets import CustomButton
+from freeassetfilter.widgets.progress_widgets import D_ProgressBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller, D_ScrollBar
 
 # 尝试导入PyMuPDF (fitz)库，作为PDF渲染引擎
 try:
@@ -79,7 +80,6 @@ class PDFPreviewWidget(QWidget):
         self.pages_layout = None
         self.page_label = None
         self.zoom_slider = None
-        self.zoom_value_label = None
         self.prev_button = None
         self.next_button = None
         
@@ -92,58 +92,63 @@ class PDFPreviewWidget(QWidget):
         """
         layout = QVBoxLayout(self)
         
-        # 使用DPI缩放因子调整边距和间距
         scaled_margin = int(10 * self.dpi_scale)
         scaled_spacing = int(8 * self.dpi_scale)
         layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         layout.setSpacing(scaled_spacing)
         
-        # 设置背景色
-        # 获取主题颜色
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
+        background_color = "#2D2D2D"
+        secondary_color = "#333333"
         if hasattr(app, 'settings_manager'):
             background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         self.setStyleSheet(f"background-color: {background_color};")
         
-        # 工具栏
+        default_font_size = getattr(app, 'default_font_size', 18)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        
         toolbar_layout = QHBoxLayout()
         toolbar_layout.setSpacing(scaled_spacing)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         
-        # 页面信息
         self.page_label = QLabel("页数: 0")
         self.page_label.setFont(self.global_font)
-        # 使用全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 18)
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        self.page_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
+        self.page_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: {secondary_color}; font-weight: 500;")
         toolbar_layout.addWidget(self.page_label)
+        
+        scaled_button_border_radius = int(4 * self.dpi_scale)
+        scaled_button_padding_v = int(6 * self.dpi_scale)
+        scaled_button_padding_h = int(12 * self.dpi_scale)
+        
+        self.prev_button = CustomButton("上一页", button_type="secondary")
+        self.prev_button.setFont(self.global_font)
+        self.prev_button.clicked.connect(self.prev_page)
+        self.prev_button.setEnabled(False)
+        toolbar_layout.addWidget(self.prev_button)
+        
+        self.next_button = CustomButton("下一页", button_type="secondary")
+        self.next_button.setFont(self.global_font)
+        self.next_button.clicked.connect(self.next_page)
+        self.next_button.setEnabled(False)
+        toolbar_layout.addWidget(self.next_button)
         
         toolbar_layout.addStretch()
         
-        # 缩放控制
         zoom_label = QLabel("缩放:")
         zoom_label.setFont(self.global_font)
-        zoom_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
+        zoom_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: {secondary_color}; font-weight: 500;")
         toolbar_layout.addWidget(zoom_label)
         
-        # 使用自定义数值控制条
-        self.zoom_slider = CustomValueBar(orientation=CustomValueBar.Horizontal, interactive=True)
+        self.zoom_slider = D_ProgressBar(orientation=D_ProgressBar.Horizontal, is_interactive=True)
         self.zoom_slider.setRange(50, 300)
         self.zoom_slider.setValue(100)
+        self.zoom_slider.setFixedWidth(int(150 * self.dpi_scale))
         self.zoom_slider.valueChanged.connect(self.change_zoom)
         toolbar_layout.addWidget(self.zoom_slider)
         
-        self.zoom_value_label = QLabel("100%")
-        self.zoom_value_label.setFont(self.global_font)
-        self.zoom_value_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #1976d2; font-weight: bold; min-width: 50px; text-align: center;")
-        toolbar_layout.addWidget(self.zoom_value_label)
-        
         layout.addLayout(toolbar_layout)
         
-        # 预览区域
         self.preview_container = QScrollArea()
         self.preview_container.setWidgetResizable(True)
         scaled_min_height = int(250 * self.dpi_scale)
@@ -156,7 +161,6 @@ class PDFPreviewWidget(QWidget):
             background-color: transparent;
         }''')
         
-        # 页面容器和布局
         self.pages_container = QWidget()
         self.pages_layout = QVBoxLayout(self.pages_container)
         self.pages_layout.setAlignment(Qt.AlignTop)
@@ -166,40 +170,15 @@ class PDFPreviewWidget(QWidget):
         
         self.preview_container.setWidget(self.pages_container)
         
+        self.preview_container.setVerticalScrollBar(D_ScrollBar(self.preview_container, Qt.Vertical))
+        self.preview_container.verticalScrollBar().apply_theme_from_settings()
         SmoothScroller.apply_to_scroll_area(self.preview_container)
         
         layout.addWidget(self.preview_container, 1)
         
-        # 页面控制按钮
-        page_control_layout = QHBoxLayout()
-        scaled_button_spacing = int(5 * self.dpi_scale)
-        page_control_layout.setSpacing(scaled_button_spacing)
-        
-        # 按钮样式
-        scaled_button_border_radius = int(4 * self.dpi_scale)
-        scaled_button_padding_v = int(6 * self.dpi_scale)
-        scaled_button_padding_h = int(12 * self.dpi_scale)
-        
-        self.prev_button = CustomButton("上一页", button_type="secondary")
-        self.prev_button.setFont(self.global_font)
-        self.prev_button.clicked.connect(self.prev_page)
-        self.prev_button.setEnabled(False)
-        page_control_layout.addWidget(self.prev_button)
-        
-        self.next_button = CustomButton("下一页", button_type="secondary")
-        self.next_button.setFont(self.global_font)
-        self.next_button.clicked.connect(self.next_page)
-        self.next_button.setEnabled(False)
-        page_control_layout.addWidget(self.next_button)
-        
-        page_control_layout.addStretch()
-        
-        layout.addLayout(page_control_layout)
         print(f"[DEBUG] PDFPreviewWidget UI组件设置字体: {self.global_font.family()}")
         
-        # 安装事件过滤器，处理滚轮事件
         self.preview_container.viewport().installEventFilter(self)
-        # 安装事件过滤器，处理窗口大小改变事件
         self.installEventFilter(self)
     
     def eventFilter(self, obj, event):
@@ -226,7 +205,6 @@ class PDFPreviewWidget(QWidget):
                     # 更新缩放值和UI
                     self.zoom = (new_percent / 100.0) * self.base_zoom
                     self.zoom_slider.setValue(new_percent)
-                    self.zoom_value_label.setText(f"{new_percent}%")
                     self.update_preview()
                     return True  # 拦截事件，不进行滚动
             elif obj is self and event.type() == QEvent.Resize:
@@ -266,43 +244,6 @@ class PDFPreviewWidget(QWidget):
                         self.update_preview()
         except Exception as e:
             print(f"重新计算缩放值时出错: {e}")
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        
-        # 获取应用实例
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtGui import QFont
-        app = QApplication.instance()
-        
-        # 获取全局字体
-        self.global_font = getattr(app, 'global_font', QFont())
-        
-        # 获取DPI缩放因子
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 设置组件字体
-        self.setFont(self.global_font)
-        
-        # 初始化所有属性
-        self.current_file_path = ""
-        self.pdf_document = None
-        self.zoom = 1.0
-        self.total_pages = 0
-        self.rendered_pages = []
-        self.preview_container = None
-        self.pages_container = None
-        self.pages_layout = None
-        self.page_label = None
-        self.zoom_slider = None
-        self.zoom_value_label = None
-        self.prev_button = None
-        self.next_button = None
-        # 添加基准缩放值，用于将适合大小作为100%
-        self.base_zoom = 1.0
-        
-        # 初始化UI
-        self.init_ui()
     
     def set_file(self, file_path):
         """
@@ -365,7 +306,6 @@ class PDFPreviewWidget(QWidget):
                     # 更新UI
                     self.update_page_info()
                     self.zoom_slider.setValue(100)
-                    self.zoom_value_label.setText("100%")
                     self.render_all_pages()
                     self.update_navigation_buttons()
                     
@@ -516,7 +456,6 @@ class PDFPreviewWidget(QWidget):
         try:
             # 根据基准缩放值计算实际缩放值
             self.zoom = (value / 100.0) * self.base_zoom
-            self.zoom_value_label.setText(f"{value}%")
             self.update_preview()
         except Exception as e:
             print(f"改变缩放时出错: {e}")
