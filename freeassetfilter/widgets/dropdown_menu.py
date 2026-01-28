@@ -66,6 +66,32 @@ class CustomDropdownMenu(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
+        # 获取样式设置
+        # 获取auxiliary_color，默认#313131
+        auxiliary_color = "#313131"
+        if self.settings_manager:
+            auxiliary_color = self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
+        
+        # 获取normal_color，默认#e0e0e0
+        normal_color = "#e0e0e0"
+        if self.settings_manager:
+            normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
+        
+        # 获取border_radius，默认4px
+        border_radius = int(4 * self.dpi_scale)
+        
+        # 获取border，默认1px
+        border = int(0.5 * self.dpi_scale)
+        
+        # 设置widget本身的样式 - 背景卡片样式
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {auxiliary_color};
+                border: {border}px solid {normal_color};
+                border-radius: {border_radius}px;
+            }}
+        """)
+        
         # 创建主按钮，使用CustomButton，与load_cube_button保持相同高度（默认20px，与ArchiveBrowser中的按钮保持一致）
         self.main_button = CustomButton(
             text="",
@@ -172,6 +198,9 @@ class CustomDropdownMenu(QWidget):
             # 设置按钮高度，与主按钮保持一致
             button_height = int(20 * self.dpi_scale)/2  # 使用与主按钮相同的高度(20px)并应用DPI缩放
             
+            # 获取border_radius，默认4px
+            border_radius = int(4 * self.dpi_scale)
+            
             item_button.setStyleSheet(f"""
                 QPushButton {{ 
                     font-size: {font_size}px;
@@ -179,12 +208,14 @@ class CustomDropdownMenu(QWidget):
                     padding: 2px 3px;
                     background-color: transparent;
                     border: none;
+                    border-radius: {border_radius}px;
                     text-align: center;
                     vertical-align: center;
                     height: {button_height}px;
                 }}
                 QPushButton:hover {{ 
                     background-color: {normal_color};
+                    border-radius: {border_radius}px;
                 }}
             """)
             

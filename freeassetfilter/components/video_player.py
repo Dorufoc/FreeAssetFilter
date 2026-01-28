@@ -432,16 +432,39 @@ class VideoPlayer(QWidget):
         bottom_layout.addWidget(self.volume_control)
         
         # 添加倍速控制下拉菜单，应用DPI缩放
-        self.speed_dropdown = CustomDropdownMenu(self)
-        scaled_min_width = int(50 * self.dpi_scale)  # 增加宽度以确保文本可见
-        self.speed_dropdown.set_fixed_width(scaled_min_width)
+        self.speed_dropdown = CustomDropdownMenu(self, position="top")
+        scaled_drive_width = int(40 * self.dpi_scale)
+        self.speed_dropdown.set_fixed_width(scaled_drive_width)
+        # 移除下拉菜单的父级关系，使其不占用布局空间
+        self.speed_dropdown.setParent(None)
         # 设置倍速选项和默认值 - 使用加载的倍速设置
         self.speed_dropdown.set_items([f"{speed}x" for speed in self.speed_options], default_item=f"{self._current_speed}x")
         # 显式更新当前选中项，确保显示正确的默认倍速
         self.speed_dropdown.set_current_item(f"{self._current_speed}x")
         # 连接倍速选择信号
         self.speed_dropdown.itemClicked.connect(self._on_speed_selected)
-        bottom_layout.addWidget(self.speed_dropdown)
+        # 设置字体大小与全局默认字体大小一致
+        scaled_font_size = int(self.default_font_size * self.dpi_scale)
+        speed_dropdown_font = QFont(self.global_font)
+        speed_dropdown_font.setPointSize(scaled_font_size)
+        self.speed_dropdown.setFont(speed_dropdown_font)
+        
+        # 创建自定义按钮来触发下拉菜单
+        self.speed_button = CustomButton(
+            text=f"{self._current_speed}x",
+            button_type="normal",
+            display_mode="text"
+        )
+        # 设置下拉菜单的目标按钮为自定义按钮
+        self.speed_dropdown.set_target_button(self.speed_button)
+        
+        # 在自定义按钮的点击事件中显示下拉菜单
+        def show_speed_menu():
+            self.speed_dropdown.set_target_button(self.speed_button)
+            self.speed_dropdown.show_menu()
+        
+        self.speed_button.clicked.connect(show_speed_menu)
+        bottom_layout.addWidget(self.speed_button)
         
         # 应用DPI缩放因子到按钮样式（用于Cube按钮）
         scaled_padding = int(2.5 * self.dpi_scale)
@@ -528,6 +551,9 @@ class VideoPlayer(QWidget):
         
         # 更新倍速下拉菜单
         self.speed_dropdown.set_current_item(f"{speed}x")
+        
+        # 更新自定义按钮的文本
+        self.speed_button.setText(f"{speed}x")
     
 
     
