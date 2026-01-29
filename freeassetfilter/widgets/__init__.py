@@ -25,6 +25,8 @@ from .D_volume import D_Volume
 from .D_volume_control import DVolumeControl
 # 导入菜单列表控件
 from .menu_list import D_MenuList, D_MenuListItem
+# 导入流体渐变背景组件
+from .fluid_gradient_background import FluidGradientBackground
 
 __all__ = [
     'CustomButton',
@@ -40,5 +42,6 @@ __all__ = [
     'D_Volume',
     'DVolumeControl',
     'D_MenuList',
-    'D_MenuListItem'
+    'D_MenuListItem',
+    'FluidGradientBackground'
 ]

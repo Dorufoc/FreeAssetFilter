@@ -235,9 +235,12 @@ class HoverTooltip(QWidget):
         """设置要监听的目标控件"""
         # 检查控件是否已经在列表中（通过比较弱引用的目标）
         for ref in self.target_widgets:
-            if ref() == widget:
-                return  # 已经存在，不需要重复添加
-        
+            try:
+                if ref() == widget:
+                    return  # 已经存在，不需要重复添加
+            except RuntimeError:
+                continue
+
         # 添加弱引用
         ref = weakref.ref(widget)
         self.target_widgets.append(ref)
@@ -248,11 +251,14 @@ class HoverTooltip(QWidget):
         # 检查obj是否是我们目标控件列表中的一个
         is_target = False
         for ref in self.target_widgets:
-            target = ref()
-            if target is obj:
-                is_target = True
-                break
-        
+            try:
+                target = ref()
+                if target is obj:
+                    is_target = True
+                    break
+            except RuntimeError:
+                continue
+
         if is_target:
             event_type = event.type()
             
@@ -285,30 +291,36 @@ class HoverTooltip(QWidget):
         """显示悬浮提示框"""
         # 清理已失效的弱引用
         self.target_widgets = [ref for ref in self.target_widgets if ref() is not None]
-        
+
         # 检查是否有可见的目标控件
         visible_widgets = []
         for ref in self.target_widgets:
-            target = ref()
-            if target and target.isVisible():
-                visible_widgets.append(target)
-        
+            try:
+                target = ref()
+                if target and target.isVisible():
+                    visible_widgets.append(target)
+            except RuntimeError:
+                continue
+
         if not visible_widgets:
             return
-        
+
         # 获取当前鼠标位置的控件
         widget = QApplication.widgetAt(self.last_mouse_pos)
         if not widget:
             return
-        
+
         # 检查鼠标是否在我们的目标控件上
         current_widget = None
         for ref in self.target_widgets:
-            target = ref()
-            if target and (widget == target or target.isAncestorOf(widget)):
-                current_widget = target
-                break
-        
+            try:
+                target = ref()
+                if target and (widget == target or target.isAncestorOf(widget)):
+                    current_widget = target
+                    break
+            except RuntimeError:
+                continue
+
         if not current_widget:
             return
         

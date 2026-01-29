@@ -18,7 +18,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPainter, QPixmap, QImage
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
-from PyQt5.QtWidgets import QWidget, QLabel
+from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout
 from PyQt5.QtGui import QGuiApplication
 import os
 
@@ -218,15 +218,31 @@ class SvgRenderer:
             # 替换CSS rgba格式为十六进制格式
             svg_content = re.sub(r'rgba\(([^\)]+)\)', rgba_to_hex, svg_content)
             
-            # 使用QSvgWidget直接渲染SVG，这对透明度支持更好
-            # 直接将SVG渲染在前端上，而不是使用转换的位图
             svg_widget = QSvgWidget()
             svg_widget.load(svg_content.encode('utf-8'))
-            svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
-            # 确保QSvgWidget完全透明，没有任何可见样式
             svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
             svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
-            return svg_widget
+            
+            svg_size = svg_widget.renderer().defaultSize()
+            aspect_ratio = svg_size.width() / svg_size.height() if svg_size.height() > 0 else 1.0
+            
+            if scaled_icon_size / svg_size.height() < 1:
+                svg_widget.setFixedHeight(scaled_icon_size)
+                svg_widget.setFixedWidth(int(scaled_icon_size * aspect_ratio))
+            else:
+                svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+            
+            container = QWidget()
+            container.setFixedSize(scaled_icon_size, scaled_icon_size)
+            container.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+            container.setAttribute(Qt.WA_TranslucentBackground, True)
+            
+            layout = QVBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+            layout.addWidget(svg_widget, 0, Qt.AlignCenter)
+            
+            return container
         except Exception as e:
             print(f"使用QSvgWidget加载SVG图标失败: {e}")
             # 如果QSvgWidget失败，回退到使用超分辨率渲染的位图

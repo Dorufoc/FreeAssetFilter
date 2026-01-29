@@ -69,7 +69,8 @@ class SettingsManager:
             },
             "player": {
                 "speed": 1.0,
-                "volume": 100
+                "volume": 100,
+                "fluid_gradient_theme": "sunset"
             },
             "developer": {
                 "debug_mode": False,

@@ -23,10 +23,10 @@ import shutil
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QSlider, QLabel,
-    QFileDialog, QStyle, QMessageBox, QGraphicsBlurEffect
+    QFileDialog, QStyle, QMessageBox, QGraphicsBlurEffect, QSizePolicy
 )
 from PyQt5.QtGui import QFont
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize, QPoint
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QRect, QSize, QPoint, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QPauseAnimation
 from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage, QCursor
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets.D_widgets import CustomButton
@@ -36,6 +36,8 @@ from freeassetfilter.widgets.control_menu import CustomControlMenu
 from freeassetfilter.widgets.D_volume_control import DVolumeControl
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.widgets.fluid_gradient_background import FluidGradientBackground
+from freeassetfilter.core.color_extractor import extract_cover_colors
 
 # 用于读取音频文件封面
 from mutagen.id3 import ID3
@@ -86,6 +88,7 @@ class VideoPlayer(QWidget):
         self.play_button = None
         self.timer = None
         self.player_core = None
+        self.fluid_gradient_background = None
         self._user_interacting = False
         
         # 获取应用实例和DPI缩放因子
@@ -162,6 +165,13 @@ class VideoPlayer(QWidget):
         self.song_name_label = QLabel()
         self.artist_name_label = QLabel()
         self.cover_label = QLabel()  # 歌曲封面显示标签
+        self.audio_icon_widget = None  # 音频图标SVG widget
+        self.audio_icon_container = None  # 音频图标容器，用于居中显示
+        self.audio_file_label = None  # 音频文件名标签
+        self.audio_file_scroll_area = None  # 文件名滚动区域（外层容器）
+        self.audio_file_scroll_offset = 0  # 文件名滚动偏移量
+        self.audio_file_needs_scroll = False  # 是否需要滚动
+        self.audio_file_animation = None  # 文件名滚动动画
         
         # 控制组件
         self.progress_slider = D_ProgressBar(is_interactive=False)
@@ -315,10 +325,47 @@ class VideoPlayer(QWidget):
         self.audio_container.setMinimumSize(150, 100)
         self.audio_container.setMaximumWidth(400)  # 设置最大宽度限制，防止布局错乱
         
+        # 创建音频图标容器，用于居中显示SVG图标
+        self.audio_icon_container = QWidget()
+        self.audio_icon_container.setStyleSheet("background-color: transparent;")
+        self.audio_icon_container.setMinimumSize(150, 100)
+        self.audio_icon_container.setMaximumWidth(400)
+        icon_container_layout = QVBoxLayout(self.audio_icon_container)
+        icon_container_layout.setContentsMargins(0, 0, 0, 0)
+        icon_container_layout.setSpacing(int(5 * self.dpi_scale))
+        icon_container_layout.setAlignment(Qt.AlignCenter)
+        
+        # 创建音频文件名滚动区域（外层容器，用于裁切显示）
+        self.audio_file_scroll_area = QWidget()
+        self.audio_file_scroll_area.setStyleSheet("background-color: transparent;")
+        self.audio_file_scroll_area.setFixedSize(int(200 * self.dpi_scale), int(25 * self.dpi_scale))
+        
+        # 创建音频文件名标签（无宽度限制，直接设置父容器突破布局限制）
+        self.audio_file_label = QLabel(self.audio_file_scroll_area)
+        self.audio_file_label.setStyleSheet("""
+            color: white;
+            font-size: 14px;
+            background-color: transparent;
+            padding-left: 0px;
+            padding-right: 0px;
+        """)
+        self.audio_file_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.audio_file_label.setWordWrap(False)
+        self.audio_file_label.setFixedHeight(int(20 * self.dpi_scale))
+        self.audio_file_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.audio_file_label.move(0, int(2 * self.dpi_scale))
+        
+        # 创建流体渐变背景组件
+        self.fluid_gradient_background = FluidGradientBackground(self)
+        self.fluid_gradient_background.setStyleSheet("background-color: transparent; border: none;")
+        self.fluid_gradient_background.setMinimumSize(150, 100)
+        
         # 构建音频叠加布局 - 将所有部件放在同一网格位置
+        audio_layout.addWidget(self.fluid_gradient_background, 0, 0)
         audio_layout.addWidget(self.background_label, 0, 0)
         audio_layout.addWidget(self.overlay_widget, 0, 0)
-        audio_layout.addWidget(self.audio_container, 0, 0)
+        audio_layout.addWidget(self.audio_container, 0, 0, Qt.AlignCenter)
+        audio_layout.addWidget(self.audio_icon_container, 0, 0, Qt.AlignCenter)
         
         # 媒体布局
         media_layout = QVBoxLayout(self.media_frame)
@@ -1273,6 +1320,10 @@ class VideoPlayer(QWidget):
                 media_layout.addWidget(self.audio_stacked_widget)
                 self.audio_stacked_widget.show()
                 
+                # 加载流体渐变背景
+                if self.fluid_gradient_background:
+                    self.fluid_gradient_background.load()
+                
                 # 主播放器加载并播放音频
                 self.player_core.set_media(file_path)
                 self.player_core.play()
@@ -1328,6 +1379,10 @@ class VideoPlayer(QWidget):
                         self.original_video_frame.show()
                     if hasattr(self, 'filtered_video_frame') and self.filtered_video_frame is not None:
                         self.filtered_video_frame.show()
+                    
+                    # 卸载流体渐变背景（视频模式下不需要）
+                    if self.fluid_gradient_background:
+                        self.fluid_gradient_background.unload()
                 else:
                     # 非对比预览模式：使用单个视频框架
                     # 先清空布局
@@ -1342,6 +1397,10 @@ class VideoPlayer(QWidget):
                     self.video_frame.setMinimumSize(150, 100)
                     self.video_frame.show()
                     
+                    # 卸载流体渐变背景（视频模式下不需要）
+                    if self.fluid_gradient_background:
+                        self.fluid_gradient_background.unload()
+                    
                     # 主播放器加载并播放视频
                     self.player_core.set_media(file_path)
                     if self.cube_path and os.path.exists(self.cube_path) and self.cube_loaded:
@@ -1353,69 +1412,213 @@ class VideoPlayer(QWidget):
     
     def extract_audio_metadata(self, file_path):
         """
-        从音频文件中提取元数据
+        从音频文件中提取元数据和封面颜色
         
         Args:
             file_path: 音频文件路径
         """
-        # 根据需求，只显示音频格式图标，不显示其他信息
-        # 所以我们不需要提取和更新歌曲名、艺术家名等信息
-        cover_data = None  # 封面数据
+        cover_data = None
         
-        # 直接更新为音频格式图标
+        try:
+            cover_data = self._extract_cover_from_audio(file_path)
+        except Exception as e:
+            print(f"[VideoPlayer] 提取封面失败: {e}")
+        
+        if cover_data:
+            colors = extract_cover_colors(cover_data, num_colors=5, min_distance=50.0)
+            if colors and len(colors) >= 5:
+                if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
+                    self.fluid_gradient_background.setCustomColors(colors)
+                    print(f"[VideoPlayer] 从封面提取到 {len(colors)} 个颜色")
+            else:
+                self._use_default_theme()
+        else:
+            self._use_default_theme()
+        
         self._update_audio_icon()
-        
-        # 隐藏歌曲名和艺术家名标签
         self.song_name_label.hide()
         self.artist_name_label.hide()
+    
+    def _extract_cover_from_audio(self, file_path: str) -> bytes:
+        """
+        从音频文件中提取封面图像数据
+        
+        Args:
+            file_path: 音频文件路径
+        
+        Returns:
+            封面图像的二进制数据，提取失败返回None
+        """
+        try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+            
+            if file_ext == '.mp3':
+                return self._extract_cover_mp3(file_path)
+            elif file_ext in ['.m4a', '.mp4']:
+                return self._extract_cover_mp4(file_path)
+            elif file_ext == '.flac':
+                return self._extract_cover_flac(file_path)
+            elif file_ext in ['.ogg', '.ogv']:
+                return self._extract_cover_ogg(file_path)
+            elif file_ext in ['.wav', '.aiff', '.aif']:
+                return self._extract_cover_wav(file_path)
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"[VideoPlayer] 提取封面数据失败: {e}")
+            return None
+    
+    def _extract_cover_mp3(self, file_path: str) -> bytes:
+        """从MP3文件提取封面"""
+        try:
+            audio = ID3(file_path)
+            for tag in ['APIC:', 'PIC:']:
+                if tag in audio:
+                    frame = audio[tag]
+                    if hasattr(frame, 'data'):
+                        return frame.data
+                    elif hasattr(frame, 'image'):
+                        return frame.image
+            return None
+        except Exception:
+            return None
+    
+    def _extract_cover_mp4(self, file_path: str) -> bytes:
+        """从M4A/MP4文件提取封面"""
+        try:
+            audio = MP4(file_path)
+            if 'covr' in audio:
+                cover_data = audio['covr'][0]
+                if isinstance(cover_data, bytes):
+                    return cover_data
+            return None
+        except Exception:
+            return None
+    
+    def _extract_cover_flac(self, file_path: str) -> bytes:
+        """从FLAC文件提取封面"""
+        try:
+            audio = FLAC(file_path)
+            if audio.pictures:
+                picture = audio.pictures[0]
+                return picture.data
+            return None
+        except Exception:
+            return None
+    
+    def _extract_cover_ogg(self, file_path: str) -> bytes:
+        """从OGG文件提取封面"""
+        try:
+            audio = OggVorbis(file_path)
+            if hasattr(audio, 'pictures') and audio.pictures:
+                picture = audio.pictures[0]
+                return picture.data
+            return None
+        except Exception:
+            return None
+    
+    def _extract_cover_wav(self, file_path: str) -> bytes:
+        """从WAV/AIFF文件提取封面"""
+        try:
+            audio = WAVE(file_path)
+            if hasattr(audio, 'pictures') and audio.pictures:
+                picture = audio.pictures[0]
+                return picture.data
+            return None
+        except Exception:
+            return None
+    
+    def _use_default_theme(self):
+        """使用默认主题"""
+        if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
+            settings = SettingsManager()
+            theme = settings.get_setting('player/fluid_gradient_theme', 'sunset')
+            self.fluid_gradient_background.setTheme(theme)
+    
+    def setFluidGradientTheme(self, theme: str):
+        """
+        设置流体渐变背景主题
+        
+        Args:
+            theme: 主题名称 ('sunset', 'ocean', 'aurora')
+        """
+        if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
+            self.fluid_gradient_background.setTheme(theme)
+    
+    def setFluidGradientSpeed(self, speed_factor: float):
+        """
+        设置流体渐变动画速率
+        
+        Args:
+            speed_factor: 速率因子 (0.1 - 2.0)
+        """
+        if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
+            self.fluid_gradient_background.setAnimationSpeed(speed_factor)
+    
+    def pauseFluidGradientAnimation(self, paused: bool = True):
+        """
+        暂停/恢复流体渐变动画
+        
+        Args:
+            paused: 是否暂停
+        """
+        if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
+            self.fluid_gradient_background.pauseAnimation(paused)
     
     def _update_audio_icon(self):
         """
         更新音频格式图标显示
         """
         try:
-            # 获取图标路径
             current_dir = os.path.dirname(os.path.abspath(__file__))
             icons_path = os.path.join(current_dir, '..', 'icons')
             icons_path = os.path.abspath(icons_path)
             
-            # 音频格式图标路径
             icon_name = "音乐.svg"
             icon_path = os.path.join(icons_path, icon_name)
             
-            # 检查文件是否存在
             if not os.path.exists(icon_path):
                 print(f"[VideoPlayer] 音频图标文件不存在: {icon_path}")
                 return
             
-            # 计算缩放后的图标大小
             scaled_cover_size = int(50 * self.dpi_scale)
             
-            # 加载SVG图标并设置到cover_label
-            from PyQt5.QtSvg import QSvgRenderer
-            from PyQt5.QtGui import QPainter
+            file_name = os.path.basename(self._current_file_path)
+            name_without_ext = os.path.splitext(file_name)[0]
             
-            # 创建SVG渲染器
-            svg_renderer = QSvgRenderer(icon_path)
+            if self.audio_file_animation:
+                self.audio_file_animation.stop()
+                self.audio_file_animation.deleteLater()
+                self.audio_file_animation = None
             
-            # 创建QPixmap用于显示
-            pixmap = QPixmap(scaled_cover_size, scaled_cover_size)
-            pixmap.fill(Qt.transparent)
-            from PyQt5.QtGui import QGuiApplication
-            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
+            self.audio_file_label.setText(name_without_ext)
+            self.audio_file_label.move(0, self.audio_file_label.y())
             
-            # 使用QPainter绘制SVG
-            painter = QPainter(pixmap)
-            svg_renderer.render(painter)
-            painter.end()
+            metrics = self.audio_file_label.fontMetrics()
+            text_width = metrics.width(name_without_ext)
+            scroll_area_width = self.audio_file_scroll_area.width() if self.audio_file_scroll_area else 0
             
-            # 设置到cover_label
-            self.cover_label.setPixmap(pixmap)
-            # 确保显示音频图标时没有边框
-            self.cover_label.setStyleSheet(f"""
-                background-color: transparent;
-                border-radius: {int(scaled_cover_size * 0.1)}px;
-            """)
+            if text_width > scroll_area_width:
+                self.audio_file_needs_scroll = True
+                QTimer.singleShot(500, self._scroll_audio_file_label)
+            else:
+                self.audio_file_needs_scroll = False
+                center_x = (scroll_area_width - text_width) // 2
+                self.audio_file_label.move(center_x, self.audio_file_label.y())
+
+            if self.audio_icon_widget is None:
+                self.audio_icon_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_cover_size, self.dpi_scale)
+                icon_container_layout = self.audio_icon_container.layout()
+                icon_container_layout.addWidget(self.audio_icon_widget, 0, Qt.AlignCenter)
+                icon_container_layout.addWidget(self.audio_file_scroll_area, 0, Qt.AlignCenter)
+            
+            self.audio_icon_container.show()
+            self.audio_icon_widget.show()
+            self.audio_icon_widget.raise_()
+            
+            self.cover_label.hide()
+            self.audio_container.hide()
             
         except Exception as e:
             print(f"[VideoPlayer] 更新音频格式图标失败: {e}")
@@ -1429,6 +1632,21 @@ class VideoPlayer(QWidget):
         Args:
             cover_data: 封面数据（字节）
         """
+        # 停止滚动动画
+        if self.audio_file_animation:
+            self.audio_file_animation.stop()
+            self.audio_file_animation.deleteLater()
+            self.audio_file_animation = None
+        self.audio_file_needs_scroll = False
+        
+        # 隐藏音频图标
+        if self.audio_icon_widget:
+            self.audio_icon_widget.hide()
+        if self.audio_icon_container:
+            self.audio_icon_container.hide()
+        self.cover_label.show()
+        self.audio_container.show()
+        
         # 计算缩放后的封面大小（100dpx正方形）
         scaled_cover_size = int(50 * self.dpi_scale)
         
@@ -1524,6 +1742,58 @@ class VideoPlayer(QWidget):
         
         return path
     
+    def _scroll_audio_file_label(self):
+        """
+        使用QPropertyAnimation实现文件名滚动效果
+        移动文本框本身，外层容器裁切显示
+        包含：开头2秒静止 -> 滚动 -> 结尾2秒静止 -> 循环
+        """
+        if not self.audio_file_label or not self.audio_file_scroll_area or not self.audio_file_needs_scroll:
+            return
+
+        text = self.audio_file_label.text()
+        if not text:
+            return
+
+        metrics = self.audio_file_label.fontMetrics()
+        text_width = metrics.width(text)
+        scroll_area_width = self.audio_file_scroll_area.width()
+
+        if text_width <= scroll_area_width:
+            self.audio_file_needs_scroll = False
+            return
+
+        current_pos = self.audio_file_label.pos()
+        start_x = 0
+        end_x = -(text_width - scroll_area_width)
+
+        if self.audio_file_animation:
+            self.audio_file_animation.stop()
+            self.audio_file_animation.deleteLater()
+            self.audio_file_animation = None
+
+        scroll_animation = QPropertyAnimation(self.audio_file_label, b"pos", self)
+        scroll_animation.setDuration(int(text_width * 15))
+        scroll_animation.setStartValue(QPoint(start_x, current_pos.y()))
+        scroll_animation.setEndValue(QPoint(end_x, current_pos.y()))
+        scroll_animation.setEasingCurve(QEasingCurve.Linear)
+
+        pause_before = QPauseAnimation(2000, self)
+        pause_after = QPauseAnimation(2000, self)
+
+        self.audio_file_animation = QSequentialAnimationGroup(self)
+
+        self.audio_file_animation.addAnimation(pause_before)
+        self.audio_file_animation.addAnimation(scroll_animation)
+        self.audio_file_animation.addAnimation(pause_after)
+
+        def on_animation_finished():
+            self.audio_file_label.move(start_x, current_pos.y())
+
+        scroll_animation.finished.connect(on_animation_finished)
+        self.audio_file_animation.setLoopCount(-1)
+        self.audio_file_animation.start()
+    
     def _show_default_cover(self, size):
         """
         显示默认封面
@@ -1531,6 +1801,21 @@ class VideoPlayer(QWidget):
         Args:
             size: 封面大小
         """
+        # 停止滚动动画
+        if self.audio_file_animation:
+            self.audio_file_animation.stop()
+            self.audio_file_animation.deleteLater()
+            self.audio_file_animation = None
+        self.audio_file_needs_scroll = False
+        
+        # 隐藏音频图标
+        if self.audio_icon_widget:
+            self.audio_icon_widget.hide()
+        if self.audio_icon_container:
+            self.audio_icon_container.hide()
+        self.cover_label.show()
+        self.audio_container.show()
+        
         # 创建默认背景
         default_pixmap = QPixmap(size, size)
         default_pixmap.fill(QColor(51, 51, 51))  # 深灰色背景
@@ -1594,6 +1879,9 @@ class VideoPlayer(QWidget):
             # 同时控制原始视频播放器
             if hasattr(self, 'original_player_core') and self.original_player_core:
                 self.original_player_core.stop()
+        
+        if self.fluid_gradient_background:
+            self.fluid_gradient_background.unload()
     
     def seek(self, position):
         """

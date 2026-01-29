@@ -424,7 +424,7 @@ class FileBlockCard(QWidget):
                     delta = event.pos() - self._touch_start_pos
                     if abs(delta.x()) > self._touch_drag_threshold or abs(delta.y()) > self._touch_drag_threshold:
                         self._is_touch_dragging = True
-                return True
+                return False
             elif event.type() == QEvent.MouseButtonRelease:
                 if event.button() == Qt.LeftButton:
                     if self._touch_start_pos is not None and not self._is_touch_dragging:
@@ -440,13 +440,13 @@ class FileBlockCard(QWidget):
                 if not self._is_selected:
                     self._is_hovered = True
                     self._trigger_hover_animation()
-                return True
+                return False
             elif event.type() == QEvent.Leave:
                 self._is_hovered = False
                 self._trigger_leave_animation()
                 self._touch_start_pos = None
                 self._is_touch_dragging = False
-                return True
+                return False
         return super().eventFilter(obj, event)
     
     def _on_click(self, event):
