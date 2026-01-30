@@ -6,13 +6,13 @@
 从音乐封面图像中提取主色调，用于流体渐变背景渲染
 """
 
+import io
 import math
 from collections import Counter
-from typing import List, Tuple, Optional
+from typing import List, Optional
 
 from PyQt5.QtGui import QColor
 from PIL import Image
-import numpy as np
 
 
 def extract_cover_colors(cover_data: bytes, num_colors: int = 5, 
@@ -24,35 +24,26 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
         cover_data: 封面图像的二进制数据
         num_colors: 要提取的颜色数量
         min_distance: 颜色之间的最小欧氏距离（用于去重）
-    
     Returns:
         提取的主色调列表（QColor对象）
     """
     if not cover_data:
+        print("[ColorExtractor] 封面数据为空")
         return []
     
     try:
-        image = Image.open.frombytes(
-            mode='RGB',
-            size=(100, 100),
-            data=cover_data[:30000] if len(cover_data) > 30000 else cover_data
-        )
-    except Exception:
-        try:
-            image = Image.open(cover_data) if isinstance(cover_data, str) else None
-            if image is None:
-                return []
-        except Exception:
-            return []
+        image = Image.open(io.BytesIO(cover_data))
+    except Exception as e:
+        print(f"[ColorExtractor] 打开封面图像失败: {e}")
+        return []
     
     try:
         image = image.convert('RGB')
         image = image.resize((100, 100), Image.Resampling.LANCZOS)
         
-        pixels = np.array(image)
-        pixels = pixels.reshape(-1, 3)
+        pixels = list(image.getdata())
         
-        pixel_counts = Counter(map(tuple, pixels))
+        pixel_counts = Counter(pixels)
         most_common = pixel_counts.most_common(500)
         
         colors = []
@@ -75,9 +66,15 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
         while len(colors) < num_colors:
             colors.append(QColor(128, 128, 128))
         
-        return colors[:num_colors]
+        result = colors[:num_colors]
+        print(f"[ColorExtractor] 提取到 {len(result)} 个颜色")
+        for i, c in enumerate(result):
+            print(f"  颜色{i+1}: RGB({c.red()}, {c.green()}, {c.blue()})")
         
-    except Exception:
+        return result
+        
+    except Exception as e:
+        print(f"[ColorExtractor] 处理封面图像失败: {e}")
         return []
 
 
@@ -95,9 +92,11 @@ def extract_cover_colors_from_path(image_path: str, num_colors: int = 5,
         提取的主色调列表（QColor对象）
     """
     try:
-        image = Image.open(image_path)
-        return extract_cover_colors(image.tobytes(), num_colors, min_distance)
-    except Exception:
+        with open(image_path, 'rb') as f:
+            cover_data = f.read()
+        return extract_cover_colors(cover_data, num_colors, min_distance)
+    except Exception as e:
+        print(f"[ColorExtractor] 从文件读取封面失败: {e}")
         return []
 
 

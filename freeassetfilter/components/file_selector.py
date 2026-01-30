@@ -2056,6 +2056,22 @@ class CustomFileSelector(QWidget):
         self._is_loading = True
         self._refresh_callback = callback
         
+        self._fixed_max_cols = self._calculate_max_columns()
+        debug(f"固定列数: {self._fixed_max_cols}")
+        
+        if files:
+            card_height = int(75 * self.dpi_scale)
+            spacing = self.files_layout.spacing()
+            margins = self.files_layout.contentsMargins()
+            total_vertical_margin = margins.top() + margins.bottom()
+            
+            import math
+            total_rows = math.ceil(len(files) / self._fixed_max_cols) if self._fixed_max_cols > 0 else 0
+            total_height = total_rows * card_height + max(0, total_rows - 1) * spacing + total_vertical_margin
+            
+            self.files_container.setMinimumHeight(total_height)
+            debug(f"设置内容区域最小高度: {total_height} (总行数: {total_rows}, 卡片高度: {card_height}, 间距: {spacing})")
+        
         debug(f"开始懒加载，共 {self._all_files_count} 个文件，每批 {self._batch_size} 个")
         
         # 如果没有文件需要加载，直接调用回调
@@ -2073,6 +2089,9 @@ class CustomFileSelector(QWidget):
         """分批加载下一批卡片"""
         if not self._pending_files:
             self._is_loading = False
+            if hasattr(self, '_fixed_max_cols'):
+                del self._fixed_max_cols
+            self.files_container.setMinimumHeight(0)
             print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
             # 所有卡片加载完成后调用回调函数
             if hasattr(self, '_refresh_callback') and self._refresh_callback:
@@ -2093,6 +2112,9 @@ class CustomFileSelector(QWidget):
             self._lazy_load_timer.start()
         else:
             self._is_loading = False
+            if hasattr(self, '_fixed_max_cols'):
+                del self._fixed_max_cols
+            self.files_container.setMinimumHeight(0)
             print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
             # 所有卡片加载完成后调用回调函数
             if hasattr(self, '_refresh_callback') and self._refresh_callback:
@@ -2121,6 +2143,9 @@ class CustomFileSelector(QWidget):
             self._lazy_load_timer.start()
         else:
             self._is_loading = False
+            if hasattr(self, '_fixed_max_cols'):
+                del self._fixed_max_cols
+            self.files_container.setMinimumHeight(0)
             print(f"[DEBUG] 滚动加载完成，共加载 {self._loaded_count} 个卡片")
     
     def _clear_files_layout(self):
@@ -2132,6 +2157,15 @@ class CustomFileSelector(QWidget):
         self._pending_files = []
         self._loaded_count = 0
         self._is_loading = False
+        
+        if hasattr(self, '_last_max_cols'):
+            del self._last_max_cols
+        
+        if hasattr(self, '_last_card_width'):
+            del self._last_card_width
+        
+        if hasattr(self, '_last_container_width'):
+            del self._last_container_width
         
         while self.files_layout.count() > 0:
             item = self.files_layout.itemAt(0)
@@ -2346,7 +2380,7 @@ class CustomFileSelector(QWidget):
         Args:
             files: 文件列表
         """
-        max_cols = self._calculate_max_columns()
+        max_cols = getattr(self, '_fixed_max_cols', self._calculate_max_columns())
         
         current_count = self.files_layout.count()
         row = current_count // max_cols
@@ -2363,12 +2397,8 @@ class CustomFileSelector(QWidget):
                 col = 0
                 row += 1
         
-        if not hasattr(self, '_last_max_cols') or self._last_max_cols != max_cols:
-            self._last_max_cols = max_cols
-            self._rearrange_cards(max_cols)
-        else:
-            self._last_max_cols = max_cols
-            self._update_all_cards_width()
+        self._last_max_cols = max_cols
+        self._update_all_cards_width()
     
     def _calculate_card_width(self):
         """

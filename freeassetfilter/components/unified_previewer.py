@@ -482,22 +482,25 @@ class UnifiedPreviewer(QWidget):
             try:
                 from freeassetfilter.components.video_player import VideoPlayer
                 if isinstance(self.current_preview_widget, VideoPlayer):
-                    # 先禁用滤镜资源
+                    # 先调用cleanup方法（这会先停止事件线程，再停止播放，确保清理彻底）
+                    if hasattr(self.current_preview_widget.player_core, 'cleanup'):
+                        self.current_preview_widget.player_core.cleanup()
+                    
+                    # 同时处理比较模式下的原始播放器核心
+                    if hasattr(self.current_preview_widget, 'original_player_core'):
+                        if hasattr(self.current_preview_widget.original_player_core, 'cleanup'):
+                            self.current_preview_widget.original_player_core.cleanup()
+                    
+                    # 作为安全网，再次调用stop确保播放完全停止
+                    self.current_preview_widget.player_core.stop()
+                    if hasattr(self.current_preview_widget, 'original_player_core'):
+                        self.current_preview_widget.original_player_core.stop()
+                    
+                    # 最后禁用滤镜资源
                     if hasattr(self.current_preview_widget.player_core, 'disable_cube_filter'):
                         self.current_preview_widget.player_core.disable_cube_filter()
                     if hasattr(self.current_preview_widget, 'original_player_core'):
                         self.current_preview_widget.original_player_core.disable_cube_filter()
-                    
-                    # 显式停止并清理播放器核心
-                    self.current_preview_widget.player_core.stop()
-                    # 调用cleanup方法彻底释放资源
-                    if hasattr(self.current_preview_widget.player_core, 'cleanup'):
-                        self.current_preview_widget.player_core.cleanup()
-                    # 同时处理比较模式下的原始播放器核心
-                    if hasattr(self.current_preview_widget, 'original_player_core'):
-                        self.current_preview_widget.original_player_core.stop()
-                        if hasattr(self.current_preview_widget.original_player_core, 'cleanup'):
-                            self.current_preview_widget.original_player_core.cleanup()
             except Exception as e:
                 print(f"清理VideoPlayer组件时出错: {e}")
             

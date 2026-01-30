@@ -15,71 +15,61 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 提供高质量的SVG到QPixmap或QSvgWidget转换，确保正确处理RGBA通道
 """
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPainter, QPixmap, QImage
+from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QPainter, QPixmap, QImage, QColor
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
 from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout
 from PyQt5.QtGui import QGuiApplication
 import os
 
-# 导入设置管理器
 from .settings_manager import SettingsManager
 
 
 class SvgRenderer:
-    """
-    SVG图像渲染工具类
-    提供高质量的SVG到QPixmap或QSvgWidget转换，确保正确处理RGBA通道
-    参考了custom_file_selector.py中_set_file_icon方法的实现
-    """
-    
+    _cached_colors = {}
+    _color_cache_valid = False
+
+    @staticmethod
+    def _invalidate_color_cache():
+        SvgRenderer._color_cache_valid = False
+        SvgRenderer._cached_colors.clear()
+
+    @staticmethod
+    def _ensure_color_cache():
+        if SvgRenderer._color_cache_valid:
+            return
+
+        try:
+            settings_manager = SettingsManager()
+            SvgRenderer._cached_colors = {
+                "accent_color": settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
+                "base_color": settings_manager.get_setting("appearance.colors.base_color", "#f1f3f5"),
+                "secondary_color": settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            }
+            SvgRenderer._color_cache_valid = True
+        except Exception as e:
+            print(f"获取颜色设置失败: {e}")
+            SvgRenderer._cached_colors = {
+                "accent_color": "#007AFF",
+                "base_color": "#f1f3f5",
+                "secondary_color": "#333333"
+            }
+            SvgRenderer._color_cache_valid = True
+
     @staticmethod
     def _get_accent_color():
-        """
-        获取应用设置中的强调色(accent_color)
-        
-        Returns:
-            str: 强调色的十六进制值，如#FF0000
-        """
-        try:
-            settings_manager = SettingsManager()
-            return settings_manager.get_setting("appearance.colors.accent_color")
-        except Exception as e:
-            print(f"获取强调色失败: {e}")
-            # 如果获取失败，返回默认强调色
-            return "#007AFF"
-    
+        SvgRenderer._ensure_color_cache()
+        return SvgRenderer._cached_colors.get("accent_color", "#007AFF")
+
     @staticmethod
     def _get_base_color():
-        """
-        获取应用设置中的底层色(base_color)
-        
-        Returns:
-            str: 底层色的十六进制值，如#FFFFFF
-        """
-        try:
-            settings_manager = SettingsManager()
-            return settings_manager.get_setting("appearance.colors.base_color")
-        except Exception as e:
-            print(f"获取底层色失败: {e}")
-            # 如果获取失败，返回默认底层色
-            return "#f1f3f5"
-    
+        SvgRenderer._ensure_color_cache()
+        return SvgRenderer._cached_colors.get("base_color", "#f1f3f5")
+
     @staticmethod
     def _get_secondary_color():
-        """
-        获取应用设置中的次选色(secondary_color)
-        
-        Returns:
-            str: 次选色的十六进制值，如#000000
-        """
-        try:
-            settings_manager = SettingsManager()
-            return settings_manager.get_setting("appearance.colors.secondary_color")
-        except Exception as e:
-            print(f"获取次选色失败: {e}")
-            # 如果获取失败，返回默认次选色
-            return "#333333"
+        SvgRenderer._ensure_color_cache()
+        return SvgRenderer._cached_colors.get("secondary_color", "#333333")
     
     @staticmethod
     def _replace_svg_colors(svg_content):

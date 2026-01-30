@@ -1563,83 +1563,55 @@ class MPVPlayerCore(QObject):
             return 0.0
     
     def _set_property_double(self, property_name, value):
-        """
-        设置double类型属性
-        
-        Args:
-            property_name (str): 属性名称
-            value (float): 属性值
-            
-        Returns:
-            bool: 设置成功返回 True，否则返回 False
-        """
         try:
             if not self._mpv:
                 return False
-            
-            value_double = c_double(value)
-            result = libmpv.mpv_set_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_DOUBLE, byref(value_double))
-            if result != MPV_ERROR_SUCCESS:
-                print(f"[MPVPlayerCore] 警告: 设置属性 {property_name} 失败，错误码: {result}")
-                return False
-            
+
+            with self._mpv_lock:
+                value_double = c_double(value)
+                result = libmpv.mpv_set_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_DOUBLE, byref(value_double))
+                if result != MPV_ERROR_SUCCESS:
+                    print(f"[MPVPlayerCore] 警告: 设置属性 {property_name} 失败，错误码: {result}")
+                    return False
+
             return True
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 设置属性 {property_name} 异常 - {e}")
             return False
     
     def _set_property_string(self, property_name, value):
-        """
-        设置字符串类型属性
-        
-        Args:
-            property_name (str): 属性名称
-            value (str): 属性值
-            
-        Returns:
-            bool: 设置成功返回 True，否则返回 False
-        """
         try:
             if not self._mpv:
                 return False
-            
-            result = libmpv.mpv_set_property_string(self._mpv, property_name.encode('utf-8'), value.encode('utf-8'))
-            if result != MPV_ERROR_SUCCESS:
-                print(f"[MPVPlayerCore] 警告: 设置属性 {property_name} 失败，错误码: {result}")
-                return False
-            
+
+            with self._mpv_lock:
+                result = libmpv.mpv_set_property_string(self._mpv, property_name.encode('utf-8'), value.encode('utf-8'))
+                if result != MPV_ERROR_SUCCESS:
+                    print(f"[MPVPlayerCore] 警告: 设置属性 {property_name} 失败，错误码: {result}")
+                    return False
+
             return True
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 设置属性 {property_name} 异常 - {e}")
             return False
-    
+
     def _get_property_string(self, property_name):
-        """
-        获取字符串类型属性
-        
-        Args:
-            property_name (str): 属性名称
-            
-        Returns:
-            str: 属性值
-        """
         try:
             if not self._mpv:
                 return ""
-            
-            value_ptr = c_char_p()
-            result = libmpv.mpv_get_property_string(self._mpv, property_name.encode('utf-8'), byref(value_ptr))
-            if result != MPV_ERROR_SUCCESS:
-                # print(f"[MPVPlayerCore] 警告: 获取属性 {property_name} 失败，错误码: {result}")
-                return ""
-            
-            if not value_ptr or not value_ptr.value:
-                return ""
-            
-            value = value_ptr.value.decode('utf-8')
-            # 释放内存
-            libmpv.mpv_free(value_ptr)
-            return value
+
+            with self._mpv_lock:
+                value_ptr = c_char_p()
+                result = libmpv.mpv_get_property_string(self._mpv, property_name.encode('utf-8'), byref(value_ptr))
+                if result != MPV_ERROR_SUCCESS:
+                    return ""
+
+                if not value_ptr or not value_ptr.value:
+                    return ""
+
+                value = value_ptr.value.decode('utf-8')
+                libmpv.mpv_free(value_ptr)
+                return value
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 获取属性 {property_name} 异常 - {e}")
             return ""

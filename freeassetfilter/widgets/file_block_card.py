@@ -124,8 +124,11 @@ class FileBlockCard(QWidget):
         
         scaled_min_width = int(35 * self.dpi_scale)
         scaled_max_width = int(50 * self.dpi_scale)
+        scaled_max_height = int(75 * self.dpi_scale)
         self.setMinimumWidth(scaled_min_width)
         self.setMaximumWidth(scaled_max_width)
+        self.setMaximumHeight(scaled_max_height)
+        self.setMinimumHeight(scaled_max_height)
         
         app = QApplication.instance()
         self.default_font_size = getattr(app, 'default_font_size', 8) if app else 8
