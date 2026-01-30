@@ -26,6 +26,9 @@ from freeassetfilter.widgets.menu_list import D_MenuList, D_MenuListItem
 # 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
 
+# 导入SVG渲染器，用于主题颜色变化时刷新SVG图标
+from freeassetfilter.core.svg_renderer import SvgRenderer
+
 # 导入主题管理器组件
 from freeassetfilter.core.theme_manager import ThemeManager
 
@@ -1151,6 +1154,9 @@ class ModernSettingsWindow(QDialog):
         if theme and "colors" in theme:
             accent_color = theme["colors"][0]
             self.current_settings.update({f"appearance.colors.accent_color": accent_color})
+            
+            # 使SVG颜色缓存失效，确保下次渲染时使用新颜色
+            SvgRenderer._invalidate_color_cache()
         
         theme_window.close()
         

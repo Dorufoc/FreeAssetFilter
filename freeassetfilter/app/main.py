@@ -87,6 +87,8 @@ from freeassetfilter.components.file_selector import CustomFileSelector
 from freeassetfilter.components.unified_previewer import UnifiedPreviewer
 # 导入文件临时存储池组件
 from freeassetfilter.components.file_staging_pool import FileStagingPool
+# 导入SVG渲染器，用于主题更新时清除SVG颜色缓存
+from freeassetfilter.core.svg_renderer import SvgRenderer
 
 
 class FreeAssetFilterApp(QMainWindow):
@@ -843,6 +845,9 @@ class FreeAssetFilterApp(QMainWindow):
         
         self._update_theme_in_progress = True
         self._theme_update_queued = False
+        
+        # 清除SVG颜色缓存，确保新组件使用最新的主题颜色
+        SvgRenderer._invalidate_color_cache()
         
         try:
             success = self._rebuild_main_layout()
