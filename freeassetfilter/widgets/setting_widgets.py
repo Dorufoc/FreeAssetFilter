@@ -202,19 +202,10 @@ class CustomSettingItem(QWidget):
             
             # 尝试获取normal_color
             normal_color_str = "#808080"  # 默认值
-            
+
             # 优先从应用实例获取设置管理器
             if hasattr(app, 'settings_manager'):
                 normal_color_str = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
-            else:
-                # 回退方案：直接创建设置管理器实例获取设置
-                from freeassetfilter.core.settings_manager import SettingsManager
-                try:
-                    settings_manager = SettingsManager()
-                    normal_color_str = settings_manager.get_setting("appearance.colors.normal_color", "#808080")
-                except Exception:
-                    # 如果无法创建设置管理器，使用默认值
-                    pass
             
             # 使用QColor将颜色加深30%
             from PyQt5.QtGui import QColor

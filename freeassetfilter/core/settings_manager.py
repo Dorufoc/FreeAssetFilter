@@ -33,7 +33,7 @@ class SettingsManager:
                 return
 
             SettingsManager._initialized = True
-            self._settings_lock = threading.Lock()
+            self._settings_lock = threading.RLock()
             self.settings = None
             self._settings_file = settings_file
             self._initialize_settings()

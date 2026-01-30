@@ -1543,11 +1543,14 @@ class VideoPlayer(QWidget):
             return None
     
     def _use_default_theme(self):
-        """使用默认主题"""
+        """使用默认主题（无封面时使用强调色主题）"""
         if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
-            settings = SettingsManager()
-            theme = settings.get_setting('player/fluid_gradient_theme', 'sunset')
-            self.fluid_gradient_background.setTheme(theme)
+            if self._audio_cover_data:
+                settings = SettingsManager()
+                theme = settings.get_setting('player/fluid_gradient_theme', 'sunset')
+                self.fluid_gradient_background.setTheme(theme)
+            else:
+                self.fluid_gradient_background.useAccentTheme()
     
     def setFluidGradientTheme(self, theme: str):
         """
@@ -1620,7 +1623,7 @@ class VideoPlayer(QWidget):
             icons_path = os.path.join(current_dir, '..', 'icons')
             icons_path = os.path.abspath(icons_path)
             
-            icon_name = "音乐.svg"
+            icon_name = "音乐_playing.svg"
             icon_path = os.path.join(icons_path, icon_name)
             
             if not os.path.exists(icon_path):

@@ -46,18 +46,21 @@ class ThemeEditor(QScrollArea):
         ]
         
         self.current_theme = self._load_current_theme()
+        
         self.is_dark_mode = self._is_dark_mode()
         
         self.selected_theme = None
         self._last_max_cols = 0
         self._last_container_width = 0
         self._slider_color = self._load_slider_color()
-        
+        self._update_retry_count = 0
+        self._layout_initialized = False
+
         self._check_current_theme_match()
         
         self.init_ui()
         
-        QTimer.singleShot(100, self._on_layout_initialized)
+        QTimer.singleShot(0, self._on_layout_initialized)
     
     def _get_theme_colors(self, accent_color):
         """
@@ -338,6 +341,20 @@ class ThemeEditor(QScrollArea):
     
     def _on_layout_initialized(self):
         """布局初始化完成后更新卡片宽度"""
+        if self._layout_initialized:
+            return
+
+        container_width = self.viewport().width()
+        if container_width <= 0:
+            self._update_retry_count += 1
+            if self._update_retry_count > 100:
+                self._layout_initialized = True
+                return
+            QTimer.singleShot(50, self._on_layout_initialized)
+            return
+
+        self._update_retry_count = 0
+        self._layout_initialized = True
         self._update_all_cards_width()
     
     def eventFilter(self, obj, event):
@@ -348,6 +365,8 @@ class ThemeEditor(QScrollArea):
     
     def _on_viewport_resized(self):
         """当视口大小变化时，重新排列主题卡片"""
+        if not self._layout_initialized:
+            return
         self._update_all_cards_width()
     
     def _calculate_max_columns(self):
@@ -400,11 +419,13 @@ class ThemeEditor(QScrollArea):
     
     def _update_all_cards_width(self):
         """更新所有卡片的动态宽度，并重新排列卡片"""
+        if not self._layout_initialized:
+            return
+
         container_width = self.viewport().width()
         if container_width <= 0:
-            QTimer.singleShot(50, self._update_all_cards_width)
             return
-        
+
         max_cols = self._calculate_max_columns()
         if max_cols <= 0:
             return

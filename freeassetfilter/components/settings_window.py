@@ -33,6 +33,24 @@ from freeassetfilter.core.theme_manager import ThemeManager
 import os
 import sys
 
+# 字体缓存，避免重复获取系统字体
+_cached_font_families = None
+
+
+def _get_font_families_cached():
+    """
+    获取系统字体列表（带缓存）
+
+    Returns:
+        list: 系统字体列表
+    """
+    global _cached_font_families
+    if _cached_font_families is None:
+        from PyQt5.QtGui import QFontDatabase
+        font_db = QFontDatabase()
+        _cached_font_families = font_db.families()
+    return _cached_font_families
+
 
 class ModernSettingsWindow(QDialog):
     """
@@ -641,10 +659,8 @@ class ModernSettingsWindow(QDialog):
         font_layout = QVBoxLayout(font_group)
         
         # 字体样式选择
-        from PyQt5.QtGui import QFontDatabase
         from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
-        font_db = QFontDatabase()
-        font_families = font_db.families()
+        font_families = _get_font_families_cached()
         
         # 获取当前字体设置
         current_font = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
@@ -703,10 +719,8 @@ class ModernSettingsWindow(QDialog):
         font_layout = QVBoxLayout(font_group)
         
         # 字体样式选择
-        from PyQt5.QtGui import QFontDatabase
         from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
-        font_db = QFontDatabase()
-        font_families = font_db.families()
+        font_families = _get_font_families_cached()
         
         # 获取当前字体设置
         current_font = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
