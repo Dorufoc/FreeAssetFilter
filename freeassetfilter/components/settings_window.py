@@ -162,7 +162,7 @@ class ModernSettingsWindow(QDialog):
         self._main_splitter = main_splitter
         main_layout.addWidget(main_splitter, 1)
 
-        self._fill_tab_content("appearance")
+        self._fill_tab_content("general")
     
     def _create_navigation_widget(self):
         """
@@ -274,11 +274,10 @@ class ModernSettingsWindow(QDialog):
 
         self.navigation_buttons = []
         self.navigation_items = [
-            {"text": "外观", "id": "appearance"},
+            {"text": "通用", "id": "general"},
             {"text": "文件选择器", "id": "file_selector"},
             {"text": "文件暂存池", "id": "file_staging"},
             {"text": "播放器", "id": "player"},
-            {"text": "通用", "id": "general"},
             {"text": "开发者设置", "id": "developer"}
         ]
 
@@ -317,7 +316,7 @@ class ModernSettingsWindow(QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(5)
 
-        self.content_title = QLabel("外观设置")
+        self.content_title = QLabel("通用设置")
         self.content_title.setStyleSheet(f"""
             QLabel {{ 
                 font-family: 'Noto Sans SC'; 
@@ -546,11 +545,11 @@ class ModernSettingsWindow(QDialog):
     def _on_navigation_clicked(self, index):
         """
         导航选项点击事件处理
-        
+
         Args:
             index (int): 选中的导航项索引
         """
-        nav_ids = ["appearance", "file_selector", "file_staging", "player", "general", "developer"]
+        nav_ids = ["general", "file_selector", "file_staging", "player", "developer"]
         
         if 0 <= index < len(nav_ids):
             for i, button in enumerate(self.navigation_buttons):
@@ -566,221 +565,39 @@ class ModernSettingsWindow(QDialog):
     def _fill_tab_content(self, tab_id):
         """
         根据标签页ID填充内容
-        
+
         Args:
             tab_id (str): 标签页ID
         """
         # 更新内容标题
         title_mapping = {
-            "appearance": "外观设置",
+            "general": "通用设置",
             "file_selector": "文件选择器设置",
             "file_staging": "文件暂存池设置",
             "player": "播放器设置",
-            "general": "通用设置",
             "developer": "开发者设置"
         }
-        
+
         if tab_id in title_mapping:
             self.content_title.setText(title_mapping[tab_id])
-        
+
         # 清空当前内容
         while self.scroll_layout.count() > 0:
             item = self.scroll_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
+
         # 根据标签页ID添加设置项
-        if tab_id == "appearance":
-            self._add_appearance_settings()
+        if tab_id == "general":
+            self._add_general_settings()
         elif tab_id == "file_selector":
             self._add_file_selector_settings()
         elif tab_id == "file_staging":
             self._add_file_staging_settings()
         elif tab_id == "player":
             self._add_player_settings()
-        elif tab_id == "general":
-            self._add_general_settings()
         elif tab_id == "developer":
             self._add_developer_settings()
-    
-    def _add_appearance_settings(self):
-        """
-        添加外观设置项
-        """
-        # 主题设置组
-        theme_group = QGroupBox("主题")
-        theme_group.setStyleSheet(self.group_box_style)
-        theme_layout = QVBoxLayout(theme_group)
-        
-        # 深色/浅色主题开关
-        self.theme_switch = CustomSettingItem(
-            text="深色主题",
-            secondary_text="启用深色主题模式",
-            interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("appearance.theme", "default") == "dark"
-        )
-        def on_theme_toggled(value):
-            theme_value = "dark" if value else "default"
-            self.current_settings.update({"appearance.theme": theme_value})
-            
-            current_accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
-            
-            if value:
-                dark_colors = {
-                    "base_color": "#212121",
-                    "secondary_color": "#FFFFFF",
-                    "normal_color": "#717171",
-                    "auxiliary_color": "#313331"
-                }
-                for color_key, color_value in dark_colors.items():
-                    self.current_settings.update({f"appearance.colors.{color_key}": color_value})
-            else:
-                light_colors = {
-                    "base_color": "#FFFFFF",
-                    "secondary_color": "#333333",
-                    "normal_color": "#e0e0e0",
-                    "auxiliary_color": "#f1f3f3"
-                }
-                for color_key, color_value in light_colors.items():
-                    self.current_settings.update({f"appearance.colors.{color_key}": color_value})
-            
-            self._update_styles()
-        
-        self.theme_switch.switch_toggled.connect(on_theme_toggled)
-        theme_layout.addWidget(self.theme_switch)
-        
-        # 主题颜色设置按钮
-        self.theme_color_button = CustomButton("自定义主题颜色", button_type="secondary")
-        self.theme_color_button.clicked.connect(self._open_theme_color_settings)
-        theme_layout.addWidget(self.theme_color_button)
-        
-        self.scroll_layout.addWidget(theme_group)
-        
-        # 字体设置组
-        font_group = QGroupBox("字体设置")
-        font_group.setStyleSheet(self.group_box_style)
-        font_layout = QVBoxLayout(font_group)
-        
-        # 字体样式选择
-        from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
-        font_families = _get_font_families_cached()
-        
-        # 获取当前字体设置
-        current_font = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
-        
-        # 创建字体样式选择控件，使用按钮组交互类型
-        self.font_style_setting = CustomSettingItem(
-            text="字体样式",
-            secondary_text="选择应用内使用的字体",
-            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
-            buttons=[{"text": current_font, "type": "primary"}]
-        )
-        
-        # 字体样式选择按钮点击处理
-        def on_font_style_button_clicked(button_index):
-            # 创建自定义下拉菜单（点击时才创建，避免初始位置错误）
-            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
-            # 设置字体列表项
-            self.font_dropdown_menu.set_items(font_families, default_item=current_font)
-            # 字体选择下拉菜单项点击处理
-            def on_font_item_clicked(selected_font_family):
-                self.current_settings.update({"font.style": selected_font_family})
-                # 更新按钮显示的字体名称
-                self.font_style_setting.button_group[0].setText(selected_font_family)
-            self.font_dropdown_menu.itemClicked.connect(on_font_item_clicked)
-            
-            # 设置目标按钮并显示下拉菜单
-            button = self.font_style_setting.button_group[button_index]
-            self.font_dropdown_menu.set_target_button(button)
-            self.font_dropdown_menu.show_menu()
-        self.font_style_setting.button_clicked.connect(on_font_style_button_clicked)
-        
-        # 将字体样式选择控件添加到布局
-        font_layout.addWidget(self.font_style_setting)
-        
-        # 字体大小滑块
-        self.font_size_bar = CustomSettingItem(
-            text="字体大小",
-            secondary_text="调整应用内字体大小",
-            interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
-            min_value=6,
-            max_value=40,
-            initial_value=self.settings_manager.get_setting("font.size", 20)
-        )
-        self.font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"font.size": value}))
-        font_layout.addWidget(self.font_size_bar)
-
-        self.scroll_layout.addWidget(font_group)
-
-    def _add_font_settings(self):
-        """
-        添加字体设置项
-        """
-        # 字体设置组
-        font_group = QGroupBox("字体设置")
-        font_group.setStyleSheet(self.group_box_style)
-        font_layout = QVBoxLayout(font_group)
-        
-        # 字体样式选择
-        from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
-        font_families = _get_font_families_cached()
-        
-        # 获取当前字体设置
-        current_font = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
-        
-        # 创建字体样式选择控件（只用于显示标题和描述）
-        font_style_label = CustomSettingItem(
-            text="字体样式",
-            secondary_text="选择应用内使用的字体",
-            interaction_type=None  # 不添加交互控件
-        )
-        
-        # 创建字体样式选择控件，使用按钮组交互类型
-        self.font_style_setting = CustomSettingItem(
-            text="",
-            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
-            buttons=[{"text": current_font, "type": "primary"}]
-        )
-        
-        # 将标签和字体选择控件添加到布局
-        font_layout.addWidget(font_style_label)
-        font_layout.addWidget(self.font_style_setting)
-        
-        # 字体样式选择按钮点击处理
-        def on_font_style_button_clicked(button_index):
-            # 创建自定义下拉菜单（点击时才创建，避免初始位置错误）
-            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
-            # 设置按钮样式为primary
-            self.font_dropdown_menu.main_button.set_button_type("primary")
-            # 设置字体列表项
-            self.font_dropdown_menu.set_items(font_families, default_item=current_font)
-            
-            # 字体选择下拉菜单项点击处理
-            def on_font_item_clicked(selected_font_family):
-                self.current_settings.update({"font.style": selected_font_family})
-                # 更新按钮显示的字体名称
-                self.font_style_setting.button_group[0].setText(selected_font_family)
-            self.font_dropdown_menu.itemClicked.connect(on_font_item_clicked)
-            
-            # 设置目标按钮并显示下拉菜单
-            button = self.font_style_setting.button_group[button_index]
-            self.font_dropdown_menu.set_target_button(button)
-            self.font_dropdown_menu.show_menu()
-        self.font_style_setting.button_clicked.connect(on_font_style_button_clicked)
-        
-        # 字体大小滑块
-        self.font_size_bar = CustomSettingItem(
-            text="字体大小",
-            secondary_text="调整应用内字体大小",
-            interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
-            min_value=6,
-            max_value=40,
-            initial_value=self.settings_manager.get_setting("font.size", 20)
-        )
-        self.font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"font.size": value}))
-        font_layout.addWidget(self.font_size_bar)
-
-        self.scroll_layout.addWidget(font_group)
 
     def _add_file_selector_settings(self):
         """
@@ -841,7 +658,7 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
             buttons=[{"text": "设置", "type": "primary"}]
         )
-        
+
         # 快捷键设置按钮点击处理
         def on_return_shortcut_clicked(button_index):
             # 在实际应用中，这里应该打开快捷键设置界面
@@ -851,6 +668,23 @@ class ModernSettingsWindow(QDialog):
         file_selector_layout.addWidget(self.return_shortcut_setting)
 
         self.scroll_layout.addWidget(file_selector_group)
+
+        # 实验性功能组
+        experimental_group = QGroupBox("实验性")
+        experimental_group.setStyleSheet(self.group_box_style)
+        experimental_layout = QVBoxLayout(experimental_group)
+
+        # 时间线视图开关
+        self.timeline_view_switch = CustomSettingItem(
+            text="时间线视图",
+            secondary_text="在文件选择器中显示时间线按钮",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("file_selector.timeline_view_enabled", False)
+        )
+        self.timeline_view_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.timeline_view_enabled": value}))
+        experimental_layout.addWidget(self.timeline_view_switch)
+
+        self.scroll_layout.addWidget(experimental_group)
 
     def _add_file_staging_settings(self):
         """
@@ -950,15 +784,112 @@ class ModernSettingsWindow(QDialog):
 
     def _add_general_settings(self):
         """
-        添加通用设置项
+        添加通用设置项（包含原外观设置中的主题和字体设置）
         """
-        general_group = QGroupBox("通用设置")
-        general_group.setStyleSheet(self.group_box_style)
-        general_layout = QVBoxLayout(general_group)
+        # 主题设置组
+        theme_group = QGroupBox("主题")
+        theme_group.setStyleSheet(self.group_box_style)
+        theme_layout = QVBoxLayout(theme_group)
 
-        # 通用设置项可以在这里添加
+        # 深色/浅色主题开关
+        self.theme_switch = CustomSettingItem(
+            text="深色主题",
+            secondary_text="启用深色主题模式",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("appearance.theme", "default") == "dark"
+        )
+        def on_theme_toggled(value):
+            theme_value = "dark" if value else "default"
+            self.current_settings.update({"appearance.theme": theme_value})
 
-        self.scroll_layout.addWidget(general_group)
+            current_accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
+
+            if value:
+                dark_colors = {
+                    "base_color": "#212121",
+                    "secondary_color": "#FFFFFF",
+                    "normal_color": "#717171",
+                    "auxiliary_color": "#313331"
+                }
+                for color_key, color_value in dark_colors.items():
+                    self.current_settings.update({f"appearance.colors.{color_key}": color_value})
+            else:
+                light_colors = {
+                    "base_color": "#FFFFFF",
+                    "secondary_color": "#333333",
+                    "normal_color": "#e0e0e0",
+                    "auxiliary_color": "#f1f3f3"
+                }
+                for color_key, color_value in light_colors.items():
+                    self.current_settings.update({f"appearance.colors.{color_key}": color_value})
+
+            self._update_styles()
+
+        self.theme_switch.switch_toggled.connect(on_theme_toggled)
+        theme_layout.addWidget(self.theme_switch)
+
+        # 主题颜色设置按钮
+        self.theme_color_button = CustomButton("自定义主题颜色", button_type="secondary")
+        self.theme_color_button.clicked.connect(self._open_theme_color_settings)
+        theme_layout.addWidget(self.theme_color_button)
+
+        self.scroll_layout.addWidget(theme_group)
+
+        # 字体设置组
+        font_group = QGroupBox("字体设置")
+        font_group.setStyleSheet(self.group_box_style)
+        font_layout = QVBoxLayout(font_group)
+
+        # 字体样式选择
+        from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
+        font_families = _get_font_families_cached()
+
+        # 获取当前字体设置
+        current_font = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
+
+        # 创建字体样式选择控件，使用按钮组交互类型
+        self.font_style_setting = CustomSettingItem(
+            text="字体样式",
+            secondary_text="选择应用内使用的字体",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": current_font, "type": "primary"}]
+        )
+
+        # 字体样式选择按钮点击处理
+        def on_font_style_button_clicked(button_index):
+            # 创建自定义下拉菜单（点击时才创建，避免初始位置错误）
+            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            # 设置字体列表项
+            self.font_dropdown_menu.set_items(font_families, default_item=current_font)
+            # 字体选择下拉菜单项点击处理
+            def on_font_item_clicked(selected_font_family):
+                self.current_settings.update({"font.style": selected_font_family})
+                # 更新按钮显示的字体名称
+                self.font_style_setting.button_group[0].setText(selected_font_family)
+            self.font_dropdown_menu.itemClicked.connect(on_font_item_clicked)
+
+            # 设置目标按钮并显示下拉菜单
+            button = self.font_style_setting.button_group[button_index]
+            self.font_dropdown_menu.set_target_button(button)
+            self.font_dropdown_menu.show_menu()
+        self.font_style_setting.button_clicked.connect(on_font_style_button_clicked)
+
+        # 将字体样式选择控件添加到布局
+        font_layout.addWidget(self.font_style_setting)
+
+        # 字体大小滑块
+        self.font_size_bar = CustomSettingItem(
+            text="字体大小",
+            secondary_text="调整应用内字体大小",
+            interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
+            min_value=6,
+            max_value=40,
+            initial_value=self.settings_manager.get_setting("font.size", 20)
+        )
+        self.font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"font.size": value}))
+        font_layout.addWidget(self.font_size_bar)
+
+        self.scroll_layout.addWidget(font_group)
 
     def _add_developer_settings(self):
         """
@@ -1374,6 +1305,7 @@ class ModernSettingsWindow(QDialog):
             "file_selector.cache_cleanup_threshold": self.settings_manager.get_setting("file_selector.cache_cleanup_threshold", 500),
             "file_selector.restore_last_path": self.settings_manager.get_setting("file_selector.restore_last_path", True),
             "file_selector.return_shortcut": self.settings_manager.get_setting("file_selector.return_shortcut", "middle_click"),
+            "file_selector.timeline_view_enabled": self.settings_manager.get_setting("file_selector.timeline_view_enabled", False),
             "file_staging.auto_restore_records": self.settings_manager.get_setting("file_staging.auto_restore_records", True),
             "file_staging.default_export_data_path": self.settings_manager.get_setting("file_staging.default_export_data_path", ""),
             "file_staging.default_export_file_path": self.settings_manager.get_setting("file_staging.default_export_file_path", ""),

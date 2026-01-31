@@ -1630,12 +1630,15 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             app = QApplication.instance()
-            
+
             if hasattr(app, 'update_theme') and callable(app.update_theme):
                 app.update_theme()
-            
+
             if hasattr(self, 'parent') and self.parent() and hasattr(self.parent(), 'update_theme'):
                 self.parent().update_theme()
+
+            # 更新时间线按钮的可见性
+            self._update_timeline_button_visibility()
             
             if self._current_settings_window is not None:
                 try:
@@ -1646,24 +1649,50 @@ class UnifiedPreviewer(QWidget):
         except (RuntimeError, AttributeError):
             pass
     
+    def _update_timeline_button_visibility(self):
+        """
+        更新时间线按钮的可见性
+        根据设置中的 file_selector.timeline_view_enabled 控制文件选择器中时间线按钮的显示/隐藏
+        """
+        try:
+            app = QApplication.instance()
+            if not hasattr(app, 'settings_manager'):
+                return
+
+            timeline_enabled = app.settings_manager.get_setting("file_selector.timeline_view_enabled", False)
+
+            # 通过主窗口访问文件选择器并更新时间线按钮可见性
+            main_window = None
+            if hasattr(self, 'main_window') and self.main_window is not None:
+                main_window = self.main_window
+            elif hasattr(self.parent(), 'main_window') and self.parent().main_window is not None:
+                main_window = self.parent().main_window
+
+            if main_window is not None and hasattr(main_window, 'file_selector_a'):
+                file_selector = main_window.file_selector_a
+                if hasattr(file_selector, '_update_timeline_button_visibility'):
+                    file_selector._update_timeline_button_visibility()
+        except Exception as e:
+            print(f"[ERROR] 更新时间线按钮可见性失败: {e}")
+
     def _refresh_settings_window(self):
         """刷新设置窗口样式"""
         try:
             if self._current_settings_window is None or not self._current_settings_window.isVisible():
                 return
-            
+
             settings_window = self._current_settings_window
-            
+
             app = QApplication.instance()
             if app is None:
                 return
-            
+
             auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-            
+
             try:
                 settings_window.setStyleSheet(f"""
-                    QDialog {{ 
-                        background-color: {auxiliary_color}; 
+                    QDialog {{
+                        background-color: {auxiliary_color};
                     }}
                 """)
             except (RuntimeError, AttributeError):

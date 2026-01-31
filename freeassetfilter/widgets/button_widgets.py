@@ -60,21 +60,27 @@ class CustomButton(QPushButton):
         """根据当前动画颜色更新按钮样式"""
         if not hasattr(self, '_style_colors') or not self._style_colors:
             return
-            
+
         scaled_border_radius = self._height // 2
         scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
         scaled_font_size = int(getattr(QApplication.instance(), 'default_font_size', 18) * self.dpi_scale)
-        
+
         if self.button_type == "primary":
             border_width = int(0.5 * self.dpi_scale)
         else:
             border_width = int(1 * self.dpi_scale)
-        
+
+        # 处理颜色字符串，支持透明色
+        def get_color_string(color):
+            if color.alpha() < 255:
+                return color.name(QColor.HexArgb)
+            return color.name()
+
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: {self._anim_bg_color.name()};
-                color: {self._anim_text_color.name()};
-                border: {border_width}px solid {self._anim_border_color.name()};
+                background-color: {get_color_string(self._anim_bg_color)};
+                color: {get_color_string(self._anim_text_color)};
+                border: {border_width}px solid {get_color_string(self._anim_border_color)};
                 border-radius: {scaled_border_radius}px;
                 padding: {scaled_padding};
                 font-size: {scaled_font_size}px;
@@ -142,12 +148,24 @@ class CustomButton(QPushButton):
             color = QColor(color_hex)
             current_theme = settings_manager.get_setting("appearance.theme", "default")
             is_dark_mode = (current_theme == "dark")
-            
+
             if is_dark_mode:
-                r = min(255, int(color.red() * (1 + percentage)))
-                g = min(255, int(color.green() * (1 + percentage)))
-                b = min(255, int(color.blue() * (1 + percentage)))
+                # 深色模式下变浅 - 使用加法逻辑，使黑色也能变亮
+                # 从当前颜色向白色方向移动
+                # 根据颜色亮度调整幅度，越暗的颜色使用越大的幅度
+                luminance = (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) / 255
+                if luminance < 0.1:  # 非常暗的颜色（如纯黑）
+                    adjusted_percentage = min(percentage * 2.5, 0.4)  # 最大40%
+                elif luminance < 0.3:  # 较暗的颜色
+                    adjusted_percentage = min(percentage * 1.8, 0.35)  # 最大35%
+                else:
+                    adjusted_percentage = percentage
+
+                r = min(255, int(color.red() + (255 - color.red()) * adjusted_percentage))
+                g = min(255, int(color.green() + (255 - color.green()) * adjusted_percentage))
+                b = min(255, int(color.blue() + (255 - color.blue()) * adjusted_percentage))
             else:
+                # 浅色模式下加深 - 使用乘法逻辑
                 r = max(0, int(color.red() * (1 - percentage)))
                 g = max(0, int(color.green() * (1 - percentage)))
                 b = max(0, int(color.blue() * (1 - percentage)))
@@ -166,9 +184,11 @@ class CustomButton(QPushButton):
             hover_border = QColor(accent_color)
             pressed_border = QColor(accent_color)
             if self._display_mode == "icon":
-                normal_text = QColor(accent_color)
-                hover_text = QColor(accent_color)
-                pressed_text = QColor(pressed_bg)
+                # 图标模式下文本颜色设为透明
+                transparent = QColor(0, 0, 0, 0)
+                normal_text = transparent
+                hover_text = transparent
+                pressed_text = transparent
             else:
                 normal_text = QColor(base_color)
                 hover_text = QColor(base_color)
@@ -181,24 +201,29 @@ class CustomButton(QPushButton):
             hover_border = QColor(base_color)
             pressed_border = QColor(base_color)
             if self._display_mode == "icon":
-                normal_text = QColor(base_color)
-                hover_text = QColor(base_color)
-                pressed_text = QColor(pressed_bg)
+                # 图标模式下文本颜色设为透明
+                transparent = QColor(0, 0, 0, 0)
+                normal_text = transparent
+                hover_text = transparent
+                pressed_text = transparent
             else:
                 normal_text = QColor(secondary_color)
                 hover_text = QColor(secondary_color)
                 pressed_text = QColor(secondary_color)
         elif self.button_type == "warning":
-            normal_bg = QColor(current_colors.get("notification_error", "#F44336"))
-            hover_bg = QColor("#E63946")
-            pressed_bg = QColor("#D62828")
-            normal_border = QColor(current_colors.get("notification_error", "#F44336"))
-            hover_border = QColor("#E63946")
-            pressed_border = QColor("#D62828")
+            warning_color = current_colors.get("notification_error", "#F44336")
+            normal_bg = QColor(warning_color)
+            hover_bg = darken_color(warning_color, 0.1)
+            pressed_bg = darken_color(warning_color, 0.2)
+            normal_border = QColor(warning_color)
+            hover_border = darken_color(warning_color, 0.1)
+            pressed_border = darken_color(warning_color, 0.2)
             if self._display_mode == "icon":
-                normal_text = QColor(current_colors.get("notification_error", "#F44336"))
-                hover_text = QColor(current_colors.get("notification_error", "#F44336"))
-                pressed_text = QColor(pressed_bg)
+                # 图标模式下文本颜色设为透明
+                transparent = QColor(0, 0, 0, 0)
+                normal_text = transparent
+                hover_text = transparent
+                pressed_text = transparent
             else:
                 normal_text = QColor(current_colors.get("notification_text", "#FFFFFF"))
                 hover_text = QColor(current_colors.get("notification_text", "#FFFFFF"))
@@ -211,9 +236,11 @@ class CustomButton(QPushButton):
             hover_border = QColor(accent_color)
             pressed_border = QColor(accent_color)
             if self._display_mode == "icon":
-                normal_text = QColor(base_color)
-                hover_text = QColor(base_color)
-                pressed_text = QColor(pressed_bg)
+                # 图标模式下文本颜色设为透明
+                transparent = QColor(0, 0, 0, 0)
+                normal_text = transparent
+                hover_text = transparent
+                pressed_text = transparent
             else:
                 normal_text = QColor(accent_color)
                 hover_text = QColor(accent_color)
@@ -401,12 +428,24 @@ class CustomButton(QPushButton):
         self._press_anim_group.stop()
         
         colors = self._style_colors
+        # 判断鼠标是否在按钮上，决定返回到悬停状态还是正常状态
+        if self.rect().contains(event.pos()):
+            # 鼠标在按钮上，返回到悬停状态
+            target_bg = colors['hover_bg']
+            target_border = colors['hover_border']
+            target_text = colors['hover_text']
+        else:
+            # 鼠标不在按钮上，直接返回到正常状态
+            target_bg = colors['normal_bg']
+            target_border = colors['normal_border']
+            target_text = colors['normal_text']
+        
         self._anim_release_bg.setStartValue(self._anim_bg_color)
-        self._anim_release_bg.setEndValue(colors['hover_bg'])
+        self._anim_release_bg.setEndValue(target_bg)
         self._anim_release_border.setStartValue(self._anim_border_color)
-        self._anim_release_border.setEndValue(colors['hover_border'])
+        self._anim_release_border.setEndValue(target_border)
         self._anim_release_text.setStartValue(self._anim_text_color)
-        self._anim_release_text.setEndValue(colors['hover_text'])
+        self._anim_release_text.setEndValue(target_text)
         self._release_anim_group.start()
         
         super().mouseReleaseEvent(event)
@@ -435,19 +474,29 @@ class CustomButton(QPushButton):
             # 获取当前主题模式
             current_theme = settings_manager.get_setting("appearance.theme", "default")
             is_dark_mode = (current_theme == "dark")
-            
+
             if is_dark_mode:
-                # 深色模式下变浅
-                r = min(255, int(color.red() * (1 + percentage)))
-                g = min(255, int(color.green() * (1 + percentage)))
-                b = min(255, int(color.blue() * (1 + percentage)))
+                # 深色模式下变浅 - 使用加法逻辑，使黑色也能变亮
+                # 从当前颜色向白色方向移动
+                # 根据颜色亮度调整幅度，越暗的颜色使用越大的幅度
+                luminance = (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) / 255
+                if luminance < 0.1:  # 非常暗的颜色（如纯黑）
+                    adjusted_percentage = min(percentage * 2.5, 0.4)  # 最大40%
+                elif luminance < 0.3:  # 较暗的颜色
+                    adjusted_percentage = min(percentage * 1.8, 0.35)  # 最大35%
+                else:
+                    adjusted_percentage = percentage
+
+                r = min(255, int(color.red() + (255 - color.red()) * adjusted_percentage))
+                g = min(255, int(color.green() + (255 - color.green()) * adjusted_percentage))
+                b = min(255, int(color.blue() + (255 - color.blue()) * adjusted_percentage))
             else:
-                # 浅色模式下加深
+                # 浅色模式下加深 - 使用乘法逻辑
                 r = max(0, int(color.red() * (1 - percentage)))
                 g = max(0, int(color.green() * (1 - percentage)))
                 b = max(0, int(color.blue() * (1 - percentage)))
             return f"#{r:02x}{g:02x}{b:02x}"
-        
+
         # 获取基础颜色
         accent_color = current_colors.get("accent_color", "#007AFF")
         secondary_color = current_colors.get("secondary_color", "#333333")
@@ -577,11 +626,11 @@ class CustomButton(QPushButton):
             disabled_text = "#FFFFFF"
             disabled_border = "#666666"
             
-            # 对于图标按钮，文字颜色与背景颜色一致，按下时等于按下时的背景颜色
+            # 对于图标按钮，文字颜色设为透明
             if self._display_mode == "icon":
-                # 图标模式下文字颜色与背景颜色一致
-                text_color = bg_color
-                pressed_text_color = pressed_color
+                # 图标模式下文字颜色设为透明
+                text_color = "transparent"
+                pressed_text_color = "transparent"
             else:
                 # 文字模式下使用正常文字颜色
                 pressed_text_color = text_color
@@ -623,11 +672,11 @@ class CustomButton(QPushButton):
             disabled_text = "#666666"
             disabled_border = "#444444"
             
-            # 对于图标按钮，文字颜色与背景颜色一致，按下时等于按下时的背景颜色
+            # 对于图标按钮，文字颜色设为透明
             if self._display_mode == "icon":
-                # 图标模式下文字颜色与背景颜色一致
-                text_color = bg_color
-                pressed_text_color = pressed_color
+                # 图标模式下文字颜色设为透明
+                text_color = "transparent"
+                pressed_text_color = "transparent"
             else:
                 # 文字模式下使用正常文字颜色
                 pressed_text_color = text_color
@@ -660,20 +709,21 @@ class CustomButton(QPushButton):
         elif self.button_type == "warning":
             # 警告按钮方案
             # 使用主题颜色
-            bg_color = current_colors.get("button_warning_normal", current_colors.get("notification_error", "#F44336"))
-            hover_color = current_colors.get("button_warning_hover", "#E63946")
-            pressed_color = current_colors.get("button_warning_pressed", "#D62828")
+            warning_color = current_colors.get("notification_error", "#F44336")
+            bg_color = current_colors.get("button_warning_normal", warning_color)
+            hover_color = current_colors.get("button_warning_hover", darken_color(warning_color, 0.1))
+            pressed_color = current_colors.get("button_warning_pressed", darken_color(warning_color, 0.2))
             text_color = current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF"))
-            border_color = current_colors.get("button_warning_border", current_colors.get("notification_error", "#F44336"))
+            border_color = current_colors.get("button_warning_border", warning_color)
             disabled_bg = "#FF8A80"
             disabled_text = "#FFFFFF"
             disabled_border = "#FF5252"
             
-            # 对于图标按钮，文字颜色与背景颜色一致，按下时等于按下时的背景颜色
+            # 对于图标按钮，文字颜色设为透明
             if self._display_mode == "icon":
-                # 图标模式下文字颜色与背景颜色一致
-                text_color = bg_color
-                pressed_text_color = pressed_color
+                # 图标模式下文字颜色设为透明
+                text_color = "transparent"
+                pressed_text_color = "transparent"
             else:
                 # 文字模式下使用正常文字颜色
                 pressed_text_color = text_color
@@ -715,11 +765,11 @@ class CustomButton(QPushButton):
             disabled_text = "#666666"
             disabled_border = "#444444"
             
-            # 对于图标按钮，文字颜色与背景颜色一致，按下时等于按下时的背景颜色
+            # 对于图标按钮，文字颜色设为透明
             if self._display_mode == "icon":
-                # 图标模式下文字颜色与背景颜色一致
-                text_color = bg_color
-                pressed_text_color = pressed_color
+                # 图标模式下文字颜色设为透明
+                text_color = "transparent"
+                pressed_text_color = "transparent"
             else:
                 # 文字模式下使用正常文字颜色
                 pressed_text_color = text_color
@@ -751,26 +801,48 @@ class CustomButton(QPushButton):
             """)
         
         # 更新动画颜色配置
-        self._update_anim_colors(current_colors, accent_color, secondary_color, base_color)
+        self._update_anim_colors(current_colors, accent_color, secondary_color, base_color, settings_manager)
     
-    def _update_anim_colors(self, current_colors, accent_color, secondary_color, base_color):
+    def _update_anim_colors(self, current_colors, accent_color, secondary_color, base_color, settings_manager=None):
         """更新动画颜色配置"""
         if not hasattr(self, '_style_colors'):
             return
+
+        # 如果没有传入settings_manager，尝试从应用实例获取
+        if settings_manager is None:
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                settings_manager = app.settings_manager
+            else:
+                from freeassetfilter.core.settings_manager import SettingsManager
+                settings_manager = SettingsManager()
         
         def get_color(color_hex):
             return QColor(color_hex)
         
         def darken_color_qcolor(color_hex, percentage):
             color = QColor(color_hex)
-            current_theme = current_colors.get("theme", "default") if "theme" in current_colors else "default"
+            # 从settings_manager获取当前主题模式
+            current_theme = settings_manager.get_setting("appearance.theme", "default")
             is_dark_mode = (current_theme == "dark")
-            
+
             if is_dark_mode:
-                r = min(255, int(color.red() * (1 + percentage)))
-                g = min(255, int(color.green() * (1 + percentage)))
-                b = min(255, int(color.blue() * (1 + percentage)))
+                # 深色模式下变浅 - 使用加法逻辑，使黑色也能变亮
+                # 从当前颜色向白色方向移动
+                # 根据颜色亮度调整幅度，越暗的颜色使用越大的幅度
+                luminance = (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) / 255
+                if luminance < 0.1:  # 非常暗的颜色（如纯黑）
+                    adjusted_percentage = min(percentage * 2.5, 0.4)  # 最大40%
+                elif luminance < 0.3:  # 较暗的颜色
+                    adjusted_percentage = min(percentage * 1.8, 0.35)  # 最大35%
+                else:
+                    adjusted_percentage = percentage
+
+                r = min(255, int(color.red() + (255 - color.red()) * adjusted_percentage))
+                g = min(255, int(color.green() + (255 - color.green()) * adjusted_percentage))
+                b = min(255, int(color.blue() + (255 - color.blue()) * adjusted_percentage))
             else:
+                # 浅色模式下加深 - 使用乘法逻辑
                 r = max(0, int(color.red() * (1 - percentage)))
                 g = max(0, int(color.green() * (1 - percentage)))
                 b = max(0, int(color.blue() * (1 - percentage)))
@@ -784,9 +856,11 @@ class CustomButton(QPushButton):
             hover_border = get_color(current_colors.get("button_primary_border", accent_color))
             pressed_border = get_color(current_colors.get("button_primary_border", accent_color))
             if self._display_mode == "icon":
-                normal_text = get_color(current_colors.get("button_primary_normal", accent_color))
-                hover_text = get_color(current_colors.get("button_primary_normal", accent_color))
-                pressed_text = pressed_bg
+                # 图标模式下文本颜色设为透明
+                transparent = QColor(0, 0, 0, 0)
+                normal_text = transparent
+                hover_text = transparent
+                pressed_text = transparent
             else:
                 normal_text = get_color(current_colors.get("button_primary_text", base_color))
                 hover_text = get_color(current_colors.get("button_primary_text", base_color))
@@ -799,24 +873,29 @@ class CustomButton(QPushButton):
             hover_border = hover_bg
             pressed_border = pressed_bg
             if self._display_mode == "icon":
-                normal_text = get_color(current_colors.get("button_normal_normal", base_color))
-                hover_text = get_color(current_colors.get("button_normal_normal", base_color))
-                pressed_text = pressed_bg
+                # 图标模式下文本颜色设为透明
+                transparent = QColor(0, 0, 0, 0)
+                normal_text = transparent
+                hover_text = transparent
+                pressed_text = transparent
             else:
                 normal_text = get_color(current_colors.get("button_normal_text", secondary_color))
                 hover_text = get_color(current_colors.get("button_normal_text", secondary_color))
                 pressed_text = get_color(current_colors.get("button_normal_text", secondary_color))
         elif self.button_type == "warning":
-            normal_bg = get_color(current_colors.get("button_warning_normal", current_colors.get("notification_error", "#F44336")))
-            hover_bg = get_color(current_colors.get("button_warning_hover", "#E63946"))
-            pressed_bg = get_color(current_colors.get("button_warning_pressed", "#D62828"))
-            normal_border = get_color(current_colors.get("button_warning_border", current_colors.get("notification_error", "#F44336")))
-            hover_border = get_color(current_colors.get("button_warning_border", current_colors.get("notification_error", "#F44336")))
-            pressed_border = get_color(current_colors.get("button_warning_border", current_colors.get("notification_error", "#F44336")))
+            warning_color = current_colors.get("notification_error", "#F44336")
+            normal_bg = get_color(current_colors.get("button_warning_normal", warning_color))
+            hover_bg = get_color(current_colors.get("button_warning_hover", darken_color_qcolor(warning_color, 0.1)))
+            pressed_bg = get_color(current_colors.get("button_warning_pressed", darken_color_qcolor(warning_color, 0.2)))
+            normal_border = get_color(current_colors.get("button_warning_border", warning_color))
+            hover_border = get_color(current_colors.get("button_warning_border", darken_color_qcolor(warning_color, 0.1)))
+            pressed_border = get_color(current_colors.get("button_warning_border", darken_color_qcolor(warning_color, 0.2)))
             if self._display_mode == "icon":
-                normal_text = get_color(current_colors.get("button_warning_normal", current_colors.get("notification_error", "#F44336")))
-                hover_text = get_color(current_colors.get("button_warning_normal", current_colors.get("notification_error", "#F44336")))
-                pressed_text = pressed_bg
+                # 图标模式下文本颜色设为透明
+                transparent = QColor(0, 0, 0, 0)
+                normal_text = transparent
+                hover_text = transparent
+                pressed_text = transparent
             else:
                 normal_text = get_color(current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF")))
                 hover_text = get_color(current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF")))
@@ -829,9 +908,11 @@ class CustomButton(QPushButton):
             hover_border = get_color(current_colors.get("button_secondary_border", accent_color))
             pressed_border = get_color(current_colors.get("button_secondary_border", accent_color))
             if self._display_mode == "icon":
-                normal_text = get_color(current_colors.get("button_secondary_normal", base_color))
-                hover_text = get_color(current_colors.get("button_secondary_normal", base_color))
-                pressed_text = pressed_bg
+                # 图标模式下文本颜色设为透明
+                transparent = QColor(0, 0, 0, 0)
+                normal_text = transparent
+                hover_text = transparent
+                pressed_text = transparent
             else:
                 normal_text = get_color(current_colors.get("button_secondary_text", accent_color))
                 hover_text = get_color(current_colors.get("button_secondary_text", accent_color))
@@ -877,7 +958,12 @@ class CustomButton(QPushButton):
         self._anim_release_border.setEndValue(hover_border)
         self._anim_release_text.setStartValue(pressed_text)
         self._anim_release_text.setEndValue(hover_text)
-    
+
+        # 同步当前动画属性值与新的normal状态一致，避免按钮类型切换后出现颜色闪烁
+        self._anim_bg_color = QColor(normal_bg)
+        self._anim_border_color = QColor(normal_border)
+        self._anim_text_color = QColor(normal_text)
+
     def set_primary(self, is_primary):
         """
         设置按钮是否使用强调色（兼容旧接口）

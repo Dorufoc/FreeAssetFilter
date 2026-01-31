@@ -397,8 +397,8 @@ class CustomFileSelector(QWidget):
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.sort_btn)
         
-        # 排序方式下拉菜单
-        self.sort_menu = CustomDropdownMenu(self, position="bottom")
+        # 排序方式下拉菜单（使用外部按钮，不创建内部按钮）
+        self.sort_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
         scaled_sort_width = int(50 * self.dpi_scale)
         self.sort_menu.set_fixed_width(scaled_sort_width)
         sort_items = [
@@ -422,11 +422,14 @@ class CustomFileSelector(QWidget):
         self.sort_btn.clicked.connect(show_sort_menu)
         
         # 时间线按钮 - 移到第二行最后并自适应填充剩余空间
-        timeline_btn = CustomButton("时间线", button_type="primary")
-        timeline_btn.clicked.connect(self._show_timeline_window)
+        self.timeline_btn = CustomButton("时间线", button_type="primary")
+        self.timeline_btn.clicked.connect(self._show_timeline_window)
         # 设置按钮大小策略为Expanding，使其填充剩余空间
-        timeline_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        nav_layout.addWidget(timeline_btn)
+        self.timeline_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        nav_layout.addWidget(self.timeline_btn)
+
+        # 根据设置控制时间线按钮的显示/隐藏
+        self._update_timeline_button_visibility()
         
         main_layout.addLayout(nav_layout)
         
@@ -3658,7 +3661,16 @@ class CustomFileSelector(QWidget):
                 if current_widget_selected != is_selected:
                     debug(f"  选中状态变化: {current_widget_selected} -> {is_selected}")
                     widget.set_selected(is_selected)
-    
+
+    def _update_timeline_button_visibility(self):
+        """
+        根据设置更新时间线按钮的显示/隐藏状态
+        """
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager') and hasattr(self, 'timeline_btn'):
+            timeline_enabled = app.settings_manager.get_setting("file_selector.timeline_view_enabled", False)
+            self.timeline_btn.setVisible(timeline_enabled)
+
     def _show_timeline_window(self):
         """
         显示时间线窗口：先生成CSV文件，再显示时间线

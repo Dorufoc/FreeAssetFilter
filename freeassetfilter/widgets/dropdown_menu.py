@@ -25,13 +25,15 @@ class CustomDropdownMenu(QWidget):
     """
     itemClicked = pyqtSignal(object)  # 列表项点击信号，传递选中项数据
     
-    def __init__(self, parent=None, position="top"):
+    def __init__(self, parent=None, position="top", use_internal_button=True):
         """
         初始化下拉菜单
         
         Args:
             parent: 父窗口部件
             position: 菜单位置，"top" 或 "bottom"，默认为上方
+            use_internal_button: 是否使用内部按钮，默认为True。
+                               当为False时，不创建内部按钮，需要通过set_target_button设置外部按钮
         """
         super().__init__(parent)
         
@@ -53,6 +55,7 @@ class CustomDropdownMenu(QWidget):
         self._max_height = int(50 * self.dpi_scale)  # 最大高度
         self._position = position  # 菜单位置："top" 或 "bottom"
         self._external_target_button = None  # 外部设置的目标按钮
+        self._use_internal_button = use_internal_button  # 是否使用内部按钮
         
         # 初始化UI
         self.init_ui()
@@ -92,13 +95,20 @@ class CustomDropdownMenu(QWidget):
             }}
         """)
         
-        # 创建主按钮，使用CustomButton，与load_cube_button保持相同高度（默认20px，与ArchiveBrowser中的按钮保持一致）
-        self.main_button = CustomButton(
-            text="",
-            button_type="normal",
-            display_mode="text",
-            #height=20
-        )
+        # 根据配置决定是否创建内部按钮
+        if self._use_internal_button:
+            # 创建主按钮，使用CustomButton，与load_cube_button保持相同高度（默认20px，与ArchiveBrowser中的按钮保持一致）
+            self.main_button = CustomButton(
+                text="",
+                button_type="normal",
+                display_mode="text",
+                #height=20
+            )
+            # 将按钮添加到主布局
+            main_layout.addWidget(self.main_button)
+        else:
+            # 不使用内部按钮时，设置为None
+            self.main_button = None
         
         # 创建下拉菜单
         self.dropdown_menu = CustomControlMenu(self)
@@ -143,11 +153,9 @@ class CustomDropdownMenu(QWidget):
         # 强制调整菜单大小
         self.dropdown_menu.adjustSize()
         
-        # 将按钮添加到主布局
-        main_layout.addWidget(self.main_button)
-        
-        # 连接信号和槽
-        self.main_button.clicked.connect(self.toggle_menu)
+        # 连接信号和槽（仅在存在内部按钮时）
+        if self.main_button:
+            self.main_button.clicked.connect(self.toggle_menu)
         
     def set_items(self, items, default_item=None):
         """
@@ -334,7 +342,8 @@ class CustomDropdownMenu(QWidget):
             width (int): 固定宽度值
         """
         self._fixed_width = width
-        self.main_button.setFixedWidth(width)
+        if self.main_button:
+            self.main_button.setFixedWidth(width)
         self._adjust_menu_size()
     
     def set_max_height(self, height):
@@ -374,6 +383,10 @@ class CustomDropdownMenu(QWidget):
         """
         更新按钮显示的文本
         """
+        # 如果没有内部按钮，直接返回
+        if not self.main_button:
+            return
+        
         if not self._current_item:
             return
         
@@ -441,6 +454,9 @@ class CustomDropdownMenu(QWidget):
         if not self._menu_visible:
             # 优先使用外部设置的目标按钮，否则使用内部main_button
             target_button = self._external_target_button if self._external_target_button else self.main_button
+            # 如果没有目标按钮，无法显示菜单
+            if not target_button:
+                return
             # 设置目标按钮
             self.dropdown_menu.set_target_button(target_button)
             # 设置菜单位置
@@ -452,8 +468,8 @@ class CustomDropdownMenu(QWidget):
             self.dropdown_menu.closeEvent = self._on_menu_close
             # 连接点击外部区域关闭菜单信号
             self.dropdown_menu.mousePressEvent = self._on_menu_click
-            # 连接按钮的leaveEvent
-            if target_button is self.main_button:
+            # 连接按钮的leaveEvent（仅在目标按钮是内部按钮时）
+            if self.main_button and target_button is self.main_button:
                 self.main_button.leaveEvent = self._on_button_leave
             # 启动定时器，3秒后检查是否需要关闭菜单
             from PyQt5.QtCore import QTimer
@@ -466,8 +482,8 @@ class CustomDropdownMenu(QWidget):
         if self._menu_visible:
             self.dropdown_menu.close()
             self._menu_visible = False
-            # 断开按钮的leaveEvent
-            if self._external_target_button is None:
+            # 断开按钮的leaveEvent（仅在存在内部按钮且没有外部目标按钮时）
+            if self._external_target_button is None and self.main_button:
                 self.main_button.leaveEvent = None
             # 重置外部目标按钮，避免下次使用时产生混淆
             self._external_target_button = None
@@ -477,8 +493,9 @@ class CustomDropdownMenu(QWidget):
         菜单关闭事件处理
         """
         self._menu_visible = False
-        # 断开按钮的leaveEvent
-        self.main_button.leaveEvent = None
+        # 断开按钮的leaveEvent（仅在存在内部按钮时）
+        if self.main_button:
+            self.main_button.leaveEvent = None
         # 调用原始的closeEvent
         super(CustomControlMenu, self.dropdown_menu).closeEvent(event)
         
@@ -489,8 +506,9 @@ class CustomDropdownMenu(QWidget):
         # 启动定时器，3秒后检查是否需要关闭菜单
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(3000, self._check_leave_and_close)
-        # 调用父类的leaveEvent
-        super(QPushButton, self.main_button).leaveEvent(event)
+        # 调用父类的leaveEvent（仅在存在内部按钮时）
+        if self.main_button:
+            super(QPushButton, self.main_button).leaveEvent(event)
         
     def _on_menu_click(self, event):
         """
