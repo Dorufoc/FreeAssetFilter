@@ -116,24 +116,21 @@ class UnifiedPreviewer(QWidget):
                     except (TypeError, RuntimeError):
                         pass
                     
-                    player_core = None
-                    if hasattr(self.current_preview_widget, 'player_core'):
-                        player_core = self.current_preview_widget.player_core
-                    
-                    if player_core and hasattr(player_core, '_event_thread_running'):
-                        player_core._event_thread_running = False
-                    
+                    # 停止idle检测定时器
                     if self.idle_detection_timer and self.idle_detection_timer.isActive():
                         self.idle_detection_timer.stop()
                     
                     self.idle_events.clear()
                     self.idle_detection_enabled = False
                     
+                    # 获取VideoPlayer实例
                     old_widget = self.current_preview_widget
                     self.preview_layout.removeWidget(old_widget)
                     self.current_preview_widget = None
                     
-                    old_widget.hide()
+                    # 关键：调用VideoPlayer的closeEvent方法来正确释放MPV资源
+                    # 这会触发player_core.cleanup()，从而正确销毁dll
+                    old_widget.close()
                     old_widget.setParent(None)
                 
                 else:

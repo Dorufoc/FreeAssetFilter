@@ -202,12 +202,15 @@ class VideoPlayer(QWidget):
             'mpv': MPVPlayerCore
         }
         self._current_file_path = ""  # 当前播放的文件路径
-        self._current_speed = self.load_speed_setting()  # 当前播放速度 - 加载保存的倍速设置
-        
+
+        # 使用SettingsManager获取音量和倍速设置
+        settings_manager = SettingsManager()
+        self._current_volume = settings_manager.get_player_volume()  # 当前音量
+        self._current_speed = settings_manager.get_player_speed()  # 当前播放速度
+
         # 音量控制相关属性
         self._is_muted = False  # 静音状态
-        self._previous_volume = 50  # 静音前的音量值
-        self._current_volume = 50  # 当前音量值
+        self._previous_volume = self._current_volume  # 静音前的音量值
         
         # Cube色彩映射相关属性
         self.cube_path = None  # 当前加载的Cube文件路径
@@ -469,20 +472,16 @@ class VideoPlayer(QWidget):
         # 创建自定义音量控制组件
         self.volume_control = DVolumeControl(self)
 
-        # 加载保存的音量设置
-        saved_volume = self.load_volume_setting()
-        # 设置初始音量
-        self._current_volume = saved_volume
-        self._previous_volume = saved_volume
-        self.volume_control.set_volume(saved_volume)
+        # 使用已经加载的音量设置
+        self.volume_control.set_volume(self._current_volume)
         # 将音量设置到播放器核心
-        self.set_volume(saved_volume)
+        self.set_volume(self._current_volume)
 
         # 设置自定义音量控制组件的信号连接
         self.volume_control.valueChanged.connect(self.set_volume)
         self.volume_control.mutedChanged.connect(self._on_muted_changed)
 
-        # 连接用户交互结束信号，用于保存音量设置
+        # 连接用户交互结束信号，用于保存音量设置到 last_volume
         self.volume_control._d_volume._progress_bar.userInteractionEnded.connect(lambda: self.save_volume_setting(self._current_volume))
 
         # 添加自定义音量控制组件到布局
@@ -602,15 +601,18 @@ class VideoPlayer(QWidget):
         # 将字符串类型的速度值转换为浮点数
         if isinstance(speed, str):
             speed = float(speed.replace('x', ''))
-        
+
         # 设置播放速度
         self.set_speed(speed)
-        
+
         # 更新倍速下拉菜单
         self.speed_dropdown.set_current_item(f"{speed}x")
-        
+
         # 更新自定义按钮的文本
         self.speed_button.setText(f"{speed}x")
+
+        # 保存倍速设置到 last_speed
+        self.save_speed_setting(speed)
     
 
     
@@ -999,28 +1001,47 @@ class VideoPlayer(QWidget):
         settings_manager = SettingsManager()
         return settings_manager.get_setting('player.volume', 100)
 
+    def load_volume_setting(self):
+        """
+        加载保存的音量设置
+        已弃用：请使用 SettingsManager.get_player_volume()
+
+        Returns:
+            int: 音量值 (0-100)
+        """
+        settings_manager = SettingsManager()
+        return settings_manager.get_player_volume()
+
     def save_volume_setting(self, volume):
         """
-        保存音量设置
+        保存音量设置到 last_volume
+
+        Args:
+            volume (int): 音量值 (0-100)
         """
-        # 使用SettingsManager保存音量设置
         settings_manager = SettingsManager()
-        settings_manager.set_setting('player.volume', volume)
-        settings_manager.save_settings()
-        
+        settings_manager.save_player_volume(volume)
+
     def load_speed_setting(self):
         """
         加载保存的倍速设置
+        已弃用：请使用 SettingsManager.get_player_speed()
+
+        Returns:
+            float: 倍速值
         """
-        # 总是返回默认倍速1.0，不保存用户设置
-        return 1.0
+        settings_manager = SettingsManager()
+        return settings_manager.get_player_speed()
 
     def save_speed_setting(self, speed):
         """
-        保存倍速设置
+        保存倍速设置到 last_speed
+
+        Args:
+            speed (float): 倍速值
         """
-        # 不保存倍速设置，每次打开都使用默认值
-        pass
+        settings_manager = SettingsManager()
+        settings_manager.save_player_speed(speed)
     
     def load_cube_file(self):
         """

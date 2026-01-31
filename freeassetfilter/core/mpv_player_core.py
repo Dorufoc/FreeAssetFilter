@@ -1804,10 +1804,31 @@ class MPVPlayerCore(QObject):
                 pass
             self._window_handle = None
             
-            # 第五步：清理 mpv 实例
-            # print("[MPVPlayerCore] 步骤5: 清理 mpv 实例...")
-            with self._mpv_lock:
-                self._mpv = None
+            # 第五步：终止并销毁 mpv 实例
+            # print("[MPVPlayerCore] 步骤5: 终止并销毁 mpv 实例...")
+            mpv_instance = None
+            try:
+                if self._mpv:
+                    # 保存实例指针到局部变量，避免在销毁过程中被其他线程访问
+                    mpv_instance = self._mpv
+                    # 先清空self._mpv，防止其他操作访问到即将销毁的实例
+                    with self._mpv_lock:
+                        self._mpv = None
+            except:
+                pass
+            
+            # 在锁外调用mpv_terminate_destroy，避免死锁
+            # 使用延迟确保之前的操作已完成
+            if mpv_instance:
+                try:
+                    # 短暂延迟，确保之前的操作（如stop命令）已完成
+                    time.sleep(0.1)
+                    # 调用mpv_terminate_destroy正确销毁MPV实例，释放dll资源
+                    libmpv.mpv_terminate_destroy(mpv_instance)
+                    # print("[MPVPlayerCore] MPV实例已正确销毁")
+                except Exception as e:
+                    # print(f"[MPVPlayerCore] 警告: 销毁MPV实例时出错（可忽略）: {e}")
+                    pass
             
             # print("[MPVPlayerCore] 资源清理完成")
         except Exception as e:

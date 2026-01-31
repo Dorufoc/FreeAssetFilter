@@ -80,7 +80,13 @@ class SettingsManager:
             "player": {
                 "speed": 1.0,
                 "volume": 100,
-                "fluid_gradient_theme": "sunset"
+                "fluid_gradient_theme": "sunset",
+                "use_default_volume": False,
+                "default_volume": 100,
+                "use_default_speed": True,
+                "default_speed": 1.0,
+                "last_volume": 100,
+                "last_speed": 1.0
             },
             "developer": {
                 "debug_mode": False,
@@ -124,6 +130,54 @@ class SettingsManager:
             "player": self.default_settings["player"].copy(),
             "developer": self.default_settings["developer"].copy()
         }
+
+    def get_player_volume(self):
+        """
+        获取播放器音量
+        如果使用默认音量则返回设置的默认音量，否则返回上次保存的音量
+
+        Returns:
+            int: 音量值 (0-100)
+        """
+        use_default = self.get_setting("player.use_default_volume", False)
+        if use_default:
+            return self.get_setting("player.default_volume", 100)
+        else:
+            return self.get_setting("player.last_volume", 100)
+
+    def get_player_speed(self):
+        """
+        获取播放器倍速
+        如果使用默认倍速则返回设置的默认倍速，否则返回上次保存的倍速
+
+        Returns:
+            float: 倍速值
+        """
+        use_default = self.get_setting("player.use_default_speed", True)
+        if use_default:
+            return self.get_setting("player.default_speed", 1.0)
+        else:
+            return self.get_setting("player.last_speed", 1.0)
+
+    def save_player_volume(self, volume):
+        """
+        保存播放器音量到 last_volume
+
+        Args:
+            volume (int): 音量值 (0-100)
+        """
+        self.set_setting("player.last_volume", volume)
+        self.save_settings()
+
+    def save_player_speed(self, speed):
+        """
+        保存播放器倍速到 last_speed
+
+        Args:
+            speed (float): 倍速值
+        """
+        self.set_setting("player.last_speed", speed)
+        self.save_settings()
     
     def save_settings(self):
         import datetime

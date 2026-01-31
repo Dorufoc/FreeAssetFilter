@@ -752,35 +752,143 @@ class ModernSettingsWindow(QDialog):
         """
         添加播放器设置项
         """
-        player_group = QGroupBox("播放器设置")
-        player_group.setStyleSheet(self.group_box_style)
-        player_layout = QVBoxLayout(player_group)
-        
-        # 播放速度设置
-        self.speed_bar = CustomSettingItem(
-            text="默认播放速度",
-            secondary_text="设置视频默认播放速度",
-            interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
-            min_value=50,
-            max_value=200,
-            initial_value=int(self.settings_manager.get_setting("player.speed", 1.0) * 100)
+        # 音量设置组
+        volume_group = QGroupBox("音量设置")
+        volume_group.setStyleSheet(self.group_box_style)
+        volume_layout = QVBoxLayout(volume_group)
+
+        # 使用默认音量开关
+        self.use_default_volume_switch = CustomSettingItem(
+            text="使用默认音量",
+            secondary_text="开启后每次启动都将使用设置的默认音量，否则继承上次播放的音量",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("player.use_default_volume", False)
         )
-        self.speed_bar.value_changed.connect(lambda value: self.current_settings.update({"player.speed": value / 100}))
-        player_layout.addWidget(self.speed_bar)
-        
-        # 音量设置
-        self.volume_bar = CustomSettingItem(
+        self.use_default_volume_switch.switch_toggled.connect(lambda value: self._on_use_default_volume_changed(value))
+        volume_layout.addWidget(self.use_default_volume_switch)
+
+        # 默认音量滑块（仅在开启使用默认音量时显示）
+        self.default_volume_bar = CustomSettingItem(
             text="默认音量",
-            secondary_text="设置默认音量大小",
+            secondary_text="设置默认音量大小 (0-100%)",
             interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
             min_value=0,
             max_value=100,
-            initial_value=self.settings_manager.get_setting("player.volume", 100)
+            initial_value=self.settings_manager.get_setting("player.default_volume", 100)
         )
-        self.volume_bar.value_changed.connect(lambda value: self.current_settings.update({"player.volume": value}))
-        player_layout.addWidget(self.volume_bar)
+        self.default_volume_bar.value_changed.connect(lambda value: self.current_settings.update({"player.default_volume": value}))
+        # 根据开关状态设置初始可见性
+        self.default_volume_bar.setVisible(self.use_default_volume_switch.get_switch_value())
+        volume_layout.addWidget(self.default_volume_bar)
 
-        self.scroll_layout.addWidget(player_group)
+        self.scroll_layout.addWidget(volume_group)
+
+        # 倍速设置组
+        speed_group = QGroupBox("倍速设置")
+        speed_group.setStyleSheet(self.group_box_style)
+        speed_layout = QVBoxLayout(speed_group)
+
+        # 使用默认倍速开关
+        self.use_default_speed_switch = CustomSettingItem(
+            text="使用默认倍速",
+            secondary_text="开启后每次启动都将使用设置的默认倍速，否则继承上次播放的倍速",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("player.use_default_speed", True)
+        )
+        self.use_default_speed_switch.switch_toggled.connect(lambda value: self._on_use_default_speed_changed(value))
+        speed_layout.addWidget(self.use_default_speed_switch)
+
+        # 默认倍速选择按钮（仅在开启使用默认倍速时显示）
+        from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
+        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
+        current_speed = self.settings_manager.get_setting("player.default_speed", 1.0)
+
+        self.default_speed_setting = CustomSettingItem(
+            text="默认倍速",
+            secondary_text="设置默认播放倍速",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": f"{current_speed}x", "type": "primary"}]
+        )
+
+        # 倍速选择按钮点击处理
+        def on_speed_button_clicked(button_index):
+            # 创建倍速下拉菜单
+            self.speed_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            speed_items = [f"{speed}x" for speed in speed_options]
+            self.speed_dropdown_menu.set_items(speed_items, default_item=f"{current_speed}x")
+
+            def on_speed_item_clicked(selected_speed):
+                speed_value = float(selected_speed.replace('x', ''))
+                self.current_settings.update({"player.default_speed": speed_value})
+                self.default_speed_setting.button_group[0].setText(selected_speed)
+
+            self.speed_dropdown_menu.itemClicked.connect(on_speed_item_clicked)
+            button = self.default_speed_setting.button_group[button_index]
+            self.speed_dropdown_menu.set_target_button(button)
+            self.speed_dropdown_menu.show_menu()
+
+        self.default_speed_setting.button_clicked.connect(on_speed_button_clicked)
+        # 根据开关状态设置初始可见性
+        self.default_speed_setting.setVisible(self.use_default_speed_switch.get_switch_value())
+        speed_layout.addWidget(self.default_speed_setting)
+
+        self.scroll_layout.addWidget(speed_group)
+
+        # 流体渐变主题设置组
+        theme_group = QGroupBox("音频可视化")
+        theme_group.setStyleSheet(self.group_box_style)
+        theme_layout = QVBoxLayout(theme_group)
+
+        # 流体渐变主题选择
+        self.fluid_theme_setting = CustomSettingItem(
+            text="流体渐变主题",
+            secondary_text="选择音频播放时的背景渐变主题",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": self.settings_manager.get_setting("player.fluid_gradient_theme", "sunset"), "type": "primary"}]
+        )
+
+        fluid_themes = ["sunset", "ocean", "forest", "aurora", "galaxy"]
+        current_theme = self.settings_manager.get_setting("player.fluid_gradient_theme", "sunset")
+
+        def on_fluid_theme_button_clicked(button_index):
+            self.fluid_theme_dropdown = CustomDropdownMenu(self, position="bottom")
+            self.fluid_theme_dropdown.set_items(fluid_themes, default_item=current_theme)
+
+            def on_theme_item_clicked(selected_theme):
+                self.current_settings.update({"player.fluid_gradient_theme": selected_theme})
+                self.fluid_theme_setting.button_group[0].setText(selected_theme)
+
+            self.fluid_theme_dropdown.itemClicked.connect(on_theme_item_clicked)
+            button = self.fluid_theme_setting.button_group[button_index]
+            self.fluid_theme_dropdown.set_target_button(button)
+            self.fluid_theme_dropdown.show_menu()
+
+        self.fluid_theme_setting.button_clicked.connect(on_fluid_theme_button_clicked)
+        theme_layout.addWidget(self.fluid_theme_setting)
+
+        self.scroll_layout.addWidget(theme_group)
+
+    def _on_use_default_volume_changed(self, value):
+        """
+        处理使用默认音量开关变化
+
+        Args:
+            value (bool): 开关状态
+        """
+        self.current_settings.update({"player.use_default_volume": value})
+        # 显示/隐藏默认音量滑块
+        self.default_volume_bar.setVisible(value)
+
+    def _on_use_default_speed_changed(self, value):
+        """
+        处理使用默认倍速开关变化
+
+        Args:
+            value (bool): 开关状态
+        """
+        self.current_settings.update({"player.use_default_speed": value})
+        # 显示/隐藏默认倍速选择按钮
+        self.default_speed_setting.setVisible(value)
 
     def _add_general_settings(self):
         """

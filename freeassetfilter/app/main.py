@@ -1022,7 +1022,8 @@ class FreeAssetFilterApp(QMainWindow):
     
     def check_and_restore_backup(self):
         """
-        检查是否存在备份文件，并询问用户是否要恢复上次的文件列表和文件选择器目录
+        检查是否存在备份文件，并询问用户是否要恢复上次的文件存储池内容
+        注意：只恢复文件存储池，文件选择器的状态由其他模块处理
         """
         # 导入自定义消息框
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
@@ -1031,7 +1032,6 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 备份文件路径
         backup_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'staging_pool_backup.json')
-        #print(f"[DEBUG] 检查备份文件路径: {backup_file}")
         
         # 检查备份文件是否存在
         if os.path.exists(backup_file):
@@ -1041,13 +1041,12 @@ class FreeAssetFilterApp(QMainWindow):
             
             # 检查备份数据格式和内容
             items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
-            selector_state = backup_data.get('selector_state', {}) if isinstance(backup_data, dict) else {}
             
             if items:
                 # 使用自定义消息框询问用户是否恢复
                 confirm_msg = CustomMessageBox(self)
-                confirm_msg.set_title("恢复文件列表和目录")
-                confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否要恢复文件列表和上次打开的目录？")
+                confirm_msg.set_title("恢复上次选中内容")
+                confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
                 confirm_msg.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
                 
                 # 记录确认结果
@@ -1063,14 +1062,11 @@ class FreeAssetFilterApp(QMainWindow):
                 
                 if is_confirmed:
                     self.restore_backup(backup_data)
-                else:
-                    # 如果选择不恢复，确保显示ALL路径
-                    self.file_selector_a.current_path = "All"
-                    self.file_selector_a.refresh_files()
     
     def restore_backup(self, backup_data):
         """
-        从备份数据恢复文件列表和文件选择器目录，包含文件存在性校验
+        从备份数据恢复文件存储池内容，包含文件存在性校验
+        注意：只恢复文件存储池，不处理文件选择器的状态
         
         Args:
             backup_data (dict or list): 备份数据，可以是包含items和selector_state的字典，或旧格式的文件列表
@@ -1079,7 +1075,6 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 处理不同格式的备份数据
         items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
-        selector_state = backup_data.get('selector_state', {}) if isinstance(backup_data, dict) else {}
         
         # 恢复文件到存储池，并检查文件是否存在
         success_count = 0
@@ -1090,18 +1085,6 @@ class FreeAssetFilterApp(QMainWindow):
             if os.path.exists(file_info["path"]):
                 # 添加到文件存储池
                 self.file_staging_pool.add_file(file_info)
-                
-                # 更新文件选择器的选中状态
-                file_path = os.path.normpath(file_info['path'])
-                file_dir = os.path.normpath(os.path.dirname(file_path))
-                
-                # 确保文件选择器的selected_files字典中存在该目录
-                if file_dir not in self.file_selector_a.selected_files:
-                    self.file_selector_a.selected_files[file_dir] = set()
-                
-                # 添加到选中文件集合
-                self.file_selector_a.selected_files[file_dir].add(file_path)
-                
                 success_count += 1
             else:
                 # 添加到未链接文件列表
@@ -1115,26 +1098,6 @@ class FreeAssetFilterApp(QMainWindow):
         # 如果有未链接文件，显示处理对话框
         if unlinked_files:
             self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
-        
-        # 当恢复文件列表时，无论设置如何，都将文件选择器的路径设置为文件所在的路径
-        target_path = "All"
-        
-        # 如果有恢复的文件，选择第一个文件所在的目录作为目标路径
-        if items:
-            # 遍历找到第一个存在的文件路径
-            for item in items:
-                if os.path.exists(item.get('path', '')):
-                    target_path = os.path.dirname(item['path'])
-                    break
-        else:
-            # 如果没有恢复的文件，但有选择器状态中的路径，使用该路径
-            last_path = selector_state.get('last_path', 'All')
-            if last_path and (last_path == 'All' or os.path.exists(last_path)):
-                target_path = last_path
-        
-        # 设置文件选择器路径并刷新
-        self.file_selector_a.current_path = target_path
-        self.file_selector_a.refresh_files()
     
     def show_info(self, title, message):
         """
