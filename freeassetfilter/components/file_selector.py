@@ -2640,9 +2640,76 @@ class CustomFileSelector(QWidget):
         card.double_clicked.connect(lambda f: self._on_card_double_clicked(f, file_path))
         card.selection_changed.connect(lambda f, s: self._on_card_selection_changed(f, s, file_path))
         
+        # 连接拖拽信号
+        card.drag_started.connect(lambda f: self._on_card_drag_started(f))
+        card.drag_ended.connect(lambda f, t: self._on_card_drag_ended(f, t))
+        
         self.hover_tooltip.set_target_widget(card)
         
         return card
+    
+    def _on_card_drag_started(self, file_info):
+        """
+        处理卡片拖拽开始
+        
+        Args:
+            file_info (dict): 文件信息
+        """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileSelector._on_card_drag_started] {msg}")
+        
+        debug(f"卡片拖拽开始: {file_info.get('name', '')}")
+    
+    def _on_card_drag_ended(self, file_info, drop_target):
+        """
+        处理卡片拖拽结束
+        根据放置目标执行相应操作
+        
+        Args:
+            file_info (dict): 文件信息
+            drop_target (str): 放置目标类型 ('staging_pool', 'previewer', 'none')
+        """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileSelector._on_card_drag_ended] {msg}")
+        
+        file_path = file_info.get('path', '')
+        file_path_norm = os.path.normpath(file_path)
+        file_dir_norm = os.path.normpath(os.path.dirname(file_path))
+        
+        debug(f"卡片拖拽结束: {file_info.get('name', '')}, 目标: {drop_target}")
+        
+        if drop_target == 'staging_pool':
+            # 拖拽到存储池，选中文件
+            debug(f"拖拽到存储池，选中文件: {file_path_norm}")
+            
+            # 设置卡片选中状态
+            if file_dir_norm not in self.selected_files:
+                self.selected_files[file_dir_norm] = set()
+            
+            if file_path_norm not in self.selected_files[file_dir_norm]:
+                self.selected_files[file_dir_norm].add(file_path_norm)
+                # 更新卡片UI状态
+                self._update_file_selection_state()
+                # 发出选择变化信号，将文件添加到存储池
+                self.file_selection_changed.emit(file_info, True)
+                debug(f"文件已添加到存储池")
+            else:
+                debug(f"文件已在存储池中，跳过")
+                
+        elif drop_target == 'previewer':
+            # 拖拽到预览器，预览文件
+            debug(f"拖拽到预览器，预览文件: {file_path_norm}")
+            # 发出文件选中信号，启动预览
+            self.file_selected.emit(file_info)
+            debug(f"预览信号已发出")
+            
+        else:
+            # 未放置到有效区域
+            debug(f"未放置到有效区域")
     
     def _on_card_clicked(self, file_info, file_path):
         """处理卡片左键点击"""
