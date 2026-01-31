@@ -220,16 +220,23 @@ class HoverTooltip(QWidget):
             return
 
         self._is_animating = True
-        self._fade_animation.stop()
-        self._scale_animation.stop()
+        
+        # 使用try-except防止动画对象已被销毁时抛出异常
+        try:
+            self._fade_animation.stop()
+            self._scale_animation.stop()
 
-        self._fade_animation.setStartValue(self._get_opacity())
-        self._fade_animation.setEndValue(0.0)
-        self._fade_animation.start()
+            self._fade_animation.setStartValue(self._get_opacity())
+            self._fade_animation.setEndValue(0.0)
+            self._fade_animation.start()
 
-        self._scale_animation.setStartValue(self._get_scale())
-        self._scale_animation.setEndValue(0.5)
-        self._scale_animation.start()
+            self._scale_animation.setStartValue(self._get_scale())
+            self._scale_animation.setEndValue(0.5)
+            self._scale_animation.start()
+        except RuntimeError:
+            # 动画对象已被销毁，直接隐藏
+            self._is_animating = False
+            super().hide()
     
     def set_target_widget(self, widget):
         """设置要监听的目标控件"""
@@ -245,6 +252,33 @@ class HoverTooltip(QWidget):
         ref = weakref.ref(widget)
         self.target_widgets.append(ref)
         widget.installEventFilter(self)
+        
+        # 监听控件销毁信号，确保控件被移除时tooltip能正确隐藏
+        widget.destroyed.connect(self._on_target_widget_destroyed)
+    
+    def _on_target_widget_destroyed(self, obj=None):
+        """
+        目标控件被销毁时的处理函数
+        
+        当控件被移除时，隐藏tooltip并清理已失效的引用
+        """
+        # 停止定时器
+        try:
+            self.timer.stop()
+        except RuntimeError:
+            pass
+        
+        # 隐藏tooltip，使用try-except防止对象已被销毁
+        try:
+            self._fade_out()
+        except RuntimeError:
+            pass
+        
+        # 清理已失效的弱引用
+        try:
+            self.target_widgets = [ref for ref in self.target_widgets if ref() is not None]
+        except RuntimeError:
+            pass
     
     def eventFilter(self, obj, event):
         """事件过滤器，监听鼠标事件"""
