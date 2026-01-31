@@ -130,7 +130,8 @@ class CustomFileHorizontalCard(QWidget):
         self._enable_multiselect = enable_multiselect  # 是否开启多选功能
         self._display_name = display_name  # 显示名称，优先于文件系统中的文件名
         self._single_line_mode = single_line_mode  # 是否使用单行文本格式
-        
+        self._path_exists = True  # 路径是否存在，用于收藏夹中标记已删除的路径
+
         # 鼠标悬停标志，用于跟踪鼠标是否在卡片区域内
         self._is_mouse_over = False
         
@@ -316,6 +317,18 @@ class CustomFileHorizontalCard(QWidget):
         self._load_file_info()
         self._set_file_icon()
 
+    def set_path_exists(self, exists):
+        """
+        设置路径是否存在状态
+        用于收藏夹中标记已删除或移动的路径
+
+        参数：
+            exists (bool): 路径是否存在
+        """
+        self._path_exists = exists
+        self._load_file_info()
+        self._set_file_icon()
+
     def set_selected(self, selected):
         """
         设置选中状态
@@ -384,25 +397,66 @@ class CustomFileHorizontalCard(QWidget):
         """
         if not self._file_path:
             return
-        
+
         try:
+            # 获取设置中的颜色
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+            normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#808080")
+            secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+
+            # 如果路径不存在，显示删除线效果和提示文字
+            if not self._path_exists:
+                # 优先使用_display_name
+                if hasattr(self, '_display_name') and self._display_name:
+                    file_name = self._display_name
+                else:
+                    file_name = os.path.basename(self._file_path)
+
+                # 获取当前组件宽度
+                component_width = self.width()
+                if component_width <= 0:
+                    component_width = int(87.5 * self.dpi_scale)
+
+                # 计算可用宽度
+                name_font_metrics = QFontMetrics(self.name_label.font())
+                icon_margin = int(10 * self.dpi_scale)
+                available_width = max(0, component_width - icon_margin)
+
+                # 添加删除线效果和（已移动或删除）后缀
+                display_name = f"{file_name}（已移动或删除）"
+                elided_name = name_font_metrics.elidedText(display_name, Qt.ElideRight, available_width)
+
+                # 设置带删除线的样式，使用normal_color（灰色）
+                self.name_label.setText(elided_name)
+                self.name_label.setStyleSheet(f"background: transparent; border: none; text-decoration: line-through; color: {normal_color};")
+
+                # 显示路径信息，使用normal_color（灰色）
+                info_text = self._file_path
+                info_font_metrics = QFontMetrics(self.info_label.font())
+                elided_info = info_font_metrics.elidedText(info_text, Qt.ElideRight, available_width)
+                self.info_label.setText(elided_info)
+                self.info_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
+                self.info_label.show()
+                return
+
             file_info = QFileInfo(self._file_path)
-            
+
             # 优先使用_display_name，否则从文件系统获取文件名
             if hasattr(self, '_display_name') and self._display_name:
                 file_name = self._display_name
             else:
                 file_name = file_info.fileName()
-            
+
             # 获取文件路径
             file_path = file_info.absoluteFilePath()
-            
+
             # 获取文件大小
             if file_info.isDir():
                 file_size = "文件夹"
             else:
                 file_size = self._format_size(file_info.size())
-            
+
             # 计算文本宽度，设置自动截断
             # 获取当前组件宽度作为参考（减去图标和边距）
             component_width = self.width()
@@ -412,7 +466,7 @@ class CustomFileHorizontalCard(QWidget):
                 # 如果组件宽度还未计算，使用一个默认值
                 component_width = int(87.5 * self.dpi_scale)
                 print(f"Using default component_width: {component_width}")
-            
+
             # 文件名截断处理
             name_font_metrics = QFontMetrics(self.name_label.font())
             # 留一些边距和图标的宽度
@@ -423,24 +477,28 @@ class CustomFileHorizontalCard(QWidget):
             if available_width < 0:
                 available_width = 0
                 print(f"available_width < 0, setting to 0")
-            
+
             # 调试信息：打印文字截断前的完整文本
             print(f"Original file name: '{file_name}'")
-            
+
             elided_file_name = name_font_metrics.elidedText(file_name, Qt.ElideRight, available_width)
-            
+
             # 文件信息截断处理
             info_text = f"{file_path}  {file_size}"
-            
+
             # 调试信息：打印文字截断前的完整文本
             print(f"Original info text: '{info_text}'")
             info_font_metrics = QFontMetrics(self.info_label.font())
             elided_info_text = info_font_metrics.elidedText(info_text, Qt.ElideRight, available_width)
-            
+
             # 调试信息：打印截断后的文本
             print(f"Elided file name: '{elided_file_name}'")
             print(f"Elided info text: '{elided_info_text}'")
-            
+
+            # 恢复默认样式，使用secondary_color
+            self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+
             # 根据单行模式更新标签文本
             if self._single_line_mode:
                 # 单行模式下，将文件信息合并到文件名标签中
@@ -456,7 +514,7 @@ class CustomFileHorizontalCard(QWidget):
                 self.info_label.setText(elided_info_text)
                 # 显示文件信息标签
                 self.info_label.show()
-            
+
         except Exception as e:
             print(f"加载文件信息失败: {e}")
 
@@ -465,61 +523,82 @@ class CustomFileHorizontalCard(QWidget):
         if not self._file_path:
             return
         try:
+            # 如果路径不存在，显示未知图标底板+?符号
+            if not self._path_exists:
+                scaled_icon_size = int(40 * self.dpi_scale)
+                icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
+                unknown_icon_path = os.path.join(icon_dir, "未知底板.svg")
+                if os.path.exists(unknown_icon_path):
+                    svg_widget = SvgRenderer.render_unknown_file_icon(unknown_icon_path, "?", scaled_icon_size, self.dpi_scale)
+                    if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
+                        for child in self.icon_display.findChildren((QLabel, QSvgWidget, QWidget)):
+                            child.deleteLater()
+                        svg_widget.setParent(self.card_container)
+                        svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+                        svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                        svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                        svg_widget.show()
+                        self.card_container.layout().removeWidget(self.icon_display)
+                        if isinstance(self.icon_display, QLabel):
+                            self.icon_display.deleteLater()
+                        self.icon_display = svg_widget
+                        self.card_container.layout().insertWidget(0, self.icon_display, alignment=Qt.AlignVCenter)
+                return
+
             file_info = QFileInfo(self._file_path)
             suffix = file_info.suffix().lower()
-            
+
             if suffix in ["lnk", "exe", "url"]:
                 scaled_icon_size = int(40 * self.dpi_scale)
-                
+
                 file_path = self._file_path
-                
+
                 try:
                     from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
                     hicon = get_highest_resolution_icon(file_path, desired_size=256)
                     if hicon:
                         pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None)
                         DestroyIcon(hicon)
-                        
+
                         if pixmap and not pixmap.isNull():
                             self._set_icon_pixmap(pixmap, scaled_icon_size)
                             return
                 except Exception:
                     pass
-                
+
                 from PyQt5.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
                 icon = icon_provider.icon(file_info)
-                
+
                 available_sizes = icon.availableSizes()
                 if available_sizes:
                     max_size = max(available_sizes, key=lambda s: s.width() * s.height())
                     max_width, max_height = max_size.width(), max_size.height()
                 else:
                     max_width = max_height = 4096
-                
+
                 high_res_pixmap = icon.pixmap(max_width, max_height)
-                
+
                 if not high_res_pixmap.isNull():
                     self._set_icon_pixmap(high_res_pixmap, scaled_icon_size)
                     return
-            
+
             import hashlib
-            import os
             thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
             md5_hash = hashlib.md5(self._file_path.encode('utf-8'))
             file_hash = md5_hash.hexdigest()[:16]
             thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
-            
+
             is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
-            
+
             print(f"[DEBUG] _set_file_icon: file={self._file_path}, suffix={suffix}, is_photo={is_photo}, is_video={is_video}")
             print(f"[DEBUG] thumbnail_path={thumbnail_path}, exists={os.path.exists(thumbnail_path)}")
-            
+
             use_thumbnail = False
             if (is_photo or is_video) and os.path.exists(thumbnail_path):
                 use_thumbnail = True
-            
+
             if use_thumbnail:
                 scaled_icon_size = int(40 * self.dpi_scale)
                 from PyQt5.QtGui import QImage
@@ -530,11 +609,11 @@ class CustomFileHorizontalCard(QWidget):
                     print(f"[DEBUG] 成功加载缩略图: {thumbnail_path}")
                     self._set_icon_pixmap(pixmap, scaled_icon_size)
                     return
-            
+
             icon_path = self._get_file_icon_path(suffix, file_info.isDir())
             if icon_path and os.path.exists(icon_path):
                 scaled_icon_size = int(40 * self.dpi_scale)
-                
+
                 if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
                     if icon_path.endswith("压缩文件.svg"):
                         display_suffix = "." + file_info.suffix()
@@ -542,7 +621,7 @@ class CustomFileHorizontalCard(QWidget):
                         display_suffix = file_info.suffix().upper()
                         if len(display_suffix) > 5:
                             display_suffix = "FILE"
-                    
+
                     svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale)
                 else:
                     svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale)

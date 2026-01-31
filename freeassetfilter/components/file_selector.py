@@ -1329,8 +1329,11 @@ class CustomFileSelector(QWidget):
         list_content_layout.setSpacing(int(4 * self.dpi_scale))
         
         favorites_cards = []
-        
+
         for favorite in self.favorites:
+            # 检查路径是否存在
+            path_exists = os.path.exists(favorite['path'])
+
             card = CustomFileHorizontalCard(
                 file_path=favorite['path'],
                 parent=list_content,
@@ -1338,10 +1341,13 @@ class CustomFileSelector(QWidget):
                 display_name=favorite['name'],
                 single_line_mode=False
             )
+            # 设置路径存在状态
+            card.set_path_exists(path_exists)
+
             card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             list_content_layout.addWidget(card)
             favorites_cards.append({'card': card, 'favorite': favorite})
-            
+
             card.clicked.connect(lambda path, fav=favorite, d=dialog: self._on_favorite_card_clicked(path, fav, d, favorites_cards))
             card.renameRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_rename(f, d, fc))
             card.deleteRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_delete(f, d, fc))
@@ -1358,8 +1364,11 @@ class CustomFileSelector(QWidget):
                 if item.widget():
                     item.widget().deleteLater()
             favorites_cards.clear()
-            
+
             for favorite in self.favorites:
+                # 检查路径是否存在
+                path_exists = os.path.exists(favorite['path'])
+
                 card = CustomFileHorizontalCard(
                     file_path=favorite['path'],
                     parent=list_content,
@@ -1367,10 +1376,13 @@ class CustomFileSelector(QWidget):
                     display_name=favorite['name'],
                     single_line_mode=False
                 )
+                # 设置路径存在状态
+                card.set_path_exists(path_exists)
+
                 card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
                 list_content_layout.addWidget(card)
                 favorites_cards.append({'card': card, 'favorite': favorite})
-                
+
                 card.clicked.connect(lambda path, fav=favorite, d=dialog: self._on_favorite_card_clicked(path, fav, d, favorites_cards))
                 card.renameRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_rename(f, d, fc))
                 card.deleteRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_delete(f, d, fc))
