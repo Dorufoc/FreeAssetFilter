@@ -113,7 +113,7 @@ class VideoPlayer(QWidget):
         self.init_attributes()
         
         # 初始化播放器核心 - 默认使用MPV内核
-        print("[VideoPlayer] 初始化MPV播放器核心...")
+        # print("[VideoPlayer] 初始化MPV播放器核心...")
         self.player_core = MPVPlayerCore()
         
         # 设置idle事件回调，用于异常检测
@@ -122,15 +122,17 @@ class VideoPlayer(QWidget):
         # 检查MPV内核是否初始化成功
         if not hasattr(self.player_core, '_mpv') or self.player_core._mpv is None:
             print("[VideoPlayer] 警告: MPV内核初始化失败，将使用简化模式")
+            pass
         else:
-            print("[VideoPlayer] MPV内核初始化成功")
+            # print("[VideoPlayer] MPV内核初始化成功")
+            pass
         
         # 创建UI组件
         self.init_ui()
         
         # 将MPV播放器绑定到video_frame窗口
         if self.video_frame:
-            print("[VideoPlayer] 绑定MPV播放器到video_frame窗口...")
+            # print("[VideoPlayer] 绑定MPV播放器到video_frame窗口...")
             self.player_core.set_window(self.video_frame.winId())
         
         # 创建定时器用于更新进度
@@ -633,8 +635,8 @@ class VideoPlayer(QWidget):
             
             # 检查文件是否存在
             if not os.path.exists(icon_path):
-                print(f"[VideoPlayer] 图标文件不存在: {icon_path}")
-                return
+                    print(f"[VideoPlayer] 图标文件不存在: {icon_path}")
+                    return
             
             # 更新CustomButton的图标
             self.play_button._icon_path = icon_path
@@ -643,6 +645,7 @@ class VideoPlayer(QWidget):
             self.play_button.update()
         except Exception as e:
             print(f"[VideoPlayer] 更新播放按钮图标失败: {e}")
+            pass
             import traceback
             traceback.print_exc()
     
@@ -654,13 +657,13 @@ class VideoPlayer(QWidget):
             # 主播放器控制
             if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
                 if not self.player_core.is_playing:
-                    print("[VideoPlayer] 开始播放媒体...")
+                    # print("[VideoPlayer] 开始播放媒体...")
                     self.player_core.play()
                     # 同时控制原始视频播放器
                     if hasattr(self, 'original_player_core') and self.original_player_core:
                         self.original_player_core.play()
                 else:
-                    print("[VideoPlayer] 暂停播放媒体...")
+                    # print("[VideoPlayer] 暂停播放媒体...")
                     
                     # 1. 先暂停主播放器
                     self.player_core.pause()
@@ -674,11 +677,12 @@ class VideoPlayer(QWidget):
                         # 同步原始播放器位置到主播放器位置，确保左右视频完全同步
                         self.original_player_core.set_position(current_position)
                     
-                    print(f"[VideoPlayer] toggle_play_pause 暂停并同步位置: {current_position}")
+                    # print(f"[VideoPlayer] toggle_play_pause 暂停并同步位置: {current_position}")
             # 更新播放按钮图标
             self._update_play_button_icon()
         except Exception as e:
             print(f"[VideoPlayer] 播放操作失败: {e}")
+            pass
             import traceback
             traceback.print_exc()
     
@@ -1028,7 +1032,7 @@ class VideoPlayer(QWidget):
             # 检查当前是否有LUT应用
             if self.cube_loaded and self.cube_path:
                 # 已有LUT应用，移除LUT效果
-                print("[VideoPlayer] 移除LUT效果...")
+                # print("[VideoPlayer] 移除LUT效果...")
                 self.clear_cube_file()
                 # 恢复按钮为普通样式
                 self.load_cube_button.set_button_type("normal")
@@ -1050,11 +1054,11 @@ class VideoPlayer(QWidget):
                     
                     # 复制用户选择的Cube文件到data目录，并重命名为lut.cube
                     shutil.copy2(cube_file, target_cube_path)
-                    print(f"[VideoPlayer] 已将Cube文件复制到: {target_cube_path}")
+                    # print(f"[VideoPlayer] 已将Cube文件复制到: {target_cube_path}")
                     
                     # 使用复制后的Cube文件
                     self.set_cube_file(target_cube_path)
-                    print(f"[VideoPlayer] 成功加载Cube文件: {cube_file}")
+                    # print(f"[VideoPlayer] 成功加载Cube文件: {cube_file}")
                     # 更新按钮为强调样式状态
                     self.load_cube_button.set_button_type("primary")
         except Exception as e:
@@ -1069,7 +1073,7 @@ class VideoPlayer(QWidget):
         try:
             self.comparison_mode = checked
             if checked:
-                print("[VideoPlayer] 启用对比预览模式")
+                # print("[VideoPlayer] 启用对比预览模式")
                 # 实现对比预览逻辑
                 self._enable_comparison_mode()
                 # 激活状态使用强调样式
@@ -1080,7 +1084,7 @@ class VideoPlayer(QWidget):
                 if hasattr(self, 'original_player_core') and self.original_player_core:
                     self.original_player_core._execute_command(['video-reconfig'])
             else:
-                print("[VideoPlayer] 禁用对比预览模式")
+                # print("[VideoPlayer] 禁用对比预览模式")
                 # 恢复正常预览模式
                 self._disable_comparison_mode()
                 # 未激活状态使用普通样式
@@ -1202,7 +1206,7 @@ class VideoPlayer(QWidget):
             
             # 恢复视频播放
             if self._current_file_path:
-                print("[VideoPlayer] 关闭对比预览，重新加载视频到单个播放区域")
+                # print("[VideoPlayer] 关闭对比预览，重新加载视频到单个播放区域")
                 # 先停止当前播放
                 self.player_core.stop()
                 # 清理滤镜资源
@@ -1359,7 +1363,7 @@ class VideoPlayer(QWidget):
                 
                 if is_comparison_mode and hasattr(self, 'original_player_core') and self.original_player_core:
                     # 对比预览模式：保持对比布局
-                    print("[VideoPlayer] 处于对比预览模式，加载视频到两个播放区域")
+                    # print("[VideoPlayer] 处于对比预览模式，加载视频到两个播放区域")
                     
                     # 1. 同时加载视频到两个播放器
                     self.player_core.set_media(file_path)
@@ -1442,7 +1446,7 @@ class VideoPlayer(QWidget):
             if colors and len(colors) >= 5:
                 if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
                     self.fluid_gradient_background.setCustomColors(colors)
-                    print(f"[VideoPlayer] 从封面提取到 {len(colors)} 个颜色")
+                    # print(f"[VideoPlayer] 从封面提取到 {len(colors)} 个颜色")
             else:
                 self._use_default_theme()
         else:
@@ -1959,7 +1963,7 @@ class VideoPlayer(QWidget):
         """
         try:
             if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
-                print("[VideoPlayer] 暂停播放媒体...")
+                # print("[VideoPlayer] 暂停播放媒体...")
                 
                 # 1. 先暂停主播放器
                 self.player_core.pause()
@@ -1976,7 +1980,7 @@ class VideoPlayer(QWidget):
                 # 4. 更新播放按钮图标
                 self._update_play_button_icon()
                 
-                print(f"[VideoPlayer] 暂停并同步位置: {current_position}")
+                # print(f"[VideoPlayer] 暂停并同步位置: {current_position}")
         except Exception as e:
             print(f"[VideoPlayer] 暂停操作失败: {e}")
             import traceback
@@ -2144,11 +2148,11 @@ class VideoPlayer(QWidget):
         """
         清除Cube文件设置
         """
-        print("[VideoPlayer] 开始清除Cube文件设置")
+        # print("[VideoPlayer] 开始清除Cube文件设置")
         
         # 1. 首先确保对比预览模式已关闭
         if self.comparison_mode:
-            print("[VideoPlayer] 移除LUT前，先关闭对比预览模式")
+            # print("[VideoPlayer] 移除LUT前，先关闭对比预览模式")
             self.toggle_comparison_mode(False)
         
         # 2. 保存当前播放状态
@@ -2156,7 +2160,7 @@ class VideoPlayer(QWidget):
         current_volume = self._current_volume
         if self.player_core:
             is_playing = self.player_core.is_playing
-            print(f"[VideoPlayer] 保存当前播放状态: 正在播放={is_playing}, 音量={current_volume}")
+            # print(f"[VideoPlayer] 保存当前播放状态: 正在播放={is_playing}, 音量={current_volume}")
         
         # 3. 移除data目录中的lut.cube文件
         data_dir = get_app_data_path()
@@ -2164,12 +2168,12 @@ class VideoPlayer(QWidget):
         if os.path.exists(lut_path):
             try:
                 os.remove(lut_path)
-                print(f"[VideoPlayer] 已删除LUT文件: {lut_path}")
+                # print(f"[VideoPlayer] 已删除LUT文件: {lut_path}")
             except Exception as e:
                 print(f"[VideoPlayer] 删除LUT文件失败: {e}")
         
         # 4. 禁用LUT滤镜
-        print("[VideoPlayer] 禁用LUT滤镜")
+        # print("[VideoPlayer] 禁用LUT滤镜")
         if self.player_core:
             # 使用player_core的disable_cube_filter方法移除滤镜
             self.player_core.disable_cube_filter()
@@ -2190,9 +2194,9 @@ class VideoPlayer(QWidget):
             # 如果之前在播放，确保继续播放
             if self.player_core._get_property_bool('pause'):
                 self.player_core._set_property_bool('pause', False)
-            print(f"[VideoPlayer] 已恢复播放状态")
+            # print(f"[VideoPlayer] 已恢复播放状态")
         
-        print("[VideoPlayer] Cube文件设置已清除")
+        # print("[VideoPlayer] Cube文件设置已清除")
     
     def check_and_apply_lut_file(self):
         """
@@ -2206,7 +2210,7 @@ class VideoPlayer(QWidget):
         
         # 检查lut.cube文件是否存在
         if os.path.exists(lut_path):
-            print(f"[VideoPlayer] 发现LUT文件: {lut_path}")
+            # print(f"[VideoPlayer] 发现LUT文件: {lut_path}")
             # 应用LUT滤镜
             self.set_cube_file(lut_path)
         else:
@@ -2251,7 +2255,8 @@ class VideoPlayer(QWidget):
             try:
                 # MPV会自动检测窗口大小变化，不需要显式发送video-reconfig命令
                 # 这个命令在新版本的MPV中可能已经不存在或名称已更改
-                print(f"[VideoPlayer] resizeEvent: 视频窗口大小已调整，MPV将自动适应新大小")
+                # print(f"[VideoPlayer] resizeEvent: 视频窗口大小已调整，MPV将自动适应新大小")
+                pass
             except Exception as e:
                 print(f"[VideoPlayer] resizeEvent: 处理窗口大小变化失败 - {e}")
     

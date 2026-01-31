@@ -686,11 +686,11 @@ class CustomFileSelector(QWidget):
         """刷新存储池中的缩略图显示"""
         import os
         try:
-            print(f"[DEBUG] 开始刷新存储池缩略图，卡片数量: {len(staging_pool.cards)}")
+            #print(f"[DEBUG] 开始刷新存储池缩略图，卡片数量: {len(staging_pool.cards)}")
             for i, (card, file_info) in enumerate(staging_pool.cards):
-                print(f"[DEBUG] 刷新卡片 {i}: {file_info.get('path', 'Unknown')}")
+                #print(f"[DEBUG] 刷新卡片 {i}: {file_info.get('path', 'Unknown')}")
                 card.refresh_thumbnail()
-            print(f"[DEBUG] 存储池缩略图刷新完成")
+            #print(f"[DEBUG] 存储池缩略图刷新完成")
         except Exception as e:
             print(f"刷新存储池缩略图失败: {e}")
 
@@ -928,20 +928,20 @@ class CustomFileSelector(QWidget):
                     
                     # 保存缩略图为PNG格式
                     thumbnail.save(thumbnail_path, format='PNG', quality=85)
-                    print(f"已生成图片缩略图 (PIL保持比例): {file_path}")
+                    #print(f"已生成图片缩略图 (PIL保持比例): {file_path}")
                     return True
                 except Exception as pil_e:
                     print(f"无法生成缩略图: {file_path}, PIL处理失败: {pil_e}")
                     return False
             # 处理所有视频文件格式
             else:
-                print(f"开始生成视频缩略图: {file_path}")
+                #print(f"开始生成视频缩略图: {file_path}")
                 cap = cv2.VideoCapture(file_path)
                 if cap.isOpened():
                     try:
                         # 获取视频总帧数
                         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        print(f"视频总帧数: {total_frames}")
+                        #print(f"视频总帧数: {total_frames}")
                         
                         # 定义尝试的帧位置列表
                         frame_positions = []
@@ -991,7 +991,7 @@ class CustomFileSelector(QWidget):
                                 valid_frame_positions.remove(middle_frame)
                                 valid_frame_positions.insert(0, middle_frame)
                         
-                        print(f"尝试的有效帧位置: {valid_frame_positions}")
+                        #print(f"尝试的有效帧位置: {valid_frame_positions}")
                         
                         # 尝试从不同位置读取帧
                         success = False
@@ -1066,8 +1066,8 @@ class CustomFileSelector(QWidget):
                                     
                                     # 保存缩略图
                                     thumbnail.save(thumbnail_path, format='PNG', quality=85)
-                                    print(f"✓ 使用PIL保存缩略图成功")
-                                    print(f"✓ 已生成视频缩略图: {file_path}, 使用第 {frame_pos} 帧，保持原始比例")
+                                    #print(f"✓ 使用PIL保存缩略图成功")
+                                    #print(f"✓ 已生成视频缩略图: {file_path}, 使用第 {frame_pos} 帧，保持原始比例")
                                     success = True
                                     return True
                                 except Exception as e:
@@ -1145,7 +1145,7 @@ class CustomFileSelector(QWidget):
                                     
                                     # 保存缩略图
                                     thumbnail.save(thumbnail_path, format='PNG', quality=85)
-                                    print(f"✓ 已生成视频缩略图: {file_path}, 使用中间位置相对帧")
+                                    #print(f"✓ 已生成视频缩略图: {file_path}, 使用中间位置相对帧")
                                     return True
                                 except Exception as e:
                                     print(f"✗ 使用PIL处理视频帧失败: {e}")
@@ -1197,7 +1197,7 @@ class CustomFileSelector(QWidget):
                                     
                                     # 保存缩略图
                                     thumbnail_pil.save(thumbnail_path, format='PNG', quality=85)
-                                    print(f"✓ 已生成视频缩略图: {file_path}, 使用相对位置帧")
+                                    #print(f"✓ 已生成视频缩略图: {file_path}, 使用相对位置帧")
                                     return True
                                 except Exception as pil_e:
                                     print(f"✗ 使用PIL处理视频帧失败: {pil_e}")
@@ -2032,26 +2032,27 @@ class CustomFileSelector(QWidget):
         import datetime
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector.refresh_files] {msg}")
+            #print(f"[{timestamp}] [CustomFileSelector.refresh_files] {msg}")
+            pass
         
-        debug("开始刷新文件列表")
+        #debug("开始刷新文件列表")
         self.path_edit.setText(self.current_path)
-        debug(f"更新路径输入框为: {self.current_path}")
+        #debug(f"更新路径输入框为: {self.current_path}")
         
         self._update_drive_selector()
-        debug("更新盘符选择器")
+        #debug("更新盘符选择器")
         
         self._clear_files_layout()
-        debug("清空现有文件卡片")
+        #debug("清空现有文件卡片")
         
         files = self._get_files()
-        debug(f"获取到 {len(files)} 个文件")
+        #debug(f"获取到 {len(files)} 个文件")
         
         files = self._sort_files(files)
-        debug("应用排序")
+        #debug("应用排序")
         
         files = self._filter_files(files)
-        debug(f"应用筛选后剩余 {len(files)} 个文件")
+        #debug(f"应用筛选后剩余 {len(files)} 个文件")
         
         self._all_files_count = len(files)
         self._pending_files = files
@@ -2060,7 +2061,7 @@ class CustomFileSelector(QWidget):
         self._refresh_callback = callback
         
         self._fixed_max_cols = self._calculate_max_columns()
-        debug(f"固定列数: {self._fixed_max_cols}")
+        #debug(f"固定列数: {self._fixed_max_cols}")
         
         if files:
             card_height = int(75 * self.dpi_scale)
@@ -2073,9 +2074,9 @@ class CustomFileSelector(QWidget):
             total_height = total_rows * card_height + max(0, total_rows - 1) * spacing + total_vertical_margin
             
             self.files_container.setMinimumHeight(total_height)
-            debug(f"设置内容区域最小高度: {total_height} (总行数: {total_rows}, 卡片高度: {card_height}, 间距: {spacing})")
+            #debug(f"设置内容区域最小高度: {total_height} (总行数: {total_rows}, 卡片高度: {card_height}, 间距: {spacing})")
         
-        debug(f"开始懒加载，共 {self._all_files_count} 个文件，每批 {self._batch_size} 个")
+        #debug(f"开始懒加载，共 {self._all_files_count} 个文件，每批 {self._batch_size} 个")
         
         # 如果没有文件需要加载，直接调用回调
         if not files:
@@ -2095,10 +2096,10 @@ class CustomFileSelector(QWidget):
             if hasattr(self, '_fixed_max_cols'):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
-            print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
+            #print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
             # 所有卡片加载完成后调用回调函数
             if hasattr(self, '_refresh_callback') and self._refresh_callback:
-                print(f"[DEBUG] 调用刷新回调函数")
+                #print(f"[DEBUG] 调用刷新回调函数")
                 callback = self._refresh_callback
                 self._refresh_callback = None  # 清除回调引用
                 callback()
@@ -2118,10 +2119,10 @@ class CustomFileSelector(QWidget):
             if hasattr(self, '_fixed_max_cols'):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
-            print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
+            #print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
             # 所有卡片加载完成后调用回调函数
             if hasattr(self, '_refresh_callback') and self._refresh_callback:
-                print(f"[DEBUG] 调用刷新回调函数")
+                #print(f"[DEBUG] 调用刷新回调函数")
                 callback = self._refresh_callback
                 self._refresh_callback = None  # 清除回调引用
                 callback()
@@ -2149,7 +2150,7 @@ class CustomFileSelector(QWidget):
             if hasattr(self, '_fixed_max_cols'):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
-            print(f"[DEBUG] 滚动加载完成，共加载 {self._loaded_count} 个卡片")
+            #print(f"[DEBUG] 滚动加载完成，共加载 {self._loaded_count} 个卡片")
     
     def _clear_files_layout(self):
         """
@@ -2323,7 +2324,7 @@ class CustomFileSelector(QWidget):
             return 3
         
         viewport_width = scroll_area.viewport().width()
-        print(f"[DEBUG] _calculate_max_columns: 视口宽度={viewport_width}")
+        #print(f"[DEBUG] _calculate_max_columns: 视口宽度={viewport_width}")
         
         card_width = int(70 * self.dpi_scale)
         spacing = int(5 * self.dpi_scale)
@@ -2331,7 +2332,7 @@ class CustomFileSelector(QWidget):
         margin = actual_margin * 2
         
         available_width = viewport_width - margin
-        print(f"[DEBUG] 可用宽度={available_width}, card_width={card_width}, spacing={spacing}")
+        #print(f"[DEBUG] 可用宽度={available_width}, card_width={card_width}, spacing={spacing}")
         
         columns = 1
         max_possible_columns = 0
@@ -2349,7 +2350,7 @@ class CustomFileSelector(QWidget):
             max_possible_columns = max(max_possible_columns, 3)
         
         max_possible_columns = max(1, max_possible_columns)
-        print(f"[DEBUG] 计算得到列数={max_possible_columns}")
+        #print(f"[DEBUG] 计算得到列数={max_possible_columns}")
         
         return max_possible_columns
     
@@ -2413,7 +2414,7 @@ class CustomFileSelector(QWidget):
                               卡片列数
         """
         container_width = self.files_container.width()
-        print(f"[DEBUG] _calculate_card_width: 容器宽度={container_width}")
+        #print(f"[DEBUG] _calculate_card_width: 容器宽度={container_width}")
         
         if container_width <= 0:
             print(f"[DEBUG] 容器宽度为0，跳过计算")
@@ -2431,7 +2432,7 @@ class CustomFileSelector(QWidget):
         available_width = container_width - (max_cols + 1) * spacing - total_margin
         card_width = available_width // max_cols
         
-        print(f"[DEBUG] 卡片计算: available_width={available_width}, card_width={card_width}, max_cols={max_cols}")
+        #print(f"[DEBUG] 卡片计算: available_width={available_width}, card_width={card_width}, max_cols={max_cols}")
         
         return card_width
     
@@ -2442,7 +2443,7 @@ class CustomFileSelector(QWidget):
         Args:
             max_cols (int): 新的列数
         """
-        print(f"[DEBUG] _rearrange_cards: 重新排列卡片，新列数={max_cols}")
+        #print(f"[DEBUG] _rearrange_cards: 重新排列卡片，新列数={max_cols}")
         
         cards = []
         for i in range(self.files_layout.count()):
@@ -2459,11 +2460,11 @@ class CustomFileSelector(QWidget):
             row = i // max_cols
             col = i % max_cols
             self.files_layout.addWidget(card, row, col)
-            print(f"[DEBUG] 卡片 {i} 移动到 ({row}, {col})")
+            #print(f"[DEBUG] 卡片 {i} 移动到 ({row}, {col})")
     
     def _update_all_cards_width(self):
         """更新所有卡片的动态宽度，并重新排列卡片"""
-        print(f"[DEBUG] _update_all_cards_width 被调用")
+        #print(f"[DEBUG] _update_all_cards_width 被调用")
         
         scroll_area = None
         parent_widget = self.files_container.parent()
@@ -2495,10 +2496,10 @@ class CustomFileSelector(QWidget):
         available_width = container_width - (max_cols + 1) * spacing - total_margin
         card_width = available_width // max_cols
         
-        print(f"[DEBUG] 更新: 视口宽度={container_width}, 列数={max_cols}, 卡片宽度={card_width}")
+        #print(f"[DEBUG] 更新: 视口宽度={container_width}, 列数={max_cols}, 卡片宽度={card_width}")
         
         if hasattr(self, '_last_max_cols') and self._last_max_cols != max_cols:
-            print(f"[DEBUG] 列数变化: {self._last_max_cols} -> {max_cols}，重新排列卡片")
+            #print(f"[DEBUG] 列数变化: {self._last_max_cols} -> {max_cols}，重新排列卡片")
             self._rearrange_cards(max_cols)
         
         self._last_max_cols = max_cols
@@ -2554,12 +2555,12 @@ class CustomFileSelector(QWidget):
             self._last_container_width = container_width
         
         if needs_rearrange:
-            print(f"[DEBUG] 定期检查: 检测到列数变化，重新排列卡片")
+            #print(f"[DEBUG] 定期检查: 检测到列数变化，重新排列卡片")
             self._rearrange_cards(max_cols)
             self._last_max_cols = max_cols
         
         if needs_update:
-            print(f"[DEBUG] 定期检查: 检测到卡片宽度变化，更新卡片宽度")
+            #print(f"[DEBUG] 定期检查: 检测到卡片宽度变化，更新卡片宽度")
             for i in range(self.files_layout.count()):
                 item = self.files_layout.itemAt(i)
                 if item is not None:
@@ -2603,9 +2604,9 @@ class CustomFileSelector(QWidget):
         file_path = file_info["path"]
         file_dir = os.path.normpath(os.path.dirname(file_path))
         
-        debug(f"创建文件卡片: {file_path}")
-        debug(f"文件目录（规范化后）: {file_dir}")
-        debug(f"selected_files: {self.selected_files}")
+        #debug(f"创建文件卡片: {file_path}")
+        #debug(f"文件目录（规范化后）: {file_dir}")
+        #debug(f"selected_files: {self.selected_files}")
         
         file_dict = {
             "name": file_info["name"],
@@ -2627,9 +2628,9 @@ class CustomFileSelector(QWidget):
             if file_path_norm in file_set:
                 is_selected = True
                 break
-        debug(f"文件选中状态: {is_selected}")
+        #debug(f"文件选中状态: {is_selected}")
         if is_selected:
-            debug(f"设置卡片为选中状态")
+            #debug(f"设置卡片为选中状态")
             card.set_selected(True)
         
         if file_info["is_dir"]:
@@ -2658,9 +2659,10 @@ class CustomFileSelector(QWidget):
         import datetime
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector._on_card_drag_started] {msg}")
+            #print(f"[{timestamp}] [CustomFileSelector._on_card_drag_started] {msg}")
+            pass
         
-        debug(f"卡片拖拽开始: {file_info.get('name', '')}")
+        #debug(f"卡片拖拽开始: {file_info.get('name', '')}")
     
     def _on_card_drag_ended(self, file_info, drop_target):
         """
@@ -2680,11 +2682,11 @@ class CustomFileSelector(QWidget):
         file_path_norm = os.path.normpath(file_path)
         file_dir_norm = os.path.normpath(os.path.dirname(file_path))
         
-        debug(f"卡片拖拽结束: {file_info.get('name', '')}, 目标: {drop_target}")
+        #debug(f"卡片拖拽结束: {file_info.get('name', '')}, 目标: {drop_target}")
         
         if drop_target == 'staging_pool':
             # 拖拽到存储池，选中文件
-            debug(f"拖拽到存储池，选中文件: {file_path_norm}")
+            #debug(f"拖拽到存储池，选中文件: {file_path_norm}")
             
             # 设置卡片选中状态
             if file_dir_norm not in self.selected_files:
@@ -2696,20 +2698,23 @@ class CustomFileSelector(QWidget):
                 self._update_file_selection_state()
                 # 发出选择变化信号，将文件添加到存储池
                 self.file_selection_changed.emit(file_info, True)
-                debug(f"文件已添加到存储池")
+                #debug(f"文件已添加到存储池")
+                pass
             else:
-                debug(f"文件已在存储池中，跳过")
+                #debug(f"文件已在存储池中，跳过")
+                pass
                 
         elif drop_target == 'previewer':
             # 拖拽到预览器，预览文件
-            debug(f"拖拽到预览器，预览文件: {file_path_norm}")
+            #debug(f"拖拽到预览器，预览文件: {file_path_norm}")
             # 发出文件选中信号，启动预览
             self.file_selected.emit(file_info)
-            debug(f"预览信号已发出")
+            #debug(f"预览信号已发出")
             
         else:
             # 未放置到有效区域
-            debug(f"未放置到有效区域")
+            #debug(f"未放置到有效区域")
+            pass
     
     def _on_card_clicked(self, file_info, file_path):
         """处理卡片左键点击"""
@@ -2736,11 +2741,12 @@ class CustomFileSelector(QWidget):
         import datetime
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector._on_card_selection_changed] {msg}")
+            #print(f"[{timestamp}] [CustomFileSelector._on_card_selection_changed] {msg}")
+            pass
         
         file_path_norm = os.path.normpath(file_path)
         file_dir_norm = os.path.normpath(os.path.dirname(file_path))
-        debug(f"文件选择状态变化: 路径={file_path_norm}, 目录={file_dir_norm}, 选中={is_selected}")
+        #debug(f"文件选择状态变化: 路径={file_path_norm}, 目录={file_dir_norm}, 选中={is_selected}")
         
         if is_selected:
             if file_dir_norm not in self.selected_files:
@@ -2748,17 +2754,19 @@ class CustomFileSelector(QWidget):
             # 检查文件是否已经被选中，如果是则不重复发出信号
             if file_path_norm not in self.selected_files[file_dir_norm]:
                 self.selected_files[file_dir_norm].add(file_path_norm)
-                debug(f"添加文件到选中集合，发出选择变化信号")
+                #debug(f"添加文件到选中集合，发出选择变化信号")
                 self.file_selection_changed.emit(file_info, is_selected)
             else:
-                debug(f"文件已在选中集合中，跳过信号")
+                #debug(f"文件已在选中集合中，跳过信号")
+                pass
         else:
             if file_dir_norm in self.selected_files and file_path_norm in self.selected_files[file_dir_norm]:
                 self.selected_files[file_dir_norm].discard(file_path_norm)
-                debug(f"从选中集合移除文件，发出选择变化信号")
+                #debug(f"从选中集合移除文件，发出选择变化信号")
                 self.file_selection_changed.emit(file_info, is_selected)
             else:
-                debug(f"文件不在选中集合中，无需处理")
+                #debug(f"文件不在选中集合中，无需处理")
+                pass
     
     def _on_card_double_clicked(self, file_info, file_path):
         """处理卡片双击"""
@@ -3251,7 +3259,7 @@ class CustomFileSelector(QWidget):
                 self.dropEvent(event)
                 return True
         elif event.type() == QEvent.Resize:
-            print(f"[DEBUG] resize事件触发 from {obj.objectName() if hasattr(obj, 'objectName') else str(obj)}")
+            #print(f"[DEBUG] resize事件触发 from {obj.objectName() if hasattr(obj, 'objectName') else str(obj)}")
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(50, self._update_all_cards_width)
             if self._pending_files and not self._is_loading:
@@ -3303,15 +3311,16 @@ class CustomFileSelector(QWidget):
             print(f"[{timestamp}] [CustomFileSelector] {msg}")
         
         file_path = card.file_info["path"]
-        debug(f"打开文件: {file_path}, 是否为目录: {card.file_info['is_dir']}")
+        #debug(f"打开文件: {file_path}, 是否为目录: {card.file_info['is_dir']}")
         
         if os.path.exists(file_path):
             if card.file_info["is_dir"]:
-                debug(f"打开目录，进入新路径: {file_path}")
+                #debug(f"打开目录，进入新路径: {file_path}")
                 self.current_path = file_path
                 self.refresh_files()
             else:
-                debug(f"打开文件，文件信息: {card.file_info}")
+                #debug(f"打开文件，文件信息: {card.file_info}")
+                pass
     
     def _open_file_by_path(self, file_path):
         """
@@ -3326,16 +3335,17 @@ class CustomFileSelector(QWidget):
             print(f"[{timestamp}] [CustomFileSelector] {msg}")
         
         is_dir = os.path.isdir(file_path)
-        debug(f"打开文件: {file_path}, 是否为目录: {is_dir}")
+        #debug(f"打开文件: {file_path}, 是否为目录: {is_dir}")
         
         if os.path.exists(file_path):
             if is_dir:
-                debug(f"打开目录，进入新路径: {file_path}")
+                #debug(f"打开目录，进入新路径: {file_path}")
                 self.current_path = file_path
                 self.path_edit.setText(file_path)
                 self.refresh_files()
             else:
-                debug(f"打开文件: {file_path}")
+                #debug(f"打开文件: {file_path}")
+                pass
     
     def _show_properties(self, card):
         """
@@ -3460,29 +3470,29 @@ class CustomFileSelector(QWidget):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             print(f"[{timestamp}] [CustomFileSelector.dropEvent] {msg}")
         
-        debug("=== DROP EVENT START ===")
+        #debug("=== DROP EVENT START ===")
         
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            debug(f"拖拽的URL数量: {len(urls)}")
+            #debug(f"拖拽的URL数量: {len(urls)}")
             
             for url in urls:
                 file_path = url.toLocalFile()
-                debug(f"处理拖拽的文件路径（原始）: {file_path}")
+                #debug(f"处理拖拽的文件路径（原始）: {file_path}")
                 
                 # 规范化文件路径，确保路径分隔符一致
                 normalized_file_path = os.path.normpath(file_path)
-                debug(f"处理拖拽的文件路径（规范化后）: {normalized_file_path}")
+                #debug(f"处理拖拽的文件路径（规范化后）: {normalized_file_path}")
                 
                 if os.path.isfile(normalized_file_path):
                     # 单个文件：自动导航至该文件所在的目录路径，并在文件选择器中高亮选中该文件
-                    debug(f"文件类型: 文件")
+                    #debug(f"文件类型: 文件")
                     file_dir = os.path.normpath(os.path.dirname(normalized_file_path))
-                    debug(f"文件所在目录（规范化后）: {file_dir}")
+                    #debug(f"文件所在目录（规范化后）: {file_dir}")
                     
                     # 将文件选择器当前路径设置为文件所在目录
                     self.current_path = file_dir
-                    debug(f"设置当前路径为: {file_dir}")
+                    #debug(f"设置当前路径为: {file_dir}")
                     
                     # 保存文件路径，用于回调函数
                     dropped_file_path = normalized_file_path
@@ -3647,7 +3657,7 @@ class CustomFileSelector(QWidget):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             print(f"[{timestamp}] [CustomFileSelector._handle_dropped_file] {msg}")
         
-        debug(f"开始处理拖拽的文件: {file_path}")
+        #debug(f"开始处理拖拽的文件: {file_path}")
         
         # 直接创建文件信息，而不是在files_layout中查找
         try:
@@ -3706,7 +3716,7 @@ class CustomFileSelector(QWidget):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             print(f"[{timestamp}] [CustomFileSelector._update_file_selection_state] {msg}")
         
-        debug(f"开始更新选中状态，卡片数量: {self.files_layout.count()}, selected_files: {self.selected_files}")
+        #debug(f"开始更新选中状态，卡片数量: {self.files_layout.count()}, selected_files: {self.selected_files}")
         for i in range(self.files_layout.count()):
             widget = self.files_layout.itemAt(i).widget()
             if widget is not None and hasattr(widget, 'file_info'):
@@ -3718,15 +3728,15 @@ class CustomFileSelector(QWidget):
                 is_selected = False
                 # 遍历所有目录的选中文件集，检查文件路径是否在其中
                 for dir_path, file_set in self.selected_files.items():
-                    debug(f"  检查目录: {dir_path}, 文件集大小: {len(file_set)}")
+                    #debug(f"  检查目录: {dir_path}, 文件集大小: {len(file_set)}")
                     if file_path_norm in file_set:
                         is_selected = True
-                        debug(f"  找到匹配! 文件在选中集合中")
+                        #debug(f"  找到匹配! 文件在选中集合中")
                         break
-                debug(f"卡片 {i}: 文件={file_path_norm}, 目录={file_dir}, 选中={is_selected}")
+                #debug(f"卡片 {i}: 文件={file_path_norm}, 目录={file_dir}, 选中={is_selected}")
                 current_widget_selected = widget.is_selected()
                 if current_widget_selected != is_selected:
-                    debug(f"  选中状态变化: {current_widget_selected} -> {is_selected}")
+                    #debug(f"  选中状态变化: {current_widget_selected} -> {is_selected}")
                     widget.set_selected(is_selected)
 
     def _update_timeline_button_visibility(self):

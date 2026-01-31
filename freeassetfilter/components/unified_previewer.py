@@ -251,21 +251,21 @@ class UnifiedPreviewer(QWidget):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
         
-        debug(f"接收到file_selected信号，文件信息: {file_info}")
+        # debug(f"接收到file_selected信号，文件信息: {file_info}")
         
         # 检查是否正在加载预览，如果是则忽略新的请求
         if self.is_loading_preview:
-            debug("正在加载预览中，忽略新的预览请求")
+            # debug("正在加载预览中，忽略新的预览请求")
             return
         
         self.current_file_info = file_info
         
         # 更新文件信息查看器
-        debug("更新文件信息查看器")
+        # debug("更新文件信息查看器")
         self.file_info_viewer.set_file(file_info)
         
         # 根据文件类型显示不同的预览内容
-        debug("调用_show_preview()显示预览")
+        # debug("调用_show_preview()显示预览")
         self._show_preview()
     
     def _show_preview(self):
@@ -273,29 +273,29 @@ class UnifiedPreviewer(QWidget):
         根据文件类型显示预览内容，确保只有一个预览组件在工作
         """
         # 生成带时间戳的debug信息
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
+        # import datetime
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
         
-        debug("开始处理文件预览")
+        # debug("开始处理文件预览")
         
         if not self.current_file_info:
             # 没有文件信息时，显示默认提示
-            debug("没有文件信息，显示默认提示")
+            # debug("没有文件信息，显示默认提示")
             self._clear_preview()
             self.preview_layout.addWidget(self.default_label)
             self.default_label.show()
             self.open_with_system_button.hide()
             return
         
-        debug(f"获取文件信息: {self.current_file_info}")
+        # debug(f"获取文件信息: {self.current_file_info}")
         
         # 获取文件路径和类型
         file_path = self.current_file_info["path"]
         file_type = self.current_file_info["suffix"]
         
-        debug(f"提取的文件路径: {file_path}, 文件类型: {file_type}")
+        # debug(f"提取的文件路径: {file_path}, 文件类型: {file_type}")
         
         # 确定预览类型
         preview_type = None
@@ -318,20 +318,20 @@ class UnifiedPreviewer(QWidget):
         else:
             preview_type = "unknown"
         
-        debug(f"确定预览类型: {preview_type}")
+        # debug(f"确定预览类型: {preview_type}")
         
         # 检查当前预览组件是否可以处理该类型
         # 如果预览类型相同，直接更新组件
         if preview_type == self.current_preview_type and self.current_preview_widget:
             # 更新现有组件
-            debug(f"预览类型相同，直接更新组件: {preview_type}")
+            # debug(f"预览类型相同，直接更新组件: {preview_type}")
             self._update_preview_widget(file_path, preview_type)
         else:
             # 设置加载状态为True，防止快速点击触发多个预览
             self.is_loading_preview = True
             
             # 对于所有预览类型，都使用后台线程加载，确保UI响应
-            debug(f"预览类型不同，创建新组件: {preview_type}")
+            # debug(f"预览类型不同，创建新组件: {preview_type}")
             
             # 显示进度条弹窗
             title = "正在加载预览"
@@ -339,63 +339,64 @@ class UnifiedPreviewer(QWidget):
             if preview_type == "video":
                 title = "正在加载视频"
                 message = "正在准备视频播放器..."
-                debug("显示视频加载进度条")
+                # debug("显示视频加载进度条")
             elif preview_type == "audio":
                 title = "正在加载音频"
                 message = "正在准备音频播放器..."
-                debug("显示音频加载进度条")
+                # debug("显示音频加载进度条")
             elif preview_type == "pdf":
                 title = "正在加载PDF"
                 message = "正在准备PDF阅读器..."
-                debug("显示PDF加载进度条")
+                # debug("显示PDF加载进度条")
             elif preview_type == "archive":
                 title = "正在加载压缩包"
                 message = "正在准备压缩包浏览器..."
-                debug("显示压缩包加载进度条")
+                # debug("显示压缩包加载进度条")
             elif preview_type == "image":
                 title = "正在加载图片"
                 message = "正在准备图片查看器..."
-                debug("显示图片加载进度条")
+                # debug("显示图片加载进度条")
             elif preview_type == "text":
                 title = "正在加载文本"
                 message = "正在准备文本查看器..."
-                debug("显示文本加载进度条")
+                # debug("显示文本加载进度条")
             elif preview_type == "dir":
                 title = "正在加载文件夹"
                 message = "正在准备文件夹浏览器..."
-                debug("显示文件夹加载进度条")
+                # debug("显示文件夹加载进度条")
             
             self._show_progress_dialog(title, message)
             
             # 预览类型不同，清除当前组件，创建新组件
-            debug("清除当前预览组件")
+            # debug("清除当前预览组件")
             self._clear_preview()
             
             # 检查并终止现有线程（如果存在）
             if hasattr(self, '_preview_thread') and self._preview_thread and self._preview_thread.isRunning():
-                debug("发现正在运行的后台线程，尝试取消并终止")
+                # debug("发现正在运行的后台线程，尝试取消并终止")
                 self._preview_thread.cancel()
                 # 等待线程终止，最多等待1秒
                 self._preview_thread.wait(1000)
                 if self._preview_thread.isRunning():
-                    debug("线程终止超时")
+                    # debug("线程终止超时")
+                    pass
             
             # 创建后台加载线程
-            debug(f"创建后台加载线程，预览类型: {preview_type}, 文件路径: {file_path}")
+            # debug(f"创建后台加载线程，预览类型: {preview_type}, 文件路径: {file_path}")
             self._preview_thread = self.PreviewLoaderThread(file_path, preview_type)
             
             # 连接线程信号
-            debug("连接线程信号")
+            # debug("连接线程信号")
             self._preview_thread.preview_created.connect(self._on_preview_created)
             self._preview_thread.preview_error.connect(self._on_preview_error)
             self._preview_thread.preview_progress.connect(self._on_progress_updated)
             
             # 启动线程
-            debug("启动后台加载线程")
+            # debug("启动后台加载线程")
             self._preview_thread.start()
             
             # 更新当前预览类型
-            debug(f"更新当前预览类型: {preview_type}")
+            # debug(f"更新当前预览类型: {preview_type}")
             self.current_preview_type = preview_type
         
         # 显示"使用系统默认方式打开"按钮

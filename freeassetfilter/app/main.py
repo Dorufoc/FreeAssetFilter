@@ -214,9 +214,10 @@ class FreeAssetFilterApp(QMainWindow):
         if os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
-                print(f"已删除临时文件夹: {temp_dir}")
+                #print(f"已删除临时文件夹: {temp_dir}")
             except Exception as e:
                 print(f"删除临时文件夹失败: {e}")
+                pass
         
         # 调用父类的closeEvent
         super().closeEvent(event)
@@ -1402,6 +1403,7 @@ def main():
             # 发生错误时，使用原有方式记录时间（不保存）
             settings_manager.set_setting("app.last_exit_time", exit_time)
             print(f"保存退出时间失败: {e}")
+            pass
     
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
