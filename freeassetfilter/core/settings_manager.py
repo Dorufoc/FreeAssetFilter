@@ -81,6 +81,7 @@ class SettingsManager:
                 "speed": 1.0,
                 "volume": 100,
                 "fluid_gradient_theme": "sunset",
+                "audio_background_style": "流体动画",
                 "use_default_volume": False,
                 "default_volume": 100,
                 "use_default_speed": True,

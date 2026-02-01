@@ -854,20 +854,47 @@ class ModernSettingsWindow(QDialog):
 
         self.scroll_layout.addWidget(speed_group)
 
-        # 流体渐变主题设置组
-        theme_group = QGroupBox("音频可视化")
+        # 音频背景样式设置组
+        theme_group = QGroupBox("音频背景样式")
         theme_group.setStyleSheet(self.group_box_style)
         theme_layout = QVBoxLayout(theme_group)
 
-        # 流体渐变主题选择
+        # 背景样式选择（流体动画、封面模糊）
+        background_styles = ["流体动画", "封面模糊"]
+        current_style = self.settings_manager.get_setting("player.audio_background_style", "流体动画")
+
+        self.audio_background_style_setting = CustomSettingItem(
+            text="背景样式",
+            secondary_text="选择音频播放时的背景显示样式",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": current_style, "type": "primary"}]
+        )
+
+        def on_background_style_button_clicked(button_index):
+            self.background_style_dropdown = CustomDropdownMenu(self, position="bottom")
+            self.background_style_dropdown.set_items(background_styles, default_item=current_style)
+
+            def on_style_item_clicked(selected_style):
+                self.current_settings.update({"player.audio_background_style": selected_style})
+                self.audio_background_style_setting.button_group[0].setText(selected_style)
+
+            self.background_style_dropdown.itemClicked.connect(on_style_item_clicked)
+            button = self.audio_background_style_setting.button_group[button_index]
+            self.background_style_dropdown.set_target_button(button)
+            self.background_style_dropdown.show_menu()
+
+        self.audio_background_style_setting.button_clicked.connect(on_background_style_button_clicked)
+        theme_layout.addWidget(self.audio_background_style_setting)
+
+        # 流体渐变主题选择（仅在流体动画样式下有效）
         self.fluid_theme_setting = CustomSettingItem(
             text="流体渐变主题",
-            secondary_text="选择音频播放时的背景渐变主题",
+            secondary_text="选择流体动画的主题预设（仅在流体动画样式下生效）",
             interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
             buttons=[{"text": self.settings_manager.get_setting("player.fluid_gradient_theme", "sunset"), "type": "primary"}]
         )
 
-        fluid_themes = ["sunset", "ocean", "forest", "aurora", "galaxy"]
+        fluid_themes = ["sunset", "ocean", "aurora", "accent"]
         current_theme = self.settings_manager.get_setting("player.fluid_gradient_theme", "sunset")
 
         def on_fluid_theme_button_clicked(button_index):

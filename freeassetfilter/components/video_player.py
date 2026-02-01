@@ -36,7 +36,7 @@ from freeassetfilter.widgets.control_menu import CustomControlMenu
 from freeassetfilter.widgets.D_volume_control import DVolumeControl
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.core.settings_manager import SettingsManager
-from freeassetfilter.widgets.fluid_gradient_background import FluidGradientBackground
+from freeassetfilter.widgets.audio_background import AudioBackground
 from freeassetfilter.core.color_extractor import extract_cover_colors
 
 # 用于读取音频文件封面
@@ -88,7 +88,7 @@ class VideoPlayer(QWidget):
         self.play_button = None
         self.timer = None
         self.player_core = None
-        self.fluid_gradient_background = None
+        self.audio_background = None
         self._user_interacting = False
         
         # 获取应用实例和DPI缩放因子
@@ -368,13 +368,13 @@ class VideoPlayer(QWidget):
         self.audio_file_label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.audio_file_label.move(0, int(2 * self.dpi_scale))
         
-        # 创建流体渐变背景组件
-        self.fluid_gradient_background = FluidGradientBackground(self)
-        self.fluid_gradient_background.setStyleSheet("background-color: transparent; border: none;")
-        self.fluid_gradient_background.setMinimumSize(150, 100)
+        # 创建音频背景组件（支持流体动画和封面模糊两种模式）
+        self.audio_background = AudioBackground(self)
+        self.audio_background.setStyleSheet("background-color: transparent; border: none;")
+        self.audio_background.setMinimumSize(150, 100)
         
-        # 构建音频叠加布局 - 将所有部件放在同一网格位置
-        audio_layout.addWidget(self.fluid_gradient_background, 0, 0)
+        # 构建音频叠加布局
+        audio_layout.addWidget(self.audio_background, 0, 0)
         audio_layout.addWidget(self.background_label, 0, 0)
         audio_layout.addWidget(self.overlay_widget, 0, 0)
         audio_layout.addWidget(self.audio_container, 0, 0, Qt.AlignCenter)
@@ -1353,16 +1353,25 @@ class VideoPlayer(QWidget):
                 media_layout.addWidget(self.audio_stacked_widget)
                 self.audio_stacked_widget.show()
                 
-                # 加载流体渐变背景
-                if self.fluid_gradient_background:
-                    self.fluid_gradient_background.load()
+                # 获取背景样式设置
+                settings = SettingsManager()
+                background_style = settings.get_setting("player.audio_background_style", "流体动画")
+                
+                # 根据设置加载对应的背景
+                if background_style == "封面模糊":
+                    if self.audio_background:
+                        self.audio_background.load(AudioBackground.MODE_COVER_BLUR)
+                else:
+                    # 默认使用流体渐变背景
+                    if self.audio_background:
+                        self.audio_background.load(AudioBackground.MODE_FLUID)
                 
                 # 主播放器加载并播放音频
                 self.player_core.set_media(file_path)
                 self.player_core.play()
                 
                 # 提取并显示音频元数据和封面
-                self.extract_audio_metadata(file_path)
+                self.extract_audio_metadata(file_path, background_style)
                 
                 # 隐藏LUT按钮，因为音频没有画面需要应用LUT
                 self.load_cube_button.hide()
@@ -1416,9 +1425,9 @@ class VideoPlayer(QWidget):
                     if hasattr(self, 'filtered_video_frame') and self.filtered_video_frame is not None:
                         self.filtered_video_frame.show()
                     
-                    # 卸载流体渐变背景（视频模式下不需要）
-                    if self.fluid_gradient_background:
-                        self.fluid_gradient_background.unload()
+                    # 卸载音频背景（视频模式下不需要）
+                    if self.audio_background:
+                        self.audio_background.unload()
                 else:
                     # 非对比预览模式：使用单个视频框架
                     # 先清空布局
@@ -1433,9 +1442,9 @@ class VideoPlayer(QWidget):
                     self.video_frame.setMinimumSize(150, 100)
                     self.video_frame.show()
                     
-                    # 卸载流体渐变背景（视频模式下不需要）
-                    if self.fluid_gradient_background:
-                        self.fluid_gradient_background.unload()
+                    # 卸载音频背景（视频模式下不需要）
+                    if self.audio_background:
+                        self.audio_background.unload()
                     
                     # 主播放器加载并播放视频
                     self.player_core.set_media(file_path)
@@ -1446,12 +1455,13 @@ class VideoPlayer(QWidget):
             # 更新播放按钮状态
             self._update_play_button_icon()
     
-    def extract_audio_metadata(self, file_path):
+    def extract_audio_metadata(self, file_path, background_style="流体动画"):
         """
         从音频文件中提取元数据和封面颜色
         
         Args:
             file_path: 音频文件路径
+            background_style: 背景样式（"流体动画"或"封面模糊"）
         """
         cover_data = None
         
@@ -1463,15 +1473,27 @@ class VideoPlayer(QWidget):
         self._audio_cover_data = cover_data
         
         if cover_data:
-            colors = extract_cover_colors(cover_data, num_colors=5, min_distance=50.0)
-            if colors and len(colors) >= 5:
-                if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
-                    self.fluid_gradient_background.setCustomColors(colors)
-                    # print(f"[VideoPlayer] 从封面提取到 {len(colors)} 个颜色")
+            if background_style == "封面模糊":
+                # 使用封面模糊背景
+                if self.audio_background and self.audio_background.isLoaded():
+                    self.audio_background.setCoverData(cover_data)
+            else:
+                # 使用流体渐变背景，提取颜色
+                colors = extract_cover_colors(cover_data, num_colors=5, min_distance=50.0)
+                if colors and len(colors) >= 5:
+                    if self.audio_background and self.audio_background.isLoaded():
+                        self.audio_background.setCustomColors(colors)
+                else:
+                    self._use_default_theme()
+        else:
+            # 无封面时使用默认主题
+            if background_style == "封面模糊":
+                # 封面模糊模式下无封面时切换到流体动画模式并使用强调色主题
+                if self.audio_background:
+                    self.audio_background.load(AudioBackground.MODE_FLUID)
+                    self.audio_background.useAccentTheme()
             else:
                 self._use_default_theme()
-        else:
-            self._use_default_theme()
         
         self._update_audio_icon()
         self.song_name_label.hide()
@@ -1569,13 +1591,13 @@ class VideoPlayer(QWidget):
     
     def _use_default_theme(self):
         """使用默认主题（无封面时使用强调色主题）"""
-        if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
+        if self.audio_background and self.audio_background.isLoaded():
             if self._audio_cover_data:
                 settings = SettingsManager()
                 theme = settings.get_setting('player/fluid_gradient_theme', 'sunset')
-                self.fluid_gradient_background.setTheme(theme)
+                self.audio_background.setTheme(theme)
             else:
-                self.fluid_gradient_background.useAccentTheme()
+                self.audio_background.useAccentTheme()
     
     def setFluidGradientTheme(self, theme: str):
         """
@@ -1584,8 +1606,8 @@ class VideoPlayer(QWidget):
         Args:
             theme: 主题名称 ('sunset', 'ocean', 'aurora')
         """
-        if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
-            self.fluid_gradient_background.setTheme(theme)
+        if self.audio_background and self.audio_background.isLoaded():
+            self.audio_background.setTheme(theme)
     
     def setFluidGradientSpeed(self, speed_factor: float):
         """
@@ -1594,8 +1616,8 @@ class VideoPlayer(QWidget):
         Args:
             speed_factor: 速率因子 (0.1 - 2.0)
         """
-        if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
-            self.fluid_gradient_background.setAnimationSpeed(speed_factor)
+        if self.audio_background and self.audio_background.isLoaded():
+            self.audio_background.setAnimationSpeed(speed_factor)
     
     def pauseFluidGradientAnimation(self, paused: bool = True):
         """
@@ -1604,8 +1626,8 @@ class VideoPlayer(QWidget):
         Args:
             paused: 是否暂停
         """
-        if self.fluid_gradient_background and self.fluid_gradient_background.isLoaded():
-            self.fluid_gradient_background.pauseAnimation(paused)
+        if self.audio_background and self.audio_background.isLoaded():
+            self.audio_background.pauseAnimation(paused)
     
     def _create_rounded_pixmap(self, pixmap, radius):
         """
@@ -2032,8 +2054,8 @@ class VideoPlayer(QWidget):
         if self.audio_stacked_widget:
             self.audio_stacked_widget.hide()
         
-        if self.fluid_gradient_background:
-            self.fluid_gradient_background.unload()
+        if self.audio_background:
+            self.audio_background.unload()
     
     def seek(self, position):
         """
