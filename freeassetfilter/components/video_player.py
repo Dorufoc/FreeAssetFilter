@@ -223,12 +223,21 @@ class VideoPlayer(QWidget):
         self.comparison_layout = None  # 对比预览布局
         self.original_video_frame = None  # 原视频显示区域
         self.filtered_video_frame = None  # 应用滤镜后的视频显示区域
-        
+
+        # 窗口分离相关属性
+        self._detached_window = None  # 分离的独立窗口
+        self._is_detached = False  # 是否处于分离状态
+        self._detached_button = None  # 分离窗口按钮
+        self._parent_container = None  # 原始父容器引用
+        self._original_layout = None  # 原始布局引用
+        self._saved_position = 0  # 分离前保存的播放位置
+        self._saved_playing_state = False  # 分离前保存的播放状态
+
         # 内核适配层相关 - 仅使用MPV
         self._core_signal_adapters = {
             'mpv': self._connect_mpv_signals
         }
-        
+
         # 视频渲染相关
         self._video_renderer = None
     
@@ -551,7 +560,22 @@ class VideoPlayer(QWidget):
         bottom_layout.addWidget(self.comparison_button)
         # 默认隐藏对比预览按钮
         self.comparison_button.hide()
-        
+
+        # 添加窗口分离按钮 - 使用maxsize图标
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        icons_path = os.path.join(current_dir, '..', 'icons')
+        icons_path = os.path.abspath(icons_path)
+        maxsize_icon_path = os.path.join(icons_path, 'maxsize.svg')
+
+        self._detached_button = CustomButton(
+            text=maxsize_icon_path,
+            button_type="normal",
+            display_mode="icon",
+            tooltip_text="分离窗口"
+        )
+        self._detached_button.clicked.connect(self._toggle_detach_window)
+        bottom_layout.addWidget(self._detached_button)
+
         # 将底部布局添加到进度时间布局
         progress_time_layout.addLayout(bottom_layout)
         
@@ -2308,5 +2332,247 @@ class VideoPlayer(QWidget):
         鼠标双击事件
         """
         pass
+
+    def _toggle_detach_window(self):
+        """
+        切换窗口分离/合并状态
+        将视频播放组件分离为独立窗口或合并回主窗口
+        """
+        if self._is_detached:
+            self._merge_window()
+        else:
+            self._detach_window()
+
+    def _detach_window(self):
+        """
+        将视频播放器分离为独立窗口
+        继承当前播放状态、进度、音量等所有内部状态
+        """
+        try:
+            # 保存当前播放状态
+            self._saved_position = self.player_core.position if self.player_core else 0
+            self._saved_playing_state = self.player_core.is_playing if self.player_core else False
+            self._current_file_path_before_detach = self._current_file_path
+
+            # 创建独立窗口
+            from PyQt5.QtWidgets import QMainWindow
+
+            class DetachedVideoWindow(QMainWindow):
+                """分离的视频播放窗口"""
+
+                def __init__(self, video_player, parent=None):
+                    super().__init__(parent)
+                    self.video_player = video_player
+                    self.setWindowTitle("视频播放器 - FreeAssetFilter")
+                    self.setMinimumSize(400, 300)
+
+                    # 设置窗口图标
+                    app = QApplication.instance()
+                    if hasattr(app, 'windowIcon') and app.windowIcon():
+                        self.setWindowIcon(app.windowIcon())
+
+                    # 创建中央部件
+                    central_widget = QWidget()
+                    self.setCentralWidget(central_widget)
+                    layout = QVBoxLayout(central_widget)
+                    layout.setContentsMargins(0, 0, 0, 0)
+                    layout.setSpacing(0)
+
+                    # 将视频播放器的媒体框架添加到独立窗口，设置拉伸因子为1使其占据主要空间
+                    layout.addWidget(self.video_player.media_frame, 1)
+
+                    # 添加控制区域
+                    # 找到控制容器并添加，不设置拉伸因子使其保持固定高度
+                    for i in range(self.video_player.layout().count()):
+                        item = self.video_player.layout().itemAt(i)
+                        if item and item.widget():
+                            widget = item.widget()
+                            # 检查是否是控制容器（通过样式或类型判断）
+                            if isinstance(widget, QWidget) and widget != self.video_player.media_frame:
+                                # 设置控制容器的最大高度，防止被拉伸
+                                widget.setMaximumHeight(int(60 * self.video_player.dpi_scale))
+                                layout.addWidget(widget, 0)  # 拉伸因子为0，不随窗口拉伸
+                                break
+
+                def closeEvent(self, event):
+                    """窗口关闭时合并回主窗口"""
+                    self.video_player._merge_window()
+                    event.accept()
+
+                def resizeEvent(self, event):
+                    """窗口大小变化时通知播放器"""
+                    super().resizeEvent(event)
+                    if self.video_player and self.video_player.player_core:
+                        try:
+                            # MPV会自动检测窗口大小变化
+                            pass
+                        except Exception as e:
+                            print(f"[DetachedWindow] 处理窗口大小变化失败: {e}")
+
+            # 保存原始父容器和布局引用
+            self._parent_container = self.parent()
+            self._original_layout = self.layout()
+
+            # 暂停当前播放
+            if self.player_core and self._saved_playing_state:
+                self.player_core.pause()
+
+            # 创建并显示独立窗口
+            self._detached_window = DetachedVideoWindow(self)
+
+            # 设置窗口大小和位置
+            self._detached_window.resize(800, 600)
+
+            # 将窗口移动到屏幕中央
+            screen = QApplication.primaryScreen().geometry()
+            window_geometry = self._detached_window.geometry()
+            x = (screen.width() - window_geometry.width()) // 2
+            y = (screen.height() - window_geometry.height()) // 2
+            self._detached_window.move(x, y)
+
+            # 显示独立窗口
+            self._detached_window.show()
+
+            # 更新分离状态
+            self._is_detached = True
+
+            # 更新按钮提示文本
+            self._detached_button._tooltip_text = "合并窗口"
+
+            # 重新绑定MPV播放器到新的视频窗口
+            if self.video_frame and self.player_core:
+                self.player_core.set_window(self.video_frame.winId())
+
+            # 恢复播放状态
+            if self._current_file_path_before_detach and self.player_core:
+                # 重新加载媒体文件
+                self.player_core.set_media(self._current_file_path_before_detach)
+
+                # 应用LUT滤镜（如果已加载）
+                if self.cube_path and self.cube_loaded:
+                    self.player_core.enable_cube_filter(self.cube_path)
+
+                # 恢复播放位置
+                if self._saved_position > 0:
+                    self.player_core.set_position(self._saved_position)
+
+                # 恢复音量
+                self.player_core.set_volume(self._current_volume)
+
+                # 恢复倍速
+                self.set_speed(self._current_speed)
+
+                # 如果之前正在播放，则继续播放
+                if self._saved_playing_state:
+                    self.player_core.play()
+
+            print("[VideoPlayer] 窗口已分离为独立窗口")
+
+        except Exception as e:
+            print(f"[VideoPlayer] 分离窗口失败: {e}")
+            import traceback
+            traceback.print_exc()
+            self._is_detached = False
+
+    def _merge_window(self):
+        """
+        将分离的窗口合并回主窗口
+        继承独立窗口中的所有播放状态
+        """
+        try:
+            if not self._detached_window:
+                return
+
+            # 保存当前播放状态
+            saved_position = self.player_core.position if self.player_core else 0
+            saved_playing_state = self.player_core.is_playing if self.player_core else False
+            saved_file_path = self._current_file_path
+
+            # 暂停播放
+            if self.player_core and saved_playing_state:
+                self.player_core.pause()
+
+            # 先从分离窗口中移除控件，设置父窗口为None，然后重新添加回原布局
+            # 这一步必须在关闭分离窗口之前完成
+
+            # 1. 处理媒体框架 - 从分离窗口中移除并重新设置父窗口
+            self.media_frame.setParent(None)
+            self.media_frame.setParent(self)
+
+            # 2. 找到控制容器并处理
+            control_container = None
+            # 从分离窗口的布局中查找控制容器
+            detached_central = self._detached_window.centralWidget()
+            if detached_central and detached_central.layout():
+                detached_layout = detached_central.layout()
+                for i in range(detached_layout.count()):
+                    item = detached_layout.itemAt(i)
+                    if item and item.widget():
+                        widget = item.widget()
+                        # 控制容器不是媒体框架
+                        if widget != self.media_frame and isinstance(widget, QWidget):
+                            control_container = widget
+                            break
+
+            # 如果找到控制容器，从分离窗口中移除并重新设置父窗口
+            if control_container:
+                control_container.setParent(None)
+                control_container.setParent(self)
+                # 重置控制容器的最大高度限制
+                control_container.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+
+            # 3. 关闭独立窗口（此时控件已经安全移除）
+            self._detached_window.close()
+            self._detached_window = None
+
+            # 4. 将控件重新添加回原布局
+            # 确保媒体框架在原布局中
+            self._original_layout.removeWidget(self.media_frame)
+            self._original_layout.insertWidget(0, self.media_frame, 1)
+
+            # 重新添加控制容器到原布局
+            if control_container:
+                self._original_layout.removeWidget(control_container)
+                self._original_layout.addWidget(control_container)
+
+            # 更新分离状态
+            self._is_detached = False
+
+            # 更新按钮提示文本
+            self._detached_button._tooltip_text = "分离窗口"
+
+            # 重新绑定MPV播放器到原来的视频窗口
+            if self.video_frame and self.player_core:
+                self.player_core.set_window(self.video_frame.winId())
+
+            # 恢复播放状态
+            if saved_file_path and self.player_core:
+                # 重新加载媒体文件
+                self.player_core.set_media(saved_file_path)
+
+                # 应用LUT滤镜（如果已加载）
+                if self.cube_path and self.cube_loaded:
+                    self.player_core.enable_cube_filter(self.cube_path)
+
+                # 恢复播放位置
+                if saved_position > 0:
+                    self.player_core.set_position(saved_position)
+
+                # 恢复音量
+                self.player_core.set_volume(self._current_volume)
+
+                # 恢复倍速
+                self.set_speed(self._current_speed)
+
+                # 如果之前正在播放，则继续播放
+                if saved_playing_state:
+                    self.player_core.play()
+
+            print("[VideoPlayer] 窗口已合并回主窗口")
+
+        except Exception as e:
+            print(f"[VideoPlayer] 合并窗口失败: {e}")
+            import traceback
+            traceback.print_exc()
     
     
