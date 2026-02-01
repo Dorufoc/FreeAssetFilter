@@ -46,18 +46,20 @@ class CustomSettingItem(QWidget):
     input_submitted = pyqtSignal(str)  # 输入框提交信号
     value_changed = pyqtSignal(int)  # 数值条值变化信号
     
-    def __init__(self, parent=None, 
-                 text="", secondary_text="", 
+    def __init__(self, parent=None,
+                 text="", secondary_text="",
                  interaction_type=SWITCH_TYPE,
+                 tooltip_text="",
                  **kwargs):
         """
         初始化设置项控件
-        
+
         Args:
             parent: 父控件
             text: 主文本
             secondary_text: 辅助文本（用于双行模式）
             interaction_type: 交互类型
+            tooltip_text: 悬浮提示文本（用于hover tooltip显示）
             **kwargs: 交互类型相关的参数
                 - 开关类型: initial_value (bool)
                 - 按钮组类型: buttons (list of dict, 每个dict包含text和type)
@@ -65,26 +67,30 @@ class CustomSettingItem(QWidget):
                 - 数值条类型: min_value, max_value, initial_value
         """
         super().__init__(parent)
-        
+
         # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+
         # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
-        
+
         # 从app对象获取全局默认字体大小，确保使用正确的默认值
         self.default_font_size = getattr(app, 'default_font_size', 10)
-        
+
         # 设置基本属性
         self.text = text
         self.secondary_text = secondary_text
         self.interaction_type = interaction_type
+        self._tooltip_text = tooltip_text  # 悬浮提示文本
         self.kwargs = kwargs
-        
+
         # 初始化UI
         self.init_ui()
+
+        # 初始化悬浮提示组件
+        self._init_hover_tooltip()
         
     def init_ui(self):
         """初始化UI组件"""
@@ -471,6 +477,37 @@ class CustomSettingItem(QWidget):
         if self.interaction_type == self.VALUE_BAR_TYPE:
             return self.value_bar.value()
         return 0
+
+    def set_tooltip_text(self, text):
+        """
+        设置悬浮提示文本
+
+        Args:
+            text: 提示文本内容
+        """
+        self._tooltip_text = text
+
+    def get_tooltip_text(self):
+        """
+        获取悬浮提示文本
+
+        Returns:
+            str: 提示文本内容
+        """
+        return self._tooltip_text
+
+    def _init_hover_tooltip(self):
+        """
+        初始化悬浮提示组件
+        为设置项添加hover tooltip支持
+        """
+        # 导入HoverTooltip类
+        from .hover_tooltip import HoverTooltip
+
+        # 创建悬浮提示组件
+        self.hover_tooltip = HoverTooltip(self)
+        # 设置当前控件为监听目标
+        self.hover_tooltip.set_target_widget(self)
 
 
 # 更新 __init__.py 文件，导出新控件

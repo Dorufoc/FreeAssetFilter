@@ -114,8 +114,8 @@ class ModernSettingsWindow(QDialog):
         """
         初始化现代化设置窗口UI
         """
-        self.setMinimumSize(419, 268)
-        self.resize(419, 268)
+        self.setMinimumSize(560, 380)
+        self.resize(560, 380)
 
         self.setStyleSheet(f"""
             QDialog {{ 
@@ -650,7 +650,27 @@ class ModernSettingsWindow(QDialog):
         )
         self.restore_last_path_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.restore_last_path": value}))
         file_selector_layout.addWidget(self.restore_last_path_switch)
-        
+
+        # 触控操作优化
+        self.touch_optimization_switch = CustomSettingItem(
+            text="触控操作优化",
+            secondary_text="启用后可以长按卡片拖拽到文件存储池和统一预览器实现对应操作",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("file_selector.touch_optimization", True)
+        )
+        self.touch_optimization_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.touch_optimization": value}))
+        file_selector_layout.addWidget(self.touch_optimization_switch)
+
+        # 鼠标按钮交换
+        self.mouse_buttons_swap_switch = CustomSettingItem(
+            text="鼠标按钮交换",
+            secondary_text="启用后交换鼠标左键和右键的预览/选中的功能",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+        )
+        self.mouse_buttons_swap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.mouse_buttons_swap": value}))
+        file_selector_layout.addWidget(self.mouse_buttons_swap_switch)
+
         # 返回上级鼠标快捷键
         self.return_shortcut_setting = CustomSettingItem(
             text="返回上级鼠标快捷键",

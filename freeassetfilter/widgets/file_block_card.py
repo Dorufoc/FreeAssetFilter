@@ -427,18 +427,59 @@ class FileBlockCard(QWidget):
         """设置事件过滤器"""
         self.installEventFilter(self)
     
+    def _is_touch_optimization_enabled(self):
+        """
+        检查触控操作优化是否启用
+
+        Returns:
+            bool: 触控操作优化是否启用
+        """
+        try:
+            settings_manager = SettingsManager()
+            return settings_manager.get_setting("file_selector.touch_optimization", True)
+        except Exception:
+            return True
+
+    def _is_mouse_buttons_swapped(self):
+        """
+        检查鼠标按钮是否交换
+
+        Returns:
+            bool: 鼠标按钮是否交换
+        """
+        try:
+            settings_manager = SettingsManager()
+            return settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+        except Exception:
+            return False
+
     def eventFilter(self, obj, event):
         """事件过滤器，处理鼠标事件"""
         if obj == self:
+            # 检查鼠标按钮是否交换
+            buttons_swapped = self._is_mouse_buttons_swapped()
+
             if event.type() == QEvent.MouseButtonPress:
                 if event.button() == Qt.LeftButton:
+                    # 物理左键按下
                     self._touch_start_pos = event.pos()
                     self._is_touch_dragging = False
-                    # 启动长按定时器
-                    self._long_press_timer.start(self._long_press_duration)
+                    # 只有在触控操作优化开启时才启动长按定时器
+                    if self._is_touch_optimization_enabled():
+                        self._long_press_timer.start(self._long_press_duration)
                     self._drag_start_pos = event.globalPos()
                 elif event.button() == Qt.RightButton:
-                    self._on_right_click(event)
+                    # 物理右键按下
+                    if buttons_swapped:
+                        # 交换时，物理右键执行原左键功能（预览）
+                        self._touch_start_pos = event.pos()
+                        self._is_touch_dragging = False
+                        if self._is_touch_optimization_enabled():
+                            self._long_press_timer.start(self._long_press_duration)
+                        self._drag_start_pos = event.globalPos()
+                    else:
+                        # 不交换时，物理右键执行原右键功能（选择/取消选择）
+                        self._on_right_click(event)
                 else:
                     return False
                 return True
@@ -458,24 +499,56 @@ class FileBlockCard(QWidget):
                 return False
             elif event.type() == QEvent.MouseButtonRelease:
                 if event.button() == Qt.LeftButton:
+                    # 物理左键释放
                     if self._is_dragging:
                         # 拖拽结束，处理放置逻辑
                         self._end_drag(event.globalPos())
                     elif self._touch_start_pos is not None and not self._is_touch_dragging:
                         # 如果不是拖拽，处理点击
-                        self._on_click(event)
+                        if buttons_swapped:
+                            # 交换时，物理左键执行原右键功能（选择/取消选择）
+                            self._on_right_click(event)
+                        else:
+                            # 不交换时，物理左键执行原左键功能（预览）
+                            self._on_click(event)
                     # 停止长按定时器
                     self._long_press_timer.stop()
                     self._is_long_pressing = False
                     self._touch_start_pos = None
                     self._is_touch_dragging = False
+                elif event.button() == Qt.RightButton:
+                    # 物理右键释放
+                    if buttons_swapped:
+                        # 交换时，物理右键执行原左键释放逻辑（预览）
+                        if self._is_dragging:
+                            self._end_drag(event.globalPos())
+                        elif self._touch_start_pos is not None and not self._is_touch_dragging:
+                            self._on_click(event)
+                        self._long_press_timer.stop()
+                        self._is_long_pressing = False
+                        self._touch_start_pos = None
+                        self._is_touch_dragging = False
+                    # 不交换时，物理右键已在press时处理，release时不做额外操作
                 return True
             elif event.type() == QEvent.MouseButtonDblClick:
                 if event.button() == Qt.LeftButton:
+                    # 物理左键双击
                     # 双击时取消长按
                     self._long_press_timer.stop()
                     self._is_long_pressing = False
-                    self._on_double_click(event)
+                    if buttons_swapped:
+                        # 交换时，物理左键双击执行原右键双击逻辑（选择/取消选择）
+                        self._on_right_click(event)
+                    else:
+                        # 不交换时，物理左键双击执行原左键双击逻辑（预览）
+                        self._on_double_click(event)
+                elif event.button() == Qt.RightButton:
+                    # 物理右键双击
+                    if buttons_swapped:
+                        # 交换时，物理右键双击执行原左键双击逻辑（预览）
+                        self._long_press_timer.stop()
+                        self._is_long_pressing = False
+                        self._on_double_click(event)
                 return True
             elif event.type() == QEvent.Enter:
                 if not self._is_selected and not self._is_dragging:

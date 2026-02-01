@@ -398,7 +398,7 @@ class HoverTooltip(QWidget):
         if direct_widget:
             # 导入CustomButton类
             from .button_widgets import CustomButton
-            
+
             # 检查是否是CustomButton
             if isinstance(direct_widget, CustomButton):
                 # 如果有自定义的悬浮信息文本，优先使用
@@ -427,13 +427,32 @@ class HoverTooltip(QWidget):
                         "info.svg": "信息",
                         "trash.svg": "清空所有项目"
                     }
-                    
+
                     # 提取SVG文件名
                     import os
                     svg_filename = os.path.basename(direct_widget._icon_path)
-                    
+
                     # 返回对应的文字描述
                     return svg_tooltip_map.get(svg_filename, svg_filename)
+
+            # 特殊处理CustomSettingItem组件
+            from .setting_widgets import CustomSettingItem
+            if isinstance(direct_widget, CustomSettingItem) or isinstance(direct_widget.parent(), CustomSettingItem):
+                # 获取CustomSettingItem实例
+                setting_item = direct_widget if isinstance(direct_widget, CustomSettingItem) else direct_widget.parent()
+                # 优先使用自定义的tooltip文本
+                if setting_item._tooltip_text:
+                    return setting_item._tooltip_text
+                # 否则返回设置名称和介绍信息
+                tooltip_parts = []
+                if setting_item.text:
+                    tooltip_parts.append(f"{setting_item.text}")
+                if setting_item.secondary_text:
+                    tooltip_parts.append(f"{setting_item.secondary_text}")
+                if tooltip_parts:
+                    return "\n".join(tooltip_parts)
+                return ""
+
             # 特殊处理CustomFileHorizontalCard组件
             from .file_horizontal_card import CustomFileHorizontalCard
             if isinstance(direct_widget, CustomFileHorizontalCard) or isinstance(direct_widget.parent(), CustomFileHorizontalCard):
