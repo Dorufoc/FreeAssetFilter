@@ -18,10 +18,12 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import sys
 import os
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QScrollArea, QGroupBox, QGridLayout,
-    QMenu, QMessageBox
+    QMessageBox
 )
+
+from freeassetfilter.widgets.D_more_menu import D_MoreMenu
 from PyQt5.QtGui import (
     QImage, QPixmap, QPainter, QPen, QColor, QCursor,
     QFont, QIcon
@@ -579,28 +581,40 @@ class ImageWidget(QWidget):
         右键菜单事件
         """
         try:
-            menu = QMenu()
-            
-            # 复制色度值
-            copy_color_action = menu.addAction("复制色度值")
-            copy_color_action.triggered.connect(self.copy_color_value)
-            
-            # 复制文件路径
+            if not hasattr(self, '_context_menu'):
+                self._context_menu = D_MoreMenu(parent=None)
+                self._context_menu.itemClicked.connect(self._on_context_menu_clicked)
+
+            # 构建菜单项
+            items = [{"text": "复制色度值", "data": "copy_color"}]
+
             if self.current_file_path:
-                copy_path_action = menu.addAction("复制文件路径")
-                copy_path_action.triggered.connect(self.copy_file_path)
-                
-                # 复制文件名
-                copy_name_action = menu.addAction("复制文件名")
-                copy_name_action.triggered.connect(self.copy_file_name)
-                
-                # 复制文件本身（这里只是提示，实际复制需要更复杂的实现）
-                copy_file_action = menu.addAction("复制文件")
-                copy_file_action.triggered.connect(self.copy_file)
-            
-            menu.exec_(event.globalPos())
+                items.extend([
+                    {"text": "复制文件路径", "data": "copy_path"},
+                    {"text": "复制文件名", "data": "copy_name"},
+                    {"text": "复制文件", "data": "copy_file"},
+                ])
+
+            self._context_menu.set_items(items)
+            self._context_menu.popup(event.globalPos())
         except Exception as e:
             print(f"显示右键菜单时出错: {e}")
+
+    def _on_context_menu_clicked(self, data):
+        """
+        右键菜单项点击事件处理
+
+        Args:
+            data: 菜单项数据
+        """
+        if data == "copy_color":
+            self.copy_color_value()
+        elif data == "copy_path":
+            self.copy_file_path()
+        elif data == "copy_name":
+            self.copy_file_name()
+        elif data == "copy_file":
+            self.copy_file()
     
     def copy_color_value(self):
         """

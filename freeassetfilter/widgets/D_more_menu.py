@@ -67,7 +67,8 @@ class D_MoreMenuItem(QPushButton):
         """应用样式表"""
         font_size = int(self.global_font.pointSize() * self.dpi_scale)
         # 圆角大小与外层一致
-        border_radius = int(8 * self.dpi_scale)
+        border_radius = int(4 * self.dpi_scale)
+        border_radius_item = 0
         padding_h = int(8 * self.dpi_scale)
         padding_v = int(6 * self.dpi_scale)
         # hover效果比内容小一圈的边距（更小）
@@ -90,7 +91,7 @@ class D_MoreMenuItem(QPushButton):
                 padding: {padding_v}px {padding_h}px;
                 background-color: transparent;
                 border: none;
-                border-radius: {border_radius}px;
+                border-radius: {border_radius_item}px;
                 text-align: left;
             }}
             QPushButton:hover {{
@@ -158,9 +159,11 @@ class D_MoreMenu(QWidget):
 
         self._bg_color = QColor(255, 255, 255)
         self._shadow_color = QColor(0, 0, 0, 30)
-        self._border_radius = int(8 * self.dpi_scale)
+        self._border_radius = int(4 * self.dpi_scale)
         self._shadow_radius = int(4 * self.dpi_scale)
         self._padding = int(4 * self.dpi_scale)
+        self._normal_color = QColor(224, 224, 224)  # 默认normal颜色
+        self._border_width = int(1 * self.dpi_scale)  # 1dx边框宽度
 
         self._content_widget = None
         self._list_layout = None
@@ -173,6 +176,8 @@ class D_MoreMenu(QWidget):
         if self.settings_manager:
             base_color_str = self.settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
             self._bg_color = QColor(base_color_str)
+            normal_color_str = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
+            self._normal_color = QColor(normal_color_str)
 
     def _init_ui(self):
         """初始化UI组件"""
@@ -189,7 +194,13 @@ class D_MoreMenu(QWidget):
         main_layout.setSpacing(0)
 
         self._content_widget = QWidget()
-        self._content_widget.setStyleSheet(f"background-color: {self._bg_color.name()}; border-radius: {self._border_radius}px;")
+        self._content_widget.setStyleSheet(f"""
+            QWidget {{
+                background-color: {self._bg_color.name()};
+                border-radius: {self._border_radius}px;
+                border: {self._border_width}px solid {self._normal_color.name()};
+            }}
+        """)
 
         self._list_layout = QVBoxLayout(self._content_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
