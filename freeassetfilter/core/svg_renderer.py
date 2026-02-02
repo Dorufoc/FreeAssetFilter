@@ -72,15 +72,16 @@ class SvgRenderer:
         return SvgRenderer._cached_colors.get("secondary_color", "#333333")
     
     @staticmethod
-    def _replace_svg_colors(svg_content):
+    def _replace_svg_colors(svg_content, invert_white_to_black=False):
         """
         预处理SVG内容，根据应用设置替换颜色值
         - 将所有#000000颜色值替换为应用设置中的secondary_color
-        - 将所有#FFFFFF颜色值替换为应用设置中的base_color
+        - 将所有#FFFFFF颜色值替换为应用设置中的base_color，或在invert_white_to_black=True时替换为#000000
         - 将所有#0a59f7颜色值替换为应用设置中的accent_color
         
         Args:
             svg_content (str): SVG内容字符串
+            invert_white_to_black (bool): 是否将#FFFFFF转换为#000000（用于某些深色模式场景），默认False
             
         Returns:
             str: 预处理后的SVG内容字符串
@@ -99,21 +100,50 @@ class SvgRenderer:
             processed_svg = re.sub(r'<path\b(?!.*\bfill\s*=)(?!.*\bclass\s*=)', r'<path fill="#000000"', processed_svg, flags=re.IGNORECASE)
             
             # 2. 处理stroke属性中的颜色（如果有）
-            processed_svg = re.sub(r'stroke="#FFFFFF"', f'stroke="{base_color}"', processed_svg, flags=re.IGNORECASE)
-            processed_svg = re.sub(r'stroke="#FFF"', f'stroke="{base_color}"', processed_svg, flags=re.IGNORECASE)
-            processed_svg = re.sub(r'stroke="#000000"', f'stroke="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
-            processed_svg = re.sub(r'stroke="#000"', f'stroke="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
+            # 先处理#FFFFFF和#FFF
+            if invert_white_to_black:
+                # 将#FFFFFF和#FFF转换为#000000
+                processed_svg = re.sub(r'stroke="#FFFFFF"', 'stroke="#000000"', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'stroke="#FFF"', 'stroke="#000000"', processed_svg, flags=re.IGNORECASE)
+                # 在反转模式下，不将#000000转换为secondary_color，保留为#000000
+            else:
+                # #FFFFFF -> base_color
+                processed_svg = re.sub(r'stroke="#FFFFFF"', f'stroke="{base_color}"', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'stroke="#FFF"', f'stroke="{base_color}"', processed_svg, flags=re.IGNORECASE)
+                # 再处理#000000和#000，替换为secondary_color
+                processed_svg = re.sub(r'stroke="#000000"', f'stroke="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'stroke="#000"', f'stroke="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
             
-            # 3. 使用更精确的正则表达式处理fill属性中的颜色
-            # 先处理#FFFFFF和#FFF，替换为base_color
-            processed_svg = re.sub(r'fill="#FFFFFF"', f'fill="{base_color}"', processed_svg, flags=re.IGNORECASE)
-            processed_svg = re.sub(r'fill="#FFF"', f'fill="{base_color}"', processed_svg, flags=re.IGNORECASE)
+            # 3. 处理fill属性中的颜色
+            # 先处理#FFFFFF和#FFF
+            if invert_white_to_black:
+                # 将#FFFFFF和#FFF转换为#000000
+                processed_svg = re.sub(r'fill="#FFFFFF"', 'fill="#000000"', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'fill="#FFF"', 'fill="#000000"', processed_svg, flags=re.IGNORECASE)
+                # 在反转模式下，不将#000000转换为secondary_color，保留为#000000
+            else:
+                # #FFFFFF -> base_color
+                processed_svg = re.sub(r'fill="#FFFFFF"', f'fill="{base_color}"', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'fill="#FFF"', f'fill="{base_color}"', processed_svg, flags=re.IGNORECASE)
+                # 再处理#000000和#000，替换为secondary_color
+                processed_svg = re.sub(r'fill="#000000"', f'fill="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'fill="#000"', f'fill="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
             
-            # 再处理#000000和#000，替换为secondary_color
-            processed_svg = re.sub(r'fill="#000000"', f'fill="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
-            processed_svg = re.sub(r'fill="#000"', f'fill="{secondary_color}"', processed_svg, flags=re.IGNORECASE)
+            # 4. 处理<style>标签中的CSS类颜色定义（如 .b{fill:#fff;}）
+            if invert_white_to_black:
+                # 在反转模式下，将CSS类中的#FFFFFF和#FFF替换为#000000
+                processed_svg = re.sub(r'(fill:\s*)#FFFFFF', r'\1#000000', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'(fill:\s*)#FFF', r'\1#000000', processed_svg, flags=re.IGNORECASE)
+                # 在反转模式下，不将#000000转换为secondary_color，保留为#000000
+            else:
+                # 正常模式下，将CSS类中的#FFFFFF和#FFF替换为base_color
+                processed_svg = re.sub(r'(fill:\s*)#FFFFFF', f'fill: {base_color}', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'(fill:\s*)#FFF', f'fill: {base_color}', processed_svg, flags=re.IGNORECASE)
+                # 将CSS类中的#000000替换为secondary_color
+                processed_svg = re.sub(r'(fill:\s*)#000000', f'fill: {secondary_color}', processed_svg, flags=re.IGNORECASE)
+                processed_svg = re.sub(r'(fill:\s*)#000\b', f'fill: {secondary_color}', processed_svg, flags=re.IGNORECASE)
             
-            # 4. 将所有#0a59f7颜色值替换为accent_color
+            # 5. 将所有#0a59f7颜色值替换为accent_color
             # 考虑大小写不敏感的情况，如#0A59F7
             processed_svg = re.sub(r'#0a59f7', accent_color, processed_svg, flags=re.IGNORECASE)
             
