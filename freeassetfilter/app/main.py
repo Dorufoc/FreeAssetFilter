@@ -1100,46 +1100,47 @@ class FreeAssetFilterApp(QMainWindow):
     
     def check_and_restore_backup(self):
         """
-        检查是否存在备份文件，并询问用户是否要恢复上次的文件存储池内容
+        检查是否存在备份文件，并根据设置决定是否自动恢复或询问用户
         注意：只恢复文件存储池，文件选择器的状态由其他模块处理
         """
-        # 导入自定义消息框
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
         import os
         import json
-        
-        # 备份文件路径
+
         backup_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'staging_pool_backup.json')
-        
-        # 检查备份文件是否存在
+
         if os.path.exists(backup_file):
-            # 读取备份文件，检查是否有内容
             with open(backup_file, 'r', encoding='utf-8') as f:
                 backup_data = json.load(f)
-            
-            # 检查备份数据格式和内容
+
             items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
-            
+
             if items:
-                # 使用自定义消息框询问用户是否恢复
-                confirm_msg = CustomMessageBox(self)
-                confirm_msg.set_title("恢复上次选中内容")
-                confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
-                confirm_msg.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
-                
-                # 记录确认结果
-                is_confirmed = False
-                
-                def on_confirm_clicked(button_index):
-                    nonlocal is_confirmed
-                    is_confirmed = (button_index == 0)  # 0表示确定按钮
-                    confirm_msg.close()
-                
-                confirm_msg.buttonClicked.connect(on_confirm_clicked)
-                confirm_msg.exec_()
-                
-                if is_confirmed:
+                auto_restore = True
+                app = QApplication.instance()
+                if hasattr(app, 'settings_manager'):
+                    auto_restore = app.settings_manager.get_setting("file_staging.auto_restore_records", True)
+
+                if auto_restore:
                     self.restore_backup(backup_data)
+                else:
+                    confirm_msg = CustomMessageBox(self)
+                    confirm_msg.set_title("恢复上次选中内容")
+                    confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
+                    confirm_msg.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
+
+                    is_confirmed = False
+
+                    def on_confirm_clicked(button_index):
+                        nonlocal is_confirmed
+                        is_confirmed = (button_index == 0)
+                        confirm_msg.close()
+
+                    confirm_msg.buttonClicked.connect(on_confirm_clicked)
+                    confirm_msg.exec_()
+
+                    if is_confirmed:
+                        self.restore_backup(backup_data)
     
     def restore_backup(self, backup_data):
         """

@@ -671,22 +671,6 @@ class ModernSettingsWindow(QDialog):
         self.mouse_buttons_swap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.mouse_buttons_swap": value}))
         file_selector_layout.addWidget(self.mouse_buttons_swap_switch)
 
-        # 返回上级鼠标快捷键
-        self.return_shortcut_setting = CustomSettingItem(
-            text="返回上级鼠标快捷键",
-            secondary_text="设置返回上级目录的鼠标操作快捷键",
-            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
-            buttons=[{"text": "设置", "type": "primary"}]
-        )
-
-        # 快捷键设置按钮点击处理
-        def on_return_shortcut_clicked(button_index):
-            # 在实际应用中，这里应该打开快捷键设置界面
-            # 暂时使用默认设置
-            self.current_settings.update({"file_selector.return_shortcut": "middle_click"})
-        self.return_shortcut_setting.button_clicked.connect(on_return_shortcut_clicked)
-        file_selector_layout.addWidget(self.return_shortcut_setting)
-
         self.scroll_layout.addWidget(file_selector_group)
 
         # 实验性功能组
@@ -885,33 +869,6 @@ class ModernSettingsWindow(QDialog):
 
         self.audio_background_style_setting.button_clicked.connect(on_background_style_button_clicked)
         theme_layout.addWidget(self.audio_background_style_setting)
-
-        # 流体渐变主题选择（仅在流体动画样式下有效）
-        self.fluid_theme_setting = CustomSettingItem(
-            text="流体渐变主题",
-            secondary_text="选择流体动画的主题预设（仅在流体动画样式下生效）",
-            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
-            buttons=[{"text": self.settings_manager.get_setting("player.fluid_gradient_theme", "sunset"), "type": "primary"}]
-        )
-
-        fluid_themes = ["sunset", "ocean", "aurora", "accent"]
-        current_theme = self.settings_manager.get_setting("player.fluid_gradient_theme", "sunset")
-
-        def on_fluid_theme_button_clicked(button_index):
-            self.fluid_theme_dropdown = CustomDropdownMenu(self, position="bottom")
-            self.fluid_theme_dropdown.set_items(fluid_themes, default_item=current_theme)
-
-            def on_theme_item_clicked(selected_theme):
-                self.current_settings.update({"player.fluid_gradient_theme": selected_theme})
-                self.fluid_theme_setting.button_group[0].setText(selected_theme)
-
-            self.fluid_theme_dropdown.itemClicked.connect(on_theme_item_clicked)
-            button = self.fluid_theme_setting.button_group[button_index]
-            self.fluid_theme_dropdown.set_target_button(button)
-            self.fluid_theme_dropdown.show_menu()
-
-        self.fluid_theme_setting.button_clicked.connect(on_fluid_theme_button_clicked)
-        theme_layout.addWidget(self.fluid_theme_setting)
 
         self.scroll_layout.addWidget(theme_group)
 

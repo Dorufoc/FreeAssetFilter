@@ -388,7 +388,7 @@ class CustomFileHorizontalCard(QWidget):
 
     def refresh_thumbnail(self):
         """刷新缩略图显示"""
-        print(f"[DEBUG] CustomFileHorizontalCard.refresh_thumbnail 被调用: {self._file_path}")
+        #print(f"[DEBUG] CustomFileHorizontalCard.refresh_thumbnail 被调用: {self._file_path}")
         self._set_file_icon()
 
     def _load_file_info(self):
@@ -461,11 +461,11 @@ class CustomFileHorizontalCard(QWidget):
             # 获取当前组件宽度作为参考（减去图标和边距）
             component_width = self.width()
             # 调试信息：打印组件宽度
-            print(f"_load_file_info called, component_width: {component_width}")
+            #print(f"_load_file_info called, component_width: {component_width}")
             if component_width <= 0:
                 # 如果组件宽度还未计算，使用一个默认值
                 component_width = int(87.5 * self.dpi_scale)
-                print(f"Using default component_width: {component_width}")
+                #print(f"Using default component_width: {component_width}")
 
             # 文件名截断处理
             name_font_metrics = QFontMetrics(self.name_label.font())
@@ -473,13 +473,13 @@ class CustomFileHorizontalCard(QWidget):
             icon_margin = int(10 * self.dpi_scale)
             available_width = component_width - icon_margin  # 图标宽度 + 边距
             # 调试信息：打印可用宽度计算
-            print(f"icon_margin: {icon_margin}, available_width: {available_width}")
+            #print(f"icon_margin: {icon_margin}, available_width: {available_width}")
             if available_width < 0:
                 available_width = 0
-                print(f"available_width < 0, setting to 0")
+                #print(f"available_width < 0, setting to 0")
 
             # 调试信息：打印文字截断前的完整文本
-            print(f"Original file name: '{file_name}'")
+            #print(f"Original file name: '{file_name}'")
 
             elided_file_name = name_font_metrics.elidedText(file_name, Qt.ElideRight, available_width)
 
@@ -487,13 +487,13 @@ class CustomFileHorizontalCard(QWidget):
             info_text = f"{file_path}  {file_size}"
 
             # 调试信息：打印文字截断前的完整文本
-            print(f"Original info text: '{info_text}'")
+            #print(f"Original info text: '{info_text}'")
             info_font_metrics = QFontMetrics(self.info_label.font())
             elided_info_text = info_font_metrics.elidedText(info_text, Qt.ElideRight, available_width)
 
             # 调试信息：打印截断后的文本
-            print(f"Elided file name: '{elided_file_name}'")
-            print(f"Elided info text: '{elided_info_text}'")
+            #print(f"Elided file name: '{elided_file_name}'")
+            #print(f"Elided info text: '{elided_info_text}'")
 
             # 恢复默认样式，使用secondary_color
             self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
@@ -592,8 +592,8 @@ class CustomFileHorizontalCard(QWidget):
             is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
 
-            print(f"[DEBUG] _set_file_icon: file={self._file_path}, suffix={suffix}, is_photo={is_photo}, is_video={is_video}")
-            print(f"[DEBUG] thumbnail_path={thumbnail_path}, exists={os.path.exists(thumbnail_path)}")
+            #print(f"[DEBUG] _set_file_icon: file={self._file_path}, suffix={suffix}, is_photo={is_photo}, is_video={is_video}")
+            #print(f"[DEBUG] thumbnail_path={thumbnail_path}, exists={os.path.exists(thumbnail_path)}")
 
             use_thumbnail = False
             if (is_photo or is_video) and os.path.exists(thumbnail_path):
@@ -603,10 +603,10 @@ class CustomFileHorizontalCard(QWidget):
                 scaled_icon_size = int(40 * self.dpi_scale)
                 from PyQt5.QtGui import QImage
                 image = QImage(thumbnail_path)
-                print(f"[DEBUG] QImage加载结果: isNull={image.isNull()}")
+                #print(f"[DEBUG] QImage加载结果: isNull={image.isNull()}")
                 if not image.isNull():
                     pixmap = QPixmap.fromImage(image)
-                    print(f"[DEBUG] 成功加载缩略图: {thumbnail_path}")
+                    #print(f"[DEBUG] 成功加载缩略图: {thumbnail_path}")
                     self._set_icon_pixmap(pixmap, scaled_icon_size)
                     return
 
@@ -998,7 +998,7 @@ class CustomFileHorizontalCard(QWidget):
         """处理大小变化事件，重新计算文字截断"""
         super().resizeEvent(event)
         # 调试信息：打印卡片宽度
-        print(f"resizeEvent triggered, card width: {self.width()}")
+        #print(f"resizeEvent triggered, card width: {self.width()}")
         # 当卡片尺寸改变时，重新计算文字的截断显示
         if self._file_path:
             self._load_file_info()
