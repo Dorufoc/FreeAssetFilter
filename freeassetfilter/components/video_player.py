@@ -2378,6 +2378,7 @@ class VideoPlayer(QWidget):
 
                     # 创建中央部件
                     central_widget = QWidget()
+                    central_widget.setStyleSheet("background-color: #000000;")
                     self.setCentralWidget(central_widget)
                     layout = QVBoxLayout(central_widget)
                     layout.setContentsMargins(0, 0, 0, 0)
@@ -2394,6 +2395,13 @@ class VideoPlayer(QWidget):
                             widget = item.widget()
                             # 检查是否是控制容器（通过样式或类型判断）
                             if isinstance(widget, QWidget) and widget != self.video_player.media_frame:
+                                # 同步控制容器的背景颜色与主窗口一致
+                                app = QApplication.instance()
+                                if hasattr(app, 'settings_manager'):
+                                    background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+                                else:
+                                    background_color = "#2D2D2D"
+                                widget.setStyleSheet(f"background-color: {background_color}; border: none; border-radius: {int(17.5 * self.video_player.dpi_scale)}px {int(17.5 * self.video_player.dpi_scale)}px {int(17.5 * self.video_player.dpi_scale)}px {int(17.5 * self.video_player.dpi_scale)}px;")
                                 # 设置控制容器的最大高度，防止被拉伸
                                 widget.setMaximumHeight(int(60 * self.video_player.dpi_scale))
                                 layout.addWidget(widget, 0)  # 拉伸因子为0，不随窗口拉伸
@@ -2404,6 +2412,42 @@ class VideoPlayer(QWidget):
                     self.video_frame = self.video_player.media_frame
                     self.video_frame.setMouseTracking(True)
                     self.video_frame.mouseDoubleClickEvent = self._on_video_double_click
+
+                    # 安装事件过滤器，监控焦点变化
+                    self.installEventFilter(self)
+
+                def eventFilter(self, obj, event):
+                    """事件过滤器 - 确保窗口始终保持活跃状态"""
+                    if obj == self:
+                        if event.type() == event.WindowDeactivate:
+                            # 窗口失去焦点时，延迟重新激活
+                            from PyQt5.QtCore import QTimer
+                            QTimer.singleShot(100, self._ensure_focus)
+                        elif event.type() == event.WindowActivate:
+                            # 窗口获得焦点时，确保在最前
+                            self._ensure_on_top()
+                    return super().eventFilter(obj, event)
+
+                def _ensure_focus(self):
+                    """确保分离窗口获得焦点"""
+                    try:
+                        if self.isVisible() and self.video_player._is_detached:
+                            self.raise_()
+                            self.activateWindow()
+                            self._ensure_on_top()
+                    except Exception as e:
+                        print(f"[DetachedWindow] 确保焦点失败: {e}")
+
+                def _ensure_on_top(self):
+                    """确保窗口在最前（使用Win32 API）"""
+                    try:
+                        import ctypes
+                        hwnd = int(self.winId())
+                        # SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW = 0x0001 | 0x0002 | 0x0040
+                        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0043)
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    except Exception as e:
+                        print(f"[DetachedWindow] 置顶失败: {e}")
 
                 def _on_video_double_click(self, event):
                     """双击视频区域切换全屏/退出全屏"""
@@ -2432,7 +2476,21 @@ class VideoPlayer(QWidget):
 
                 def closeEvent(self, event):
                     """窗口关闭时合并回主窗口"""
-                    self.video_player._merge_window()
+                    # 标记正在关闭，防止递归调用
+                    if hasattr(self, '_is_closing') and self._is_closing:
+                        event.accept()
+                        return
+                    self._is_closing = True
+
+                    # 先断开事件过滤器，防止在关闭过程中触发事件
+                    self.removeEventFilter(self)
+
+                    # 通知播放器合并窗口（会进行控件转移和窗口清理）
+                    self.video_player._merge_from_window()
+
+                    # 确保窗口被完全销毁
+                    self.deleteLater()
+
                     event.accept()
 
                 def resizeEvent(self, event):
@@ -2490,6 +2548,91 @@ class VideoPlayer(QWidget):
             traceback.print_exc()
             self._is_detached = False
 
+    def _merge_from_window(self):
+        """
+        从分离窗口中合并回主窗口
+        由分离窗口的closeEvent调用，不执行窗口关闭操作
+        """
+        try:
+            if not self._detached_window:
+                return
+
+            # 保存当前播放状态
+            saved_position = self.player_core.position if self.player_core else 0
+            saved_playing_state = self.player_core.is_playing if self.player_core else False
+            saved_file_path = self._current_file_path
+
+            # 暂停播放
+            if self.player_core and saved_playing_state:
+                self.player_core.pause()
+
+            # 先从分离窗口中移除控件，设置父窗口为None，然后重新添加回原布局
+
+            # 1. 处理媒体框架 - 从分离窗口中移除并重新设置父窗口
+            self.media_frame.setParent(None)
+            self.media_frame.setParent(self)
+
+            # 2. 找到控制容器并处理
+            control_container = None
+            # 从分离窗口的布局中查找控制容器
+            detached_central = self._detached_window.centralWidget()
+            if detached_central and detached_central.layout():
+                detached_layout = detached_central.layout()
+                for i in range(detached_layout.count()):
+                    item = detached_layout.itemAt(i)
+                    if item and item.widget():
+                        widget = item.widget()
+                        # 控制容器不是媒体框架
+                        if widget != self.media_frame and isinstance(widget, QWidget):
+                            control_container = widget
+                            break
+
+            # 如果找到控制容器，从分离窗口中移除并重新设置父窗口
+            if control_container:
+                control_container.setParent(None)
+                control_container.setParent(self)
+                # 恢复控制容器的原始样式表（透明背景）
+                control_container.setStyleSheet("background-color: transparent; border: none; border-radius: 17.5px 17.5px 17.5px 17.5px;")
+                # 重置控制容器的最大高度限制
+                control_container.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+
+            # 3. 将分离窗口引用置为None（在closeEvent中会调用deleteLater）
+            self._detached_window = None
+
+            # 4. 将控件重新添加回原布局
+            # 确保媒体框架在原布局中
+            self._original_layout.removeWidget(self.media_frame)
+            self._original_layout.insertWidget(0, self.media_frame, 1)
+
+            # 重新添加控制容器到原布局
+            if control_container:
+                self._original_layout.removeWidget(control_container)
+                self._original_layout.addWidget(control_container)
+
+            # 更新分离状态
+            self._is_detached = False
+
+            # 更新按钮图标为maxsize，提示文本改为"分离窗口"
+            self._detached_button._icon_path = self._maxsize_icon_path
+            self._detached_button._render_icon()
+            self._detached_button.update()
+            self._detached_button._tooltip_text = "分离窗口"
+
+            # 重新绑定MPV播放器到原来的视频窗口（只切换窗口，不重新加载媒体）
+            if self.video_frame and self.player_core:
+                # 切换窗口句柄
+                self.player_core.set_window(self.video_frame.winId())
+                # 根据保存的播放状态恢复（如果之前是播放状态则恢复播放）
+                if saved_playing_state:
+                    self.player_core.play()
+
+            print("[VideoPlayer] 窗口已合并回主窗口")
+
+        except Exception as e:
+            print(f"[VideoPlayer] 从分离窗口合并失败: {e}")
+            import traceback
+            traceback.print_exc()
+
     def _merge_window(self):
         """
         将分离的窗口合并回主窗口
@@ -2534,6 +2677,8 @@ class VideoPlayer(QWidget):
             if control_container:
                 control_container.setParent(None)
                 control_container.setParent(self)
+                # 恢复控制容器的原始样式表（透明背景）
+                control_container.setStyleSheet("background-color: transparent; border: none; border-radius: 17.5px 17.5px 17.5px 17.5px;")
                 # 重置控制容器的最大高度限制
                 control_container.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
 
