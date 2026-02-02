@@ -24,6 +24,8 @@ import hashlib
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
+from freeassetfilter.widgets.D_more_menu import D_MoreMenu
+
 # 用于提取EXIF信息的库
 try:
     import exifread
@@ -1705,102 +1707,67 @@ class FileInfoBrowser:
     def _connect_context_menu(self, widget, key):
         """
         连接控件的右键菜单信号
-        
+
         Args:
             widget: 要连接右键菜单的控件
             key: 信息键
         """
         def show_menu(point):
             """显示右键菜单"""
-            from PyQt5.QtWidgets import QMenu, QAction
             from PyQt5.QtGui import QCursor
-            
-            menu = QMenu(widget)
-            
-            # 设置右键菜单样式
-            scaled_padding = int(8 * self.dpi_scale)
-            scaled_padding_right = int(30 * self.dpi_scale)
-            menu.setStyleSheet(f"""
-                QMenu {{
-                    background-color: white;
-                    color: black;
-                    border: 1px solid #ccc;
-                    font-size: {int(self.global_font.pointSize() * self.dpi_scale * 1.9)}px;
-                    font-family: '{self.global_font.family()}';
-                }}
-                QMenu::item {{
-                    padding: {scaled_padding}px {scaled_padding_right}px;
-                }}
-                QMenu::item:selected {{
-                    background-color: #1E90FF; /* 蓝色背景 */
-                    color: white; /* 白色文字 */
-                }}
-            """)
-            
-            # 获取当前值
-            value = self.basic_info_labels[key].text() if key in self.basic_info_labels else ""
-            
-            # 复制当前信息
-            copy_current_action = QAction("复制当前信息", widget)
-            copy_current_action.triggered.connect(lambda: self._copy_current_info(key, value))
-            menu.addAction(copy_current_action)
-            
-            # 复制全部信息
-            copy_all_action = QAction("复制全部信息", widget)
-            copy_all_action.triggered.connect(self._copy_all_info)
-            menu.addAction(copy_all_action)
-            
-            # 显示右键菜单
-            menu.popup(QCursor.pos())
-        
+            from PyQt5.QtWidgets import QApplication
+
+            if not hasattr(self, '_context_menu'):
+                app = QApplication.instance()
+                self._context_menu = D_MoreMenu(parent=None)
+                self._context_menu.set_items([
+                    {"text": "复制当前信息", "data": "copy_current"},
+                    {"text": "复制全部信息", "data": "copy_all"},
+                ])
+                self._context_menu.itemClicked.connect(self._on_context_menu_clicked)
+
+            self._context_menu._current_key = key
+            self._context_menu._current_value = self.basic_info_labels[key].text() if key in self.basic_info_labels else ""
+            self._context_menu.popup(QCursor.pos())
+
         widget.customContextMenuRequested.connect(show_menu)
+
+    def _on_context_menu_clicked(self, data):
+        """
+        右键菜单项点击事件处理
+
+        Args:
+            data: 菜单项数据
+        """
+        if data == "copy_current" and hasattr(self._context_menu, '_current_key'):
+            key = self._context_menu._current_key
+            value = self._context_menu._current_value
+            self._copy_current_info(key, value)
+        elif data == "copy_all":
+            self._copy_all_info()
     
     def _show_context_menu(self, widget, key, value):
         """
         显示右键菜单
-        
+
         Args:
             widget: 调用右键菜单的控件
             key: 信息键
             value: 信息值
         """
-        from PyQt5.QtWidgets import QMenu, QAction
         from PyQt5.QtGui import QCursor
-        
-        menu = QMenu(widget)
-        
-        # 设置右键菜单样式，确保悬停时显示蓝色背景和白色文字
-        scaled_padding = int(8 * self.dpi_scale)
-        scaled_padding_right = int(30 * self.dpi_scale)
-        menu.setStyleSheet(f"""
-            QMenu {{
-                background-color: white;
-                color: black;
-                border: 1px solid #ccc;
-                font-size: {int(self.global_font.pointSize() * self.dpi_scale)}px;
-                font-family: '{self.global_font.family()}';
-            }}
-            QMenu::item {{
-                padding: {scaled_padding}px {scaled_padding_right}px;
-            }}
-            QMenu::item:selected {{
-                background-color: #1E90FF; /* 蓝色背景 */
-                color: white; /* 白色文字 */
-            }}
-        """)
-        
-        # 复制当前信息
-        copy_current_action = QAction("复制当前信息", widget)
-        copy_current_action.triggered.connect(lambda: self._copy_current_info(key, value))
-        menu.addAction(copy_current_action)
-        
-        # 复制全部信息
-        copy_all_action = QAction("复制全部信息", widget)
-        copy_all_action.triggered.connect(self._copy_all_info)
-        menu.addAction(copy_all_action)
-        
-        # 显示右键菜单
-        menu.popup(QCursor.pos())
+
+        if not hasattr(self, '_context_menu'):
+            self._context_menu = D_MoreMenu(parent=None)
+            self._context_menu.set_items([
+                {"text": "复制当前信息", "data": "copy_current"},
+                {"text": "复制全部信息", "data": "copy_all"},
+            ])
+            self._context_menu.itemClicked.connect(self._on_context_menu_clicked)
+
+        self._context_menu._current_key = key
+        self._context_menu._current_value = value
+        self._context_menu.popup(QCursor.pos())
 
 # 测试代码
 if __name__ == "__main__":

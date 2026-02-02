@@ -21,7 +21,8 @@ from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.message_box import CustomMessageBox
-from freeassetfilter.widgets.menu_list import D_MenuList, D_MenuListItem
+from freeassetfilter.widgets.menu_list import D_MenuList
+from freeassetfilter.widgets.D_more_menu import D_MoreMenu
 
 # 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
@@ -1056,50 +1057,59 @@ class ModernSettingsWindow(QDialog):
 
         menu_list_test_layout.addLayout(button_row1)
 
-        self.menu_list = D_MenuList(parent=self, position="bottom", selection_mode="single")
+        self.menu_list = D_MenuList(parent=self, position="bottom")
         self.menu_list.set_target_widget(self.menu_list_toggle_btn)
-        self.menu_list.set_offset(0, int(5 * dpi_scale))
-        self.menu_list.set_list_height(150)
-        self.menu_list.set_min_width(100)
-        self.menu_list.set_max_width(250)
-        self.menu_list.set_timeout_enabled(True)
-        self.menu_list.set_timeout_duration(5000)
-        self.menu_list.add_items([
+        self.menu_list.set_items([
             "项目 1",
             "项目 2",
             "项目 3（长文本测试）",
             "项目 4",
             "项目 5"
         ])
-        self.menu_list._ensure_width_updated()
 
-        menu_list_item_test_group = QGroupBox("D_MenuListItem 测试（轻量级）")
-        menu_list_item_test_group.setStyleSheet(self.group_box_style)
-        menu_list_item_test_layout = QVBoxLayout(menu_list_item_test_group)
-        menu_list_item_test_layout.setSpacing(int(8 * dpi_scale))
+        more_menu_test_group = QGroupBox("D_MoreMenu 测试（右键菜单）")
+        more_menu_test_group.setStyleSheet(self.group_box_style)
+        more_menu_test_layout = QVBoxLayout(more_menu_test_group)
+        more_menu_test_layout.setSpacing(int(8 * dpi_scale))
 
-        menu_list_item_intro = QLabel("轻量级菜单列表，无滚动区域")
-        menu_list_item_intro.setStyleSheet("font-weight: bold; color: #666; font-size: 12px;")
-        menu_list_item_test_layout.addWidget(menu_list_item_intro)
+        more_menu_intro = QLabel("自定义右键菜单控件，支持hover效果")
+        more_menu_intro.setStyleSheet("font-weight: bold; color: #666; font-size: 12px;")
+        more_menu_test_layout.addWidget(more_menu_intro)
 
-        button_row2 = QHBoxLayout()
-        button_row2.setSpacing(int(8 * dpi_scale))
+        button_row3 = QHBoxLayout()
+        button_row3.setSpacing(int(8 * dpi_scale))
 
-        self.menu_list_item_toggle_btn = CustomButton("打开轻量菜单", button_type="normal", display_mode="text")
-        self.menu_list_item_toggle_btn.clicked.connect(self._toggle_menu_list_item)
-        button_row2.addWidget(self.menu_list_item_toggle_btn)
+        self.more_menu_toggle_btn = CustomButton("打开右键菜单", button_type="normal", display_mode="text")
+        self.more_menu_toggle_btn.clicked.connect(self._toggle_more_menu)
+        button_row3.addWidget(self.more_menu_toggle_btn)
 
-        self.menu_list_item_pos_btn = CustomButton("切换位置", button_type="normal", display_mode="text")
-        self.menu_list_item_pos_btn.clicked.connect(self._change_menu_list_item_position)
-        button_row2.addWidget(self.menu_list_item_pos_btn)
+        self.more_menu_add_btn = CustomButton("添加项目", button_type="normal", display_mode="text")
+        self.more_menu_add_btn.clicked.connect(self._add_more_menu_item)
+        button_row3.addWidget(self.more_menu_add_btn)
 
-        menu_list_item_test_layout.addLayout(button_row2)
+        self.more_menu_clear_btn = CustomButton("清空项目", button_type="normal", display_mode="text")
+        self.more_menu_clear_btn.clicked.connect(self._clear_more_menu_items)
+        button_row3.addWidget(self.more_menu_clear_btn)
 
-        self.menu_list_item = D_MenuListItem(parent=self, position="bottom")
-        self.menu_list_item.set_target_widget(self.menu_list_item_toggle_btn)
-        self.menu_list_item.add_items(["选项 A", "选项 B", "选项 C", "选项 D"])
+        more_menu_test_layout.addLayout(button_row3)
 
-        developer_layout.addWidget(menu_list_item_test_group)
+        self.more_menu = D_MoreMenu(parent=self)
+        self.more_menu.set_target_widget(self.more_menu_toggle_btn)
+        self.more_menu.set_offset(0, int(5 * dpi_scale))
+        self.more_menu.set_max_height(int(250 * dpi_scale))
+        self.more_menu.set_timeout_enabled(True)
+        self.more_menu.set_timeout_duration(5000)
+        self.more_menu.set_items([
+            {"text": "复制", "data": "copy"},
+            {"text": "粘贴", "data": "paste"},
+            {"text": "剪切", "data": "cut"},
+            {"text": "删除", "data": "delete"},
+            {"text": "重命名", "data": "rename"},
+            {"text": "属性", "data": "properties"},
+        ])
+        self.more_menu.itemClicked.connect(self._on_more_menu_item_clicked)
+
+        developer_layout.addWidget(more_menu_test_group)
         self.scroll_layout.addWidget(developer_group)
 
     def _toggle_menu_list(self):
@@ -1107,29 +1117,30 @@ class ModernSettingsWindow(QDialog):
         self.menu_list.toggle()
 
     def _add_menu_list_item(self):
-        """添加项目到菜单列表"""
-        import random
-        for i in range(3):
-            self.menu_list.add_item(f"新项目 {random.randint(100, 999)}")
+        """添加项目到菜单列表（暂不支持动态添加）"""
+        pass
 
     def _clear_menu_list_items(self):
-        """清空菜单列表"""
-        self.menu_list.clear_items()
+        """清空菜单列表（暂不支持动态清空）"""
+        pass
 
-    def _toggle_menu_list_item(self):
-        """切换轻量菜单显示"""
-        self.menu_list_item.toggle()
+    def _toggle_more_menu(self):
+        """切换右键菜单显示"""
+        self.more_menu.toggle()
 
-    def _change_menu_list_item_position(self):
-        """切换轻量菜单位置"""
-        current_pos = self.menu_list_item._position
-        positions = ["bottom", "top", "left", "right"]
-        try:
-            idx = positions.index(current_pos)
-            next_pos = positions[(idx + 1) % len(positions)]
-            self.menu_list_item.set_position(next_pos)
-        except (ValueError, IndexError):
-            self.menu_list_item.set_position("bottom")
+    def _add_more_menu_item(self):
+        """添加项目到右键菜单"""
+        import random
+        data = f"item_{random.randint(100, 999)}"
+        self.more_menu.add_item(f"新项目 {random.randint(100, 999)}", data)
+
+    def _clear_more_menu_items(self):
+        """清空右键菜单"""
+        self.more_menu.clear_items()
+
+    def _on_more_menu_item_clicked(self, data):
+        """右键菜单项点击事件"""
+        print(f"D_MoreMenu 点击: {data}")
 
     def _run_hover_menu_test(self):
         """
