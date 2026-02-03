@@ -294,11 +294,17 @@ class FileStagingPool(QWidget):
         
         card = CustomFileHorizontalCard(file_info["path"], display_name=file_info["display_name"])
         
+        # 设置文件信息用于拖拽
+        card.set_file_info(file_info)
+        
         card.clicked.connect(lambda path: self.on_card_clicked(path, card, file_info))
         card.doubleClicked.connect(lambda path: self.on_item_double_clicked(path))
         card.selectionChanged.connect(lambda selected, path: self.on_card_selection_changed(selected, path, file_info))
         card.renameRequested.connect(lambda path: self.on_card_rename_requested(path, file_info))
         card.deleteRequested.connect(lambda path: self.on_card_delete_requested(path, file_info))
+        # 连接拖拽信号
+        card.drag_started.connect(lambda fi: self.on_card_drag_started(fi))
+        card.drag_ended.connect(lambda fi, target: self.on_card_drag_ended(fi, target))
         
         self.hover_tooltip.set_target_widget(card.card_container)
         
@@ -526,6 +532,43 @@ class FileStagingPool(QWidget):
             if file_info["path"] == path:
                 self.item_left_clicked.emit(file_info)
                 break
+    
+    def on_card_drag_started(self, file_info):
+        """
+        处理卡片拖拽开始事件
+        
+        Args:
+            file_info (dict): 文件信息字典
+        """
+        # 拖拽开始时的处理，可以在这里添加视觉反馈
+        pass
+    
+    def on_card_drag_ended(self, file_info, drop_target):
+        """
+        处理卡片拖拽结束事件
+
+        Args:
+            file_info (dict): 文件信息字典
+            drop_target (str): 放置目标类型 ('file_selector', 'previewer', 'none')
+        """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [FileStagingPool.on_card_drag_ended] {msg}")
+
+        debug(f"拖拽结束，文件: {file_info.get('name', 'unknown')}, 目标: {drop_target}")
+
+        if drop_target == 'file_selector':
+            # 拖拽到文件选择器，从存储池中移除该文件
+            debug(f"拖拽到文件选择器，移除文件: {file_info.get('path', '')}")
+            self.remove_file(file_info['path'])
+        elif drop_target == 'previewer':
+            # 拖拽到预览器，触发预览
+            debug(f"拖拽到预览器，触发预览: {file_info.get('path', '')}")
+            self.item_left_clicked.emit(file_info)
+        else:
+            debug(f"未放置到有效区域")
+        # 如果是 'none'，不做任何操作，卡片会自动恢复原状
     
     def rename_file(self, file_info, widget=None):
         """

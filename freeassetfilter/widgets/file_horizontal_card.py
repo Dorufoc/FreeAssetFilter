@@ -18,10 +18,10 @@ from PyQt5.QtWidgets import (
 )
 from .button_widgets import CustomButton
 from PyQt5.QtCore import (
-    Qt, pyqtSignal, QFileInfo, QEvent, QPropertyAnimation, QEasingCurve, pyqtProperty, QParallelAnimationGroup
+    Qt, pyqtSignal, QFileInfo, QEvent, QPropertyAnimation, QEasingCurve, pyqtProperty, QParallelAnimationGroup, QTimer, QPoint
 )
 from PyQt5.QtGui import (
-    QFont, QFontMetrics, QPixmap, QColor
+    QFont, QFontMetrics, QPixmap, QColor, QCursor
 )
 from PyQt5.QtSvg import QSvgWidget
 # 导入悬浮详细信息组件
@@ -70,6 +70,8 @@ class CustomFileHorizontalCard(QWidget):
     selectionChanged = pyqtSignal(bool, str)
     renameRequested = pyqtSignal(str)  # 重命名请求信号，传递文件路径
     deleteRequested = pyqtSignal(str)  # 删除请求信号，传递文件路径
+    drag_started = pyqtSignal(dict)  # 拖拽开始信号，传递文件信息
+    drag_ended = pyqtSignal(dict, str)  # 拖拽结束信号，传递文件信息和放置目标类型
     
     @pyqtProperty(QColor)
     def anim_bg_color(self):
@@ -138,6 +140,18 @@ class CustomFileHorizontalCard(QWidget):
         self._touch_drag_threshold = int(10 * self.dpi_scale)
         self._touch_start_pos = None
         self._is_touch_dragging = False
+        
+        # 长按拖拽相关属性
+        self._long_press_timer = QTimer(self)
+        self._long_press_timer.setSingleShot(True)
+        self._long_press_timer.timeout.connect(self._on_long_press)
+        self._long_press_duration = 500  # 长按触发时间（毫秒）
+        self._is_long_pressing = False
+        self._drag_start_pos = None
+        self._drag_card = None  # 拖拽时显示的浮动卡片
+        self._is_dragging = False
+        self._original_opacity = 1.0
+        self._file_info = None  # 文件信息字典
         
         # 初始化UI
         self.init_ui()
@@ -966,9 +980,22 @@ class CustomFileHorizontalCard(QWidget):
 
     def mousePressEvent(self, event):
         """处理鼠标按下事件"""
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileHorizontalCard.mousePressEvent] {msg}")
+
+        debug(f"鼠标按下事件触发，按钮: {event.button()}")
+
         if event.button() == Qt.LeftButton:
+            debug(f"左键按下，触控优化: {self._is_touch_optimization_enabled()}")
             self._touch_start_pos = event.pos()
             self._is_touch_dragging = False
+            # 只有在触控操作优化开启时才启动长按定时器
+            if self._is_touch_optimization_enabled():
+                debug(f"启动长按定时器，时长: {self._long_press_duration}ms")
+                self._long_press_timer.start(self._long_press_duration)
+            self._drag_start_pos = event.globalPos()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -977,13 +1004,46 @@ class CustomFileHorizontalCard(QWidget):
             delta = event.pos() - self._touch_start_pos
             if abs(delta.x()) > self._touch_drag_threshold or abs(delta.y()) > self._touch_drag_threshold:
                 self._is_touch_dragging = True
+                # 如果正在长按，取消长按定时器
+                if self._is_long_pressing:
+                    self._long_press_timer.stop()
+                    self._is_long_pressing = False
+                    # 如果还没有开始拖拽，启动拖拽
+                    if not self._is_dragging:
+                        self._start_drag()
+
+        # 如果正在拖拽，更新拖拽卡片位置
+        if self._is_dragging:
+            self._update_drag_card_position(event.globalPos())
+
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         """处理鼠标释放事件"""
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileHorizontalCard.mouseReleaseEvent] {msg}")
+
+        debug(f"鼠标释放事件触发，按钮: {event.button()}, 左键: {Qt.LeftButton}")
+
         if event.button() == Qt.LeftButton:
-            if self._touch_start_pos is not None and not self._is_touch_dragging:
+            debug(f"左键释放，_is_dragging: {self._is_dragging}, _is_long_pressing: {self._is_long_pressing}")
+            if self._is_dragging:
+                # 拖拽结束，处理放置逻辑
+                debug(f"正在拖拽中，调用 _end_drag")
+                self._end_drag(event.globalPos())
+            elif self._is_long_pressing:
+                # 如果处于长按状态但没有拖拽（用户长按后松开但没有移动），取消长按状态
+                debug(f"长按状态但未拖拽，调用 _cancel_drag")
+                self._cancel_drag()
+            elif self._touch_start_pos is not None and not self._is_touch_dragging:
+                # 如果不是拖拽，处理点击
+                debug(f"普通点击，发出 clicked 信号")
                 self.clicked.emit(self._file_path)
+            # 停止长按定时器
+            self._long_press_timer.stop()
+            self._is_long_pressing = False
             self._touch_start_pos = None
             self._is_touch_dragging = False
         super().mouseReleaseEvent(event)
@@ -1158,3 +1218,612 @@ class CustomFileHorizontalCard(QWidget):
         更新卡片样式，用于主题变化时
         """
         self.update_card_style()
+    
+    # ==================== 长按拖拽功能 ====================
+    
+    def _is_touch_optimization_enabled(self):
+        """
+        检查触控操作优化是否启用
+        对于存储池中的卡片，使用 file_staging.touch_optimization 设置
+        
+        Returns:
+            bool: 触控操作优化是否启用
+        """
+        try:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+            # 优先检查 file_staging 设置，如果不存在则使用 file_selector 设置
+            staging_setting = settings_manager.get_setting("file_staging.touch_optimization", None)
+            if staging_setting is not None:
+                return staging_setting
+            return settings_manager.get_setting("file_selector.touch_optimization", True)
+        except Exception:
+            return True
+    
+    def _on_long_press(self):
+        """
+        处理长按事件
+        当用户长按卡片时触发，开始拖拽操作
+        """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileHorizontalCard._on_long_press] {msg}")
+
+        debug(f"长按事件触发")
+
+        # 文件夹不支持拖拽
+        if self._file_info and self._file_info.get("is_dir", False):
+            debug(f"文件夹不支持拖拽，跳过")
+            return
+
+        debug(f"开始拖拽操作")
+        self._is_long_pressing = True
+        self._start_drag()
+    
+    def _start_drag(self):
+        """
+        开始拖拽操作
+        创建浮动卡片并设置原始卡片为半透明
+        """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileHorizontalCard._start_drag] {msg}")
+
+        debug(f"开始拖拽，_file_info: {self._file_info is not None}")
+
+        self._is_dragging = True
+
+        # 设置原始卡片为半透明
+        debug(f"设置拖拽外观")
+        self._set_dragging_appearance(True)
+
+        # 创建浮动拖拽卡片
+        debug(f"创建拖拽卡片")
+        self._create_drag_card()
+
+        # 发出拖拽开始信号
+        if self._file_info:
+            debug(f"发出拖拽开始信号")
+            self.drag_started.emit(self._file_info)
+
+        # 改变鼠标样式
+        debug(f"改变鼠标样式")
+        self.setCursor(QCursor(Qt.ClosedHandCursor))
+
+        # 捕获鼠标，确保能接收到鼠标释放事件
+        debug(f"捕获鼠标")
+        self.grabMouse()
+
+        debug(f"拖拽开始完成")
+    
+    def _set_dragging_appearance(self, is_dragging):
+        """
+        设置拖拽时的外观样式
+        
+        Args:
+            is_dragging (bool): 是否正在拖拽
+        """
+        if is_dragging:
+            # 保存当前样式
+            self._original_style = self.card_container.styleSheet()
+            
+            # 创建半透明背景色
+            base_qcolor = QColor(self._get_base_color())
+            r, g, b = base_qcolor.red(), base_qcolor.green(), base_qcolor.blue()
+            bg_color = f"rgba({r}, {g}, {b}, 102)"  # 40% 透明度
+            
+            border_qcolor = QColor(self._get_auxiliary_color())
+            br, bg, bb = border_qcolor.red(), border_qcolor.green(), border_qcolor.blue()
+            border_color = f"rgba({br}, {bg}, {bb}, 102)"
+            
+            scaled_border_radius = int(8 * self.dpi_scale)
+            scaled_border_width = int(1 * self.dpi_scale)
+            
+            # 应用半透明样式
+            self.card_container.setStyleSheet(
+                f"QWidget {{"
+                f"background-color: {bg_color}; "
+                f"border: {scaled_border_width}px solid {border_color}; "
+                f"border-radius: {scaled_border_radius}px;"
+                f"}}"
+            )
+            
+            # 设置子控件透明度
+            self.icon_display.setStyleSheet("background: transparent; border: none; opacity: 0.4;")
+            self.name_label.setStyleSheet(f"color: {self._get_secondary_color()}; background: transparent; border: none; opacity: 0.4;")
+            self.info_label.setStyleSheet(f"color: {self._get_secondary_color()}; background: transparent; border: none; opacity: 0.4;")
+        else:
+            # 恢复正常样式
+            self.update_card_style()
+    
+    def _get_base_color(self):
+        """获取基础颜色"""
+        try:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+            return settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        except Exception:
+            return "#212121"
+    
+    def _get_auxiliary_color(self):
+        """获取辅助颜色"""
+        try:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+            return settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        except Exception:
+            return "#3D3D3D"
+    
+    def _get_secondary_color(self):
+        """获取次要颜色（文字颜色）"""
+        try:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+            return settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+        except Exception:
+            return "#FFFFFF"
+    
+    def _create_drag_card(self):
+        """
+        创建浮动拖拽卡片
+        使用 file horizontal card 样式，外层透明，内层圆角区域显示背景色
+        """
+        if self._drag_card:
+            self._drag_card.deleteLater()
+        
+        # 创建浮动卡片窗口
+        self._drag_card = QWidget(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        self._drag_card.setObjectName("DragCard")
+
+        # 设置卡片尺寸 - 使用与存储池卡片相同的自适应宽度
+        card_width = self.card_container.width()
+        card_height = self.card_container.height()
+        self._drag_card.setFixedSize(card_width, card_height)
+
+        # 设置外层透明
+        self._drag_card.setStyleSheet("background-color: transparent; border: none;")
+        self._drag_card.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._drag_card.setAutoFillBackground(False)
+
+        # 设置拖拽卡片不接收鼠标事件，让事件传递到下层窗口
+        self._drag_card.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        
+        # 创建主布局
+        main_layout = QVBoxLayout(self._drag_card)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # 创建内部卡片（带圆角和背景色）
+        from PyQt5.QtWidgets import QFrame
+        inner_card = QFrame()
+        inner_card.setObjectName("InnerCard")
+        
+        scaled_border_radius = int(8 * self.dpi_scale)
+        scaled_border_width = int(1 * self.dpi_scale)
+        base_color = self._get_base_color()
+        normal_color = self._get_auxiliary_color()
+        secondary_color = self._get_secondary_color()
+        
+        inner_card.setStyleSheet(
+            f"#InnerCard {{"
+            f"background-color: {base_color}; "
+            f"border: {scaled_border_width}px solid {normal_color}; "
+            f"border-radius: {scaled_border_radius}px;"
+            f"}}"
+            f"#InnerCard QLabel {{ background-color: transparent; border: none; }}"
+        )
+        inner_card.setAutoFillBackground(True)
+        
+        # 创建内部布局 - 使用水平布局（file horizontal card 样式）
+        layout = QHBoxLayout(inner_card)
+        layout.setSpacing(int(7.5 * self.dpi_scale))
+        min_height_margin = int(6.25 * self.dpi_scale)
+        layout.setContentsMargins(
+            int(7.5 * self.dpi_scale),
+            min_height_margin,
+            int(7.5 * self.dpi_scale),
+            min_height_margin
+        )
+        layout.setAlignment(Qt.AlignVCenter)
+        
+        # 创建图标显示区域 - 使用与原始卡片相同的图标大小 (40 * dpi_scale)
+        icon_container = QWidget()
+        icon_size = int(40 * self.dpi_scale)
+        icon_container.setFixedSize(icon_size, icon_size)
+        icon_container.setStyleSheet("background: transparent; border: none;")
+        icon_layout = QVBoxLayout(icon_container)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(0)
+        icon_layout.setAlignment(Qt.AlignCenter)
+        
+        # 复制当前显示的图标 - 根据图标类型使用不同的复制方式
+        self._copy_icon_to_drag_card(icon_container)
+        
+        layout.addWidget(icon_container, alignment=Qt.AlignVCenter)
+        
+        # 创建文字信息区
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        if self._single_line_mode:
+            text_layout.setSpacing(0)
+        else:
+            text_layout.setSpacing(int(4 * self.dpi_scale))
+        text_layout.setAlignment(Qt.AlignVCenter)
+        
+        # 创建文件名标签
+        name_font = QFont(self.global_font)
+        name_font.setBold(True)
+        
+        name_label = QLabel()
+        name_label.setAlignment(Qt.AlignLeft)
+        name_label.setWordWrap(False)
+        name_label.setFont(name_font)
+        name_label.setStyleSheet(f"color: {secondary_color}; background: transparent; border: none;")
+        name_label.setText(self.name_label.text())
+        text_layout.addWidget(name_label)
+        
+        # 创建文件信息标签
+        if not self._single_line_mode:
+            info_font = QFont(self.global_font)
+            info_font.setWeight(QFont.Normal)
+            
+            info_label = QLabel()
+            info_label.setAlignment(Qt.AlignLeft)
+            info_label.setWordWrap(False)
+            info_label.setFont(info_font)
+            info_label.setStyleSheet(f"color: {secondary_color}; background: transparent; border: none;")
+            info_label.setText(self.info_label.text())
+            text_layout.addWidget(info_label)
+        
+        layout.addLayout(text_layout, 1)
+        
+        # 将内部卡片添加到主布局
+        main_layout.addWidget(inner_card)
+        
+        # 显示拖拽卡片在鼠标位置
+        cursor_pos = QCursor.pos()
+        self._drag_card.move(cursor_pos.x() - card_width // 2, cursor_pos.y() - card_height // 2)
+        self._drag_card.show()
+    
+    def _update_drag_card_position(self, global_pos):
+        """
+        更新拖拽卡片位置
+        
+        Args:
+            global_pos: 鼠标全局位置
+        """
+        if self._drag_card:
+            card_width = self._drag_card.width()
+            card_height = self._drag_card.height()
+            self._drag_card.move(global_pos.x() - card_width // 2, global_pos.y() - card_height // 2)
+    
+    def _end_drag(self, global_pos):
+        """
+        结束拖拽操作
+
+        Args:
+            global_pos: 鼠标释放时的全局位置
+        """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [CustomFileHorizontalCard._end_drag] {msg}")
+
+        debug(f"结束拖拽，位置: ({global_pos.x()}, {global_pos.y()})")
+
+        # 恢复原始卡片样式
+        self._set_dragging_appearance(False)
+
+        # 恢复鼠标样式
+        self.setCursor(QCursor(Qt.ArrowCursor))
+
+        # 检测放置目标
+        drop_target = self._detect_drop_target(global_pos)
+        debug(f"检测到放置目标: {drop_target}")
+
+        # 发出拖拽结束信号
+        if self._file_info:
+            debug(f"发出拖拽结束信号，文件: {self._file_info.get('name', 'unknown')}")
+            self.drag_ended.emit(self._file_info, drop_target)
+        else:
+            debug(f"警告: _file_info 为 None，无法发出信号")
+
+        # 清理拖拽卡片
+        if self._drag_card:
+            self._drag_card.deleteLater()
+            self._drag_card = None
+
+        # 释放鼠标捕获
+        self.releaseMouse()
+
+        self._is_dragging = False
+        self._is_long_pressing = False
+
+    def _cancel_drag(self):
+        """
+        取消拖拽操作
+        当用户长按后松开但没有移动时调用，恢复原始状态
+        """
+        # 恢复原始卡片样式
+        self._set_dragging_appearance(False)
+
+        # 恢复鼠标样式
+        self.setCursor(QCursor(Qt.ArrowCursor))
+
+        # 清理拖拽卡片（隐藏hover卡片）
+        if self._drag_card:
+            self._drag_card.deleteLater()
+            self._drag_card = None
+
+        # 释放鼠标捕获
+        self.releaseMouse()
+
+        # 重置状态
+        self._is_dragging = False
+        self._is_long_pressing = False
+
+        # 停止长按定时器
+        self._long_press_timer.stop()
+
+    def _detect_drop_target(self, global_pos):
+        """
+        检测拖拽放置的目标区域
+
+        Args:
+            global_pos: 鼠标全局位置
+
+        Returns:
+            str: 放置目标类型 ('file_selector', 'previewer', 'none')
+        """
+        # 获取主窗口
+        main_window = self.window()
+        if not main_window:
+            return 'none'
+
+        # 检查是否在文件选择器区域
+        if hasattr(main_window, 'file_selector_a'):
+            file_selector = main_window.file_selector_a
+            if file_selector and file_selector.isVisible():
+                # 使用 mapToGlobal 获取文件选择器的全局坐标范围
+                selector_top_left = file_selector.mapToGlobal(file_selector.rect().topLeft())
+                selector_bottom_right = file_selector.mapToGlobal(file_selector.rect().bottomRight())
+                # 创建全局矩形
+                from PyQt5.QtCore import QRect
+                selector_global_rect = QRect(selector_top_left, selector_bottom_right)
+                if selector_global_rect.contains(global_pos):
+                    return 'file_selector'
+
+        # 检查是否在统一预览器区域
+        if hasattr(main_window, 'unified_previewer'):
+            previewer = main_window.unified_previewer
+            if previewer and previewer.isVisible():
+                # 使用 mapToGlobal 获取预览器的全局坐标范围
+                previewer_top_left = previewer.mapToGlobal(previewer.rect().topLeft())
+                previewer_bottom_right = previewer.mapToGlobal(previewer.rect().bottomRight())
+                # 创建全局矩形
+                from PyQt5.QtCore import QRect
+                previewer_global_rect = QRect(previewer_top_left, previewer_bottom_right)
+                if previewer_global_rect.contains(global_pos):
+                    return 'previewer'
+
+        return 'none'
+    
+    def is_dragging(self):
+        """
+        获取当前是否正在拖拽
+
+        Returns:
+            bool: 是否正在拖拽
+        """
+        return self._is_dragging
+
+    def set_file_info(self, file_info):
+        """
+        设置文件信息
+
+        Args:
+            file_info (dict): 文件信息字典
+        """
+        self._file_info = file_info
+
+    def _copy_icon_to_drag_card(self, parent_container):
+        """
+        复制图标到拖拽卡片
+        根据原卡片的图标类型（QLabel/QSvgWidget/自定义Widget）使用不同的复制方式
+
+        Args:
+            parent_container: 拖拽卡片中的图标容器
+        """
+        try:
+            from PyQt5.QtSvg import QSvgWidget
+            from PyQt5.QtGui import QPixmap
+
+            # 获取图标尺寸 - 使用与原始卡片相同的图标大小 (40 * dpi_scale)
+            icon_size = int(40 * self.dpi_scale)
+
+            # 检查 icon_display 的类型
+            if isinstance(self.icon_display, QLabel):
+                # QLabel 类型 - 直接复制 pixmap
+                pixmap = self.icon_display.pixmap()
+                if pixmap and not pixmap.isNull():
+                    icon_label = QLabel(parent_container)
+                    icon_label.setAlignment(Qt.AlignCenter)
+                    icon_label.setFixedSize(icon_size, icon_size)
+                    icon_label.setStyleSheet("background: transparent; border: none;")
+                    icon_label.setPixmap(pixmap)
+                    parent_container.layout().addWidget(icon_label)
+                    return
+
+            elif isinstance(self.icon_display, QSvgWidget):
+                # QSvgWidget 类型 - 重新渲染 SVG
+                # 尝试获取 SVG 文件路径并重新渲染
+                if self._file_path:
+                    file_info = QFileInfo(self._file_path)
+                    suffix = file_info.suffix().lower()
+                    icon_path = self._get_file_icon_path(suffix, file_info.isDir())
+
+                    if icon_path and os.path.exists(icon_path):
+                        svg_widget = None
+                        if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
+                            if icon_path.endswith("压缩文件.svg"):
+                                display_suffix = "." + suffix
+                            else:
+                                display_suffix = suffix.upper()
+                                if len(display_suffix) > 5:
+                                    display_suffix = "FILE"
+                            svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale)
+                        else:
+                            svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale)
+
+                        if svg_widget:
+                            svg_widget.setParent(parent_container)
+                            svg_widget.setFixedSize(icon_size, icon_size)
+                            svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                            svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                            parent_container.layout().addWidget(svg_widget)
+                            return
+
+            else:
+                # 其他类型（可能是包含子控件的自定义 Widget）
+                # 查找子控件中的 QLabel 或 QSvgWidget
+                qlabel_child = self.icon_display.findChild(QLabel)
+                qsvg_child = self.icon_display.findChild(QSvgWidget)
+
+                if qlabel_child and qlabel_child.pixmap() and not qlabel_child.pixmap().isNull():
+                    # 复制 QLabel 的 pixmap
+                    pixmap = qlabel_child.pixmap()
+                    icon_label = QLabel(parent_container)
+                    icon_label.setAlignment(Qt.AlignCenter)
+                    icon_label.setFixedSize(icon_size, icon_size)
+                    icon_label.setStyleSheet("background: transparent; border: none;")
+                    icon_label.setPixmap(pixmap)
+                    parent_container.layout().addWidget(icon_label)
+                    return
+
+                elif qsvg_child:
+                    # 重新渲染 SVG
+                    if self._file_path:
+                        file_info = QFileInfo(self._file_path)
+                        suffix = file_info.suffix().lower()
+                        icon_path = self._get_file_icon_path(suffix, file_info.isDir())
+
+                        if icon_path and os.path.exists(icon_path):
+                            svg_widget = None
+                            if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
+                                if icon_path.endswith("压缩文件.svg"):
+                                    display_suffix = "." + suffix
+                                else:
+                                    display_suffix = suffix.upper()
+                                    if len(display_suffix) > 5:
+                                        display_suffix = "FILE"
+                                svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale)
+                            else:
+                                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale)
+
+                            if svg_widget:
+                                svg_widget.setParent(parent_container)
+                                svg_widget.setFixedSize(icon_size, icon_size)
+                                svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                                svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                                parent_container.layout().addWidget(svg_widget)
+                                return
+
+            # 如果以上都失败，使用默认的文件图标
+            self._create_default_icon_for_drag(parent_container, icon_size)
+
+        except Exception as e:
+            print(f"复制图标到拖拽卡片失败: {e}")
+            # 创建默认图标 - 使用与原始卡片相同的图标大小 (40 * dpi_scale)
+            self._create_default_icon_for_drag(parent_container, int(40 * self.dpi_scale))
+
+    def _create_default_icon_for_drag(self, parent_container, icon_size):
+        """
+        为拖拽卡片创建默认图标
+
+        Args:
+            parent_container: 父容器
+            icon_size: 图标尺寸
+        """
+        try:
+            # 尝试根据文件类型重新创建图标
+            if self._file_path:
+                file_info = QFileInfo(self._file_path)
+                suffix = file_info.suffix().lower()
+                is_dir = file_info.isDir()
+
+                # 检查是否有缩略图（图片/视频）
+                import hashlib
+                thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+                md5_hash = hashlib.md5(self._file_path.encode('utf-8'))
+                file_hash = md5_hash.hexdigest()[:16]
+                thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
+
+                is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
+                is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
+
+                if (is_photo or is_video) and os.path.exists(thumbnail_path):
+                    # 使用缩略图
+                    pixmap = QPixmap(thumbnail_path)
+                    if not pixmap.isNull():
+                        icon_label = QLabel(parent_container)
+                        icon_label.setAlignment(Qt.AlignCenter)
+                        icon_label.setFixedSize(icon_size, icon_size)
+                        icon_label.setStyleSheet("background: transparent; border: none;")
+                        scaled_pixmap = pixmap.scaled(icon_size, icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        icon_label.setPixmap(scaled_pixmap)
+                        parent_container.layout().addWidget(icon_label)
+                        return
+
+                # 对于 lnk/exe/url 文件，使用系统图标
+                if not is_dir and suffix in ["lnk", "exe", "url"]:
+                    try:
+                        from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
+                        hicon = get_highest_resolution_icon(self._file_path, desired_size=256)
+                        if hicon:
+                            pixmap = hicon_to_pixmap(hicon, icon_size, None)
+                            DestroyIcon(hicon)
+                            if pixmap and not pixmap.isNull():
+                                icon_label = QLabel(parent_container)
+                                icon_label.setAlignment(Qt.AlignCenter)
+                                icon_label.setFixedSize(icon_size, icon_size)
+                                icon_label.setStyleSheet("background: transparent; border: none;")
+                                icon_label.setPixmap(pixmap)
+                                parent_container.layout().addWidget(icon_label)
+                                return
+                    except Exception:
+                        pass
+
+                # 使用 SVG 图标
+                icon_path = self._get_file_icon_path(suffix, is_dir)
+                if icon_path and os.path.exists(icon_path):
+                    svg_widget = None
+                    if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
+                        if icon_path.endswith("压缩文件.svg"):
+                            display_suffix = "." + suffix
+                        else:
+                            display_suffix = suffix.upper()
+                            if len(display_suffix) > 5:
+                                display_suffix = "FILE"
+                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale)
+                    else:
+                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale)
+
+                    if svg_widget:
+                        svg_widget.setParent(parent_container)
+                        svg_widget.setFixedSize(icon_size, icon_size)
+                        svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                        svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                        parent_container.layout().addWidget(svg_widget)
+                        return
+
+            # 最终回退：创建空白图标
+            icon_label = QLabel(parent_container)
+            icon_label.setAlignment(Qt.AlignCenter)
+            icon_label.setFixedSize(icon_size, icon_size)
+            icon_label.setStyleSheet("background: transparent; border: none;")
+            parent_container.layout().addWidget(icon_label)
+
+        except Exception as e:
+            print(f"创建默认图标失败: {e}")

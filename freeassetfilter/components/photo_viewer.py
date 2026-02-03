@@ -20,7 +20,7 @@ import os
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QScrollArea, QGroupBox, QGridLayout,
-    QMessageBox
+    QMessageBox, QSizePolicy
 )
 
 from freeassetfilter.widgets.D_more_menu import D_MoreMenu
@@ -177,6 +177,10 @@ class ImageWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMouseTracking(True)
+        
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
         
         # 不再需要获取设备像素比，Qt会自动处理
         
@@ -354,41 +358,37 @@ class ImageWidget(QWidget):
         """
         try:
             if self.original_image:
-                # 获取设备像素比
                 from PyQt5.QtGui import QGuiApplication
                 device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
                 
-                # 获取原始图像的像素尺寸
+                if hasattr(self.parent(), 'viewport') and self.parent().viewport():
+                    viewport_size = self.parent().viewport().size()
+                else:
+                    viewport_size = self.size()
+                
+                available_logical_width = viewport_size.width()
+                available_logical_height = viewport_size.height()
+                
                 original_width = self.original_image.width()
                 original_height = self.original_image.height()
                 
-                # 计算缩放后的物理像素大小
-                # scale_factor是逻辑像素的缩放比例
                 logical_width = int(original_width * self.scale_factor)
                 logical_height = int(original_height * self.scale_factor)
                 physical_width = int(logical_width * device_pixel_ratio)
                 physical_height = int(logical_height * device_pixel_ratio)
                 
-                # 使用高质量缩放算法缩放到物理像素大小
                 self.scaled_image = self.original_image.scaled(
                     physical_width, physical_height, 
                     Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
                 
-                # 不要在QImage上设置devicePixelRatio，避免混淆
-                # 直接创建QPixmap并设置正确的devicePixelRatio
                 self.pixmap = QPixmap.fromImage(self.scaled_image)
                 self.pixmap.setDevicePixelRatio(device_pixel_ratio)
                 
-                # 保存物理尺寸用于绘制
                 self._physical_image_width = physical_width
                 self._physical_image_height = physical_height
                 
-                # 更新窗口大小为视口的逻辑像素大小
-                self.setMinimumSize(
-                    int(viewport_logical_width),
-                    int(viewport_logical_height)
-                )
+                self.setMinimumSize(0, 0)
         except Exception as e:
             print(f"更新图片时出错: {e}")
     
@@ -397,10 +397,20 @@ class ImageWidget(QWidget):
         绘制图片
         """
         painter = QPainter(self)
-        # 设置基础渲染质量（避免过度渲染导致性能问题）
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         
-        painter.fillRect(self.rect(), QColor(40, 40, 40))
+        app = QApplication.instance()
+        base_color = "#212121"
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        
+        if base_color.startswith('#'):
+            r = int(base_color[1:3], 16)
+            g = int(base_color[3:5], 16)
+            b = int(base_color[5:7], 16)
+            painter.fillRect(self.rect(), QColor(r, g, b))
+        else:
+            painter.fillRect(self.rect(), QColor(40, 40, 40))
         
         if self.pixmap and self.scaled_image:
             try:
@@ -776,33 +786,26 @@ class PhotoViewer(QWidget):
         """
         super().__init__(parent)
         
-        # 获取应用实例
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QFont
         app = QApplication.instance()
         
-        # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
-        
-        # 获取DPI缩放因子
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
-        # 设置组件字体
         self.setFont(self.global_font)
         
-        # 初始化所有属性
         self.image_widget = None
         self.scroll_area = None
         
-        # 设置窗口属性
         self.setWindowTitle("照片查看器")
         
-        # 使用DPI缩放因子调整窗口大小
-        scaled_min_width = int(400 * self.dpi_scale)
-        scaled_min_height = int(300 * self.dpi_scale)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        scaled_min_width = int(100 * self.dpi_scale)
+        scaled_min_height = int(100 * self.dpi_scale)
         self.setMinimumSize(scaled_min_width, scaled_min_height)
         
-        # 创建UI组件
         self.init_ui()
     
     def init_ui(self):
@@ -816,15 +819,15 @@ class PhotoViewer(QWidget):
         
         # 设置整体背景色
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
+        base_color = "#212121"
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-        self.setStyleSheet(f"background-color: {background_color};")
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        self.setStyleSheet(f"background-color: {base_color};")
         
         # 1. 图片显示区域
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("background-color: #212121;")
+        self.scroll_area.setStyleSheet(f"background-color: {base_color};")
         
         self.image_widget = ImageWidget()
         self.scroll_area.setWidget(self.image_widget)

@@ -751,6 +751,16 @@ class ModernSettingsWindow(QDialog):
         self.delete_original_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.delete_original_after_export": value}))
         file_staging_layout.addWidget(self.delete_original_switch)
 
+        # 触控操作优化
+        self.staging_touch_optimization_switch = CustomSettingItem(
+            text="触控操作优化",
+            secondary_text="启用后可以长按存储池卡片拖拽到文件选择器取消选中，拖拽到统一预览器实现预览",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("file_staging.touch_optimization", True)
+        )
+        self.staging_touch_optimization_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.touch_optimization": value}))
+        file_staging_layout.addWidget(self.staging_touch_optimization_switch)
+
         self.scroll_layout.addWidget(file_staging_group)
 
     def _add_player_settings(self):
