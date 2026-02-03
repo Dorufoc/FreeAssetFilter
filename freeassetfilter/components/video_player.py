@@ -520,8 +520,12 @@ class VideoPlayer(QWidget):
         self.speed_button = CustomButton(
             text=f"{self._current_speed}x",
             button_type="normal",
-            display_mode="text"
+            display_mode="text",
+            height=18
         )
+        # 设置固定高度，但宽度自适应内容
+        speed_button_height = int(18 * self.dpi_scale)
+        self.speed_button.setFixedHeight(speed_button_height)
         # 设置下拉菜单的目标按钮为自定义按钮
         self.speed_dropdown.set_target_button(self.speed_button)
         
@@ -546,8 +550,12 @@ class VideoPlayer(QWidget):
         self.load_cube_button = CustomButton(
             text="加载LUT",
             button_type="normal",
-            display_mode="text"
+            display_mode="text",
+            height=18
         )
+        # 设置固定大小，与音量按钮保持一致
+        cube_button_size = int(18 * self.dpi_scale)
+        self.load_cube_button.setFixedSize(cube_button_size, cube_button_size)
         self.load_cube_button.clicked.connect(self.load_cube_file)
         bottom_layout.addWidget(self.load_cube_button)
         
@@ -555,8 +563,12 @@ class VideoPlayer(QWidget):
         self.comparison_button = CustomButton(
             text="对比预览",
             button_type="normal",
-            display_mode="text"
+            display_mode="text",
+            height=18
         )
+        # 设置固定大小，与音量按钮保持一致
+        comparison_button_size = int(18 * self.dpi_scale)
+        self.comparison_button.setFixedSize(comparison_button_size, comparison_button_size)
         self.comparison_button.setCheckable(True)
         self.comparison_button.clicked.connect(self.toggle_comparison_mode)
         bottom_layout.addWidget(self.comparison_button)
@@ -574,8 +586,12 @@ class VideoPlayer(QWidget):
             text=self._maxsize_icon_path,
             button_type="normal",
             display_mode="icon",
+            height=18,
             tooltip_text="分离窗口"
         )
+        # 设置固定大小，与音量按钮保持一致
+        detached_button_size = int(18 * self.dpi_scale)
+        self._detached_button.setFixedSize(detached_button_size, detached_button_size)
         self._detached_button.clicked.connect(self._toggle_detach_window)
         bottom_layout.addWidget(self._detached_button)
 
@@ -2361,7 +2377,12 @@ class VideoPlayer(QWidget):
             from PyQt5.QtWidgets import QMainWindow
 
             class DetachedVideoWindow(QMainWindow):
-                """分离的视频播放窗口 - 无边框全屏窗口"""
+                """分离的视频播放窗口 - 无边框全屏窗口
+                
+                布局结构：
+                - 第0层：视频内容区域，填满整个显示区域
+                - 第1层：控制栏，固定在底部浮动显示
+                """
 
                 def __init__(self, video_player, parent=None):
                     super().__init__(parent)
@@ -2378,43 +2399,102 @@ class VideoPlayer(QWidget):
 
                     # 创建中央部件
                     central_widget = QWidget()
-                    central_widget.setStyleSheet("background-color: #000000;")
+                    central_widget.setStyleSheet("background-color: transparent;")
                     self.setCentralWidget(central_widget)
-                    layout = QVBoxLayout(central_widget)
-                    layout.setContentsMargins(0, 0, 0, 0)
-                    layout.setSpacing(0)
-
-                    # 将视频播放器的媒体框架添加到独立窗口，设置拉伸因子为1使其占据主要空间
-                    layout.addWidget(self.video_player.media_frame, 1)
-
-                    # 添加控制区域
-                    # 找到控制容器并添加，不设置拉伸因子使其保持固定高度
+                    
+                    # 使用绝对定位布局，实现控制栏浮动在视频上方
+                    central_widget.setLayout(QVBoxLayout())
+                    central_widget.layout().setContentsMargins(0, 0, 0, 0)
+                    central_widget.layout().setSpacing(0)
+                    
+                    # 创建堆叠容器，用于分层显示
+                    self.stack_container = QWidget(central_widget)
+                    self.stack_container.setGeometry(central_widget.rect())
+                    self.stack_container.setStyleSheet("background-color: transparent;")
+                    self.stack_container.setAttribute(Qt.WA_TranslucentBackground, True)
+                    
+                    # 第0层：视频内容区域 - 填满整个显示区域
+                    self.video_player.media_frame.setParent(self.stack_container)
+                    self.video_player.media_frame.setGeometry(self.stack_container.rect())
+                    self.video_player.media_frame.setStyleSheet("background-color: #000000;")
+                    
+                    # 第1层：控制栏 - 固定在底部浮动显示
+                    self.control_container = None
                     for i in range(self.video_player.layout().count()):
                         item = self.video_player.layout().itemAt(i)
                         if item and item.widget():
                             widget = item.widget()
                             # 检查是否是控制容器（通过样式或类型判断）
                             if isinstance(widget, QWidget) and widget != self.video_player.media_frame:
-                                # 同步控制容器的背景颜色与主窗口一致
-                                app = QApplication.instance()
-                                if hasattr(app, 'settings_manager'):
-                                    background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-                                else:
-                                    background_color = "#2D2D2D"
-                                widget.setStyleSheet(f"background-color: {background_color}; border: none; border-radius: {int(17.5 * self.video_player.dpi_scale)}px {int(17.5 * self.video_player.dpi_scale)}px {int(17.5 * self.video_player.dpi_scale)}px {int(17.5 * self.video_player.dpi_scale)}px;")
-                                # 设置控制容器的最大高度，防止被拉伸
-                                widget.setMaximumHeight(int(60 * self.video_player.dpi_scale))
-                                layout.addWidget(widget, 0)  # 拉伸因子为0，不随窗口拉伸
+                                self.control_container = widget
                                 break
-
+                    
+                    if self.control_container:
+                        # 设置控制栏样式 - 使用纯色base_color背景
+                        app = QApplication.instance()
+                        if hasattr(app, 'settings_manager'):
+                            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#2D2D2D")
+                        else:
+                            base_color = "#2D2D2D"
+                        
+                        scaled_radius = int(8 * self.video_player.dpi_scale)
+                        # 先设置父级
+                        self.control_container.setParent(self.stack_container)
+                        # 清除所有样式，使用 setAttribute 确保样式正确应用
+                        self.control_container.setStyleSheet("")
+                        self.control_container.setAttribute(Qt.WA_StyledBackground, True)
+                        # 设置 objectName 和样式
+                        self.control_container.setObjectName("DetachedControlBar")
+                        self.control_container.setStyleSheet(f"""
+                            #DetachedControlBar {{
+                                background-color: {base_color};
+                                border: none;
+                                border-radius: {scaled_radius}px;
+                            }}
+                        """)
+                        # 设置控制栏固定高度
+                        self.control_container.setFixedHeight(int(50 * self.video_player.dpi_scale))
+                        # 初始位置在底部，带边距
+                        self._update_control_position()
+                    
                     # 启用鼠标跟踪，用于双击检测
                     self.setMouseTracking(True)
                     self.video_frame = self.video_player.media_frame
                     self.video_frame.setMouseTracking(True)
                     self.video_frame.mouseDoubleClickEvent = self._on_video_double_click
 
-                    # 安装事件过滤器，监控焦点变化
+                    # 安装事件过滤器，监控焦点变化和大小变化
                     self.installEventFilter(self)
+                
+                def resizeEvent(self, event):
+                    """窗口大小变化时更新各层位置和大小"""
+                    super().resizeEvent(event)
+                    # 更新视频区域大小 - 填满整个窗口
+                    if hasattr(self, 'stack_container'):
+                        self.stack_container.setGeometry(self.centralWidget().rect())
+                        self.video_player.media_frame.setGeometry(self.stack_container.rect())
+                        # 更新控制栏位置
+                        self._update_control_position()
+                
+                def _update_control_position(self):
+                    """更新控制栏位置 - 固定在底部，带边距浮动显示"""
+                    if self.control_container:
+                        container_width = self.stack_container.width()
+                        container_height = self.stack_container.height()
+                        control_height = self.control_container.height()
+                        
+                        # 计算边距（DPI缩放）
+                        margin = int(20 * self.video_player.dpi_scale)
+                        bottom_margin = int(30 * self.video_player.dpi_scale)
+                        
+                        # 控制栏宽度 = 容器宽度 - 左右边距
+                        control_width = container_width - 2 * margin
+                        
+                        # 控制栏位置：水平居中，底部对齐带边距
+                        x = margin
+                        y = container_height - control_height - bottom_margin
+                        
+                        self.control_container.setGeometry(x, y, control_width, control_height)
 
                 def eventFilter(self, obj, event):
                     """事件过滤器 - 确保窗口始终保持活跃状态"""
@@ -2493,15 +2573,7 @@ class VideoPlayer(QWidget):
 
                     event.accept()
 
-                def resizeEvent(self, event):
-                    """窗口大小变化时通知播放器"""
-                    super().resizeEvent(event)
-                    if self.video_player and self.video_player.player_core:
-                        try:
-                            # MPV会自动检测窗口大小变化
-                            pass
-                        except Exception as e:
-                            print(f"[DetachedWindow] 处理窗口大小变化失败: {e}")
+
 
             # 保存原始父容器和布局引用
             self._parent_container = self.parent()
@@ -2568,33 +2640,22 @@ class VideoPlayer(QWidget):
 
             # 先从分离窗口中移除控件，设置父窗口为None，然后重新添加回原布局
 
-            # 1. 处理媒体框架 - 从分离窗口中移除并重新设置父窗口
+            # 1. 处理媒体框架 - 从分离窗口的堆叠容器中移除并重新设置父窗口
             self.media_frame.setParent(None)
             self.media_frame.setParent(self)
 
-            # 2. 找到控制容器并处理
-            control_container = None
-            # 从分离窗口的布局中查找控制容器
-            detached_central = self._detached_window.centralWidget()
-            if detached_central and detached_central.layout():
-                detached_layout = detached_central.layout()
-                for i in range(detached_layout.count()):
-                    item = detached_layout.itemAt(i)
-                    if item and item.widget():
-                        widget = item.widget()
-                        # 控制容器不是媒体框架
-                        if widget != self.media_frame and isinstance(widget, QWidget):
-                            control_container = widget
-                            break
+            # 2. 获取控制容器 - 直接从分离窗口实例中获取
+            control_container = getattr(self._detached_window, 'control_container', None)
 
             # 如果找到控制容器，从分离窗口中移除并重新设置父窗口
             if control_container:
                 control_container.setParent(None)
                 control_container.setParent(self)
                 # 恢复控制容器的原始样式表（透明背景）
-                control_container.setStyleSheet("background-color: transparent; border: none; border-radius: 17.5px 17.5px 17.5px 17.5px;")
-                # 重置控制容器的最大高度限制
-                control_container.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+                scaled_radius = int(17.5 * self.dpi_scale)
+                control_container.setStyleSheet(f"background-color: transparent; border: none; border-radius: {scaled_radius}px {scaled_radius}px {scaled_radius}px {scaled_radius}px;")
+                # 重置控制容器的固定高度限制
+                control_container.setFixedHeight(int(50 * self.dpi_scale))
 
             # 3. 将分离窗口引用置为None（在closeEvent中会调用deleteLater）
             self._detached_window = None
@@ -2654,33 +2715,22 @@ class VideoPlayer(QWidget):
             # 先从分离窗口中移除控件，设置父窗口为None，然后重新添加回原布局
             # 这一步必须在关闭分离窗口之前完成
 
-            # 1. 处理媒体框架 - 从分离窗口中移除并重新设置父窗口
+            # 1. 处理媒体框架 - 从分离窗口的堆叠容器中移除并重新设置父窗口
             self.media_frame.setParent(None)
             self.media_frame.setParent(self)
 
-            # 2. 找到控制容器并处理
-            control_container = None
-            # 从分离窗口的布局中查找控制容器
-            detached_central = self._detached_window.centralWidget()
-            if detached_central and detached_central.layout():
-                detached_layout = detached_central.layout()
-                for i in range(detached_layout.count()):
-                    item = detached_layout.itemAt(i)
-                    if item and item.widget():
-                        widget = item.widget()
-                        # 控制容器不是媒体框架
-                        if widget != self.media_frame and isinstance(widget, QWidget):
-                            control_container = widget
-                            break
+            # 2. 获取控制容器 - 直接从分离窗口实例中获取
+            control_container = getattr(self._detached_window, 'control_container', None)
 
             # 如果找到控制容器，从分离窗口中移除并重新设置父窗口
             if control_container:
                 control_container.setParent(None)
                 control_container.setParent(self)
                 # 恢复控制容器的原始样式表（透明背景）
-                control_container.setStyleSheet("background-color: transparent; border: none; border-radius: 17.5px 17.5px 17.5px 17.5px;")
-                # 重置控制容器的最大高度限制
-                control_container.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+                scaled_radius = int(17.5 * self.dpi_scale)
+                control_container.setStyleSheet(f"background-color: transparent; border: none; border-radius: {scaled_radius}px {scaled_radius}px {scaled_radius}px {scaled_radius}px;")
+                # 重置控制容器的固定高度限制
+                control_container.setFixedHeight(int(50 * self.dpi_scale))
 
             # 3. 关闭独立窗口（此时控件已经安全移除）
             self._detached_window.close()

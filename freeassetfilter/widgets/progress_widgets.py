@@ -61,6 +61,10 @@ class CustomProgressBar(QWidget):
         self.setMinimumSize(scaled_min_width, scaled_min_height)
         self.setMaximumHeight(scaled_min_height)
         
+        # 设置透明背景，避免显示默认黑色背景
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("background-color: transparent;")
+        
         # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
@@ -595,6 +599,10 @@ class D_ProgressBar(QWidget):
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.valueChanged.connect(self._on_animation_value_changed)
         self._animation.finished.connect(self._on_animation_finished)
+
+        # 设置透明背景，避免显示默认黑色背景
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("background-color: transparent;")
 
         self._init_sizes()
         self._init_colors()
