@@ -522,10 +522,9 @@ class FileStagingPool(QWidget):
         Args:
             path: 文件路径
         """
-        # 查找对应的文件信息
         for file_info in self.items:
             if file_info["path"] == path:
-                self.open_file(file_info)
+                self.item_left_clicked.emit(file_info)
                 break
     
     def rename_file(self, file_info, widget=None):
