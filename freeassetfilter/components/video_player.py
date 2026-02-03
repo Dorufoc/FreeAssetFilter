@@ -32,6 +32,7 @@ from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets.D_widgets import CustomButton
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.utils.mouse_activity_monitor import MouseActivityMonitor
 from freeassetfilter.widgets.control_menu import CustomControlMenu
 from freeassetfilter.widgets.D_volume_control import DVolumeControl
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
@@ -2423,12 +2424,12 @@ class VideoPlayer(QWidget):
 
                     self.installEventFilter(self)
 
-                    self._last_mouse_pos = None
-                    self._hide_timer = QTimer(self)
-                    self._hide_timer.setSingleShot(True)
-                    self._hide_timer.timeout.connect(self._on_hide_timer_timeout)
                     self._hide_control_bar_visible = True
-                    self._setup_global_mouse_tracking()
+
+                    self._mouse_monitor = MouseActivityMonitor(timeout=3000)
+                    self._mouse_monitor.activity_callback = self._on_mouse_activity
+                    self._mouse_monitor.timeout_callback = self._on_timeout_reached
+                    self._mouse_monitor.start()
                 
                 def _create_control_overlay(self):
                     """创建控制栏覆盖窗口"""
@@ -2488,53 +2489,14 @@ class VideoPlayer(QWidget):
                     
                     self.control_overlay.installEventFilter(self)
 
-                def _setup_global_mouse_tracking(self):
-                    """设置全局鼠标跟踪"""
-                    try:
-                        import ctypes
-                        from ctypes import wintypes
-                        
-                        user32 = ctypes.windll.user32
-                        
-                        WH_MOUSE_LL = 14
-                        
-                        def mouse_proc(nCode, wParam, lParam):
-                            """鼠标钩子回调函数"""
-                            try:
-                                if nCode == 0:
-                                    if wParam == 0x200:
-                                        pt = wintypes.POINT()
-                                        user32.GetCursorPos(ctypes.byref(pt))
-                                        current_pos = (pt.x, pt.y)
-                                        
-                                        if self._last_mouse_pos is None or self._last_mouse_pos != current_pos:
-                                            self._last_mouse_pos = current_pos
-                                            QTimer.singleShot(0, self._on_mouse_moved)
-                            except Exception as e:
-                                pass
-                            
-                            return user32.CallNextHookEx(None, nCode, wParam, lParam)
-                        
-                        mouse_proc_func = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)(mouse_proc)
-                        
-                        self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_func, None, 0)
-                        if not self._mouse_hook:
-                            error_code = ctypes.get_last_error()
-                            print(f"[DetachedVideoWindow] 安装鼠标钩子失败，错误码: {error_code}")
-                        else:
-                            print(f"[DetachedVideoWindow] 鼠标钩子安装成功，hook: {self._mouse_hook}")
-                            self._mouse_proc_func = mouse_proc_func
-                    except Exception as e:
-                        print(f"[DetachedVideoWindow] 设置全局鼠标跟踪失败: {e}")
-
-                def _on_mouse_moved(self):
-                    """鼠标移动时的处理"""
-                    print(f"[DetachedVideoWindow] 鼠标移动检测到，hide_control_bar_visible: {self._hide_control_bar_visible}")
+                def _on_mouse_activity(self):
+                    """鼠标活动处理"""
                     if not self._hide_control_bar_visible:
                         self._show_control_bar()
-                    self._hide_timer.stop()
-                    self._hide_timer.start(3000)
-                    print(f"[DetachedVideoWindow] 计时器已重置为3秒")
+
+                def _on_timeout_reached(self):
+                    """空闲超时处理"""
+                    self._hide_control_bar()
 
                 def _show_control_bar(self):
                     """显示控制栏"""
@@ -2542,19 +2504,12 @@ class VideoPlayer(QWidget):
                         self.control_overlay.show()
                         self.control_overlay.raise_()
                         self._hide_control_bar_visible = True
-                        print(f"[DetachedVideoWindow] 控制栏已显示")
 
                 def _hide_control_bar(self):
                     """隐藏控制栏"""
                     if hasattr(self, 'control_overlay') and self.control_overlay:
                         self.control_overlay.hide()
                         self._hide_control_bar_visible = False
-                        print(f"[DetachedVideoWindow] 控制栏已隐藏")
-
-                def _on_hide_timer_timeout(self):
-                    """隐藏计时器超时"""
-                    print(f"[DetachedVideoWindow] 隐藏计时器超时")
-                    self._hide_control_bar()
                 
                 def _update_control_position(self):
                     """更新控制栏位置"""
@@ -2596,20 +2551,12 @@ class VideoPlayer(QWidget):
                         self.control_overlay.show()
                         self.control_overlay.raise_()
                         self._hide_control_bar_visible = True
-                    if hasattr(self, '_hide_timer') and self._hide_timer:
-                        self._hide_timer.start(3000)
+                    if hasattr(self, '_mouse_monitor') and self._mouse_monitor:
+                        self._mouse_monitor.reset_timer()
                 
                 def closeEvent(self, event):
-                    if hasattr(self, '_hide_timer') and self._hide_timer:
-                        self._hide_timer.stop()
-                    
-                    if hasattr(self, '_mouse_hook') and self._mouse_hook:
-                        try:
-                            import ctypes
-                            ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
-                            self._mouse_hook = None
-                        except Exception as e:
-                            print(f"[DetachedVideoWindow] 卸载鼠标钩子失败: {e}")
+                    if hasattr(self, '_mouse_monitor') and self._mouse_monitor:
+                        self._mouse_monitor.stop()
                     
                     if hasattr(self, 'control_overlay') and self.control_overlay:
                         self.control_overlay.close()
