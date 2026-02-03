@@ -2380,8 +2380,8 @@ class VideoPlayer(QWidget):
                 """分离的视频播放窗口 - 无边框全屏窗口
                 
                 布局结构：
-                - 第0层：视频内容区域，填满整个显示区域
-                - 第1层：控制栏，固定在底部浮动显示
+                - 主窗口：只负责渲染视频内容
+                - 控制栏覆盖窗口：独立的浮动窗口，包含控制栏
                 """
 
                 def __init__(self, video_player, parent=None):
@@ -2389,48 +2389,59 @@ class VideoPlayer(QWidget):
                     self.video_player = video_player
                     self.setWindowTitle("视频播放器 - FreeAssetFilter")
 
-                    # 设置无边框窗口
                     self.setWindowFlags(Qt.FramelessWindowHint)
+                    
+                    self.setStyleSheet("background-color: #000000;")
 
-                    # 设置窗口图标
                     app = QApplication.instance()
                     if hasattr(app, 'windowIcon') and app.windowIcon():
                         self.setWindowIcon(app.windowIcon())
 
-                    # 创建中央部件
                     central_widget = QWidget()
-                    central_widget.setStyleSheet("background-color: transparent;")
+                    central_widget.setStyleSheet("background-color: #000000;")
                     self.setCentralWidget(central_widget)
                     
-                    # 使用绝对定位布局，实现控制栏浮动在视频上方
-                    central_widget.setLayout(QVBoxLayout())
-                    central_widget.layout().setContentsMargins(0, 0, 0, 0)
-                    central_widget.layout().setSpacing(0)
+                    central_layout = QVBoxLayout(central_widget)
+                    central_layout.setContentsMargins(0, 0, 0, 0)
+                    central_layout.setSpacing(0)
                     
-                    # 创建堆叠容器，用于分层显示
-                    self.stack_container = QWidget(central_widget)
-                    self.stack_container.setGeometry(central_widget.rect())
-                    self.stack_container.setStyleSheet("background-color: transparent;")
-                    self.stack_container.setAttribute(Qt.WA_TranslucentBackground, True)
+                    self.video_player.media_frame.setParent(central_widget)
+                    self.video_player.media_frame.setStyleSheet("background-color: transparent;")
+                    self.video_player.media_frame.setGeometry(central_widget.rect())
+                    central_layout.addWidget(self.video_player.media_frame, 1)
                     
-                    # 第0层：视频内容区域 - 填满整个显示区域
-                    self.video_player.media_frame.setParent(self.stack_container)
-                    self.video_player.media_frame.setGeometry(self.stack_container.rect())
-                    self.video_player.media_frame.setStyleSheet("background-color: #000000;")
+                    if self.video_player.media_frame.layout():
+                        self.video_player.media_frame.layout().update()
+                        self.video_player.video_frame.setGeometry(self.video_player.media_frame.rect())
                     
-                    # 第1层：控制栏 - 固定在底部浮动显示
+                    self._create_control_overlay()
+                    
+                    self.setMouseTracking(True)
+                    self.video_frame = self.video_player.media_frame
+                    self.video_frame.setMouseTracking(True)
+                    self.video_frame.mouseDoubleClickEvent = self._on_video_double_click
+
+                    self.installEventFilter(self)
+                
+                def _create_control_overlay(self):
+                    """创建控制栏覆盖窗口"""
+                    self.control_overlay = QWidget(self, Qt.Tool)
+                    self.control_overlay.setWindowTitle("控制栏")
+                    self.control_overlay.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
+                    
+                    self.control_overlay.setAttribute(Qt.WA_TranslucentBackground, True)
+                    self.control_overlay.setStyleSheet("background-color: transparent;")
+                    
                     self.control_container = None
                     for i in range(self.video_player.layout().count()):
                         item = self.video_player.layout().itemAt(i)
                         if item and item.widget():
                             widget = item.widget()
-                            # 检查是否是控制容器（通过样式或类型判断）
                             if isinstance(widget, QWidget) and widget != self.video_player.media_frame:
                                 self.control_container = widget
                                 break
                     
                     if self.control_container:
-                        # 设置控制栏样式 - 使用纯色base_color背景
                         app = QApplication.instance()
                         if hasattr(app, 'settings_manager'):
                             base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#2D2D2D")
@@ -2438,13 +2449,11 @@ class VideoPlayer(QWidget):
                             base_color = "#2D2D2D"
                         
                         scaled_radius = int(8 * self.video_player.dpi_scale)
-                        # 先设置父级
-                        self.control_container.setParent(self.stack_container)
-                        # 清除所有样式，使用 setAttribute 确保样式正确应用
+                        
                         self.control_container.setStyleSheet("")
                         self.control_container.setAttribute(Qt.WA_StyledBackground, True)
-                        # 设置 objectName 和样式
                         self.control_container.setObjectName("DetachedControlBar")
+                        
                         self.control_container.setStyleSheet(f"""
                             #DetachedControlBar {{
                                 background-color: {base_color};
@@ -2452,49 +2461,75 @@ class VideoPlayer(QWidget):
                                 border-radius: {scaled_radius}px;
                             }}
                         """)
-                        # 设置控制栏固定高度
-                        self.control_container.setFixedHeight(int(50 * self.video_player.dpi_scale))
-                        # 初始位置在底部，带边距
+                        
+                        control_height = int(50 * self.video_player.dpi_scale)
+                        self.control_container.setFixedHeight(control_height)
+                        
+                        overlay_content = QWidget(self.control_overlay)
+                        overlay_content.setObjectName("ControlOverlayContent")
+                        overlay_content.setStyleSheet("#ControlOverlayContent { background-color: transparent; }")
+                        
+                        self.control_container.setParent(overlay_content)
+                        self.control_container.setGeometry(0, 0, 100, control_height)
+                        
+                        overlay_layout = QVBoxLayout(self.control_overlay)
+                        overlay_layout.setContentsMargins(0, 0, 0, 0)
+                        overlay_layout.setSpacing(0)
+                        overlay_layout.addWidget(overlay_content)
+                        
                         self._update_control_position()
                     
-                    # 启用鼠标跟踪，用于双击检测
-                    self.setMouseTracking(True)
-                    self.video_frame = self.video_player.media_frame
-                    self.video_frame.setMouseTracking(True)
-                    self.video_frame.mouseDoubleClickEvent = self._on_video_double_click
-
-                    # 安装事件过滤器，监控焦点变化和大小变化
-                    self.installEventFilter(self)
-                
-                def resizeEvent(self, event):
-                    """窗口大小变化时更新各层位置和大小"""
-                    super().resizeEvent(event)
-                    # 更新视频区域大小 - 填满整个窗口
-                    if hasattr(self, 'stack_container'):
-                        self.stack_container.setGeometry(self.centralWidget().rect())
-                        self.video_player.media_frame.setGeometry(self.stack_container.rect())
-                        # 更新控制栏位置
-                        self._update_control_position()
+                    self.control_overlay.installEventFilter(self)
                 
                 def _update_control_position(self):
-                    """更新控制栏位置 - 固定在底部，带边距浮动显示"""
-                    if self.control_container:
-                        container_width = self.stack_container.width()
-                        container_height = self.stack_container.height()
-                        control_height = self.control_container.height()
-                        
-                        # 计算边距（DPI缩放）
-                        margin = int(20 * self.video_player.dpi_scale)
-                        bottom_margin = int(30 * self.video_player.dpi_scale)
-                        
-                        # 控制栏宽度 = 容器宽度 - 左右边距
-                        control_width = container_width - 2 * margin
-                        
-                        # 控制栏位置：水平居中，底部对齐带边距
-                        x = margin
-                        y = container_height - control_height - bottom_margin
-                        
-                        self.control_container.setGeometry(x, y, control_width, control_height)
+                    """更新控制栏位置"""
+                    if not hasattr(self, 'control_container') or not self.control_container:
+                        return
+                    
+                    if not hasattr(self, 'control_overlay') or not self.control_overlay:
+                        return
+                    
+                    margin = int(20 * self.video_player.dpi_scale)
+                    bottom_margin = int(30 * self.video_player.dpi_scale)
+                    
+                    control_width = self.width() - 2 * margin
+                    control_height = self.control_container.height()
+                    
+                    x = margin
+                    y = self.height() - control_height - bottom_margin
+                    
+                    self.control_overlay.setGeometry(x, y, control_width, control_height)
+                    self.control_container.setGeometry(0, 0, control_width, control_height)
+                    
+                    self.control_overlay.show()
+                    self.control_overlay.raise_()
+                
+                def resizeEvent(self, event):
+                    super().resizeEvent(event)
+                    
+                    if self.video_player.media_frame.parent() == self.centralWidget():
+                        self.video_player.media_frame.setGeometry(self.centralWidget().rect())
+                        if self.video_player.media_frame.layout():
+                            self.video_player.media_frame.layout().update()
+                            self.video_player.video_frame.setGeometry(self.video_player.media_frame.rect())
+                    
+                    self._update_control_position()
+                
+                def showEvent(self, event):
+                    super().showEvent(event)
+                    if hasattr(self, 'control_overlay') and self.control_overlay:
+                        self.control_overlay.show()
+                        self.control_overlay.raise_()
+                
+                def closeEvent(self, event):
+                    if hasattr(self, 'control_overlay') and self.control_overlay:
+                        self.control_overlay.close()
+                    super().closeEvent(event)
+                
+                def moveEvent(self, event):
+                    super().moveEvent(event)
+                    if hasattr(self, 'control_overlay') and self.control_overlay:
+                        self._update_control_position()
 
                 def eventFilter(self, obj, event):
                     """事件过滤器 - 确保窗口始终保持活跃状态"""
