@@ -542,18 +542,18 @@ class MPVPlayerCore(QObject):
                         
                         # 清除待处理的LUT设置
                         self._pending_cube_apply = None
-                        
-                        # 媒体加载完成后，检查并恢复播放状态
-                        try:
-                            # 如果媒体正在改变，不恢复播放状态
-                            if not is_media_changing:
-                                # 如果是循环播放触发的FILE_LOADED事件，确保继续播放
-                                if self._is_playing:
-                                    #print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复播放状态")
-                                    # 多次尝试设置播放状态，提高成功率
-                                    play_attempts = 0
-                                    while play_attempts < 3:
-                                        play_attempts += 1
+                    
+                    # 媒体加载完成后，检查并恢复播放状态（独立于LUT设置处理）
+                    try:
+                        # 如果媒体正在改变，不恢复播放状态
+                        if not is_media_changing:
+                            # 如果是循环播放触发的FILE_LOADED事件，确保继续播放
+                            if self._is_playing:
+                                #print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复播放状态")
+                                # 多次尝试设置播放状态，提高成功率
+                                play_attempts = 0
+                                while play_attempts < 3:
+                                    play_attempts += 1
                                     try:
                                         self._set_property_bool('pause', False)
                                         current_pause = self._get_property_bool('pause')
@@ -562,33 +562,33 @@ class MPVPlayerCore(QObject):
                                     except Exception as e:
                                         print(f"[MPVPlayerCore] FILE_LOADED事件：设置播放状态失败 - {e}")
                                     time.sleep(0.1)
-                        except Exception as e:
-                            print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放状态时发生异常 - {e}")
-                            
-                            # 强制刷新视频，防止黑屏
-                            try:
-                                # 保存当前播放速度
-                                current_speed = self._get_property_double('speed')
-                                
-                                # 先设置播放速度为1.1，然后立即恢复为1.0
-                                # 这种方式可以触发视频刷新，同时避免在媒体刚加载时的错误
-                                self._execute_command(['set', 'speed', '1.1'])
-                                self._execute_command(['set', 'speed', '1.0'])
-                                # print(f"[MPVPlayerCore] FILE_LOADED事件：通过调整播放速度刷新视频")
-                                
-                                # 恢复之前的播放速度
-                                self._set_property_double('speed', current_speed)
-                                # print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放速度为: {current_speed}x")
-                            except Exception as e:
-                                # 忽略刷新错误，因为这不会影响播放功能
-                                pass
+                    except Exception as e:
+                        print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放状态时发生异常 - {e}")
                         
-                        # 媒体加载完成后，确保idle事件处理恢复正常
-                        if self._idle_events_ignored:
-                            # print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复idle事件处理")
-                            self._idle_events_ignored = False
-                            self._idle_ignore_until = 0.0
-                            self._idle_event_timestamps.clear()
+                        # 强制刷新视频，防止黑屏
+                        try:
+                            # 保存当前播放速度
+                            current_speed = self._get_property_double('speed')
+                            
+                            # 先设置播放速度为1.1，然后立即恢复为1.0
+                            # 这种方式可以触发视频刷新，同时避免在媒体刚加载时的错误
+                            self._execute_command(['set', 'speed', '1.1'])
+                            self._execute_command(['set', 'speed', '1.0'])
+                            # print(f"[MPVPlayerCore] FILE_LOADED事件：通过调整播放速度刷新视频")
+                            
+                            # 恢复之前的播放速度
+                            self._set_property_double('speed', current_speed)
+                            # print(f"[MPVPlayerCore] FILE_LOADED事件：恢复播放速度为: {current_speed}x")
+                        except Exception as e:
+                            # 忽略刷新错误，因为这不会影响播放功能
+                            pass
+                    
+                    # 媒体加载完成后，确保idle事件处理恢复正常
+                    if self._idle_events_ignored:
+                        # print(f"[MPVPlayerCore] FILE_LOADED事件：媒体加载完成，恢复idle事件处理")
+                        self._idle_events_ignored = False
+                        self._idle_ignore_until = 0.0
+                        self._idle_event_timestamps.clear()
                 
                 elif event_type == MPV_EVENT_IDLE:
                     # 处理idle事件（播放结束后可能进入此状态）

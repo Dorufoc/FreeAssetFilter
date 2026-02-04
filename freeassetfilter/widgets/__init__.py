@@ -27,6 +27,8 @@ from .D_volume_control import DVolumeControl
 from .menu_list import D_MenuList, D_MenuListItem
 # 导入音频背景组件（包含流体动画和封面模糊两种模式）
 from .audio_background import AudioBackground
+# 导入滚动文本组件
+from .scrolling_text import ScrollingText
 
 __all__ = [
     'CustomButton',
@@ -43,5 +45,6 @@ __all__ = [
     'DVolumeControl',
     'D_MenuList',
     'D_MenuListItem',
-    'AudioBackground'
+    'AudioBackground',
+    'ScrollingText'
 ]

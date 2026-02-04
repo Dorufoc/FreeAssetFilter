@@ -1513,31 +1513,167 @@ class ModernSettingsWindow(QDialog):
     def reset_settings(self):
         """
         重置设置为默认值
+        将当前设置恢复为默认值，并立即更新UI显示
         """
         # 询问用户是否确认重置
         confirm_box = CustomMessageBox(self)
         confirm_box.set_title("确认重置")
         confirm_box.set_text("重置后所有设置将恢复为默认值，此操作不可撤销。\n是否继续？")
         confirm_box.set_buttons(["确认重置", "取消"], Qt.Vertical, ["warning", "secondary"])
-        
-        # 获取当前设置文件路径
-        settings_file = self.settings_manager.settings_file
-        
+
         if confirm_box.exec_() == 0:
-            # 删除设置文件
-            if os.path.exists(settings_file):
-                try:
-                    os.remove(settings_file)
-                    print(f"已删除设置文件: {settings_file}")
-                except Exception as e:
-                    print(f"删除设置文件失败: {e}")
-            
-            # 清除内存中的设置缓存，强制重新加载
-            self.settings_manager.settings = None
-            
-            # 显示重启提示窗口
-            self._show_restart_required_dialog()
-    
+            try:
+                # 调用设置管理器的重置方法
+                self.settings_manager.reset_to_defaults()
+
+                # 保存默认设置到文件
+                self.settings_manager.save_settings()
+
+                # 重新加载设置到当前窗口
+                self.load_settings()
+
+                # 更新所有UI控件到默认值
+                self._update_ui_to_defaults()
+
+                # 显示成功提示
+                success_box = CustomMessageBox(self)
+                success_box.set_title("重置成功")
+                success_box.set_text("所有设置已恢复为默认值。\n部分设置可能需要重启程序后完全生效。")
+                success_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                success_box.exec_()
+
+            except Exception as e:
+                # 错误处理
+                error_box = CustomMessageBox(self)
+                error_box.set_title("重置失败")
+                error_box.set_text(f"重置设置时发生错误：\n{str(e)}\n\n请尝试手动删除设置文件后重启程序。")
+                error_box.set_buttons(["确定"], Qt.Horizontal, ["warning"])
+                error_box.exec_()
+                print(f"重置设置失败: {e}")
+
+    def _update_ui_to_defaults(self):
+        """
+        将所有UI控件更新为默认值
+        根据default_settings中的值更新各个控件
+        """
+        defaults = self.settings_manager.default_settings
+
+        # 更新通用设置 - 主题设置
+        if hasattr(self, 'theme_switch') and self.theme_switch:
+            default_theme = defaults["appearance"]["theme"]
+            # 主题为"dark"时开关为True，否则为False
+            is_dark_theme = (default_theme == "dark")
+            self.theme_switch.set_switch_value(is_dark_theme)
+
+        # 更新通用设置 - 字体设置
+        if hasattr(self, 'font_style_setting') and self.font_style_setting:
+            default_font = defaults["font"]["style"]
+            if self.font_style_setting.button_group:
+                self.font_style_setting.button_group[0].setText(default_font)
+
+        if hasattr(self, 'font_size_bar') and self.font_size_bar:
+            default_size = defaults["font"]["size"]
+            self.font_size_bar.set_value(default_size)
+
+        # 更新文件选择器设置
+        if hasattr(self, 'auto_clear_cache_switch') and self.auto_clear_cache_switch:
+            default_value = defaults["file_selector"]["auto_clear_thumbnail_cache"]
+            self.auto_clear_cache_switch.set_switch_value(default_value)
+
+        if hasattr(self, 'cache_cleanup_period') and self.cache_cleanup_period:
+            default_value = defaults["file_selector"]["cache_cleanup_period"]
+            self.cache_cleanup_period.set_value(default_value)
+
+        if hasattr(self, 'cache_cleanup_threshold') and self.cache_cleanup_threshold:
+            default_value = defaults["file_selector"]["cache_cleanup_threshold"]
+            self.cache_cleanup_threshold.set_value(default_value)
+
+        if hasattr(self, 'restore_last_path_switch') and self.restore_last_path_switch:
+            default_value = defaults["file_selector"]["restore_last_path"]
+            self.restore_last_path_switch.set_switch_value(default_value)
+
+        if hasattr(self, 'touch_optimization_switch') and self.touch_optimization_switch:
+            default_value = defaults["file_selector"].get("touch_optimization", True)
+            self.touch_optimization_switch.set_switch_value(default_value)
+
+        if hasattr(self, 'mouse_buttons_swap_switch') and self.mouse_buttons_swap_switch:
+            default_value = defaults["file_selector"].get("mouse_buttons_swap", False)
+            self.mouse_buttons_swap_switch.set_switch_value(default_value)
+
+        if hasattr(self, 'timeline_view_switch') and self.timeline_view_switch:
+            default_value = defaults["file_selector"].get("timeline_view_enabled", False)
+            self.timeline_view_switch.set_switch_value(default_value)
+
+        # 更新文件暂存池设置
+        if hasattr(self, 'auto_restore_switch') and self.auto_restore_switch:
+            default_value = defaults["file_staging"]["auto_restore_records"]
+            self.auto_restore_switch.set_switch_value(default_value)
+
+        if hasattr(self, 'default_export_data_path') and self.default_export_data_path:
+            default_value = defaults["file_staging"]["default_export_data_path"]
+            self.default_export_data_path.set_input_text(default_value)
+
+        if hasattr(self, 'default_export_file_path') and self.default_export_file_path:
+            default_value = defaults["file_staging"]["default_export_file_path"]
+            self.default_export_file_path.set_input_text(default_value)
+
+        if hasattr(self, 'delete_original_switch') and self.delete_original_switch:
+            default_value = defaults["file_staging"]["delete_original_after_export"]
+            self.delete_original_switch.set_switch_value(default_value)
+
+        # 更新播放器设置
+        if hasattr(self, 'use_default_volume_switch') and self.use_default_volume_switch:
+            default_value = defaults["player"]["use_default_volume"]
+            self.use_default_volume_switch.set_switch_value(default_value)
+            # 更新关联控件的可见性
+            if hasattr(self, 'default_volume_bar') and self.default_volume_bar:
+                self.default_volume_bar.setVisible(default_value)
+
+        if hasattr(self, 'default_volume_bar') and self.default_volume_bar:
+            default_value = defaults["player"]["default_volume"]
+            self.default_volume_bar.set_value(default_value)
+
+        if hasattr(self, 'use_default_speed_switch') and self.use_default_speed_switch:
+            default_value = defaults["player"]["use_default_speed"]
+            self.use_default_speed_switch.set_switch_value(default_value)
+            # 更新关联控件的可见性
+            if hasattr(self, 'default_speed_setting') and self.default_speed_setting:
+                self.default_speed_setting.setVisible(default_value)
+
+        if hasattr(self, 'default_speed_setting') and self.default_speed_setting:
+            default_value = defaults["player"]["default_speed"]
+            if self.default_speed_setting.button_group:
+                self.default_speed_setting.button_group[0].setText(f"{default_value}x")
+
+        # 更新开发者设置
+        if hasattr(self, 'debug_mode_switch') and self.debug_mode_switch:
+            default_value = defaults["developer"]["debug_mode"]
+            self.debug_mode_switch.set_switch_value(default_value)
+
+        # 更新音频背景样式设置
+        if hasattr(self, 'audio_background_style_setting') and self.audio_background_style_setting:
+            default_style = defaults["player"]["audio_background_style"]
+            if self.audio_background_style_setting.button_group:
+                self.audio_background_style_setting.button_group[0].setText(default_style)
+
+        # 更新流体渐变主题设置（如果有的话）
+        if hasattr(self, 'fluid_gradient_theme_setting') and self.fluid_gradient_theme_setting:
+            default_theme = defaults["player"]["fluid_gradient_theme"]
+            if self.fluid_gradient_theme_setting.button_group:
+                self.fluid_gradient_theme_setting.button_group[0].setText(default_theme)
+
+        # 更新current_settings中的主题颜色为默认值
+        default_colors = defaults["appearance"]["colors"]
+        for color_key, color_value in default_colors.items():
+            self.current_settings.update({f"appearance.colors.{color_key}": color_value})
+
+        # 更新UI样式以反映主题颜色的变化
+        self._update_styles()
+        self._update_theme_display()
+
+        # 使SVG颜色缓存失效，确保下次渲染时使用新颜色
+        SvgRenderer._invalidate_color_cache()
+
     def _show_restart_required_dialog(self):
         """
         显示重启提示窗口
