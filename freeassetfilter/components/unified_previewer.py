@@ -32,7 +32,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QFont
 
-from freeassetfilter.core.file_info_browser import FileInfoBrowser
+from freeassetfilter.components.file_info_previewer import FileInfoPreviewer
 from freeassetfilter.components.folder_content_list import FolderContentList
 from freeassetfilter.components.archive_browser import ArchiveBrowser
 from freeassetfilter.widgets.D_widgets import CustomMessageBox
@@ -65,7 +65,7 @@ class UnifiedPreviewer(QWidget):
         self.current_file_info = None
         
         # 初始化文件信息查看器
-        self.file_info_viewer = FileInfoBrowser()
+        self.file_info_viewer = FileInfoPreviewer()
         
         # 初始化当前预览组件
         self.current_preview_widget = None

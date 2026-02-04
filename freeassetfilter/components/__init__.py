@@ -5,6 +5,7 @@ from .archive_browser import ArchiveBrowser
 from .auto_timeline import AutoTimeline
 from .file_selector import CustomFileSelector
 from .file_staging_pool import FileStagingPool
+from .file_info_previewer import FileInfoPreviewer
 from .folder_content_list import FolderContentList
 from .font_previewer import FontPreviewer
 from .pdf_previewer import PDFPreviewer
@@ -19,6 +20,7 @@ __all__ = [
     'AutoTimeline',
     'CustomFileSelector',
     'FileStagingPool',
+    'FileInfoPreviewer',
     'FolderContentList',
     'FontPreviewer',
     'PDFPreviewer',
