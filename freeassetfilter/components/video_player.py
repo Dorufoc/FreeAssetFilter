@@ -257,11 +257,11 @@ class VideoPlayer(QWidget):
         
         # 媒体显示区域设置
         self.media_frame.setStyleSheet("background-color: transparent;")
-        self.media_frame.setMinimumSize(150, 100)
+        self.media_frame.setMinimumSize(200, 200)
         
         # 视频显示区域设置 - MPV将直接渲染到这个窗口
         self.video_frame.setStyleSheet("background-color: transparent;")
-        self.video_frame.setMinimumSize(150, 100)
+        self.video_frame.setMinimumSize(200, 200)
         
         # 设置视频显示区域的布局
         video_layout = QVBoxLayout(self.video_frame)
@@ -278,7 +278,7 @@ class VideoPlayer(QWidget):
         self.background_label.setStyleSheet("background-color: transparent;")
         self.background_label.setScaledContents(True)
         self.background_label.setAlignment(Qt.AlignCenter)
-        self.background_label.setMinimumSize(150, 100)
+        self.background_label.setMinimumSize(200, 200)
         
         # 背景遮罩 - 设置为完全透明，移除边框效果
         self.overlay_widget.setStyleSheet("background-color: transparent;")
@@ -395,7 +395,7 @@ class VideoPlayer(QWidget):
         # 创建音频背景组件（支持流体动画和封面模糊两种模式）
         self.audio_background = AudioBackground(self)
         self.audio_background.setStyleSheet("background-color: transparent; border: none;")
-        self.audio_background.setMinimumSize(150, 100)
+        self.audio_background.setMinimumSize(200, 200)
         
         # 构建音频叠加布局
         audio_layout.addWidget(self.audio_background, 0, 0)

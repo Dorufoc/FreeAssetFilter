@@ -613,6 +613,8 @@ class CustomButton(QPushButton):
             self.setMaximumWidth(16777215)
             # 确保按钮宽度能容纳文字内容
             self.adjustSize()
+            # 根据文本内容计算并设置最小宽度，确保文本完整显示
+            self._update_minimum_width_for_text()
         
         if self.button_type == "primary":
             # 强调色方案
@@ -985,6 +987,56 @@ class CustomButton(QPushButton):
         self.button_type = button_type
         self.update_style()
         self.resizeEvent(None)  # 触发resizeEvent，更新圆角半径
+    
+    def setText(self, text):
+        """
+        重写setText方法，在设置文本后自动更新最小宽度
+        
+        Args:
+            text (str): 按钮文本
+        """
+        super().setText(text)
+        # 文本改变后，重新计算最小宽度
+        if self._display_mode == "text":
+            self._update_minimum_width_for_text()
+    
+    def _update_minimum_width_for_text(self):
+        """
+        根据文本内容计算并设置按钮的最小宽度，确保文本完整显示不被裁切
+        
+        计算逻辑：
+        - 使用当前字体计算文本的宽度
+        - 加上左右内边距（padding）
+        - 加上左右边框宽度
+        - 加上额外的安全边距，确保文本不会被裁切
+        """
+        if self._display_mode == "icon":
+            return
+        
+        # 获取当前文本
+        text = self.text()
+        if not text:
+            return
+        
+        # 使用当前字体计算文本宽度
+        font_metrics = self.fontMetrics()
+        text_width = font_metrics.horizontalAdvance(text)
+        
+        # 获取样式参数（与update_style中保持一致）
+        scaled_padding_horizontal = int(6 * self.dpi_scale)  # 水平方向内边距
+        border_width = int(0.5 * self.dpi_scale) if self.button_type == "primary" else int(1 * self.dpi_scale)
+        
+        # 计算最小宽度：文本宽度 + 左右内边距 + 左右边框 + 安全边距
+        # 安全边距用于防止某些字体或渲染差异导致的裁切
+        safety_margin = int(4 * self.dpi_scale)
+        min_width = text_width + (scaled_padding_horizontal * 2) + (border_width * 2) + safety_margin
+        
+        # 确保最小宽度不会小于预设的最小值
+        absolute_min = int(25 * self.dpi_scale)
+        min_width = max(min_width, absolute_min)
+        
+        # 设置最小宽度
+        self.setMinimumWidth(min_width)
     
     def _render_icon(self):
         """
