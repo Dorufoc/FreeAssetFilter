@@ -15,12 +15,13 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 提供高质量的SVG到QPixmap或QSvgWidget转换，确保正确处理RGBA通道
 """
 
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QThread
 from PyQt5.QtGui import QPainter, QPixmap, QImage, QColor
 from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
-from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout
+from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication
 from PyQt5.QtGui import QGuiApplication
 import os
+import threading
 
 from .settings_manager import SettingsManager
 
@@ -389,6 +390,15 @@ class SvgRenderer:
             return pixmap
         
         try:
+            # 线程安全检查：确保在主线程中执行
+            # QPainter 只能在主线程中使用，如果在非主线程调用会导致崩溃
+            if QThread.currentThread() != QApplication.instance().thread():
+                print(f"[SvgRenderer] 警告: 在非主线程中调用render_svg_to_pixmap，返回空图标")
+                pixmap = QPixmap(scaled_width, scaled_height)
+                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
+                pixmap.fill(Qt.transparent)
+                return pixmap
+            
             # 始终使用SVG渲染，不检查PNG文件
             
             # 读取SVG文件内容，预处理以确保兼容性

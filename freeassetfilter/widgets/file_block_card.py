@@ -138,12 +138,11 @@ class FileBlockCard(QWidget):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
-        
+
         scaled_min_width = int(35 * self.dpi_scale)
-        scaled_max_width = int(50 * self.dpi_scale)
         scaled_max_height = int(75 * self.dpi_scale)
         self.setMinimumWidth(scaled_min_width)
-        self.setMaximumWidth(scaled_max_width)
+        # 移除最大宽度限制，让卡片可以自适应填充可用空间
         self.setMaximumHeight(scaled_max_height)
         self.setMinimumHeight(scaled_max_height)
         
@@ -383,9 +382,14 @@ class FileBlockCard(QWidget):
         text = self.file_info.get("name", "")
         font = self.name_label.font()
         font_metrics = QFontMetrics(font)
-        
-        # 扩大文件名显示宽度，以显示更多内容
-        max_width = int(60 * self.dpi_scale)
+
+        # 根据卡片实际宽度动态计算文本最大宽度
+        # 减去边距和布局间距，确保文本不会溢出
+        layout_margins = self.layout.contentsMargins()
+        horizontal_margin = layout_margins.left() + layout_margins.right()
+        max_width = self.width() - horizontal_margin - int(4 * self.dpi_scale)
+        max_width = max(int(35 * self.dpi_scale), max_width)  # 确保最小宽度
+
         elided_text = font_metrics.elidedText(text, Qt.ElideRight, max_width)
         self.name_label.setText(elided_text)
     
@@ -841,17 +845,26 @@ class FileBlockCard(QWidget):
     def set_flexible_width(self, width):
         """
         设置卡片动态宽度
-        
+
         Args:
             width (int): 可用宽度（像素）
         """
         self._flexible_width = width
         min_width = int(35 * self.dpi_scale)
-        max_width = int(500 * self.dpi_scale)
-        constrained_width = max(min_width, min(width, max_width))
+        # 移除最大宽度限制，让卡片可以自适应填充可用空间
+        constrained_width = max(min_width, width)
         self.setFixedWidth(constrained_width)
         self.updateGeometry()
+        # 宽度变化后重新更新文本显示
+        self._update_name_label()
     
+    def resizeEvent(self, event):
+        """处理大小变化事件，重新计算文本省略"""
+        super().resizeEvent(event)
+        # 宽度变化时重新更新文件名显示
+        if hasattr(self, 'name_label') and self.name_label:
+            self._update_name_label()
+
     def _on_long_press(self):
         """
         处理长按事件
@@ -860,7 +873,7 @@ class FileBlockCard(QWidget):
         # 文件夹不支持拖拽
         if self.file_info.get("is_dir", False):
             return
-        
+
         self._is_long_pressing = True
         self._start_drag()
     

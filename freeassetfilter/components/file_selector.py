@@ -385,6 +385,9 @@ class CustomFileSelector(QWidget):
         sift_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "sift.svg")
         self.filter_btn = CustomButton(sift_icon_path, button_type="normal", display_mode="icon", tooltip_text="筛选")
         self.filter_btn.clicked.connect(self.apply_filter)
+        # 强制设置固定尺寸，确保与其他图标按钮保持一致
+        scaled_btn_size = int(20 * self.dpi_scale)
+        self.filter_btn.setFixedSize(scaled_btn_size, scaled_btn_size)
         nav_layout.addWidget(self.filter_btn)
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.filter_btn)
@@ -393,6 +396,8 @@ class CustomFileSelector(QWidget):
         import os
         list_bullet_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "list_bullet.svg")
         self.sort_btn = CustomButton(list_bullet_icon_path, button_type="normal", display_mode="icon", tooltip_text="排序方式")
+        # 强制设置固定尺寸，确保与其他图标按钮保持一致
+        self.sort_btn.setFixedSize(scaled_btn_size, scaled_btn_size)
         nav_layout.addWidget(self.sort_btn)
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.sort_btn)
@@ -421,11 +426,9 @@ class CustomFileSelector(QWidget):
         
         self.sort_btn.clicked.connect(show_sort_menu)
         
-        # 时间线按钮 - 移到第二行最后并自适应填充剩余空间
+        # 时间线按钮 - 移到第二行最后
         self.timeline_btn = CustomButton("时间线", button_type="primary")
         self.timeline_btn.clicked.connect(self._show_timeline_window)
-        # 设置按钮大小策略为Expanding，使其填充剩余空间
-        self.timeline_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         nav_layout.addWidget(self.timeline_btn)
 
         # 根据设置控制时间线按钮的显示/隐藏
@@ -468,7 +471,7 @@ class CustomFileSelector(QWidget):
                 border: 1px solid {normal_color};
                 border-radius: 8px;
                 background-color: {base_color};
-                padding: 3px;
+                padding: 0px;
             }}
             QScrollArea > QWidget > QWidget {{
                 background-color: {base_color};
@@ -2333,22 +2336,21 @@ class CustomFileSelector(QWidget):
         if parent_widget:
             scroll_area = parent_widget
         else:
-            return 3
-        
+            return 2
+
         viewport_width = scroll_area.viewport().width()
-        #print(f"[DEBUG] _calculate_max_columns: 视口宽度={viewport_width}")
-        
-        card_width = int(70 * self.dpi_scale)
+
+        # 使用与 FileBlockCard 一致的最大宽度作为基准
+        card_width = int(50 * self.dpi_scale)
         spacing = int(5 * self.dpi_scale)
         actual_margin = int(5 * self.dpi_scale)
         margin = actual_margin * 2
-        
+
         available_width = viewport_width - margin
-        #print(f"[DEBUG] 可用宽度={available_width}, card_width={card_width}, spacing={spacing}")
-        
+
         columns = 1
         max_possible_columns = 0
-        
+
         while True:
             total_width = columns * card_width + (columns - 1) * spacing
             if total_width <= available_width:
@@ -2356,14 +2358,10 @@ class CustomFileSelector(QWidget):
                 columns += 1
             else:
                 break
-        
-        three_columns_width = 3 * card_width + 2 * spacing
-        if available_width >= three_columns_width - 10:
-            max_possible_columns = max(max_possible_columns, 3)
-        
-        max_possible_columns = max(1, max_possible_columns)
-        #print(f"[DEBUG] 计算得到列数={max_possible_columns}")
-        
+
+        # 确保至少显示2列
+        max_possible_columns = max(2, max_possible_columns)
+
         return max_possible_columns
     
     def _create_file_cards(self, files):
@@ -2419,33 +2417,39 @@ class CustomFileSelector(QWidget):
     def _calculate_card_width(self):
         """
         计算每个卡片可用的动态宽度
-        
+
         计算公式:
-        容器总宽度 - (卡片列数 + 1) * 间距 - 容器边距 * 2
+        视口宽度 - (卡片列数 - 1) * 间距 - 容器边距 * 2
         -----------------------------------------------
                               卡片列数
         """
-        container_width = self.files_container.width()
-        #print(f"[DEBUG] _calculate_card_width: 容器宽度={container_width}")
-        
+        scroll_area = None
+        parent_widget = self.files_container.parent()
+        while parent_widget and not isinstance(parent_widget, QScrollArea):
+            parent_widget = parent_widget.parent()
+        if parent_widget:
+            scroll_area = parent_widget
+
+        if scroll_area:
+            container_width = scroll_area.viewport().width()
+        else:
+            container_width = self.files_container.width()
+
         if container_width <= 0:
-            print(f"[DEBUG] 容器宽度为0，跳过计算")
             return None
-        
+
         max_cols = self._calculate_max_columns()
         if max_cols <= 0:
-            print(f"[DEBUG] 列数为0，跳过计算")
             return None
-        
+
         spacing = self.files_layout.spacing()
         margins = self.files_layout.contentsMargins()
         total_margin = margins.left() + margins.right()
-        
-        available_width = container_width - (max_cols + 1) * spacing - total_margin
+
+        # 修正计算公式：n 列卡片之间有 (n-1) 个间距
+        available_width = container_width - (max_cols - 1) * spacing - total_margin
         card_width = available_width // max_cols
-        
-        #print(f"[DEBUG] 卡片计算: available_width={available_width}, card_width={card_width}, max_cols={max_cols}")
-        
+
         return card_width
     
     def _rearrange_cards(self, max_cols):
@@ -2489,26 +2493,23 @@ class CustomFileSelector(QWidget):
             container_width = scroll_area.viewport().width()
         else:
             container_width = self.files_container.width()
-        
+
         if container_width <= 0:
-            print(f"[DEBUG] 容器宽度为0，50ms后重试")
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(50, self._update_all_cards_width)
             return
-        
+
         max_cols = self._calculate_max_columns()
         if max_cols <= 0:
-            print(f"[DEBUG] 列数为0，跳过更新")
             return
-        
+
         spacing = self.files_layout.spacing()
         margins = self.files_layout.contentsMargins()
         total_margin = margins.left() + margins.right()
-        
-        available_width = container_width - (max_cols + 1) * spacing - total_margin
+
+        # 修正计算公式：n 列卡片之间有 (n-1) 个间距
+        available_width = container_width - (max_cols - 1) * spacing - total_margin
         card_width = available_width // max_cols
-        
-        #print(f"[DEBUG] 更新: 视口宽度={container_width}, 列数={max_cols}, 卡片宽度={card_width}")
         
         if hasattr(self, '_last_max_cols') and self._last_max_cols != max_cols:
             #print(f"[DEBUG] 列数变化: {self._last_max_cols} -> {max_cols}，重新排列卡片")
@@ -2531,18 +2532,19 @@ class CustomFileSelector(QWidget):
         """
         if not self.files_container.width() > 0:
             return
-        
+
         container_width = self.files_container.width()
         max_cols = self._calculate_max_columns()
-        
+
         if max_cols <= 0:
             return
-        
+
         spacing = self.files_layout.spacing()
         margins = self.files_layout.contentsMargins()
         total_margin = margins.left() + margins.right()
-        
-        available_width = container_width - (max_cols + 1) * spacing - total_margin
+
+        # 修正计算公式：n 列卡片之间有 (n-1) 个间距
+        available_width = container_width - (max_cols - 1) * spacing - total_margin
         card_width = available_width // max_cols
         
         needs_update = False

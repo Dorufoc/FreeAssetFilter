@@ -38,6 +38,7 @@ from freeassetfilter.widgets.D_volume_control import DVolumeControl
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.widgets.audio_background import AudioBackground
+from freeassetfilter.widgets.scrolling_text import ScrollingText
 from freeassetfilter.core.color_extractor import extract_cover_colors
 
 # 用于读取音频文件封面
@@ -171,11 +172,12 @@ class VideoPlayer(QWidget):
         self.audio_icon_widget = None  # 音频图标SVG widget
         self.audio_icon_container = None  # 音频图标容器，用于居中显示
         self.audio_cover_label = None  # 音频封面图片标签
-        self.audio_file_label = None  # 音频文件名标签
+        self.audio_file_label = None  # 音频文件名标签（已废弃，使用scrolling_text替代）
         self.audio_file_scroll_area = None  # 文件名滚动区域（外层容器）
         self.audio_file_scroll_offset = 0  # 文件名滚动偏移量
         self.audio_file_needs_scroll = False  # 是否需要滚动
         self.audio_file_animation = None  # 文件名滚动动画
+        self.scrolling_text = None  # 滚动文本控件（替代audio_file_label）
         self._audio_cover_data = None  # 音频文件封面数据
         
         # 控制组件
@@ -361,24 +363,34 @@ class VideoPlayer(QWidget):
         icon_container_layout.addWidget(self.audio_cover_label, 0, Qt.AlignCenter)
         
         # 创建音频文件名滚动区域（外层容器，用于裁切显示）
+        # 完全填充可用横向区域，无边距限制
         self.audio_file_scroll_area = QWidget()
         self.audio_file_scroll_area.setStyleSheet("background-color: transparent;")
-        self.audio_file_scroll_area.setMinimumSize(int(200 * self.dpi_scale), int(25 * self.dpi_scale))
+        self.audio_file_scroll_area.setMinimumSize(int(150 * self.dpi_scale), int(25 * self.dpi_scale))
         
-        # 创建音频文件名标签（根据内容自动调整宽度）
-        self.audio_file_label = QLabel(self.audio_file_scroll_area)
-        self.audio_file_label.setStyleSheet("""
-            color: white;
-            font-size: 14px;
-            background-color: transparent;
-            padding-left: 0px;
-            padding-right: 0px;
-        """)
-        self.audio_file_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.audio_file_label.setWordWrap(False)
-        self.audio_file_label.setFixedHeight(int(20 * self.dpi_scale))
-        self.audio_file_label.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        self.audio_file_label.move(0, int(2 * self.dpi_scale))
+        # 为滚动区域设置水平布局，完全填充
+        scroll_area_layout = QHBoxLayout(self.audio_file_scroll_area)
+        scroll_area_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_area_layout.setSpacing(0)
+        
+        # 创建滚动文本控件替代QLabel，完全填充父容器宽度
+        self.scrolling_text = ScrollingText(
+            parent=self.audio_file_scroll_area,
+            text="",
+            width=0,  # 宽度为0表示完全填充父容器
+            height=int(25 * self.dpi_scale),
+            font_size=14,
+            text_color="#FFFFFF",
+            dpi_scale=self.dpi_scale,
+            linear_animation=True,
+            loop_mode=ScrollingText.LOOP_MODE_SINGLE
+        )
+        
+        # 将滚动文本添加到布局中，完全填充
+        scroll_area_layout.addWidget(self.scrolling_text)
+        
+        # 注意：audio_file_scroll_area 将在 _update_audio_icon 中按正确顺序添加
+        # 以确保 SVG 图标在上，滚动文本在下
         
         # 创建音频背景组件（支持流体动画和封面模糊两种模式）
         self.audio_background = AudioBackground(self)
@@ -663,6 +675,7 @@ class VideoPlayer(QWidget):
     def _update_play_button_icon(self):
         """
         更新播放/暂停按钮的SVG图标
+        使用缓存机制避免频繁重新渲染相同的图标
         """
         try:
             # 获取图标路径
@@ -681,17 +694,23 @@ class VideoPlayer(QWidget):
             
             # 检查文件是否存在
             if not os.path.exists(icon_path):
-                    print(f"[VideoPlayer] 图标文件不存在: {icon_path}")
-                    return
+                print(f"[VideoPlayer] 图标文件不存在: {icon_path}")
+                return
+            
+            # 缓存检查：如果图标路径没有变化，跳过重新渲染
+            current_icon_attr = getattr(self.play_button, '_current_icon_path', None)
+            if current_icon_attr == icon_path:
+                # 图标没有变化，不需要重新渲染
+                return
             
             # 更新CustomButton的图标
             self.play_button._icon_path = icon_path
             self.play_button._display_mode = "icon"
+            self.play_button._current_icon_path = icon_path  # 记录当前图标路径
             self.play_button._render_icon()
             self.play_button.update()
         except Exception as e:
             print(f"[VideoPlayer] 更新播放按钮图标失败: {e}")
-            pass
             import traceback
             traceback.print_exc()
     
@@ -1726,6 +1745,7 @@ class VideoPlayer(QWidget):
             file_name = os.path.basename(self._current_file_path)
             name_without_ext = os.path.splitext(file_name)[0]
             
+            # 停止旧的滚动动画（如果存在）
             if self.audio_file_animation:
                 self.audio_file_animation.stop()
                 try:
@@ -1739,15 +1759,22 @@ class VideoPlayer(QWidget):
                 self.audio_file_animation.deleteLater()
                 self.audio_file_animation = None
             
-            self.audio_file_label.setText(name_without_ext)
+            # 使用滚动文本控件设置文本
+            if self.scrolling_text:
+                self.scrolling_text.set_text(name_without_ext)
+            
+            icon_container_layout = self.audio_icon_container.layout()
             
             if self.audio_icon_widget is None:
                 self.audio_icon_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_cover_size, self.dpi_scale)
-                icon_container_layout = self.audio_icon_container.layout()
+                # 按正确顺序添加：先 SVG 图标，后滚动文本
+                # 先移除可能已存在的滚动区域（如果之前添加过）
+                if self.audio_file_scroll_area.parent() == self.audio_icon_container:
+                    icon_container_layout.removeWidget(self.audio_file_scroll_area)
+                # 添加 SVG 图标
                 icon_container_layout.addWidget(self.audio_icon_widget, 0, Qt.AlignCenter)
-                icon_container_layout.addWidget(self.audio_file_scroll_area, 0, Qt.AlignCenter)
-            
-            QTimer.singleShot(0, lambda: self._update_audio_file_scroll(name_without_ext))
+                # 添加滚动文本区域（在 SVG 图标下方）
+                icon_container_layout.addWidget(self.audio_file_scroll_area, 0, Qt.AlignHCenter)
             
             if self._audio_cover_data:
                 if self.audio_icon_widget:
@@ -1771,7 +1798,8 @@ class VideoPlayer(QWidget):
             self.audio_icon_container.show()
             
             self.cover_label.hide()
-            self.audio_container.hide()
+            # 注意：不能隐藏 audio_container，因为 audio_icon_container 是它的子控件
+            # self.audio_container.hide()
             
         except Exception as e:
             print(f"[VideoPlayer] 更新音频格式图标失败: {e}")
@@ -1780,31 +1808,13 @@ class VideoPlayer(QWidget):
     
     def _update_audio_file_scroll(self, name_without_ext):
         """
-        更新音频文件名滚动状态
-        在布局完成后执行，确保获取正确的scroll_area宽度
+        更新音频文件名滚动状态（已废弃，功能由ScrollingText替代）
         
         Args:
             name_without_ext: 文件名（不含扩展名）
         """
-        if not self.audio_file_label or not self.audio_file_scroll_area:
-            return
-        
-        self.audio_file_label.move(0, self.audio_file_label.y())
-        
-        metrics = self.audio_file_label.fontMetrics()
-        text_width = metrics.width(name_without_ext)
-        scroll_area_width = self.audio_file_scroll_area.width() if self.audio_file_scroll_area else 0
-        
-        self.audio_file_label.setMinimumWidth(text_width)
-        
-        if text_width > scroll_area_width:
-            self.audio_file_needs_scroll = True
-            self.audio_file_label.move(0, self.audio_file_label.y())
-            self._scroll_audio_file_label()
-        else:
-            self.audio_file_needs_scroll = False
-            center_x = (scroll_area_width - text_width) // 2
-            self.audio_file_label.move(center_x, self.audio_file_label.y())
+        # 此方法已废弃，滚动功能由ScrollingText控件内部处理
+        pass
     
     def _update_cover(self, cover_data):
         """
@@ -1933,61 +1943,17 @@ class VideoPlayer(QWidget):
     
     def _on_scroll_animation_finished(self):
         """
-        滚动动画结束回调，将标签移回起始位置
-        只有在动画仍然需要滚动时才执行
+        滚动动画结束回调（已废弃，功能由ScrollingText替代）
         """
-        if self.audio_file_label and self.audio_file_needs_scroll:
-            self.audio_file_label.move(0, self.audio_file_label.y())
+        # 此方法已废弃，滚动功能由ScrollingText控件内部处理
+        pass
     
     def _scroll_audio_file_label(self):
         """
-        使用QPropertyAnimation实现文件名滚动效果
-        移动文本框本身，外层容器裁切显示
-        包含：开头2秒静止 -> 滚动 -> 结尾2秒静止 -> 循环
+        使用QPropertyAnimation实现文件名滚动效果（已废弃，功能由ScrollingText替代）
         """
-        if not self.audio_file_label or not self.audio_file_scroll_area or not self.audio_file_needs_scroll:
-            return
-
-        text = self.audio_file_label.text()
-        if not text:
-            return
-
-        metrics = self.audio_file_label.fontMetrics()
-        text_width = metrics.width(text)
-        scroll_area_width = self.audio_file_scroll_area.width()
-
-        if text_width <= scroll_area_width:
-            self.audio_file_needs_scroll = False
-            return
-
-        current_pos = self.audio_file_label.pos()
-
-        if self.audio_file_animation:
-            self.audio_file_animation.stop()
-            self.audio_file_animation.deleteLater()
-            self.audio_file_animation = None
-
-        start_x = 0
-        end_x = -(text_width - scroll_area_width)
-
-        scroll_animation = QPropertyAnimation(self.audio_file_label, b"pos", self)
-        scroll_animation.setDuration(int(text_width * 15))
-        scroll_animation.setStartValue(QPoint(start_x, current_pos.y()))
-        scroll_animation.setEndValue(QPoint(end_x, current_pos.y()))
-        scroll_animation.setEasingCurve(QEasingCurve.Linear)
-
-        pause_before = QPauseAnimation(2000, self)
-        pause_after = QPauseAnimation(2000, self)
-
-        self.audio_file_animation = QSequentialAnimationGroup(self)
-
-        self.audio_file_animation.addAnimation(pause_before)
-        self.audio_file_animation.addAnimation(scroll_animation)
-        self.audio_file_animation.addAnimation(pause_after)
-
-        scroll_animation.finished.connect(self._on_scroll_animation_finished)
-        self.audio_file_animation.setLoopCount(-1)
-        self.audio_file_animation.start()
+        # 此方法已废弃，滚动功能由ScrollingText控件内部处理
+        pass
     
     def _show_default_cover(self, size):
         """
@@ -2010,6 +1976,10 @@ class VideoPlayer(QWidget):
             self.audio_file_animation.deleteLater()
             self.audio_file_animation = None
         self.audio_file_needs_scroll = False
+        
+        # 停止滚动文本控件
+        if self.scrolling_text:
+            self.scrolling_text.stop()
         
         # 隐藏音频图标
         if self.audio_icon_widget:
