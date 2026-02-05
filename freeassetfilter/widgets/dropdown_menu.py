@@ -6,7 +6,7 @@ FreeAssetFilter 自定义下拉菜单组件
 支持自适应文字显示、固定宽度和滚动布局
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QScrollArea, QLabel
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QScrollArea, QLabel, QSizePolicy
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QSize, QRect
 from PyQt5.QtGui import QFont, QFontMetrics
 
@@ -14,6 +14,7 @@ from .control_menu import CustomControlMenu
 from .button_widgets import CustomButton
 from .smooth_scroller import D_ScrollBar
 from .smooth_scroller import SmoothScroller
+from .scrolling_text import ScrollingText
 import os
 
 
@@ -52,7 +53,9 @@ class CustomDropdownMenu(QWidget):
         self._current_item = None  # 当前选中项
         self._menu_visible = False  # 菜单是否可见
         self._fixed_width = None  # 固定宽度
-        self._max_height = int(50 * self.dpi_scale)  # 最大高度
+        self._max_height = int(80 * self.dpi_scale)  # 最大高度（增加以显示更多条目）
+        self._item_height = int(20 * self.dpi_scale)  # 单个条目高度
+        self._max_items = 5  # 默认最多显示5个条目
         self._position = position  # 菜单位置："top" 或 "bottom"
         self._external_target_button = None  # 外部设置的目标按钮
         self._use_internal_button = use_internal_button  # 是否使用内部按钮
@@ -75,21 +78,26 @@ class CustomDropdownMenu(QWidget):
         if self.settings_manager:
             auxiliary_color = self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
         
-        # 获取normal_color，默认#e0e0e0
+        # 获取base_color（与hover tooltip一致）
+        base_color = "#ffffff"
+        if self.settings_manager:
+            base_color = self.settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+        
+        # 获取normal_color（与hover tooltip一致）
         normal_color = "#e0e0e0"
         if self.settings_manager:
             normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
         
-        # 获取border_radius，默认4px
-        border_radius = int(4 * self.dpi_scale)
+        # 获取border_radius，默认4px（与hover tooltip一致）
+        border_radius = 4
         
-        # 获取border，默认1px
-        border = int(0.5 * self.dpi_scale)
+        # 获取border，默认1px（与hover tooltip一致）
+        border = 1
         
-        # 设置widget本身的样式 - 背景卡片样式
+        # 设置widget本身的样式 - 与hover tooltip一致：白色背景 + 1px边框 + 4px圆角
         self.setStyleSheet(f"""
             QWidget {{
-                background-color: {auxiliary_color};
+                background-color: {base_color};
                 border: {border}px solid {normal_color};
                 border-radius: {border_radius}px;
             }}
@@ -174,6 +182,11 @@ class CustomDropdownMenu(QWidget):
         # 保存列表项
         self._items = items
         
+        # 获取secondary_color用于滚动文本颜色
+        secondary_color = "#333333"
+        if self.settings_manager:
+            secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        
         # 创建新的列表项
         for item in items:
             # 处理字符串和字典两种格式
@@ -184,54 +197,61 @@ class CustomDropdownMenu(QWidget):
                 text = str(item)
                 data = item
             
-            # 创建列表项按钮（使用QPushButton替代QLabel以支持cursor属性）
-            item_button = QPushButton(text)
-            item_button.setFont(self.global_font)
-            item_button.setFlat(True)  # 设置为平面样式
-            item_button.setCursor(Qt.PointingHandCursor)  # 设置鼠标指针为手型
+            # 创建滚动文本控件替代QPushButton
+            item_button = ScrollingText(
+                parent=self,
+                text=text,
+                width=0,  # 设置为0使控件自动填充父容器宽度
+                height=int(20 * self.dpi_scale),
+                font_size=int(8 * self.dpi_scale),
+                text_color=secondary_color,
+                scroll_trigger="hover"  # 悬停触发滚动模式
+            )
             
-            # 设置样式
-            font_size = int(8 * self.dpi_scale)
-            
-            # 获取normal_color，默认#e0e0e0
+            # 获取normal_color
             normal_color = "#e0e0e0"
             if self.settings_manager:
                 normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
             
-            # 获取secondary_color，默认#333333
-            secondary_color = "#333333"
-            if self.settings_manager:
-                secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            
-            # 设置按钮高度，与主按钮保持一致
-            button_height = int(20 * self.dpi_scale)/2  # 使用与主按钮相同的高度(20px)并应用DPI缩放
-            
-            # 获取border_radius，默认4px
+            # 获取border_radius
             border_radius = int(4 * self.dpi_scale)
             
             item_button.setStyleSheet(f"""
-                QPushButton {{ 
-                    font-size: {font_size}px;
-                    color: {secondary_color};
-                    padding: 2px 3px;
+                ScrollingText {{
                     background-color: transparent;
                     border: none;
-                    border-radius: {border_radius}px;
-                    text-align: center;
-                    vertical-align: center;
-                    height: {button_height}px;
-                }}
-                QPushButton:hover {{ 
-                    background-color: {normal_color};
                     border-radius: {border_radius}px;
                 }}
             """)
             
+            # 设置悬停时背景色变化
+            item_button.setCursor(Qt.PointingHandCursor)
+            
+            # 创建包装容器以支持悬停效果
+            wrapper_widget = QWidget()
+            wrapper_layout = QVBoxLayout(wrapper_widget)
+            wrapper_layout.setContentsMargins(0, 0, 0, 0)
+            wrapper_layout.setSpacing(0)
+            wrapper_layout.addWidget(item_button)
+            wrapper_widget.setStyleSheet(f"""
+                QWidget {{
+                    background-color: transparent;
+                    border-radius: {border_radius}px;
+                }}
+                QWidget:hover {{
+                    background-color: {normal_color};
+                    border-radius: {border_radius}px;
+                }}
+            """)
+            # 设置包装容器的大小策略，确保横向填充
+            wrapper_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            wrapper_widget.setFixedHeight(int(20 * self.dpi_scale))
+            
             # 设置点击事件
-            item_button.clicked.connect(lambda checked, d=data: self._on_item_clicked(d))
+            item_button.clicked.connect(lambda checked=False, d=data: self._on_item_clicked(d))
             
             # 添加到布局
-            self.list_layout.addWidget(item_button)
+            self.list_layout.addWidget(wrapper_widget)
         
         # 设置默认选中项
         if default_item is not None:
@@ -410,11 +430,12 @@ class CustomDropdownMenu(QWidget):
         """
         调整菜单大小
         """
-        # 计算列表容器的理想大小
-        self.list_container.adjustSize()
+        # 计算基于条目数量的高度
+        item_count = len(self._items)
+        calculated_height = min(item_count, self._max_items) * self._item_height
         
-        # 设置滚动区域的最大高度
-        scroll_height = min(self.list_container.height(), self._max_height)
+        # 设置滚动区域的最大高度（自适应：基于条目数量或最大高度）
+        scroll_height = min(calculated_height, self._max_height)
         self.scroll_area.setFixedHeight(scroll_height)
         
         # 获取滚动条宽度
@@ -482,11 +503,8 @@ class CustomDropdownMenu(QWidget):
         if self._menu_visible:
             self.dropdown_menu.close()
             self._menu_visible = False
-            # 断开按钮的leaveEvent（仅在存在内部按钮且没有外部目标按钮时）
             if self._external_target_button is None and self.main_button:
                 self.main_button.leaveEvent = None
-            # 重置外部目标按钮，避免下次使用时产生混淆
-            self._external_target_button = None
             
     def _on_menu_close(self, event):
         """

@@ -109,6 +109,7 @@ class UnifiedPreviewer(QWidget):
         try:
             if hasattr(self, 'current_preview_widget') and self.current_preview_widget:
                 from freeassetfilter.components.video_player import VideoPlayer
+                from freeassetfilter.components.text_previewer import TextPreviewWidget
                 
                 if isinstance(self.current_preview_widget, VideoPlayer):
                     try:
@@ -131,6 +132,15 @@ class UnifiedPreviewer(QWidget):
                     # 关键：调用VideoPlayer的closeEvent方法来正确释放MPV资源
                     # 这会触发player_core.cleanup()，从而正确销毁dll
                     old_widget.close()
+                    old_widget.setParent(None)
+                
+                elif isinstance(self.current_preview_widget, TextPreviewWidget):
+                    # 对于文本预览器，调用cleanup方法释放QWebEngineView资源
+                    old_widget = self.current_preview_widget
+                    if hasattr(old_widget, 'cleanup'):
+                        old_widget.cleanup()
+                    self.preview_layout.removeWidget(old_widget)
+                    self.current_preview_widget = None
                     old_widget.setParent(None)
                 
                 else:
@@ -469,6 +479,16 @@ class UnifiedPreviewer(QWidget):
         
         # 停止当前预览组件的播放（如果是视频或音频）
         if self.current_preview_widget:
+            # 对于文本预览器，需要特别处理QWebEngineView的资源释放
+            try:
+                from freeassetfilter.components.text_previewer import TextPreviewWidget
+                if isinstance(self.current_preview_widget, TextPreviewWidget):
+                    # 调用cleanup方法进行完整的资源清理
+                    if hasattr(self.current_preview_widget, 'cleanup'):
+                        self.current_preview_widget.cleanup()
+            except Exception as e:
+                print(f"清理TextPreviewWidget组件时出错: {e}")
+            
             # 停止播放
             if hasattr(self.current_preview_widget, 'stop'):
                 try:
@@ -501,10 +521,11 @@ class UnifiedPreviewer(QWidget):
                         self.current_preview_widget.original_player_core.disable_cube_filter()
             except Exception as e:
                 print(f"清理VideoPlayer组件时出错: {e}")
-            
-            # 断开所有信号连接
-            self.current_preview_widget.disconnect()
-            
+
+            # 注意：不要调用 self.current_preview_widget.disconnect()
+            # 因为这会断开所有信号连接，包括 QWebEngineView 等内部组件的信号
+            # 可能导致程序卡死。使用 removeWidget 和 deleteLater 已经足够
+
             # 清除布局中的所有组件，除了控制栏
             # 控制栏是第一个组件，所以只清除从索引1开始的组件
             for i in reversed(range(self.preview_layout.count())):
@@ -1341,10 +1362,11 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             # 尝试导入文本预览器组件
-            from freeassetfilter.components.text_previewer import TextPreviewer
+            from freeassetfilter.components.text_previewer import TextPreviewWidget
             
-            # 创建文本预览器
-            text_previewer = TextPreviewer()
+            # 创建文本预览部件（注意：使用TextPreviewWidget而不是TextPreviewer）
+            # TextPreviewer是QMainWindow，不能嵌入到布局中；TextPreviewWidget才是QWidget
+            text_previewer = TextPreviewWidget()
             
             # 设置文件，开始异步读取
             text_previewer.set_file(file_path)

@@ -33,9 +33,13 @@ class ScrollingText(QWidget):
     LOOP_MODE_SINGLE = "single"      # 单向循环：左→右→闪现回左→右
     LOOP_MODE_PINGPONG = "pingpong"  # PingPong：左→右→停顿→右→左
     
+    # 滚动触发模式常量
+    SCROLL_TRIGGER_AUTO = "auto"      # 自动触发：立即开始滚动（默认）
+    SCROLL_TRIGGER_HOVER = "hover"    # 悬停触发：鼠标悬停时开始滚动，移开时返回开头
+    
     def __init__(self, parent=None, text="", width=200, height=30, 
                  font_size=None, text_color=None, dpi_scale=1.0,
-                 linear_animation=True, loop_mode=None):
+                 linear_animation=True, loop_mode=None, scroll_trigger=None):
         """
         初始化滚动文本控件
         
@@ -49,6 +53,7 @@ class ScrollingText(QWidget):
             dpi_scale (float): DPI缩放比例
             linear_animation (bool): 是否使用线性动画，True=线性，False=非线性（缓动），默认True
             loop_mode (str): 循环模式，"single"=单向循环，"pingpong"=往返循环，默认"single"
+            scroll_trigger (str): 滚动触发模式，"auto"=自动触发（默认），"hover"=悬停触发
         """
         super().__init__(parent)
         
@@ -67,13 +72,19 @@ class ScrollingText(QWidget):
         # 动画配置
         self._linear_animation = linear_animation
         self._loop_mode = loop_mode or self.LOOP_MODE_SINGLE
+        self._scroll_trigger = scroll_trigger or self.SCROLL_TRIGGER_AUTO
         
         # 动画状态控制
         self._is_scrolling = False          # 是否正在滚动
         self._is_paused = False             # 是否暂停
+        self._is_hover_mode = False         # 是否为悬停触发模式
+        self._has_started = False          # 是否已经触发过滚动（用于悬停模式）
         
         # 滚动偏移量（用于动画）
         self._scroll_offset = 0
+        
+        # 返回动画
+        self._return_animation = None
         
         # 初始化UI
         self._init_ui()
@@ -100,12 +111,11 @@ class ScrollingText(QWidget):
         
         # 设置字体
         app = QApplication.instance()
-        # 使用原始字体大小，不在这里进行DPI缩放
-        # 因为字体渲染系统会自动处理DPI缩放
-        font_size = self._original_font_size or getattr(app, 'default_font_size', 14)
+        default_font_size = getattr(app, 'default_font_size', 14)
+        scaled_font_size = int(default_font_size * self._dpi_scale)
         
         self._font = QFont()
-        self._font.setPointSize(font_size)
+        self._font.setPointSize(scaled_font_size)
         
         # 计算文本尺寸
         self._update_text_metrics()
@@ -132,7 +142,15 @@ class ScrollingText(QWidget):
             self.update()
             return
         
-        # 需要滚动，创建动画
+        # 如果是悬停触发模式，初始时保持静止，等待鼠标进入
+        if self._scroll_trigger == self.SCROLL_TRIGGER_HOVER:
+            self._is_scrolling = False
+            self._is_hover_mode = False
+            self._scroll_offset = 0
+            self.update()
+            return
+        
+        # 需要滚动，创建动画（自动触发模式）
         self._create_scroll_animation()
     
     def _calculate_scroll_duration(self):
@@ -472,11 +490,16 @@ class ScrollingText(QWidget):
         """停止滚动动画"""
         self._is_scrolling = False
         self._is_paused = False
+        self._is_hover_mode = False
+        self._has_started = False
         
         if hasattr(self, '_forward_animation'):
             self._forward_animation.stop()
         if hasattr(self, '_backward_animation'):
             self._backward_animation.stop()
+        if hasattr(self, '_return_animation') and self._return_animation:
+            self._return_animation.stop()
+            self._return_animation = None
         
         self._scroll_offset = 0
         self.update()
@@ -491,12 +514,74 @@ class ScrollingText(QWidget):
     def enterEvent(self, event):
         """鼠标进入事件"""
         super().enterEvent(event)
-        self.pause()
+        
+        if self._scroll_trigger == self.SCROLL_TRIGGER_HOVER:
+            # 悬停触发模式：鼠标进入时开始滚动
+            if self._scroll_distance > 0 and not self._is_scrolling:
+                self._is_hover_mode = True
+                self._is_scrolling = True
+                self._is_paused = False
+                # 创建并启动滚动动画
+                self._create_scroll_animation()
+                self._start_scroll_cycle()
+        else:
+            # 自动触发模式：鼠标进入时暂停滚动（原有行为）
+            self.pause()
     
     def leaveEvent(self, event):
         """鼠标离开事件"""
         super().leaveEvent(event)
-        self.resume()
+        
+        if self._scroll_trigger == self.SCROLL_TRIGGER_HOVER:
+            # 悬停触发模式：鼠标离开时返回开头
+            if self._is_scrolling:
+                self._stop_and_return_to_start()
+        else:
+            # 自动触发模式：鼠标离开时恢复滚动（原有行为）
+            self.resume()
+    
+    def _stop_and_return_to_start(self):
+        """
+        停止滚动动画并平滑返回开头
+        用于悬停触发模式下鼠标离开时的动画
+        """
+        # 停止所有滚动动画
+        self._is_scrolling = False
+        self._is_paused = False
+        
+        if hasattr(self, '_forward_animation'):
+            self._forward_animation.stop()
+        if hasattr(self, '_backward_animation'):
+            self._backward_animation.stop()
+        
+        # 创建返回动画
+        self._return_animation = QPropertyAnimation(self, b"scroll_offset")
+        
+        # 根据当前位置计算动画持续时间（保持恒定速度）
+        current_offset = self._scroll_offset
+        distance = abs(current_offset)
+        
+        # 基础返回速度：20像素/秒
+        return_speed = 20 * self._dpi_scale
+        return_duration = max(300, int((distance / return_speed) * 1000))  # 最少300ms
+        
+        self._return_animation.setDuration(return_duration)
+        self._return_animation.setStartValue(current_offset)
+        self._return_animation.setEndValue(0)
+        self._return_animation.setEasingCurve(QEasingCurve.OutQuad)
+        
+        # 动画完成后清理状态
+        self._return_animation.finished.connect(self._on_return_animation_finished)
+        
+        self._return_animation.start()
+    
+    def _on_return_animation_finished(self):
+        """返回动画完成回调"""
+        self._is_scrolling = False
+        self._has_started = False
+        self._is_hover_mode = False
+        self._scroll_offset = 0
+        self.update()
     
     def mousePressEvent(self, event):
         """鼠标按下事件"""

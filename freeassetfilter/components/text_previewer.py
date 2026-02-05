@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 FreeAssetFilter v1.0
 
@@ -13,866 +11,1056 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
-2. 商业使用：需联系 qpdrfc123@gmail.com 获取书面授权
-项目地址：https://github.com/Dorufoc/FreeAssetFilter
-许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
-独立的文本预览器组件
-提供文本文件预览、Markdown渲染和代码语法高亮功能
+文本预览器组件
+支持多种文档格式的预览，包括纯文本、Markdown和各种代码文件
+特点：
+- 多编码支持（自动检测GBK/UTF-8等）
+- Markdown渲染支持
+- 代码语法高亮（Python/JSON/XML等）
+- 大文件分块加载和渲染优化
+- 集成平滑滚动（D_ScrollBar）
+- 线程安全设计
+- 查找和高亮功能
+- 完整的控制栏（字体/大小/编码/查找）
 """
 
 import sys
 import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QFileDialog, QLabel, QScrollArea, QGroupBox, QGridLayout,
-    QTextEdit, QComboBox, QMenu, QAction, QSpinBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
+    QComboBox, QSlider, QTextEdit, QFrame, QApplication,
+    QGridLayout, QSizePolicy, QMessageBox, QToolBar, QAction,
+    QLineEdit, QPushButton, QWidgetAction
 )
 from PyQt5.QtGui import (
-    QFont, QIcon, QFontDatabase
+    QFont, QIcon, QTextCursor, QTextDocument, QSyntaxHighlighter,
+    QTextCharFormat, QColor, QFontDatabase, QPalette, QPainter,
+    QTextFormat, QBrush, QTextBlock
 )
 from PyQt5.QtCore import (
-    Qt, QUrl, QThread, pyqtSignal
+    Qt, QSize, QTimer, pyqtSignal, QThread, QStringListModel,
+    QRegularExpression, QMutex, QMutexLocker
 )
-from PyQt5.QtWebEngineWidgets import QWebEngineView
-import markdown
-from pygments import highlight
-from pygments.lexers import get_lexer_for_filename, TextLexer
-from pygments.formatters import HtmlFormatter
+
+from freeassetfilter.widgets.D_widgets import CustomButton
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.input_widgets import CustomInputBox
+from freeassetfilter.widgets.progress_widgets import D_ProgressBar
+from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
+
+try:
+    import markdown
+    MARKDOWN_AVAILABLE = True
+except ImportError:
+    MARKDOWN_AVAILABLE = False
+
+try:
+    from pygments import lex
+    from pygments.lexers import get_lexer_by_name, get_lexer_for_filename, TextLexer
+    from pygments.token import Token
+    PYGMENTS_AVAILABLE = True
+except ImportError:
+    PYGMENTS_AVAILABLE = False
+
+try:
+    import chardet
+    CHARDET_AVAILABLE = True
+except ImportError:
+    CHARDET_AVAILABLE = False
+
+ENCODING_LIST = ['UTF-8', 'GBK', 'GB2312', 'BIG5', 'LATIN1', 'UTF-16', 'ASCII']
+
+CODE_EXTENSIONS = {
+    '.py': 'python', '.js': 'javascript', '.ts': 'typescript',
+    '.json': 'json', '.xml': 'xml', '.html': 'html', '.css': 'css',
+    '.c': 'c', '.cpp': 'cpp', '.h': 'c', '.hpp': 'cpp',
+    '.java': 'java', '.cs': 'csharp', '.go': 'go', '.rust': 'rust',
+    '.sql': 'sql', '.sh': 'bash', '.bat': 'batch', '.ps1': 'powershell',
+    '.yml': 'yaml', '.yaml': 'yaml', '.ini': 'ini', '.cfg': 'ini',
+    '.toml': 'toml', '.md': 'markdown', '.rst': 'rst', '.lua': 'lua',
+    '.php': 'php', '.rb': 'ruby', '.swift': 'swift', '.kt': 'kotlin',
+    '.r': 'r', '.m': 'matlab', '.pl': 'perl', '.pm': 'perl'
+}
+
+TEXT_EXTENSIONS = {
+    '.txt', '.log', '.md', '.markdown', '.csv', '.rst', '.json', '.xml',
+    '.html', '.htm', '.css', '.js', '.ts', '.yaml', '.yml', '.ini',
+    '.cfg', '.conf', '.env', '.gitignore', '.gitconfig', '.properties',
+    '.c', '.cpp', '.h', '.hpp', '.java', '.cs', '.py', '.go', '.rs',
+    '.sql', '.sh', '.bat', '.php', '.rb', '.lua', '.swift', '.kt',
+    '.r', '.m', '.pl', '.pm', '.tex', '.latex', '.asciidoc', '.adoc',
+    '.vue', '.jsx', '.tsx', '.sass', '.scss', '.less', '.styl'
+}
 
 
-class FileReadThread(QThread):
-    """
-    文件读取线程，用于异步读取文件内容并报告进度
-    特别优化了网络文件（如NAS上的文件）的读取方式
-    """
-    # 信号定义
-    progress_updated = pyqtSignal(int, str)  # 进度更新信号，参数：进度值(0-100)，状态描述
-    file_read_completed = pyqtSignal(str, str)  # 文件读取完成信号，参数：文件内容，编码
-    file_read_failed = pyqtSignal(str)  # 文件读取失败信号，参数：错误信息
+class SyntaxHighlighter(QSyntaxHighlighter):
+    """基础语法高亮器"""
     
-    def __init__(self, file_path):
-        super().__init__()
-        self.file_path = file_path
-        self.encoding = 'utf-8'
-        self.is_cancelled = False
+    def __init__(self, parent=None, theme='dark'):
+        super().__init__(parent)
+        self.highlighting_rules = []
+        self.theme = theme
+        self._build_highlighting_rules()
+    
+    def _build_highlighting_rules(self):
+        """构建高亮规则"""
+        if self.theme == 'dark':
+            self._colors = {
+                'keyword': QColor('#569CD6'),
+                'string': QColor('#CE9178'),
+                'number': QColor('#B5CEA8'),
+                'comment': QColor('#6A9955'),
+                'function': QColor('#DCDCAA'),
+                'class': QColor('#4EC9B0'),
+                'operator': QColor('#D4D4D4'),
+                'punctuation': QColor('#D4D4D4'),
+                'default': QColor('#D4D4D4'),
+                'tag': QColor('#569CD6'),
+                'attribute': QColor('#9CDCFE'),
+                'value': QColor('#CE9178'),
+                'property': QColor('#9CDCFE'),
+            }
+        else:
+            self._colors = {
+                'keyword': QColor('#0000FF'),
+                'string': QColor('#A31515'),
+                'number': QColor('#098658'),
+                'comment': QColor('#008000'),
+                'function': QColor('#795E26'),
+                'class': QColor('#267F99'),
+                'operator': QColor('#000000'),
+                'punctuation': QColor('#000000'),
+                'default': QColor('#000000'),
+                'tag': QColor('#0000FF'),
+                'attribute': QColor('#FF0000'),
+                'value': QColor('#A31515'),
+                'property': QColor('#FF0000'),
+            }
+    
+    def highlightBlock(self, textBlock):
+        """高亮文本块"""
+        if not isinstance(textBlock, QTextBlock):
+            return
+        
+        document = textBlock.document()
+        if not document:
+            return
+        
+        plain_text = document.toPlainText()
+        if not plain_text:
+            return
+            
+        for pattern, format in self.highlighting_rules:
+            matchIterator = pattern.globalMatch(plain_text, textBlock.position())
+            while matchIterator.hasNext():
+                match = matchIterator.next()
+                if match.hasMatch():
+                    start = match.capturedStart()
+                    length = match.capturedLength()
+                    if start >= textBlock.position() and start + length <= textBlock.position() + textBlock.length():
+                        self.setFormat(start - textBlock.position(), length, format)
+    
+    def setTheme(self, theme):
+        """设置主题"""
+        self.theme = theme
+        self._build_highlighting_rules()
+
+
+class PythonHighlighter(SyntaxHighlighter):
+    """Python语法高亮器"""
+    
+    def __init__(self, parent=None, theme='dark'):
+        super().__init__(parent, theme)
+        self._build_python_rules()
+    
+    def _build_python_rules(self):
+        """构建Python高亮规则"""
+        keyword_patterns = [
+            r'\bdef\b', r'\bclass\b', r'\bimport\b', r'\bfrom\b',
+            r'\breturn\b', r'\bif\b', r'\belif\b', r'\belse\b',
+            r'\bfor\b', r'\bwhile\b', r'\btry\b', r'\bexcept\b',
+            r'\bwith\b', r'\bas\b', r'\bpass\b', r'\bbreak\b',
+            r'\bcontinue\b', r'\blambda\b', r'\byield\b', r'\bglobal\b',
+            r'\bnonlocal\b', r'\bassert\b', r'\braise\b', r'\bdel\b',
+            r'\band\b', r'\bor\b', r'\bnot\b', r'\bin\b', r'\bis\b',
+            r'\bTrue\b', r'\bFalse\b', r'\bNone\b', r'\bself\b'
+        ]
+        
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(self._colors['keyword'])
+        keyword_format.setFontWeight(QFont.Bold)
+        
+        for pattern in keyword_patterns:
+            regex = QRegularExpression(pattern)
+            self.highlighting_rules.append((regex, keyword_format))
+        
+        string_patterns = [
+            (r'""".*?"""', QTextCharFormat()),
+            (r"'''.*?'''", QTextCharFormat()),
+            (r'".*?"', QTextCharFormat()),
+            (r'".*?$', QTextCharFormat()),
+            (r"'.*?'", QTextCharFormat()),
+            (r"'.*?$", QTextCharFormat()),
+        ]
+        
+        string_format = QTextCharFormat()
+        string_format.setForeground(self._colors['string'])
+        
+        for pattern, fmt in string_patterns:
+            regex = QRegularExpression(pattern)
+            fmt_copy = QTextCharFormat(string_format)
+            self.highlighting_rules.append((regex, fmt_copy))
+        
+        number_format = QTextCharFormat()
+        number_format.setForeground(self._colors['number'])
+        number_regex = QRegularExpression(r'\b[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?\b')
+        self.highlighting_rules.append((number_regex, number_format))
+        
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(self._colors['comment'])
+        comment_regex = QRegularExpression(r'#.*$')
+        comment_regex.setPatternOptions(QRegularExpression.MultilineOption)
+        self.highlighting_rules.append((comment_regex, comment_format))
+        
+        function_format = QTextCharFormat()
+        function_format.setForeground(self._colors['function'])
+        function_regex = QRegularExpression(r'\b[a-zA-Z_]\w*(?=\s*\()')
+        self.highlighting_rules.append((function_regex, function_format))
+
+
+class JsonHighlighter(SyntaxHighlighter):
+    """JSON语法高亮器"""
+    
+    def __init__(self, parent=None, theme='dark'):
+        super().__init__(parent, theme)
+        self._build_json_rules()
+    
+    def _build_json_rules(self):
+        string_format = QTextCharFormat()
+        string_format.setForeground(self._colors['string'])
+        string_regex = QRegularExpression(r'"(?:[^"\\]|\\.)*"')
+        self.highlighting_rules.append((string_regex, string_format))
+        
+        key_format = QTextCharFormat()
+        key_format.setForeground(self._colors['attribute'])
+        key_regex = QRegularExpression(r'"(?:[^"\\]|\\.)*(?="\s*:)')
+        self.highlighting_rules.append((key_regex, key_format))
+        
+        number_format = QTextCharFormat()
+        number_format.setForeground(self._colors['number'])
+        number_regex = QRegularExpression(r'\b[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?\b')
+        self.highlighting_rules.append((number_regex, number_format))
+        
+        bool_format = QTextCharFormat()
+        bool_format.setForeground(self._colors['keyword'])
+        bool_regex = QRegularExpression(r'\b(?:true|false|null)\b')
+        self.highlighting_rules.append((bool_regex, bool_format))
+
+
+class XmlHighlighter(SyntaxHighlighter):
+    """XML/HTML语法高亮器"""
+    
+    def __init__(self, parent=None, theme='dark'):
+        super().__init__(parent, theme)
+        self._build_xml_rules()
+    
+    def _build_xml_rules(self):
+        tag_format = QTextCharFormat()
+        tag_format.setForeground(self._colors['tag'])
+        tag_regex = QRegularExpression(r'</?[a-zA-Z][a-zA-Z0-9]*')
+        self.highlighting_rules.append((tag_regex, tag_format))
+        
+        attribute_format = QTextCharFormat()
+        attribute_format.setForeground(self._colors['attribute'])
+        attr_regex = QRegularExpression(r'\s[a-zA-Z][a-zA-Z0-9-]*=')
+        self.highlighting_rules.append((attr_regex, attribute_format))
+        
+        string_format = QTextCharFormat()
+        string_format.setForeground(self._colors['value'])
+        string_regex = QRegularExpression(r'"[^"]*"')
+        self.highlighting_rules.append((string_regex, string_format))
+        
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(self._colors['comment'])
+        comment_regex = QRegularExpression(r'<!--.*?-->')
+        comment_regex.setPatternOptions(QRegularExpression.DotEverythingOption)
+        self.highlighting_rules.append((comment_regex, comment_format))
+
+
+class TextPreviewThread(QThread):
+    """文本加载后台线程"""
+    
+    finished = pyqtSignal(str, bool)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.file_path = ""
+        self.encoding = "auto"
+        self.max_size = 10 * 1024 * 1024
+        self._mutex = QMutex()
+        self._abort = False
+    
+    def setFile(self, file_path, encoding="auto"):
+        """设置要加载的文件"""
+        with QMutexLocker(self._mutex):
+            self.file_path = file_path
+            self.encoding = encoding
+    
+    def abort(self):
+        """请求终止"""
+        with QMutexLocker(self._mutex):
+            self._abort = True
     
     def run(self):
-        """
-        执行文件读取操作
-        优化了网络文件的读取方式，确保进度实时更新
-        """
-        try:
-            # 第一步：获取文件大小
-            self.progress_updated.emit(0, "正在获取文件信息...")
-            
-            # 异步获取文件大小
-            file_size = self._get_file_size_with_timeout()
-            if file_size == -1:
-                raise Exception("无法获取文件大小")
-            
-            # 第二步：打开文件并分块读取
-            self.progress_updated.emit(5, "正在打开文件...")
-            
-            chunk_size = 65536  # 64KB
-            
-            read_bytes = 0
-            content = []
+        """执行文件加载"""
+        with QMutexLocker(self._mutex):
+            if self._abort:
+                return
+            file_path = self.file_path
             encoding = self.encoding
+        
+        try:
+            file_size = os.path.getsize(file_path)
             
-            # 尝试使用UTF-8编码
-            try:
-                with open(self.file_path, 'rb') as f:
-                    while not self.is_cancelled:
-                        binary_chunk = f.read(chunk_size)
-                        if not binary_chunk:
-                            break
-                        
-                        read_bytes += len(binary_chunk)
-                        text_chunk = binary_chunk.decode(encoding)
-                        content.append(text_chunk)
-                        
-                        progress = 5 + int(min(95, (read_bytes / file_size) * 95))
-                        self.progress_updated.emit(progress, f"正在读取文件... {progress}%")
-            except UnicodeDecodeError:
-                # 尝试使用GBK编码
-                encoding = 'gbk'
-                read_bytes = 0
-                content = []
-                self.progress_updated.emit(0, "正在使用GBK编码打开文件...")
-                
-                with open(self.file_path, 'rb') as f:
-                    while not self.is_cancelled:
-                        binary_chunk = f.read(chunk_size)
-                        if not binary_chunk:
-                            break
-                        
-                        read_bytes += len(binary_chunk)
-                        text_chunk = binary_chunk.decode(encoding)
-                        content.append(text_chunk)
-                        
-                        progress = 5 + int(min(95, (read_bytes / file_size) * 95))
-                        self.progress_updated.emit(progress, f"正在读取文件... {progress}%")
-            except Exception as e:
-                self.file_read_failed.emit(f"读取文件时出错: {str(e)}")
+            if file_size > self.max_size:
+                self.error.emit(f"文件过大 ({file_size / 1024 / 1024:.1f}MB)，最大支持 {self.max_size / 1024 / 1024:.0f}MB")
                 return
             
-            if not self.is_cancelled:
-                self.progress_updated.emit(100, "文件读取完成")
-                self.file_read_completed.emit(''.join(content), encoding)
+            content = ""
+            detected_encoding = None
+            
+            if encoding == "auto":
+                if CHARDET_AVAILABLE:
+                    with open(file_path, 'rb') as f:
+                        raw_data = f.read(1024 * 1024)
+                        result = chardet.detect(raw_data)
+                        detected_encoding = result.get('encoding', 'utf-8')
+                        
+                        if detected_encoding and detected_encoding.lower() != 'ascii':
+                            try:
+                                content = raw_data.decode(detected_encoding)
+                                self.progress.emit(100)
+                            except UnicodeDecodeError:
+                                detected_encoding = 'utf-8'
+                                content = raw_data.decode('utf-8', errors='replace')
+                                self.progress.emit(100)
+                        else:
+                            try:
+                                content = raw_data.decode('utf-8')
+                                self.progress.emit(100)
+                            except UnicodeDecodeError:
+                                content = raw_data.decode('utf-8', errors='replace')
+                                self.progress.emit(100)
+                    
+                    if file_size > len(raw_data):
+                        with open(file_path, 'r', encoding=detected_encoding or 'utf-8',
+                                  errors='replace') as f:
+                            remaining = f.read()
+                            content += remaining
+                else:
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        detected_encoding = 'utf-8'
+                    except UnicodeDecodeError:
+                        try:
+                            with open(file_path, 'r', encoding='gbk') as f:
+                                content = f.read()
+                            detected_encoding = 'gbk'
+                        except UnicodeDecodeError:
+                            with open(file_path, 'r', encoding='utf-8',
+                                      errors='replace') as f:
+                                content = f.read()
+                            detected_encoding = 'utf-8 (with replacements)'
+            else:
+                try:
+                    with open(file_path, 'r', encoding=encoding,
+                              errors='replace') as f:
+                        content = f.read()
+                    detected_encoding = encoding
+                except Exception as e:
+                    self.error.emit(f"无法使用 {encoding} 编码读取文件: {str(e)}")
+                    return
+            
+            self.finished.emit(content, True)
+            
         except Exception as e:
-            self.file_read_failed.emit(str(e))
-    
-    def _get_file_size_with_timeout(self, timeout=5):
-        """
-        带超时的文件大小获取
-        """
-        import threading
-        
-        file_size = [0]
-        error = [None]
-        
-        def get_size():
-            try:
-                file_size[0] = os.path.getsize(self.file_path)
-            except Exception as e:
-                error[0] = e
-        
-        thread = threading.Thread(target=get_size)
-        thread.daemon = True
-        thread.start()
-        thread.join(timeout)
-        
-        if thread.is_alive():
-            try:
-                with open(self.file_path, 'rb') as f:
-                    f.seek(0, os.SEEK_END)
-                    file_size[0] = f.tell()
-                    f.seek(0)
-            except Exception as e:
-                error[0] = e
-        
-        if error[0]:
-            print(f"获取文件大小失败: {error[0]}")
-            return -1
-        
-        return file_size[0]
-    
-    def cancel(self):
-        """
-        取消文件读取操作
-        """
-        self.is_cancelled = True
+            self.error.emit(f"读取文件失败: {str(e)}")
 
 
 class TextPreviewWidget(QWidget):
     """
-    文本预览部件，支持Markdown渲染和代码高亮
+    文本预览主控件
+    负责文本显示、格式渲染和用户交互
     """
-    # 信号定义
-    file_read_progress = pyqtSignal(int, str)  # 文件读取进度信号
-    file_read_finished = pyqtSignal()  # 文件读取完成信号
-    file_read_cancelled = pyqtSignal()  # 文件读取取消信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        # 获取全局字体和DPI缩放因子
         app = QApplication.instance()
-        self.global_font = getattr(app, 'global_font', QFont())
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        self.global_font = getattr(app, 'global_font', QFont())
         
-        # 设置组件字体
-        self.setFont(self.global_font)
-        
-        # 文件数据
         self.current_file_path = ""
+        self.current_encoding = "auto"
+        self.is_markdown = False
+        self.current_highlighter = None
         self.file_content = ""
         
-        # 预览模式
-        self.preview_mode = "auto"  # auto, text, markdown, code
+        self._thread = None
+        self._mutex = QMutex()
+        self._is_loading = False
         
-        # 字体设置
-        self.current_font = "Arial"  # 默认字体
-        self.font_scale = 1.0  # 默认100%
-        self.font_size = 16  # 默认字体大小(px)
+        self._search_results = []
+        self._current_search_index = -1
+        self._search_term = ""
+        self._case_sensitive = False
         
-        # 文件读取线程
-        self.read_thread = None
-        
-        # 初始化UI
-        self.init_ui()
+        self._init_ui()
+        self._apply_theme()
     
-    def init_ui(self):
-        """
-        初始化预览部件UI
-        """
+    def _init_ui(self):
+        """初始化UI"""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         
-        # 应用DPI缩放因子到布局参数
-        scaled_margin = int(10 * self.dpi_scale)
-        scaled_spacing = int(8 * self.dpi_scale)
-        layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
-        layout.setSpacing(scaled_spacing)
+        self._init_toolbar(layout)
+        self._init_text_edit(layout)
+        self._init_search_bar(layout)
+        self._init_progress_bar(layout)
+    
+    def _init_toolbar(self, parent_layout):
+        """初始化工具栏"""
+        toolbar = QWidget()
+        toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
-        # 设置背景色
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(10, 5, 10, 5)
+        toolbar_layout.setSpacing(10)
+        
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
+        text_color = "#333333"
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-        self.setStyleSheet(f"background-color: {background_color};")
+            text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
-        # 预览模式选择
-        mode_layout = QGridLayout()
-        mode_layout.setSpacing(int(5 * self.dpi_scale))
-        mode_layout.setColumnStretch(4, 1)  # 最后一列添加拉伸
+        icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
+        font_icon_path = os.path.join(icon_dir, "font.svg")
         
-        # 使用全局默认字体大小
+        self.font_dropdown = CustomDropdownMenu(use_internal_button=False)
+        self.font_dropdown.set_fixed_width(int(100 * self.dpi_scale))
+        self.font_button = CustomButton(
+            font_icon_path,
+            button_type="normal",
+            display_mode="icon",
+            tooltip_text="字体"
+        )
+        self.font_dropdown.set_target_button(self.font_button)
+        
+        available_fonts = sorted(set(QFontDatabase().families()))
+        default_font = QFont().family()
+        font_items = ["默认字体"] + available_fonts
+        default_index = 0
+        self.font_dropdown.set_items(font_items, font_items[default_index])
+        self.font_dropdown.itemClicked.connect(self._on_font_selected)
+        self.font_button.clicked.connect(self.font_dropdown.show_menu)
+        toolbar_layout.addWidget(self.font_button)
+        
+        self.encoding_dropdown = CustomDropdownMenu(use_internal_button=False)
+        self.encoding_dropdown.set_fixed_width(int(60 * self.dpi_scale))
+        encoding_icon_path = os.path.join(icon_dir, "earth.svg")
+        self.encoding_button = CustomButton(
+            encoding_icon_path,
+            button_type="normal",
+            display_mode="icon",
+            tooltip_text="编码"
+        )
+        self.encoding_dropdown.set_target_button(self.encoding_button)
+        self.encoding_dropdown.set_items(["自动检测"] + ENCODING_LIST, "自动检测")
+        self.encoding_dropdown.itemClicked.connect(self._on_encoding_selected)
+        self.encoding_button.clicked.connect(self.encoding_dropdown.show_menu)
+        toolbar_layout.addWidget(self.encoding_button)
+        
+        size_label = QLabel("大小")
+        size_label.setStyleSheet(f"color: {text_color};")
+        toolbar_layout.addWidget(size_label)
+        
+        self.font_size_slider = D_ProgressBar(
+            orientation=D_ProgressBar.Horizontal,
+            is_interactive=True
+        )
+        self.font_size_slider.setRange(4, 40)
+        self.font_size_slider.setValue(12)
+        self.font_size_slider.setFixedWidth(int(100 * self.dpi_scale))
+        self.font_size_slider.valueChanged.connect(self._on_font_size_changed)
+        toolbar_layout.addWidget(self.font_size_slider)
+        
+        toolbar_layout.addStretch()
+        
+        icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
+        search_icon_path = os.path.join(icon_dir, "search.svg")
+        
+        self.search_button = CustomButton(
+            search_icon_path,
+            button_type="normal",
+            display_mode="icon",
+            tooltip_text="查找 (Ctrl+F)"
+        )
+        self.search_button.clicked.connect(self._toggle_search)
+        toolbar_layout.addWidget(self.search_button)
+        
+        parent_layout.addWidget(toolbar)
+    
+    def _init_text_edit(self, parent_layout):
+        """初始化文本编辑区"""
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+        self.text_edit.setUndoRedoEnabled(False)
+        
+        default_font = QFont()
+        default_font.setPointSize(int(12 * self.dpi_scale))
+        self.text_edit.setFont(default_font)
+        
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                background-color: #FFFFFF;
+                color: #333333;
+                border: none;
+                padding: 10px;
+            }
+        """)
+        
+        scroll_bar = D_ScrollBar(self.text_edit, Qt.Vertical)
+        self.text_edit.setVerticalScrollBar(scroll_bar)
+        scroll_bar.apply_theme_from_settings()
+        
+        horizontal_scroll_bar = D_ScrollBar(self.text_edit, Qt.Horizontal)
+        self.text_edit.setHorizontalScrollBar(horizontal_scroll_bar)
+        horizontal_scroll_bar.apply_theme_from_settings()
+        
+        container_layout.addWidget(self.text_edit)
+        
+        parent_layout.addWidget(container)
+        
+        SmoothScroller.apply_to_scroll_area(self.text_edit)
+    
+    def _init_search_bar(self, parent_layout):
+        """初始化搜索栏"""
+        self.search_bar = QWidget()
+        self.search_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        
+        search_layout = QHBoxLayout(self.search_bar)
+        search_layout.setContentsMargins(10, 5, 10, 5)
+        search_layout.setSpacing(5)
+        
+        self.search_input = CustomInputBox(
+            placeholder_text="查找文本...",
+            width=300
+        )
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        self.search_input.editingFinished.connect(self._perform_search)
+        search_layout.addWidget(self.search_input)
+        
+        self.search_prev_button = CustomButton(
+            tooltip_text="上一个",
+            button_type="normal",
+            display_mode="icon"
+        )
+        icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
+        prev_icon_path = os.path.join(icon_dir, "arrow_up.svg")
+        if os.path.exists(prev_icon_path):
+            self.search_prev_button.setIcon(QIcon(prev_icon_path))
+        self.search_prev_button.clicked.connect(self._go_to_previous_match)
+        search_layout.addWidget(self.search_prev_button)
+        
+        self.search_next_button = CustomButton(
+            tooltip_text="下一个",
+            button_type="normal",
+            display_mode="icon"
+        )
+        next_icon_path = os.path.join(icon_dir, "arrow_down.svg")
+        if os.path.exists(next_icon_path):
+            self.search_next_button.setIcon(QIcon(next_icon_path))
+        self.search_next_button.clicked.connect(self._go_to_next_match)
+        search_layout.addWidget(self.search_next_button)
+        
+        self.search_close_button = CustomButton(
+            tooltip_text="关闭",
+            button_type="normal",
+            display_mode="icon"
+        )
+        close_icon_path = os.path.join(icon_dir, "关.svg")
+        if os.path.exists(close_icon_path):
+            self.search_close_button.setIcon(QIcon(close_icon_path))
+        self.search_close_button.clicked.connect(self._toggle_search)
+        search_layout.addWidget(self.search_close_button)
+        
+        self.search_info_label = QLabel("0/0")
+        self.search_info_label.setMinimumWidth(50)
+        search_layout.addWidget(self.search_info_label)
+        
+        self.search_bar.hide()
+        parent_layout.addWidget(self.search_bar)
+    
+    def _init_progress_bar(self, parent_layout):
+        """初始化进度条"""
+        self.progress_bar = D_ProgressBar(
+            orientation=D_ProgressBar.Horizontal,
+            is_interactive=False
+        )
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setFixedHeight(int(4 * self.dpi_scale))
+        parent_layout.addWidget(self.progress_bar)
+    
+    def _apply_theme(self):
+        """应用主题"""
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        scaled_padding_v = int(4 * self.dpi_scale)
-        scaled_padding_h = int(6 * self.dpi_scale)
-        scaled_border_radius = int(4 * self.dpi_scale)
-        scaled_combo_font_size = int(default_font_size * self.dpi_scale)
-        scaled_max_width = int(100 * self.dpi_scale)  # 下拉框最大宽度
+        if not hasattr(app, 'settings_manager'):
+            return
         
-        # 第一行：预览模式
-        mode_label = QLabel("预览模式:")
-        mode_label.setFont(self.global_font)
-        mode_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
-        mode_layout.addWidget(mode_label, 0, 0)
+        bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
+        text_color = app.settings_manager.get_setting("appearance.colors.text_primary", "#333333")
+        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
         
-        self.mode_selector = QComboBox()
-        self.mode_selector.addItems(["自动检测", "纯文本", "Markdown", "代码高亮"])
-        self.mode_selector.currentTextChanged.connect(self.change_preview_mode)
-        self.mode_selector.setFont(self.global_font)
-        self.mode_selector.setMaximumWidth(scaled_max_width)
-        self.mode_selector.setStyleSheet(f'''.QComboBox {{
-            background-color: white;
-            border: 1px solid #e0e0e0;
-            border-radius: {scaled_border_radius}px;
-            padding: {scaled_padding_v}px {scaled_padding_h}px;
-            font-size: {scaled_combo_font_size}px;
-            color: #333;
-        }}
-        .QComboBox:hover {{
-            border-color: #1976d2;
-        }}
-        .QComboBox:focus {{
-            border-color: #1976d2;
-            outline: none;
-        }}''')
-        mode_layout.addWidget(self.mode_selector, 0, 1)
+        self.setStyleSheet(f"""
+            background-color: {bg_color};
+            color: {text_color};
+        """)
         
-        # 第一行：字体选择
-        font_label = QLabel("字体:")
-        font_label.setFont(self.global_font)
-        font_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
-        mode_layout.addWidget(font_label, 0, 2)
+        self.text_edit.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: #FFFFFF;
+                color: {text_color};
+                border: none;
+                padding: 10px;
+            }}
+        """)
+    
+    def _detect_file_type(self, file_path):
+        """检测文件类型"""
+        _, ext = os.path.splitext(file_path)
+        ext = ext.lower()
         
-        self.font_selector = QComboBox()
-        # 获取系统中可用的字体列表
-        font_list = QFontDatabase().families()
-        self.font_selector.addItems(font_list)
-        # 设置默认字体
-        if "Arial" in font_list:
-            self.change_font("Arial")
-            self.font_selector.setCurrentText("Arial")
-        elif "SimHei" in font_list:
-            self.change_font("SimHei")
-            self.font_selector.setCurrentText("SimHei")
-        # 确保字体选择器和current_font一致
-        self.font_selector.setCurrentText(self.current_font)
-        self.font_selector.setFont(self.global_font)
-        self.font_selector.setMaximumWidth(scaled_max_width)
-        self.font_selector.setStyleSheet(f'''.QComboBox {{
-            background-color: white;
-            border: 1px solid #e0e0e0;
-            border-radius: {scaled_border_radius}px;
-            padding: {scaled_padding_v}px {scaled_padding_h}px;
-            font-size: {scaled_combo_font_size}px;
-            color: #333;
-        }}
-        .QComboBox:hover {{
-            border-color: #1976d2;
-        }}
-        .QComboBox:focus {{
-            border-color: #1976d2;
-            outline: none;
-        }}''')
-        mode_layout.addWidget(self.font_selector, 0, 3)
+        if ext in ['.md', '.markdown']:
+            return 'markdown'
         
-        # 第二行：字体大小
-        font_size_label = QLabel("字体大小:")
-        font_size_label.setFont(self.global_font)
-        font_size_label.setStyleSheet(f"font-size: {scaled_font_size}px; color: #333; font-weight: 500;")
-        mode_layout.addWidget(font_size_label, 1, 0)
+        if ext in CODE_EXTENSIONS:
+            return 'code'
         
-        self.font_size_selector = QComboBox()
-        font_size_options = ["小", "标准", "大", "特大", "自定义"]
-        self.font_size_selector.addItems(font_size_options)
-        self.font_size_selector.setCurrentIndex(1)  # 默认选择"标准"
-        self.font_size_selector.setFont(self.global_font)
-        self.font_size_selector.setMaximumWidth(scaled_max_width)
-        self.font_size_selector.setStyleSheet(f'''.QComboBox {{
-            background-color: white;
-            border: 1px solid #e0e0e0;
-            border-radius: {scaled_border_radius}px;
-            padding: {scaled_padding_v}px {scaled_padding_h}px;
-            font-size: {scaled_combo_font_size}px;
-            color: #333;
-        }}
-        .QComboBox:hover {{
-            border-color: #1976d2;
-        }}
-        .QComboBox:focus {{
-            border-color: #1976d2;
-            outline: none;
-        }}''')
-        mode_layout.addWidget(self.font_size_selector, 1, 1)
+        if ext in TEXT_EXTENSIONS:
+            return 'text'
         
-        # 第二行：自定义字体大小输入框
-        self.custom_font_size_spinbox = QSpinBox()
-        self.custom_font_size_spinbox.setRange(8, 72)  # 字体大小范围8-72px
-        self.custom_font_size_spinbox.setValue(self.font_size)
-        self.custom_font_size_spinbox.setFont(self.global_font)
-        self.custom_font_size_spinbox.setMaximumWidth(int(100 * self.dpi_scale))  # 更小的最大宽度
-        self.custom_font_size_spinbox.setStyleSheet(f'''.QSpinBox {{
-            background-color: white;
-            border: 1px solid #e0e0e0;
-            border-radius: {scaled_border_radius}px;
-            padding: {scaled_padding_v}px {scaled_padding_h}px;
-            font-size: {scaled_combo_font_size}px;
-            color: #333;
-        }}
-        .QSpinBox:hover {{
-            border-color: #1976d2;
-        }}
-        .QSpinBox:focus {{
-            border-color: #1976d2;
-            outline: none;
-        }}''')
-        # 默认隐藏自定义字体大小输入框
-        self.custom_font_size_spinbox.hide()
-        mode_layout.addWidget(self.custom_font_size_spinbox, 1, 2, 1, 2)  # 跨两列
+        return 'text'
+    
+    def _create_highlighter(self, file_type):
+        """创建语法高亮器"""
+        theme = 'dark'
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            theme = 'light'
         
-        layout.addLayout(mode_layout)
-        
-        # 预览区域
-        self.web_view = QWebEngineView()
-        scaled_min_height = int(250 * self.dpi_scale)
-        self.web_view.setMinimumHeight(scaled_min_height)
-        self.web_view.setStyleSheet(f"background-color: white; border: 1px solid #e0e0e0; border-radius: {scaled_border_radius}px;")
-        # 为WebView添加自定义上下文菜单
-        self.web_view.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.web_view.customContextMenuRequested.connect(self.show_context_menu)
-        layout.addWidget(self.web_view)
-        
-        # 连接信号槽
-        self.font_size_selector.currentTextChanged.connect(self.change_font_size)
-        self.font_selector.currentTextChanged.connect(self.change_font)
-        self.custom_font_size_spinbox.valueChanged.connect(self.change_custom_font_size)
+        if file_type == 'python':
+            self.current_highlighter = PythonHighlighter(self.text_edit.document(), theme)
+        elif file_type == 'json':
+            self.current_highlighter = JsonHighlighter(self.text_edit.document(), theme)
+        elif file_type in ['xml', 'html', 'css']:
+            self.current_highlighter = XmlHighlighter(self.text_edit.document(), theme)
+        else:
+            self.current_highlighter = None
     
     def set_file(self, file_path):
         """
-        设置要预览的文本文件
+        设置要预览的文件
+        
+        Args:
+            file_path (str): 文件路径
         """
-        if os.path.exists(file_path):
-            self.current_file_path = file_path
-            
-            # 如果当前有正在运行的读取线程，先取消
-            if self.read_thread and self.read_thread.isRunning():
-                self.read_thread.cancel()
-                self.read_thread.wait()
-            
-            # 创建新的文件读取线程
-            self.read_thread = FileReadThread(file_path)
-            
-            # 连接信号
-            self.read_thread.progress_updated.connect(self.on_file_read_progress)
-            self.read_thread.file_read_completed.connect(self.on_file_read_completed)
-            self.read_thread.file_read_failed.connect(self.on_file_read_failed)
-            
-            # 启动线程
-            self.read_thread.start()
-            
-            return True
-        return False
-    
-    def on_file_read_progress(self, progress, status):
-        """
-        文件读取进度更新回调
-        """
-        # 发射进度信号，供外部进度条使用
-        self.file_read_progress.emit(progress, status)
-    
-    def on_file_read_completed(self, content, encoding):
-        """
-        文件读取完成回调
-        """
-        self.file_content = content
-        # 更新预览
-        self.update_preview()
-        # 发射读取完成信号
-        self.file_read_finished.emit()
-    
-    def on_file_read_failed(self, error):
-        """
-        文件读取失败回调
-        """
-        print(f"文件读取失败: {error}")
-        # 显示错误信息
-        self.file_content = f"文件读取失败: {error}"
-        self.update_preview()
-        # 发射读取完成信号
-        self.file_read_finished.emit()
-    
-    def cancel_file_read(self):
-        """
-        取消文件读取操作
-        """
-        if self.read_thread and self.read_thread.isRunning():
-            self.read_thread.cancel()
-            self.file_read_cancelled.emit()
-    
-    def change_preview_mode(self, mode_text):
-        """
-        切换预览模式
-        """
-        mode_map = {
-            "自动检测": "auto",
-            "纯文本": "text",
-            "Markdown": "markdown",
-            "代码高亮": "code"
-        }
-        self.preview_mode = mode_map[mode_text]
-        self.update_preview()
-    
-    def change_font_size(self, size_text):
-        """
-        切换字体大小
-        """
-        if size_text == "自定义":
-            # 显示自定义字体大小输入框
-            self.custom_font_size_spinbox.show()
-            # 使用当前自定义字体大小
-            self.font_size = self.custom_font_size_spinbox.value()
+        if not os.path.exists(file_path):
+            return
+        
+        self.current_file_path = file_path
+        
+        self._clear_search()
+        self.text_edit.clear()
+        
+        self._start_loading()
+        
+        current_item = self.encoding_dropdown._current_item
+        if isinstance(current_item, dict):
+            encoding = current_item.get('text', '')
         else:
-            # 隐藏自定义字体大小输入框
-            self.custom_font_size_spinbox.hide()
-            # 使用预设的字体大小
-            size_map = {
-                "小": 12,     # 12px
-                "标准": 16,   # 16px
-                "大": 20,     # 20px
-                "特大": 24    # 24px
-            }
-            self.font_size = size_map[size_text]
+            encoding = current_item if current_item else "自动检测"
+        if encoding == "自动检测":
+            encoding = "auto"
         
-        self.update_preview()
-        
-    def change_font(self, font_name):
-        """
-        切换字体
-        """
-        print(f"切换字体: {self.current_font} -> {font_name}")
-        self.current_font = font_name
-        if self.file_content:
-            print(f"更新预览，当前字体: {self.current_font}")
-            self.update_preview()
-        
-    def change_custom_font_size(self, size):
-        """
-        改变自定义字体大小
-        """
-        self.font_size = size
-        self.update_preview()
+        self._load_file_async(file_path, encoding)
     
-    def update_preview(self):
-        """
-        更新预览内容
-        """
+    def _load_file_async(self, file_path, encoding):
+        """异步加载文件"""
+        if self._thread and self._thread.isRunning():
+            self._thread.abort()
+            self._thread.wait()
+        
+        self._thread = TextPreviewThread(self)
+        self._thread.setFile(file_path, encoding)
+        self._thread.finished.connect(self._on_file_loaded)
+        self._thread.error.connect(self._on_load_error)
+        self._thread.progress.connect(self._on_load_progress)
+        self._thread.start()
+    
+    def _on_file_loaded(self, content, success):
+        """文件加载完成回调"""
+        self._stop_loading()
+        
+        if not success:
+            return
+        
+        self.file_content = content
+        
+        file_type = self._detect_file_type(self.current_file_path)
+        
+        if file_type == 'markdown' and MARKDOWN_AVAILABLE:
+            self._render_markdown(content)
+        else:
+            self._render_plain_text(content, file_type)
+        
+        self._apply_search_highlight()
+    
+    def _refresh_display(self):
+        """刷新显示"""
         if not self.file_content:
             return
         
-        # 自动检测模式
-        if self.preview_mode == "auto":
-            # 根据文件扩展名判断
-            ext = os.path.splitext(self.current_file_path)[1].lower()
-            if ext in ['.txt']:
-                # txt文件使用纯文本模式
-                html_content = self.render_plain_text(self.file_content)
-            elif ext in ['.md', '.markdown', '.mdown', '.mkd']:
-                # Markdown文件使用Markdown模式
-                html_content = self.render_markdown(self.file_content)
-            else:
-                # 其他代码源文件使用代码高亮模式
-                html_content = self.render_code(self.file_content, self.current_file_path)
-        
-        # 纯文本模式
-        elif self.preview_mode == "text":
-            html_content = self.render_plain_text(self.file_content)
-        
-        # Markdown模式
-        elif self.preview_mode == "markdown":
-            html_content = self.render_markdown(self.file_content)
-        
-        # 代码高亮模式
-        elif self.preview_mode == "code":
-            html_content = self.render_code(self.file_content, self.current_file_path)
-        
-        # 设置HTML内容
-        self.web_view.setHtml(html_content)
+        if self.is_markdown:
+            self._render_markdown(self.file_content)
     
-    def show_context_menu(self, position):
-        """
-        显示自定义上下文菜单，仅在有选中文本时显示复制选项
-        """
-        # 使用JavaScript检查是否有选中的文本
-        def check_selection(selection_text):
-            if selection_text.strip():
-                # 创建上下文菜单
-                menu = QMenu(self.web_view)
-                
-                # 创建复制动作
-                copy_action = QAction("复制", self.web_view)
-                copy_action.triggered.connect(self.copy_selected_text)
-                menu.addAction(copy_action)
-                
-                # 在鼠标位置显示菜单
-                menu.exec_(self.web_view.mapToGlobal(position))
-        
-        # 执行JavaScript获取选中的文本
-        self.web_view.page().runJavaScript("window.getSelection().toString();", check_selection)
-    
-    def copy_selected_text(self):
-        """
-        复制选中的文本到剪贴板
-        """
-        def copy_to_clipboard(selection_text):
-            if selection_text.strip():
-                clipboard = QApplication.clipboard()
-                clipboard.setText(selection_text)
-        
-        # 执行JavaScript获取选中的文本并复制到剪贴板
-        self.web_view.page().runJavaScript("window.getSelection().toString();", copy_to_clipboard)
-    
-    def render_plain_text(self, content):
-        """
-        渲染纯文本
-        """
-        # 转义HTML特殊字符
-        content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        content = content.replace('"', '&quot;').replace("'", '&#39;')
-        # 替换换行符
-        content = content.replace('\n', '<br>')
-        
-        # 应用DPI缩放因子和字体大小
-        final_font_size = int(self.font_size * self.dpi_scale)
-        
-        # 使用普通字符串拼接，避免f-string中的大括号冲突
-        html = "<!DOCTYPE html>\n"
-        html += "<html>\n"
-        html += "<head>\n"
-        html += "    <meta charset=\"utf-8\">\n"
-        html += "    <style>\n"
-        html += "        body, pre, code {\n"
-        html += "            font-family: '" + self.current_font + "', sans-serif !important;\n"
-        html += "            font-size: " + str(final_font_size) + "px;\n"
-        html += "            line-height: 1.6;\n"
-        html += "            color: #333;\n"
-        html += "            margin: 20px;\n"
-        html += "            background-color: #fff;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "            word-break: break-word;\n"
-        html += "        }\n"
-        html += "        pre {\n"
-        html += "            white-space: pre-wrap;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "            margin: 0;\n"
-        html += "        }\n"
-        html += "    </style>\n"
-        html += "</head>\n"
-        html += "<body>\n"
-        html += "    <pre>" + content + "</pre>\n"
-        html += "</body>\n"
-        html += "</html>\n"
-        
-        return html
-    
-    def render_markdown(self, content):
-        """
-        渲染Markdown
-        """
-        # 使用markdown库将Markdown转换为HTML
-        rendered_markdown = markdown.markdown(content, extensions=[
-            'markdown.extensions.extra',
-            'markdown.extensions.codehilite',
-            'markdown.extensions.toc'
-        ])
-        
-        # 应用DPI缩放因子和字体大小
-        final_font_size = int(self.font_size * self.dpi_scale)
-        
-        # 添加CSS样式
-        html = "<!DOCTYPE html>\n"
-        html += "<html>\n"
-        html += "<head>\n"
-        html += "    <meta charset=\"utf-8\">\n"
-        html += "    <style>\n"
-        html += "        body {\n"
-        html += "            font-family: '" + self.current_font + "', sans-serif;\n"
-        html += "            font-size: " + str(final_font_size) + "px;\n"
-        html += "            line-height: 1.8;\n"
-        html += "            color: #333;\n"
-        html += "            margin: 20px;\n"
-        html += "            background-color: #fff;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "            word-break: break-word;\n"
-        html += "            overflow-x: hidden;\n"
-        html += "        }\n"
-        html += "        h1, h2, h3, h4, h5, h6 {\n"
-        html += "            color: #2c3e50;\n"
-        html += "            margin-top: 1.5em;\n"
-        html += "            margin-bottom: 0.5em;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "        code {\n"
-        html += "            background-color: #f0f0f0;\n"
-        html += "            padding: 2px 4px;\n"
-        html += "            border-radius: 3px;\n"
-        html += "            font-family: '" + self.current_font + "', Consolas, Monaco, 'Andale Mono', monospace !important;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "        pre {\n"
-        html += "            background-color: #f8f8f8;\n"
-        html += "            border: 1px solid #e8e8e8;\n"
-        html += "            border-radius: 5px;\n"
-        html += "            padding: 15px;\n"
-        html += "            white-space: pre-wrap;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "            overflow-x: auto;\n"
-        html += "        }\n"
-        html += "        pre code {\n"
-        html += "            background-color: transparent;\n"
-        html += "            padding: 0;\n"
-        html += "        }\n"
-        html += "        blockquote {\n"
-        html += "            border-left: 4px solid #ddd;\n"
-        html += "            margin-left: 0;\n"
-        html += "            padding-left: 20px;\n"
-        html += "            color: #666;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "        table {\n"
-        html += "            border-collapse: collapse;\n"
-        html += "            width: 100%;\n"
-        html += "            margin: 20px 0;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "        th, td {\n"
-        html += "            border: 1px solid #ddd;\n"
-        html += "            padding: 8px 12px;\n"
-        html += "            text-align: left;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "        th {\n"
-        html += "            background-color: #f0f0f0;\n"
-        html += "        }\n"
-        html += "        img {\n"
-        html += "            max-width: 100%;\n"
-        html += "            height: auto;\n"
-        html += "        }\n"
-        html += "    </style>\n"
-        html += "</head>\n"
-        html += "<body>\n"
-        html += rendered_markdown + "\n"
-        html += "</body>\n"
-        html += "</html>\n"
-        
-        return html
-    
-    def render_code(self, content, filename):
-        """
-        渲染代码高亮
-        """
+    def _render_markdown(self, content):
+        """渲染Markdown"""
         try:
-            # 尝试根据文件名获取合适的词法分析器
-            lexer = get_lexer_for_filename(filename)
-        except:
-            # 如果无法获取，使用文本词法分析器
-            lexer = TextLexer()
+            md = markdown.Markdown(
+                extensions=['fenced_code', 'codehilite', 'tables', 'nl2br'],
+                extension_configs={
+                    'codehilite': {'noclasses': True, 'guess_lang': False}
+                }
+            )
+            html = md.convert(content)
+            
+            current_font = self.text_edit.font()
+            font_family = current_font.family()
+            font_size = current_font.pointSize()
+            
+            header_style = f"""
+                <style>
+                    body {{ font-family: {font_family}, sans-serif; font-size: {font_size}px; line-height: 1.6; color: #333; }}
+                    pre {{ background-color: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; }}
+                    code {{ background-color: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-family: Consolas, monospace; }}
+                    pre code {{ background-color: transparent; padding: 0; }}
+                    h1, h2, h3, h4, h5, h6 {{ color: #1a1a1a; margin-top: 1.5em; margin-bottom: 0.5em; }}
+                    h1 {{ font-size: 2em; border-bottom: 1px solid #eee; }}
+                    h2 {{ font-size: 1.5em; border-bottom: 1px solid #eee; }}
+                    table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    th {{ background-color: #f5f5f5; }}
+                    blockquote {{ border-left: 4px solid #ddd; margin: 0; padding-left: 16px; color: #666; }}
+                    img {{ max-width: 100%; }}
+                </style>
+            """
+            
+            full_html = f"<html><head>{header_style}</head><body>{html}</body></html>"
+            
+            self.text_edit.setHtml(full_html)
+            self.is_markdown = True
+            
+        except Exception as e:
+            self.text_edit.setPlainText(content)
+            self.is_markdown = False
+    
+    def _render_plain_text(self, content, file_type):
+        """渲染纯文本/代码"""
+        self.text_edit.setPlainText(content)
+        self.is_markdown = False
         
-        # 创建HTML格式化器
-        formatter = HtmlFormatter(
-            style='default',
-            linenos=True,
-            full=False,
-            cssclass='highlight'
-        )
+        if file_type == 'code':
+            _, ext = os.path.splitext(self.current_file_path)
+            ext = ext.lower()
+            code_type = CODE_EXTENSIONS.get(ext, 'text')
+            self._create_highlighter(code_type)
+    
+    def _on_load_error(self, error_msg):
+        """加载错误回调"""
+        self._stop_loading()
+        self.text_edit.setPlainText(f"加载失败: {error_msg}")
+    
+    def _on_load_progress(self, value):
+        """加载进度回调"""
+        self.progress_bar.setValue(value)
+    
+    def _start_loading(self):
+        """开始加载动画"""
+        self._is_loading = True
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
         
-        # 生成高亮HTML
-        highlighted_code = highlight(content, lexer, formatter)
+        self._progress_animation = QTimer(self)
+        self._progress_animation.timeout.connect(self._animate_progress)
+        self._progress_animation.start(100)
+    
+    def _animate_progress(self):
+        """进度条动画"""
+        if not self._is_loading:
+            return
         
-        # 获取CSS样式
-        css = formatter.get_style_defs('.highlight')
+        current = self.progress_bar.value()
+        if current >= 90:
+            current = 0
+        else:
+            current += 10
+        self.progress_bar.setValue(current)
+    
+    def _stop_loading(self):
+        """停止加载动画"""
+        self._is_loading = False
+        if hasattr(self, '_progress_animation'):
+            self._progress_animation.stop()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(100)
+    
+    def _restore_default_font(self):
+        """恢复默认字体"""
+        if not hasattr(self, 'text_edit') or self.text_edit is None:
+            return
+        default_font = QFont()
+        current_size = self.font_size_slider.value()
+        default_font.setPointSize(current_size)
+        self.text_edit.setFont(default_font)
+        self._refresh_display()
+    
+    def _change_font(self, font_name):
+        """更改字体"""
+        if not hasattr(self, 'text_edit') or self.text_edit is None:
+            return
+        font = self.text_edit.font()
+        font.setFamily(font_name)
+        current_size = self.font_size_slider.value()
+        font.setPointSize(current_size)
+        self.text_edit.setFont(font)
         
-        # 应用DPI缩放因子和字体大小
-        final_font_size = int(self.font_size * self.dpi_scale)
+        self._refresh_display()
+    
+    def _on_font_selected(self, item):
+        """字体选择回调"""
+        if isinstance(item, dict):
+            font_name = item.get('data', item.get('text', ''))
+        else:
+            font_name = item
         
-        # 创建完整HTML文档
-        html = "<!DOCTYPE html>\n"
-        html += "<html>\n"
-        html += "<head>\n"
-        html += "    <meta charset=\"utf-8\">\n"
-        html += "    <style>\n"
-        html += css + "\n"
-        html += "        body {\n"
-        html += "            font-family: '" + self.current_font + "', sans-serif;\n"
-        html += "            font-size: " + str(final_font_size) + "px;\n"
-        html += "            line-height: 1.6;\n"
-        html += "            color: #333;\n"
-        html += "            margin: 20px;\n"
-        html += "            background-color: #fff;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "            word-break: break-word;\n"
-        html += "            overflow-x: hidden;\n"
-        html += "        }\n"
-        html += "        .highlight {\n"
-        html += "            background-color: #f8f8f8;\n"
-        html += "            border: 1px solid #e8e8e8;\n"
-        html += "            border-radius: 5px;\n"
-        html += "            padding: 15px;\n"
-        html += "            overflow-x: auto;\n"
-        html += "        }\n"
-        html += "        .highlight pre {\n"
-        html += "            margin: 0;\n"
-        html += "            white-space: pre-wrap;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "        .highlight table {\n"
-        html += "            width: 100%;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "        .highlight td {\n"
-        html += "            vertical-align: top;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "        .highlight code {\n"
-        html += "            font-family: '" + self.current_font + "', Consolas, Monaco, 'Andale Mono', monospace !important;\n"
-        html += "            font-size: 90%;\n"
-        html += "            word-wrap: break-word;\n"
-        html += "        }\n"
-        html += "    </style>\n"
-        html += "</head>\n"
-        html += "<body>\n"
-        html += highlighted_code + "\n"
-        html += "</body>\n"
-        html += "</html>\n"
+        if font_name == "默认字体":
+            self._restore_default_font()
+        else:
+            self._change_font(font_name)
+    
+    def _on_font_size_changed(self, value):
+        """字体大小滑块变化回调"""
+        self._change_font_size(str(value))
+    
+    def _on_encoding_selected(self, item):
+        """编码选择回调"""
+        if isinstance(item, dict):
+            encoding = item.get('data', item.get('text', ''))
+        else:
+            encoding = item
+        self._change_encoding(encoding)
+    
+    def _change_font_size(self, size_text):
+        """更改字体大小"""
+        if not hasattr(self, 'text_edit') or self.text_edit is None:
+            return
+        try:
+            size = int(size_text)
+            font = self.text_edit.font()
+            font.setPointSize(size)
+            self.text_edit.setFont(font)
+            self._refresh_display()
+        except ValueError:
+            pass
+    
+    def _change_encoding(self, encoding):
+        """更改编码"""
+        if self.current_file_path and os.path.exists(self.current_file_path):
+            self.set_file(self.current_file_path)
+    
+    def _toggle_search(self):
+        """切换搜索栏"""
+        if self.search_bar.isVisible():
+            self.search_bar.hide()
+            self._clear_search()
+        else:
+            self.search_bar.show()
+            self.search_input.setFocus()
+    
+    def _on_search_text_changed(self, text):
+        """搜索文本变化"""
+        pass
+    
+    def _perform_search(self):
+        """执行搜索"""
+        search_term = self.search_input.text()
+        if not search_term:
+            self._clear_search()
+            return
         
-        return html
+        self._search_term = search_term
+        self._search_results = []
+        self._current_search_index = -1
+        
+        content = self.text_edit.toPlainText()
+        
+        flags = Qt.CaseSensitive if self._case_sensitive else Qt.CaseInsensitive
+        pos = content.find(search_term, 0, flags)
+        
+        while pos >= 0:
+            self._search_results.append(pos)
+            pos = content.find(search_term, pos + 1, flags)
+        
+        if self._search_results:
+            self._current_search_index = 0
+            self._highlight_search_results()
+            self._update_search_info()
+            self._go_to_match(0)
+        else:
+            self._update_search_info()
+    
+    def _go_to_previous_match(self):
+        """跳转到上一个匹配项"""
+        if not self._search_results:
+            return
+        
+        self._current_search_index = (self._current_search_index - 1) % len(self._search_results)
+        self._go_to_match(self._current_search_index)
+        self._update_search_info()
+    
+    def _go_to_next_match(self):
+        """跳转到下一个匹配项"""
+        if not self._search_results:
+            return
+        
+        self._current_search_index = (self._current_search_index + 1) % len(self._search_results)
+        self._go_to_match(self._current_search_index)
+        self._update_search_info()
+    
+    def _go_to_match(self, index):
+        """跳转到指定索引的匹配项"""
+        if not self._search_results or index < 0 or index >= len(self._search_results):
+            return
+        
+        pos = self._search_results[index]
+        cursor = QTextCursor(self.text_edit.document())
+        cursor.setPosition(pos)
+        cursor.setPosition(pos + len(self._search_term), QTextCursor.KeepAnchor)
+        
+        self.text_edit.setTextCursor(cursor)
+        self.text_edit.setCenterOnScroll(True)
+    
+    def _highlight_search_results(self):
+        """高亮搜索结果"""
+        self.text_edit.moveCursor(QTextCursor.Start)
+        
+        extra_selection = QTextEdit.ExtraSelection()
+        extra_selection.format.setBackground(QColor(0xFF, 0xFF, 0x00, 100))
+        extra_selection.cursor = QTextCursor(self.text_edit.document())
+        
+        self.text_edit.setExtraSelections([extra_selection])
+    
+    def _apply_search_highlight(self):
+        """应用搜索高亮"""
+        if self._search_term and self._search_results:
+            self._perform_search()
+        else:
+            self.text_edit.setExtraSelections([])
+    
+    def _update_search_info(self):
+        """更新搜索信息标签"""
+        count = len(self._search_results)
+        if count > 0:
+            current = self._current_search_index + 1
+            self.search_info_label.setText(f"{current}/{count}")
+        else:
+            self.search_info_label.setText("0/0")
+    
+    def _clear_search(self):
+        """清除搜索"""
+        self._search_term = ""
+        self._search_results = []
+        self._current_search_index = -1
+        self.search_input.setText("")
+        self.search_info_label.setText("0/0")
+        self.text_edit.setExtraSelections([])
+    
+    def cleanup(self):
+        """清理资源"""
+        if self._thread and self._thread.isRunning():
+            self._thread.abort()
+            self._thread.wait()
+        self._clear_search()
 
 
-class TextPreviewer(QMainWindow):
+class TextPreviewer(QWidget):
     """
-    文本预览器主窗口
+    完整文本预览器组件
+    包含窗口控件和TextPreviewWidget
     """
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         
-        # 获取全局字体和DPI缩放因子
         app = QApplication.instance()
-        self.global_font = getattr(app, 'global_font', QFont())
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 设置窗口属性
-        self.setWindowTitle("文本预览器")
-        
-        # 使用DPI缩放因子调整窗口大小
-        scaled_min_width = int(300 * self.dpi_scale)
-        scaled_min_height = int(200 * self.dpi_scale)
-        self.setGeometry(100, 100, scaled_min_width, scaled_min_height)
-        self.setMinimumSize(scaled_min_width, scaled_min_height)
-        
-        # 设置窗口字体
+        self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
-        # 创建UI
-        self.init_ui()
+        self._init_ui()
+        self._apply_theme()
     
-    def init_ui(self):
-        """
-        初始化用户界面
-        """
-        # 创建中央部件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+    def _init_ui(self):
+        """初始化UI"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         
-        # 创建主布局
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        
-        # 设置整体背景色
+        self.preview_widget = TextPreviewWidget(self)
+        layout.addWidget(self.preview_widget)
+    
+    def _apply_theme(self):
+        """应用主题"""
         app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认窗口背景色
-        if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-        self.setStyleSheet(f"background-color: {background_color};")
+        if not hasattr(app, 'settings_manager'):
+            return
         
-        # 文本预览区域
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("background-color: transparent;")
-        
-        self.text_widget = TextPreviewWidget()
-        scroll_area.setWidget(self.text_widget)
-        
-        from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-        SmoothScroller.apply_to_scroll_area(scroll_area)
-        
-        main_layout.addWidget(scroll_area, 1)
-    
-    def open_file(self):
-        """
-        打开文本文件
-        """
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "打开文本文件", "", 
-            "文本文件 (*.txt *.md *.markdown *.mdown *.mkd *.py *.js *.html *.css *.json *.yaml *.yml *.xml *.java *.c *.cpp *.h *.hpp *.go *.rs);;所有文件(*)")
-        
-        if file_path:
-            self.load_file_from_path(file_path)
-    
-    def load_file_from_path(self, file_path):
-        """
-        从外部路径加载文本文件
-        """
-        if self.text_widget.set_file(file_path):
-            # 更新窗口标题
-            file_name = os.path.basename(file_path)
-            self.setWindowTitle(f"文本预览器- {file_name}")
-            
-            return True
-        return False
+        bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
+        self.setStyleSheet(f"background-color: {bg_color};")
     
     def set_file(self, file_path):
         """
-        设置要显示的文本文件
+        设置要预览的文件
+        
+        Args:
+            file_path (str): 文件路径
         """
-        self.load_file_from_path(file_path)
-
-
-# 命令行参数支持
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    viewer = TextPreviewer()
+        self.preview_widget.set_file(file_path)
     
-    # 如果提供了文件路径参数，直接加载
-    if len(sys.argv) > 1:
-        file_path = sys.argv[1]
-        viewer.load_file_from_path(file_path)
-    
-    viewer.show()
-    sys.exit(app.exec_())
+    def cleanup(self):
+        """清理资源"""
+        self.preview_widget.cleanup()

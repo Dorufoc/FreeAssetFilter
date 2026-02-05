@@ -130,7 +130,7 @@ class FileStagingPool(QWidget):
         # 创建滚动区域
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
         app = QApplication.instance()
@@ -183,6 +183,37 @@ class FileStagingPool(QWidget):
             }}
             QScrollBar::add-page:vertical,
             QScrollBar::sub-page:vertical {{
+                background: none;
+                border: 0px solid transparent;
+                border: none;
+            }}
+            QScrollBar:horizontal {{
+                height: 6px;
+                background-color: {auxiliary_color};
+                border: 0px solid transparent;
+                border-radius: 0px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background-color: {normal_color};
+                min-width: 15px;
+                border-radius: 3px;
+                border: none;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background-color: {secondary_color};
+                border: none;
+            }}
+            QScrollBar::handle:horizontal:pressed {{
+                background-color: {accent_color};
+                border: none;
+            }}
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {{
+                width: 0px;
+                border: none;
+            }}
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {{
                 background: none;
                 border: 0px solid transparent;
                 border: none;

@@ -186,6 +186,27 @@ class TestWindow(QWidget):
         self.scrolling_text6.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc;")
         layout.addWidget(self.scrolling_text6)
         
+        # ========== 测试7: 悬停触发模式 ==========
+        test7_label = QLabel("测试7: 悬停触发模式（鼠标悬停时开始滚动，移开时返回开头）")
+        test7_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(test7_label)
+        
+        self.scrolling_text8 = ScrollingText(
+            parent=self,
+            text="这是悬停触发模式的测试文本，鼠标移入时开始滚动，移出时平滑返回开头",
+            width=200,
+            height=30,
+            font_size=14,
+            scroll_trigger="hover"  # 使用悬停触发模式
+        )
+        self.scrolling_text8.setStyleSheet("background-color: #e8f5e9; border: 1px solid #4caf50;")
+        layout.addWidget(self.scrolling_text8)
+        
+        # 悬停模式说明
+        hover_info = QLabel("说明：悬停触发模式下，文本默认静止，鼠标移入后开始滚动，移出后平滑返回起点")
+        hover_info.setStyleSheet("color: #4caf50; font-size: 11px; margin-left: 10px;")
+        layout.addWidget(hover_info)
+        
         # ========== 测试6: 字体大小测试 ==========
         test6_label = QLabel("测试6: 字体大小测试")
         test6_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
@@ -223,9 +244,10 @@ class TestWindow(QWidget):
         # 说明标签
         info_label = QLabel(
             "说明：\n"
-            "1. 将鼠标悬停在滚动文本上可暂停动画，移开后恢复\n"
-            "2. 点击滚动文本会触发 clicked 信号（查看控制台输出）\n"
-            "3. 短文本自动居中显示，长文本自动启用滚动"
+            "1. 自动触发模式：鼠标悬停可暂停动画，移开后恢复；\n"
+            "2. 悬停触发模式：鼠标移入时开始滚动，移出时平滑返回开头；\n"
+            "3. 点击滚动文本会触发 clicked 信号（查看控制台输出）\n"
+            "4. 短文本自动居中显示，长文本自动启用滚动"
         )
         info_label.setStyleSheet("color: #666; font-size: 12px; margin-top: 10px;")
         layout.addWidget(info_label)
