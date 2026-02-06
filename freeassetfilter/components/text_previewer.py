@@ -46,6 +46,7 @@ from PyQt5.QtCore import (
 )
 
 from freeassetfilter.widgets.D_widgets import CustomButton
+from freeassetfilter.widgets.D_more_menu import D_MoreMenu
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
@@ -527,6 +528,8 @@ class TextPreviewWidget(QWidget):
         self.text_edit.setReadOnly(True)
         self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
         self.text_edit.setUndoRedoEnabled(False)
+        self.text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.text_edit.customContextMenuRequested.connect(self._show_context_menu)
         
         default_font = QFont()
         default_font.setPointSize(int(12 * self.dpi_scale))
@@ -554,6 +557,29 @@ class TextPreviewWidget(QWidget):
         parent_layout.addWidget(container)
         
         SmoothScroller.apply_to_scroll_area(self.text_edit)
+        
+        self._init_context_menu()
+    
+    def _init_context_menu(self):
+        """初始化右键菜单"""
+        self.context_menu = D_MoreMenu(self.text_edit)
+        self.context_menu.set_items([
+            {"text": "复制", "data": "copy"},
+            {"text": "全选", "data": "select_all"}
+        ])
+        self.context_menu.itemClicked.connect(self._on_context_menu_clicked)
+    
+    def _on_context_menu_clicked(self, data):
+        """处理右键菜单项点击"""
+        if data == "copy":
+            self.text_edit.copy()
+        elif data == "select_all":
+            self.text_edit.selectAll()
+    
+    def _show_context_menu(self, pos):
+        """显示右键菜单"""
+        self.context_menu.move(pos)
+        self.context_menu.show()
     
     def _init_search_bar(self, parent_layout):
         """初始化搜索栏"""
@@ -564,51 +590,56 @@ class TextPreviewWidget(QWidget):
         search_layout.setContentsMargins(10, 5, 10, 5)
         search_layout.setSpacing(5)
         
+        icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
+        
         self.search_input = CustomInputBox(
             placeholder_text="查找文本...",
-            width=300
+            height=20
         )
+        self.search_input.setMinimumWidth(int(50 * self.dpi_scale))
+        self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.search_input.textChanged.connect(self._on_search_text_changed)
         self.search_input.editingFinished.connect(self._perform_search)
-        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.search_input, stretch=1)
+        
+        self.search_word_button = CustomButton(
+            "查询",
+            button_type="primary",
+            display_mode="text",
+            height=20,
+            tooltip_text="执行搜索"
+        )
+        self.search_word_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.search_word_button.clicked.connect(self._perform_search)
+        search_layout.addWidget(self.search_word_button)
         
         self.search_prev_button = CustomButton(
-            tooltip_text="上一个",
+            os.path.join(icon_dir, "arrow_left.svg"),
             button_type="normal",
-            display_mode="icon"
+            display_mode="icon",
+            tooltip_text="上一个"
         )
-        icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
-        prev_icon_path = os.path.join(icon_dir, "arrow_up.svg")
-        if os.path.exists(prev_icon_path):
-            self.search_prev_button.setIcon(QIcon(prev_icon_path))
+        self.search_prev_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.search_prev_button.clicked.connect(self._go_to_previous_match)
         search_layout.addWidget(self.search_prev_button)
         
+        self.search_info_label = QLabel("0/0")
+        self.search_info_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
+            self.search_info_label.setStyleSheet(f"color: {secondary_color};")
+        search_layout.addWidget(self.search_info_label)
+        
         self.search_next_button = CustomButton(
-            tooltip_text="下一个",
+            os.path.join(icon_dir, "arrow_right.svg"),
             button_type="normal",
-            display_mode="icon"
+            display_mode="icon",
+            tooltip_text="下一个"
         )
-        next_icon_path = os.path.join(icon_dir, "arrow_down.svg")
-        if os.path.exists(next_icon_path):
-            self.search_next_button.setIcon(QIcon(next_icon_path))
+        self.search_next_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.search_next_button.clicked.connect(self._go_to_next_match)
         search_layout.addWidget(self.search_next_button)
-        
-        self.search_close_button = CustomButton(
-            tooltip_text="关闭",
-            button_type="normal",
-            display_mode="icon"
-        )
-        close_icon_path = os.path.join(icon_dir, "关.svg")
-        if os.path.exists(close_icon_path):
-            self.search_close_button.setIcon(QIcon(close_icon_path))
-        self.search_close_button.clicked.connect(self._toggle_search)
-        search_layout.addWidget(self.search_close_button)
-        
-        self.search_info_label = QLabel("0/0")
-        self.search_info_label.setMinimumWidth(50)
-        search_layout.addWidget(self.search_info_label)
         
         self.search_bar.hide()
         parent_layout.addWidget(self.search_bar)
@@ -912,8 +943,9 @@ class TextPreviewWidget(QWidget):
             self.search_input.setFocus()
     
     def _on_search_text_changed(self, text):
-        """搜索文本变化"""
-        pass
+        """搜索文本变化时清除高亮"""
+        if not text:
+            self._clear_search()
     
     def _perform_search(self):
         """执行搜索"""
@@ -976,13 +1008,29 @@ class TextPreviewWidget(QWidget):
     
     def _highlight_search_results(self):
         """高亮搜索结果"""
-        self.text_edit.moveCursor(QTextCursor.Start)
+        extra_selections = []
         
-        extra_selection = QTextEdit.ExtraSelection()
-        extra_selection.format.setBackground(QColor(0xFF, 0xFF, 0x00, 100))
-        extra_selection.cursor = QTextCursor(self.text_edit.document())
+        highlight_format = QTextCharFormat()
+        highlight_format.setBackground(QColor(0xFF, 0xFF, 0x00, 100))
         
-        self.text_edit.setExtraSelections([extra_selection])
+        current_format = QTextCharFormat()
+        current_format.setBackground(QColor(0xFF, 0x00, 0x00, 150))
+        
+        for i, pos in enumerate(self._search_results):
+            extra_selection = QTextEdit.ExtraSelection()
+            
+            if i == self._current_search_index:
+                extra_selection.format = current_format
+            else:
+                extra_selection.format = highlight_format
+            
+            extra_selection.cursor = QTextCursor(self.text_edit.document())
+            extra_selection.cursor.setPosition(pos)
+            extra_selection.cursor.setPosition(pos + len(self._search_term), QTextCursor.KeepAnchor)
+            
+            extra_selections.append(extra_selection)
+        
+        self.text_edit.setExtraSelections(extra_selections)
     
     def _apply_search_highlight(self):
         """应用搜索高亮"""
