@@ -9,7 +9,6 @@ __pycache__/
 # Data directories
 data/thumbnails/
 data/LibreOfficePortable/
-*.png
 *.jpg
 *.jpeg
 *.gif
@@ -21,8 +20,7 @@ data/LibreOfficePortable/
 # Configuration files
 config/
 test/
-*.json
-
+data/
 # Testing files
 tests/
 data/timeline/

@@ -8,6 +8,7 @@ python-vlc>=3.0.0
 importlib-metadata>=6.0.0
 markdown>=3.4.0
 pygments>=2.15.0
+pysyntect>=0.3.0
 rarfile>=4.0.0
 py7zr>=0.21.0
 pycdlib>=1.14.0

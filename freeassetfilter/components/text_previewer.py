@@ -60,6 +60,12 @@ from freeassetfilter.widgets.input_widgets import CustomInputBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 
+# 导入新的语法高亮器
+from freeassetfilter.utils.syntax_highlighter import (
+    SyntaxHighlighter as FAFHighlighter,
+    ColorSchemes, TokenType, create_highlighter, is_dark_mode
+)
+
 try:
     import markdown
     MARKDOWN_AVAILABLE = True
@@ -83,15 +89,46 @@ except ImportError:
 ENCODING_LIST = ['UTF-8', 'GBK', 'GB2312', 'BIG5', 'LATIN1', 'UTF-16', 'ASCII']
 
 CODE_EXTENSIONS = {
-    '.py': 'python', '.js': 'javascript', '.ts': 'typescript',
-    '.json': 'json', '.xml': 'xml', '.html': 'html', '.css': 'css',
-    '.c': 'c', '.cpp': 'cpp', '.h': 'c', '.hpp': 'cpp',
-    '.java': 'java', '.cs': 'csharp', '.go': 'go', '.rust': 'rust',
-    '.sql': 'sql', '.sh': 'bash', '.bat': 'batch', '.ps1': 'powershell',
+    # Python
+    '.py': 'python', '.pyw': 'python', '.pyi': 'python',
+    # C/C++
+    '.c': 'cpp', '.cpp': 'cpp', '.cxx': 'cpp', '.cc': 'cpp',
+    '.h': 'cpp', '.hpp': 'cpp', '.hxx': 'cpp',
+    # Java
+    '.java': 'java',
+    # JavaScript/TypeScript
+    '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript',
+    '.ts': 'typescript', '.tsx': 'typescript',
+    # C#
+    '.cs': 'csharp',
+    # Go
+    '.go': 'go',
+    # Rust
+    '.rs': 'rust',
+    # SQL
+    '.sql': 'sql',
+    # PHP
+    '.php': 'php', '.phtml': 'php',
+    # R
+    '.r': 'r', '.R': 'r',
+    # Lua
+    '.lua': 'lua',
+    # VB/VBA
+    '.vb': 'vb', '.vbs': 'vb', '.vba': 'vb',
+    # HTML
+    '.html': 'html', '.htm': 'html',
+    # CSS
+    '.css': 'css', '.scss': 'css', '.sass': 'css', '.less': 'css',
+    # JSON
+    '.json': 'json',
+    # XML
+    '.xml': 'xml', '.xhtml': 'xml', '.svg': 'xml', '.xsl': 'xml', '.xslt': 'xml',
+    # 其他
+    '.sh': 'bash', '.bat': 'batch', '.ps1': 'powershell',
     '.yml': 'yaml', '.yaml': 'yaml', '.ini': 'ini', '.cfg': 'ini',
-    '.toml': 'toml', '.md': 'markdown', '.rst': 'rst', '.lua': 'lua',
-    '.php': 'php', '.rb': 'ruby', '.swift': 'swift', '.kt': 'kotlin',
-    '.r': 'r', '.m': 'matlab', '.pl': 'perl', '.pm': 'perl'
+    '.toml': 'toml', '.md': 'markdown', '.rst': 'rst',
+    '.rb': 'ruby', '.swift': 'swift', '.kt': 'kotlin',
+    '.m': 'matlab', '.pl': 'perl', '.pm': 'perl'
 }
 
 TEXT_EXTENSIONS = {
@@ -455,6 +492,136 @@ class XmlHighlighter(SyntaxHighlighter):
                 self.setFormat(start, length, fmt)
 
 
+class FAFHighlighterAdapter(QSyntaxHighlighter):
+    """
+    FreeAssetFilter语法高亮器适配器
+    
+    将新的FAF语法高亮器适配为PyQt5的QSyntaxHighlighter接口
+    支持所有17种编程语言和标记语言
+    """
+    
+    # 文件扩展名到语言标识的映射
+    EXTENSION_MAP = {
+        # Python
+        '.py': 'python', '.pyw': 'python', '.pyi': 'python',
+        # C/C++
+        '.c': 'cpp', '.cpp': 'cpp', '.cxx': 'cpp', '.cc': 'cpp',
+        '.h': 'cpp', '.hpp': 'cpp', '.hxx': 'cpp',
+        # Java
+        '.java': 'java',
+        # JavaScript/TypeScript
+        '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript',
+        '.ts': 'typescript', '.tsx': 'typescript',
+        # C#
+        '.cs': 'csharp',
+        # Go
+        '.go': 'go',
+        # Rust
+        '.rs': 'rust',
+        # SQL
+        '.sql': 'sql',
+        # PHP
+        '.php': 'php', '.phtml': 'php',
+        # R
+        '.r': 'r', '.R': 'r',
+        # Lua
+        '.lua': 'lua',
+        # VB/VBA
+        '.vb': 'vb', '.vbs': 'vb', '.vba': 'vb',
+        # HTML
+        '.html': 'html', '.htm': 'html',
+        # CSS
+        '.css': 'css', '.scss': 'css', '.sass': 'css', '.less': 'css',
+        # JSON
+        '.json': 'json',
+        # XML
+        '.xml': 'xml', '.xhtml': 'xml', '.svg': 'xml', '.xsl': 'xml', '.xslt': 'xml'
+    }
+    
+    def __init__(self, parent=None, file_path=None, language=None):
+        """
+        初始化适配器高亮器
+        
+        参数：
+            parent: 父文档
+            file_path: 文件路径（用于自动检测语言）
+            language: 语言标识（直接指定）
+        """
+        super().__init__(parent)
+        
+        # 自动检测语言
+        self.language = language or self._detect_language(file_path)
+        
+        # 创建FAF高亮器（自动根据主题选择）
+        self.faf_highlighter = create_highlighter("auto")
+        
+        # 获取当前配色方案用于设置文档背景
+        self.color_scheme = self.faf_highlighter.color_scheme
+    
+    def _detect_language(self, file_path):
+        """
+        根据文件路径检测语言
+        
+        参数：
+            file_path: 文件路径
+            
+        返回：
+            str: 语言标识
+        """
+        if not file_path:
+            return 'text'
+        
+        ext = os.path.splitext(file_path)[1].lower()
+        return self.EXTENSION_MAP.get(ext, 'text')
+    
+    def highlightBlock(self, text):
+        """
+        高亮文本块 - 实现QSyntaxHighlighter接口
+        
+        参数：
+            text: 当前文本块内容
+        """
+        if not text or self.language == 'text':
+            return
+        
+        try:
+            # 使用FAF高亮器解析当前行
+            tokens = self.faf_highlighter.tokenize(text, self.language)
+            
+            # 应用高亮格式
+            for token in tokens:
+                fmt = self.faf_highlighter.get_qtextformat(token.token_type)
+                self.setFormat(token.start_pos, len(token.text), fmt)
+        except Exception:
+            # 解析失败时不应用高亮
+            pass
+    
+    def get_background_color(self):
+        """获取背景颜色"""
+        return self.faf_highlighter.get_background_color()
+    
+    def get_foreground_color(self):
+        """获取前景颜色"""
+        return self.faf_highlighter.get_foreground_color()
+    
+    def rehighlight(self):
+        """重新高亮整个文档"""
+        super().rehighlight()
+
+    def update_theme(self):
+        """更新主题配色方案
+
+        当应用主题切换时调用此方法，重新创建高亮器以应用新的配色方案
+        """
+        try:
+            # 重新创建FAF高亮器以获取新的主题配色
+            self.faf_highlighter = create_highlighter("auto")
+            self.color_scheme = self.faf_highlighter.color_scheme
+            # 重新高亮整个文档
+            self.rehighlight()
+        except Exception:
+            pass
+
 class TextPreviewThread(QThread):
     """文本加载后台线程"""
     
@@ -705,6 +872,8 @@ class TextPreviewWidget(QWidget):
         
         default_font = QFont()
         default_font.setPointSize(int(self.default_font_size * self.dpi_scale))
+        # 设置字重为Regular（正常），避免字体过细
+        default_font.setWeight(QFont.Normal)
         self.text_edit.setFont(default_font)
 
         app = QApplication.instance()
@@ -837,7 +1006,10 @@ class TextPreviewWidget(QWidget):
         parent_layout.addWidget(self.progress_bar)
     
     def _apply_theme(self):
-        """应用主题"""
+        """应用主题
+
+        更新文本编辑器的样式，并在有代码高亮器时同步更新配色方案
+        """
         app = QApplication.instance()
         if not hasattr(app, 'settings_manager'):
             return
@@ -858,6 +1030,20 @@ class TextPreviewWidget(QWidget):
                 padding: 10px;
             }}
         """)
+
+        # 如果存在代码高亮器，更新其配色方案以匹配当前主题
+        if self.current_highlighter is not None:
+            try:
+                self.current_highlighter.update_theme()
+                # 更新文本编辑器的调色板以匹配新的配色方案
+                bg_color = self.current_highlighter.get_background_color()
+                fg_color = self.current_highlighter.get_foreground_color()
+                palette = self.text_edit.palette()
+                palette.setColor(QPalette.Base, bg_color)
+                palette.setColor(QPalette.Text, fg_color)
+                self.text_edit.setPalette(palette)
+            except Exception:
+                pass
     
     def _detect_file_type(self, file_path):
         """检测文件类型"""
@@ -876,20 +1062,30 @@ class TextPreviewWidget(QWidget):
         return 'text'
     
     def _create_highlighter(self, file_type):
-        """创建语法高亮器"""
-        theme = 'dark'
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            theme = 'light'
+        """
+        创建语法高亮器
         
-        if file_type == 'python':
-            self.current_highlighter = PythonHighlighter(self.text_edit.document(), theme)
-        elif file_type == 'json':
-            self.current_highlighter = JsonHighlighter(self.text_edit.document(), theme)
-        elif file_type in ['xml', 'html', 'css']:
-            self.current_highlighter = XmlHighlighter(self.text_edit.document(), theme)
-        else:
-            self.current_highlighter = None
+        使用新的FAF语法高亮器适配器，支持17种编程语言和标记语言：
+        Python、C、C++、Java、R、Lua、JavaScript、C#、VB、SQL、PHP、Go、Rust、HTML、CSS、JSON、XML
+        """
+        # 使用新的FAF高亮器适配器，自动检测主题和语言
+        self.current_highlighter = FAFHighlighterAdapter(
+            self.text_edit.document(),
+            file_path=self.current_file_path
+        )
+        
+        # 应用配色方案的字体颜色到文本编辑器
+        try:
+            bg_color = self.current_highlighter.get_background_color()
+            fg_color = self.current_highlighter.get_foreground_color()
+            
+            # 设置文本编辑器的背景色和前景色
+            palette = self.text_edit.palette()
+            palette.setColor(QPalette.Base, bg_color)
+            palette.setColor(QPalette.Text, fg_color)
+            self.text_edit.setPalette(palette)
+        except Exception:
+            pass
     
     def set_file(self, file_path):
         """
@@ -1130,16 +1326,19 @@ class TextPreviewWidget(QWidget):
                 }
             )
             html = md.convert(content)
-            
+
             current_font = self.text_edit.font()
             font_family = current_font.family()
-            # 使用缩放后的字体大小（像素值），用于 CSS 样式
-            font_size = int(self.default_font_size * self.dpi_scale)
+            # 使用当前字体大小滑块的值作为基准，实现等比例缩放
+            # 优先使用滑块当前值，确保用户调整字体大小后能够实时反映
+            current_slider_value = self.font_size_slider.value()
+            font_size = int(current_slider_value * self.dpi_scale)
             
             is_dark = False
             app = QApplication.instance()
             if hasattr(app, 'settings_manager'):
-                theme = app.settings_manager.get_setting("general.theme", "dark")
+                # 使用正确的设置键名 appearance.theme
+                theme = app.settings_manager.get_setting("appearance.theme", "default")
                 is_dark = theme == "dark"
                 secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
                 base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
@@ -1164,7 +1363,12 @@ class TextPreviewWidget(QWidget):
                     div {{ color: {secondary_color}; }}
                     p {{ color: {secondary_color}; margin: 0.5em 0; }}
                     li {{ color: {secondary_color}; margin: 0.3em 0; }}
-                    pre {{ background-color: {pre_bg}; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 0.5em 0; }}
+                    pre {{ background-color: {pre_bg}; padding: 10px; border-radius: 0; overflow-x: hidden; margin: 0; white-space: pre-wrap; word-wrap: break-word; }}
+                    /* 消除连续代码块之间的缝隙 */
+                    pre + pre {{ margin-top: 0; }}
+                    div > pre:first-child {{ border-radius: 4px 4px 0 0; }}
+                    div > pre:last-child {{ border-radius: 0 0 4px 4px; }}
+                    div > pre:only-child {{ border-radius: 4px; }}
                     code {{ background-color: {code_bg}; padding: 2px 5px; border-radius: 3px; font-family: Consolas, monospace; color: {secondary_color}; }}
                     pre code {{ background-color: transparent; padding: 0; color: {secondary_color} !important; }}
                     pre code * {{ color: {secondary_color} !important; }}
@@ -1199,7 +1403,11 @@ class TextPreviewWidget(QWidget):
                 html = self._process_html_colors(html, True)
             
             html = f"<html><head>{header_style}</head><body>{html}</body></html>"
-            
+
+            # Markdown 模式下启用自动换行（根据显示区域宽度自适应）
+            self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+            # 禁用水平滚动条，确保内容自动换行不溢出
+            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             self.text_edit.setHtml(html)
             self.is_markdown = True
             
@@ -1209,6 +1417,10 @@ class TextPreviewWidget(QWidget):
     
     def _render_plain_text(self, content, file_type):
         """渲染纯文本/代码"""
+        # 纯文本/代码模式下禁用自动换行（保持原有行为）
+        self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+        # 恢复水平滚动条，方便查看长行代码
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.text_edit.setPlainText(content)
         self.is_markdown = False
         
@@ -1263,14 +1475,16 @@ class TextPreviewWidget(QWidget):
         """应用代码高亮专用字体（FiraCode-VF）"""
         if not hasattr(self, 'text_edit') or self.text_edit is None:
             return
-        
+
         app = QApplication.instance()
         firacode_family = getattr(app, 'firacode_font_family', None)
-        
+
         if firacode_family:
             code_font = QFont(firacode_family)
             current_size = self.font_size_slider.value()
             code_font.setPointSize(current_size)
+            # 设置字重为Medium（中等），使代码更清晰易读
+            code_font.setWeight(QFont.Medium)
             self.text_edit.setFont(code_font)
     
     def _restore_default_font(self):
@@ -1280,6 +1494,8 @@ class TextPreviewWidget(QWidget):
         default_font = QFont()
         current_size = self.font_size_slider.value()
         default_font.setPointSize(current_size)
+        # 设置字重为Medium（中等），使文字更清晰易读
+        default_font.setWeight(QFont.Medium)
         self.text_edit.setFont(default_font)
         self._refresh_display()
     
@@ -1291,8 +1507,10 @@ class TextPreviewWidget(QWidget):
         font.setFamily(font_name)
         current_size = self.font_size_slider.value()
         font.setPointSize(current_size)
+        # 确保字重为Regular（正常），避免字体过细
+        font.setWeight(QFont.Normal)
         self.text_edit.setFont(font)
-        
+
         self._refresh_display()
     
     def _on_font_selected(self, item):
@@ -1327,6 +1545,8 @@ class TextPreviewWidget(QWidget):
             size = int(size_text)
             font = self.text_edit.font()
             font.setPointSize(size)
+            # 确保字重为Regular（正常），避免字体过细
+            font.setWeight(QFont.Normal)
             self.text_edit.setFont(font)
             self._refresh_display()
         except ValueError:

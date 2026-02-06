@@ -1,0 +1,332 @@
+{
+  "metadata": {
+    "name": "FreeAssetFilter IDE Color Schemes",
+    "version": "1.0.0",
+    "description": "现代化IDE风格配色方案，参考GitHub Dark/Light和VS Code主题",
+    "author": "FreeAssetFilter",
+    "last_updated": "2025-02-06"
+  },
+  "schemes": {
+    "github_dark": {
+      "name": "GitHub Dark",
+      "description": "深色背景，柔和对比度，长时间编码舒适",
+      "type": "dark",
+      "colors": {
+        "background": "#0d1117",
+        "foreground": "#c9d1d9",
+        "keyword": "#ff7b72",
+        "variable": "#79c0ff",
+        "function": "#d2a8ff",
+        "string": "#a5d6ff",
+        "comment": "#8b949e",
+        "number": "#79c0ff",
+        "operator": "#ff7b72",
+        "class_type": "#ffa657",
+        "constant": "#79c0ff",
+        "builtin": "#d2a8ff",
+        "decorator": "#d2a8ff",
+        "tag": "#7ee787",
+        "attribute": "#79c0ff",
+        "css_property": "#79c0ff",
+        "css_value": "#a5d6ff",
+        "selector": "#d2a8ff",
+        "line_number": "#6e7681",
+        "line_number_active": "#c9d1d9",
+        "selection": "#264f78",
+        "current_line": "#161b22",
+        "bracket_match": "#1f6feb",
+        "bracket_mismatch": "#f85149"
+      },
+      "font": {
+        "family": "Fira Code, Consolas, Monaco, 'Courier New', monospace",
+        "size": 14,
+        "line_height": 1.5
+      }
+    },
+    "github_light": {
+      "name": "GitHub Light",
+      "description": "浅色背景，清晰对比度，专业可读",
+      "type": "light",
+      "colors": {
+        "background": "#ffffff",
+        "foreground": "#24292f",
+        "keyword": "#cf222e",
+        "variable": "#0969da",
+        "function": "#8250df",
+        "string": "#0a3069",
+        "comment": "#6e7781",
+        "number": "#0550ae",
+        "operator": "#cf222e",
+        "class_type": "#953800",
+        "constant": "#0550ae",
+        "builtin": "#8250df",
+        "decorator": "#8250df",
+        "tag": "#116329",
+        "attribute": "#0969da",
+        "css_property": "#0969da",
+        "css_value": "#0a3069",
+        "selector": "#8250df",
+        "line_number": "#6e7781",
+        "line_number_active": "#24292f",
+        "selection": "#b4d5fe",
+        "current_line": "#f6f8fa",
+        "bracket_match": "#0969da",
+        "bracket_mismatch": "#cf222e"
+      },
+      "font": {
+        "family": "Fira Code, Consolas, Monaco, 'Courier New', monospace",
+        "size": 14,
+        "line_height": 1.5
+      }
+    },
+    "vscode_dark": {
+      "name": "VS Code Dark+",
+      "description": "经典深色，高对比度，专业开发体验",
+      "type": "dark",
+      "colors": {
+        "background": "#1e1e1e",
+        "foreground": "#d4d4d4",
+        "keyword": "#569cd6",
+        "variable": "#9cdcfe",
+        "function": "#dcdcaa",
+        "string": "#ce9178",
+        "comment": "#6a9955",
+        "number": "#b5cea8",
+        "operator": "#d4d4d4",
+        "class_type": "#4ec9b0",
+        "constant": "#4fc1ff",
+        "builtin": "#dcdcaa",
+        "decorator": "#4ec9b0",
+        "tag": "#569cd6",
+        "attribute": "#9cdcfe",
+        "css_property": "#9cdcfe",
+        "css_value": "#ce9178",
+        "selector": "#d7ba7d",
+        "line_number": "#858585",
+        "line_number_active": "#c6c6c6",
+        "selection": "#264f78",
+        "current_line": "#2d2d2d",
+        "bracket_match": "#ffd700",
+        "bracket_mismatch": "#f44747"
+      },
+      "font": {
+        "family": "Fira Code, Consolas, Monaco, 'Courier New', monospace",
+        "size": 14,
+        "line_height": 1.5
+      }
+    },
+    "vscode_light": {
+      "name": "VS Code Light+",
+      "description": "经典浅色，清晰易读，适合日间开发",
+      "type": "light",
+      "colors": {
+        "background": "#ffffff",
+        "foreground": "#333333",
+        "keyword": "#0000ff",
+        "variable": "#001080",
+        "function": "#795e26",
+        "string": "#a31515",
+        "comment": "#008000",
+        "number": "#098658",
+        "operator": "#000000",
+        "class_type": "#267f99",
+        "constant": "#0070c1",
+        "builtin": "#795e26",
+        "decorator": "#267f99",
+        "tag": "#800000",
+        "attribute": "#001080",
+        "css_property": "#001080",
+        "css_value": "#0000ff",
+        "selector": "#800000",
+        "line_number": "#237893",
+        "line_number_active": "#0b216f",
+        "selection": "#add6ff",
+        "current_line": "#f5f5f5",
+        "bracket_match": "#ffd700",
+        "bracket_mismatch": "#ff0000"
+      },
+      "font": {
+        "family": "Fira Code, Consolas, Monaco, 'Courier New', monospace",
+        "size": 14,
+        "line_height": 1.5
+      }
+    },
+    "dracula": {
+      "name": "Dracula",
+      "description": "流行的深色主题，鲜艳但不刺眼",
+      "type": "dark",
+      "colors": {
+        "background": "#282a36",
+        "foreground": "#f8f8f2",
+        "keyword": "#ff79c6",
+        "variable": "#8be9fd",
+        "function": "#50fa7b",
+        "string": "#f1fa8c",
+        "comment": "#6272a4",
+        "number": "#bd93f9",
+        "operator": "#ff79c6",
+        "class_type": "#8be9fd",
+        "constant": "#bd93f9",
+        "builtin": "#50fa7b",
+        "decorator": "#50fa7b",
+        "tag": "#ff79c6",
+        "attribute": "#50fa7b",
+        "css_property": "#8be9fd",
+        "css_value": "#f1fa8c",
+        "selector": "#ff79c6",
+        "line_number": "#6272a4",
+        "line_number_active": "#f8f8f2",
+        "selection": "#44475a",
+        "current_line": "#44475a",
+        "bracket_match": "#ff79c6",
+        "bracket_mismatch": "#ff5555"
+      },
+      "font": {
+        "family": "Fira Code, Consolas, Monaco, 'Courier New', monospace",
+        "size": 14,
+        "line_height": 1.5
+      }
+    },
+    "monokai": {
+      "name": "Monokai",
+      "description": "经典的Monokai主题，高对比度",
+      "type": "dark",
+      "colors": {
+        "background": "#272822",
+        "foreground": "#f8f8f2",
+        "keyword": "#f92672",
+        "variable": "#f8f8f2",
+        "function": "#a6e22e",
+        "string": "#e6db74",
+        "comment": "#75715e",
+        "number": "#ae81ff",
+        "operator": "#f92672",
+        "class_type": "#66d9ef",
+        "constant": "#ae81ff",
+        "builtin": "#a6e22e",
+        "decorator": "#a6e22e",
+        "tag": "#f92672",
+        "attribute": "#a6e22e",
+        "css_property": "#66d9ef",
+        "css_value": "#e6db74",
+        "selector": "#f92672",
+        "line_number": "#75715e",
+        "line_number_active": "#f8f8f2",
+        "selection": "#49483e",
+        "current_line": "#383830",
+        "bracket_match": "#f92672",
+        "bracket_mismatch": "#ff0000"
+      },
+      "font": {
+        "family": "Fira Code, Consolas, Monaco, 'Courier New', monospace",
+        "size": 14,
+        "line_height": 1.5
+      }
+    },
+    "solarized_dark": {
+      "name": "Solarized Dark",
+      "description": "Solarized深色主题，减少眼睛疲劳",
+      "type": "dark",
+      "colors": {
+        "background": "#002b36",
+        "foreground": "#839496",
+        "keyword": "#859900",
+        "variable": "#268bd2",
+        "function": "#b58900",
+        "string": "#2aa198",
+        "comment": "#586e75",
+        "number": "#d33682",
+        "operator": "#859900",
+        "class_type": "#cb4b16",
+        "constant": "#d33682",
+        "builtin": "#b58900",
+        "decorator": "#b58900",
+        "tag": "#859900",
+        "attribute": "#268bd2",
+        "css_property": "#268bd2",
+        "css_value": "#2aa198",
+        "selector": "#859900",
+        "line_number": "#586e75",
+        "line_number_active": "#839496",
+        "selection": "#073642",
+        "current_line": "#073642",
+        "bracket_match": "#859900",
+        "bracket_mismatch": "#dc322f"
+      },
+      "font": {
+        "family": "Fira Code, Consolas, Monaco, 'Courier New', monospace",
+        "size": 14,
+        "line_height": 1.5
+      }
+    },
+    "solarized_light": {
+      "name": "Solarized Light",
+      "description": "Solarized浅色主题，减少眼睛疲劳",
+      "type": "light",
+      "colors": {
+        "background": "#fdf6e3",
+        "foreground": "#657b83",
+        "keyword": "#859900",
+        "variable": "#268bd2",
+        "function": "#b58900",
+        "string": "#2aa198",
+        "comment": "#93a1a1",
+        "number": "#d33682",
+        "operator": "#859900",
+        "class_type": "#cb4b16",
+        "constant": "#d33682",
+        "builtin": "#b58900",
+        "decorator": "#b58900",
+        "tag": "#859900",
+        "attribute": "#268bd2",
+        "css_property": "#268bd2",
+        "css_value": "#2aa198",
+        "selector": "#859900",
+        "line_number": "#93a1a1",
+        "line_number_active": "#657b83",
+        "selection": "#eee8d5",
+        "current_line": "#eee8d5",
+        "bracket_match": "#859900",
+        "bracket_mismatch": "#dc322f"
+      },
+      "font": {
+        "family": "Fira Code, Consolas, Monaco, 'Courier New', monospace",
+        "size": 14,
+        "line_height": 1.5
+      }
+    }
+  },
+  "language_mappings": {
+    "python": ["py", "pyw", "pyi"],
+    "cpp": ["c", "cpp", "cxx", "cc", "h", "hpp", "hxx"],
+    "java": ["java"],
+    "javascript": ["js", "jsx", "mjs", "cjs"],
+    "typescript": ["ts", "tsx"],
+    "csharp": ["cs"],
+    "go": ["go"],
+    "rust": ["rs"],
+    "sql": ["sql"],
+    "php": ["php", "phtml"],
+    "r": ["r", "R"],
+    "lua": ["lua"],
+    "vb": ["vb", "vbs", "vba"],
+    "html": ["html", "htm"],
+    "css": ["css", "scss", "sass", "less"],
+    "json": ["json"],
+    "xml": ["xml", "xhtml", "svg", "xsl", "xslt"]
+  },
+  "syntax_groups": {
+    "general": {
+      "description": "通用语法元素",
+      "elements": ["keyword", "variable", "function", "string", "comment", "number", "operator", "class_type", "constant", "builtin", "decorator"]
+    },
+    "markup": {
+      "description": "标记语言语法元素",
+      "elements": ["tag", "attribute", "css_property", "css_value", "selector"]
+    },
+    "ui": {
+      "description": "UI界面元素",
+      "elements": ["background", "foreground", "line_number", "line_number_active", "selection", "current_line", "bracket_match", "bracket_mismatch"]
+    }
+  }
+}
