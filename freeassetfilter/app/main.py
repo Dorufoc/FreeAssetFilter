@@ -1269,6 +1269,14 @@ def main():
     font_db = QFontDatabase()
     font_families = font_db.families()
     
+    # 加载 FiraCode-VF 字体（用于代码高亮显示）
+    firacode_font_path = get_resource_path('freeassetfilter/icons/FiraCode-VF.ttf')
+    firacode_font_family = None
+    if os.path.exists(firacode_font_path):
+        font_id = QFontDatabase.addApplicationFont(firacode_font_path)
+        if font_id != -1:
+            firacode_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+    
     # 初始化设置管理器
     settings_manager = SettingsManager()
     
@@ -1309,6 +1317,9 @@ def main():
     
     # 将全局字体存储到app对象中，方便其他组件访问
     app.global_font = global_font
+    
+    # 将 FiraCode 字体族名存储到app对象中，供代码高亮模式使用
+    app.firacode_font_family = firacode_font_family
     
     # 根据当前主题动态设置全局滚动条样式
     theme = settings_manager.get_setting("appearance.theme", "default")

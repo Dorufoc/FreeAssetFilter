@@ -279,7 +279,8 @@ class ModernSettingsWindow(QDialog):
             {"text": "文件选择器", "id": "file_selector"},
             {"text": "文件暂存池", "id": "file_staging"},
             {"text": "播放器", "id": "player"},
-            {"text": "开发者设置", "id": "developer"}
+            {"text": "开发者设置", "id": "developer"},
+            {"text": "关于", "id": "about"}
         ]
 
         for i, item in enumerate(self.navigation_items):
@@ -550,7 +551,7 @@ class ModernSettingsWindow(QDialog):
         Args:
             index (int): 选中的导航项索引
         """
-        nav_ids = ["general", "file_selector", "file_staging", "player", "developer"]
+        nav_ids = ["general", "file_selector", "file_staging", "player", "developer", "about"]
         
         if 0 <= index < len(nav_ids):
             for i, button in enumerate(self.navigation_buttons):
@@ -599,6 +600,8 @@ class ModernSettingsWindow(QDialog):
             self._add_player_settings()
         elif tab_id == "developer":
             self._add_developer_settings()
+        elif tab_id == "about":
+            self._add_about_settings()
 
     def _add_file_selector_settings(self):
         """
@@ -1121,6 +1124,80 @@ class ModernSettingsWindow(QDialog):
 
         developer_layout.addWidget(more_menu_test_group)
         self.scroll_layout.addWidget(developer_group)
+
+    def _add_about_settings(self):
+        """
+        添加关于设置项
+        """
+        app = QApplication.instance()
+        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+
+        about_group = QGroupBox("关于 FreeAssetFilter")
+        about_group.setStyleSheet(self.group_box_style)
+        about_layout = QVBoxLayout(about_group)
+        about_layout.setSpacing(int(15 * dpi_scale))
+
+        logo_label = QLabel()
+        logo_label.setAlignment(Qt.AlignCenter)
+        logo_label.setText("<h1>FreeAssetFilter</h1>")
+        logo_label.setStyleSheet("""
+            QLabel {
+                font-family: 'Noto Sans SC';
+                color: #007AFF;
+                font-size: 24px;
+                font-weight: 600;
+                margin: 10px 0;
+            }
+        """)
+        about_layout.addWidget(logo_label)
+
+        version_info = QLabel("版本 1.0.0")
+        version_info.setAlignment(Qt.AlignCenter)
+        version_info.setStyleSheet("""
+            QLabel {
+                font-family: 'Noto Sans SC';
+                color: #666;
+                font-size: 14px;
+            }
+        """)
+        about_layout.addWidget(version_info)
+
+        description = QLabel("一个功能强大的免费资源过滤和预览工具，支持多种文件格式的快速预览和管理。")
+        description.setAlignment(Qt.AlignCenter)
+        description.setWordWrap(True)
+        description.setStyleSheet("""
+            QLabel {
+                font-family: 'Noto Sans SC';
+                color: #888;
+                font-size: 13px;
+                margin: 10px 20px;
+            }
+        """)
+        about_layout.addWidget(description)
+
+        link_group = QGroupBox("链接")
+        link_group.setStyleSheet(self.group_box_style)
+        link_layout = QVBoxLayout(link_group)
+        link_layout.setSpacing(int(8 * dpi_scale))
+
+        github_btn = CustomButton("GitHub 仓库", button_type="secondary")
+        github_btn.setCursor(Qt.PointingHandCursor)
+        github_btn.clicked.connect(lambda: self._open_link("https://github.com/yourusername/FreeAssetFilter"))
+        link_layout.addWidget(github_btn)
+
+        about_layout.addWidget(link_group)
+
+        self.scroll_layout.addWidget(about_group)
+
+    def _open_link(self, url):
+        """
+        打开链接
+
+        Args:
+            url (str): 要打开的链接
+        """
+        import webbrowser
+        webbrowser.open(url)
 
     def _toggle_menu_list(self):
         """切换菜单列表显示"""

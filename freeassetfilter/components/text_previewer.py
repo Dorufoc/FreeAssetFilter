@@ -44,6 +44,14 @@ from PyQt5.QtCore import (
     Qt, QSize, QTimer, pyqtSignal, QThread, QStringListModel,
     QRegularExpression, QMutex, QMutexLocker
 )
+from PyQt5.QtGui import (
+    QFont, QIcon, QTextCursor, QTextDocument, QSyntaxHighlighter,
+    QTextCharFormat, QColor, QFontDatabase, QPalette, QPainter,
+    QTextFormat, QBrush, QTextBlock
+)
+
+import re
+import colorsys
 
 from freeassetfilter.widgets.D_widgets import CustomButton
 from freeassetfilter.widgets.D_more_menu import D_MoreMenu
@@ -107,62 +115,60 @@ class SyntaxHighlighter(QSyntaxHighlighter):
         self._build_highlighting_rules()
     
     def _build_highlighting_rules(self):
-        """构建高亮规则"""
+        """构建高亮规则 - 参考现代 IDE 配色方案"""
         if self.theme == 'dark':
+            # 深色主题配色 - 参考 VS Code 等现代编辑器
             self._colors = {
-                'keyword': QColor('#569CD6'),
-                'string': QColor('#CE9178'),
-                'number': QColor('#B5CEA8'),
-                'comment': QColor('#6A9955'),
-                'function': QColor('#DCDCAA'),
-                'class': QColor('#4EC9B0'),
-                'operator': QColor('#D4D4D4'),
-                'punctuation': QColor('#D4D4D4'),
-                'default': QColor('#D4D4D4'),
-                'tag': QColor('#569CD6'),
-                'attribute': QColor('#9CDCFE'),
-                'value': QColor('#CE9178'),
-                'property': QColor('#9CDCFE'),
+                'keyword': QColor('#FF7B72'),      # 关键字：橙红色 (if, while, return 等)
+                'string': QColor('#A5D6FF'),       # 字符串：浅蓝色
+                'number': QColor('#79C0FF'),       # 数字：亮蓝色
+                'comment': QColor('#8B949E'),      # 注释：灰色
+                'function': QColor('#D2A8FF'),     # 函数名：紫色
+                'class': QColor('#FFA657'),        # 类名：橙色
+                'operator': QColor('#FF7B72'),     # 运算符：橙红色
+                'punctuation': QColor('#C9D1D9'),  # 标点符号：浅灰色
+                'default': QColor('#C9D1D9'),      # 默认文本：浅灰色
+                'tag': QColor('#7EE787'),          # XML/HTML 标签：绿色
+                'attribute': QColor('#79C0FF'),    # XML/HTML 属性名：亮蓝色
+                'value': QColor('#A5D6FF'),        # XML/HTML 属性值：浅蓝色
+                'property': QColor('#79C0FF'),     # JSON 键名：亮蓝色
+                'preprocessor': QColor('#FF7B72'), # 预处理指令：橙红色
             }
         else:
+            # 浅色主题配色
             self._colors = {
-                'keyword': QColor('#0000FF'),
-                'string': QColor('#A31515'),
-                'number': QColor('#098658'),
-                'comment': QColor('#008000'),
-                'function': QColor('#795E26'),
-                'class': QColor('#267F99'),
-                'operator': QColor('#000000'),
-                'punctuation': QColor('#000000'),
-                'default': QColor('#000000'),
-                'tag': QColor('#0000FF'),
-                'attribute': QColor('#FF0000'),
-                'value': QColor('#A31515'),
-                'property': QColor('#FF0000'),
+                'keyword': QColor('#D73A49'),      # 关键字：红色
+                'string': QColor('#032F62'),       # 字符串：深蓝色
+                'number': QColor('#005CC5'),       # 数字：蓝色
+                'comment': QColor('#6A737D'),      # 注释：灰色
+                'function': QColor('#6F42C1'),     # 函数名：紫色
+                'class': QColor('#E36209'),        # 类名：橙色
+                'operator': QColor('#D73A49'),     # 运算符：红色
+                'punctuation': QColor('#24292E'),  # 标点符号：深灰色
+                'default': QColor('#24292E'),      # 默认文本：深灰色
+                'tag': QColor('#22863A'),          # XML/HTML 标签：绿色
+                'attribute': QColor('#005CC5'),    # XML/HTML 属性名：蓝色
+                'value': QColor('#032F62'),        # XML/HTML 属性值：深蓝色
+                'property': QColor('#005CC5'),     # JSON 键名：蓝色
+                'preprocessor': QColor('#D73A49'), # 预处理指令：红色
             }
     
-    def highlightBlock(self, textBlock):
-        """高亮文本块"""
-        if not isinstance(textBlock, QTextBlock):
+    def highlightBlock(self, text):
+        """高亮文本块
+
+        参数：
+            text (str): 当前文本块的内容
+        """
+        if not text:
             return
-        
-        document = textBlock.document()
-        if not document:
-            return
-        
-        plain_text = document.toPlainText()
-        if not plain_text:
-            return
-            
-        for pattern, format in self.highlighting_rules:
-            matchIterator = pattern.globalMatch(plain_text, textBlock.position())
-            while matchIterator.hasNext():
-                match = matchIterator.next()
-                if match.hasMatch():
-                    start = match.capturedStart()
-                    length = match.capturedLength()
-                    if start >= textBlock.position() and start + length <= textBlock.position() + textBlock.length():
-                        self.setFormat(start - textBlock.position(), length, format)
+
+        for pattern, fmt in self.highlighting_rules:
+            match_iterator = pattern.globalMatch(text)
+            while match_iterator.hasNext():
+                match = match_iterator.next()
+                start = match.capturedStart()
+                length = match.capturedLength()
+                self.setFormat(start, length, fmt)
     
     def setTheme(self, theme):
         """设置主题"""
@@ -233,62 +239,220 @@ class PythonHighlighter(SyntaxHighlighter):
 
 
 class JsonHighlighter(SyntaxHighlighter):
-    """JSON语法高亮器"""
-    
+    """JSON语法高亮器 - 优化版本
+
+    支持以下元素的高亮：
+    - 键名（属性名）：使用 attribute 颜色
+    - 字符串值：使用 string 颜色
+    - 数字：使用 number 颜色
+    - 布尔值和 null：使用 keyword 颜色
+    - 标点符号：使用 punctuation 颜色
+    """
+
     def __init__(self, parent=None, theme='dark'):
         super().__init__(parent, theme)
         self._build_json_rules()
-    
+
     def _build_json_rules(self):
+        """构建 JSON 高亮规则"""
+        # 键名高亮 - 匹配 "key": 中的 key 部分
+        key_format = QTextCharFormat()
+        key_format.setForeground(self._colors['property'])
+        key_format.setFontWeight(QFont.Bold)
+        # 匹配双引号内的键名，后面跟着冒号
+        key_regex = QRegularExpression(r'"(?:[^"\\]|\\.)*"(?=\s*:)')
+        self.highlighting_rules.append((key_regex, key_format))
+
+        # 字符串值高亮 - 匹配普通字符串值
         string_format = QTextCharFormat()
         string_format.setForeground(self._colors['string'])
         string_regex = QRegularExpression(r'"(?:[^"\\]|\\.)*"')
         self.highlighting_rules.append((string_regex, string_format))
-        
-        key_format = QTextCharFormat()
-        key_format.setForeground(self._colors['attribute'])
-        key_regex = QRegularExpression(r'"(?:[^"\\]|\\.)*(?="\s*:)')
-        self.highlighting_rules.append((key_regex, key_format))
-        
+
+        # 数字高亮
         number_format = QTextCharFormat()
         number_format.setForeground(self._colors['number'])
-        number_regex = QRegularExpression(r'\b[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?\b')
+        number_regex = QRegularExpression(r'\b-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?\b')
         self.highlighting_rules.append((number_regex, number_format))
-        
+
+        # 布尔值和 null 高亮
         bool_format = QTextCharFormat()
         bool_format.setForeground(self._colors['keyword'])
+        bool_format.setFontWeight(QFont.Bold)
         bool_regex = QRegularExpression(r'\b(?:true|false|null)\b')
         self.highlighting_rules.append((bool_regex, bool_format))
 
+        # 标点符号高亮
+        punct_format = QTextCharFormat()
+        punct_format.setForeground(self._colors['punctuation'])
+        punct_regex = QRegularExpression(r'[{}\[\]:,]')
+        self.highlighting_rules.append((punct_regex, punct_format))
+
+    def highlightBlock(self, text):
+        """高亮当前文本块 - 重写基类方法以正确处理键名和字符串的优先级"""
+        if not text:
+            return
+
+        # 首先标记所有键名和字符串的位置（这些区域不应该被数字等规则覆盖）
+        protected_ranges = []
+
+        # 1. 处理键名
+        key_pattern = self.highlighting_rules[0][0]  # 第一个规则是键名
+        key_format = self.highlighting_rules[0][1]
+
+        match_iterator = key_pattern.globalMatch(text)
+        while match_iterator.hasNext():
+            match = match_iterator.next()
+            start = match.capturedStart()
+            length = match.capturedLength()
+            protected_ranges.append((start, start + length))
+            self.setFormat(start, length, key_format)
+
+        # 2. 处理字符串值（第二个规则是字符串）
+        string_pattern = self.highlighting_rules[1][0]
+        string_format = self.highlighting_rules[1][1]
+
+        match_iterator = string_pattern.globalMatch(text)
+        while match_iterator.hasNext():
+            match = match_iterator.next()
+            start = match.capturedStart()
+            length = match.capturedLength()
+            end = start + length
+
+            # 检查是否与键名范围重叠
+            is_key = False
+            for key_start, key_end in protected_ranges:
+                if start == key_start and end == key_end:
+                    is_key = True
+                    break
+
+            if not is_key:
+                # 这是普通字符串值，需要保护其内部不被数字规则覆盖
+                protected_ranges.append((start, end))
+                self.setFormat(start, length, string_format)
+
+        # 3. 应用其他规则（数字、布尔值、标点符号），但跳过受保护的范围
+        for pattern, fmt in self.highlighting_rules[2:]:
+            match_iterator = pattern.globalMatch(text)
+            while match_iterator.hasNext():
+                match = match_iterator.next()
+                start = match.capturedStart()
+                length = match.capturedLength()
+                end = start + length
+
+                # 检查是否与受保护范围重叠
+                overlaps_protected = False
+                for protected_start, protected_end in protected_ranges:
+                    if start < protected_end and end > protected_start:
+                        overlaps_protected = True
+                        break
+
+                if not overlaps_protected:
+                    self.setFormat(start, length, fmt)
+
 
 class XmlHighlighter(SyntaxHighlighter):
-    """XML/HTML语法高亮器"""
-    
+    """XML/HTML语法高亮器 - 优化版本
+
+    支持以下元素的高亮：
+    - 标签名：使用 tag 颜色
+    - 属性名：使用 attribute 颜色
+    - 属性值（字符串）：使用 value 颜色
+    - 注释：使用 comment 颜色
+    - 处理指令（如 <?xml ?>）：使用 keyword 颜色
+    - CDATA 区块：使用 string 颜色
+    - 实体引用：使用 number 颜色
+    """
+
     def __init__(self, parent=None, theme='dark'):
         super().__init__(parent, theme)
         self._build_xml_rules()
-    
+
     def _build_xml_rules(self):
-        tag_format = QTextCharFormat()
-        tag_format.setForeground(self._colors['tag'])
-        tag_regex = QRegularExpression(r'</?[a-zA-Z][a-zA-Z0-9]*')
-        self.highlighting_rules.append((tag_regex, tag_format))
-        
-        attribute_format = QTextCharFormat()
-        attribute_format.setForeground(self._colors['attribute'])
-        attr_regex = QRegularExpression(r'\s[a-zA-Z][a-zA-Z0-9-]*=')
-        self.highlighting_rules.append((attr_regex, attribute_format))
-        
-        string_format = QTextCharFormat()
-        string_format.setForeground(self._colors['value'])
-        string_regex = QRegularExpression(r'"[^"]*"')
-        self.highlighting_rules.append((string_regex, string_format))
-        
+        """构建 XML/HTML 高亮规则"""
+        # 注释高亮 - 优先匹配，避免与其他规则冲突
         comment_format = QTextCharFormat()
         comment_format.setForeground(self._colors['comment'])
-        comment_regex = QRegularExpression(r'<!--.*?-->')
-        comment_regex.setPatternOptions(QRegularExpression.DotEverythingOption)
+        comment_format.setFontItalic(True)
+        comment_regex = QRegularExpression(r'<!--[\s\S]*?-->')
         self.highlighting_rules.append((comment_regex, comment_format))
+
+        # CDATA 区块高亮
+        cdata_format = QTextCharFormat()
+        cdata_format.setForeground(self._colors['string'])
+        cdata_regex = QRegularExpression(r'<!\[CDATA\[[\s\S]*?\]\]>')
+        self.highlighting_rules.append((cdata_regex, cdata_format))
+
+        # DOCTYPE 声明高亮
+        doctype_format = QTextCharFormat()
+        doctype_format.setForeground(self._colors['keyword'])
+        doctype_format.setFontWeight(QFont.Bold)
+        doctype_regex = QRegularExpression(r'<!DOCTYPE[^>]*>')
+        self.highlighting_rules.append((doctype_regex, doctype_format))
+
+        # 处理指令高亮（如 <?xml version="1.0"?>）
+        pi_format = QTextCharFormat()
+        pi_format.setForeground(self._colors['keyword'])
+        pi_regex = QRegularExpression(r'<\?[^?]*\?>')
+        self.highlighting_rules.append((pi_regex, pi_format))
+
+        # 结束标签高亮
+        end_tag_format = QTextCharFormat()
+        end_tag_format.setForeground(self._colors['tag'])
+        end_tag_regex = QRegularExpression(r'</[a-zA-Z][a-zA-Z0-9:._-]*\s*>')
+        self.highlighting_rules.append((end_tag_regex, end_tag_format))
+
+        # 开始标签名高亮（包括自闭合标签）
+        tag_format = QTextCharFormat()
+        tag_format.setForeground(self._colors['tag'])
+        tag_format.setFontWeight(QFont.Bold)
+        # 匹配 <tag 或 <tag> 中的 tag 部分
+        tag_regex = QRegularExpression(r'<[a-zA-Z][a-zA-Z0-9:._-]*')
+        self.highlighting_rules.append((tag_regex, tag_format))
+
+        # 属性名高亮
+        attr_format = QTextCharFormat()
+        attr_format.setForeground(self._colors['attribute'])
+        # 匹配属性名，支持 XML 命名空间前缀
+        attr_regex = QRegularExpression(r'\s[a-zA-Z_:][a-zA-Z0-9:._-]*(?=\s*=)')
+        self.highlighting_rules.append((attr_regex, attr_format))
+
+        # 属性值高亮（双引号）
+        string_format = QTextCharFormat()
+        string_format.setForeground(self._colors['value'])
+        string_regex = QRegularExpression(r'"(?:[^"\\]|\\.)*"')
+        self.highlighting_rules.append((string_regex, string_format))
+
+        # 属性值高亮（单引号）
+        string_single_format = QTextCharFormat()
+        string_single_format.setForeground(self._colors['value'])
+        string_single_regex = QRegularExpression(r"'(?:[^'\\]|\\.)*'")
+        self.highlighting_rules.append((string_single_regex, string_single_format))
+
+        # 实体引用高亮（如 &amp; &#123;）
+        entity_format = QTextCharFormat()
+        entity_format.setForeground(self._colors['number'])
+        entity_regex = QRegularExpression(r'&(?:#[0-9]+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);')
+        self.highlighting_rules.append((entity_regex, entity_format))
+
+        # 标签结束符号高亮
+        punct_format = QTextCharFormat()
+        punct_format.setForeground(self._colors['punctuation'])
+        punct_regex = QRegularExpression(r'[<>/]')
+        self.highlighting_rules.append((punct_regex, punct_format))
+
+    def highlightBlock(self, text):
+        """高亮当前文本块 - 重写基类方法以正确工作"""
+        if not text:
+            return
+
+        for pattern, fmt in self.highlighting_rules:
+            match_iterator = pattern.globalMatch(text)
+            while match_iterator.hasNext():
+                match = match_iterator.next()
+                start = match.capturedStart()
+                length = match.capturedLength()
+                self.setFormat(start, length, fmt)
 
 
 class TextPreviewThread(QThread):
@@ -406,6 +570,7 @@ class TextPreviewWidget(QWidget):
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(app, 'global_font', QFont())
+        self.default_font_size = getattr(app, 'default_font_size', 12)
         
         self.current_file_path = ""
         self.current_encoding = "auto"
@@ -496,7 +661,7 @@ class TextPreviewWidget(QWidget):
             is_interactive=True
         )
         self.font_size_slider.setRange(4, 40)
-        self.font_size_slider.setValue(12)
+        self.font_size_slider.setValue(self.default_font_size)
         self.font_size_slider.setFixedWidth(int(100 * self.dpi_scale))
         self.font_size_slider.valueChanged.connect(self._on_font_size_changed)
         toolbar_layout.addWidget(self.font_size_slider)
@@ -523,6 +688,13 @@ class TextPreviewWidget(QWidget):
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
+
+        app = QApplication.instance()
+        base_color = "#FFFFFF"
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+
+        container.setStyleSheet(f"background-color: {base_color};")
         
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
@@ -532,16 +704,23 @@ class TextPreviewWidget(QWidget):
         self.text_edit.customContextMenuRequested.connect(self._show_context_menu)
         
         default_font = QFont()
-        default_font.setPointSize(int(12 * self.dpi_scale))
+        default_font.setPointSize(int(self.default_font_size * self.dpi_scale))
         self.text_edit.setFont(default_font)
-        
-        self.text_edit.setStyleSheet("""
-            QTextEdit {
-                background-color: #FFFFFF;
-                color: #333333;
+
+        app = QApplication.instance()
+        base_color = "#FFFFFF"
+        second_color = "#333333"
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            second_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+
+        self.text_edit.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {base_color};
+                color: {second_color};
                 border: none;
                 padding: 10px;
-            }
+            }}
         """)
         
         scroll_bar = D_ScrollBar(self.text_edit, Qt.Vertical)
@@ -578,8 +757,9 @@ class TextPreviewWidget(QWidget):
     
     def _show_context_menu(self, pos):
         """显示右键菜单"""
-        self.context_menu.move(pos)
-        self.context_menu.show()
+        # 将局部坐标转换为全局坐标
+        global_pos = self.text_edit.mapToGlobal(pos)
+        self.context_menu.popup(global_pos)
     
     def _init_search_bar(self, parent_layout):
         """初始化搜索栏"""
@@ -661,20 +841,19 @@ class TextPreviewWidget(QWidget):
         app = QApplication.instance()
         if not hasattr(app, 'settings_manager'):
             return
-        
+
         bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
-        text_color = app.settings_manager.get_setting("appearance.colors.text_primary", "#333333")
-        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
-        
+        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+
         self.setStyleSheet(f"""
             background-color: {bg_color};
-            color: {text_color};
         """)
-        
+
         self.text_edit.setStyleSheet(f"""
             QTextEdit {{
-                background-color: #FFFFFF;
-                color: {text_color};
+                background-color: {base_color};
+                color: {secondary_color};
                 border: none;
                 padding: 10px;
             }}
@@ -725,7 +904,20 @@ class TextPreviewWidget(QWidget):
         self.current_file_path = file_path
         
         self._clear_search()
+        
+        if self._thread and self._thread.isRunning():
+            self._thread.abort()
+            self._thread.wait()
+        
         self.text_edit.clear()
+        self.text_edit.setDocument(QTextDocument())
+        
+        if self.current_highlighter:
+            self.current_highlighter.deleteLater()
+            self.current_highlighter = None
+        
+        self.file_content = ""
+        self.is_markdown = False
         
         self._start_loading()
         
@@ -752,6 +944,111 @@ class TextPreviewWidget(QWidget):
         self._thread.progress.connect(self._on_load_progress)
         self._thread.start()
     
+    def _is_grayscale(self, r, g, b):
+        """判断颜色是否为灰度（彩色分量接近相等）"""
+        max_val = max(r, g, b)
+        min_val = min(r, g, b)
+        return (max_val - min_val) < 15
+    
+    def _is_light_color(self, hex_color):
+        """
+        判断颜色是否为浅色
+        
+        Args:
+            hex_color: 十六进制颜色字符串，如 '#RRGGBB'
+            
+        Returns:
+            bool: 是否为浅色（亮度 > 0.5）
+        """
+        if not hex_color or not hex_color.startswith('#') or len(hex_color) != 7:
+            return False
+        
+        try:
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+            
+            # 计算亮度 (使用相对亮度公式)
+            luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+            return luminance > 0.5
+        except (ValueError, IndexError):
+            return False
+    
+    def _invert_grayscale(self, r, g, b):
+        """反转灰度颜色"""
+        return 255 - r, 255 - g, 255 - b
+    
+    def _adjust_brightness(self, r, g, b):
+        """调整彩色亮度（反转亮度）"""
+        h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+        new_l = 1.0 - l
+        new_r, new_g, new_b = colorsys.hls_to_rgb(h, new_l, s)
+        return int(new_r * 255), int(new_g * 255), int(new_b * 255)
+    
+    def _invert_color(self, hex_color):
+        """
+        根据当前主题反转颜色
+        
+        Args:
+            hex_color: 十六进制颜色字符串，如 '#RRGGBB'
+            
+        Returns:
+            str: 反转后的十六进制颜色字符串
+        """
+        if not hex_color or not hex_color.startswith('#') or len(hex_color) != 7:
+            return hex_color
+        
+        try:
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+            
+            if self._is_grayscale(r, g, b):
+                r, g, b = self._invert_grayscale(r, g, b)
+            else:
+                r, g, b = self._adjust_brightness(r, g, b)
+            
+            return f'#{r:02x}{g:02x}{b:02x}'
+        except (ValueError, IndexError):
+            return hex_color
+    
+    def _process_html_colors(self, html, is_dark):
+        """
+        处理HTML中的颜色值（仅深色模式下反转颜色）
+        
+        Args:
+            html: HTML字符串
+            is_dark: 是否为深色模式
+            
+        Returns:
+            str: 处理后的HTML字符串
+        """
+        if not is_dark:
+            return html
+        
+        color_pattern = re.compile(r'color:\s*(#[0-9A-Fa-f]{6})')
+        
+        def replace_color(match):
+            return f'color: {self._invert_color(match.group(1))}'
+        
+        html = color_pattern.sub(replace_color, html)
+        
+        background_pattern = re.compile(r'background(-color)?:\s*(#[0-9A-Fa-f]{6})')
+        
+        def replace_bg(match):
+            return f'background-color: {self._invert_color(match.group(2))}'
+        
+        html = background_pattern.sub(replace_bg, html)
+        
+        border_color_pattern = re.compile(r'border(-color)?:\s*(#[0-9A-Fa-f]{6})')
+        
+        def replace_border(match):
+            return f'border-color: {self._invert_color(match.group(2))}'
+        
+        html = border_color_pattern.sub(replace_border, html)
+        
+        return html
+    
     def _on_file_loaded(self, content, success):
         """文件加载完成回调"""
         self._stop_loading()
@@ -777,12 +1074,57 @@ class TextPreviewWidget(QWidget):
         
         if self.is_markdown:
             self._render_markdown(self.file_content)
+        else:
+            self._render_plain_text(self.file_content, self._detect_file_type(self.current_file_path))
     
+    def _preprocess_markdown_lists(self, content):
+        """预处理 Markdown 列表缩进，统一为 4 空格缩进
+
+        参数：
+            content (str): 原始 Markdown 内容
+
+        返回：
+            str: 处理后的 Markdown 内容
+        """
+        lines = content.split('\n')
+        processed_lines = []
+
+        for line in lines:
+            # 检测行首的缩进（空格或制表符）
+            stripped = line.lstrip()
+            if not stripped:
+                processed_lines.append(line)
+                continue
+
+            # 计算原始缩进长度
+            indent_len = len(line) - len(stripped)
+            original_indent = line[:indent_len]
+
+            # 将制表符转换为空格（1个制表符 = 4个空格）
+            spaces_only = original_indent.replace('\t', '    ')
+
+            # 如果缩进不是4的倍数，调整为4的倍数
+            # 这样可以处理 2空格、3空格等各种缩进方式
+            current_spaces = len(spaces_only)
+            if current_spaces > 0 and current_spaces % 4 != 0:
+                # 计算应该有多少个4空格缩进
+                # 假设原始意图是每级缩进4空格
+                level = max(1, round(current_spaces / 4))
+                new_indent = '    ' * level
+                processed_lines.append(new_indent + stripped)
+            else:
+                processed_lines.append(spaces_only + stripped)
+
+        return '\n'.join(processed_lines)
+
     def _render_markdown(self, content):
         """渲染Markdown"""
         try:
+            # 预处理列表缩进
+            content = self._preprocess_markdown_lists(content)
+
             md = markdown.Markdown(
-                extensions=['fenced_code', 'codehilite', 'tables', 'nl2br'],
+                extensions=['fenced_code', 'codehilite', 'tables', 'sane_lists'],
                 extension_configs={
                     'codehilite': {'noclasses': True, 'guess_lang': False}
                 }
@@ -791,28 +1133,74 @@ class TextPreviewWidget(QWidget):
             
             current_font = self.text_edit.font()
             font_family = current_font.family()
-            font_size = current_font.pointSize()
+            # 使用缩放后的字体大小（像素值），用于 CSS 样式
+            font_size = int(self.default_font_size * self.dpi_scale)
+            
+            is_dark = False
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                theme = app.settings_manager.get_setting("general.theme", "dark")
+                is_dark = theme == "dark"
+                secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+                base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+                normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#666666")
+                auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#999999")
+            else:
+                secondary_color = "#333333"
+                base_color = "#FFFFFF"
+                normal_color = "#666666"
+                auxiliary_color = "#999999"
+            
+            # 代码块背景使用 auxiliary_color
+            code_bg = auxiliary_color
+            pre_bg = code_bg
+            # 表格边框使用 normal_color，表头背景使用 auxiliary_color
+            border_color = normal_color
+            th_bg = auxiliary_color
             
             header_style = f"""
                 <style>
-                    body {{ font-family: {font_family}, sans-serif; font-size: {font_size}px; line-height: 1.6; color: #333; }}
-                    pre {{ background-color: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; }}
-                    code {{ background-color: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-family: Consolas, monospace; }}
-                    pre code {{ background-color: transparent; padding: 0; }}
-                    h1, h2, h3, h4, h5, h6 {{ color: #1a1a1a; margin-top: 1.5em; margin-bottom: 0.5em; }}
-                    h1 {{ font-size: 2em; border-bottom: 1px solid #eee; }}
-                    h2 {{ font-size: 1.5em; border-bottom: 1px solid #eee; }}
+                    body {{ font-family: {font_family}, sans-serif; font-size: {font_size}px; line-height: 1.6; color: {secondary_color}; margin: 0; padding: 0; }}
+                    div {{ color: {secondary_color}; }}
+                    p {{ color: {secondary_color}; margin: 0.5em 0; }}
+                    li {{ color: {secondary_color}; margin: 0.3em 0; }}
+                    pre {{ background-color: {pre_bg}; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 0.5em 0; }}
+                    code {{ background-color: {code_bg}; padding: 2px 5px; border-radius: 3px; font-family: Consolas, monospace; color: {secondary_color}; }}
+                    pre code {{ background-color: transparent; padding: 0; color: {secondary_color} !important; }}
+                    pre code * {{ color: {secondary_color} !important; }}
+                    h1, h2, h3, h4, h5, h6 {{ color: {secondary_color}; margin-top: 1.5em; margin-bottom: 0.5em; }}
+                    h1 {{ font-size: 2em; border-bottom: 1px solid {border_color}; }}
+                    h2 {{ font-size: 1.5em; border-bottom: 1px solid {border_color}; }}
                     table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
-                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                    th {{ background-color: #f5f5f5; }}
-                    blockquote {{ border-left: 4px solid #ddd; margin: 0; padding-left: 16px; color: #666; }}
+                    th {{ background-color: {th_bg}; color: {secondary_color}; }}
+                    td {{ color: {secondary_color}; }}
+                    th, td {{ border: 1px solid {border_color}; padding: 8px; text-align: left; }}
+                    blockquote {{ border-left: 4px solid {border_color}; margin: 0.5em 0; padding-left: 16px; color: {secondary_color}; }}
                     img {{ max-width: 100%; }}
+                    strong, b {{ color: {secondary_color}; }}
+                    em, i {{ color: {secondary_color}; }}
+                    a {{ color: {secondary_color}; text-decoration: underline; }}
+                    /* 列表样式优化 */
+                    ul, ol {{ margin: 0.5em 0; padding-left: 2em; }}
+                    ul ul, ul ol, ol ul, ol ol {{ margin: 0.2em 0; }}
+                    ul li {{ list-style-type: disc; }}
+                    ul ul li {{ list-style-type: circle; }}
+                    ul ul ul li {{ list-style-type: square; }}
+                    ol li {{ list-style-type: decimal; }}
+                    ol ol li {{ list-style-type: lower-alpha; }}
+                    ol ol ol li {{ list-style-type: lower-roman; }}
+                    li > p {{ margin: 0.2em 0; }}
+                    li > ul, li > ol {{ margin: 0.2em 0; }}
                 </style>
             """
             
-            full_html = f"<html><head>{header_style}</head><body>{html}</body></html>"
+            # 在应用样式前，处理 Markdown 内容中的颜色（仅深色模式）
+            if is_dark:
+                html = self._process_html_colors(html, True)
             
-            self.text_edit.setHtml(full_html)
+            html = f"<html><head>{header_style}</head><body>{html}</body></html>"
+            
+            self.text_edit.setHtml(html)
             self.is_markdown = True
             
         except Exception as e:
@@ -829,6 +1217,8 @@ class TextPreviewWidget(QWidget):
             ext = ext.lower()
             code_type = CODE_EXTENSIONS.get(ext, 'text')
             self._create_highlighter(code_type)
+            # 代码高亮模式下使用 FiraCode-VF 字体
+            self._apply_code_font()
     
     def _on_load_error(self, error_msg):
         """加载错误回调"""
@@ -868,6 +1258,20 @@ class TextPreviewWidget(QWidget):
             self._progress_animation.stop()
         self.progress_bar.setVisible(False)
         self.progress_bar.setValue(100)
+    
+    def _apply_code_font(self):
+        """应用代码高亮专用字体（FiraCode-VF）"""
+        if not hasattr(self, 'text_edit') or self.text_edit is None:
+            return
+        
+        app = QApplication.instance()
+        firacode_family = getattr(app, 'firacode_font_family', None)
+        
+        if firacode_family:
+            code_font = QFont(firacode_family)
+            current_size = self.font_size_slider.value()
+            code_font.setPointSize(current_size)
+            self.text_edit.setFont(code_font)
     
     def _restore_default_font(self):
         """恢复默认字体"""
@@ -1025,13 +1429,13 @@ class TextPreviewWidget(QWidget):
         
         pos = self._search_results[index]
         print(f"[DEBUG] _go_to_match: pos = {pos}, term = '{self._search_term}'")
-        cursor = QTextCursor(self.text_edit.document())
-        cursor.setPosition(pos)
-        cursor.setPosition(pos + len(self._search_term), QTextCursor.KeepAnchor)
         
+        self._highlight_search_results()
+        
+        cursor = QTextCursor(self.text_edit.document())
+        cursor.setPosition(pos + len(self._search_term))
         self.text_edit.setTextCursor(cursor)
         self.text_edit.ensureCursorVisible()
-        self._highlight_search_results()
     
     def _highlight_search_results(self):
         """高亮搜索结果"""
@@ -1039,21 +1443,24 @@ class TextPreviewWidget(QWidget):
         
         app = QApplication.instance()
         accent_color_hex = "#007AFF"
+        secondary_color_hex = "#666666"
         if hasattr(app, 'settings_manager'):
             accent_color_hex = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+            secondary_color_hex = app.settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
         
         accent_color = QColor(accent_color_hex)
         accent_color.setAlpha(127)
         
+        secondary_color = QColor(secondary_color_hex)
+        secondary_color.setAlpha(51)
+        
         extra_selections = []
         
         highlight_format = QTextCharFormat()
-        highlight_format.setBackground(accent_color)
+        highlight_format.setBackground(secondary_color)
         
         current_format = QTextCharFormat()
-        current_color = QColor(accent_color_hex)
-        current_color.setAlpha(180)
-        current_format.setBackground(current_color)
+        current_format.setBackground(accent_color)
         
         for i, pos in enumerate(self._search_results):
             extra_selection = QTextEdit.ExtraSelection()
@@ -1071,6 +1478,7 @@ class TextPreviewWidget(QWidget):
         
         print(f"[DEBUG] _highlight_search_results: setting {len(extra_selections)} extra selections")
         self.text_edit.setExtraSelections(extra_selections)
+        self.text_edit.viewport().update()
     
     def _apply_search_highlight(self):
         """应用搜索高亮"""
