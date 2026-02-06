@@ -941,6 +941,20 @@ class TextPreviewWidget(QWidget):
         else:
             self.search_bar.show()
             self.search_input.setFocus()
+        self._update_search_button_style()
+    
+    def _update_search_button_style(self):
+        """
+        根据搜索状态更新搜索按钮的样式
+        - 当搜索栏可见或有搜索内容时，使用强调样式（primary）
+        - 当搜索栏隐藏且无搜索内容时，使用普通样式（normal）
+        """
+        if hasattr(self, 'search_button'):
+            if self.search_bar.isVisible() or self._search_term:
+                self.search_button.button_type = "primary"
+            else:
+                self.search_button.button_type = "normal"
+            self.search_button.update_style()
     
     def _on_search_text_changed(self, text):
         """搜索文本变化时清除高亮"""
@@ -950,6 +964,7 @@ class TextPreviewWidget(QWidget):
     def _perform_search(self):
         """执行搜索"""
         search_term = self.search_input.text()
+        print(f"[DEBUG] _perform_search: search_term = '{search_term}'")
         if not search_term:
             self._clear_search()
             return
@@ -960,12 +975,14 @@ class TextPreviewWidget(QWidget):
         
         content = self.text_edit.toPlainText()
         
-        flags = Qt.CaseSensitive if self._case_sensitive else Qt.CaseInsensitive
-        pos = content.find(search_term, 0, flags)
+        pos = content.find(search_term)
+        print(f"[DEBUG] _perform_search: found at pos = {pos}")
         
         while pos >= 0:
             self._search_results.append(pos)
-            pos = content.find(search_term, pos + 1, flags)
+            pos = content.find(search_term, pos + 1)
+        
+        print(f"[DEBUG] _perform_search: results count = {len(self._search_results)}")
         
         if self._search_results:
             self._current_search_index = 0
@@ -977,44 +994,66 @@ class TextPreviewWidget(QWidget):
     
     def _go_to_previous_match(self):
         """跳转到上一个匹配项"""
+        print(f"[DEBUG] _go_to_previous_match: results = {len(self._search_results)}, current = {self._current_search_index}")
         if not self._search_results:
+            print(f"[DEBUG] _go_to_previous_match: early return, no results")
             return
         
         self._current_search_index = (self._current_search_index - 1) % len(self._search_results)
+        print(f"[DEBUG] _go_to_previous_match: new index = {self._current_search_index}")
         self._go_to_match(self._current_search_index)
         self._update_search_info()
     
     def _go_to_next_match(self):
         """跳转到下一个匹配项"""
+        print(f"[DEBUG] _go_to_next_match: results = {len(self._search_results)}, current = {self._current_search_index}")
         if not self._search_results:
+            print(f"[DEBUG] _go_to_next_match: early return, no results")
             return
         
         self._current_search_index = (self._current_search_index + 1) % len(self._search_results)
+        print(f"[DEBUG] _go_to_next_match: new index = {self._current_search_index}")
         self._go_to_match(self._current_search_index)
         self._update_search_info()
     
     def _go_to_match(self, index):
         """跳转到指定索引的匹配项"""
+        print(f"[DEBUG] _go_to_match: index = {index}, results count = {len(self._search_results)}")
         if not self._search_results or index < 0 or index >= len(self._search_results):
+            print(f"[DEBUG] _go_to_match: early return due to invalid index")
             return
         
         pos = self._search_results[index]
+        print(f"[DEBUG] _go_to_match: pos = {pos}, term = '{self._search_term}'")
         cursor = QTextCursor(self.text_edit.document())
         cursor.setPosition(pos)
         cursor.setPosition(pos + len(self._search_term), QTextCursor.KeepAnchor)
         
         self.text_edit.setTextCursor(cursor)
-        self.text_edit.setCenterOnScroll(True)
+        self.text_edit.ensureCursorVisible()
+        self._highlight_search_results()
     
     def _highlight_search_results(self):
         """高亮搜索结果"""
+        print(f"[DEBUG] _highlight_search_results: called with {len(self._search_results)} results")
+        
+        app = QApplication.instance()
+        accent_color_hex = "#007AFF"
+        if hasattr(app, 'settings_manager'):
+            accent_color_hex = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+        
+        accent_color = QColor(accent_color_hex)
+        accent_color.setAlpha(127)
+        
         extra_selections = []
         
         highlight_format = QTextCharFormat()
-        highlight_format.setBackground(QColor(0xFF, 0xFF, 0x00, 100))
+        highlight_format.setBackground(accent_color)
         
         current_format = QTextCharFormat()
-        current_format.setBackground(QColor(0xFF, 0x00, 0x00, 150))
+        current_color = QColor(accent_color_hex)
+        current_color.setAlpha(180)
+        current_format.setBackground(current_color)
         
         for i, pos in enumerate(self._search_results):
             extra_selection = QTextEdit.ExtraSelection()
@@ -1030,6 +1069,7 @@ class TextPreviewWidget(QWidget):
             
             extra_selections.append(extra_selection)
         
+        print(f"[DEBUG] _highlight_search_results: setting {len(extra_selections)} extra selections")
         self.text_edit.setExtraSelections(extra_selections)
     
     def _apply_search_highlight(self):
@@ -1053,9 +1093,9 @@ class TextPreviewWidget(QWidget):
         self._search_term = ""
         self._search_results = []
         self._current_search_index = -1
-        self.search_input.setText("")
         self.search_info_label.setText("0/0")
         self.text_edit.setExtraSelections([])
+        self._update_search_button_style()
     
     def cleanup(self):
         """清理资源"""
