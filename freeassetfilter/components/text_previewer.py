@@ -622,6 +622,166 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
         except Exception:
             pass
 
+class LineNumberArea(QWidget):
+    """
+    行号显示区域
+    
+    为文本编辑器提供左侧行号显示功能，支持：
+    - 自动根据文本行数更新行号
+    - 与文本编辑器滚动同步
+    - 自适应行号宽度（根据行数动态调整）
+    - 行号与文本行精确对齐
+    """
+    
+    def __init__(self, text_edit, parent=None):
+        """
+        初始化行号区域
+        
+        参数：
+            text_edit: 关联的文本编辑器
+            parent: 父控件
+        """
+        super().__init__(parent)
+        self.text_edit = text_edit
+        self.setFixedWidth(40)  # 默认宽度
+        
+        # 设置背景色和文字颜色
+        app = QApplication.instance()
+        self.bg_color = QColor("#2d2d2d") if self._is_dark_theme() else QColor("#f0f0f0")
+        self.text_color = QColor("#808080") if self._is_dark_theme() else QColor("#666666")
+        self.border_color = QColor("#3d3d3d") if self._is_dark_theme() else QColor("#d0d0d0")
+        
+        # 连接文本变化信号以更新行号
+        self.text_edit.textChanged.connect(self.update)
+        self.text_edit.verticalScrollBar().valueChanged.connect(self.update)
+    
+    def _is_dark_theme(self):
+        """检测当前是否为深色主题"""
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            theme = app.settings_manager.get_setting("appearance.theme", "default")
+            return theme == "dark"
+        return False
+    
+    def update_theme(self):
+        """更新主题颜色"""
+        self.bg_color = QColor("#2d2d2d") if self._is_dark_theme() else QColor("#f0f0f0")
+        self.text_color = QColor("#808080") if self._is_dark_theme() else QColor("#666666")
+        self.border_color = QColor("#3d3d3d") if self._is_dark_theme() else QColor("#d0d0d0")
+        self.update()
+    
+    def sizeHint(self):
+        """返回建议大小"""
+        return QSize(self.get_width(), 0)
+    
+    def get_width(self):
+        """
+        根据行数计算所需宽度
+        
+        返回：
+            int: 行号区域宽度（像素）
+        """
+        digits = 1
+        count = max(1, self.text_edit.document().blockCount())
+        while count >= 10:
+            count //= 10
+            digits += 1
+        
+        # 使用字体度量精确计算最大行号文本的宽度
+        font_metrics = self.text_edit.fontMetrics()
+        # 生成最大行号的文本（如 999）
+        max_number_text = '9' * digits
+        text_width = font_metrics.horizontalAdvance(max_number_text)
+        
+        # 最小宽度40像素，宽度 = 文本宽度 + 左边距4px + 右边距4px
+        return max(40, text_width + 8)
+    
+    def update_width(self):
+        """更新行号区域宽度"""
+        new_width = self.get_width()
+        if self.width() != new_width:
+            self.setFixedWidth(new_width)
+    
+    def paintEvent(self, event):
+        """
+        绘制行号
+        
+        参数：
+            event: 绘制事件
+        """
+        painter = QPainter(self)
+        
+        # 填充背景
+        painter.fillRect(event.rect(), self.bg_color)
+        
+        # 绘制右边框
+        painter.setPen(self.border_color)
+        painter.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
+        
+        # 获取文档
+        document = self.text_edit.document()
+        
+        # 获取文本编辑器的视口和滚动信息
+        viewport = self.text_edit.viewport()
+        scroll_bar = self.text_edit.verticalScrollBar()
+        scroll_value = scroll_bar.value()
+        
+        # 使用与文本编辑器完全相同的字体
+        font = QFont(self.text_edit.font())
+        painter.setFont(font)
+        painter.setPen(self.text_color)
+        
+        # 获取字体度量信息
+        font_metrics = self.text_edit.fontMetrics()
+        line_height = font_metrics.lineSpacing()  # 使用行间距而非高度，更准确
+        ascent = font_metrics.ascent()
+        
+        # 获取文档布局
+        doc_layout = document.documentLayout()
+        
+        # 获取滚动位置作为内容偏移量
+        scroll_value = scroll_bar.value()
+        
+        # 获取文本编辑器的上边距（与 QTextEdit 的 padding-top 对应）
+        # QTextEdit 设置了 padding: 10px，所以内容区域有 10px 的上边距
+        content_margin_top = 10
+        
+        # 遍历所有文本块，找到可见区域内的行
+        block = document.begin()
+        block_number = 0
+        
+        while block.isValid():
+            # 获取该块在文档中的位置
+            block_rect = doc_layout.blockBoundingRect(block)
+            # 减去滚动值并加上内容边距来得到相对于视口的位置
+            block_top = block_rect.top() - scroll_value + content_margin_top
+            block_bottom = block_top + block_rect.height()
+            
+            # 检查该块是否在可见区域内
+            if block_bottom >= 0 and block_top <= self.height():
+                # 计算该块内的每一行的位置
+                layout = block.layout()
+                line_count = layout.lineCount()
+                
+                for line_idx in range(line_count):
+                    line = layout.lineAt(line_idx)
+                    # 计算行的Y位置：块顶部 + 行在块内的Y位置 + 行上升高度 - 字体上升高度
+                    line_y = block_top + line.y() + line.ascent() - ascent
+                    
+                    # 确保行在绘制区域内
+                    if -line_height <= line_y <= self.height() + line_height:
+                        number = str(block_number + 1)
+                        # 绘制行号，使用与文本相同的基线对齐
+                        # 右边距4px，与get_width中的计算一致
+                        painter.drawText(0, int(line_y), self.width() - 4, line_height,
+                                       Qt.AlignRight | Qt.AlignVCenter, number)
+            
+            block = block.next()
+            block_number += 1
+        
+        painter.end()
+
+
 class TextPreviewThread(QThread):
     """文本加载后台线程"""
     
@@ -850,9 +1010,9 @@ class TextPreviewWidget(QWidget):
         parent_layout.addWidget(toolbar)
     
     def _init_text_edit(self, parent_layout):
-        """初始化文本编辑区"""
+        """初始化文本编辑区（包含行号显示）"""
         container = QWidget()
-        container_layout = QVBoxLayout(container)
+        container_layout = QHBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
@@ -863,6 +1023,7 @@ class TextPreviewWidget(QWidget):
 
         container.setStyleSheet(f"background-color: {base_color};")
         
+        # 创建文本编辑器
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
@@ -900,13 +1061,26 @@ class TextPreviewWidget(QWidget):
         self.text_edit.setHorizontalScrollBar(horizontal_scroll_bar)
         horizontal_scroll_bar.apply_theme_from_settings()
         
-        container_layout.addWidget(self.text_edit)
+        # 创建行号区域
+        self.line_number_area = LineNumberArea(self.text_edit)
+        
+        # 将行号区域和文本编辑器添加到水平布局
+        container_layout.addWidget(self.line_number_area)
+        container_layout.addWidget(self.text_edit, 1)  # 文本编辑器占据剩余空间
         
         parent_layout.addWidget(container)
+        
+        # 连接文本变化信号以更新行号宽度
+        self.text_edit.textChanged.connect(self._update_line_number_width)
         
         SmoothScroller.apply_to_scroll_area(self.text_edit)
         
         self._init_context_menu()
+    
+    def _update_line_number_width(self):
+        """更新行号区域宽度"""
+        if hasattr(self, 'line_number_area') and self.line_number_area:
+            self.line_number_area.update_width()
     
     def _init_context_menu(self):
         """初始化右键菜单"""
@@ -1044,6 +1218,10 @@ class TextPreviewWidget(QWidget):
                 self.text_edit.setPalette(palette)
             except Exception:
                 pass
+        
+        # 更新行号区域主题
+        if hasattr(self, 'line_number_area') and self.line_number_area:
+            self.line_number_area.update_theme()
     
     def _detect_file_type(self, file_path):
         """检测文件类型"""
