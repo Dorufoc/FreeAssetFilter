@@ -50,7 +50,7 @@ class ThemeManager(QObject):
         加载主题颜色设置
         """
         self.theme_colors = {
-            "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#B036EE"),
+            "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7"),
             "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
             "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
             "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),

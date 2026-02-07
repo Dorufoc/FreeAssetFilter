@@ -279,6 +279,7 @@ class ModernSettingsWindow(QDialog):
             {"text": "文件选择器", "id": "file_selector"},
             {"text": "文件暂存池", "id": "file_staging"},
             {"text": "播放器", "id": "player"},
+            {"text": "文本预览器", "id": "text_preview"},
             {"text": "开发者设置", "id": "developer"},
             {"text": "关于", "id": "about"}
         ]
@@ -551,7 +552,7 @@ class ModernSettingsWindow(QDialog):
         Args:
             index (int): 选中的导航项索引
         """
-        nav_ids = ["general", "file_selector", "file_staging", "player", "developer", "about"]
+        nav_ids = ["general", "file_selector", "file_staging", "player", "text_preview", "developer", "about"]
         
         if 0 <= index < len(nav_ids):
             for i, button in enumerate(self.navigation_buttons):
@@ -577,6 +578,7 @@ class ModernSettingsWindow(QDialog):
             "file_selector": "文件选择器设置",
             "file_staging": "文件暂存池设置",
             "player": "播放器设置",
+            "text_preview": "文本预览器设置",
             "developer": "开发者设置"
         }
 
@@ -598,6 +600,8 @@ class ModernSettingsWindow(QDialog):
             self._add_file_staging_settings()
         elif tab_id == "player":
             self._add_player_settings()
+        elif tab_id == "text_preview":
+            self._add_text_preview_settings()
         elif tab_id == "developer":
             self._add_developer_settings()
         elif tab_id == "about":
@@ -1016,6 +1020,214 @@ class ModernSettingsWindow(QDialog):
         font_layout.addWidget(self.font_size_bar)
 
         self.scroll_layout.addWidget(font_group)
+
+    def _add_text_preview_settings(self):
+        """
+        添加文本预览器设置项
+        """
+        # 纯文本文件预览分组
+        text_preview_group = QGroupBox("纯文本文件预览")
+        text_preview_group.setStyleSheet(self.group_box_style)
+        text_preview_layout = QVBoxLayout(text_preview_group)
+
+        # 自动换行开关
+        self.text_word_wrap_switch = CustomSettingItem(
+            text="自动换行",
+            secondary_text="为文本提供自动换行功能",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("text_preview.word_wrap", True)
+        )
+        self.text_word_wrap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"text_preview.word_wrap": value}))
+        text_preview_layout.addWidget(self.text_word_wrap_switch)
+
+        # 使用全局字体开关
+        self.use_global_font_switch = CustomSettingItem(
+            text="使用全局字体",
+            secondary_text="开启时文本预览将自动使用全局字体进行渲染",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("text_preview.use_global_font", True)
+        )
+        self.use_global_font_switch.switch_toggled.connect(lambda value: self._on_use_global_font_changed(value))
+        text_preview_layout.addWidget(self.use_global_font_switch)
+
+        # 自定义加载字体选择（仅在关闭使用全局字体时显示）
+        from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
+        font_families = _get_font_families_cached()
+        current_custom_font = self.settings_manager.get_setting("text_preview.custom_font_family", "Microsoft YaHei")
+
+        self.custom_font_setting = CustomSettingItem(
+            text="自定义加载字体",
+            secondary_text="选择纯文本预览时所使用的字体",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": current_custom_font, "type": "primary"}]
+        )
+
+        def on_custom_font_button_clicked(button_index):
+            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            self.font_dropdown_menu.set_items(font_families, default_item=current_custom_font)
+
+            def on_font_item_clicked(selected_font_family):
+                self.current_settings.update({"text_preview.custom_font_family": selected_font_family})
+                self.custom_font_setting.button_group[0].setText(selected_font_family)
+
+            self.font_dropdown_menu.itemClicked.connect(on_font_item_clicked)
+            button = self.custom_font_setting.button_group[button_index]
+            self.font_dropdown_menu.set_target_button(button)
+            self.font_dropdown_menu.show_menu()
+
+        self.custom_font_setting.button_clicked.connect(on_custom_font_button_clicked)
+        # 根据开关状态设置初始可见性
+        self.custom_font_setting.setVisible(not self.use_global_font_switch.get_switch_value())
+        text_preview_layout.addWidget(self.custom_font_setting)
+
+        # 使用全局字体大小开关
+        self.use_global_font_size_switch = CustomSettingItem(
+            text="使用全局字体大小",
+            secondary_text="开启时文本预览将自动使用全局字体大小进行渲染",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("text_preview.use_global_font_size", True)
+        )
+        self.use_global_font_size_switch.switch_toggled.connect(lambda value: self._on_use_global_font_size_changed(value))
+        text_preview_layout.addWidget(self.use_global_font_size_switch)
+
+        # 自定义字体大小滑块（仅在关闭使用全局字体大小时显示）
+        self.custom_font_size_bar = CustomSettingItem(
+            text="自定义加载字体大小",
+            secondary_text="控制纯文本预览加载时的默认字体大小 (4-40)",
+            interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
+            min_value=4,
+            max_value=40,
+            initial_value=self.settings_manager.get_setting("text_preview.custom_font_size", 12)
+        )
+        self.custom_font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"text_preview.custom_font_size": value}))
+        # 根据开关状态设置初始可见性
+        self.custom_font_size_bar.setVisible(not self.use_global_font_size_switch.get_switch_value())
+        text_preview_layout.addWidget(self.custom_font_size_bar)
+
+        self.scroll_layout.addWidget(text_preview_group)
+
+        # Markdown预览分组
+        markdown_group = QGroupBox("Markdown预览")
+        markdown_group.setStyleSheet(self.group_box_style)
+        markdown_layout = QVBoxLayout(markdown_group)
+
+        # Markdown自动换行开关
+        self.markdown_word_wrap_switch = CustomSettingItem(
+            text="自动换行",
+            secondary_text="为Markdown文本提供自动换行功能",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("text_preview.markdown_word_wrap", True)
+        )
+        self.markdown_word_wrap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"text_preview.markdown_word_wrap": value}))
+        markdown_layout.addWidget(self.markdown_word_wrap_switch)
+
+        # Markdown使用全局字体开关
+        self.markdown_use_global_font_switch = CustomSettingItem(
+            text="使用全局字体",
+            secondary_text="开启时Markdown预览将自动使用全局字体进行渲染",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("text_preview.markdown_use_global_font", True)
+        )
+        self.markdown_use_global_font_switch.switch_toggled.connect(lambda value: self._on_markdown_use_global_font_changed(value))
+        markdown_layout.addWidget(self.markdown_use_global_font_switch)
+
+        # Markdown自定义加载字体选择（仅在关闭使用全局字体时显示）
+        current_markdown_font = self.settings_manager.get_setting("text_preview.markdown_custom_font_family", "Microsoft YaHei")
+
+        self.markdown_custom_font_setting = CustomSettingItem(
+            text="自定义加载字体",
+            secondary_text="选择Markdown预览时所使用的字体",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": current_markdown_font, "type": "primary"}]
+        )
+
+        def on_markdown_font_button_clicked(button_index):
+            self.markdown_font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            self.markdown_font_dropdown_menu.set_items(font_families, default_item=current_markdown_font)
+
+            def on_markdown_font_item_clicked(selected_font_family):
+                self.current_settings.update({"text_preview.markdown_custom_font_family": selected_font_family})
+                self.markdown_custom_font_setting.button_group[0].setText(selected_font_family)
+
+            self.markdown_font_dropdown_menu.itemClicked.connect(on_markdown_font_item_clicked)
+            button = self.markdown_custom_font_setting.button_group[button_index]
+            self.markdown_font_dropdown_menu.set_target_button(button)
+            self.markdown_font_dropdown_menu.show_menu()
+
+        self.markdown_custom_font_setting.button_clicked.connect(on_markdown_font_button_clicked)
+        # 根据开关状态设置初始可见性
+        self.markdown_custom_font_setting.setVisible(not self.markdown_use_global_font_switch.get_switch_value())
+        markdown_layout.addWidget(self.markdown_custom_font_setting)
+
+        # Markdown使用全局字体大小开关
+        self.markdown_use_global_font_size_switch = CustomSettingItem(
+            text="使用全局字体大小",
+            secondary_text="开启时Markdown预览将自动使用全局字体大小进行渲染",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("text_preview.markdown_use_global_font_size", True)
+        )
+        self.markdown_use_global_font_size_switch.switch_toggled.connect(lambda value: self._on_markdown_use_global_font_size_changed(value))
+        markdown_layout.addWidget(self.markdown_use_global_font_size_switch)
+
+        # Markdown自定义字体大小滑块（仅在关闭使用全局字体大小时显示）
+        self.markdown_custom_font_size_bar = CustomSettingItem(
+            text="自定义加载字体大小",
+            secondary_text="控制Markdown预览加载时的默认字体大小 (4-40)",
+            interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
+            min_value=4,
+            max_value=40,
+            initial_value=self.settings_manager.get_setting("text_preview.markdown_custom_font_size", 12)
+        )
+        self.markdown_custom_font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"text_preview.markdown_custom_font_size": value}))
+        # 根据开关状态设置初始可见性
+        self.markdown_custom_font_size_bar.setVisible(not self.markdown_use_global_font_size_switch.get_switch_value())
+        markdown_layout.addWidget(self.markdown_custom_font_size_bar)
+
+        self.scroll_layout.addWidget(markdown_group)
+
+    def _on_use_global_font_changed(self, value):
+        """
+        使用全局字体开关变化处理
+
+        Args:
+            value (bool): 开关状态
+        """
+        self.current_settings.update({"text_preview.use_global_font": value})
+        # 显示或隐藏自定义字体设置
+        self.custom_font_setting.setVisible(not value)
+
+    def _on_use_global_font_size_changed(self, value):
+        """
+        使用全局字体大小开关变化处理
+
+        Args:
+            value (bool): 开关状态
+        """
+        self.current_settings.update({"text_preview.use_global_font_size": value})
+        # 显示或隐藏自定义字体大小设置
+        self.custom_font_size_bar.setVisible(not value)
+
+    def _on_markdown_use_global_font_changed(self, value):
+        """
+        Markdown使用全局字体开关变化处理
+
+        Args:
+            value (bool): 开关状态
+        """
+        self.current_settings.update({"text_preview.markdown_use_global_font": value})
+        # 显示或隐藏自定义字体设置
+        self.markdown_custom_font_setting.setVisible(not value)
+
+    def _on_markdown_use_global_font_size_changed(self, value):
+        """
+        Markdown使用全局字体大小开关变化处理
+
+        Args:
+            value (bool): 开关状态
+        """
+        self.current_settings.update({"text_preview.markdown_use_global_font_size": value})
+        # 显示或隐藏自定义字体大小设置
+        self.markdown_custom_font_size_bar.setVisible(not value)
 
     def _add_developer_settings(self):
         """

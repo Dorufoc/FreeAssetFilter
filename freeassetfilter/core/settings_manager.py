@@ -55,7 +55,7 @@ class SettingsManager:
             "appearance": {
                 "theme": "default",
                 "colors": {
-                    "accent_color": "#B036EE",
+                    "accent_color": "#0A59F7",
                     "secondary_color": "#333333",
                     "normal_color": "#e0e0e0",
                     "auxiliary_color": "#f1f3f5",
@@ -92,6 +92,18 @@ class SettingsManager:
             "developer": {
                 "debug_mode": False,
                 "log_level": "info"
+            },
+            "text_preview": {
+                "word_wrap": True,
+                "use_global_font": True,
+                "custom_font_family": "Microsoft YaHei",
+                "use_global_font_size": True,
+                "custom_font_size": 12,
+                "markdown_word_wrap": True,
+                "markdown_use_global_font": True,
+                "markdown_custom_font_family": "Microsoft YaHei",
+                "markdown_use_global_font_size": True,
+                "markdown_custom_font_size": 12
             }
         }
         self.settings = self.load_settings()
@@ -129,7 +141,8 @@ class SettingsManager:
             "file_selector": self.default_settings["file_selector"].copy(),
             "file_staging": self.default_settings["file_staging"].copy(),
             "player": self.default_settings["player"].copy(),
-            "developer": self.default_settings["developer"].copy()
+            "developer": self.default_settings["developer"].copy(),
+            "text_preview": self.default_settings["text_preview"].copy()
         }
 
     def get_player_volume(self):
@@ -266,7 +279,8 @@ class SettingsManager:
             "file_selector": default["file_selector"].copy(),
             "file_staging": default["file_staging"].copy(),
             "player": default["player"].copy(),
-            "developer": default["developer"].copy()
+            "developer": default["developer"].copy(),
+            "text_preview": default["text_preview"].copy()
         }
 
         for key, value in loaded.items():
@@ -282,7 +296,7 @@ class SettingsManager:
                     for color_key in base_color_keys:
                         if color_key in value:
                             merged["appearance"]["colors"][color_key] = value[color_key]
-                elif key in ("font", "file_selector", "file_staging", "player", "developer"):
+                elif key in ("font", "file_selector", "file_staging", "player", "developer", "text_preview"):
                     merged[key] = value.copy()
                 else:
                     merged[key] = value
