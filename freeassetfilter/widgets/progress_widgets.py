@@ -242,7 +242,39 @@ class CustomProgressBar(QWidget):
             self._is_pressed = False
             self._animation_suspended = False
             self.userInteractionEnded.emit()
-    
+
+    def wheelEvent(self, event):
+        """
+        鼠标滚轮事件，处理滚轮调整进度值
+        仅当进度条可交互时响应滚轮事件
+        """
+        if not self._is_interactive:
+            super().wheelEvent(event)
+            return
+
+        # 获取滚轮滚动角度，每格通常为120
+        delta = event.angleDelta().y()
+
+        # 计算每次滚动的步进值（范围的1%）
+        step = max(1, (self._maximum - self._minimum) // 100)
+
+        if delta > 0:
+            # 向上滚动，增加数值
+            new_value = self._value + step
+        else:
+            # 向下滚动，减少数值
+            new_value = self._value - step
+
+        # 限制在有效范围内
+        new_value = max(self._minimum, min(new_value, self._maximum))
+
+        if new_value != self._value:
+            self.userInteracting.emit()
+            self.setValue(new_value)
+            self.userInteractionEnded.emit()
+
+        event.accept()
+
     def _update_value_from_pos(self, pos, use_animation=True):
         """
         根据鼠标位置更新进度值
@@ -1024,6 +1056,38 @@ class D_ProgressBar(QWidget):
             self.userInteractionEnded.emit()
             self.update()
 
+    def wheelEvent(self, event):
+        """
+        鼠标滚轮事件，处理滚轮调整进度值
+        仅当进度条可交互时响应滚轮事件
+        """
+        if not self._is_interactive:
+            super().wheelEvent(event)
+            return
+
+        # 获取滚轮滚动角度，每格通常为120
+        delta = event.angleDelta().y()
+
+        # 计算每次滚动的步进值（范围的1%）
+        step = max(1, (self._maximum - self._minimum) // 100)
+
+        if delta > 0:
+            # 向上滚动，增加数值
+            new_value = self._value + step
+        else:
+            # 向下滚动，减少数值
+            new_value = self._value - step
+
+        # 限制在有效范围内
+        new_value = max(self._minimum, min(new_value, self._maximum))
+
+        if new_value != self._value:
+            self.userInteracting.emit()
+            self.setValue(new_value)
+            self.userInteractionEnded.emit()
+
+        event.accept()
+
     def enterEvent(self, event):
         """
         鼠标进入事件
@@ -1405,7 +1469,39 @@ class CustomValueBar(QWidget):
         else:
             # 不可交互时，调用父类实现
             super().mouseReleaseEvent(event)
-    
+
+    def wheelEvent(self, event):
+        """
+        鼠标滚轮事件，处理滚轮调整数值
+        仅当数值条可交互时响应滚轮事件
+        """
+        if not self._interactive:
+            super().wheelEvent(event)
+            return
+
+        # 获取滚轮滚动角度，每格通常为120
+        delta = event.angleDelta().y()
+
+        # 计算每次滚动的步进值（范围的1%）
+        step = max(1, (self._maximum - self._minimum) // 100)
+
+        if delta > 0:
+            # 向上滚动，增加数值
+            new_value = self._value + step
+        else:
+            # 向下滚动，减少数值
+            new_value = self._value - step
+
+        # 限制在有效范围内
+        new_value = max(self._minimum, min(new_value, self._maximum))
+
+        if new_value != self._value:
+            self.userInteracting.emit()
+            self.setValue(new_value)
+            self.userInteractionEnded.emit()
+
+        event.accept()
+
     def setInteractive(self, interactive):
         """
         设置数值条是否可交互
@@ -1793,7 +1889,32 @@ class CustomVolumeBar(QWidget):
         """
         if self._is_pressed and event.button() == Qt.LeftButton:
             self._is_pressed = False
-    
+
+    def wheelEvent(self, event):
+        """
+        鼠标滚轮事件，处理滚轮调整音量值
+        """
+        # 获取滚轮滚动角度，每格通常为120
+        delta = event.angleDelta().y()
+
+        # 计算每次滚动的步进值（范围的2%，音量调整更敏感）
+        step = max(1, (self._maximum - self._minimum) // 50)
+
+        if delta > 0:
+            # 向上滚动，增加音量
+            new_value = self._value + step
+        else:
+            # 向下滚动，减少音量
+            new_value = self._value - step
+
+        # 限制在有效范围内
+        new_value = max(self._minimum, min(new_value, self._maximum))
+
+        if new_value != self._value:
+            self.setValue(new_value)
+
+        event.accept()
+
     def _update_value_from_pos(self, x_pos):
         """
         根据鼠标位置更新音量值

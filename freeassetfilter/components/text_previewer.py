@@ -622,6 +622,52 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
         except Exception:
             pass
 
+class ZoomDisabledTextEdit(QTextEdit):
+    """
+    禁用缩放的文本编辑器
+    
+    继承自QTextEdit，但禁用了Ctrl+滚轮缩放功能
+    支持Ctrl+滚轮控制字体大小
+    """
+    
+    # 信号：字体大小变化通知，参数为变化量（正数表示增大，负数表示减小）
+    font_size_change_requested = pyqtSignal(int)
+    
+    def __init__(self, parent=None):
+        """
+        初始化文本编辑器
+        
+        参数：
+            parent: 父控件
+        """
+        super().__init__(parent)
+    
+    def wheelEvent(self, event):
+        """
+        处理滚轮事件
+        
+        当按下Ctrl键时，通过信号通知字体大小变化
+        否则正常处理滚轮事件（滚动）
+        
+        参数：
+            event: 滚轮事件
+        """
+        # 如果按下了Ctrl键，发送字体大小变化信号
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                # 向上滚动，增大字体
+                self.font_size_change_requested.emit(1)
+            elif delta < 0:
+                # 向下滚动，减小字体
+                self.font_size_change_requested.emit(-1)
+            event.accept()
+            return
+        
+        # 否则正常处理滚轮事件（滚动）
+        super().wheelEvent(event)
+
+
 class LineNumberArea(QWidget):
     """
     行号显示区域
@@ -705,15 +751,34 @@ class LineNumberArea(QWidget):
     def paintEvent(self, event):
         """
         绘制行号
-        
+
         参数：
             event: 绘制事件
         """
         painter = QPainter(self)
-        
-        # 填充背景
-        painter.fillRect(event.rect(), self.bg_color)
-        
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # 创建带左上和左下圆角的矩形路径，圆角大小与整体风格一致（8px）
+        from PyQt5.QtGui import QPainterPath
+        radius = 8  # 圆角半径，与主窗口整体风格一致
+        path = QPainterPath()
+        # 从左上角圆角开始
+        path.moveTo(0, radius)
+        path.arcTo(0, 0, radius * 2, radius * 2, 180, -90)
+        # 上边线到右上角
+        path.lineTo(self.width(), 0)
+        # 右边线到右下角
+        path.lineTo(self.width(), self.height())
+        # 下边线到左下角圆角
+        path.lineTo(radius, self.height())
+        # 左下角圆角
+        path.arcTo(0, self.height() - radius * 2, radius * 2, radius * 2, 270, -90)
+        # 闭合路径
+        path.closeSubpath()
+
+        # 填充背景（使用圆角路径）
+        painter.fillPath(path, self.bg_color)
+
         # 绘制右边框
         painter.setPen(self.border_color)
         painter.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
@@ -1023,13 +1088,15 @@ class TextPreviewWidget(QWidget):
 
         container.setStyleSheet(f"background-color: {base_color};")
         
-        # 创建文本编辑器
-        self.text_edit = QTextEdit()
+        # 创建文本编辑器（使用禁用缩放的自定义类）
+        self.text_edit = ZoomDisabledTextEdit()
         self.text_edit.setReadOnly(True)
         self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
         self.text_edit.setUndoRedoEnabled(False)
         self.text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
         self.text_edit.customContextMenuRequested.connect(self._show_context_menu)
+        # 连接字体大小变化信号
+        self.text_edit.font_size_change_requested.connect(self._on_font_size_change_requested)
         
         default_font = QFont()
         default_font.setPointSize(int(self.default_font_size * self.dpi_scale))
@@ -1493,6 +1560,10 @@ class TextPreviewWidget(QWidget):
 
     def _render_markdown(self, content):
         """渲染Markdown"""
+        # Markdown预览模式下隐藏行号区域
+        if hasattr(self, 'line_number_area') and self.line_number_area:
+            self.line_number_area.hide()
+
         try:
             # 预处理列表缩进
             content = self._preprocess_markdown_lists(content)
@@ -1595,13 +1666,20 @@ class TextPreviewWidget(QWidget):
     
     def _render_plain_text(self, content, file_type):
         """渲染纯文本/代码"""
+        # 纯文本预览模式下隐藏行号区域，代码模式下显示行号区域
+        if hasattr(self, 'line_number_area') and self.line_number_area:
+            if file_type == 'text':
+                self.line_number_area.hide()
+            else:
+                self.line_number_area.show()
+
         # 纯文本/代码模式下禁用自动换行（保持原有行为）
         self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
         # 恢复水平滚动条，方便查看长行代码
         self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.text_edit.setPlainText(content)
         self.is_markdown = False
-        
+
         if file_type == 'code':
             _, ext = os.path.splitext(self.current_file_path)
             ext = ext.lower()
@@ -1706,6 +1784,27 @@ class TextPreviewWidget(QWidget):
     def _on_font_size_changed(self, value):
         """字体大小滑块变化回调"""
         self._change_font_size(str(value))
+    
+    def _on_font_size_change_requested(self, delta):
+        """
+        处理字体大小变化请求（来自Ctrl+滚轮）
+        
+        参数：
+            delta (int): 变化量，1表示增大，-1表示减小
+        """
+        if not hasattr(self, 'font_size_slider') or self.font_size_slider is None:
+            return
+        
+        current_value = self.font_size_slider.value()
+        new_value = current_value + delta
+        
+        # 确保新值在滑块范围内（D_ProgressBar使用私有属性）
+        min_value = getattr(self.font_size_slider, '_minimum', 4)
+        max_value = getattr(self.font_size_slider, '_maximum', 40)
+        new_value = max(min_value, min(max_value, new_value))
+        
+        # 更新滑块值（这会触发valueChanged信号，进而调用_on_font_size_changed）
+        self.font_size_slider.setValue(new_value)
     
     def _on_encoding_selected(self, item):
         """编码选择回调"""

@@ -296,12 +296,44 @@ class ArchiveBrowser(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        
+
         scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
         scroll_area.verticalScrollBar().apply_theme_from_settings()
-        
+
         SmoothScroller.apply_to_scroll_area(scroll_area)
-        
+
+        # 获取颜色设置（用于滚动区域背景）
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+
+        current_colors = settings_manager.get_setting("appearance.colors", {
+            "secondary_color": "#FFFFFF",
+            "base_color": "#212121",
+            "auxiliary_color": "#3D3D3D",
+            "normal_color": "#717171",
+            "accent_color": "#B036EE"
+        })
+
+        base_color = current_colors.get('base_color', '#212121')
+        border_radius = int(6 * self.dpi_scale)
+
+        # 设置滚动区域样式（添加圆角背景）
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: {base_color};
+                border: none;
+                border-radius: {border_radius}px;
+            }}
+            QScrollArea::viewport {{
+                background-color: {base_color};
+                border-radius: {border_radius}px;
+            }}
+        """)
+
         # 创建文件列表
         self.files_list = QListWidget()
         self.files_list.itemDoubleClicked.connect(self.on_item_double_clicked)
@@ -334,7 +366,7 @@ class ArchiveBrowser(QWidget):
         
         # 设置列表项高度
         scaled_item_height = int(15 * self.dpi_scale)
-        
+
         # 获取强调色并设置透明度为0.4
         from PyQt5.QtGui import QColor
         accent_color = current_colors.get("accent_color", "#B036EE")
@@ -343,33 +375,51 @@ class ArchiveBrowser(QWidget):
         qcolor.setAlpha(155)
         # 转换为CSS rgba格式
         selected_bg_color = f"rgba({qcolor.red()}, {qcolor.green()}, {qcolor.blue()}, 0.4)"
-        
-        # 设置列表样式
+
+        # 获取其他颜色值
+        secondary_color = current_colors.get('secondary_color', '#FFFFFF')
+        auxiliary_color = current_colors.get('auxiliary_color', '#3D3D3D')
+        normal_color = current_colors.get('normal_color', '#717171')
+
+        # 计算圆角半径和边距（基于DPI缩放）
+        item_margin = int(2 * self.dpi_scale)
+
+        # 设置列表样式（添加圆角，参考文件横向卡片样式）
+        # 默认状态：背景=base_color，边框=auxiliary_color（与文件横向卡片一致）
+        # QListWidget 背景设为透明，让 QScrollArea 的圆角背景显示出来
         self.files_list.setStyleSheet(f"""
             QListWidget {{
                 show-decoration-selected: 0;
                 outline: none;
+                background-color: transparent;
+                border: none;
+                padding: {item_margin}px;
             }}
             QListWidget::item {{
                 height: {scaled_item_height}px;
-                color: {current_colors.get('secondary_color', '#FFFFFF')};
-                background-color: {current_colors.get('base_color', '#212121')};
-                border: 1px solid transparent;
+                color: {secondary_color};
+                background-color: {base_color};
+                border: 1px solid {auxiliary_color};
+                border-radius: {border_radius}px;
                 outline: none;
+                margin: {item_margin}px {item_margin}px 0 {item_margin}px;
             }}
             QListWidget::item:hover {{
-                color: {current_colors.get('secondary_color', '#FFFFFF')};
-                background-color: {current_colors.get('auxiliary_color', '#3D3D3D')};
-                border: 1px solid {current_colors.get('normal_color', '#717171')};
+                color: {secondary_color};
+                background-color: {auxiliary_color};
+                border: 1px solid {normal_color};
+                border-radius: {border_radius}px;
             }}
             QListWidget::item:selected {{
-                color: {current_colors.get('secondary_color', '#FFFFFF')};
+                color: {secondary_color};
                 background-color: {selected_bg_color};
                 border: 1px solid {accent_color};
+                border-radius: {border_radius}px;
             }}
             QListWidget::item:selected:focus, QListWidget::item:focus {{
                 outline: none;
                 border: 1px solid {accent_color};
+                border-radius: {border_radius}px;
             }}
             QListWidget:focus, QListWidget::item:focus, QListWidget::item:selected:focus {{
                 outline: none;
@@ -380,9 +430,12 @@ class ArchiveBrowser(QWidget):
         
         # 禁用列表的焦点策略
         self.files_list.setFocusPolicy(Qt.NoFocus)
-        
+
+        # 连接鼠标点击事件，用于检测点击空白区域
+        self.files_list.mousePressEvent = self._on_list_mouse_press
+
         scroll_area.setWidget(self.files_list)
-        
+
         return scroll_area
     
     def _detect_encoding(self, filename_bytes):
@@ -1222,6 +1275,29 @@ class ArchiveBrowser(QWidget):
         """
         file_info = item.data(Qt.UserRole)
         self.file_selected.emit(file_info)
+
+    def _on_list_mouse_press(self, event):
+        """
+        处理列表区域的鼠标点击事件
+        当点击空白区域时取消所有选中状态
+
+        参数：
+            event: 鼠标事件对象
+        """
+        # 获取点击位置对应的列表项
+        item = self.files_list.itemAt(event.pos())
+
+        if item is None:
+            # 点击了空白区域，取消所有选中状态
+            self.files_list.clearSelection()
+            # 发送空信号表示取消选中
+            self.file_selected.emit({})
+        else:
+            # 点击了列表项，调用原来的点击处理
+            self.on_item_clicked(item)
+
+        # 调用父类的鼠标按下事件处理（保持原有的交互行为）
+        QListWidget.mousePressEvent(self.files_list, event)
 
 
 if __name__ == "__main__":
