@@ -185,7 +185,8 @@ class UnifiedPreviewer(QWidget):
         self.content_splitter = QSplitter(Qt.Vertical)
         self.content_splitter.setContentsMargins(0, 0, 0, 0)
         self.content_splitter.setHandleWidth(10)
-        self.content_splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {base_color}; }}")
+        border_radius = int(8 * self.dpi_scale)
+        self.content_splitter.setStyleSheet(f"QSplitter {{ background-color: {base_color}; border-radius: {border_radius}px; }} QSplitter::handle {{ background-color: {base_color}; }}")
         
         # 创建预览内容区域
         self.preview_area = QWidget()
@@ -322,6 +323,8 @@ class UnifiedPreviewer(QWidget):
             preview_type = "text"
         elif file_type in ["zip", "rar", "tar", "gz", "tgz", "bz2", "xz", "7z", "iso"]:
             preview_type = "archive"
+        elif file_type in ["ttf", "otf", "woff", "woff2", "eot"]:
+            preview_type = "font"
         else:
             preview_type = "unknown"
         
@@ -371,7 +374,11 @@ class UnifiedPreviewer(QWidget):
                 title = "正在加载文件夹"
                 message = "正在准备文件夹浏览器..."
                 # debug("显示文件夹加载进度条")
-            
+            elif preview_type == "font":
+                title = "正在加载字体"
+                message = "正在准备字体预览器..."
+                # debug("显示字体加载进度条")
+
             self._show_progress_dialog(title, message)
             
             # 预览类型不同，清除当前组件，创建新组件
@@ -488,6 +495,16 @@ class UnifiedPreviewer(QWidget):
                         self.current_preview_widget.cleanup()
             except Exception as e:
                 print(f"清理TextPreviewWidget组件时出错: {e}")
+            
+            # 对于字体预览器，需要特别处理字体资源释放
+            try:
+                from freeassetfilter.components.font_previewer import FontPreviewWidget
+                if isinstance(self.current_preview_widget, FontPreviewWidget):
+                    # 调用cleanup方法进行完整的资源清理
+                    if hasattr(self.current_preview_widget, 'cleanup'):
+                        self.current_preview_widget.cleanup()
+            except Exception as e:
+                print(f"清理FontPreviewWidget组件时出错: {e}")
             
             # 停止播放
             if hasattr(self.current_preview_widget, 'stop'):
@@ -619,6 +636,12 @@ class UnifiedPreviewer(QWidget):
                 # 文件夹预览组件
                 if hasattr(self.current_preview_widget, 'set_path'):
                     self.current_preview_widget.set_path(file_path)
+            elif preview_type == "font":
+                # 字体预览组件：每次传入新字体时，清除旧组件并创建新组件
+                # 这样可以确保字体资源被正确释放，新字体能够正确加载
+                self._clear_preview()
+                self._show_font_preview(file_path)
+                return
         except Exception as e:
             print(f"更新预览组件时出错: {e}")
             # 如果更新失败，清除当前组件，重新创建
@@ -1154,6 +1177,10 @@ class UnifiedPreviewer(QWidget):
                 # 文档预览：转换为PDF后预览
                 self._show_document_preview(file_path)
                 return  # _show_document_preview已经处理了组件添加
+            elif preview_type == "font":
+                # 字体预览
+                self._show_font_preview(file_path)
+                return  # _show_font_preview已经处理了组件添加
             elif preview_type == "unknown":
                 # 不支持的文件类型，显示普通提示文字
                 # 创建普通信息容器
@@ -1305,7 +1332,7 @@ class UnifiedPreviewer(QWidget):
                 # 实际的UI组件创建将在主线程中完成
                 
                 # 对于不同的预览类型，执行不同的预处理逻辑
-                if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir", "document", "unknown"]:
+                if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir", "document", "font", "unknown"]:
                     # 模拟进度更新，确保UI能响应
                     import time
                     for i in range(20, 100, 10):
@@ -1376,6 +1403,32 @@ class UnifiedPreviewer(QWidget):
         except Exception as e:
             error_message = f"文本预览失败: {str(e)}"
             self._show_error_with_copy_button(error_message)
+
+    def _show_font_preview(self, file_path):
+        """
+        显示字体预览
+        进度条已在_show_preview中显示并在_on_preview_created中关闭
+
+        Args:
+            file_path (str): 字体文件路径
+        """
+        try:
+            # 尝试导入字体预览器组件
+            from freeassetfilter.components.font_previewer import FontPreviewWidget
+
+            # 创建字体预览部件（注意：使用FontPreviewWidget而不是FontPreviewer）
+            # FontPreviewer是QMainWindow，不能嵌入到布局中；FontPreviewWidget才是QWidget
+            font_previewer = FontPreviewWidget()
+
+            # 设置字体文件
+            font_previewer.set_font(file_path)
+
+            self.preview_layout.addWidget(font_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
+            self.current_preview_widget = font_previewer
+        except Exception as e:
+            error_message = f"字体预览失败: {str(e)}"
+            self._show_error_with_copy_button(error_message)
+
     def _show_document_preview(self, file_path):
         """
         显示文档预览，先将文档转换为PDF，然后使用PDF预览器显示
