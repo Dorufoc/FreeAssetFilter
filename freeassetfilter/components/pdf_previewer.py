@@ -22,8 +22,8 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QSizePolicy, QSpacerItem, QApplication, QFrame
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QRect, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QRect, QRectF, QPoint
+from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QRegion, QPainterPath
 
 # 导入自定义控件
 from freeassetfilter.widgets.button_widgets import CustomButton
@@ -43,19 +43,19 @@ class PDFPageWidget(QWidget):
     PDF页面显示控件
     负责单个PDF页面的渲染和显示
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # 获取DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+
         # 初始化属性
         self.page_pixmap = None
         self.page_number = -1
         self.is_rendered = False
-        
+
         # 设置固定大小策略
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         # 设置最小大小与视频播放器组件相同 (200, 200)，应用DPI缩放
@@ -222,15 +222,15 @@ class PDFPreviewer(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(int(5 * self.dpi_scale))
         main_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # 创建控制栏
         self._create_control_bar()
         main_layout.addWidget(self.control_bar)
-        
+
         # 创建内容预览区
         self._create_content_area()
         main_layout.addWidget(self.scroll_area, 1)
-        
+
         # 设置字体
         self.setFont(self.global_font)
     
@@ -314,31 +314,48 @@ class PDFPreviewer(QWidget):
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
-        
+
         # 应用平滑滚动
         SmoothScroller.apply_to_scroll_area(self.scroll_area)
-        
+
         # 设置自定义滚动条
         self.scroll_area.setVerticalScrollBar(D_ScrollBar(orientation=Qt.Vertical))
         self.scroll_area.setHorizontalScrollBar(D_ScrollBar(orientation=Qt.Horizontal))
-        
+
         # 连接滚动事件，实时更新当前页码
         self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
-        
-        # 创建内容容器
+
+        # 创建内容容器（无圆角，背景色与滚动区域一致）
         self.content_widget = QWidget()
         self.content_widget.setStyleSheet("background-color: #F5F5F5;")
         self.content_layout = QVBoxLayout(self.content_widget)
         self.content_layout.setSpacing(int(10 * self.dpi_scale))
         self.content_layout.setContentsMargins(
-            int(20 * self.dpi_scale), 
-            int(20 * self.dpi_scale), 
-            int(20 * self.dpi_scale), 
+            int(20 * self.dpi_scale),
+            int(20 * self.dpi_scale),
+            int(20 * self.dpi_scale),
             int(20 * self.dpi_scale)
         )
         self.content_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        
+
         self.scroll_area.setWidget(self.content_widget)
+
+        # 安装事件过滤器以捕获双击事件（重置缩放）和滚轮事件（Ctrl+滚轮缩放）
+        self.content_widget.installEventFilter(self)
+        self.scroll_area.installEventFilter(self)
+        self.scroll_area.viewport().installEventFilter(self)
+
+        # 设置滚动区域圆角样式（参考file_selector.py的实现）
+        self.scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid #E0E0E0;
+                border-radius: 6px;
+                background-color: #F5F5F5;
+            }
+            QScrollArea > QWidget > QWidget {
+                background-color: #F5F5F5;
+            }
+        """)
     
     def set_file(self, file_info):
         """
@@ -830,6 +847,41 @@ class PDFPreviewer(QWidget):
             self.page_pixmaps.clear()
             self._render_visible_pages()
     
+    def eventFilter(self, obj, event):
+        """
+        事件过滤器，处理预览区域的鼠标事件
+        - 双击左键：重置缩放到100%
+        - Ctrl+滚轮：缩放控制（阻止默认滚动行为）
+
+        Args:
+            obj: 事件源对象
+            event: 事件对象
+
+        Returns:
+            bool: 是否已处理事件
+        """
+        # 处理 content_widget 的双击事件
+        if obj == self.content_widget:
+            if event.type() == event.MouseButtonDblClick:
+                if event.button() == Qt.LeftButton:
+                    self.zoom_slider.setValue(self.zoom_default)
+                    return True
+
+        # 处理 scroll_area、viewport 和 content_widget 的滚轮事件
+        if obj in (self.scroll_area, self.scroll_area.viewport(), self.content_widget):
+            if event.type() == event.Wheel:
+                # 当按下Ctrl时，阻止默认滚动行为，只进行缩放
+                if event.modifiers() == Qt.ControlModifier:
+                    delta = event.angleDelta().y()
+                    if delta > 0:
+                        new_zoom = min(self.current_zoom + 10, self.zoom_max)
+                    else:
+                        new_zoom = max(self.current_zoom - 10, self.zoom_min)
+                    self.zoom_slider.setValue(new_zoom)
+                    return True
+
+        return super().eventFilter(obj, event)
+
     def closeEvent(self, event):
         """
         关闭事件处理

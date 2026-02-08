@@ -263,28 +263,33 @@ class D_ScrollBar(QScrollBar):
         super().mouseReleaseEvent(event)
     
     def wheelEvent(self, event):
-        """滚轮事件 - 平滑滚动"""
+        """滚轮事件 - 平滑滚动，Ctrl+滚轮时交给父控件处理缩放"""
+        # 当按下Ctrl时，不处理滚轮事件，让事件向上传播以支持缩放
+        if event.modifiers() == Qt.ControlModifier:
+            super().wheelEvent(event)
+            return
+
         angle_delta = event.angleDelta().y()
-        
+
         if angle_delta != 0:
             current_time = time.time()
             time_diff = current_time - self._last_wheel_time
-            
+
             if time_diff < 0.1:
                 self._wheel_speed_boost = min(self._wheel_speed_boost + 0.3, self._max_boost)
             else:
                 self._wheel_speed_boost = 1.0
-            
+
             self._last_wheel_time = current_time
-            
+
             pixel_delta = -angle_delta // 9 * self._wheel_speed_boost
-            
+
             if self._animation_timer.isActive():
                 self._velocity = pixel_delta
             else:
                 self._velocity = pixel_delta
                 self._start_scroll_animation()
-            
+
             event.accept()
         else:
             super().wheelEvent(event)
