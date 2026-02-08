@@ -2299,16 +2299,23 @@ class CustomFileSelector(QWidget):
     def _filter_files(self, files):
         """
         应用筛选器
+        支持通配符 * 和 ?，对无效的正则表达式进行错误处理
         """
         if self.filter_pattern == "*":
             return files
         
         filtered = []
-        pattern = self.filter_pattern.replace("*", ".*")
-        pattern = pattern.replace(".", "\\.")
+        # 将通配符转换为正则表达式
+        pattern = self.filter_pattern.replace(".", "\\.")
+        pattern = pattern.replace("*", ".*")
+        pattern = pattern.replace("?", ".")
         pattern = f"^{pattern}$"
         
-        regex = re.compile(pattern, re.IGNORECASE)
+        try:
+            regex = re.compile(pattern, re.IGNORECASE)
+        except re.error:
+            # 正则表达式无效，返回空列表
+            return []
         
         for file in files:
             if regex.match(file["name"]):
