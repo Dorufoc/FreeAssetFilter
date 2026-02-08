@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QRect, QRectF, QPoint
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QRegion, QPainterPath
+from PyQt5.QtWidgets import QScroller
 
 # 导入自定义控件
 from freeassetfilter.widgets.button_widgets import CustomButton
@@ -210,7 +211,14 @@ class PDFPreviewer(QWidget):
         self.visibility_timer = QTimer(self)
         self.visibility_timer.setInterval(100)  # 100ms检测一次
         self.visibility_timer.timeout.connect(self._render_visible_pages)
-        
+
+        # 鼠标中键拖动相关属性
+        self._is_middle_button_dragging = False  # 是否正在中键拖动
+        self._middle_button_drag_global_start_pos = None  # 拖动起始位置（全局坐标）
+        self._middle_button_drag_start_scroll_x = 0  # 拖动起始水平滚动值
+        self._middle_button_drag_start_scroll_y = 0  # 拖动起始垂直滚动值
+        self.setCursor(Qt.ArrowCursor)  # 设置默认光标
+
         # 初始化UI
         self._init_ui()
     
@@ -346,11 +354,13 @@ class PDFPreviewer(QWidget):
         self.scroll_area.viewport().installEventFilter(self)
 
         # 设置滚动区域圆角样式（参考file_selector.py的实现）
+        # 添加padding为滚动条提供边距
         self.scroll_area.setStyleSheet("""
             QScrollArea {
                 border: 1px solid #E0E0E0;
                 border-radius: 6px;
                 background-color: #F5F5F5;
+                padding: 6px;
             }
             QScrollArea > QWidget > QWidget {
                 background-color: #F5F5F5;
@@ -412,10 +422,14 @@ class PDFPreviewer(QWidget):
             # 更新UI
             self._update_page_label()
             self._update_button_states()
-            
+
+            # 重置滚动条到顶部
+            self.scroll_area.verticalScrollBar().setValue(0)
+            self.scroll_area.horizontalScrollBar().setValue(0)
+
             # 启动可见区域检测
             self.visibility_timer.start()
-            
+
             # 立即渲染第一页
             QTimer.singleShot(0, self._render_visible_pages)
             
@@ -524,34 +538,36 @@ class PDFPreviewer(QWidget):
         """
         if not self.pdf_document or not self.page_widgets:
             return
-        
+
         # 获取滚动区域的可视区域
         viewport = self.scroll_area.viewport()
         viewport_rect = viewport.rect()
-        
+
         # 计算可见的页面范围
         first_visible = -1
         last_visible = -1
-        
+
         for i, widget in enumerate(self.page_widgets):
-            # 获取控件在视口中的位置
-            widget_pos = widget.mapTo(self.scroll_area.widget(), QPoint(0, 0))
+            # 获取控件在视口中的位置（统一使用viewport坐标系）
+            widget_pos = widget.mapTo(viewport, QPoint(0, 0))
             widget_rect = QRect(widget_pos, widget.size())
-            
+
             # 检查是否与可视区域相交
             if widget_rect.intersects(viewport_rect):
                 if first_visible == -1:
                     first_visible = i
                 last_visible = i
-        
+
         if first_visible == -1:
             return
-        
-        # 渲染可见页面
-        for page_num in range(first_visible, min(last_visible + 2, self.total_pages)):
+
+        # 渲染可见页面及其相邻页面（预加载）
+        start_page = max(0, first_visible - 1)
+        end_page = min(last_visible + 2, self.total_pages)
+        for page_num in range(start_page, end_page):
             if page_num not in self.page_pixmaps:
                 self._render_page(page_num)
-        
+
         # 清理过期缓存
         self._cleanup_cache()
     
@@ -621,31 +637,32 @@ class PDFPreviewer(QWidget):
         """
         if len(self.page_pixmaps) <= self.max_cache_pages:
             return
-        
+
         # 获取当前可见的页面
         viewport = self.scroll_area.viewport()
         viewport_rect = viewport.rect()
         visible_pages = set()
-        
+
         for i, widget in enumerate(self.page_widgets):
-            widget_pos = widget.mapTo(self.scroll_area.widget(), QPoint(0, 0))
+            # 统一使用viewport坐标系
+            widget_pos = widget.mapTo(viewport, QPoint(0, 0))
             widget_rect = QRect(widget_pos, widget.size())
             if widget_rect.intersects(viewport_rect):
                 visible_pages.add(i)
-        
+
         # 保留可见页面及其相邻页面
         pages_to_keep = set()
         for page in visible_pages:
             pages_to_keep.add(page)
             pages_to_keep.add(page - 1)
             pages_to_keep.add(page + 1)
-        
+
         # 清理不在保留列表中的缓存
         pages_to_remove = []
         for page_num in self.page_pixmaps:
             if page_num not in pages_to_keep:
                 pages_to_remove.append(page_num)
-        
+
         for page_num in pages_to_remove:
             del self.page_pixmaps[page_num]
     
@@ -852,6 +869,9 @@ class PDFPreviewer(QWidget):
         事件过滤器，处理预览区域的鼠标事件
         - 双击左键：重置缩放到100%
         - Ctrl+滚轮：缩放控制（阻止默认滚动行为）
+        - 鼠标中键按下：开始拖动模式
+        - 鼠标中键释放：结束拖动模式
+        - 鼠标移动：在拖动模式下滚动内容
 
         Args:
             obj: 事件源对象
@@ -880,7 +900,83 @@ class PDFPreviewer(QWidget):
                     self.zoom_slider.setValue(new_zoom)
                     return True
 
+        # 处理鼠标中键按下事件 - 开始拖动
+        if obj in (self.scroll_area, self.scroll_area.viewport(), self.content_widget):
+            if event.type() == event.MouseButtonPress:
+                if event.button() == Qt.MiddleButton:
+                    # 使用全局坐标避免坐标系转换问题
+                    self._start_middle_button_drag(event.globalPos())
+                    return True
+
+        # 处理鼠标移动事件 - 执行拖动
+        if obj in (self.scroll_area, self.scroll_area.viewport(), self.content_widget):
+            if event.type() == event.MouseMove:
+                if self._is_middle_button_dragging:
+                    # 使用全局坐标避免坐标系转换问题
+                    self._do_middle_button_drag(event.globalPos())
+                    return True
+
+        # 处理鼠标中键释放事件 - 结束拖动
+        if obj in (self.scroll_area, self.scroll_area.viewport(), self.content_widget):
+            if event.type() == event.MouseButtonRelease:
+                if event.button() == Qt.MiddleButton:
+                    self._end_middle_button_drag()
+                    return True
+
         return super().eventFilter(obj, event)
+
+    def _start_middle_button_drag(self, global_pos):
+        """
+        开始鼠标中键拖动
+
+        Args:
+            global_pos: 鼠标按下位置（全局坐标）
+        """
+        self._is_middle_button_dragging = True
+        self._middle_button_drag_global_start_pos = global_pos
+        # 记录当前滚动位置
+        self._middle_button_drag_start_scroll_x = self.scroll_area.horizontalScrollBar().value()
+        self._middle_button_drag_start_scroll_y = self.scroll_area.verticalScrollBar().value()
+        # 更改光标为手型（表示可以拖动）
+        self.scroll_area.viewport().setCursor(Qt.ClosedHandCursor)
+        # 禁用平滑滚动（QScroller）以避免动画冲突
+        viewport = self.scroll_area.viewport()
+        QScroller.ungrabGesture(viewport)
+
+    def _do_middle_button_drag(self, global_pos):
+        """
+        执行鼠标中键拖动滚动
+        使用全局坐标计算偏移，避免坐标系转换导致的闪烁问题
+
+        Args:
+            global_pos: 当前鼠标位置（全局坐标）
+        """
+        if not self._is_middle_button_dragging or self._middle_button_drag_global_start_pos is None:
+            return
+
+        # 计算鼠标移动距离（相对于初始位置，使用全局坐标）
+        delta_x = global_pos.x() - self._middle_button_drag_global_start_pos.x()
+        delta_y = global_pos.y() - self._middle_button_drag_global_start_pos.y()
+
+        # 反向滚动（拖动方向与滚动方向相反）
+        new_scroll_x = self._middle_button_drag_start_scroll_x - delta_x
+        new_scroll_y = self._middle_button_drag_start_scroll_y - delta_y
+
+        # 应用滚动
+        self.scroll_area.horizontalScrollBar().setValue(new_scroll_x)
+        self.scroll_area.verticalScrollBar().setValue(new_scroll_y)
+
+    def _end_middle_button_drag(self):
+        """
+        结束鼠标中键拖动
+        """
+        self._is_middle_button_dragging = False
+        self._middle_button_drag_global_start_pos = None
+        # 恢复默认光标
+        self.scroll_area.viewport().setCursor(Qt.ArrowCursor)
+        # 重新启用平滑滚动（QScroller）
+        viewport = self.scroll_area.viewport()
+        QScroller.grabGesture(viewport, QScroller.TouchGesture)
 
     def closeEvent(self, event):
         """
