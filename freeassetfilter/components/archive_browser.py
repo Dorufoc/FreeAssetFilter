@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QApplication,
-    QLabel, QScrollArea,
+    QLabel,
     QGroupBox, QListWidget, QListWidgetItem, QMessageBox,
     QFrame, QSizePolicy, QFileIconProvider
 )
@@ -162,15 +162,17 @@ class ArchiveBrowser(QWidget):
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
-        # 从app对象获取全局默认字体大小
-        
-        default_font_size = getattr(app, 'default_font_size', 14)
-        
-        # 应用DPI缩放因子到字体和按钮高度
-        scaled_font_size = int(default_font_size * self.dpi_scale)
+        # 从app对象获取全局默认字体大小（Qt已自动处理DPI缩放，无需再乘dpi_scale）
+        default_font_size = getattr(app, 'default_font_size', 9)
+
+        # 应用DPI缩放因子到按钮高度（字体大小已由Qt自动处理）
         # 使用统一的按钮高度（与文件选择器保持一致）
         button_height = 20
         scaled_button_height = int(button_height * self.dpi_scale)
+
+        # 创建字体供控制栏使用（使用原始字体大小，Qt会自动处理DPI缩放）
+        control_font = QFont(self.global_font)
+        control_font.setPointSize(default_font_size)
         
         # 第一行：路径显示和返回按钮
         path_layout = QHBoxLayout()
@@ -200,10 +202,8 @@ class ArchiveBrowser(QWidget):
         scaled_combo_width = int(40 * self.dpi_scale)
         self.encoding_combo.set_fixed_width(scaled_combo_width)
         
-        # 设置字体，与文件选择器的设置方法一致
-        combo_font = QFont(self.global_font)
-        combo_font.setPointSize(scaled_font_size)
-        self.encoding_combo.setFont(combo_font)
+        # 设置字体，使用缩放后的字体
+        self.encoding_combo.setFont(control_font)
         
         # 添加支持的编码（只显示编码格式本身）
         encoding_items = []
@@ -224,15 +224,13 @@ class ArchiveBrowser(QWidget):
         
         # 压缩包类型显示
         self.type_label = QLabel("压缩包类型: ")
-        self.type_label.setFont(self.global_font)
-        self.type_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
+        self.type_label.setFont(control_font)
         self.type_label.hide()  # 隐藏标签
         # info_layout.addWidget(self.type_label)
-        
+
         # 加密状态显示
         self.encryption_label = QLabel("加密状态: 未加密")
-        self.encryption_label.setFont(self.global_font)
-        self.encryption_label.setStyleSheet(f"font-size: {scaled_font_size}px; min-height: {scaled_button_height}px;")
+        self.encryption_label.setFont(control_font)
         self.encryption_label.hide()  # 隐藏标签
         # info_layout.addWidget(self.encryption_label)
         
@@ -290,19 +288,9 @@ class ArchiveBrowser(QWidget):
     def _create_files_area(self):
         """
         创建文件列表区域
+        集成自定义丝滑滚动条和平滑滚动效果
         """
-        # 创建滚动区域
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
-        scroll_area.verticalScrollBar().apply_theme_from_settings()
-
-        SmoothScroller.apply_to_scroll_area(scroll_area)
-
-        # 获取颜色设置（用于滚动区域背景）
+        # 获取颜色设置
         app = QApplication.instance()
         if hasattr(app, 'settings_manager'):
             settings_manager = app.settings_manager
@@ -321,33 +309,33 @@ class ArchiveBrowser(QWidget):
         base_color = current_colors.get('base_color', '#212121')
         border_radius = int(6 * self.dpi_scale)
 
-        # 设置滚动区域样式（添加圆角背景）
-        scroll_area.setStyleSheet(f"""
-            QScrollArea {{
-                background-color: {base_color};
-                border: none;
-                border-radius: {border_radius}px;
-            }}
-            QScrollArea::viewport {{
-                background-color: {base_color};
-                border-radius: {border_radius}px;
-            }}
-        """)
-
         # 创建文件列表
         self.files_list = QListWidget()
         self.files_list.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.files_list.itemClicked.connect(self.on_item_clicked)
+
+        # 为 QListWidget 设置自定义丝滑滚动条
+        self.files_list.setVerticalScrollBar(D_ScrollBar(self.files_list, Qt.Vertical))
+        self.files_list.verticalScrollBar().apply_theme_from_settings()
+
+        # 启用 QListWidget 的像素级滚动模式以实现平滑滚动
+        self.files_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.files_list.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
+
+        # 应用平滑滚动到 QListWidget 的视口
+        SmoothScroller.apply(self.files_list)
         
-        # 从app对象获取全局默认字体大小
+        # 从app对象获取全局默认字体大小（Qt已自动处理DPI缩放，无需再乘dpi_scale）
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 14)
-        
-        # 应用DPI缩放因子到列表项字体
-        scaled_font_size = int(default_font_size * self.dpi_scale)
+        default_font_size = getattr(app, 'default_font_size', 9)
+
+        # 创建列表字体（使用原始字体大小，Qt会自动处理DPI缩放）
         list_font = QFont(self.global_font)
-        list_font.setPointSize(scaled_font_size)
+        list_font.setPointSize(default_font_size)
         self.files_list.setFont(list_font)
+
+        # 存储字体供条目使用
+        self.scaled_font = list_font
         
         # 获取颜色设置
         if hasattr(app, 'settings_manager'):
@@ -384,16 +372,22 @@ class ArchiveBrowser(QWidget):
         # 计算圆角半径和边距（基于DPI缩放）
         item_margin = int(2 * self.dpi_scale)
 
-        # 设置列表样式（添加圆角，参考文件横向卡片样式）
-        # 默认状态：背景=base_color，边框=auxiliary_color（与文件横向卡片一致）
-        # QListWidget 背景设为透明，让 QScrollArea 的圆角背景显示出来
+        # 禁用列表的焦点策略
+        self.files_list.setFocusPolicy(Qt.NoFocus)
+
+        # 连接鼠标点击事件，用于检测点击空白区域
+        self.files_list.mousePressEvent = self._on_list_mouse_press
+
+        # 设置 QListWidget 的样式（添加圆角背景，并在样式表中设置字体大小）
         self.files_list.setStyleSheet(f"""
             QListWidget {{
                 show-decoration-selected: 0;
                 outline: none;
-                background-color: transparent;
+                background-color: {base_color};
                 border: none;
+                border-radius: {border_radius}px;
                 padding: {item_margin}px;
+                font-size: {default_font_size}px;
             }}
             QListWidget::item {{
                 height: {scaled_item_height}px;
@@ -403,6 +397,8 @@ class ArchiveBrowser(QWidget):
                 border-radius: {border_radius}px;
                 outline: none;
                 margin: {item_margin}px {item_margin}px 0 {item_margin}px;
+                padding-left: 8px;
+                font-size: {default_font_size}px;
             }}
             QListWidget::item:hover {{
                 color: {secondary_color};
@@ -427,16 +423,8 @@ class ArchiveBrowser(QWidget):
                 selection-color: transparent;
             }}
         """)
-        
-        # 禁用列表的焦点策略
-        self.files_list.setFocusPolicy(Qt.NoFocus)
 
-        # 连接鼠标点击事件，用于检测点击空白区域
-        self.files_list.mousePressEvent = self._on_list_mouse_press
-
-        scroll_area.setWidget(self.files_list)
-
-        return scroll_area
+        return self.files_list
     
     def _detect_encoding(self, filename_bytes):
         """
@@ -609,18 +597,22 @@ class ArchiveBrowser(QWidget):
             back_item = QListWidgetItem()
             back_item.setText("..")
             back_item.setData(Qt.UserRole, {"name": "..", "path": "..", "is_dir": True})
+            # 应用全局字体
+            back_item.setFont(self.scaled_font)
             self.files_list.addItem(back_item)
-        
+
         # 添加文件和文件夹项
         for file in self.archive_content:
             # 跳过空白文件名
             if not file["name"]:
                 continue
-            
+
             item = QListWidgetItem()
             item.setText(file["name"])
             item.setData(Qt.UserRole, file)
-            
+            # 应用全局字体
+            item.setFont(self.scaled_font)
+
             # 设置图标
             if file["is_dir"]:
                 # 使用文件夹图标
@@ -633,7 +625,7 @@ class ArchiveBrowser(QWidget):
                 temp_file_info = QFileInfo(f"temp.{file_suffix}")
                 file_icon = self.icon_provider.icon(temp_file_info)
                 item.setIcon(file_icon)
-            
+
             self.files_list.addItem(item)
         
         # 更新返回按钮状态（注释掉，使按钮始终保持启用状态）
