@@ -164,7 +164,41 @@ class ModernSettingsWindow(QDialog):
         main_layout.addWidget(main_splitter, 1)
 
         self._fill_tab_content("general")
-    
+
+        # 应用窗口标题栏深色模式
+        self._apply_title_bar_theme()
+
+    def _apply_title_bar_theme(self):
+        """
+        应用窗口标题栏主题（深色/浅色模式）
+        使用 Windows DWM API 设置标题栏颜色跟随系统/应用主题
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            # 获取窗口句柄
+            hwnd = int(self.winId())
+
+            # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 10 1903+)
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+
+            # 获取当前主题模式
+            is_dark_mode = self.theme_manager.is_dark_theme()
+
+            # 设置深色模式属性 (1 = 启用深色, 0 = 禁用深色/使用浅色)
+            dark_mode_value = wintypes.BOOL(1 if is_dark_mode else 0)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                ctypes.byref(dark_mode_value),
+                ctypes.sizeof(dark_mode_value)
+            )
+
+        except Exception:
+            # 如果设置失败（非Windows系统或DWM API不可用），静默忽略
+            pass
+
     def _create_navigation_widget(self):
         """
         创建左侧导航栏

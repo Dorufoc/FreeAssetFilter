@@ -169,6 +169,9 @@ class FreeAssetFilterApp(QMainWindow):
         # 启用窗口激活事件监听，用于焦点管理
         self.setAttribute(Qt.WA_MacAlwaysShowToolWindow, False)
 
+        # 应用窗口标题栏深色模式（根据当前主题设置）
+        self._apply_title_bar_theme()
+
     def changeEvent(self, event):
         """
         窗口状态变化事件
@@ -327,6 +330,41 @@ class FreeAssetFilterApp(QMainWindow):
             # 其他按键事件，交给父类处理
             super().keyPressEvent(event)
     
+    def _apply_title_bar_theme(self):
+        """
+        应用窗口标题栏主题（深色/浅色模式）
+        使用 Windows DWM API 设置标题栏颜色跟随系统/应用主题
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            # 获取窗口句柄
+            hwnd = int(self.winId())
+
+            # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 10 1903+)
+            # DWMWA_USE_IMMERSIVE_DARK_MODE = 19 (Windows 10 1809)
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+
+            # 获取当前主题模式
+            app = QApplication.instance()
+            is_dark_mode = False
+            if hasattr(app, 'settings_manager'):
+                is_dark_mode = app.settings_manager.get_setting("appearance.theme", "default") == "dark"
+
+            # 设置深色模式属性 (1 = 启用深色, 0 = 禁用深色/使用浅色)
+            dark_mode_value = wintypes.BOOL(1 if is_dark_mode else 0)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                ctypes.byref(dark_mode_value),
+                ctypes.sizeof(dark_mode_value)
+            )
+
+        except Exception as e:
+            # 如果设置失败（非Windows系统或DWM API不可用），静默忽略
+            pass
+
     def focusInEvent(self, event):
         """
         处理焦点进入事件
@@ -927,7 +965,7 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 清除SVG颜色缓存，确保新组件使用最新的主题颜色
         SvgRenderer._invalidate_color_cache()
-        
+
         try:
             success = self._rebuild_main_layout()
             if not success:
@@ -937,6 +975,9 @@ class FreeAssetFilterApp(QMainWindow):
             pass
         finally:
             self._update_theme_in_progress = False
+
+        # 更新窗口标题栏主题
+        self._apply_title_bar_theme()
     
     def show_custom_window_demo(self):
         """
