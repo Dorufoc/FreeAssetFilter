@@ -90,13 +90,196 @@ class RawProcessor(QThread):
             self.processing_failed.emit(f"加载RAW图片时出错: {e}")
 
 
+class IcoProcessor(QThread):
+    """
+    ICO文件异步处理器
+    将ICO格式转换为位图进行预览
+    """
+    processing_complete = pyqtSignal(QImage, str)
+    processing_failed = pyqtSignal(str)
+
+    def __init__(self, image_path):
+        super().__init__()
+        self.image_path = image_path
+
+    def run(self):
+        """
+        处理ICO文件，提取最高分辨率的图标并转换为QImage
+        优先使用PIL库解析，如不可用则使用Windows API
+        """
+        try:
+            # 首先尝试使用PIL库解析ICO文件
+            try:
+                image = self._load_with_pil()
+                if image and not image.isNull():
+                    self.processing_complete.emit(image, self.image_path)
+                    return
+            except ImportError:
+                pass  # PIL不可用，使用备用方案
+
+            # 使用Windows API加载ICO文件
+            image = self._load_with_windows_api()
+            if image and not image.isNull():
+                self.processing_complete.emit(image, self.image_path)
+                return
+
+            raise Exception("无法从ICO文件创建图像")
+
+        except Exception as e:
+            print(f"加载ICO文件时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            self.processing_failed.emit(f"加载ICO文件时出错: {e}")
+
+    def _load_with_pil(self):
+        """
+        使用PIL库加载ICO文件
+        返回QImage对象
+        """
+        from PIL import Image
+
+        # 打开ICO文件
+        img = Image.open(self.image_path)
+
+        # ICO文件可能包含多个尺寸，选择最大的那个
+        if hasattr(img, 'info') and 'sizes' in img.info:
+            sizes = img.info['sizes']
+            if sizes:
+                # 选择最大尺寸
+                max_size = max(sizes, key=lambda s: s[0] * s[1])
+                img.size = max_size
+                img.load()
+
+        # 转换为RGBA模式以支持透明通道
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+
+        # 获取图像尺寸
+        width, height = img.size
+
+        # 将图像数据转换为字节
+        img_bytes = img.tobytes()
+
+        # 创建QImage
+        bytes_per_line = width * 4
+        qimage = QImage(img_bytes, width, height, bytes_per_line, QImage.Format_RGBA8888)
+
+        # 复制数据以确保内存安全
+        return qimage.copy()
+
+    def _load_with_windows_api(self):
+        """
+        使用Windows API加载ICO文件
+        返回QImage对象
+        """
+        import ctypes
+        from ctypes import windll, byref, sizeof
+        from ctypes.wintypes import DWORD, UINT, HANDLE, LPCWSTR, HICON
+
+        # 定义Windows API函数
+        ExtractIconExW = windll.shell32.ExtractIconExW
+        ExtractIconExW.argtypes = [LPCWSTR, ctypes.c_int, ctypes.POINTER(HICON), ctypes.POINTER(HICON), UINT]
+        ExtractIconExW.restype = UINT
+
+        DestroyIcon = windll.user32.DestroyIcon
+        DestroyIcon.argtypes = [HICON]
+        DestroyIcon.restype = ctypes.c_bool
+
+        # 获取图标数量
+        icon_count = ExtractIconExW(self.image_path, -1, None, None, 0)
+
+        if icon_count == 0:
+            raise Exception("ICO文件中未找到图标")
+
+        # 提取第一个图标（通常是最高分辨率的）
+        large_icon = HICON()
+        small_icon = HICON()
+
+        extracted = ExtractIconExW(self.image_path, 0, byref(large_icon), byref(small_icon), 1)
+
+        if extracted == 0 or not large_icon:
+            raise Exception("无法提取ICO图标")
+
+        try:
+            # 使用icon_utils中的函数将HICON转换为QPixmap
+            from freeassetfilter.utils.icon_utils import hicon_to_pixmap
+
+            # 获取图标信息以确定尺寸
+            class ICONINFO(ctypes.Structure):
+                _fields_ = [
+                    ("fIcon", ctypes.c_bool),
+                    ("xHotspot", ctypes.c_uint),
+                    ("yHotspot", ctypes.c_uint),
+                    ("hbmMask", ctypes.c_void_p),
+                    ("hbmColor", ctypes.c_void_p)
+                ]
+
+            class BITMAP(ctypes.Structure):
+                _fields_ = [
+                    ("bmType", DWORD),
+                    ("bmWidth", DWORD),
+                    ("bmHeight", DWORD),
+                    ("bmWidthBytes", DWORD),
+                    ("bmPlanes", ctypes.c_ushort),
+                    ("bmBitsPixel", ctypes.c_ushort),
+                    ("bmBits", ctypes.c_void_p)
+                ]
+
+            GetIconInfo = windll.user32.GetIconInfo
+            GetIconInfo.argtypes = [HICON, ctypes.POINTER(ICONINFO)]
+            GetIconInfo.restype = ctypes.c_bool
+
+            GetObjectW = windll.gdi32.GetObjectW
+            GetObjectW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            GetObjectW.restype = ctypes.c_int
+
+            DeleteObject = windll.gdi32.DeleteObject
+            DeleteObject.argtypes = [ctypes.c_void_p]
+            DeleteObject.restype = ctypes.c_bool
+
+            icon_info = ICONINFO()
+            if GetIconInfo(large_icon, byref(icon_info)):
+                bmp = BITMAP()
+                if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
+                    icon_size = bmp.bmWidth
+                else:
+                    icon_size = 256
+
+                # 释放位图资源
+                if icon_info.hbmMask:
+                    DeleteObject(icon_info.hbmMask)
+                if icon_info.hbmColor:
+                    DeleteObject(icon_info.hbmColor)
+            else:
+                icon_size = 256
+
+            # 转换为QPixmap
+            pixmap = hicon_to_pixmap(large_icon, icon_size, None, 1.0)
+
+            if pixmap and not pixmap.isNull():
+                image = pixmap.toImage()
+                # 确保图像格式为ARGB32
+                if image.format() != QImage.Format_ARGB32:
+                    image = image.convertToFormat(QImage.Format_ARGB32)
+                return image
+            else:
+                raise Exception("HICON转换为QPixmap失败")
+
+        finally:
+            # 释放图标资源
+            if large_icon:
+                DestroyIcon(large_icon)
+            if small_icon:
+                DestroyIcon(small_icon)
+
+
 class HeifAvifProcessor(QThread):
     """
     HEIC/AVIF文件异步处理器
     """
     processing_complete = pyqtSignal(QImage, str)
     processing_failed = pyqtSignal(str)
-    
+
     def __init__(self, image_path):
         super().__init__()
         self.image_path = image_path
@@ -202,7 +385,8 @@ class ImageWidget(QWidget):
         # RAW处理器
         self.raw_processor = None
         self.heif_avif_processor = None
-        
+        self.ico_processor = None
+
         # 像素信息
         self.pixel_info = {
             'x': 0, 'y': 0,
@@ -210,6 +394,25 @@ class ImageWidget(QWidget):
             'hex': '#000000'
         }
     
+    def _on_ico_processing_complete(self, qimage, image_path):
+        """
+        ICO文件处理完成槽函数
+        """
+        if not qimage.isNull():
+            self.current_file_path = image_path
+            self.original_image = qimage
+            self.pan_offset = QPoint()
+            QTimer.singleShot(100, self._delayed_fit_scale)
+
+        self.ico_processor = None
+
+    def _on_ico_processing_failed(self, error_msg):
+        """
+        ICO文件处理失败槽函数
+        """
+        print(error_msg)
+        self.ico_processor = None
+
     def _on_heif_avif_processing_complete(self, qimage, image_path):
         """
         HEIC/AVIF文件处理完成槽函数
@@ -219,9 +422,9 @@ class ImageWidget(QWidget):
             self.original_image = qimage
             self.pan_offset = QPoint()
             QTimer.singleShot(100, self._delayed_fit_scale)
-        
+
         self.heif_avif_processor = None
-    
+
     def _on_heif_avif_processing_failed(self, error_msg):
         """
         HEIC/AVIF文件处理失败槽函数
@@ -271,28 +474,40 @@ class ImageWidget(QWidget):
             file_ext = os.path.splitext(image_path)[1].lower()
             raw_formats = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf']
             heif_avif_formats = ['.heic', '.heif', '.avif']
-            
+            ico_formats = ['.ico', '.icon']
+
             if file_ext in raw_formats:
                 if self.raw_processor is not None and self.raw_processor.isRunning():
                     self.raw_processor.quit()
                     self.raw_processor.wait()
-                
+
                 self.raw_processor = RawProcessor(image_path)
                 self.raw_processor.processing_complete.connect(self._on_raw_processing_complete)
                 self.raw_processor.processing_failed.connect(self._on_raw_processing_failed)
                 self.raw_processor.start()
-                
+
                 return True
             elif file_ext in heif_avif_formats:
                 if self.heif_avif_processor is not None and self.heif_avif_processor.isRunning():
                     self.heif_avif_processor.quit()
                     self.heif_avif_processor.wait()
-                
+
                 self.heif_avif_processor = HeifAvifProcessor(image_path)
                 self.heif_avif_processor.processing_complete.connect(self._on_heif_avif_processing_complete)
                 self.heif_avif_processor.processing_failed.connect(self._on_heif_avif_processing_failed)
                 self.heif_avif_processor.start()
-                
+
+                return True
+            elif file_ext in ico_formats:
+                if self.ico_processor is not None and self.ico_processor.isRunning():
+                    self.ico_processor.quit()
+                    self.ico_processor.wait()
+
+                self.ico_processor = IcoProcessor(image_path)
+                self.ico_processor.processing_complete.connect(self._on_ico_processing_complete)
+                self.ico_processor.processing_failed.connect(self._on_ico_processing_failed)
+                self.ico_processor.start()
+
                 return True
             else:
                 self.original_image = QImage(image_path)

@@ -97,8 +97,11 @@ class PDFPageWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         
-        # 绘制白色背景
-        painter.fillRect(self.rect(), QColor("#FFFFFF"))
+        # 绘制背景色（使用base_color）
+        base_color = "#F5F5F5"
+        if self.parent() and hasattr(self.parent(), 'base_color'):
+            base_color = self.parent().base_color
+        painter.fillRect(self.rect(), QColor(base_color))
         
         # 绘制页面位图
         if self.page_pixmap and not self.page_pixmap.isNull():
@@ -175,8 +178,10 @@ class PDFPreviewer(QWidget):
         
         # 获取主题颜色
         self.secondary_color = "#333333"  # 默认secondary颜色
+        self.base_color = "#F5F5F5"  # 默认base颜色
         if hasattr(app, 'settings_manager'):
             self.secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            self.base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#F5F5F5")
         
         # 获取图标路径
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -330,17 +335,21 @@ class PDFPreviewer(QWidget):
         self.scroll_area.setVerticalScrollBar(D_ScrollBar(orientation=Qt.Vertical))
         self.scroll_area.setHorizontalScrollBar(D_ScrollBar(orientation=Qt.Horizontal))
 
+        # 应用主题颜色到滚动条
+        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
+        self.scroll_area.horizontalScrollBar().apply_theme_from_settings()
+
         # 连接滚动事件，实时更新当前页码
         self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
 
-        # 创建内容容器（无圆角，背景色与滚动区域一致）
+        # 创建内容容器（无圆角，背景色使用base_color）
         self.content_widget = QWidget()
-        self.content_widget.setStyleSheet("background-color: #F5F5F5;")
+        self.content_widget.setStyleSheet(f"background-color: {self.base_color};")
         self.content_layout = QVBoxLayout(self.content_widget)
         self.content_layout.setSpacing(int(10 * self.dpi_scale))
         self.content_layout.setContentsMargins(
             int(20 * self.dpi_scale),
-            int(20 * self.dpi_scale),
+            0,  # 顶部边距设为0，避免第一页上方出现空白间隙
             int(20 * self.dpi_scale),
             int(20 * self.dpi_scale)
         )
@@ -354,17 +363,17 @@ class PDFPreviewer(QWidget):
         self.scroll_area.viewport().installEventFilter(self)
 
         # 设置滚动区域圆角样式（参考file_selector.py的实现）
-        # 添加padding为滚动条提供边距
-        self.scroll_area.setStyleSheet("""
-            QScrollArea {
-                border: 1px solid #E0E0E0;
+        # 添加padding为滚动条提供边距，背景色使用base_color
+        self.scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                border: 1px solid {self.base_color};
                 border-radius: 6px;
-                background-color: #F5F5F5;
+                background-color: {self.base_color};
                 padding: 6px;
-            }
-            QScrollArea > QWidget > QWidget {
-                background-color: #F5F5F5;
-            }
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: {self.base_color};
+            }}
         """)
     
     def set_file(self, file_info):

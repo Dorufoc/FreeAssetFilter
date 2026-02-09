@@ -42,18 +42,20 @@ from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 
 
 # 默认预览文本 - 展示字体的各种字符
-DEFAULT_PREVIEW_TEXT = """ABCDEFGHIJKLMNOPQRSTUVWXYZ
-abcdefghijklmnopqrstuvwxyz
-0123456789
-!@#$%^&*()_+-=[]{}|;':",./<>?
+DEFAULT_PREVIEW_TEXT = """FreeAssetFilter字体示例
+
+汉字之美，在于形、意、韵。天地人和，万物有序。
+漢字之美，在於形、意、韻。天地人和，萬物有序。
 
 The quick brown fox jumps over the lazy dog.
+abcdefghijklmnopqrstuvwxyz
+ABCDEFGHIJKLMNOPQRSTUVWXYZ
+0123456789
+!@#$%^&*()_+-=[]{};':",./<>?
 
-中文测试：
-天地玄黄，宇宙洪荒。
-日月盈昃，辰宿列张。
-
-字体预览器 - Font Previewer"""
+吾輩は猫である。名前はまだ無い。あいうえお かきくけこ さしすせそ
+사람은 무엇으로 사는가?가나다라마바사 아자차카타파하
+В чащах юга жил бы цитрус? Да, но фальшивый экземпляр!абвгдеёжзийклмнопрстуфхцчшщъыьэюя"""
 
 
 class ZoomDisabledTextEdit(QTextEdit):
@@ -248,6 +250,10 @@ class FontPreviewWidget(QWidget):
         self.text_edit.setReadOnly(True)
         self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
         self.text_edit.setUndoRedoEnabled(False)
+        # 禁用右键菜单
+        self.text_edit.setContextMenuPolicy(Qt.NoContextMenu)
+        # 禁用文本选择功能
+        self.text_edit.setTextInteractionFlags(Qt.NoTextInteraction)
         # 连接字体大小变化信号
         self.text_edit.font_size_change_requested.connect(self._on_font_size_change_requested)
         
@@ -269,7 +275,7 @@ class FontPreviewWidget(QWidget):
                 background-color: {base_color};
                 color: {second_color};
                 border: none;
-                padding: 20px;
+                padding: {int(6 * self.dpi_scale)}px;
             }}
         """)
         
@@ -307,10 +313,10 @@ class FontPreviewWidget(QWidget):
                 background-color: {base_color};
                 color: {secondary_color};
                 border: none;
-                padding: 20px;
+                padding: {int(6 * self.dpi_scale)}px;
             }}
         """)
-    
+
     def _on_font_size_changed(self, value):
         """处理字体大小滑块变化"""
         self.font_size_label.setText(f"{value}px")
@@ -430,30 +436,22 @@ class FontPreviewWidget(QWidget):
         
         # 设置预览文本
         preview_text = DEFAULT_PREVIEW_TEXT
-        
+
         # 添加字体信息
         font_info = f"""字体名称: {self.current_font_family}
-文件路径: {self.current_file_path}
-
-{'='*50}
-
 """
-        
+
         self.text_edit.setPlainText(font_info + preview_text)
-    
+
     def set_preview_text(self, text):
         """
         设置自定义预览文本
-        
+
         参数：
             text (str): 预览文本内容
         """
         if self.current_font_family:
             font_info = f"""字体名称: {self.current_font_family}
-文件路径: {self.current_file_path}
-
-{'='*50}
-
 """
             self.text_edit.setPlainText(font_info + text)
         else:
