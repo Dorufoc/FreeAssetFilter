@@ -386,7 +386,7 @@ class ArchiveBrowser(QWidget):
                 background-color: {base_color};
                 border: none;
                 border-radius: {border_radius}px;
-                padding: {item_margin}px;
+                padding: 6px;
                 font-size: {default_font_size}px;
             }}
             QListWidget::item {{
