@@ -69,7 +69,8 @@ class D_MoreMenuItem(QPushButton):
         # 圆角大小与外层一致
         border_radius = int(4 * self.dpi_scale)
         border_radius_item = 0
-        padding_h = int(8 * self.dpi_scale)
+        padding_left = int(8 * self.dpi_scale)
+        padding_right = int(20 * self.dpi_scale)  # 20dx右边距
         padding_v = int(6 * self.dpi_scale)
         # hover效果比内容小一圈的边距（更小）
         hover_margin = int(1 * self.dpi_scale)
@@ -88,7 +89,7 @@ class D_MoreMenuItem(QPushButton):
             QPushButton {{
                 font-size: {font_size}px;
                 color: {text_color};
-                padding: {padding_v}px {padding_h}px;
+                padding: {padding_v}px {padding_right}px {padding_v}px {padding_left}px;
                 background-color: transparent;
                 border: none;
                 border-radius: {border_radius_item}px;
@@ -97,7 +98,7 @@ class D_MoreMenuItem(QPushButton):
             QPushButton:hover {{
                 background-color: {hover_color};
                 margin: {hover_margin}px;
-                padding: {padding_v - hover_margin}px {padding_h - hover_margin}px;
+                padding: {padding_v - hover_margin}px {padding_right - hover_margin}px {padding_v - hover_margin}px {padding_left - hover_margin}px;
             }}
         """)
 
@@ -338,16 +339,19 @@ class D_MoreMenu(QWidget):
         self.hide()
 
     def _adjust_menu_size(self):
-        """调整菜单大小"""
+        """调整菜单大小，宽度根据内容自适应"""
         self._content_widget.adjustSize()
 
-        content_width = self._content_widget.width()
-        content_height = self._content_widget.height()
+        content_width = self._content_widget.sizeHint().width()
+        content_height = self._content_widget.sizeHint().height()
 
-        if content_width > 0:
-            self._content_widget.setFixedWidth(content_width)
-        else:
-            self._content_widget.setFixedWidth(int(100 * self.dpi_scale))
+        # 设置最短横向宽度为50dx
+        min_width = int(50 * self.dpi_scale)
+        if content_width < min_width:
+            content_width = min_width
+
+        # 不设置固定宽度，让控件根据内容自适应
+        self._content_widget.setMinimumWidth(content_width)
 
         total_width = content_width + 2 * (self._shadow_radius + self._padding)
         total_height = content_height + 2 * (self._shadow_radius + self._padding)
