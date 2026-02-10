@@ -19,10 +19,7 @@ from freeassetfilter.widgets.setting_widgets import CustomSettingItem
 from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.message_box import CustomMessageBox
-from freeassetfilter.widgets.menu_list import D_MenuList
-from freeassetfilter.widgets.D_more_menu import D_MoreMenu
 
 # 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
@@ -1269,107 +1266,38 @@ class ModernSettingsWindow(QDialog):
         """
         app = QApplication.instance()
         dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        developer_group = QGroupBox("开发者选项")
-        developer_group.setStyleSheet(self.group_box_style)
-        developer_layout = QVBoxLayout(developer_group)
-        developer_layout.setSpacing(int(10 * dpi_scale))
 
-        hover_test_group = QGroupBox("hover类测试")
-        hover_test_group.setStyleSheet(self.group_box_style)
-        hover_test_layout = QVBoxLayout(hover_test_group)
-        hover_test_layout.setSpacing(int(5 * dpi_scale))
+        # 实验性功能开关（带警告提示）
+        self.experimental_feature_switch = CustomSettingItem(
+            text="启用实验性功能",
+            secondary_text="开启后将解锁未经验证的高级功能，可能导致不稳定",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("developer.experimental_feature_enabled", False)
+        )
+        self.experimental_feature_switch.switch_toggled.connect(self._on_experimental_feature_toggled)
+        self.scroll_layout.addWidget(self.experimental_feature_switch)
 
-        self.hover_menu_test_button = CustomButton("测试 Hover Menu", button_type="secondary")
-        self.hover_menu_test_button.clicked.connect(self._run_hover_menu_test)
-        hover_test_layout.addWidget(self.hover_menu_test_button)
+        # JSON配置组（仅在实验性功能开启时显示）
+        self.json_config_group = QGroupBox("JSON配置")
+        self.json_config_group.setStyleSheet(self.group_box_style)
+        json_config_layout = QVBoxLayout(self.json_config_group)
+        json_config_layout.setSpacing(int(10 * dpi_scale))
 
-        self.hover_tooltip_test_button = CustomButton("测试 Hover Tooltip", button_type="secondary")
-        self.hover_tooltip_test_button.clicked.connect(self._run_hover_tooltip_test)
-        hover_test_layout.addWidget(self.hover_tooltip_test_button)
+        # 使用默认打开方式打开settings.json
+        self.open_settings_json_item = CustomSettingItem(
+            text="打开设置文件",
+            secondary_text="使用系统默认程序打开settings.json配置文件",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": "打开", "type": "primary"}]
+        )
+        self.open_settings_json_item.button_clicked.connect(self._on_open_settings_json_clicked)
+        json_config_layout.addWidget(self.open_settings_json_item)
 
-        developer_layout.addWidget(hover_test_group)
+        self.scroll_layout.addWidget(self.json_config_group)
 
-        menu_list_test_group = QGroupBox("菜单列表测试")
-        menu_list_test_group.setStyleSheet(self.group_box_style)
-        menu_list_test_layout = QVBoxLayout(menu_list_test_group)
-        menu_list_test_layout.setSpacing(int(8 * dpi_scale))
-
-        menu_list_intro = QLabel("D_MenuList 测试（带滚动条）")
-        menu_list_intro.setStyleSheet("font-weight: bold; color: #666; font-size: 12px;")
-        menu_list_test_layout.addWidget(menu_list_intro)
-
-        button_row1 = QHBoxLayout()
-        button_row1.setSpacing(int(8 * dpi_scale))
-
-        self.menu_list_toggle_btn = CustomButton("打开菜单列表", button_type="normal", display_mode="text")
-        self.menu_list_toggle_btn.clicked.connect(self._toggle_menu_list)
-        button_row1.addWidget(self.menu_list_toggle_btn)
-
-        self.menu_list_add_btn = CustomButton("添加项目", button_type="normal", display_mode="text")
-        self.menu_list_add_btn.clicked.connect(self._add_menu_list_item)
-        button_row1.addWidget(self.menu_list_add_btn)
-
-        self.menu_list_clear_btn = CustomButton("清空项目", button_type="normal", display_mode="text")
-        self.menu_list_clear_btn.clicked.connect(self._clear_menu_list_items)
-        button_row1.addWidget(self.menu_list_clear_btn)
-
-        menu_list_test_layout.addLayout(button_row1)
-
-        self.menu_list = D_MenuList(parent=self, position="bottom")
-        self.menu_list.set_target_widget(self.menu_list_toggle_btn)
-        self.menu_list.set_items([
-            "项目 1",
-            "项目 2",
-            "项目 3（长文本测试）",
-            "项目 4",
-            "项目 5"
-        ])
-
-        more_menu_test_group = QGroupBox("D_MoreMenu 测试（右键菜单）")
-        more_menu_test_group.setStyleSheet(self.group_box_style)
-        more_menu_test_layout = QVBoxLayout(more_menu_test_group)
-        more_menu_test_layout.setSpacing(int(8 * dpi_scale))
-
-        more_menu_intro = QLabel("自定义右键菜单控件，支持hover效果")
-        more_menu_intro.setStyleSheet("font-weight: bold; color: #666; font-size: 12px;")
-        more_menu_test_layout.addWidget(more_menu_intro)
-
-        button_row3 = QHBoxLayout()
-        button_row3.setSpacing(int(8 * dpi_scale))
-
-        self.more_menu_toggle_btn = CustomButton("打开右键菜单", button_type="normal", display_mode="text")
-        self.more_menu_toggle_btn.clicked.connect(self._toggle_more_menu)
-        button_row3.addWidget(self.more_menu_toggle_btn)
-
-        self.more_menu_add_btn = CustomButton("添加项目", button_type="normal", display_mode="text")
-        self.more_menu_add_btn.clicked.connect(self._add_more_menu_item)
-        button_row3.addWidget(self.more_menu_add_btn)
-
-        self.more_menu_clear_btn = CustomButton("清空项目", button_type="normal", display_mode="text")
-        self.more_menu_clear_btn.clicked.connect(self._clear_more_menu_items)
-        button_row3.addWidget(self.more_menu_clear_btn)
-
-        more_menu_test_layout.addLayout(button_row3)
-
-        self.more_menu = D_MoreMenu(parent=self)
-        self.more_menu.set_target_widget(self.more_menu_toggle_btn)
-        self.more_menu.set_offset(0, int(5 * dpi_scale))
-        self.more_menu.set_max_height(int(250 * dpi_scale))
-        self.more_menu.set_timeout_enabled(True)
-        self.more_menu.set_timeout_duration(5000)
-        self.more_menu.set_items([
-            {"text": "复制", "data": "copy"},
-            {"text": "粘贴", "data": "paste"},
-            {"text": "剪切", "data": "cut"},
-            {"text": "删除", "data": "delete"},
-            {"text": "重命名", "data": "rename"},
-            {"text": "属性", "data": "properties"},
-        ])
-        self.more_menu.itemClicked.connect(self._on_more_menu_item_clicked)
-
-        developer_layout.addWidget(more_menu_test_group)
-        self.scroll_layout.addWidget(developer_group)
+        # 根据当前实验性功能开关状态设置JSON配置组的可见性
+        is_experimental_enabled = self.settings_manager.get_setting("developer.experimental_feature_enabled", False)
+        self.json_config_group.setVisible(is_experimental_enabled)
 
     def _add_about_settings(self):
         """
@@ -1445,55 +1373,61 @@ class ModernSettingsWindow(QDialog):
         import webbrowser
         webbrowser.open(url)
 
-    def _toggle_menu_list(self):
-        """切换菜单列表显示"""
-        self.menu_list.toggle()
-
-    def _add_menu_list_item(self):
-        """添加项目到菜单列表（暂不支持动态添加）"""
-        pass
-
-    def _clear_menu_list_items(self):
-        """清空菜单列表（暂不支持动态清空）"""
-        pass
-
-    def _toggle_more_menu(self):
-        """切换右键菜单显示"""
-        self.more_menu.toggle()
-
-    def _add_more_menu_item(self):
-        """添加项目到右键菜单"""
-        import random
-        data = f"item_{random.randint(100, 999)}"
-        self.more_menu.add_item(f"新项目 {random.randint(100, 999)}", data)
-
-    def _clear_more_menu_items(self):
-        """清空右键菜单"""
-        self.more_menu.clear_items()
-
-    def _on_more_menu_item_clicked(self, data):
-        """右键菜单项点击事件"""
-        print(f"D_MoreMenu 点击: {data}")
-
-    def _run_hover_menu_test(self):
+    def _on_experimental_feature_toggled(self, value):
         """
-        运行 Hover Menu 测试程序
-        """
-        import subprocess
-        import sys
-        test_script = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "test", "test_D_hover_menu.py")
-        if os.path.exists(test_script):
-            subprocess.Popen([sys.executable, test_script])
+        实验性功能开关状态变化处理
+        开启时弹出警告提示窗口，关闭时直接关闭
 
-    def _run_hover_tooltip_test(self):
+        Args:
+            value (bool): 开关状态
         """
-        运行 Hover Tooltip 测试程序
+        if value:
+            # 开启时弹出警告提示窗口
+            self._show_experimental_warning()
+        else:
+            # 关闭时直接更新设置
+            self.current_settings.update({"developer.experimental_feature_enabled": False})
+            # 隐藏JSON配置组
+            if hasattr(self, 'json_config_group'):
+                self.json_config_group.setVisible(False)
+
+    def _show_experimental_warning(self):
         """
-        import subprocess
-        import sys
-        test_script = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "test", "20260118", "test_hover_tooltip_interactive.py")
-        if os.path.exists(test_script):
-            subprocess.Popen([sys.executable, test_script])
+        显示实验性功能警告提示窗口
+        确定按钮使用警告样式，取消按钮使用强调样式
+        """
+        # 创建自定义消息框
+        warning_dialog = CustomMessageBox(self)
+        warning_dialog.set_title("警告")
+        warning_dialog.set_text("您正在尝试启用实验性功能。\n\n这些功能尚未经过充分测试，可能会导致应用程序不稳定或出现意外行为。\n\n请在充分了解功能的情况下进行操作，避免发生错误。")
+
+        # 设置按钮：确定使用警告样式(warning)，取消使用普通样式(normal)
+        warning_dialog.set_buttons(
+            button_texts=["确定", "取消"],
+            orientations=Qt.Vertical,
+            button_types=["warning", "normal"]
+        )
+
+        # 连接按钮点击信号
+        def on_button_clicked(button_index):
+            if button_index == 0:
+                # 用户点击确定，开启开关
+                self.current_settings.update({"developer.experimental_feature_enabled": True})
+                # 显示JSON配置组
+                if hasattr(self, 'json_config_group'):
+                    self.json_config_group.setVisible(True)
+            else:
+                # 用户点击取消，恢复开关状态为关闭
+                self.experimental_feature_switch.set_switch_value(False)
+                self.current_settings.update({"developer.experimental_feature_enabled": False})
+                # 隐藏JSON配置组
+                if hasattr(self, 'json_config_group'):
+                    self.json_config_group.setVisible(False)
+
+        warning_dialog.buttonClicked.connect(on_button_clicked)
+
+        # 显示对话框
+        warning_dialog.exec_()
 
     def _open_theme_color_settings(self):
         """
@@ -1531,7 +1465,35 @@ class ModernSettingsWindow(QDialog):
         main_layout.addLayout(buttons_layout)
         
         theme_window.exec_()
-    
+
+    def _on_open_settings_json_clicked(self, button_index):
+        """
+        打开settings.json文件按钮点击事件
+        使用系统默认程序打开配置文件
+        """
+        import os
+        import subprocess
+
+        # 获取settings.json文件路径
+        settings_file_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "data", "settings.json"
+        )
+
+        # 确保文件存在
+        if not os.path.exists(settings_file_path):
+            # 如果文件不存在，先保存当前设置创建文件
+            self.settings_manager.save_settings()
+
+        # 使用系统默认程序打开文件
+        try:
+            if os.name == 'nt':  # Windows
+                os.startfile(settings_file_path)
+            elif os.name == 'posix':  # macOS 或 Linux
+                subprocess.call(['open', settings_file_path])
+        except Exception as e:
+            print(f"打开设置文件失败: {e}")
+
     def _on_theme_confirmed(self, theme_window):
         """
         主题颜色确认按钮点击事件

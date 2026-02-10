@@ -225,9 +225,10 @@ class CustomButton(QPushButton):
                 hover_text = transparent
                 pressed_text = transparent
             else:
-                normal_text = QColor(current_colors.get("notification_text", "#FFFFFF"))
-                hover_text = QColor(current_colors.get("notification_text", "#FFFFFF"))
-                pressed_text = QColor(current_colors.get("notification_text", "#FFFFFF"))
+                # 警告样式使用 base_color 作为文本颜色
+                normal_text = QColor(base_color)
+                hover_text = QColor(base_color)
+                pressed_text = QColor(base_color)
         else:  # secondary
             normal_bg = QColor(base_color)
             hover_bg = darken_color(base_color, 0.1)
