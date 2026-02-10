@@ -351,6 +351,88 @@ class HeifAvifProcessor(QThread):
             self.processing_failed.emit(f"加载HEIC/AVIF图片时出错: {e}")
 
 
+class PSDProcessor(QThread):
+    """
+    PSD文件异步处理器
+    使用psd-tools库解析PSD文件，合成所有图层和应用图层效果
+    """
+    processing_complete = pyqtSignal(str)  # 发送临时文件路径
+    processing_failed = pyqtSignal(str)
+    processing_progress = pyqtSignal(int, str)  # 进度信号
+
+    def __init__(self, image_path):
+        super().__init__()
+        self.image_path = image_path
+        self._cancelled = False
+
+    def cancel(self):
+        """取消处理"""
+        self._cancelled = True
+
+    def run(self):
+        """
+        处理PSD文件，合成所有图层并返回临时文件路径
+        """
+        try:
+            from psd_tools import PSDImage
+            from PIL import Image
+            import numpy as np
+
+            self.processing_progress.emit(5, "正在打开PSD文件...")
+
+            if self._cancelled:
+                return
+
+            psd = PSDImage.open(self.image_path)
+            width = psd.width
+            height = psd.height
+
+            self.processing_progress.emit(10, f"PSD文件打开成功 {width}x{height}...")
+
+            self.processing_progress.emit(30, "正在合成所有图层和效果...")
+
+            if self._cancelled:
+                return
+
+            composited = psd.composite()
+
+            self.processing_progress.emit(70, "图层合成完成...")
+
+            if self._cancelled:
+                return
+
+            self.processing_progress.emit(85, "正在转换图像格式...")
+
+            if composited.mode != 'RGBA':
+                composited = composited.convert('RGBA')
+
+            import tempfile
+            import os
+
+            temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
+            os.close(temp_fd)
+
+            try:
+                composited.save(temp_path, 'PNG')
+            except Exception as e:
+                print(f"保存临时文件时出错: {e}")
+                self.processing_failed.emit(f"保存临时文件时出错: {e}")
+                return
+
+            self.processing_progress.emit(100, "处理完成!")
+            self.processing_complete.emit(temp_path)
+
+        except ImportError as e:
+            error_msg = f"缺少必要的库: {str(e)}。请安装psd-tools库: pip install psd-tools"
+            print(error_msg)
+            self.processing_failed.emit(error_msg)
+        except Exception as e:
+            print(f"加载PSD文件时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            self.processing_failed.emit(f"加载PSD文件时出错: {e}")
+
+
 class ImageWidget(QWidget):
     """
     图片显示部件，支持缩放、像素信息显示等功能
@@ -386,6 +468,7 @@ class ImageWidget(QWidget):
         self.raw_processor = None
         self.heif_avif_processor = None
         self.ico_processor = None
+        self.psd_processor = None
 
         # 像素信息
         self.pixel_info = {
@@ -431,6 +514,38 @@ class ImageWidget(QWidget):
         """
         print(error_msg)
         self.heif_avif_processor = None
+
+    def _on_psd_processing_complete(self, temp_path):
+        """
+        PSD文件处理完成槽函数
+        使用原始的QImage(image_path)方式加载，保持接口一致性
+        """
+        self.original_image = QImage(temp_path)
+        
+        if not self.original_image.isNull():
+            self.current_file_path = temp_path
+            self.pan_offset = QPoint()
+            QTimer.singleShot(100, self._delayed_fit_scale)
+        else:
+            print(f"加载临时PSD文件失败: {temp_path}")
+
+        self.psd_processor = None
+
+    def _on_psd_processing_failed(self, error_msg):
+        """
+        PSD文件处理失败槽函数
+        """
+        print(error_msg)
+        self.psd_processor = None
+
+    def _on_psd_processing_progress(self, progress, status):
+        """
+        PSD文件处理进度槽函数
+        """
+        if hasattr(self.parent(), '_on_progress_updated'):
+            self.parent()._on_progress_updated(progress, status)
+        elif hasattr(self, '_progress_callback'):
+            self._progress_callback(progress, status)
     
     def _on_raw_processing_complete(self, qimage, image_path):
         """
@@ -475,6 +590,7 @@ class ImageWidget(QWidget):
             raw_formats = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf']
             heif_avif_formats = ['.heic', '.heif', '.avif']
             ico_formats = ['.ico', '.icon']
+            psd_formats = ['.psd']
 
             if file_ext in raw_formats:
                 if self.raw_processor is not None and self.raw_processor.isRunning():
@@ -507,6 +623,18 @@ class ImageWidget(QWidget):
                 self.ico_processor.processing_complete.connect(self._on_ico_processing_complete)
                 self.ico_processor.processing_failed.connect(self._on_ico_processing_failed)
                 self.ico_processor.start()
+
+                return True
+            elif file_ext in psd_formats:
+                if self.psd_processor is not None and self.psd_processor.isRunning():
+                    self.psd_processor.quit()
+                    self.psd_processor.wait()
+
+                self.psd_processor = PSDProcessor(image_path)
+                self.psd_processor.processing_complete.connect(self._on_psd_processing_complete)
+                self.psd_processor.processing_failed.connect(self._on_psd_processing_failed)
+                self.psd_processor.processing_progress.connect(self._on_psd_processing_progress)
+                self.psd_processor.start()
 
                 return True
             else:
