@@ -3,21 +3,26 @@
 """
 FreeAssetFilter 悬浮详细信息组件
 当鼠标放到控件上时，显示当前鼠标指针所指向的文本内容
-鼠标静止3秒才会显示，鼠标移动则立即隐藏
+鼠标静止1秒才会显示，鼠标移动则立即隐藏
+
+使用 MouseActivityMonitor 全局鼠标钩子来检测鼠标移动状态，
+确保 tooltip 在鼠标移走时能够及时隐藏。
 """
 
 import weakref
 from PyQt5.QtWidgets import QWidget, QLabel, QApplication
 from PyQt5.QtCore import Qt, QPoint, QTimer, QRect, QEvent, QPropertyAnimation, QEasingCurve, pyqtProperty, QByteArray
-from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase, QTransform
+from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase, QTransform, QCursor
+
+from freeassetfilter.utils.mouse_activity_monitor import MouseActivityMonitor
 
 
 class HoverTooltip(QWidget):
     """
     悬浮详细信息组件
     特点：
-    - 鼠标静止3秒后显示
-    - 鼠标移动则立即隐藏
+    - 鼠标静止1秒后显示
+    - 鼠标移动则立即隐藏（使用全局鼠标钩子检测）
     - 白色圆角卡片样式
     - 灰色400字重文字
     """
@@ -67,7 +72,7 @@ class HoverTooltip(QWidget):
         # 应用初始样式
         self.update_style()
         
-        # 定时器
+        # 显示定时器（鼠标静止后显示tooltip）
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(1000)  # 1秒延迟
@@ -76,6 +81,12 @@ class HoverTooltip(QWidget):
         # 鼠标位置跟踪
         self.last_mouse_pos = QPoint()
         self.target_widgets = []  # 存储目标控件的弱引用列表
+        
+        # 鼠标活动监控器（全局鼠标钩子）
+        # 用于检测鼠标移动状态，当鼠标移动时立即隐藏tooltip
+        self._mouse_monitor = MouseActivityMonitor(self, timeout=100)
+        self._mouse_monitor.mouse_moved.connect(self._on_global_mouse_moved)
+        self._mouse_monitor_active = False
 
         # 动画相关属性
         self._is_animating = False
@@ -268,6 +279,9 @@ class HoverTooltip(QWidget):
         except RuntimeError:
             pass
         
+        # 停止全局鼠标监控
+        self._stop_mouse_monitor()
+        
         # 隐藏tooltip，使用try-except防止对象已被销毁
         try:
             self._fade_out()
@@ -280,6 +294,45 @@ class HoverTooltip(QWidget):
         except RuntimeError:
             pass
     
+    def _start_mouse_monitor(self):
+        """启动全局鼠标活动监控"""
+        if not self._mouse_monitor_active:
+            self._mouse_monitor.start()
+            self._mouse_monitor_active = True
+    
+    def _stop_mouse_monitor(self):
+        """停止全局鼠标活动监控"""
+        if self._mouse_monitor_active:
+            self._mouse_monitor.stop()
+            self._mouse_monitor_active = False
+    
+    def _on_global_mouse_moved(self):
+        """
+        全局鼠标移动回调函数
+        
+        当检测到全局鼠标移动时，立即隐藏tooltip。
+        这是通过 MouseActivityMonitor 的全局钩子实现的，
+        可以确保即使鼠标快速移出目标控件，tooltip也能及时隐藏。
+        """
+        # 检查鼠标是否还在目标控件上
+        current_widget = QApplication.widgetAt(QCursor.pos())
+        is_over_target = False
+        
+        for ref in self.target_widgets:
+            try:
+                target = ref()
+                if target and (current_widget == target or target.isAncestorOf(current_widget)):
+                    is_over_target = True
+                    break
+            except RuntimeError:
+                continue
+        
+        # 如果鼠标不在目标控件上，隐藏tooltip
+        if not is_over_target:
+            self._fade_out()
+            self.timer.stop()
+            self._stop_mouse_monitor()
+
     def eventFilter(self, obj, event):
         """事件过滤器，监听鼠标事件"""
         # 检查obj是否是我们目标控件列表中的一个
@@ -302,21 +355,25 @@ class HoverTooltip(QWidget):
                 self.timer.start()
                 self._fade_out()
             elif event_type == QEvent.Enter:
-                # 鼠标进入时启动定时器
+                # 鼠标进入时启动定时器和全局鼠标监控
                 self.last_mouse_pos = event.globalPos()
                 self.timer.start()
+                self._start_mouse_monitor()
             elif event_type == QEvent.Leave:
                 # 鼠标离开时隐藏并停止定时器
+                # 注意：不立即停止鼠标监控，让全局钩子继续检测鼠标是否真的移走
                 self._fade_out()
                 self.timer.stop()
             elif event_type == QEvent.MouseButtonPress or event_type == QEvent.MouseButtonRelease:
                 # 点击时隐藏并停止定时器，不影响控件的点击事件
                 self._fade_out()
                 self.timer.stop()
+                self._stop_mouse_monitor()
             elif event_type == QEvent.MouseButtonDblClick:
                 # 双击时隐藏并停止定时器，不影响控件的双击事件
                 self._fade_out()
                 self.timer.stop()
+                self._stop_mouse_monitor()
         
         # 返回False确保事件继续传播到目标控件
         return False

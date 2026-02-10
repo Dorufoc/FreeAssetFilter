@@ -199,6 +199,8 @@ class CustomFileHorizontalCard(QWidget):
         self.icon_display.setAlignment(Qt.AlignCenter)
         self.icon_display.setFixedSize(int(20 * self.dpi_scale), int(20 * self.dpi_scale))
         self.icon_display.setStyleSheet('background: transparent; border: none;')
+        # 设置鼠标事件穿透，避免鼠标移动到图标上时触发父容器的Leave事件
+        self.icon_display.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         card_content_layout.addWidget(self.icon_display, alignment=Qt.AlignVCenter)
         
         # 文字信息区
@@ -551,6 +553,7 @@ class CustomFileHorizontalCard(QWidget):
                         svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
                         svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                         svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                        svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                         svg_widget.show()
                         self.card_container.layout().removeWidget(self.icon_display)
                         if isinstance(self.icon_display, QLabel):
@@ -647,6 +650,7 @@ class CustomFileHorizontalCard(QWidget):
                     svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
                     svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                     svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                    svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                     svg_widget.show()
                 elif isinstance(svg_widget, QLabel):
                     for child in self.icon_display.findChildren((QLabel, QSvgWidget)):
@@ -655,6 +659,7 @@ class CustomFileHorizontalCard(QWidget):
                     svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
                     svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                     svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                    svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                     svg_widget.show()
                 elif isinstance(svg_widget, QWidget):
                     for child in self.icon_display.findChildren((QLabel, QSvgWidget, QWidget)):
@@ -663,6 +668,7 @@ class CustomFileHorizontalCard(QWidget):
                     svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
                     svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                     svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                    svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                     svg_widget.show()
                 else:
                     self._set_default_icon()
@@ -754,7 +760,9 @@ class CustomFileHorizontalCard(QWidget):
         self.icon_display.setAlignment(Qt.AlignCenter)
         self.icon_display.setFixedSize(old_icon_display.size())
         self.icon_display.setStyleSheet('background: transparent; border: none;')
-        
+        # 设置鼠标事件穿透，避免鼠标移动到图标上时触发父容器的Leave事件
+        self.icon_display.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
         card_layout = self.card_container.layout()
         card_layout.insertWidget(0, self.icon_display, alignment=Qt.AlignVCenter)
         self.icon_display.show()
