@@ -1118,9 +1118,11 @@ class CustomButton(QPushButton):
                     # 读取SVG文件内容并进行颜色替换预处理
                     with open(self._icon_path, 'r', encoding='utf-8') as f:
                         svg_content = f.read()
-                    
+
                     # 预处理SVG内容：替换颜色
-                    svg_content = SvgRenderer._replace_svg_colors(svg_content)
+                    # 强调样式（primary）按钮的SVG图标需要将#000000替换为base_color
+                    force_black_to_base = (self.button_type == "primary")
+                    svg_content = SvgRenderer._replace_svg_colors(svg_content, force_black_to_base=force_black_to_base)
                     
                     # 使用预处理后的内容创建QSvgRenderer
                     svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
