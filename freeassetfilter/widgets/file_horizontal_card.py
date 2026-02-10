@@ -1247,17 +1247,10 @@ class CustomFileHorizontalCard(QWidget):
         """
         import datetime
         def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d:%M:%S.%f')[:-3]
             print(f"[{timestamp}] [CustomFileHorizontalCard._on_long_press] {msg}")
 
         debug(f"长按事件触发")
-
-        # 文件夹不支持拖拽
-        if self._file_info and self._file_info.get("is_dir", False):
-            debug(f"文件夹不支持拖拽，跳过")
-            return
-
-        debug(f"开始拖拽操作")
         self._is_long_pressing = True
         self._start_drag()
     

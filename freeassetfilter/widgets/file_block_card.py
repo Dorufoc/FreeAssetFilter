@@ -870,10 +870,6 @@ class FileBlockCard(QWidget):
         处理长按事件
         当用户长按卡片时触发，开始拖拽操作
         """
-        # 文件夹不支持拖拽
-        if self.file_info.get("is_dir", False):
-            return
-
         self._is_long_pressing = True
         self._start_drag()
     
