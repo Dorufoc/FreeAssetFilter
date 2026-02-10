@@ -43,7 +43,10 @@ class UnifiedPreviewer(QWidget):
     统一文件预览器组件
     根据文件类型自动选择合适的预览组件
     """
-    
+
+    # 信号定义
+    open_in_selector_requested = pyqtSignal(str)  # 请求在文件选择器中打开路径
+
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -1148,6 +1151,8 @@ class UnifiedPreviewer(QWidget):
                 from freeassetfilter.components.folder_content_list import FolderContentList
                 created_widget = FolderContentList()
                 created_widget.set_path(file_path)
+                # 连接信号：请求在文件选择器中打开路径
+                created_widget.open_in_selector_requested.connect(self.open_in_selector_requested.emit)
             elif preview_type == "image":
                 # 图片预览
                 self._show_image_preview(file_path)

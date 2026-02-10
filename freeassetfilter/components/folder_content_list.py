@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QPushButton, QSplitter, QFrame, QSizePolicy,
-    QFileIconProvider, QMenu
+    QFileIconProvider, QMenu, QApplication
 )
 from PyQt5.QtCore import (
     Qt, pyqtSignal, QFileInfo, QDateTime
@@ -34,13 +34,23 @@ from PyQt5.QtGui import (
     QIcon, QFont, QColor, QBrush
 )
 
+# 导入自定义滚动条
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+# 导入自定义输入框
+from freeassetfilter.widgets.input_widgets import CustomInputBox
+# 导入自定义按钮
+from freeassetfilter.widgets.button_widgets import CustomButton
+
 
 class FolderContentList(QWidget):
     """
     文件夹内信息列表预览组件
     显示给定路径下的所有文件和文件夹
     """
-    
+
+    # 定义信号：请求在文件选择器中打开当前路径
+    open_in_selector_requested = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -74,60 +84,168 @@ class FolderContentList(QWidget):
         # 应用DPI缩放因子到布局参数
         scaled_spacing = int(5 * self.dpi_scale)
         scaled_margin = int(5 * self.dpi_scale)
-        
+
         # 获取应用实例
-        from PyQt5.QtWidgets import QApplication
         app = QApplication.instance()
-        
-        # 获取默认字体大小并应用DPI缩放
-        default_font_size = getattr(app, 'default_font_size', 14)
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        
+
+        # 获取默认字体大小（Qt已自动处理DPI缩放，无需再乘dpi_scale）
+        default_font_size = getattr(app, 'default_font_size', 9)
+
         # 创建主布局
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
-        
+
+        # 设置背景色
+        background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        self.setStyleSheet(f"background-color: {background_color};")
+
+        # 使用统一的按钮高度（与压缩包预览器保持一致）
+        button_height = 20
+
         # 创建顶部路径栏
         path_layout = QHBoxLayout()
         path_layout.setSpacing(scaled_spacing)
-        
-        # 路径标签
-        self.path_label = QLabel(f"当前路径: {self.current_path}")
-        self.path_label.setFont(self.global_font)
-        self.path_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
-        path_layout.addWidget(self.path_label)
-        
+
+        # 当前路径显示（使用CustomInputBox，与压缩包预览器保持一致）
+        self.path_edit = CustomInputBox(height=button_height)
+        self.path_edit.line_edit.setReadOnly(True)
+        self.path_edit.set_text(self.current_path)
+        path_layout.addWidget(self.path_edit, 1)
+
+        # 在文件选择器中打开按钮（次选样式）
+        self.open_in_selector_btn = CustomButton(
+            "在文件选择器中打开",
+            button_type="secondary",
+            height=button_height
+        )
+        self.open_in_selector_btn.clicked.connect(self._on_open_in_selector_clicked)
+        path_layout.addWidget(self.open_in_selector_btn)
+
         main_layout.addLayout(path_layout)
-        
+
         # 创建列表控件
         self.content_list = QListWidget()
-        self.content_list.setAlternatingRowColors(True)
         self.content_list.setFont(self.global_font)
-        self.content_list.setStyleSheet(f"font-size: {scaled_font_size}px;")
-        
-        from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+
+        # 为 QListWidget 设置自定义丝滑滚动条
+        self.content_list.setVerticalScrollBar(D_ScrollBar(self.content_list, Qt.Vertical))
+        self.content_list.verticalScrollBar().apply_theme_from_settings()
+
+        # 启用 QListWidget 的像素级滚动模式以实现平滑滚动
+        self.content_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.content_list.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
+
+        # 应用平滑滚动到 QListWidget 的视口
         SmoothScroller.apply(self.content_list)
-        
+
+        # 创建列表字体（使用原始字体大小，Qt会自动处理DPI缩放）
+        list_font = QFont(self.global_font)
+        list_font.setPointSize(default_font_size)
+        self.content_list.setFont(list_font)
+
+        # 存储字体供条目使用
+        self.scaled_font = list_font
+
+        # 获取颜色设置
+        current_colors = app.settings_manager.get_setting("appearance.colors", {
+            "secondary_color": "#FFFFFF",
+            "base_color": "#212121",
+            "auxiliary_color": "#3D3D3D",
+            "normal_color": "#717171",
+            "accent_color": "#B036EE"
+        })
+
+        base_color = current_colors.get('base_color', '#212121')
+        border_radius = int(6 * self.dpi_scale)
+
+        # 设置列表项高度
+        scaled_item_height = int(15 * self.dpi_scale)
+
+        # 获取强调色并设置透明度为0.4
+        accent_color = current_colors.get("accent_color", "#B036EE")
+        qcolor = QColor(accent_color)
+        qcolor.setAlpha(155)
+        selected_bg_color = f"rgba({qcolor.red()}, {qcolor.green()}, {qcolor.blue()}, 0.4)"
+
+        # 获取其他颜色值
+        secondary_color = current_colors.get('secondary_color', '#FFFFFF')
+        auxiliary_color = current_colors.get('auxiliary_color', '#3D3D3D')
+        normal_color = current_colors.get('normal_color', '#717171')
+
+        # 计算圆角半径和边距（基于DPI缩放）
+        item_margin = int(2 * self.dpi_scale)
+
+        # 禁用列表的焦点策略
+        self.content_list.setFocusPolicy(Qt.NoFocus)
+
+        # 设置 QListWidget 的样式（与压缩包预览器保持一致）
+        self.content_list.setStyleSheet(f"""
+            QListWidget {{
+                show-decoration-selected: 0;
+                outline: none;
+                background-color: {base_color};
+                border: none;
+                border-radius: {border_radius}px;
+                padding: 6px;
+                font-size: {default_font_size}px;
+            }}
+            QListWidget::item {{
+                height: {scaled_item_height}px;
+                color: {secondary_color};
+                background-color: {base_color};
+                border: 1px solid {auxiliary_color};
+                border-radius: {border_radius}px;
+                outline: none;
+                margin: {item_margin}px {item_margin}px 0 {item_margin}px;
+                padding-left: 8px;
+                font-size: {default_font_size}px;
+            }}
+            QListWidget::item:hover {{
+                color: {secondary_color};
+                background-color: {auxiliary_color};
+                border: 1px solid {normal_color};
+                border-radius: {border_radius}px;
+            }}
+            QListWidget::item:selected {{
+                color: {secondary_color};
+                background-color: {selected_bg_color};
+                border: 1px solid {accent_color};
+                border-radius: {border_radius}px;
+            }}
+            QListWidget::item:selected:focus, QListWidget::item:focus {{
+                outline: none;
+                border: 1px solid {accent_color};
+                border-radius: {border_radius}px;
+            }}
+            QListWidget:focus, QListWidget::item:focus, QListWidget::item:selected:focus {{
+                outline: none;
+                selection-background-color: transparent;
+                selection-color: transparent;
+            }}
+        """)
+
         main_layout.addWidget(self.content_list)
-        
-        # 创建底部状态栏
-        self.status_label = QLabel("就绪")
-        self.status_label.setFont(self.global_font)
-        self.status_label.setStyleSheet(f"font-size: {scaled_font_size}px;")
-        main_layout.addWidget(self.status_label)
     
     def set_path(self, path):
         """
         设置当前路径
-        
+
         Args:
             path (str): 要设置的路径
         """
         if os.path.exists(path) and os.path.isdir(path):
             self.current_path = path
-            self.path_label.setText(f"当前路径: {self.current_path}")
+            self.path_edit.set_text(self.current_path)
             self.load_folder_content()
+
+    def _on_open_in_selector_clicked(self):
+        """
+        处理"在文件选择器中打开"按钮点击事件
+        发出信号请求主应用程序在文件选择器中打开当前路径
+        """
+        if self.current_path and os.path.exists(self.current_path):
+            self.open_in_selector_requested.emit(self.current_path)
         
     def load_folder_content(self):
         """
@@ -135,22 +253,24 @@ class FolderContentList(QWidget):
         """
         # 清空列表
         self.content_list.clear()
-        
+
         try:
             # 获取当前路径下的所有文件和文件夹
             entries = os.listdir(self.current_path)
-            
+
             # 排序：文件夹在前，文件在后，按名称排序
             entries.sort(key=lambda x: (not os.path.isdir(os.path.join(self.current_path, x)), x.lower()))
-            
+
             # 添加当前目录下的所有项
             for entry in entries:
                 entry_path = os.path.join(self.current_path, entry)
                 file_info = QFileInfo(entry_path)
-                
+
                 # 创建列表项
                 item = QListWidgetItem()
-                
+                # 应用全局字体
+                item.setFont(self.scaled_font)
+
                 # 设置图标
                 if file_info.isDir():
                     icon = self.icon_provider.icon(QFileIconProvider.Folder)
@@ -161,14 +281,11 @@ class FolderContentList(QWidget):
                     size = self._format_size(file_info.size())
                     modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm")
                     item.setText(f"{entry} ({size}) - {modified_time}")
-                
+
                 item.setIcon(icon)
                 self.content_list.addItem(item)
-            
-            # 更新状态
-            self.status_label.setText(f"共 {len(entries)} 项")
         except Exception as e:
-            self.status_label.setText(f"错误: {str(e)}")
+            pass
     
 
     

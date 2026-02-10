@@ -14,6 +14,8 @@ from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QRectF
 from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect
 
+from .D_more_menu import D_MoreMenu
+
 
 class CustomInputBox(QWidget):
     """
@@ -34,11 +36,11 @@ class CustomInputBox(QWidget):
     # 编辑完成信号，当用户按下回车键或失去焦点时发出
     editingFinished = pyqtSignal(str)
     
-    def __init__(self, 
-                 parent=None, 
-                 placeholder_text="", 
-                 initial_text="", 
-                 width=None, 
+    def __init__(self,
+                 parent=None,
+                 placeholder_text="",
+                 initial_text="",
+                 width=None,
                  height=20,
                  border_radius=10,
                  border_color="#f1f3f5",  # 使用auxiliary_color
@@ -46,10 +48,11 @@ class CustomInputBox(QWidget):
                  text_color="#333333",  # 使用secondary_color
                  placeholder_color="#e0e0e0",  # 使用normal_color
                  active_border_color="#007AFF",  # 使用accent_color
-                 active_background_color="#ffffff"):  # 使用base_color
+                 active_background_color="#ffffff",  # 使用base_color
+                 editable=True):  # 是否可编辑
         """
         初始化自定义输入框
-        
+
         Args:
             parent (QWidget): 父控件
             placeholder_text (str): 默认显示文本（占位符）
@@ -63,17 +66,19 @@ class CustomInputBox(QWidget):
             placeholder_color (str): 占位符文本颜色
             active_border_color (str): 激活状态下的边框颜色
             active_background_color (str): 激活状态下的背景颜色
+            editable (bool): 是否可编辑，默认可编辑
         """
         super().__init__(parent)
-        
+
         # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+
         # 设置基本属性
         self.placeholder_text = placeholder_text
         self._is_active = False
         self._has_content = False
+        self._editable = editable  # 是否可编辑标志
         
         # 尝试从应用实例获取主题颜色
         use_theme_colors = False
@@ -109,11 +114,14 @@ class CustomInputBox(QWidget):
         
         # 初始化UI
         self.init_ui()
-        
+
         # 设置初始文本
         if initial_text:
             self.line_edit.setText(initial_text)
             self._has_content = True
+
+        # 初始化右键菜单
+        self._init_context_menu()
     
     def init_ui(self):
         """
@@ -329,17 +337,113 @@ class CustomInputBox(QWidget):
     def setText(self, text):
         """
         设置输入框文本（Qt兼容接口）
-        
+
         Args:
             text (str): 要设置的文本
         """
         self.set_text(text)
-    
+
     def text(self):
         """
         获取输入框当前文本（Qt兼容接口）
-        
+
         Returns:
             str: 当前输入框文本
         """
         return self.get_text()
+
+    def set_editable(self, editable):
+        """
+        设置输入框是否可编辑
+
+        Args:
+            editable (bool): 是否可编辑
+        """
+        self._editable = editable
+        self.line_edit.setReadOnly(not editable)
+
+    def is_editable(self):
+        """
+        获取输入框是否可编辑
+
+        Returns:
+            bool: 是否可编辑
+        """
+        return self._editable
+
+    def _init_context_menu(self):
+        """
+        初始化右键菜单
+        使用D_MoreMenu实现复制、剪切、粘贴、全选功能
+        对于不可编辑项目，只显示复制、全选
+        """
+        self._context_menu = D_MoreMenu(self)
+        self._context_menu.itemClicked.connect(self._on_context_menu_item_clicked)
+
+        # 设置右键菜单策略
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+        self.line_edit.setContextMenuPolicy(Qt.NoContextMenu)  # 禁用原生右键菜单
+
+        # 保存选区信息
+        self._saved_selection_start = 0
+        self._saved_selection_end = 0
+        self._has_selection = False
+
+    def _show_context_menu(self, pos):
+        """
+        显示右键菜单
+
+        Args:
+            pos: 鼠标位置
+        """
+        # 保存当前选区信息
+        self._saved_selection_start = self.line_edit.selectionStart()
+        self._saved_selection_end = self.line_edit.selectionEnd()
+        self._has_selection = self.line_edit.hasSelectedText()
+
+        # 清空现有菜单项
+        self._context_menu.clear_items()
+
+        # 根据是否可编辑添加不同的菜单项
+        if self._editable:
+            # 可编辑状态：显示复制、剪切、粘贴、全选
+            self._context_menu.add_item("复制", "copy")
+            self._context_menu.add_item("剪切", "cut")
+            self._context_menu.add_item("粘贴", "paste")
+            self._context_menu.add_item("全选", "select_all")
+        else:
+            # 不可编辑状态：只显示复制、全选
+            self._context_menu.add_item("复制", "copy")
+            self._context_menu.add_item("全选", "select_all")
+
+        # 在鼠标位置显示菜单
+        global_pos = self.mapToGlobal(pos)
+        self._context_menu.popup(global_pos)
+
+    def _on_context_menu_item_clicked(self, action):
+        """
+        处理右键菜单项点击事件
+
+        Args:
+            action: 菜单项动作标识
+        """
+        if action == "copy":
+            # 如果用户已有选区，恢复选区后复制；否则全选复制
+            if self._has_selection:
+                self.line_edit.setSelection(self._saved_selection_start, self._saved_selection_end - self._saved_selection_start)
+            else:
+                self.line_edit.selectAll()
+            self.line_edit.copy()
+        elif action == "cut":
+            if self._editable:
+                if self._has_selection:
+                    self.line_edit.setSelection(self._saved_selection_start, self._saved_selection_end - self._saved_selection_start)
+                else:
+                    self.line_edit.selectAll()
+                self.line_edit.cut()
+        elif action == "paste":
+            if self._editable:
+                self.line_edit.paste()
+        elif action == "select_all":
+            self.line_edit.selectAll()

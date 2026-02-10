@@ -528,9 +528,12 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 连接文件选择器的左键点击信号到预览器
         self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
-        
+
         # 连接文件选择器的选中状态变化信号到存储池（自动添加/移除）
         self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
+
+        # 连接预览器的信号：请求在文件选择器中打开路径
+        self.unified_previewer.open_in_selector_requested.connect(lambda path: self.handle_navigate_to_path(path))
         
         # 连接文件临时存储池的信号到预览器
         self.file_staging_pool.item_right_clicked.connect(self.unified_previewer.set_file)
