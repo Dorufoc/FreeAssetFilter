@@ -42,10 +42,12 @@ class CustomFileHorizontalCard(QWidget):
         clicked (str): 鼠标单击事件，传递文件路径
         doubleClicked (str): 鼠标双击事件，传递文件路径
         selectionChanged (bool, str): 选中状态改变事件，传递选中状态和文件路径
+        previewStateChanged (bool, str): 预览状态改变事件，传递预览状态和文件路径
     
     属性：
         file_path (str): 文件路径
         is_selected (bool): 是否选中
+        is_previewing (bool): 是否处于预览态
         thumbnail_mode (str): 缩略图显示模式，可选值：'icon' 或 'custom'
         dpi_scale (float): DPI缩放因子
         enable_multiselect (bool): 是否开启多选功能
@@ -54,6 +56,7 @@ class CustomFileHorizontalCard(QWidget):
     方法：
         set_file_path(file_path): 设置文件路径
         set_selected(selected): 设置选中状态
+        set_previewing(previewing): 设置预览状态
         set_thumbnail_mode(mode): 设置缩略图显示模式
         set_enable_multiselect(enable): 设置是否开启多选功能
         set_single_line_mode(enable): 设置是否使用单行文本格式
@@ -68,6 +71,7 @@ class CustomFileHorizontalCard(QWidget):
     clicked = pyqtSignal(str)
     doubleClicked = pyqtSignal(str)
     selectionChanged = pyqtSignal(bool, str)
+    previewStateChanged = pyqtSignal(bool, str)  # 预览状态变化信号
     renameRequested = pyqtSignal(str)  # 重命名请求信号，传递文件路径
     deleteRequested = pyqtSignal(str)  # 删除请求信号，传递文件路径
     drag_started = pyqtSignal(dict)  # 拖拽开始信号，传递文件信息
@@ -96,12 +100,19 @@ class CustomFileHorizontalCard(QWidget):
         if not hasattr(self, '_style_colors'):
             return
         
-        scaled_border_width = int(1 * self.dpi_scale)
+        normal_border_width = int(1 * self.dpi_scale)
+        # 预览态使用2倍边框宽度
+        scaled_border_width = normal_border_width * 2 if self._is_previewing else normal_border_width
         scaled_border_radius = int(8 * self.dpi_scale)
         
         r, g, b, a = self._anim_bg_color.red(), self._anim_bg_color.green(), self._anim_bg_color.blue(), self._anim_bg_color.alpha()
         bg_color = f"rgba({r}, {g}, {b}, {a})"
-        border_color = self._anim_border_color.name()
+        
+        # 预览态使用secondary_color作为边框颜色，其他状态使用动画边框颜色
+        if self._is_previewing:
+            border_color = self.secondary_color
+        else:
+            border_color = self._anim_border_color.name()
         
         card_style = ""
         card_style += "QWidget {"
@@ -128,6 +139,7 @@ class CustomFileHorizontalCard(QWidget):
         # 初始化属性
         self._file_path = file_path
         self._is_selected = False
+        self._is_previewing = False  # 预览态标志
         self._thumbnail_mode = 'icon'  # 默认使用icon模式
         self._enable_multiselect = enable_multiselect  # 是否开启多选功能
         self._display_name = display_name  # 显示名称，优先于文件系统中的文件名
@@ -360,6 +372,76 @@ class CustomFileHorizontalCard(QWidget):
                 else:
                     self._trigger_deselect_animation()
                 self.selectionChanged.emit(selected, self._file_path)
+    
+    def set_previewing(self, previewing):
+        """
+        设置预览状态
+        
+        参数：
+            previewing (bool): 是否处于预览态
+        """
+        if self._is_previewing != previewing:
+            self._is_previewing = previewing
+            if previewing:
+                self._is_mouse_over = False
+                self._trigger_preview_animation()
+            else:
+                self._trigger_unpreview_animation()
+            self.update_card_style()
+            self.previewStateChanged.emit(previewing, self._file_path)
+    
+    def _trigger_preview_animation(self):
+        """触发预览态动画"""
+        if not hasattr(self, '_style_colors'):
+            self.update_card_style()
+            return
+        
+        # 停止其他动画
+        self._hover_anim_group.stop()
+        self._leave_anim_group.stop()
+        self._select_anim_group.stop()
+        self._deselect_anim_group.stop()
+        
+        colors = self._style_colors
+        secondary_qcolor = QColor(self.secondary_color)
+        
+        # 根据当前选中状态决定背景色
+        if self._is_selected:
+            target_bg = colors['selected_bg']
+        else:
+            target_bg = colors['normal_bg']
+        
+        self._anim_preview_bg.setStartValue(self._anim_bg_color)
+        self._anim_preview_bg.setEndValue(target_bg)
+        self._anim_preview_border.setStartValue(self._anim_border_color)
+        self._anim_preview_border.setEndValue(secondary_qcolor)
+        
+        self._preview_anim_group.start()
+    
+    def _trigger_unpreview_animation(self):
+        """触发取消预览态动画"""
+        if not hasattr(self, '_style_colors'):
+            self.update_card_style()
+            return
+        
+        self._preview_anim_group.stop()
+        
+        colors = self._style_colors
+        
+        # 根据当前选中状态决定目标状态
+        if self._is_selected:
+            target_bg = colors['selected_bg']
+            target_border = colors['selected_border']
+        else:
+            target_bg = colors['normal_bg']
+            target_border = colors['normal_border']
+        
+        self._anim_unpreview_bg.setStartValue(self._anim_bg_color)
+        self._anim_unpreview_bg.setEndValue(target_bg)
+        self._anim_unpreview_border.setStartValue(self._anim_border_color)
+        self._anim_unpreview_border.setEndValue(target_border)
+        
+        self._unpreview_anim_group.start()
     
     def _trigger_select_animation(self):
         """触发选中动画"""
@@ -895,6 +977,34 @@ class CustomFileHorizontalCard(QWidget):
         self._deselect_anim_group.addAnimation(self._anim_deselect_bg)
         self._deselect_anim_group.addAnimation(self._anim_deselect_border)
         
+        # 预览态动画组
+        self._preview_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_preview_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_preview_bg.setDuration(180)
+        self._anim_preview_bg.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._anim_preview_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_preview_border.setDuration(180)
+        self._anim_preview_border.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._preview_anim_group.addAnimation(self._anim_preview_bg)
+        self._preview_anim_group.addAnimation(self._anim_preview_border)
+        
+        # 取消预览态动画组
+        self._unpreview_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_unpreview_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_unpreview_bg.setDuration(200)
+        self._anim_unpreview_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_unpreview_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_unpreview_border.setDuration(200)
+        self._anim_unpreview_border.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._unpreview_anim_group.addAnimation(self._anim_unpreview_bg)
+        self._unpreview_anim_group.addAnimation(self._anim_unpreview_border)
+        
         self._apply_animated_style()
     
     def update_card_style(self):
@@ -902,7 +1012,7 @@ class CustomFileHorizontalCard(QWidget):
         from PyQt5.QtWidgets import QApplication
         from PyQt5.QtGui import QColor
         
-        scaled_border_width = int(1 * self.dpi_scale)
+        normal_border_width = int(1 * self.dpi_scale)
         scaled_border_radius = int(8 * self.dpi_scale)
         
         app = QApplication.instance()
@@ -921,6 +1031,9 @@ class CustomFileHorizontalCard(QWidget):
             secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", secondary_color)
             auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
         
+        # 保存secondary_color为实例属性，供其他方法使用
+        self.secondary_color = secondary_color
+        
         self.setStyleSheet("""
             QWidget {
                 background: transparent;
@@ -928,7 +1041,31 @@ class CustomFileHorizontalCard(QWidget):
             }
         """)
         
-        if self._enable_multiselect and self._is_selected:
+        if self._is_previewing:
+            # 预览态：边框使用secondary_color，宽度为2倍
+            preview_border_width = normal_border_width * 2
+            
+            if self._is_selected:
+                # 预览态+选中态：使用选中态背景
+                qcolor = QColor(accent_color)
+                r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+                bg_color = f"rgba({r}, {g}, {b}, 102)"
+            else:
+                # 预览态+未选中态：使用普通背景
+                bg_color = base_color
+            
+            card_style = ""
+            card_style += "QWidget {"
+            card_style += f"background-color: {bg_color};"
+            card_style += f"border: {preview_border_width}px solid {secondary_color};"
+            card_style += f"border-radius: {scaled_border_radius}px;"
+            card_style += "}"
+            self.card_container.setStyleSheet(card_style)
+            
+            self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+            self.info_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
+        elif self._enable_multiselect and self._is_selected:
+            # 选中态
             qcolor = QColor(accent_color)
             r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
             bg_color = f"rgba({r}, {g}, {b}, 102)"
@@ -936,7 +1073,7 @@ class CustomFileHorizontalCard(QWidget):
             card_style = ""
             card_style += "QWidget {"
             card_style += f"background-color: {bg_color};"
-            card_style += f"border: {scaled_border_width}px solid {accent_color};"
+            card_style += f"border: {normal_border_width}px solid {accent_color};"
             card_style += f"border-radius: {scaled_border_radius}px;"
             card_style += "}"
             self.card_container.setStyleSheet(card_style)
@@ -944,10 +1081,11 @@ class CustomFileHorizontalCard(QWidget):
             self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
             self.info_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
         else:
+            # 普通态
             card_style = ""
             card_style += "QWidget {"
             card_style += f"background-color: {base_color};"
-            card_style += f"border: {scaled_border_width}px solid {auxiliary_color};"
+            card_style += f"border: {normal_border_width}px solid {auxiliary_color};"
             card_style += f"border-radius: {scaled_border_radius}px;"
             card_style += "}"
             card_style += "QWidget:hover {"
@@ -1103,19 +1241,17 @@ class CustomFileHorizontalCard(QWidget):
         if not hasattr(self, '_style_colors'):
             return
         
+        # 预览态和选中态不响应hover效果
+        if self._is_selected or self._is_previewing:
+            return
+        
         self._leave_anim_group.stop()
         
         colors = self._style_colors
-        if self._is_selected:
-            self._anim_hover_bg.setStartValue(self._anim_bg_color)
-            self._anim_hover_bg.setEndValue(colors['selected_bg'])
-            self._anim_hover_border.setStartValue(self._anim_border_color)
-            self._anim_hover_border.setEndValue(colors['selected_border'])
-        else:
-            self._anim_hover_bg.setStartValue(self._anim_bg_color)
-            self._anim_hover_bg.setEndValue(colors['hover_bg'])
-            self._anim_hover_border.setStartValue(self._anim_border_color)
-            self._anim_hover_border.setEndValue(colors['hover_border'])
+        self._anim_hover_bg.setStartValue(self._anim_bg_color)
+        self._anim_hover_bg.setEndValue(colors['hover_bg'])
+        self._anim_hover_border.setStartValue(self._anim_border_color)
+        self._anim_hover_border.setEndValue(colors['hover_border'])
         
         self._hover_anim_group.start()
     
@@ -1124,7 +1260,8 @@ class CustomFileHorizontalCard(QWidget):
         if not hasattr(self, '_style_colors'):
             return
         
-        if self._is_selected:
+        # 预览态和选中态不响应leave效果
+        if self._is_selected or self._is_previewing:
             return
         
         self._hover_anim_group.stop()

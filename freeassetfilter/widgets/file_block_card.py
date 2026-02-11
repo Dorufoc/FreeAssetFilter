@@ -35,8 +35,9 @@ class FileBlockCard(QWidget):
     特性：
     - 最小横向宽度35，最大50（支持DPI缩放）
     - 圆角和边框设计
-    - 三种状态：未选中态、hover态、选中态
+    - 四种状态：未选中态、hover态、选中态、预览态
     - 选中态不响应hover效果
+    - 预览态边框使用secondary_color，宽度为选中态的2倍
     - 支持左键点击、右键点击、左键双击
     - 支持非线性动画过渡效果
     - 支持长按拖拽功能，拖拽到存储池选中文件，拖拽到预览器预览文件
@@ -46,6 +47,7 @@ class FileBlockCard(QWidget):
     - right_clicked: 右键点击信号，传递file_info
     - double_clicked: 双击信号，传递file_info
     - selection_changed: 选中状态变化信号，传递(file_info, is_selected)
+    - preview_state_changed: 预览状态变化信号，传递(file_info, is_previewing)
     - drag_started: 拖拽开始信号，传递file_info
     - drag_ended: 拖拽结束信号，传递(file_info, drop_target_type)
     """
@@ -54,6 +56,7 @@ class FileBlockCard(QWidget):
     right_clicked = pyqtSignal(dict)
     double_clicked = pyqtSignal(dict)
     selection_changed = pyqtSignal(dict, bool)
+    preview_state_changed = pyqtSignal(dict, bool)
     drag_started = pyqtSignal(dict)
     drag_ended = pyqtSignal(dict, str)
     
@@ -81,11 +84,18 @@ class FileBlockCard(QWidget):
             return
         
         scaled_border_radius = int(8 * self.dpi_scale)
-        scaled_border_width = int(1 * self.dpi_scale)
+        normal_border_width = int(1 * self.dpi_scale)
+        # 预览态使用2倍边框宽度
+        scaled_border_width = normal_border_width * 2 if self._is_previewing else normal_border_width
         
         r, g, b, a = self._anim_bg_color.red(), self._anim_bg_color.green(), self._anim_bg_color.blue(), self._anim_bg_color.alpha()
         bg_color = f"rgba({r}, {g}, {b}, {a})"
-        border_color = self._anim_border_color.name()
+        
+        # 预览态使用secondary_color作为边框颜色，其他状态使用动画边框颜色
+        if self._is_previewing:
+            border_color = self.secondary_color
+        else:
+            border_color = self._anim_border_color.name()
         
         self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
     
@@ -111,6 +121,7 @@ class FileBlockCard(QWidget):
         
         self._is_selected = False
         self._is_hovered = False
+        self._is_previewing = False  # 预览态标志
         
         self._touch_drag_threshold = int(10 * self.dpi_scale)
         self._touch_start_pos = None
@@ -676,6 +687,34 @@ class FileBlockCard(QWidget):
         self._deselect_anim_group.addAnimation(self._anim_deselect_bg)
         self._deselect_anim_group.addAnimation(self._anim_deselect_border)
         
+        # 预览态动画组
+        self._preview_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_preview_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_preview_bg.setDuration(180)
+        self._anim_preview_bg.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._anim_preview_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_preview_border.setDuration(180)
+        self._anim_preview_border.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._preview_anim_group.addAnimation(self._anim_preview_bg)
+        self._preview_anim_group.addAnimation(self._anim_preview_border)
+        
+        # 取消预览态动画组
+        self._unpreview_anim_group = QParallelAnimationGroup(self)
+        
+        self._anim_unpreview_bg = QPropertyAnimation(self, b"anim_bg_color")
+        self._anim_unpreview_bg.setDuration(200)
+        self._anim_unpreview_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._anim_unpreview_border = QPropertyAnimation(self, b"anim_border_color")
+        self._anim_unpreview_border.setDuration(200)
+        self._anim_unpreview_border.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        self._unpreview_anim_group.addAnimation(self._anim_unpreview_bg)
+        self._unpreview_anim_group.addAnimation(self._anim_unpreview_border)
+        
         self._apply_animated_style()
     
     def _trigger_hover_animation(self):
@@ -684,19 +723,17 @@ class FileBlockCard(QWidget):
             self._update_styles()
             return
         
+        # 预览态和选中态不响应hover效果
+        if self._is_selected or self._is_previewing:
+            return
+        
         self._leave_anim_group.stop()
         
         colors = self._style_colors
-        if self._is_selected:
-            self._anim_hover_bg.setStartValue(self._anim_bg_color)
-            self._anim_hover_bg.setEndValue(colors['selected_bg'])
-            self._anim_hover_border.setStartValue(self._anim_border_color)
-            self._anim_hover_border.setEndValue(colors['selected_border'])
-        else:
-            self._anim_hover_bg.setStartValue(self._anim_bg_color)
-            self._anim_hover_bg.setEndValue(colors['hover_bg'])
-            self._anim_hover_border.setStartValue(self._anim_border_color)
-            self._anim_hover_border.setEndValue(colors['hover_border'])
+        self._anim_hover_bg.setStartValue(self._anim_bg_color)
+        self._anim_hover_bg.setEndValue(colors['hover_bg'])
+        self._anim_hover_border.setStartValue(self._anim_border_color)
+        self._anim_hover_border.setEndValue(colors['hover_border'])
         
         self._hover_anim_group.start()
     
@@ -706,7 +743,8 @@ class FileBlockCard(QWidget):
             self._update_styles()
             return
         
-        if self._is_selected:
+        # 预览态和选中态不响应leave效果
+        if self._is_selected or self._is_previewing:
             return
         
         self._hover_anim_group.stop()
@@ -728,19 +766,38 @@ class FileBlockCard(QWidget):
         from PyQt5.QtGui import QColor
         
         scaled_border_radius = int(8 * self.dpi_scale)
-        scaled_border_width = int(1 * self.dpi_scale)
+        normal_border_width = int(1 * self.dpi_scale)
         
-        if self._is_selected:
+        if self._is_previewing:
+            # 预览态：背景保持选中态或普通态，边框使用secondary_color，宽度为2倍
+            if self._is_selected:
+                # 预览态+选中态：使用选中态背景
+                qcolor = QColor(self.accent_color)
+                r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
+                bg_color = f"rgba({r}, {g}, {b}, 102)"
+            else:
+                # 预览态+未选中态：使用普通背景
+                bg_color = self.base_color
+            # 预览态边框使用secondary_color，宽度为2倍
+            border_color = self.secondary_color
+            scaled_border_width = normal_border_width * 2
+        elif self._is_selected:
+            # 选中态
             qcolor = QColor(self.accent_color)
             r, g, b = qcolor.red(), qcolor.green(), qcolor.blue()
             bg_color = f"rgba({r}, {g}, {b}, 102)"
             border_color = self.accent_color
+            scaled_border_width = normal_border_width
         elif self._is_hovered:
+            # 悬停态
             bg_color = self.auxiliary_color
             border_color = self.normal_color
+            scaled_border_width = normal_border_width
         else:
+            # 普通态
             bg_color = self.base_color
             border_color = self.auxiliary_color
+            scaled_border_width = normal_border_width
         
         self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -786,6 +843,77 @@ class FileBlockCard(QWidget):
             self._update_label_styles()
             self.selection_changed.emit(self.file_info, selected)
     
+    def set_previewing(self, previewing):
+        """
+        设置卡片预览状态
+        
+        Args:
+            previewing (bool): 是否处于预览态
+        """
+        if self._is_previewing != previewing:
+            self._is_previewing = previewing
+            if previewing:
+                self._is_hovered = False
+                self._trigger_preview_animation()
+            else:
+                self._trigger_unpreview_animation()
+            self._update_card_style()
+            self._update_label_styles()
+            self.preview_state_changed.emit(self.file_info, previewing)
+    
+    def _trigger_preview_animation(self):
+        """触发预览态动画"""
+        if not hasattr(self, '_style_colors'):
+            self._update_styles()
+            return
+        
+        # 停止其他动画
+        self._hover_anim_group.stop()
+        self._leave_anim_group.stop()
+        self._select_anim_group.stop()
+        self._deselect_anim_group.stop()
+        
+        colors = self._style_colors
+        secondary_qcolor = QColor(self.secondary_color)
+        
+        # 根据当前选中状态决定背景色
+        if self._is_selected:
+            target_bg = colors['selected_bg']
+        else:
+            target_bg = colors['normal_bg']
+        
+        self._anim_preview_bg.setStartValue(self._anim_bg_color)
+        self._anim_preview_bg.setEndValue(target_bg)
+        self._anim_preview_border.setStartValue(self._anim_border_color)
+        self._anim_preview_border.setEndValue(secondary_qcolor)
+        
+        self._preview_anim_group.start()
+    
+    def _trigger_unpreview_animation(self):
+        """触发取消预览态动画"""
+        if not hasattr(self, '_style_colors'):
+            self._update_styles()
+            return
+        
+        self._preview_anim_group.stop()
+        
+        colors = self._style_colors
+        
+        # 根据当前选中状态决定目标状态
+        if self._is_selected:
+            target_bg = colors['selected_bg']
+            target_border = colors['selected_border']
+        else:
+            target_bg = colors['normal_bg']
+            target_border = colors['normal_border']
+        
+        self._anim_unpreview_bg.setStartValue(self._anim_bg_color)
+        self._anim_unpreview_bg.setEndValue(target_bg)
+        self._anim_unpreview_border.setStartValue(self._anim_border_color)
+        self._anim_unpreview_border.setEndValue(target_border)
+        
+        self._unpreview_anim_group.start()
+    
     def _trigger_select_animation(self):
         """触发选中动画"""
         if not hasattr(self, '_style_colors'):
@@ -820,6 +948,10 @@ class FileBlockCard(QWidget):
     def is_selected(self):
         """获取卡片选中状态"""
         return self._is_selected
+    
+    def is_previewing(self):
+        """获取卡片预览状态"""
+        return self._is_previewing
     
     def set_file_info(self, file_info):
         """

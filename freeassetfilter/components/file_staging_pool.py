@@ -81,6 +81,7 @@ class FileStagingPool(QWidget):
         
         # 初始化数据
         self.items = []  # 存储所有添加的文件/文件夹项目
+        self.previewing_file_path = None  # 当前处于预览态的文件路径
         
         # 备份文件路径
         self.backup_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'staging_pool_backup.json')
@@ -324,6 +325,10 @@ class FileStagingPool(QWidget):
         self.items.append(file_info)
         
         card = CustomFileHorizontalCard(file_info["path"], display_name=file_info["display_name"])
+        
+        # 检查文件是否处于预览状态（使用normcase处理Windows路径大小写）
+        if self.previewing_file_path and os.path.normcase(file_path) == os.path.normcase(self.previewing_file_path):
+            card.set_previewing(True)
         
         # 设置文件信息用于拖拽
         card.set_file_info(file_info)
@@ -1947,6 +1952,51 @@ class FileStagingPool(QWidget):
         thread = threading.Thread(target=copy_thread)
         thread.daemon = True  # 设置为守护线程，防止程序退出时线程还在运行
         thread.start()
+    
+    def set_previewing_file(self, file_path):
+        """
+        设置当前正在预览的文件，更新对应卡片的预览态
+        
+        Args:
+            file_path (str): 文件路径
+        """
+        if not file_path:
+            return
+        
+        # 保存当前预览的文件路径
+        self.previewing_file_path = os.path.normpath(file_path)
+        
+        # 先清除所有卡片的预览态
+        self.clear_previewing_state()
+        
+        # 规范化路径用于比较（Windows下使用normcase处理大小写）
+        file_path_norm = os.path.normcase(os.path.normpath(file_path))
+        
+        # 查找并设置对应卡片的预览态
+        found = False
+        for card, card_file_info in self.cards:
+            card_path_norm = os.path.normcase(os.path.normpath(card_file_info.get('path', '')))
+            if card_path_norm == file_path_norm:
+                card.set_previewing(True)
+                found = True
+                break
+        
+        # 调试输出
+        print(f"[FileStagingPool] set_previewing_file: {file_path}")
+        print(f"[FileStagingPool] normalized path: {file_path_norm}")
+        print(f"[FileStagingPool] found={found}, total_cards={len(self.cards)}")
+        if self.cards:
+            first_card_path = os.path.normcase(os.path.normpath(self.cards[0][1].get('path', '')))
+            print(f"[FileStagingPool] first card path: {first_card_path}")
+    
+    def clear_previewing_state(self):
+        """
+        清除所有卡片的预览态
+        注意：不清除 previewing_file_path，以便在需要时仍能恢复预览态
+        """
+        for card, _ in self.cards:
+            if hasattr(card, 'set_previewing'):
+                card.set_previewing(False)
 
 # 测试代码
 if __name__ == "__main__":

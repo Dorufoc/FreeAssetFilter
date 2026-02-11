@@ -549,6 +549,10 @@ class FreeAssetFilterApp(QMainWindow):
         # 连接文件临时存储池的导航信号到处理方法，用于更新文件选择器的路径
         self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
         
+        # 连接统一预览器的预览状态信号
+        self.unified_previewer.preview_started.connect(self.handle_preview_started)
+        self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
+        
         # 添加分割器到主布局
         main_layout.addWidget(splitter, 1)
         
@@ -1141,6 +1145,41 @@ class FreeAssetFilterApp(QMainWindow):
                     self.file_selector_a._update_file_selection_state()
             else:
                 self.file_selector_a._update_file_selection_state()
+    
+    def handle_preview_started(self, file_info):
+        """
+        处理预览开始事件，更新文件选择器和存储池中对应文件的预览态
+        
+        Args:
+            file_info (dict): 文件信息
+        """
+        file_path = file_info.get('path', '')
+        print(f"[Main] handle_preview_started called with path: {file_path}")
+        if not file_path:
+            return
+        
+        # 更新文件选择器中的卡片预览态
+        if hasattr(self, 'file_selector_a') and self.file_selector_a:
+            self.file_selector_a.set_previewing_file(file_path)
+        
+        # 更新文件存储池中的卡片预览态
+        if hasattr(self, 'file_staging_pool') and self.file_staging_pool:
+            print(f"[Main] Calling file_staging_pool.set_previewing_file: {file_path}")
+            self.file_staging_pool.set_previewing_file(file_path)
+    
+    def handle_preview_cleared(self):
+        """
+        处理预览清除事件，清除所有卡片的预览态
+        """
+        # 清除文件选择器中的卡片预览态
+        if hasattr(self, 'file_selector_a') and self.file_selector_a:
+            self.file_selector_a.clear_previewing_state()
+            self.file_selector_a.previewing_file_path = None
+        
+        # 清除文件存储池中的卡片预览态
+        if hasattr(self, 'file_staging_pool') and self.file_staging_pool:
+            self.file_staging_pool.clear_previewing_state()
+            self.file_staging_pool.previewing_file_path = None
     
     def check_and_restore_backup(self):
         """

@@ -142,6 +142,7 @@ class CustomFileSelector(QWidget):
         # 初始化配置
         self.current_path = "All"  # 默认路径为"All"
         self.selected_files = {}  # 存储每个目录下的选中文件 {directory: {file_path1, file_path2}}]
+        self.previewing_file_path = None  # 当前处于预览态的文件路径
         self.filter_pattern = "*"  # 默认显示所有文件
         self.sort_by = "name"  # 默认按名称排序
         self.sort_order = "asc"  # 默认升序
@@ -2127,6 +2128,8 @@ class CustomFileSelector(QWidget):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
             #print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
+            # 所有卡片加载完成后检查预览状态
+            self._check_and_apply_preview_state()
             # 所有卡片加载完成后调用回调函数
             if hasattr(self, '_refresh_callback') and self._refresh_callback:
                 #print(f"[DEBUG] 调用刷新回调函数")
@@ -2150,6 +2153,8 @@ class CustomFileSelector(QWidget):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
             #print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
+            # 所有卡片加载完成后检查预览状态
+            self._check_and_apply_preview_state()
             # 所有卡片加载完成后调用回调函数
             if hasattr(self, '_refresh_callback') and self._refresh_callback:
                 #print(f"[DEBUG] 调用刷新回调函数")
@@ -2668,6 +2673,10 @@ class CustomFileSelector(QWidget):
         if is_selected:
             #debug(f"设置卡片为选中状态")
             card.set_selected(True)
+        
+        # 检查文件是否处于预览状态
+        if self.previewing_file_path and file_path_norm == self.previewing_file_path:
+            card.set_previewing(True)
         
         if file_info["is_dir"]:
             card.clicked.connect(lambda f, p=file_path: self._on_folder_clicked(p))
@@ -3855,6 +3864,58 @@ class CustomFileSelector(QWidget):
             
             # 直接导入生成的CSV文件
             self.timeline_window.import_csv(csv_path)
+    
+    def set_previewing_file(self, file_path):
+        """
+        设置当前正在预览的文件，更新对应卡片的预览态
+        
+        Args:
+            file_path (str): 文件路径
+        """
+        # 保存当前预览的文件路径
+        self.previewing_file_path = os.path.normpath(file_path) if file_path else None
+        
+        # 先清除所有卡片的预览态
+        self.clear_previewing_state()
+        
+        # 规范化路径用于比较
+        file_path_norm = os.path.normpath(file_path)
+        
+        # 查找并设置对应卡片的预览态
+        for i in range(self.files_layout.count()):
+            widget = self.files_layout.itemAt(i).widget()
+            if widget is not None and hasattr(widget, 'file_info'):
+                widget_path_norm = os.path.normpath(widget.file_info.get('path', ''))
+                if widget_path_norm == file_path_norm:
+                    widget.set_previewing(True)
+                    break
+    
+    def clear_previewing_state(self):
+        """
+        清除所有卡片的预览态
+        注意：不清除 previewing_file_path，以便在路径切换后仍能恢复预览态
+        """
+        for i in range(self.files_layout.count()):
+            widget = self.files_layout.itemAt(i).widget()
+            if widget is not None and hasattr(widget, 'set_previewing'):
+                widget.set_previewing(False)
+    
+    def _check_and_apply_preview_state(self):
+        """
+        检查并应用预览状态到当前已加载的卡片
+        在懒加载完成后调用，确保预览态能够正确应用
+        """
+        if not self.previewing_file_path:
+            return
+        
+        # 遍历所有已加载的卡片，查找匹配的预览文件
+        for i in range(self.files_layout.count()):
+            widget = self.files_layout.itemAt(i).widget()
+            if widget is not None and hasattr(widget, 'file_info'):
+                widget_path_norm = os.path.normpath(widget.file_info.get('path', ''))
+                if widget_path_norm == self.previewing_file_path:
+                    widget.set_previewing(True)
+                    break
 
 # 使用项目中的自定义提示弹窗实现CSV生成进度显示
 

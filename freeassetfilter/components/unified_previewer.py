@@ -46,6 +46,8 @@ class UnifiedPreviewer(QWidget):
 
     # 信号定义
     open_in_selector_requested = pyqtSignal(str)  # 请求在文件选择器中打开路径
+    preview_started = pyqtSignal(dict)  # 预览开始信号，传递文件信息
+    preview_cleared = pyqtSignal()  # 预览清除信号
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -285,6 +287,9 @@ class UnifiedPreviewer(QWidget):
         
         self.current_file_info = file_info
         
+        # 发出预览开始信号，通知文件选择器和存储池更新预览态
+        self.preview_started.emit(file_info)
+        
         # 更新文件信息查看器
         # debug("更新文件信息查看器")
         self.file_info_viewer.set_file(file_info)
@@ -400,8 +405,9 @@ class UnifiedPreviewer(QWidget):
             self._show_progress_dialog(title, message)
             
             # 预览类型不同，清除当前组件，创建新组件
+            # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
             # debug("清除当前预览组件")
-            self._clear_preview()
+            self._clear_preview(emit_signal=False)
             
             # 检查并终止现有线程（如果存在）
             if hasattr(self, '_preview_thread') and self._preview_thread and self._preview_thread.isRunning():
@@ -502,9 +508,13 @@ class UnifiedPreviewer(QWidget):
         # 发送信号请求在文件选择器中打开该路径
         self.open_in_selector_requested.emit(file_dir)
 
-    def _clear_preview(self):
+    def _clear_preview(self, emit_signal=True):
         """
         清除当前预览内容，确保所有组件都被正确释放，但保留控制栏
+        
+        Args:
+            emit_signal (bool): 是否发出预览清除信号，默认为True。
+                               在切换预览类型时不应发出信号，避免清除新设置的预览态。
         """
         # 先停止后台线程，避免在清理过程中发生访问冲突
         if hasattr(self, '_preview_thread') and self._preview_thread and self._preview_thread.isRunning():
@@ -620,6 +630,11 @@ class UnifiedPreviewer(QWidget):
         # 重置当前预览组件和类型
         self.current_preview_widget = None
         self.current_preview_type = None
+        
+        # 根据参数决定是否发出预览清除信号
+        # 在切换预览类型时不发出信号，避免清除新设置的预览态
+        if emit_signal:
+            self.preview_cleared.emit()
     
     def _update_preview_widget(self, file_path, preview_type):
         """
@@ -646,7 +661,8 @@ class UnifiedPreviewer(QWidget):
                     finally:
                         self.temp_pdf_path = None
                 # 对于文档类型，需要重新转换
-                self._clear_preview()
+                # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
+                self._clear_preview(emit_signal=False)
                 self._show_preview()
                 return
             # 确保组件处于正确状态
@@ -683,13 +699,15 @@ class UnifiedPreviewer(QWidget):
             elif preview_type == "font":
                 # 字体预览组件：每次传入新字体时，清除旧组件并创建新组件
                 # 这样可以确保字体资源被正确释放，新字体能够正确加载
-                self._clear_preview()
+                # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
+                self._clear_preview(emit_signal=False)
                 self._show_font_preview(file_path)
                 return
         except Exception as e:
             print(f"更新预览组件时出错: {e}")
             # 如果更新失败，清除当前组件，重新创建
-            self._clear_preview()
+            # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
+            self._clear_preview(emit_signal=False)
             self._show_preview()
     
     def _show_error_with_copy_button(self, error_message):
