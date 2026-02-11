@@ -405,16 +405,19 @@ class CustomInputBox(QWidget):
         # 清空现有菜单项
         self._context_menu.clear_items()
 
+        # 检查QLineEdit的实际只读状态
+        is_readonly = self.line_edit.isReadOnly()
+
         # 根据是否可编辑添加不同的菜单项
-        if self._editable:
+        if is_readonly:
+            # 不可编辑状态：只显示复制、全选
+            self._context_menu.add_item("复制", "copy")
+            self._context_menu.add_item("全选", "select_all")
+        else:
             # 可编辑状态：显示复制、剪切、粘贴、全选
             self._context_menu.add_item("复制", "copy")
             self._context_menu.add_item("剪切", "cut")
             self._context_menu.add_item("粘贴", "paste")
-            self._context_menu.add_item("全选", "select_all")
-        else:
-            # 不可编辑状态：只显示复制、全选
-            self._context_menu.add_item("复制", "copy")
             self._context_menu.add_item("全选", "select_all")
 
         # 在鼠标位置显示菜单
@@ -428,6 +431,8 @@ class CustomInputBox(QWidget):
         Args:
             action: 菜单项动作标识
         """
+        is_readonly = self.line_edit.isReadOnly()
+
         if action == "copy":
             # 如果用户已有选区，恢复选区后复制；否则全选复制
             if self._has_selection:
@@ -436,14 +441,14 @@ class CustomInputBox(QWidget):
                 self.line_edit.selectAll()
             self.line_edit.copy()
         elif action == "cut":
-            if self._editable:
+            if not is_readonly:
                 if self._has_selection:
                     self.line_edit.setSelection(self._saved_selection_start, self._saved_selection_end - self._saved_selection_start)
                 else:
                     self.line_edit.selectAll()
                 self.line_edit.cut()
         elif action == "paste":
-            if self._editable:
+            if not is_readonly:
                 self.line_edit.paste()
         elif action == "select_all":
             self.line_edit.selectAll()

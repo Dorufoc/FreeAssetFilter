@@ -1771,7 +1771,7 @@ class FileStagingPool(QWidget):
 
     def _is_media_file(self, suffix):
         """判断是否为图片或视频文件"""
-        image_formats = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'svg']
+        image_formats = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'svg', 'psd', 'psb']
         video_formats = ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
         return suffix in image_formats or suffix in video_formats
 
