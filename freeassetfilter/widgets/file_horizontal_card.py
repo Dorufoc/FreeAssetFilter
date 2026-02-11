@@ -606,7 +606,7 @@ class CustomFileHorizontalCard(QWidget):
             file_hash = md5_hash.hexdigest()[:16]
             thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
 
-            is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
+            is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
 
             #print(f"[DEBUG] _set_file_icon: file={self._file_path}, suffix={suffix}, is_photo={is_photo}, is_video={is_video}")
@@ -702,6 +702,7 @@ class CustomFileHorizontalCard(QWidget):
             'tiff': '图像.svg', 'svg': '图像.svg', 'avif': '图像.svg',
             'cr2': '图像.svg', 'cr3': '图像.svg', 'nef': '图像.svg',
             'arw': '图像.svg', 'dng': '图像.svg', 'orf': '图像.svg',
+            'psd': '图像.svg', 'psb': '图像.svg',
             # 文档格式
             'pdf': 'PDF.svg', 'ppt': 'PPT.svg', 'pptx': 'PPT.svg',
             'xls': '表格.svg', 'xlsx': '表格.svg',
@@ -1761,7 +1762,7 @@ class CustomFileHorizontalCard(QWidget):
                 file_hash = md5_hash.hexdigest()[:16]
                 thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
 
-                is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
+                is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']
                 is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
 
                 if (is_photo or is_video) and os.path.exists(thumbnail_path):

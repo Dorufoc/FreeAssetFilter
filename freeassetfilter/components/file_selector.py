@@ -541,7 +541,7 @@ class CustomFileSelector(QWidget):
         同时也为文件存储池中的照片和视频生成缩略图
         使用后台线程处理，避免阻塞UI
         """
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb"]
         video_formats = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"]
 
         files_to_generate = []
@@ -837,8 +837,10 @@ class CustomFileSelector(QWidget):
             image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif", ".heic"]
             # 支持的raw格式
             raw_formats = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf"]
-            
-            if suffix in image_formats or suffix in raw_formats:
+            # 支持的PSD格式
+            psd_formats = [".psd", ".psb"]
+
+            if suffix in image_formats or suffix in raw_formats or suffix in psd_formats:
                 # 处理图片文件
                 try:
                     from PIL import Image, ImageDraw
@@ -865,6 +867,19 @@ class CustomFileSelector(QWidget):
                             img = Image.open(file_path)
                         except Exception as img_error:
                             print(f"无法生成图片缩略图: {file_path}, 错误: {img_error}")
+                            return False
+                    elif suffix in psd_formats:
+                        # 处理PSD文件
+                        try:
+                            from psd_tools import PSDImage
+                            psd = PSDImage.open(file_path)
+                            # 合成所有图层
+                            img = psd.composite()
+                        except ImportError:
+                            print(f"无法生成PSD缩略图: {file_path}, 缺少psd-tools库")
+                            return False
+                        except Exception as psd_error:
+                            print(f"无法生成PSD缩略图: {file_path}, 错误: {psd_error}")
                             return False
                     else:
                         img = Image.open(file_path)
@@ -2874,7 +2889,7 @@ class CustomFileSelector(QWidget):
         
         # 检查是否是照片或视频类型，这些类型可以使用缩略图
         suffix = file_info["suffix"].lower() if not file_info["is_dir"] else ""
-        is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
+        is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']
         is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
         
         # 只有照片和视频类型才使用缩略图，其余类型直接使用SVG图标
@@ -2945,7 +2960,7 @@ class CustomFileSelector(QWidget):
             return label
         
         # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb"]
         video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
@@ -3106,13 +3121,13 @@ class CustomFileSelector(QWidget):
             QPixmap: 文件类型图标
         """
         # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb"]
         video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
         audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
         document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
         font_formats = ["ttf", "otf", "woff", "woff2", "eot", "svg"]
         archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "tar.gz", "tar.bz2", "tar.xz", "tar.lzma", "iso", "cab", "arj", "lzh", "ace", "z"]
-        
+
         # 确定要使用的SVG图标
         icon_path = None
         icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")

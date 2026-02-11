@@ -242,12 +242,26 @@ class UnifiedPreviewer(QWidget):
         # 将分割器添加到主布局
         main_layout.addWidget(self.content_splitter, 1)
         
-        # 创建"使用系统默认方式打开"按钮并放在最底部
+        # 创建按钮布局容器
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(int(10 * self.dpi_scale))
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 创建"使用系统默认方式打开"按钮
         self.open_with_system_button = CustomButton("使用系统默认方式打开", button_type="secondary")
         self.open_with_system_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.open_with_system_button.clicked.connect(self._open_file_with_system)
         self.open_with_system_button.hide()
-        main_layout.addWidget(self.open_with_system_button)
+        buttons_layout.addWidget(self.open_with_system_button, 1)
+
+        # 创建"定位到所在目录"按钮（强调样式）
+        self.locate_in_selector_button = CustomButton("定位到所在目录", button_type="primary")
+        self.locate_in_selector_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.locate_in_selector_button.clicked.connect(self._locate_file_in_selector)
+        self.locate_in_selector_button.hide()
+        buttons_layout.addWidget(self.locate_in_selector_button, 1)
+
+        main_layout.addLayout(buttons_layout)
     
     def set_file(self, file_info):
         """
@@ -298,6 +312,7 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(self.default_label)
             self.default_label.show()
             self.open_with_system_button.hide()
+            self.locate_in_selector_button.hide()
             return
         
         # debug(f"获取文件信息: {self.current_file_info}")
@@ -416,8 +431,9 @@ class UnifiedPreviewer(QWidget):
             # debug(f"更新当前预览类型: {preview_type}")
             self.current_preview_type = preview_type
         
-        # 显示"使用系统默认方式打开"按钮
+        # 显示"使用系统默认方式打开"按钮和"定位到所在目录"按钮
         self.open_with_system_button.show()
+        self.locate_in_selector_button.show()
         
     def _open_file_with_system(self):
         """
@@ -460,7 +476,32 @@ class UnifiedPreviewer(QWidget):
             msg_box.set_text(f"无法打开文件: {str(e)}")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             msg_box.exec_()
-    
+
+    def _locate_file_in_selector(self):
+        """
+        定位到当前预览文件所在的目录，发送信号给文件选择器加载该路径
+        """
+        if not self.current_file_info:
+            return
+
+        file_path = self.current_file_info["path"]
+        if not file_path:
+            return
+
+        # 获取文件所在目录
+        file_dir = os.path.dirname(file_path)
+        if not file_dir or not os.path.exists(file_dir):
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("错误")
+            msg_box.set_text(f"目录不存在: {file_dir}")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec_()
+            return
+
+        # 发送信号请求在文件选择器中打开该路径
+        self.open_in_selector_requested.emit(file_dir)
+
     def _clear_preview(self):
         """
         清除当前预览内容，确保所有组件都被正确释放，但保留控制栏
