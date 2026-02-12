@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
@@ -12,18 +12,18 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 import os
 import sys
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QSizePolicy, QStackedLayout
 )
 from .button_widgets import CustomButton
-from PyQt5.QtCore import (
-    Qt, pyqtSignal, QFileInfo, QEvent, QPropertyAnimation, QEasingCurve, pyqtProperty, QParallelAnimationGroup, QTimer, QPoint
+from PySide6.QtCore import (
+    Qt, Signal, QFileInfo, QEvent, QPropertyAnimation, QEasingCurve, Property, QParallelAnimationGroup, QTimer, QPoint
 )
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QFont, QFontMetrics, QPixmap, QColor, QCursor
 )
-from PyQt5.QtSvg import QSvgWidget
+from PySide6.QtSvgWidgets import QSvgWidget
 # 导入悬浮详细信息组件
 from .hover_tooltip import HoverTooltip
 # 添加项目根目录到Python路径
@@ -37,13 +37,13 @@ from freeassetfilter.core.svg_renderer import SvgRenderer  # noqa: E402 模块�
 class CustomFileHorizontalCard(QWidget):
     """
     自定义文件横向卡片组件
-    
+
     信号：
         clicked (str): 鼠标单击事件，传递文件路径
         doubleClicked (str): 鼠标双击事件，传递文件路径
         selectionChanged (bool, str): 选中状态改变事件，传递选中状态和文件路径
         previewStateChanged (bool, str): 预览状态改变事件，传递预览状态和文件路径
-    
+
     属性：
         file_path (str): 文件路径
         is_selected (bool): 是否选中
@@ -52,7 +52,7 @@ class CustomFileHorizontalCard(QWidget):
         dpi_scale (float): DPI缩放因子
         enable_multiselect (bool): 是否开启多选功能
         single_line_mode (bool): 是否使用单行文本格式
-    
+
     方法：
         set_file_path(file_path): 设置文件路径
         set_selected(selected): 设置选中状态
@@ -60,7 +60,7 @@ class CustomFileHorizontalCard(QWidget):
         set_thumbnail_mode(mode): 设置缩略图显示模式
         set_enable_multiselect(enable): 设置是否开启多选功能
         set_single_line_mode(enable): 设置是否使用单行文本格式
-    
+
     参数：
         file_path (str): 文件路径
         parent (QWidget): 父部件
@@ -68,16 +68,19 @@ class CustomFileHorizontalCard(QWidget):
         single_line_mode (bool): 是否使用单行文本格式，默认值为False
     """
     # 信号定义
-    clicked = pyqtSignal(str)
-    doubleClicked = pyqtSignal(str)
-    selectionChanged = pyqtSignal(bool, str)
-    previewStateChanged = pyqtSignal(bool, str)  # 预览状态变化信号
-    renameRequested = pyqtSignal(str)  # 重命名请求信号，传递文件路径
-    deleteRequested = pyqtSignal(str)  # 删除请求信号，传递文件路径
-    drag_started = pyqtSignal(dict)  # 拖拽开始信号，传递文件信息
-    drag_ended = pyqtSignal(dict, str)  # 拖拽结束信号，传递文件信息和放置目标类型
+    clicked = Signal(str)
+    doubleClicked = Signal(str)
+    selectionChanged = Signal(bool, str)
+    previewStateChanged = Signal(bool, str)  # 预览状态变化信号
+    renameRequested = Signal(str)  # 重命名请求信号，传递文件路径
+    deleteRequested = Signal(str)  # 删除请求信号，传递文件路径
+    drag_started = Signal(dict)  # 拖拽开始信号，传递文件信息
+    drag_ended = Signal(dict, str)  # 拖拽结束信号，传递文件信息和放置目标类型
+
+    # 类变量：跟踪当前显示按钮的卡片实例，用于确保只有一个卡片显示按钮
+    _current_card_with_visible_buttons = None
     
-    @pyqtProperty(QColor)
+    @Property(QColor)
     def anim_bg_color(self):
         return self._anim_bg_color
     
@@ -86,7 +89,7 @@ class CustomFileHorizontalCard(QWidget):
         self._anim_bg_color = color
         self._apply_animated_style()
     
-    @pyqtProperty(QColor)
+    @Property(QColor)
     def anim_border_color(self):
         return self._anim_border_color
     
@@ -124,15 +127,16 @@ class CustomFileHorizontalCard(QWidget):
 
     def __init__(self, file_path=None, parent=None, enable_multiselect=True, display_name=None, single_line_mode=False):
         super().__init__(parent)
-        
+
         # 获取应用实例和DPI缩放因子
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 获取全局字体
+
+        # 获取全局字体和默认字体大小
         self.global_font = getattr(app, 'global_font', QFont())
-        
+        self.default_font_size = getattr(app, 'default_font_size', 9)
+
         # 设置组件字体
         self.setFont(self.global_font)
         
@@ -235,14 +239,14 @@ class CustomFileHorizontalCard(QWidget):
         self.name_label.setMinimumWidth(0)
         # 忽略文字自然长度，允许自由收缩
         self.name_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        # 设置字体大小和粗细
+        # 设置字体大小和粗细，直接使用全局字体让Qt6自动处理DPI缩放
         name_font = QFont(self.global_font)
         name_font.setBold(True)  # 字重600
         self.name_label.setFont(name_font)
         # 初始设置默认样式，后续会在update_card_style中更新为主题颜色
         self.name_label.setStyleSheet("background: transparent; border: none;")
         text_layout.addWidget(self.name_label)
-        
+
         # 文件信息标签
         self.info_label = QLabel()
         self.info_label.setAlignment(Qt.AlignLeft)
@@ -251,7 +255,7 @@ class CustomFileHorizontalCard(QWidget):
         self.info_label.setMinimumWidth(0)
         # 忽略文字自然长度，允许自由收缩
         self.info_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        # 设置字体大小
+        # 设置字体大小，直接使用全局字体让Qt6自动处理DPI缩放
         info_font = QFont(self.global_font)
         info_font.setWeight(QFont.Normal)  # 设置为正常字重
         self.info_label.setFont(info_font)
@@ -376,7 +380,7 @@ class CustomFileHorizontalCard(QWidget):
     def set_previewing(self, previewing):
         """
         设置预览状态
-        
+
         参数：
             previewing (bool): 是否处于预览态
         """
@@ -384,6 +388,9 @@ class CustomFileHorizontalCard(QWidget):
             self._is_previewing = previewing
             if previewing:
                 self._is_mouse_over = False
+                # 隐藏覆盖层（重命名/删除按钮），避免预览态时按钮卡住显示
+                self.overlay_widget.hide()
+                self.overlay_widget.setWindowOpacity(0.0)
                 self._trigger_preview_animation()
             else:
                 self._trigger_unpreview_animation()
@@ -629,7 +636,11 @@ class CustomFileHorizontalCard(QWidget):
                 if os.path.exists(unknown_icon_path):
                     svg_widget = SvgRenderer.render_unknown_file_icon(unknown_icon_path, "?", scaled_icon_size, self.dpi_scale)
                     if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
-                        for child in self.icon_display.findChildren((QLabel, QSvgWidget, QWidget)):
+                        for child in self.icon_display.findChildren(QLabel):
+                            child.deleteLater()
+                        for child in self.icon_display.findChildren(QSvgWidget):
+                            child.deleteLater()
+                        for child in self.icon_display.findChildren(QWidget):
                             child.deleteLater()
                         svg_widget.setParent(self.card_container)
                         svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
@@ -665,7 +676,7 @@ class CustomFileHorizontalCard(QWidget):
                 except Exception:
                     pass
 
-                from PyQt5.QtWidgets import QFileIconProvider
+                from PySide6.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
                 icon = icon_provider.icon(file_info)
 
@@ -700,7 +711,7 @@ class CustomFileHorizontalCard(QWidget):
 
             if use_thumbnail:
                 scaled_icon_size = int(40 * self.dpi_scale)
-                from PyQt5.QtGui import QImage
+                from PySide6.QtGui import QImage
                 image = QImage(thumbnail_path)
                 #print(f"[DEBUG] QImage加载结果: isNull={image.isNull()}")
                 if not image.isNull():
@@ -726,7 +737,9 @@ class CustomFileHorizontalCard(QWidget):
                     svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale)
                 
                 if isinstance(svg_widget, QSvgWidget):
-                    for child in self.icon_display.findChildren((QLabel, QSvgWidget)):
+                    for child in self.icon_display.findChildren(QLabel):
+                        child.deleteLater()
+                    for child in self.icon_display.findChildren(QSvgWidget):
                         child.deleteLater()
                     svg_widget.setParent(self.card_container)
                     svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
@@ -735,7 +748,9 @@ class CustomFileHorizontalCard(QWidget):
                     svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                     svg_widget.show()
                 elif isinstance(svg_widget, QLabel):
-                    for child in self.icon_display.findChildren((QLabel, QSvgWidget)):
+                    for child in self.icon_display.findChildren(QLabel):
+                        child.deleteLater()
+                    for child in self.icon_display.findChildren(QSvgWidget):
                         child.deleteLater()
                     svg_widget.setParent(self.card_container)
                     svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
@@ -744,7 +759,11 @@ class CustomFileHorizontalCard(QWidget):
                     svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                     svg_widget.show()
                 elif isinstance(svg_widget, QWidget):
-                    for child in self.icon_display.findChildren((QLabel, QSvgWidget, QWidget)):
+                    for child in self.icon_display.findChildren(QLabel):
+                        child.deleteLater()
+                    for child in self.icon_display.findChildren(QSvgWidget):
+                        child.deleteLater()
+                    for child in self.icon_display.findChildren(QWidget):
                         child.deleteLater()
                     svg_widget.setParent(self.card_container)
                     svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
@@ -830,7 +849,17 @@ class CustomFileHorizontalCard(QWidget):
         
         def recursive_delete(widget):
             """递归删除所有子组件"""
-            for child in widget.findChildren((QLabel, QSvgWidget, QWidget)):
+            for child in widget.findChildren(QLabel):
+                if child.parent() == widget:
+                    recursive_delete(child)
+                    child.hide()
+                    child.deleteLater()
+            for child in widget.findChildren(QSvgWidget):
+                if child.parent() == widget:
+                    recursive_delete(child)
+                    child.hide()
+                    child.deleteLater()
+            for child in widget.findChildren(QWidget):
                 if child.parent() == widget:
                     recursive_delete(child)
                     child.hide()
@@ -869,7 +898,7 @@ class CustomFileHorizontalCard(QWidget):
     
     def _init_animations(self):
         """初始化卡片状态切换动画"""
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         from freeassetfilter.core.settings_manager import SettingsManager
         
         app = QApplication.instance()
@@ -1009,8 +1038,8 @@ class CustomFileHorizontalCard(QWidget):
     
     def update_card_style(self):
         """更新卡片样式"""
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtGui import QColor
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QColor
         
         normal_border_width = int(1 * self.dpi_scale)
         scaled_border_radius = int(8 * self.dpi_scale)
@@ -1147,21 +1176,18 @@ class CustomFileHorizontalCard(QWidget):
 
     def mouseMoveEvent(self, event):
         """处理鼠标移动事件"""
-        if self._touch_start_pos is not None:
+        if self._is_dragging and self._drag_card:
+            # 拖拽过程中，更新浮动卡片位置
+            self._update_drag_card_position(event.globalPos())
+            return
+        elif self._touch_start_pos is not None:
             delta = event.pos() - self._touch_start_pos
             if abs(delta.x()) > self._touch_drag_threshold or abs(delta.y()) > self._touch_drag_threshold:
                 self._is_touch_dragging = True
-                # 如果正在长按，取消长按定时器
-                if self._is_long_pressing:
+                # 如果移动距离超过阈值，取消长按
+                if not self._is_dragging:
                     self._long_press_timer.stop()
                     self._is_long_pressing = False
-                    # 如果还没有开始拖拽，启动拖拽
-                    if not self._is_dragging:
-                        self._start_drag()
-
-        # 如果正在拖拽，更新拖拽卡片位置
-        if self._is_dragging:
-            self._update_drag_card_position(event.globalPos())
 
         super().mouseMoveEvent(event)
 
@@ -1212,12 +1238,14 @@ class CustomFileHorizontalCard(QWidget):
 
     def eventFilter(self, obj, event):
         """事件过滤器，用于处理鼠标悬停事件"""
-        from PyQt5.QtCore import QEvent
-        
+        from PySide6.QtCore import QEvent
+
         if event.type() == QEvent.Enter:
             if not self._is_mouse_over:
                 self._is_mouse_over = True
                 self._trigger_hover_animation()
+                # 隐藏其他卡片的按钮，确保只有一个卡片显示按钮
+                self._hide_other_card_buttons()
                 # 确保覆盖层大小与卡片容器一致
                 self.on_card_container_resize(None)
                 # 强制刷新布局，确保按钮位置正确
@@ -1225,16 +1253,44 @@ class CustomFileHorizontalCard(QWidget):
                 self.overlay_widget.layout().activate()
                 self.overlay_widget.setWindowOpacity(1.0)
                 self.overlay_widget.show()
+                # 更新当前显示按钮的卡片引用
+                CustomFileHorizontalCard._current_card_with_visible_buttons = self
         elif event.type() == QEvent.Leave:
             if self._is_mouse_over:
                 self._is_mouse_over = False
-                self._trigger_leave_animation()
+                # 只有在非拖拽状态下才触发离开动画
+                if not self._is_dragging:
+                    self._trigger_leave_animation()
                 self.overlay_widget.hide()
                 self.overlay_widget.setWindowOpacity(0.0)
-            self._touch_start_pos = None
-            self._is_touch_dragging = False
-        
+                # 如果当前卡片是显示按钮的卡片，清除引用
+                if CustomFileHorizontalCard._current_card_with_visible_buttons is self:
+                    CustomFileHorizontalCard._current_card_with_visible_buttons = None
+            # 只有在非拖拽状态下才重置触摸相关状态
+            if not self._is_dragging:
+                self._touch_start_pos = None
+                self._is_touch_dragging = False
+
         return super().eventFilter(obj, event)
+
+    def _hide_other_card_buttons(self):
+        """
+        隐藏其他卡片的按钮
+        确保在同一时间只有一个卡片显示重命名/删除按钮
+        """
+        current_card = CustomFileHorizontalCard._current_card_with_visible_buttons
+        if current_card is not None and current_card is not self:
+            # 检查卡片是否仍然有效（未被销毁）
+            try:
+                if current_card.isVisible():
+                    current_card._is_mouse_over = False
+                    current_card._trigger_leave_animation()
+                    current_card.overlay_widget.hide()
+                    current_card.overlay_widget.setWindowOpacity(0.0)
+            except RuntimeError:
+                # 卡片可能已被销毁，忽略错误
+                pass
+            CustomFileHorizontalCard._current_card_with_visible_buttons = None
     
     def _trigger_hover_animation(self):
         """触发悬停动画"""
@@ -1535,7 +1591,7 @@ class CustomFileHorizontalCard(QWidget):
         main_layout.setSpacing(0)
         
         # 创建内部卡片（带圆角和背景色）
-        from PyQt5.QtWidgets import QFrame
+        from PySide6.QtWidgets import QFrame
         inner_card = QFrame()
         inner_card.setObjectName("InnerCard")
         
@@ -1590,11 +1646,11 @@ class CustomFileHorizontalCard(QWidget):
         else:
             text_layout.setSpacing(int(4 * self.dpi_scale))
         text_layout.setAlignment(Qt.AlignVCenter)
-        
-        # 创建文件名标签
+
+        # 创建文件名标签，直接使用全局字体让Qt6自动处理DPI缩放
         name_font = QFont(self.global_font)
         name_font.setBold(True)
-        
+
         name_label = QLabel()
         name_label.setAlignment(Qt.AlignLeft)
         name_label.setWordWrap(False)
@@ -1602,12 +1658,12 @@ class CustomFileHorizontalCard(QWidget):
         name_label.setStyleSheet(f"color: {secondary_color}; background: transparent; border: none;")
         name_label.setText(self.name_label.text())
         text_layout.addWidget(name_label)
-        
-        # 创建文件信息标签
+
+        # 创建文件信息标签，直接使用全局字体让Qt6自动处理DPI缩放
         if not self._single_line_mode:
             info_font = QFont(self.global_font)
             info_font.setWeight(QFont.Normal)
-            
+
             info_label = QLabel()
             info_label.setAlignment(Qt.AlignLeft)
             info_label.setWordWrap(False)
@@ -1729,7 +1785,7 @@ class CustomFileHorizontalCard(QWidget):
                 selector_top_left = file_selector.mapToGlobal(file_selector.rect().topLeft())
                 selector_bottom_right = file_selector.mapToGlobal(file_selector.rect().bottomRight())
                 # 创建全局矩形
-                from PyQt5.QtCore import QRect
+                from PySide6.QtCore import QRect
                 selector_global_rect = QRect(selector_top_left, selector_bottom_right)
                 if selector_global_rect.contains(global_pos):
                     return 'file_selector'
@@ -1742,7 +1798,7 @@ class CustomFileHorizontalCard(QWidget):
                 previewer_top_left = previewer.mapToGlobal(previewer.rect().topLeft())
                 previewer_bottom_right = previewer.mapToGlobal(previewer.rect().bottomRight())
                 # 创建全局矩形
-                from PyQt5.QtCore import QRect
+                from PySide6.QtCore import QRect
                 previewer_global_rect = QRect(previewer_top_left, previewer_bottom_right)
                 if previewer_global_rect.contains(global_pos):
                     return 'previewer'
@@ -1776,8 +1832,8 @@ class CustomFileHorizontalCard(QWidget):
             parent_container: 拖拽卡片中的图标容器
         """
         try:
-            from PyQt5.QtSvg import QSvgWidget
-            from PyQt5.QtGui import QPixmap
+            from PySide6.QtSvgWidgets import QSvgWidget
+            from PySide6.QtGui import QPixmap
 
             # 获取图标尺寸 - 使用与原始卡片相同的图标大小 (40 * dpi_scale)
             icon_size = int(40 * self.dpi_scale)

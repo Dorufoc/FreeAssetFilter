@@ -326,7 +326,7 @@ def show_dependency_error(missing_deps, version_issues):
 
     message += "\n安装命令：\npip install -r requirements.txt"
 
-    # 使用简单的print输出，避免依赖PyQt5
+    # 使用简单的print输出，避免依赖PySide6
     print("\n" + "="*50)
     print("依赖错误")
     print("="*50)
@@ -335,7 +335,7 @@ def show_dependency_error(missing_deps, version_issues):
 
     # 尝试使用自定义消息框显示错误
     try:
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
         app = QApplication.instance()
         if app:
@@ -343,9 +343,9 @@ def show_dependency_error(missing_deps, version_issues):
             msg_box.set_title("依赖警告")
             msg_box.set_text(message)
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            msg_box.exec_()
+            msg_box.exec()
     except Exception:
-        # 如果PyQt5或自定义消息框不可用，只使用print输出
+        # 如果PySide6或自定义消息框不可用，只使用print输出
         pass
 
     # 不要强制退出，让应用程序继续运行

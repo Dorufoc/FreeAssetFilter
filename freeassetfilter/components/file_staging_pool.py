@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -22,10 +22,10 @@ import tempfile
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QScrollArea, QGroupBox, QListWidget, QListWidgetItem, 
-    QSizePolicy, QCheckBox, QMenu, QAction, QProgressBar, QFileDialog, QApplication
+    QSizePolicy, QCheckBox, QMenu, QProgressBar, QFileDialog, QApplication
 )
 
 # 导入自定义控件
@@ -35,10 +35,10 @@ from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCar
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from PyQt5.QtCore import (
-    Qt, pyqtSignal, QFileInfo
+from PySide6.QtCore import (
+    Qt, Signal, QFileInfo
 )
-from PyQt5.QtGui import QIcon, QColor, QPixmap, QFont
+from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QAction
 
 # 尝试导入PIL库，用于生成缩略图
 try:
@@ -54,21 +54,21 @@ class FileStagingPool(QWidget):
     """
     
     # 定义信号
-    item_right_clicked = pyqtSignal(dict)  # 当项目被右键点击时发出
-    item_left_clicked = pyqtSignal(dict)  # 当项目被左键点击时发出
-    remove_from_selector = pyqtSignal(dict)  # 当需要从选择器中移除文件时发出
-    file_added_to_pool = pyqtSignal(dict)  # 当文件被添加到储存池时发出
-    update_progress = pyqtSignal(int)  # 更新进度条信号
-    export_finished = pyqtSignal(int, int, list)  # 导出完成信号
-    folder_size_calculated = pyqtSignal(dict)  # 文件夹体积计算完成信号
-    navigate_to_path = pyqtSignal(str, dict)  # 当需要导航到某个路径时发出，第二个参数是可选的文件信息
+    item_right_clicked = Signal(dict)  # 当项目被右键点击时发出
+    item_left_clicked = Signal(dict)  # 当项目被左键点击时发出
+    remove_from_selector = Signal(dict)  # 当需要从选择器中移除文件时发出
+    file_added_to_pool = Signal(dict)  # 当文件被添加到储存池时发出
+    update_progress = Signal(int)  # 更新进度条信号
+    export_finished = Signal(int, int, list)  # 导出完成信号
+    folder_size_calculated = Signal(dict)  # 文件夹体积计算完成信号
+    navigate_to_path = Signal(str, dict)  # 当需要导航到某个路径时发出，第二个参数是可选的文件信息
     
     def __init__(self, parent=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtGui import QFont
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QFont
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
@@ -422,7 +422,7 @@ class FileStagingPool(QWidget):
             confirm_msg.close()
         
         confirm_msg.buttonClicked.connect(on_confirm_clicked)
-        confirm_msg.exec_()
+        confirm_msg.exec()
         
         if is_confirmed:
             # 保存当前项目列表的副本，因为清空操作会修改原列表
@@ -649,7 +649,7 @@ class FileStagingPool(QWidget):
                 input_box.close()
             
             input_box.buttonClicked.connect(on_button_clicked)
-            input_box.exec_()
+            input_box.exec()
             
             ok = button_clicked == 0
             new_name_input = input_box.get_input() if ok else ""
@@ -665,7 +665,7 @@ class FileStagingPool(QWidget):
                 warning_msg.set_text("文件名不能为空！")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
-                warning_msg.exec_()
+                warning_msg.exec()
                 continue
             
             if new_name_input == current_name:
@@ -679,7 +679,7 @@ class FileStagingPool(QWidget):
                 warning_msg.set_text("文件名包含非法字符！请避免使用：< > : \" / \\ | ? * 以及控制字符")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
-                warning_msg.exec_()
+                warning_msg.exec()
                 continue
             
             # 生成新的文件名
@@ -703,7 +703,7 @@ class FileStagingPool(QWidget):
                                     f"当前估计总长度：{estimated_total_length}字符，建议缩短文件名。")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
-                warning_msg.exec_()
+                warning_msg.exec()
                 continue
             
             # 更新文件信息中的显示名称
@@ -749,7 +749,7 @@ class FileStagingPool(QWidget):
             info_msg.set_text("文件临时存储池中没有文件可以导出")
             info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             info_msg.buttonClicked.connect(info_msg.close)
-            info_msg.exec_()
+            info_msg.exec()
             return
         
         # 检查是否有文件正在计算体积
@@ -764,7 +764,7 @@ class FileStagingPool(QWidget):
             warning_msg.set_text(f"有 {calculating_count} 个文件夹正在计算体积，请等待计算完成后再导出。")
             warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             warning_msg.buttonClicked.connect(warning_msg.close)
-            warning_msg.exec_()
+            warning_msg.exec()
             return
         
         # 获取所有文件信息
@@ -797,7 +797,7 @@ class FileStagingPool(QWidget):
                     warning_msg.close()
                 
                 warning_msg.buttonClicked.connect(on_button_clicked)
-                warning_msg.exec_()
+                warning_msg.exec()
                 
                 if user_choice == 0:  # 继续
                     break
@@ -824,7 +824,7 @@ class FileStagingPool(QWidget):
                         error_msg.close()
                     
                     error_msg.buttonClicked.connect(on_error_button_clicked)
-                    error_msg.exec_()
+                    error_msg.exec()
                     
                     if user_choice == 0:  # 重新选择
                         continue
@@ -863,7 +863,7 @@ class FileStagingPool(QWidget):
         self.copy_files(all_files, target_dir)
         
         # 显示提示窗口
-        progress_msg_box.exec_()
+        progress_msg_box.exec()
     
     def on_update_progress(self, value):
         """
@@ -916,7 +916,7 @@ class FileStagingPool(QWidget):
             result_msg.set_text(error_msg)
         result_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
         result_msg.buttonClicked.connect(result_msg.close)
-        result_msg.exec_()
+        result_msg.exec()
     
     def on_folder_size_calculated(self, file_info):
         """
@@ -1005,17 +1005,17 @@ class FileStagingPool(QWidget):
             msg_box.close()
         
         msg_box.buttonClicked.connect(on_button_clicked)
-        msg_box.exec_()
+        msg_box.exec()
         
         # 根据用户选择执行相应操作
         if user_choice == 0:  # 导入数据
             # 创建一个临时对话框实例用于传递给import_data方法
-            from PyQt5.QtWidgets import QDialog
+            from PySide6.QtWidgets import QDialog
             temp_dialog = QDialog(self)
             self.import_data(temp_dialog)
         elif user_choice == 1:  # 导出数据
             # 创建一个临时对话框实例用于传递给export_data方法
-            from PyQt5.QtWidgets import QDialog
+            from PySide6.QtWidgets import QDialog
             temp_dialog = QDialog(self)
             self.export_data(temp_dialog)
         # 否则取消操作，不做任何处理
@@ -1027,7 +1027,7 @@ class FileStagingPool(QWidget):
         Args:
             dialog (QDialog): 父对话框
         """
-        from PyQt5.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
         import json
         
         # 打开文件选择对话框，选择JSON文件
@@ -1048,7 +1048,7 @@ class FileStagingPool(QWidget):
                     warning_msg.set_text("文件格式不正确，应为JSON数组格式")
                     warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                     warning_msg.buttonClicked.connect(warning_msg.close)
-                    warning_msg.exec_()
+                    warning_msg.exec()
                     return
                 
                 # 询问用户是否要清空现有数据
@@ -1066,7 +1066,7 @@ class FileStagingPool(QWidget):
                     confirm_msg.close()
                 
                 confirm_msg.buttonClicked.connect(on_confirm_clicked)
-                confirm_msg.exec_()
+                confirm_msg.exec()
                 
                 if is_confirmed:
                     # 清空现有数据
@@ -1102,7 +1102,7 @@ class FileStagingPool(QWidget):
                 info_msg.set_text(f"成功导入 {success_count} 个文件，{len(unlinked_files)} 个文件需要手动链接")
                 info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 info_msg.buttonClicked.connect(info_msg.close)
-                info_msg.exec_()
+                info_msg.exec()
                 
                 # 关闭对话框
                 dialog.accept()
@@ -1112,14 +1112,14 @@ class FileStagingPool(QWidget):
                 warning_msg.set_text("JSON文件格式不正确")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
-                warning_msg.exec_()
+                warning_msg.exec()
             except Exception as e:
                 warning_msg = CustomMessageBox(self)
                 warning_msg.set_title("导入失败")
                 warning_msg.set_text(f"导入过程中发生错误: {str(e)}")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
-                warning_msg.exec_()
+                warning_msg.exec()
     
     def calculate_md5(self, file_path):
         """
@@ -1152,7 +1152,7 @@ class FileStagingPool(QWidget):
         Args:
             unlinked_files (list): 未链接文件列表
         """
-        from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
                                      QListWidget, QListWidgetItem, QMenu, QAction, 
                                      QFileDialog, QLabel, QGridLayout)
         
@@ -1206,7 +1206,7 @@ class FileStagingPool(QWidget):
         main_layout.addLayout(button_layout)
         
         # 显示对话框
-        dialog.exec_()
+        dialog.exec()
         
         # 处理已链接的文件
         for file_item in unlinked_files:
@@ -1226,7 +1226,8 @@ class FileStagingPool(QWidget):
             pos (QPoint): 鼠标位置
             unlinked_files (list): 未链接文件列表
         """
-        from PyQt5.QtWidgets import QMenu, QAction
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtGui import QAction
         
         # 获取当前选中的项
         selected_items = self.unlinked_list_widget.selectedItems()
@@ -1255,7 +1256,7 @@ class FileStagingPool(QWidget):
             unlinked_files (list): 未链接文件列表
             list_widget (QListWidget): 列表控件
         """
-        from PyQt5.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
         
         # 选择一个目录
         dir_path = QFileDialog.getExistingDirectory(self, "选择文件目录")
@@ -1302,7 +1303,7 @@ class FileStagingPool(QWidget):
                                 confirm_msg.close()
                             
                             confirm_msg.buttonClicked.connect(on_confirm_clicked)
-                            confirm_msg.exec_()
+                            confirm_msg.exec()
                                 
                             if is_confirmed:
                                 file_item["status"] = "linked"
@@ -1318,7 +1319,7 @@ class FileStagingPool(QWidget):
         info_msg.set_text(f"成功匹配 {matched_count} 个文件")
         info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
         info_msg.buttonClicked.connect(info_msg.close)
-        info_msg.exec_()
+        info_msg.exec()
     
     def manual_link_selected_files(self, unlinked_files, selected_items):
         """
@@ -1328,7 +1329,7 @@ class FileStagingPool(QWidget):
             unlinked_files (list): 未链接文件列表
             selected_items (list): 选中的列表项
         """
-        from PyQt5.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
         
         for item in selected_items:
             index = item.data(Qt.UserRole)
@@ -1364,7 +1365,7 @@ class FileStagingPool(QWidget):
                             confirm_msg.close()
                         
                         confirm_msg.buttonClicked.connect(on_confirm_clicked)
-                        confirm_msg.exec_()
+                        confirm_msg.exec()
                         
                         if not is_confirmed:
                             continue
@@ -1416,7 +1417,7 @@ class FileStagingPool(QWidget):
             confirm_msg.close()
         
         confirm_msg.buttonClicked.connect(on_confirm_clicked)
-        confirm_msg.exec_()
+        confirm_msg.exec()
         
         if is_confirmed:
             for file_item in unlinked_files:
@@ -1470,7 +1471,7 @@ class FileStagingPool(QWidget):
                 confirm_msg.close()
             
             confirm_msg.buttonClicked.connect(on_confirm_clicked)
-            confirm_msg.exec_()
+            confirm_msg.exec()
             
             if is_confirmed:
                 # 忽略所有未处理的文件
@@ -1488,7 +1489,7 @@ class FileStagingPool(QWidget):
         Args:
             dialog (QDialog): 父对话框
         """
-        from PyQt5.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
         import json
         
         # 检查是否有数据可导出
@@ -1498,7 +1499,7 @@ class FileStagingPool(QWidget):
             info_msg.set_text("文件存储池中没有数据可以导出")
             info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             info_msg.buttonClicked.connect(info_msg.close)
-            info_msg.exec_()
+            info_msg.exec()
             return
         
         # 生成带时间戳的默认文件名
@@ -1522,7 +1523,7 @@ class FileStagingPool(QWidget):
                 info_msg.set_text(f"成功导出 {len(self.items)} 个文件的数据到 {file_path}")
                 info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 info_msg.buttonClicked.connect(lambda: [info_msg.close(), dialog.accept()])
-                info_msg.exec_()
+                info_msg.exec()
                 
                 # 关闭对话框
                 dialog.accept()
@@ -1532,7 +1533,7 @@ class FileStagingPool(QWidget):
                 warning_msg.set_text(f"导出过程中发生错误: {str(e)}")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
-                warning_msg.exec_()
+                warning_msg.exec()
     
     def clear_all_without_confirmation(self):
         """
@@ -1791,7 +1792,7 @@ class FileStagingPool(QWidget):
 
     def _generate_thumbnail_async(self, file_path):
         """异步生成缩略图"""
-        from PyQt5.QtCore import QThreadPool, QRunnable
+        from PySide6.QtCore import QThreadPool, QRunnable
 
         class ThumbnailGenerator(QRunnable):
             def __init__(self, file_path, callback):
@@ -2001,7 +2002,7 @@ class FileStagingPool(QWidget):
 # 测试代码
 if __name__ == "__main__":
     import sys
-    from PyQt5.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication, QMainWindow
     
     app = QApplication(sys.argv)
     window = QMainWindow()
@@ -2024,4 +2025,4 @@ if __name__ == "__main__":
     pool.add_file(test_file)
     
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

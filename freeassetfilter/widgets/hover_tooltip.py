@@ -10,9 +10,9 @@ FreeAssetFilter 悬浮详细信息组件
 """
 
 import weakref
-from PyQt5.QtWidgets import QWidget, QLabel, QApplication
-from PyQt5.QtCore import Qt, QPoint, QTimer, QRect, QEvent, QPropertyAnimation, QEasingCurve, pyqtProperty, QByteArray
-from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase, QTransform, QCursor
+from PySide6.QtWidgets import QWidget, QLabel, QApplication
+from PySide6.QtCore import Qt, QPoint, QTimer, QRect, QEvent, QPropertyAnimation, QEasingCurve, Property, QByteArray
+from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase, QTransform, QCursor
 
 from freeassetfilter.utils.mouse_activity_monitor import MouseActivityMonitor
 
@@ -39,7 +39,7 @@ class HoverTooltip(QWidget):
         self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         
         # 获取应用实例，使用main中定义的全局字体
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         
         # 获取DPI缩放因子
@@ -151,7 +151,7 @@ class HoverTooltip(QWidget):
         self._opacity_value = max(0.0, min(1.0, opacity))
         self.setWindowOpacity(self._opacity_value)
 
-    _tooltip_opacity = pyqtProperty(float, _get_opacity, _set_opacity)
+    _tooltip_opacity = Property(float, _get_opacity, _set_opacity)
 
     def _get_scale(self):
         """获取缩放比例"""
@@ -162,7 +162,7 @@ class HoverTooltip(QWidget):
         self._scale_value = max(0.01, min(2.0, scale))
         self.update_transform()
 
-    _tooltip_scale = pyqtProperty(float, _get_scale, _set_scale)
+    _tooltip_scale = Property(float, _get_scale, _set_scale)
 
     def update_transform(self):
         """更新缩放变换"""
@@ -437,8 +437,9 @@ class HoverTooltip(QWidget):
         pos = self.last_mouse_pos
         pos.setY(pos.y() + int(5 * self.dpi_scale))
         
-        # 确保提示框在屏幕内
-        screen_rect = QApplication.desktop().screenGeometry()
+        # 确保提示框在屏幕内 (Qt6中使用primaryScreen替代desktop)
+        screen = QApplication.primaryScreen()
+        screen_rect = screen.geometry() if screen else self.screen().geometry()
         margin = int(2.5 * self.dpi_scale)
         if pos.x() + self.width() > screen_rect.width():
             pos.setX(screen_rect.width() - self.width() - margin)
@@ -523,7 +524,7 @@ class HoverTooltip(QWidget):
                 
                 # 获取文件信息
                 import os
-                from PyQt5.QtCore import QFileInfo
+                from PySide6.QtCore import QFileInfo
                 file_info = QFileInfo(file_path)
                 
                 # 判断是文件夹还是文件
@@ -599,7 +600,7 @@ class HoverTooltip(QWidget):
                             size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
                     
                     # 使用QFileInfo获取更准确的文件信息，特别是日期
-                    from PyQt5.QtCore import QFileInfo, QDateTime
+                    from PySide6.QtCore import QFileInfo, QDateTime
                     qfile_info = QFileInfo(file_path)
                     
                     # 日期格式化
@@ -656,7 +657,7 @@ class HoverTooltip(QWidget):
                     return item.text()
             
             # 递归检查所有子控件和布局
-            from PyQt5.QtWidgets import QWidget, QLayout
+            from PySide6.QtWidgets import QWidget, QLayout
             
             # 检查所有直接子控件
             for child in w.children():
@@ -720,7 +721,7 @@ class HoverTooltip(QWidget):
                         file_name = os.path.basename(file_path)
                     
                     # 获取完整文件信息
-                    from PyQt5.QtCore import QFileInfo
+                    from PySide6.QtCore import QFileInfo
                     file_info = QFileInfo(file_path)
                     
                     # 判断是文件夹还是文件
@@ -776,7 +777,7 @@ class HoverTooltip(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         
         # 获取颜色设置
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         
         # 从应用实例获取设置管理器，而不是创建新实例

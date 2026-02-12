@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -24,8 +24,8 @@ from itertools import groupby
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtCore import (
-    Qt, QDateTime, QThread, pyqtSignal
+from PySide6.QtCore import (
+    Qt, QDateTime, QThread, Signal
 )
 
 
@@ -130,8 +130,8 @@ class FolderScanner(QThread):
     使用QThread执行文件扫描与CSV读写，确保UI线程响应速度
     增强版支持生成特定格式的CSV和JSON记录
     """
-    scan_finished = pyqtSignal(list, str, str)  # 扫描完成后发送结果：事件列表、CSV路径、JSON路径
-    progress = pyqtSignal(int, int)  # 进度信号：已完成数量，总数
+    scan_finished = Signal(list, str, str)  # 扫描完成后发送结果：事件列表、CSV路径、JSON路径
+    progress = Signal(int, int)  # 进度信号：已完成数量，总数
     
     def __init__(self, path):
         super().__init__()
@@ -360,8 +360,8 @@ class CSVParser(QThread):
     """
     异步解析CSV文件，生成TimelineEvent列表
     """
-    finished = pyqtSignal(list)  # 解析完成后发送结果
-    progress = pyqtSignal(int, int)  # 进度信号：已完成数量，总数
+    finished = Signal(list)  # 解析完成后发送结果
+    progress = Signal(int, int)  # 进度信号：已完成数量，总数
     
     def __init__(self, file_path):
         super().__init__()

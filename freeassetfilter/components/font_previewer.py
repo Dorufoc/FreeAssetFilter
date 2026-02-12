@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -26,15 +26,15 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
     QSizePolicy, QApplication, QFrame
 )
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QFont, QFontDatabase, QPalette, QColor
 )
-from PyQt5.QtCore import (
-    Qt, pyqtSignal, QThread, QMutex, QMutexLocker
+from PySide6.QtCore import (
+    Qt, Signal, QThread, QMutex, QMutexLocker
 )
 
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
@@ -67,7 +67,7 @@ class ZoomDisabledTextEdit(QTextEdit):
     """
     
     # 信号：字体大小变化通知，参数为变化量（正数表示增大，负数表示减小）
-    font_size_change_requested = pyqtSignal(int)
+    font_size_change_requested = Signal(int)
     
     def __init__(self, parent=None):
         """
@@ -107,8 +107,8 @@ class ZoomDisabledTextEdit(QTextEdit):
 class FontLoadThread(QThread):
     """字体加载后台线程"""
 
-    finished = pyqtSignal(bool, str, int)
-    error = pyqtSignal(str)
+    finished = Signal(bool, str, int)
+    error = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -257,10 +257,8 @@ class FontPreviewWidget(QWidget):
         # 连接字体大小变化信号
         self.text_edit.font_size_change_requested.connect(self._on_font_size_change_requested)
         
-        # 设置默认字体
-        default_font = QFont()
-        default_font.setPointSize(int(self.default_font_size * self.dpi_scale))
-        default_font.setWeight(QFont.Normal)
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        default_font = QFont(self.global_font)
         self.text_edit.setFont(default_font)
 
         app = QApplication.instance()
@@ -335,7 +333,8 @@ class FontPreviewWidget(QWidget):
             font = QFont(self.current_font_family)
         else:
             font = QFont()
-        font.setPointSize(int(size * self.dpi_scale))
+        # 使用原始字体大小，让Qt6自动处理DPI缩放
+        font.setPointSize(size)
         font.setWeight(QFont.Normal)
         self.text_edit.setFont(font)
     
@@ -361,8 +360,9 @@ class FontPreviewWidget(QWidget):
         self.current_font_family = ""
 
         # 重置文本编辑器为默认字体
+        # 使用原始字体大小，让Qt6自动处理DPI缩放
         default_font = QFont()
-        default_font.setPointSize(int(self.default_font_size * self.dpi_scale))
+        default_font.setPointSize(self.default_font_size)
         default_font.setWeight(QFont.Normal)
         self.text_edit.setFont(default_font)
 
@@ -428,7 +428,8 @@ class FontPreviewWidget(QWidget):
         # 创建字体对象
         font = QFont(self.current_font_family)
         font_size = self.font_size_slider.value()
-        font.setPointSize(int(font_size * self.dpi_scale))
+        # 使用原始字体大小，让Qt6自动处理DPI缩放
+        font.setPointSize(font_size)
         font.setWeight(QFont.Normal)
         
         # 应用到文本编辑器
@@ -571,4 +572,4 @@ if __name__ == "__main__":
         previewer.preview_widget.text_edit.setPlainText("请提供字体文件路径作为参数")
     
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

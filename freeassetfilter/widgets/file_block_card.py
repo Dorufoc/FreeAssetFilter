@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -19,10 +19,10 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import sys
 import os
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy, QApplication, QGraphicsDropShadowEffect
-from PyQt5.QtCore import Qt, pyqtSignal, QEvent, QSize, QPropertyAnimation, pyqtProperty, QEasingCurve, QParallelAnimationGroup, QTimer, QPoint
-from PyQt5.QtGui import QFont, QFontMetrics, QPixmap, QColor, QPainter, QCursor
-from PyQt5.QtSvg import QSvgWidget
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy, QApplication, QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, Signal, QEvent, QSize, QPropertyAnimation, Property, QEasingCurve, QParallelAnimationGroup, QTimer, QPoint
+from PySide6.QtGui import QFont, QFontMetrics, QPixmap, QColor, QPainter, QCursor
+from PySide6.QtSvgWidgets import QSvgWidget
 
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.core.settings_manager import SettingsManager
@@ -52,15 +52,15 @@ class FileBlockCard(QWidget):
     - drag_ended: 拖拽结束信号，传递(file_info, drop_target_type)
     """
     
-    clicked = pyqtSignal(dict)
-    right_clicked = pyqtSignal(dict)
-    double_clicked = pyqtSignal(dict)
-    selection_changed = pyqtSignal(dict, bool)
-    preview_state_changed = pyqtSignal(dict, bool)
-    drag_started = pyqtSignal(dict)
-    drag_ended = pyqtSignal(dict, str)
+    clicked = Signal(dict)
+    right_clicked = Signal(dict)
+    double_clicked = Signal(dict)
+    selection_changed = Signal(dict, bool)
+    preview_state_changed = Signal(dict, bool)
+    drag_started = Signal(dict)
+    drag_ended = Signal(dict, str)
     
-    @pyqtProperty(QColor)
+    @Property(QColor)
     def anim_bg_color(self):
         return self._anim_bg_color
     
@@ -69,7 +69,7 @@ class FileBlockCard(QWidget):
         self._anim_bg_color = color
         self._apply_animated_style()
     
-    @pyqtProperty(QColor)
+    @Property(QColor)
     def anim_border_color(self):
         return self._anim_border_color
     
@@ -159,7 +159,8 @@ class FileBlockCard(QWidget):
         
         app = QApplication.instance()
         self.default_font_size = getattr(app, 'default_font_size', 8) if app else 8
-        
+        self.global_font = getattr(app, 'global_font', QFont()) if app else QFont()
+
         self._init_colors()
         self._create_layout()
         self._create_icon()
@@ -259,7 +260,9 @@ class FileBlockCard(QWidget):
                     svg_widget = SvgRenderer.render_svg_to_widget(icon_path, base_icon_size, self.dpi_scale)
                 
                 if isinstance(svg_widget, QSvgWidget):
-                    for child in self.icon_label.findChildren((QLabel, QSvgWidget)):
+                    for child in self.icon_label.findChildren(QLabel):
+                        child.deleteLater()
+                    for child in self.icon_label.findChildren(QSvgWidget):
                         child.deleteLater()
                     svg_widget.setParent(self.icon_label)
                     svg_widget.setFixedSize(base_icon_size, base_icon_size)
@@ -267,7 +270,9 @@ class FileBlockCard(QWidget):
                     svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                     svg_widget.show()
                 elif isinstance(svg_widget, QLabel):
-                    for child in self.icon_label.findChildren((QLabel, QSvgWidget)):
+                    for child in self.icon_label.findChildren(QLabel):
+                        child.deleteLater()
+                    for child in self.icon_label.findChildren(QSvgWidget):
                         child.deleteLater()
                     svg_widget.setParent(self.icon_label)
                     svg_widget.setFixedSize(base_icon_size, base_icon_size)
@@ -275,7 +280,11 @@ class FileBlockCard(QWidget):
                     svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                     svg_widget.show()
                 elif isinstance(svg_widget, QWidget):
-                    for child in self.icon_label.findChildren((QLabel, QSvgWidget, QWidget)):
+                    for child in self.icon_label.findChildren(QLabel):
+                        child.deleteLater()
+                    for child in self.icon_label.findChildren(QSvgWidget):
+                        child.deleteLater()
+                    for child in self.icon_label.findChildren(QWidget):
                         child.deleteLater()
                     svg_widget.setParent(self.icon_label)
                     svg_widget.setFixedSize(base_icon_size, base_icon_size)
@@ -353,14 +362,13 @@ class FileBlockCard(QWidget):
     
     def _create_labels(self):
         """创建文本标签"""
-        # 将文字大小保持默认为系统缩放的1.0倍
-        scaled_font_size = int(self.default_font_size * 1.0)
-        small_font_size = int(scaled_font_size * 0.85)
-        
-        font = QFont()
-        font.setPointSize(scaled_font_size)
-        
-        small_font = QFont()
+        # 直接使用全局字体，让Qt6自动处理DPI缩放
+        # 小字体使用全局字体的0.85倍
+        small_font_size = int(self.global_font.pointSize() * 0.85)
+
+        font = QFont(self.global_font)
+
+        small_font = QFont(self.global_font)
         small_font.setPointSize(small_font_size)
         
         self.name_label = QLabel()
@@ -416,7 +424,7 @@ class FileBlockCard(QWidget):
         """更新时间显示"""
         created = self.file_info.get("created", "")
         if created:
-            from PyQt5.QtCore import QDateTime
+            from PySide6.QtCore import QDateTime
             try:
                 dt = QDateTime.fromString(created, Qt.ISODate)
                 self.time_label.setText(dt.toString("yyyy-MM-dd"))
@@ -763,7 +771,7 @@ class FileBlockCard(QWidget):
     
     def _update_card_style(self):
         """更新卡片背景色和边框样式"""
-        from PyQt5.QtGui import QColor
+        from PySide6.QtGui import QColor
         
         scaled_border_radius = int(8 * self.dpi_scale)
         normal_border_width = int(1 * self.dpi_scale)
@@ -1107,7 +1115,7 @@ class FileBlockCard(QWidget):
         main_layout.setSpacing(0)
         
         # 创建内部卡片（带圆角和背景色）
-        from PyQt5.QtWidgets import QFrame
+        from PySide6.QtWidgets import QFrame
         inner_card = QFrame()
         inner_card.setObjectName("InnerCard")
         inner_card.setStyleSheet(
@@ -1197,29 +1205,28 @@ class FileBlockCard(QWidget):
             print(f"拖拽卡片图标渲染失败: {e}")
         
         layout.addWidget(icon_label, alignment=Qt.AlignCenter)
-        
-        # 创建文件名标签 - 与原卡片一致
-        font = QFont()
-        font.setPointSize(int(self.default_font_size * 1.0))
-        
+
+        # 创建文件名标签 - 与原卡片一致，直接使用全局字体让Qt6自动处理DPI缩放
+        font = QFont(self.global_font)
+
         name_label = QLabel()
         name_label.setAlignment(Qt.AlignCenter)
         name_label.setFont(font)
         name_label.setStyleSheet(f"color: {self.secondary_color}; background: transparent; border: none;")
         name_label.setWordWrap(False)
-        
+
         # 显示文件名（使用与原卡片相同的截断逻辑）
         text = self.file_info.get("name", "")
         font_metrics = QFontMetrics(font)
         max_width = int(60 * self.dpi_scale)
         elided_text = font_metrics.elidedText(text, Qt.ElideRight, max_width)
         name_label.setText(elided_text)
-        
+
         layout.addWidget(name_label)
-        
-        # 创建文件大小标签 - 与原卡片一致
-        small_font = QFont()
-        small_font.setPointSize(int(self.default_font_size * 0.85))
+
+        # 创建文件大小标签 - 与原卡片一致，使用全局字体的0.85倍
+        small_font = QFont(self.global_font)
+        small_font.setPointSize(int(self.global_font.pointSize() * 0.85))
         
         size_label = QLabel()
         size_label.setAlignment(Qt.AlignCenter)
@@ -1244,7 +1251,7 @@ class FileBlockCard(QWidget):
         # 显示时间
         created = self.file_info.get("created", "")
         if created:
-            from PyQt5.QtCore import QDateTime
+            from PySide6.QtCore import QDateTime
             try:
                 dt = QDateTime.fromString(created, Qt.ISODate)
                 time_label.setText(dt.toString("yyyy-MM-dd"))

@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -22,7 +22,7 @@ import time
 import ctypes
 import threading
 from ctypes import *
-from PyQt5.QtCore import QObject
+from PySide6.QtCore import QObject
 
 # Windows 错误模式常量
 SEM_FAILCRITICALERRORS = 0x0001
@@ -268,6 +268,8 @@ class MPVPlayerCore(QObject):
         # 事件处理相关
         self._event_thread = None
         self._event_thread_running = False
+        self._event_loop_paused = False  # 事件循环暂停标志
+        self._event_loop_pause_lock = threading.Condition(self._mpv_lock)  # 用于暂停/恢复事件循环
         self._property_observers = {}
         self._next_observer_id = 1
         
@@ -418,32 +420,87 @@ class MPVPlayerCore(QObject):
             import traceback
             traceback.print_exc()
             self._event_thread_running = False
-    
+
+    def pause_event_loop(self):
+        """
+        暂停事件循环处理
+        用于在窗口操作等关键操作期间避免冲突
+        """
+        with self._mpv_lock:
+            self._event_loop_paused = True
+            # print("[MPVPlayerCore] 事件循环已暂停")
+
+    def resume_event_loop(self):
+        """
+        恢复事件循环处理
+        """
+        with self._mpv_lock:
+            self._event_loop_paused = False
+            self._event_loop_pause_lock.notify_all()
+            # print("[MPVPlayerCore] 事件循环已恢复")
+
+    def stop_event_thread(self):
+        """
+        完全停止事件处理线程
+        用于在窗口操作等关键操作期间彻底避免冲突
+        返回线程对象，以便外部等待线程结束
+        """
+        thread_to_join = None
+        with self._mpv_lock:
+            if self._event_thread_running:
+                self._event_thread_running = False
+                thread_to_join = self._event_thread
+                self._event_thread = None
+                # print("[MPVPlayerCore] 事件处理线程已标记停止")
+        return thread_to_join
+
+    def start_event_thread(self):
+        """
+        启动事件处理线程
+        在线程停止后重新启动事件处理
+        """
+        self._start_event_thread()
+
     def _event_loop(self):
         """
         事件处理循环，用于处理MPV事件
+        使用非阻塞方式轮询事件，避免与Qt事件循环冲突
         """
         try:
             while self._event_thread_running:
-                # 使用锁保护MPV实例访问，防止与cleanup方法产生竞争条件
+                # 检查是否需要暂停事件循环
                 with self._mpv_lock:
-                    if not self._mpv:
+                    while self._event_loop_paused and self._event_thread_running:
+                        # 等待恢复信号，释放锁
+                        self._event_loop_pause_lock.wait(timeout=0.1)
+                
+                # 先检查MPV实例是否有效（使用锁保护）
+                with self._mpv_lock:
+                    mpv_instance = self._mpv
+                    if not mpv_instance:
                         break
-                    # 等待事件，超时100ms，避免阻塞线程
-                    event = libmpv.mpv_wait_event(self._mpv, 0.1)
-                    
-                    # 检查事件指针是否有效
-                    if not event:
-                        continue
-                    
-                    # 获取事件类型（事件指针的第一个成员）
-                    # 注意：必须在锁内读取事件类型，因为事件指针可能指向MPV内部内存
-                    try:
-                        event_type = c_int.from_address(event).value
-                    except (ValueError, OSError, MemoryError):
-                        # 如果读取事件类型失败（例如内存无效），跳过此次循环
-                        # 静默处理，避免输出干扰
-                        continue
+                
+                # 使用非阻塞方式获取事件（timeout=0）
+                # 这样可以避免在mpv_wait_event中阻塞，减少与Qt的冲突
+                event = libmpv.mpv_wait_event(mpv_instance, 0)
+                
+                # 检查事件指针是否有效
+                if not event:
+                    # 没有事件，短暂休眠避免CPU占用过高
+                    import time
+                    time.sleep(0.01)
+                    continue
+                
+                # 获取事件类型（事件指针的第一个成员）
+                # 注意：事件指针指向MPV内部内存，但读取是安全的
+                try:
+                    event_type = c_int.from_address(event).value
+                except (ValueError, OSError, MemoryError):
+                    # 如果读取事件类型失败（例如内存无效），跳过此次循环
+                    # 静默处理，避免输出干扰
+                    import time
+                    time.sleep(0.01)
+                    continue
                 
                 # 1. 事件处理前检查：媒体切换状态过滤
                 if self._media_changing:
@@ -460,9 +517,9 @@ class MPVPlayerCore(QObject):
                     ]
                     
                     if event_type not in critical_events:
-                        with self._mpv_lock:
-                            event_name = libmpv.mpv_event_name(event_type)
-                            event_name_str = event_name.decode('utf-8') if event_name else f"未知事件({event_type})"
+                        # 获取事件名称（不需要锁，因为只是转换整数为字符串）
+                        event_name = libmpv.mpv_event_name(event_type)
+                        event_name_str = event_name.decode('utf-8') if event_name else f"未知事件({event_type})"
                         # print(f"[MPVPlayerCore] 媒体正在切换，忽略非关键事件: {event_name_str}")
                         continue
                 
@@ -1146,45 +1203,46 @@ class MPVPlayerCore(QObject):
             thread_start_time = time.time()
             
             try:
-                # 再次检查MPV实例和状态，确保线程执行时状态仍然有效
-                if not self._mpv:
-                    result_value = False
-                    return
-                
-                if self._media_changing and not is_media_change_related:
-                    result_value = False
-                    return
-                
-                # 转换命令列表为ctypes所需的格式
-                command_array = (c_char_p * (len(command_list) + 1))()
-                for i, cmd in enumerate(command_list):
-                    if isinstance(cmd, str):
-                        command_array[i] = cmd.encode('utf-8')
-                    else:
-                        command_array[i] = str(cmd).encode('utf-8')
-                command_array[len(command_list)] = None
-                
-                # 执行命令 - 添加额外的异常保护
-                try:
-                    result = libmpv.mpv_command(self._mpv, command_array)
-                    if result != MPV_ERROR_SUCCESS:
-                        # 仅在主线程中打印错误，避免事件循环中的输出干扰
-                        if threading.current_thread() == threading.main_thread():
-                            print(f"[MPVPlayerCore] 错误: 执行命令 {command_list} 失败，错误码: {result}")
+                with self._mpv_lock:
+                    # 再次检查MPV实例和状态，确保线程执行时状态仍然有效
+                    if not self._mpv:
                         result_value = False
-                    else:
-                        result_value = True
-                        # print(f"[MPVPlayerCore] 命令执行成功: {command_list}")
-                except ctypes.ArgumentError as e:
-                    if threading.current_thread() == threading.main_thread():
-                        print(f"[MPVPlayerCore] 参数错误: 执行命令 {command_list} 失败 - {e}")
-                    result_value = False
-                except ctypes.AccessViolationError as e:
-                    # 访问违规错误静默处理，避免输出干扰
-                    result_value = False
-                except Exception as e:
-                    # 其他未预期的异常，静默处理
-                    result_value = False
+                        return
+                    
+                    if self._media_changing and not is_media_change_related:
+                        result_value = False
+                        return
+                    
+                    # 转换命令列表为ctypes所需的格式
+                    command_array = (c_char_p * (len(command_list) + 1))()
+                    for i, cmd in enumerate(command_list):
+                        if isinstance(cmd, str):
+                            command_array[i] = cmd.encode('utf-8')
+                        else:
+                            command_array[i] = str(cmd).encode('utf-8')
+                    command_array[len(command_list)] = None
+                    
+                    # 执行命令 - 添加额外的异常保护
+                    try:
+                        result = libmpv.mpv_command(self._mpv, command_array)
+                        if result != MPV_ERROR_SUCCESS:
+                            # 仅在主线程中打印错误，避免事件循环中的输出干扰
+                            if threading.current_thread() == threading.main_thread():
+                                print(f"[MPVPlayerCore] 错误: 执行命令 {command_list} 失败，错误码: {result}")
+                            result_value = False
+                        else:
+                            result_value = True
+                            # print(f"[MPVPlayerCore] 命令执行成功: {command_list}")
+                    except ctypes.ArgumentError as e:
+                        if threading.current_thread() == threading.main_thread():
+                            print(f"[MPVPlayerCore] 参数错误: 执行命令 {command_list} 失败 - {e}")
+                        result_value = False
+                    except ctypes.AccessViolationError as e:
+                        # 访问违规错误静默处理，避免输出干扰
+                        result_value = False
+                    except Exception as e:
+                        # 其他未预期的异常，静默处理
+                        result_value = False
                     
             except Exception as e:
                 exception_occurred = e
@@ -1515,16 +1573,17 @@ class MPVPlayerCore(QObject):
             bool: 属性值
         """
         try:
-            if not self._mpv:
-                return False
-            
-            value = c_int()
-            result = libmpv.mpv_get_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_FLAG, byref(value))
-            if result != MPV_ERROR_SUCCESS:
-                # print(f"[MPVPlayerCore] 警告: 获取属性 {property_name} 失败，错误码: {result}")
-                return False
-            
-            return bool(value.value)
+            with self._mpv_lock:
+                if not self._mpv:
+                    return False
+                
+                value = c_int()
+                result = libmpv.mpv_get_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_FLAG, byref(value))
+                if result != MPV_ERROR_SUCCESS:
+                    # print(f"[MPVPlayerCore] 警告: 获取属性 {property_name} 失败，错误码: {result}")
+                    return False
+                
+                return bool(value.value)
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 获取属性 {property_name} 异常 - {e}")
             return False
@@ -1541,16 +1600,17 @@ class MPVPlayerCore(QObject):
             bool: 设置成功返回 True，否则返回 False
         """
         try:
-            if not self._mpv:
-                return False
-            
-            value_int = c_int(1 if value else 0)
-            result = libmpv.mpv_set_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_FLAG, byref(value_int))
-            if result != MPV_ERROR_SUCCESS:
-                print(f"[MPVPlayerCore] 警告: 设置属性 {property_name} 失败，错误码: {result}")
-                return False
-            
-            return True
+            with self._mpv_lock:
+                if not self._mpv:
+                    return False
+                
+                value_int = c_int(1 if value else 0)
+                result = libmpv.mpv_set_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_FLAG, byref(value_int))
+                if result != MPV_ERROR_SUCCESS:
+                    print(f"[MPVPlayerCore] 警告: 设置属性 {property_name} 失败，错误码: {result}")
+                    return False
+                
+                return True
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 设置属性 {property_name} 异常 - {e}")
             return False
@@ -1566,16 +1626,17 @@ class MPVPlayerCore(QObject):
             float: 属性值
         """
         try:
-            if not self._mpv:
-                return 0.0
-            
-            value = c_double()
-            result = libmpv.mpv_get_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_DOUBLE, byref(value))
-            if result != MPV_ERROR_SUCCESS:
-                # print(f"[MPVPlayerCore] 警告: 获取属性 {property_name} 失败，错误码: {result}")
-                return 0.0
-            
-            return float(value.value)
+            with self._mpv_lock:
+                if not self._mpv:
+                    return 0.0
+                
+                value = c_double()
+                result = libmpv.mpv_get_property(self._mpv, property_name.encode('utf-8'), MPV_FORMAT_DOUBLE, byref(value))
+                if result != MPV_ERROR_SUCCESS:
+                    # print(f"[MPVPlayerCore] 警告: 获取属性 {property_name} 失败，错误码: {result}")
+                    return 0.0
+                
+                return float(value.value)
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 获取属性 {property_name} 异常 - {e}")
             return 0.0
@@ -1691,34 +1752,35 @@ class MPVPlayerCore(QObject):
             window_id: 窗口句柄，根据平台不同类型可能不同
         """
         try:
-            # 检查MPV实例是否初始化成功
-            if not self._mpv:
-                print("[MPVPlayerCore] 警告: MPV实例未初始化，无法绑定窗口")
-                return
+            with self._mpv_lock:
+                # 检查MPV实例是否初始化成功
+                if not self._mpv:
+                    print("[MPVPlayerCore] 警告: MPV实例未初始化，无法绑定窗口")
+                    return
                 
-            # print(f"[MPVPlayerCore] 尝试绑定窗口，窗口ID: {window_id}")
-            
-            # 保存窗口句柄
-            self._window_handle = window_id
-            
-            # 将窗口句柄转换为整数，处理sip.voidptr对象
-            if hasattr(window_id, 'value'):
-                # 处理sip.voidptr对象
-                window_id = window_id.value
-                # print(f"[MPVPlayerCore] 转换窗口ID为: {window_id}")
-            elif not isinstance(window_id, int):
-                # 尝试转换为整数
-                window_id = int(window_id)
-                # print(f"[MPVPlayerCore] 转换窗口ID为: {window_id}")
-            
-            # 设置MPV的渲染窗口
-            # 使用mpv_set_option_string设置wid选项
-            result = libmpv.mpv_set_option_string(self._mpv, b"wid", str(window_id).encode('utf-8'))
-            if result != MPV_ERROR_SUCCESS:
-                print(f"[MPVPlayerCore] 错误: 设置窗口失败，错误码: {result}")
-                return
-            
-            # print("[MPVPlayerCore] 窗口绑定成功")
+                # print(f"[MPVPlayerCore] 尝试绑定窗口，窗口ID: {window_id}")
+                
+                # 保存窗口句柄
+                self._window_handle = window_id
+                
+                # 将窗口句柄转换为整数，处理sip.voidptr对象
+                if hasattr(window_id, 'value'):
+                    # 处理sip.voidptr对象
+                    window_id = window_id.value
+                    # print(f"[MPVPlayerCore] 转换窗口ID为: {window_id}")
+                elif not isinstance(window_id, int):
+                    # 尝试转换为整数
+                    window_id = int(window_id)
+                    # print(f"[MPVPlayerCore] 转换窗口ID为: {window_id}")
+                
+                # 设置MPV的渲染窗口
+                # 使用mpv_set_option_string设置wid选项
+                result = libmpv.mpv_set_option_string(self._mpv, b"wid", str(window_id).encode('utf-8'))
+                if result != MPV_ERROR_SUCCESS:
+                    print(f"[MPVPlayerCore] 错误: 设置窗口失败，错误码: {result}")
+                    return
+                
+                # print("[MPVPlayerCore] 窗口绑定成功")
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 设置窗口失败 - {e}")
             import traceback
@@ -1738,26 +1800,27 @@ class MPVPlayerCore(QObject):
         清除媒体播放器与窗口的绑定
         """
         try:
-            # 检查MPV实例是否初始化成功
-            if not self._mpv:
+            with self._mpv_lock:
+                # 检查MPV实例是否初始化成功
+                if not self._mpv:
+                    self._window_handle = None
+                    return
+                
+                # 尝试清除MPV的渲染窗口
+                # 注意：如果 mpv 处于不稳定状态，这个调用可能会失败或崩溃
+                # 使用 try-except 保护，但即使失败也不影响程序运行
+                try:
+                    result = libmpv.mpv_set_option_string(self._mpv, b"wid", b"0")
+                    if result != MPV_ERROR_SUCCESS:
+                        print(f"[MPVPlayerCore] 错误: 清除窗口绑定失败，错误码: {result}")
+                except Exception as e:
+                    # 忽略 mpv API 调用失败，继续清理
+                    # print(f"[MPVPlayerCore] 警告: 清除窗口绑定时出错（可忽略）: {e}")
+                    pass
+                
+                # 清除窗口句柄
                 self._window_handle = None
-                return
-            
-            # 尝试清除MPV的渲染窗口
-            # 注意：如果 mpv 处于不稳定状态，这个调用可能会失败或崩溃
-            # 使用 try-except 保护，但即使失败也不影响程序运行
-            try:
-                result = libmpv.mpv_set_option_string(self._mpv, b"wid", b"0")
-                if result != MPV_ERROR_SUCCESS:
-                    print(f"[MPVPlayerCore] 错误: 清除窗口绑定失败，错误码: {result}")
-            except Exception as e:
-                # 忽略 mpv API 调用失败，继续清理
-                # print(f"[MPVPlayerCore] 警告: 清除窗口绑定时出错（可忽略）: {e}")
-                pass
-            
-            # 清除窗口句柄
-            self._window_handle = None
-            # print("[MPVPlayerCore] 窗口绑定已清除")
+                # print("[MPVPlayerCore] 窗口绑定已清除")
         except Exception as e:
             print(f"[MPVPlayerCore] 错误: 清除窗口绑定失败 - {e}")
             import traceback

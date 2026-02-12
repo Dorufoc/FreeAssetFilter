@@ -10,9 +10,9 @@ FreeAssetFilter 音量控制悬浮菜单组件
 - 支持DPI缩放和主题颜色
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QApplication
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QApplication
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 
 from .D_hover_menu import D_HoverMenu
 from .progress_widgets import D_ProgressBar
@@ -24,7 +24,7 @@ class D_Volume(QWidget):
     基于 D_hover_menu，包含百分比显示和纵向进度条
     """
 
-    valueChanged = pyqtSignal(int)
+    valueChanged = Signal(int)
 
     def __init__(self, parent=None):
         """

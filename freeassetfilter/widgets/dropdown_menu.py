@@ -6,9 +6,9 @@ FreeAssetFilter 自定义下拉菜单组件
 支持自适应文字显示、固定宽度和滚动布局
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QScrollArea, QLabel, QSizePolicy
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QSize, QRect
-from PyQt5.QtGui import QFont, QFontMetrics
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QScrollArea, QLabel, QSizePolicy
+from PySide6.QtCore import Qt, QPoint, Signal, QSize, QRect
+from PySide6.QtGui import QFont, QFontMetrics
 
 from .control_menu import CustomControlMenu
 from .button_widgets import CustomButton
@@ -24,7 +24,7 @@ class CustomDropdownMenu(QWidget):
     包含一个按钮和可弹出的列表菜单
     支持自适应文字显示和滚动布局
     """
-    itemClicked = pyqtSignal(object)  # 列表项点击信号，传递选中项数据
+    itemClicked = Signal(object)  # 列表项点击信号，传递选中项数据
     
     def __init__(self, parent=None, position="top", use_internal_button=True):
         """
@@ -493,7 +493,7 @@ class CustomDropdownMenu(QWidget):
             if self.main_button and target_button is self.main_button:
                 self.main_button.leaveEvent = self._on_button_leave
             # 启动定时器，3秒后检查是否需要关闭菜单
-            from PyQt5.QtCore import QTimer
+            from PySide6.QtCore import QTimer
             QTimer.singleShot(3000, self._check_leave_and_close)
             
     def hide_menu(self):
@@ -522,7 +522,7 @@ class CustomDropdownMenu(QWidget):
         鼠标离开按钮事件
         """
         # 启动定时器，3秒后检查是否需要关闭菜单
-        from PyQt5.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         QTimer.singleShot(3000, self._check_leave_and_close)
         # 调用父类的leaveEvent（仅在存在内部按钮时）
         if self.main_button:
@@ -556,7 +556,7 @@ class CustomDropdownMenu(QWidget):
         """
         检查是否真正离开组件，并在离开3秒后关闭菜单
         """
-        from PyQt5.QtGui import QCursor
+        from PySide6.QtGui import QCursor
         
         # 获取全局鼠标位置
         global_pos = QCursor.pos()

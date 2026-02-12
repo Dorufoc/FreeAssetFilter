@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -88,8 +88,8 @@ class FileInfoBrowser:
         self.custom_tags = {}
         
         # 获取全局字体和DPI缩放因子
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtGui import QFont
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QFont
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -110,13 +110,13 @@ class FileInfoBrowser:
         Returns:
             QWidget: 文件信息浏览组件的UI组件
         """
-        from PyQt5.QtWidgets import (
+        from PySide6.QtWidgets import (
             QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox, QGridLayout,
             QTabWidget, QFrame, QSplitter, QSizePolicy, QHBoxLayout, QPushButton,
             QTextBrowser, QTreeWidget, QTreeWidgetItem, QFormLayout
         )
-        from PyQt5.QtCore import Qt
-        from PyQt5.QtGui import QFont, QCursor
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QFont, QCursor
         
         from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
         from freeassetfilter.widgets.smooth_scroller import SmoothScroller
@@ -1179,11 +1179,11 @@ class FileInfoBrowser:
         self._show_loading_dialog()
         
         # 使用线程加载详细信息
-        from PyQt5.QtCore import QThread, pyqtSignal
+        from PySide6.QtCore import QThread, Signal
         
         class LoadThread(QThread):
-            finished = pyqtSignal(dict)
-            error = pyqtSignal(str)
+            finished = Signal(dict)
+            error = Signal(str)
             
             def __init__(self, file_path, file_info, parent):
                 super().__init__()
@@ -1243,7 +1243,7 @@ class FileInfoBrowser:
         """
         from freeassetfilter.widgets.message_box import CustomMessageBox
         from freeassetfilter.widgets.progress_widgets import D_ProgressBar
-        from PyQt5.QtCore import Qt
+        from PySide6.QtCore import Qt
         
         # 创建自定义提示弹窗
         self.loading_dialog = CustomMessageBox()
@@ -1293,7 +1293,7 @@ class FileInfoBrowser:
         msg_box.set_title("错误")
         msg_box.set_text(f"加载详细信息失败: {error_msg}")
         msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-        msg_box.exec_()
+        msg_box.exec()
     
     def _get_cache_dir(self):
         """
@@ -1432,9 +1432,9 @@ class FileInfoBrowser:
                     
                     # 如果是哈希值字段，根据值的状态设置不同样式
                     if key in ["MD5", "SHA1", "SHA256"]:
-                        from PyQt5.QtCore import Qt
-                        from PyQt5.QtGui import QCursor
-                        from PyQt5.QtWidgets import QSizePolicy
+                        from PySide6.QtCore import Qt
+                        from PySide6.QtGui import QCursor
+                        from PySide6.QtWidgets import QSizePolicy
                         widget = self.basic_info_labels[key]
                         if str(value) == "点击查看":
                             # 设置为可点击的链接样式
@@ -1474,8 +1474,8 @@ class FileInfoBrowser:
         # 在表单布局中添加详细信息
         if hasattr(self, 'info_layout') and "details" in self.file_info and self.file_info["details"]:
             # 导入需要的PyQt组件
-            from PyQt5.QtWidgets import QLabel, QSizePolicy
-            from PyQt5.QtCore import Qt
+            from PySide6.QtWidgets import QLabel, QSizePolicy
+            from PySide6.QtCore import Qt
             
             # 为详细信息创建标签和值
             for key, value in self.file_info["details"].items():
@@ -1516,14 +1516,14 @@ class FileInfoBrowser:
             title: 信息组标题
             info_dict: 信息字典
         """
-        from PyQt5.QtWidgets import QGroupBox, QGridLayout, QLabel, QTreeWidget, QTreeWidgetItem
-        from PyQt5.QtCore import Qt
+        from PySide6.QtWidgets import QGroupBox, QGridLayout, QLabel, QTreeWidget, QTreeWidgetItem
+        from PySide6.QtCore import Qt
         
         group = QGroupBox(title)
         group.setFont(self.global_font)
         
         # 获取主题颜色
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         secondary_color = "#FFFFFF"
         if hasattr(app, 'settings_manager'):
@@ -1535,8 +1535,9 @@ class FileInfoBrowser:
         has_nested = any(isinstance(v, dict) for v in info_dict.values())
         
         # 导入需要的PyQt组件
-        from PyQt5.QtWidgets import QMenu, QAction, QSizePolicy
-        from PyQt5.QtGui import QCursor
+        from PySide6.QtWidgets import QMenu, QSizePolicy
+        from PySide6.QtGui import QAction
+        from PySide6.QtGui import QCursor
         
         # 创建右键菜单
         def create_context_menu(widget, key="", value=""):
@@ -1673,7 +1674,7 @@ class FileInfoBrowser:
             key (str): 信息键
             value (str): 信息值
         """
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         
         clipboard = QApplication.clipboard()
         clipboard.setText(f"{key}: {value}")
@@ -1682,7 +1683,7 @@ class FileInfoBrowser:
         """
         复制所有信息到剪贴板
         """
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         
         all_info = []
         
@@ -1714,8 +1715,8 @@ class FileInfoBrowser:
         """
         def show_menu(point):
             """显示右键菜单"""
-            from PyQt5.QtGui import QCursor
-            from PyQt5.QtWidgets import QApplication
+            from PySide6.QtGui import QCursor
+            from PySide6.QtWidgets import QApplication
 
             if not hasattr(self, '_context_menu'):
                 app = QApplication.instance()
@@ -1755,7 +1756,7 @@ class FileInfoBrowser:
             key: 信息键
             value: 信息值
         """
-        from PyQt5.QtGui import QCursor
+        from PySide6.QtGui import QCursor
 
         if not hasattr(self, '_context_menu'):
             self._context_menu = D_MoreMenu(parent=None)
@@ -1772,7 +1773,7 @@ class FileInfoBrowser:
 # 测试代码
 if __name__ == "__main__":
     import sys
-    from PyQt5.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication, QMainWindow
     
     app = QApplication(sys.argv)
     window = QMainWindow()
@@ -1796,4 +1797,4 @@ if __name__ == "__main__":
     file_info_browser.set_file(test_file)
     
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

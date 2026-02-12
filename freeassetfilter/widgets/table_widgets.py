@@ -5,10 +5,10 @@ FreeAssetFilter 自定义表格控件
 用于时间线左侧的自定义表格实现
 """
 
-from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea, QVBoxLayout, QWidget, QGridLayout
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QColor
-from PyQt5.QtWidgets import QApplication
+from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QScrollArea, QVBoxLayout, QWidget, QGridLayout
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QColor
+from PySide6.QtWidgets import QApplication
 
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
@@ -21,7 +21,7 @@ class CustomTimelineTable(QTableWidget):
     """
     
     # 定义信号
-    row_clicked = pyqtSignal(int)  # 行点击信号
+    row_clicked = Signal(int)  # 行点击信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,21 +38,12 @@ class CustomTimelineTable(QTableWidget):
         self.setup_table()
         
     def setup_font(self):
-        """设置字体并应用DPI缩放"""
-        # 创建全局字体的副本，避免修改全局字体对象
-        scaled_font = QFont(self.global_font)
-        
-        # 根据DPI缩放因子调整字体大小
-        font_size = scaled_font.pointSize()
-        if font_size > 0:
-            scaled_size = int(font_size * self.dpi_scale)
-            scaled_font.setPointSize(scaled_size)
-        
-        # 保存缩放后的字体用于单元格
-        self.scaled_font = scaled_font
-        
+        """设置字体，让Qt6自动处理DPI缩放"""
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        self.scaled_font = self.global_font
+
         # 设置表格字体
-        self.setFont(scaled_font)
+        self.setFont(self.global_font)
     
     def setup_table(self):
         """设置表格基本配置"""
@@ -127,8 +118,8 @@ class CustomTimelineTable(QTableWidget):
             self.row_clicked.emit(index)
 
 
-from PyQt5.QtWidgets import QWidget, QGridLayout, QLabel, QVBoxLayout
-from PyQt5.QtGui import QPalette
+from PySide6.QtWidgets import QWidget, QGridLayout, QLabel, QVBoxLayout
+from PySide6.QtGui import QPalette
 
 
 class MatrixCell(QWidget):
@@ -166,7 +157,7 @@ class MatrixCell(QWidget):
         """应用单元格样式"""
         # 设置背景颜色和文本颜色
         palette = self.label.palette()
-        palette.setColor(QPalette.Background, QColor(self.bg_color))
+        palette.setColor(QPalette.Window, QColor(self.bg_color))
         palette.setColor(QPalette.WindowText, QColor(self.text_color))
         self.label.setPalette(palette)
         self.label.setAutoFillBackground(True)
@@ -228,8 +219,8 @@ class CustomMatrixTable(QWidget):
     """
     
     # 定义信号
-    cell_clicked = pyqtSignal(int, int)  # 单元格点击信号 (行, 列)
-    row_clicked = pyqtSignal(int)  # 行点击信号
+    cell_clicked = Signal(int, int)  # 单元格点击信号 (行, 列)
+    row_clicked = Signal(int)  # 行点击信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -282,17 +273,11 @@ class CustomMatrixTable(QWidget):
         # 创建全局字体的副本，避免修改全局字体对象
         scaled_font = QFont(self.global_font)
         
-        # 根据DPI缩放因子调整字体大小
-        font_size = scaled_font.pointSize()
-        if font_size > 0:
-            scaled_size = int(font_size * self.dpi_scale)
-            scaled_font.setPointSize(scaled_size)
-        
-        # 保存缩放后的字体用于单元格
-        self.scaled_font = scaled_font
-        
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        self.scaled_font = self.global_font
+
         # 设置表格字体
-        self.setFont(scaled_font)
+        self.setFont(self.global_font)
     
     def setup_table(self):
         """设置表格基本配置"""

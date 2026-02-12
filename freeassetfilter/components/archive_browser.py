@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -25,7 +25,7 @@ import chardet
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QApplication,
     QLabel,
     QGroupBox, QListWidget, QListWidgetItem, QMessageBox,
@@ -39,8 +39,8 @@ from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from PyQt5.QtCore import Qt, pyqtSignal, QFileInfo
-from PyQt5.QtGui import QFont, QIcon
+from PySide6.QtCore import Qt, Signal, QFileInfo
+from PySide6.QtGui import QFont, QIcon
 
 # 导入os模块用于路径处理
 import os
@@ -72,8 +72,8 @@ class ArchiveBrowser(QWidget):
     """
     
     # 定义信号
-    path_changed = pyqtSignal(str)  # 当浏览路径变化时发出
-    file_selected = pyqtSignal(dict)  # 当选中文件时发出
+    path_changed = Signal(str)  # 当浏览路径变化时发出
+    file_selected = Signal(dict)  # 当选中文件时发出
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -162,17 +162,13 @@ class ArchiveBrowser(QWidget):
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         
-        # 从app对象获取全局默认字体大小（Qt已自动处理DPI缩放，无需再乘dpi_scale）
-        default_font_size = getattr(app, 'default_font_size', 9)
-
         # 应用DPI缩放因子到按钮高度（字体大小已由Qt自动处理）
         # 使用统一的按钮高度（与文件选择器保持一致）
         button_height = 20
         scaled_button_height = int(button_height * self.dpi_scale)
 
-        # 创建字体供控制栏使用（使用原始字体大小，Qt会自动处理DPI缩放）
-        control_font = QFont(self.global_font)
-        control_font.setPointSize(default_font_size)
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        control_font = self.global_font
         
         # 第一行：路径显示和返回按钮
         path_layout = QHBoxLayout()
@@ -251,7 +247,7 @@ class ArchiveBrowser(QWidget):
             str: 处理后的十六进制颜色值
         """
         # 获取当前主题模式
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if hasattr(app, 'settings_manager'):
             settings_manager = app.settings_manager
@@ -262,7 +258,7 @@ class ArchiveBrowser(QWidget):
         is_dark_mode = (current_theme == "dark")
         
         # 将十六进制颜色转换为RGB
-        from PyQt5.QtGui import QColor
+        from PySide6.QtGui import QColor
         color = QColor(color_hex)
         r = color.red()
         g = color.green()
@@ -322,20 +318,15 @@ class ArchiveBrowser(QWidget):
         self.files_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.files_list.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
 
-        # 应用平滑滚动到 QListWidget 的视口
-        SmoothScroller.apply(self.files_list)
+        # 应用平滑滚动到 QListWidget 的视口，启用触摸滚动（同时支持鼠标拖动和触摸）
+        SmoothScroller.apply(self.files_list, enable_mouse_drag=True)
         
         # 从app对象获取全局默认字体大小（Qt已自动处理DPI缩放，无需再乘dpi_scale）
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-
-        # 创建列表字体（使用原始字体大小，Qt会自动处理DPI缩放）
-        list_font = QFont(self.global_font)
-        list_font.setPointSize(default_font_size)
-        self.files_list.setFont(list_font)
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        self.files_list.setFont(self.global_font)
 
         # 存储字体供条目使用
-        self.scaled_font = list_font
+        self.scaled_font = self.global_font
         
         # 获取颜色设置
         if hasattr(app, 'settings_manager'):
@@ -356,7 +347,7 @@ class ArchiveBrowser(QWidget):
         scaled_item_height = int(15 * self.dpi_scale)
 
         # 获取强调色并设置透明度为0.4
-        from PyQt5.QtGui import QColor
+        from PySide6.QtGui import QColor
         accent_color = current_colors.get("accent_color", "#B036EE")
         qcolor = QColor(accent_color)
         # 设置alpha通道为155
@@ -387,7 +378,6 @@ class ArchiveBrowser(QWidget):
                 border: none;
                 border-radius: {border_radius}px;
                 padding: 6px;
-                font-size: {default_font_size}px;
             }}
             QListWidget::item {{
                 height: {scaled_item_height}px;
@@ -398,7 +388,6 @@ class ArchiveBrowser(QWidget):
                 outline: none;
                 margin: {item_margin}px {item_margin}px 0 {item_margin}px;
                 padding-left: 8px;
-                font-size: {default_font_size}px;
             }}
             QListWidget::item:hover {{
                 color: {secondary_color};
@@ -1312,4 +1301,4 @@ if __name__ == "__main__":
     window.show()
     
     # 运行应用
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

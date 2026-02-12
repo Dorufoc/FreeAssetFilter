@@ -5,9 +5,9 @@ ThemeCard 控件
 现代主题编辑器的主题卡片组件，可用于单独显示主题选项
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication, QSizePolicy
-from PyQt5.QtCore import Qt, pyqtSignal, QSize
-from PyQt5.QtGui import QColor, QPen, QBrush, QPainter, QFont
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication, QSizePolicy
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QColor, QPen, QBrush, QPainter, QFont
 
 from freeassetfilter.widgets.color_slider import ColorSliderWidget
 
@@ -28,8 +28,8 @@ class ThemeCard(QWidget):
         clicked: 卡片点击时发出，传递主题信息对象
     """
     
-    clicked = pyqtSignal(object)  # 点击信号，传递主题信息
-    color_changed = pyqtSignal(str)  # 颜色变化信号，传递RGB颜色字符串
+    clicked = Signal(object)  # 点击信号，传递主题信息
+    color_changed = Signal(str)  # 颜色变化信号，传递RGB颜色字符串
     
     def __init__(self, theme_name="", colors=None, is_selected=False, is_add_card=False, parent=None):
         """

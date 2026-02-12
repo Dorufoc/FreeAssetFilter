@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -23,7 +23,7 @@ from itertools import groupby
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, 
     QScrollArea, QPushButton, QLabel, QGroupBox,
     QSpinBox, QFileDialog, QApplication, QSlider, QToolTip, QHeaderView, QComboBox,
@@ -34,10 +34,10 @@ from PyQt5.QtWidgets import (
 from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.table_widgets import CustomMatrixTable
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from PyQt5.QtCore import (
-    Qt, pyqtSignal, QDateTime, QThread, QRectF, QPoint, QTimer
+from PySide6.QtCore import (
+    Qt, Signal, QDateTime, QThread, QRectF, QPoint, QTimer
 )
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QPainter, QColor, QLinearGradient, QBrush, QPen, QFont, QPixmap, QCursor
 )
 
@@ -46,6 +46,7 @@ from freeassetfilter.core.timeline_generator import (
     TimelineEvent, MergedEvent, TimelineParams,
     FolderScanner, CSVParser, merge_logic
 )
+from freeassetfilter.core.settings_manager import SettingsManager
 
 
 # 自定义绘图引擎：TimelineWidget
@@ -55,9 +56,9 @@ class TimelineWidget(QWidget):
     继承自QWidget，重写paintEvent实现高性能2D渲染
     """
     # 定义点击事件信号，传递点击位置和对应的事件信息
-    timeline_clicked = pyqtSignal(int, int, dict)
+    timeline_clicked = Signal(int, int, dict)
     # 定义缩放值改变信号
-    scale_changed = pyqtSignal(float)
+    scale_changed = Signal(float)
     
     def __init__(self, params):
         super().__init__()
@@ -82,16 +83,10 @@ class TimelineWidget(QWidget):
         
         # 获取应用实例和全局字体
         app = QApplication.instance()
-        # 创建全局字体的副本，避免修改全局字体对象
+        # 使用全局字体，让Qt6自动处理DPI缩放
         global_font = getattr(app, 'global_font', QFont())
         self.global_font = QFont(global_font)
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 调整字体大小以适应DPI
-        font_size = self.global_font.pointSize()
-        if font_size > 0:
-            scaled_size = int(font_size * self.dpi_scale)
-            self.global_font.setPointSize(scaled_size)
     
     def set_data(self, data):
         """设置时间线数据"""
@@ -143,8 +138,9 @@ class TimelineWidget(QWidget):
                 
                 # 显示当前时间
                 painter.setPen(QPen(QColor(255, 255, 255), 1))
+                # 使用全局字体，让Qt6自动处理DPI缩放
                 time_font = QFont(self.global_font)
-                time_font.setPointSize(int(10 * self.dpi_scale))
+                time_font.setPointSize(int(self.global_font.pointSize() * 1.1))
                 painter.setFont(time_font)
                 time_str = current_time.toString("yyyy-MM-dd HH:mm:ss")
                 painter.drawText(mouse_x + 5, 20, time_str)
@@ -290,9 +286,9 @@ class TimelineWidget(QWidget):
                 # 绘制视频数量标记
                 if vids:
                     painter.setPen(QPen(Qt.white, 1))
-                    # 使用全局字体，调整大小以适应视频数量标记
+                    # 使用全局字体，让Qt6自动处理DPI缩放
                     count_font = QFont(self.global_font)
-                    count_font.setPointSize(int(8 * self.dpi_scale))
+                    count_font.setPointSize(int(self.global_font.pointSize() * 0.9))
                     painter.setFont(count_font)
                     painter.drawText(rect.adjusted(5, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, f"{len(vids)}")
 
@@ -317,9 +313,9 @@ class TimelineWidget(QWidget):
             return
         
         painter.setPen(QPen(Qt.white, 1))
-        # 使用全局字体，调整大小以适应时间刻度
+        # 使用全局字体，让Qt6自动处理DPI缩放
         time_font = QFont(self.global_font)
-        time_font.setPointSize(int(10 * self.dpi_scale))
+        time_font.setPointSize(int(self.global_font.pointSize() * 1.1))
         painter.setFont(time_font)
         
         total_duration = self.params.global_start_time.secsTo(self.params.global_end_time)
@@ -696,7 +692,7 @@ class AutoTimeline(QWidget):
     整合数据加载、处理和可视化功能
     """
     # 定义JSON结果信号，传递格式化后的JSON数据
-    json_result_ready = pyqtSignal(str)
+    json_result_ready = Signal(str)
     
     def __init__(self, initial_path=None):
         super().__init__()
@@ -704,16 +700,11 @@ class AutoTimeline(QWidget):
         # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 获取全局字体并应用DPI缩放（创建副本避免修改全局字体）
+
+        # 使用全局字体，让Qt6自动处理DPI缩放
         global_font = getattr(app, 'global_font', QFont())
         self.global_font = QFont(global_font)
-        # 根据DPI缩放因子调整字体大小
-        font_size = self.global_font.pointSize()
-        if font_size > 0:
-            scaled_size = int(font_size * self.dpi_scale)
-            self.global_font.setPointSize(scaled_size)
-        
+
         # 设置组件字体
         self.setFont(self.global_font)
         
@@ -1246,12 +1237,15 @@ class AutoTimeline(QWidget):
 if __name__ == "__main__":
     """测试代码"""
     import sys
-    from PyQt5.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
     
     app = QApplication(sys.argv)
     
-    # 设置全局字体
-    font = QFont("Microsoft YaHei", 9)
+    # 从设置管理器获取字体设置
+    settings_manager = SettingsManager()
+    font_size = settings_manager.get_setting("font.size", 10)
+    font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
+    font = QFont(font_style, font_size)
     app.setFont(font)
     
     # 创建自动时间线组件
@@ -1260,4 +1254,4 @@ if __name__ == "__main__":
     timeline.resize(800, 600)
     timeline.show()
     
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

@@ -5,10 +5,10 @@
 用于选择色相(Hue)、饱和度(Saturation)和亮度(Lightness)
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QRect
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QBrush, QLinearGradient
-from PyQt5.QtWidgets import QApplication
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
+from PySide6.QtCore import Qt, Signal, QSize, QRect
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QLinearGradient
+from PySide6.QtWidgets import QApplication
 
 from freeassetfilter.widgets.progress_widgets import CustomValueBar
 
@@ -22,7 +22,7 @@ class ColorSliderWidget(QWidget):
         color_changed: 颜色变化时发出，传递RGB颜色字符串
     """
     
-    color_changed = pyqtSignal(str)
+    color_changed = Signal(str)
     
     def __init__(self, parent=None):
         """
@@ -242,7 +242,7 @@ class HueSlider(QWidget):
     背景显示完整的色相渐变范围
     """
     
-    valueChanged = pyqtSignal(int)
+    valueChanged = Signal(int)
     
     def __init__(self, dpi_scale=1.0, parent=None):
         super().__init__(parent)

@@ -5,9 +5,9 @@ FreeAssetFilter 现代主题编辑器
 实现主题的预设选择和自定义功能
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QScrollArea, QApplication, QLabel
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QScrollArea, QApplication, QLabel
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QFont
 
 from freeassetfilter.widgets.theme_card import ThemeCard
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
@@ -19,9 +19,9 @@ class ThemeEditor(QScrollArea):
     包含预设组和自定义组的滚动布局窗口
     """
     
-    theme_selected = pyqtSignal(dict)  # 主题选中信号
-    add_new_design = pyqtSignal()  # 添加新设计信号
-    theme_applied = pyqtSignal()  # 主题应用完成信号，用于关闭窗口
+    theme_selected = Signal(dict)  # 主题选中信号
+    add_new_design = Signal()  # 添加新设计信号
+    theme_applied = Signal()  # 主题应用完成信号，用于关闭窗口
     
     def __init__(self, parent=None):
         """初始化主题编辑器"""
@@ -30,6 +30,7 @@ class ThemeEditor(QScrollArea):
         self.app = QApplication.instance()
         self.settings_manager = getattr(self.app, 'settings_manager', None)
         self.dpi_scale = getattr(self.app, 'dpi_scale_factor', 1.0)
+        self.global_font = getattr(self.app, 'global_font', QFont())
         self.global_font_size = getattr(self.app, 'default_font_size', 8)
         
         self.preset_themes = [
@@ -209,7 +210,9 @@ class ThemeEditor(QScrollArea):
         self.scroll_layout.setSpacing(int(12 * self.dpi_scale))
         
         self.preset_group = QGroupBox(self.scroll_widget)
-        font = QFont("Noto Sans SC", int(self.dpi_scale * self.global_font_size * 1.6))
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        font = QFont(self.global_font)
+        font.setPointSize(int(self.global_font.pointSize() * 1.6))
         self.preset_group.setFont(font)
         
         base_color = "#FFFFFF"
@@ -258,7 +261,9 @@ class ThemeEditor(QScrollArea):
         self.scroll_layout.addWidget(self.preset_group)
         
         self.custom_group = QGroupBox(self.scroll_widget)
-        font = QFont("Noto Sans SC", int(self.dpi_scale * self.global_font_size * 1.6))
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        font = QFont(self.global_font)
+        font.setPointSize(int(self.global_font.pointSize() * 1.6))
         self.custom_group.setFont(font)
         
         base_color = "#FFFFFF"
@@ -613,7 +618,7 @@ class ThemeEditor(QScrollArea):
 # 测试代码
 if __name__ == "__main__":
     import sys
-    from PyQt5.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication
     from freeassetfilter.widgets.message_box import CustomWindow
     
     app = QApplication(sys.argv)
@@ -629,4 +634,4 @@ if __name__ == "__main__":
     window.setCentralWidget(theme_editor)
     
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

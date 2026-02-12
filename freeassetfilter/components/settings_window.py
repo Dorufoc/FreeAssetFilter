@@ -5,14 +5,14 @@ FreeAssetFilter 现代化设置窗口
 包含现代化设计风格的设置窗口实现
 """
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QTabWidget, QPushButton, QGroupBox, QSizePolicy, QDialog,
     QApplication, QSplitter
 )
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QColor
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QColor
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 # 导入自定义控件
 from freeassetfilter.widgets.setting_widgets import CustomSettingItem
@@ -47,9 +47,8 @@ def _get_font_families_cached():
     """
     global _cached_font_families
     if _cached_font_families is None:
-        from PyQt5.QtGui import QFontDatabase
-        font_db = QFontDatabase()
-        _cached_font_families = font_db.families()
+        from PySide6.QtGui import QFontDatabase
+        _cached_font_families = QFontDatabase.families()
     return _cached_font_families
 
 
@@ -66,7 +65,7 @@ class ModernSettingsWindow(QDialog):
     """
     
     # 信号定义
-    settings_saved = pyqtSignal(dict)  # 设置保存信号
+    settings_saved = Signal(dict)  # 设置保存信号
     
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Dialog | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint)
@@ -95,9 +94,16 @@ class ModernSettingsWindow(QDialog):
         
         # 初始化主题管理器
         self.theme_manager = ThemeManager(self.settings_manager)
-        
+
         # 当前设置值
         self.current_settings = {}
+
+        # 初始化全局字体
+        app = QApplication.instance()
+        if app is not None and hasattr(app, 'global_font'):
+            self.global_font = app.global_font
+        else:
+            self.global_font = QFont("Microsoft YaHei", 9)
         
         # 加载当前设置
         self.load_settings()
@@ -223,11 +229,12 @@ class ModernSettingsWindow(QDialog):
 
         title_label = QLabel("设置")
         title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        title_font = QFont(self.global_font)
+        title_font.setPointSize(int(self.global_font.pointSize() * 1.2))
+        title_font.setWeight(QFont.Weight.Bold)
+        title_label.setFont(title_font)
         title_label.setStyleSheet(f"""
-            QLabel {{ 
-                font-family: 'Noto Sans SC'; 
-                font-size: 14px;
-                font-weight: 600;
+            QLabel {{
                 color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 margin-bottom: 10px;
                 padding: 5px;
@@ -351,11 +358,12 @@ class ModernSettingsWindow(QDialog):
         layout.setSpacing(5)
 
         self.content_title = QLabel("通用设置")
+        content_title_font = QFont(self.global_font)
+        content_title_font.setPointSize(int(self.global_font.pointSize() * 1.2))
+        content_title_font.setWeight(QFont.Weight.Bold)
+        self.content_title.setFont(content_title_font)
         self.content_title.setStyleSheet(f"""
-            QLabel {{ 
-                font-family: 'Noto Sans SC'; 
-                font-size: 14px;
-                font-weight: 600;
+            QLabel {{
                 color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 margin-bottom: 10px;
                 padding: 5px;
@@ -496,16 +504,15 @@ class ModernSettingsWindow(QDialog):
         
         # 标题标签
         title_label = QLabel(title)
-        
-        # 从app对象获取全局默认字体大小
-        app = self.parent() if hasattr(self, 'parent') and self.parent() else None
-        default_font_size = getattr(app, 'default_font_size', 18)
-        scaled_font_size = int(default_font_size * 1)
-        
+
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        title_font = QFont(self.global_font)
+        title_font.setPointSize(int(self.global_font.pointSize() * 1.1))
+        title_font.setWeight(QFont.Weight.Bold)
+        title_label.setFont(title_font)
+
         title_label.setStyleSheet(f"""
-            QLabel {{ 
-                font-size: {scaled_font_size}px;
-                font-weight: 600;
+            QLabel {{
                 color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 margin-bottom: 5px;
                 padding: 2px;
@@ -921,6 +928,25 @@ class ModernSettingsWindow(QDialog):
 
         self.scroll_layout.addWidget(theme_group)
 
+        # 实验性选项设置组
+        experimental_group = QGroupBox("实验性选项")
+        experimental_group.setStyleSheet(self.group_box_style)
+        experimental_layout = QVBoxLayout(experimental_group)
+
+        # 播放器全屏化开关
+        self.enable_fullscreen_switch = CustomSettingItem(
+            text="播放器全屏化",
+            secondary_text="开启后播放器控制栏将显示全屏按钮（分离窗口按钮）",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self.settings_manager.get_setting("player.enable_fullscreen", False)
+        )
+        self.enable_fullscreen_switch.switch_toggled.connect(
+            lambda value: self.current_settings.update({"player.enable_fullscreen": value})
+        )
+        experimental_layout.addWidget(self.enable_fullscreen_switch)
+
+        self.scroll_layout.addWidget(experimental_group)
+
     def _on_use_default_volume_changed(self, value):
         """
         处理使用默认音量开关变化
@@ -1314,12 +1340,13 @@ class ModernSettingsWindow(QDialog):
         logo_label = QLabel()
         logo_label.setAlignment(Qt.AlignCenter)
         logo_label.setText("<h1>FreeAssetFilter</h1>")
+        logo_font = QFont(self.global_font)
+        logo_font.setPointSize(int(self.global_font.pointSize() * 2.0))
+        logo_font.setWeight(QFont.Weight.Bold)
+        logo_label.setFont(logo_font)
         logo_label.setStyleSheet("""
             QLabel {
-                font-family: 'Noto Sans SC';
                 color: #007AFF;
-                font-size: 24px;
-                font-weight: 600;
                 margin: 10px 0;
             }
         """)
@@ -1327,11 +1354,10 @@ class ModernSettingsWindow(QDialog):
 
         version_info = QLabel("版本 1.0.0")
         version_info.setAlignment(Qt.AlignCenter)
+        version_info.setFont(self.global_font)
         version_info.setStyleSheet("""
             QLabel {
-                font-family: 'Noto Sans SC';
                 color: #666;
-                font-size: 14px;
             }
         """)
         about_layout.addWidget(version_info)
@@ -1339,11 +1365,10 @@ class ModernSettingsWindow(QDialog):
         description = QLabel("一个功能强大的免费资源过滤和预览工具，支持多种文件格式的快速预览和管理。")
         description.setAlignment(Qt.AlignCenter)
         description.setWordWrap(True)
+        description.setFont(self.global_font)
         description.setStyleSheet("""
             QLabel {
-                font-family: 'Noto Sans SC';
                 color: #888;
-                font-size: 13px;
                 margin: 10px 20px;
             }
         """)
@@ -1427,15 +1452,15 @@ class ModernSettingsWindow(QDialog):
         warning_dialog.buttonClicked.connect(on_button_clicked)
 
         # 显示对话框
-        warning_dialog.exec_()
+        warning_dialog.exec()
 
     def _open_theme_color_settings(self):
         """
         打开主题颜色设置窗口
         """
         from freeassetfilter.components.theme_editor import ThemeEditor
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton
-        from PyQt5.QtCore import Qt
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton
+        from PySide6.QtCore import Qt
         
         theme_window = QDialog(self)
         theme_window.setWindowTitle("主题设置")
@@ -1464,7 +1489,7 @@ class ModernSettingsWindow(QDialog):
         
         main_layout.addLayout(buttons_layout)
         
-        theme_window.exec_()
+        theme_window.exec()
 
     def _on_open_settings_json_clicked(self, button_index):
         """
@@ -1550,10 +1575,7 @@ class ModernSettingsWindow(QDialog):
         self.navigation_widget.setStyleSheet(navigation_style)
         
         title_style = f"""
-            QLabel {{ 
-                font-family: 'Noto Sans SC'; 
-                font-size: 10px;
-                font-weight: 400;
+            QLabel {{
                 color: {secondary_color};
                 margin-bottom: 15px;
                 padding: 5px;
@@ -1569,17 +1591,15 @@ class ModernSettingsWindow(QDialog):
                         break
         
         card_style = f"""
-            QPushButton {{ 
-                background-color: {auxiliary_color}; 
+            QPushButton {{
+                background-color: {auxiliary_color};
                 border: none;
                 border-radius: 2px;
                 padding: 0;
                 height: 15px;
                 width: 85px;
                 text-align: center;
-                font-size: 10px;
                 color: {secondary_color};
-                font-weight: 400;
             }}
             QPushButton:hover {{ 
                 background-color: {dark2}; 
@@ -1605,10 +1625,7 @@ class ModernSettingsWindow(QDialog):
         self.content_area.setStyleSheet(content_style)
         
         content_title_style = f"""
-            QLabel {{ 
-                font-family: 'Noto Sans SC'; 
-                font-size: 14px;
-                font-weight: 600;
+            QLabel {{
                 color: {secondary_color};
                 margin-bottom: 10px;
                 padding: 5px;
@@ -1700,7 +1717,6 @@ class ModernSettingsWindow(QDialog):
                 padding: 0px 10px;
                 color: {secondary_color};
                 font-weight: 600;
-                font-size: 6px;
                 margin-bottom: 0px;
                 top: -2px;
                 background-color: {base_color};
@@ -1783,7 +1799,7 @@ class ModernSettingsWindow(QDialog):
         msg_box.set_title("提示")
         msg_box.set_text("当前字体修改将在下次启动后生效")
         msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-        msg_box.exec_()
+        msg_box.exec()
     
     def _apply_theme_if_needed(self):
         """
@@ -1806,7 +1822,7 @@ class ModernSettingsWindow(QDialog):
         confirm_box.set_text("重置后所有设置将恢复为默认值，此操作不可撤销。\n是否继续？")
         confirm_box.set_buttons(["确认重置", "取消"], Qt.Vertical, ["warning", "secondary"])
 
-        if confirm_box.exec_() == 0:
+        if confirm_box.exec() == 0:
             try:
                 # 调用设置管理器的重置方法
                 self.settings_manager.reset_to_defaults()
@@ -1825,7 +1841,7 @@ class ModernSettingsWindow(QDialog):
                 success_box.set_title("重置成功")
                 success_box.set_text("所有设置已恢复为默认值。\n部分设置可能需要重启程序后完全生效。")
                 success_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                success_box.exec_()
+                success_box.exec()
 
             except Exception as e:
                 # 错误处理
@@ -1833,7 +1849,7 @@ class ModernSettingsWindow(QDialog):
                 error_box.set_title("重置失败")
                 error_box.set_text(f"重置设置时发生错误：\n{str(e)}\n\n请尝试手动删除设置文件后重启程序。")
                 error_box.set_buttons(["确定"], Qt.Horizontal, ["warning"])
-                error_box.exec_()
+                error_box.exec()
                 print(f"重置设置失败: {e}")
 
     def _update_ui_to_defaults(self):
@@ -1947,6 +1963,11 @@ class ModernSettingsWindow(QDialog):
             if self.fluid_gradient_theme_setting.button_group:
                 self.fluid_gradient_theme_setting.button_group[0].setText(default_theme)
 
+        # 更新播放器全屏化设置（如果有的话）
+        if hasattr(self, 'enable_fullscreen_switch') and self.enable_fullscreen_switch:
+            default_value = defaults["player"]["enable_fullscreen"]
+            self.enable_fullscreen_switch.set_switch_value(default_value)
+
         # 更新current_settings中的主题颜色为默认值
         default_colors = defaults["appearance"]["colors"]
         for color_key, color_value in default_colors.items():
@@ -1971,7 +1992,7 @@ class ModernSettingsWindow(QDialog):
         # 连接按钮点击事件
         restart_box.buttonClicked.connect(lambda idx: self._restart_application(restart_box))
         
-        restart_box.exec_()
+        restart_box.exec()
     
     def _restart_application(self, dialog):
         """

@@ -29,6 +29,8 @@ from .menu_list import D_MenuList, D_MenuListItem
 from .audio_background import AudioBackground
 # 导入滚动文本组件
 from .scrolling_text import ScrollingText
+# 导入播放器控制栏组件
+from .player_control_bar import PlayerControlBar
 
 __all__ = [
     'CustomButton',
@@ -46,5 +48,6 @@ __all__ = [
     'D_MenuList',
     'D_MenuListItem',
     'AudioBackground',
-    'ScrollingText'
+    'ScrollingText',
+    'PlayerControlBar'
 ]

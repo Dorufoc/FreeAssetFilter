@@ -5,9 +5,9 @@ FreeAssetFilter 滚动文本自定义控件
 实现单行文本的横向滚动效果，支持鼠标悬停暂停
 """
 
-from PyQt5.QtWidgets import QWidget, QApplication, QSizePolicy
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal, QPoint, pyqtProperty
-from PyQt5.QtGui import QFont, QColor, QFontMetrics, QPainter, QPaintEvent
+from PySide6.QtWidgets import QWidget, QApplication, QSizePolicy
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, Signal, QPoint, Property
+from PySide6.QtGui import QFont, QColor, QFontMetrics, QPainter, QPaintEvent
 
 
 class ScrollingText(QWidget):
@@ -27,7 +27,7 @@ class ScrollingText(QWidget):
         clicked: 点击信号
     """
     
-    clicked = pyqtSignal()  # 点击信号
+    clicked = Signal()  # 点击信号
     
     # 循环模式常量
     LOOP_MODE_SINGLE = "single"      # 单向循环：左→右→闪现回左→右
@@ -83,7 +83,9 @@ class ScrollingText(QWidget):
         # 滚动偏移量（用于动画）
         self._scroll_offset = 0
         
-        # 返回动画
+        # 动画对象（在需要时创建）
+        self._forward_animation = None
+        self._backward_animation = None
         self._return_animation = None
         
         # 初始化UI
@@ -109,13 +111,10 @@ class ScrollingText(QWidget):
             scaled_height = int(self._original_height * self._dpi_scale)
             self.setFixedSize(scaled_width, scaled_height)
         
-        # 设置字体
+        # 设置字体，使用全局字体让Qt6自动处理DPI缩放
         app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 14)
-        scaled_font_size = int(default_font_size * self._dpi_scale)
-        
-        self._font = QFont()
-        self._font.setPointSize(scaled_font_size)
+        global_font = getattr(app, 'global_font', QFont())
+        self._font = QFont(global_font)
 
         # 注意：不在此处计算文本尺寸，因为布局可能尚未完成
         # 文本尺寸和滚动状态的计算延迟到 _init_scroll_animation() 中进行
@@ -234,7 +233,7 @@ class ScrollingText(QWidget):
         # 开始动画
         self._start_scroll_cycle()
     
-    @pyqtProperty(float)
+    @Property(float)
     def scroll_offset(self):
         """获取当前滚动偏移量"""
         return self._scroll_offset
@@ -250,8 +249,10 @@ class ScrollingText(QWidget):
         if not self._is_scrolling or self._is_paused:
             return
         
-        # 开始正向滚动
-        self._forward_animation.start()
+        # 检查动画对象是否存在
+        if hasattr(self, '_forward_animation') and self._forward_animation:
+            # 开始正向滚动
+            self._forward_animation.start()
     
     def _on_forward_finished(self):
         """正向滚动完成回调"""
@@ -270,7 +271,9 @@ class ScrollingText(QWidget):
         if not self._is_scrolling or self._is_paused:
             return
         
-        self._backward_animation.start()
+        # 检查动画对象是否存在
+        if hasattr(self, '_backward_animation') and self._backward_animation:
+            self._backward_animation.start()
     
     def _on_backward_finished(self):
         """反向滚动完成回调（PingPong模式）"""
@@ -336,13 +339,14 @@ class ScrollingText(QWidget):
     
     def _update_animation_end_position(self):
         """更新动画终点位置（用于大小改变时）"""
-        if not self._forward_animation:
+        # 检查动画对象是否存在（可能在初始化完成前被调用）
+        if not hasattr(self, '_forward_animation') or not self._forward_animation:
             return
         
         end_value = -self._scroll_distance
         self._forward_animation.setEndValue(end_value)
         
-        if self._backward_animation:
+        if hasattr(self, '_backward_animation') and self._backward_animation:
             self._backward_animation.setStartValue(end_value)
     
     def paintEvent(self, event):
@@ -409,15 +413,14 @@ class ScrollingText(QWidget):
     def set_font_size(self, font_size):
         """
         设置字体大小
-        
+
         参数：
             font_size (int): 字体大小（未缩放值）
         """
         self._original_font_size = font_size
-        # 使用原始字体大小，不在这里进行DPI缩放
-        # 因为字体渲染系统会自动处理DPI缩放
+        # 使用全局字体并设置新的大小，让Qt6自动处理DPI缩放
         self._font.setPointSize(font_size)
-        
+
         # 重新计算滚动
         self._update_scroll()
     
@@ -484,9 +487,9 @@ class ScrollingText(QWidget):
         
         self._is_paused = True
         
-        if hasattr(self, '_forward_animation') and self._forward_animation.state() == QPropertyAnimation.Running:
+        if hasattr(self, '_forward_animation') and self._forward_animation and self._forward_animation.state() == QPropertyAnimation.Running:
             self._forward_animation.pause()
-        elif hasattr(self, '_backward_animation') and self._backward_animation.state() == QPropertyAnimation.Running:
+        elif hasattr(self, '_backward_animation') and self._backward_animation and self._backward_animation.state() == QPropertyAnimation.Running:
             self._backward_animation.pause()
     
     def resume(self):
@@ -496,9 +499,9 @@ class ScrollingText(QWidget):
         
         self._is_paused = False
         
-        if hasattr(self, '_forward_animation') and self._forward_animation.state() == QPropertyAnimation.Paused:
+        if hasattr(self, '_forward_animation') and self._forward_animation and self._forward_animation.state() == QPropertyAnimation.Paused:
             self._forward_animation.resume()
-        elif hasattr(self, '_backward_animation') and self._backward_animation.state() == QPropertyAnimation.Paused:
+        elif hasattr(self, '_backward_animation') and self._backward_animation and self._backward_animation.state() == QPropertyAnimation.Paused:
             self._backward_animation.resume()
         else:
             # 如果没有暂停的动画，重新开始循环
@@ -511,9 +514,9 @@ class ScrollingText(QWidget):
         self._is_hover_mode = False
         self._has_started = False
         
-        if hasattr(self, '_forward_animation'):
+        if hasattr(self, '_forward_animation') and self._forward_animation:
             self._forward_animation.stop()
-        if hasattr(self, '_backward_animation'):
+        if hasattr(self, '_backward_animation') and self._backward_animation:
             self._backward_animation.stop()
         if hasattr(self, '_return_animation') and self._return_animation:
             self._return_animation.stop()
@@ -567,9 +570,9 @@ class ScrollingText(QWidget):
         self._is_scrolling = False
         self._is_paused = False
         
-        if hasattr(self, '_forward_animation'):
+        if hasattr(self, '_forward_animation') and self._forward_animation is not None:
             self._forward_animation.stop()
-        if hasattr(self, '_backward_animation'):
+        if hasattr(self, '_backward_animation') and self._backward_animation is not None:
             self._backward_animation.stop()
         
         # 创建返回动画

@@ -11,7 +11,7 @@ import math
 from collections import Counter
 from typing import List, Optional
 
-from PyQt5.QtGui import QColor
+from PySide6.QtGui import QColor
 from PIL import Image
 
 

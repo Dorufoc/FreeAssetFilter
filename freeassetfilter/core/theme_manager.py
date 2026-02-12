@@ -5,8 +5,8 @@ FreeAssetFilter 主题管理器组件
 集中管理应用的主题颜色和主题切换功能
 """
 
-from PyQt5.QtCore import Qt, pyqtSignal, QObject
-from PyQt5.QtGui import QColor
+from PySide6.QtCore import Qt, Signal, QObject
+from PySide6.QtGui import QColor
 
 # 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
@@ -22,8 +22,8 @@ class ThemeManager(QObject):
         colors_updated: 颜色更新时发出的信号
     """
     
-    theme_changed = pyqtSignal(str)  # 主题变更信号，参数为新主题名称
-    colors_updated = pyqtSignal(dict)  # 颜色更新信号，参数为新颜色字典
+    theme_changed = Signal(str)  # 主题变更信号，参数为新主题名称
+    colors_updated = Signal(dict)  # 颜色更新信号，参数为新颜色字典
     
     def __init__(self, settings_manager=None):
         """

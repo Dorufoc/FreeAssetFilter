@@ -5,9 +5,9 @@ FreeAssetFilter 开关类自定义控件
 包含独立的开关控件实现
 """
 
-from PyQt5.QtWidgets import QWidget, QPushButton, QApplication, QVBoxLayout
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QIcon, QPixmap
+from PySide6.QtWidgets import QWidget, QPushButton, QApplication, QVBoxLayout
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QIcon, QPixmap
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
@@ -26,7 +26,7 @@ class CustomSwitch(QWidget):
     """
     
     # 信号定义
-    toggled = pyqtSignal(bool)  # 开关状态变化信号
+    toggled = Signal(bool)  # 开关状态变化信号
     
     def __init__(self, parent=None, initial_value=False, height=20):
         """
@@ -83,7 +83,7 @@ class CustomSwitch(QWidget):
         """ % (self._height // 2))
         
         # 创建QSvgWidget用于渲染SVG
-        from PyQt5.QtSvg import QSvgWidget
+        from PySide6.QtSvgWidgets import QSvgWidget
         self.svg_widget = QSvgWidget(self)
         self.svg_widget.setStyleSheet("background: transparent;")
         

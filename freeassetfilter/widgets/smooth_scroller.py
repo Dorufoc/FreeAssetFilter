@@ -4,9 +4,9 @@ FreeAssetFilter 滚动条组件
 带悬停动画效果和平滑滚动的滚动条
 """
 
-from PyQt5.QtCore import Qt, QPoint, QTimer, pyqtSignal, QObject, QPropertyAnimation, pyqtProperty, QEasingCurve
-from PyQt5.QtWidgets import QScrollArea, QAbstractItemView, QScroller, QScrollerProperties, QApplication, QScrollBar
-from PyQt5.QtGui import QColor, QWheelEvent
+from PySide6.QtCore import Qt, QPoint, QTimer, Signal, QObject, QPropertyAnimation, Property, QEasingCurve
+from PySide6.QtWidgets import QScrollArea, QAbstractItemView, QScroller, QScrollerProperties, QApplication, QScrollBar
+from PySide6.QtGui import QColor, QWheelEvent
 import time
 
 
@@ -23,7 +23,7 @@ class D_ScrollBar(QScrollBar):
     - 支持滚轮平滑滚动
     """
     
-    scroll_finished = pyqtSignal()
+    scroll_finished = Signal()
     
     def __init__(self, parent=None, orientation=Qt.Vertical):
         """
@@ -200,7 +200,7 @@ class D_ScrollBar(QScrollBar):
         self._anim_handle_color_value = QColor(color)
         self._update_style()
     
-    _anim_handle_color = pyqtProperty(QColor, fget=_get_anim_handle_color, fset=_set_anim_handle_color)
+    _anim_handle_color = Property(QColor, fget=_get_anim_handle_color, fset=_set_anim_handle_color)
     
     def enterEvent(self, event):
         """鼠标进入事件"""
@@ -348,45 +348,51 @@ class SmoothScroller:
     """
     
     @staticmethod
-    def apply(widget, gesture_type=QScroller.TouchGesture):
+    def apply(widget, gesture_type=QScroller.TouchGesture, enable_mouse_drag=False):
         """
         为控件应用触摸惯性滚动
-        
+
         Args:
             widget: 要应用平滑滚动的控件
             gesture_type: 手势类型
+            enable_mouse_drag: 是否同时启用鼠标拖动滚动（模拟触摸滚动）
         """
         target = _get_target_widget(widget)
         scroller = QScroller.scroller(target)
         QScroller.grabGesture(target, gesture_type)
-        
+
+        # 同时启用鼠标左键拖动滚动
+        if enable_mouse_drag:
+            QScroller.grabGesture(target, QScroller.LeftMouseButtonGesture)
+
         properties = scroller.scrollerProperties()
-        
+
         properties.setScrollMetric(QScrollerProperties.OvershootDragResistanceFactor, 1.0)
         properties.setScrollMetric(QScrollerProperties.OvershootDragDistanceFactor, 0.0)
         properties.setScrollMetric(QScrollerProperties.OvershootScrollTime, 0)
         properties.setScrollMetric(QScrollerProperties.DecelerationFactor, 0.8)
         properties.setScrollMetric(QScrollerProperties.DragVelocitySmoothingFactor, 0.6)
-        
+
         scroller.setScrollerProperties(properties)
-        
+
         return scroller
     
     @staticmethod
-    def apply_to_scroll_area(scroll_area, gesture_type=QScroller.TouchGesture):
+    def apply_to_scroll_area(scroll_area, gesture_type=QScroller.TouchGesture, enable_mouse_drag=False):
         """
         为 QScrollArea 应用平滑滚动
-        
+
         Args:
             scroll_area: QScrollArea 实例
             gesture_type: 手势类型
+            enable_mouse_drag: 是否同时启用鼠标拖动滚动（模拟触摸滚动）
         """
         if not isinstance(scroll_area, QScrollArea):
             return None
-        
+
         SmoothScroller._configure_scroll_area(scroll_area)
-        SmoothScroller.apply(scroll_area, gesture_type)
-        
+        SmoothScroller.apply(scroll_area, gesture_type, enable_mouse_drag)
+
         return scroll_area
     
     @staticmethod

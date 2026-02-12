@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -29,12 +29,12 @@ import hashlib
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox,
     QSizePolicy, QFormLayout, QApplication, QTextEdit
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QCursor, QTextOption
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QFont, QCursor, QTextOption
 
 # 导入项目自定义控件
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
@@ -980,8 +980,8 @@ class FileInfoPreviewer:
 
         # 使用线程加载详细信息
         class LoadThread(QThread):
-            finished = pyqtSignal(dict)
-            error = pyqtSignal(str)
+            finished = Signal(dict)
+            error = Signal(str)
 
             def __init__(self, file_path, file_info, parent):
                 super().__init__()
@@ -1065,7 +1065,7 @@ class FileInfoPreviewer:
         msg_box.set_title("错误")
         msg_box.set_text(f"加载详细信息失败: {error_msg}")
         msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-        msg_box.exec_()
+        msg_box.exec()
 
     def _get_cache_dir(self):
         """获取缓存目录路径"""

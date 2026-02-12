@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 
 音频背景组件
 支持两种背景模式：
@@ -13,9 +13,9 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 2. 封面模糊 - 使用音频封面图像，拉伸到1440P并模糊处理
 """
 
-from PyQt5.QtWidgets import QWidget
-from PyQt5.QtCore import Qt, QTimer, QPointF, pyqtSignal, QRect
-from PyQt5.QtGui import QPainter, QColor, QRadialGradient, QBrush, QLinearGradient, QPixmap, QImage
+from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt, QTimer, QPointF, Signal, QRect
+from PySide6.QtGui import QPainter, QColor, QRadialGradient, QBrush, QLinearGradient, QPixmap, QImage
 from PIL import Image, ImageFilter
 import io
 import random
@@ -31,8 +31,8 @@ class AudioBackground(QWidget):
     """
     
     # 信号定义
-    themeChanged = pyqtSignal(str)
-    speedChanged = pyqtSignal(float)
+    themeChanged = Signal(str)
+    speedChanged = Signal(float)
     
     # 背景模式常量
     MODE_FLUID = "fluid"

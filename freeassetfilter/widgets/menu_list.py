@@ -11,9 +11,9 @@ FreeAssetFilter 菜单列表控件
 - 横向宽度自适应文本内容
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QScrollArea, QLabel
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QSize, QRect, QTimer
-from PyQt5.QtGui import QFont, QFontMetrics
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QScrollArea, QLabel
+from PySide6.QtCore import Qt, QPoint, Signal, QSize, QRect, QTimer
+from PySide6.QtGui import QFont, QFontMetrics
 
 from .D_hover_menu import D_HoverMenu
 from .smooth_scroller import D_ScrollBar
@@ -31,7 +31,7 @@ class D_MenuList(QWidget):
     - 支持项目点击事件
     - 横向宽度自适应文本内容
     """
-    itemClicked = pyqtSignal(object)
+    itemClicked = Signal(object)
 
     def __init__(self, parent=None, position="bottom"):
         """
@@ -113,8 +113,6 @@ class D_MenuList(QWidget):
             item_button.setFlat(True)
             item_button.setCursor(Qt.PointingHandCursor)
 
-            font_size = int(8 * self.dpi_scale)
-
             normal_color = "#e0e0e0"
             if self.settings_manager:
                 normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
@@ -127,7 +125,6 @@ class D_MenuList(QWidget):
 
             item_button.setStyleSheet(f"""
                 QPushButton {{
-                    font-size: {font_size}px;
                     color: {secondary_color};
                     padding: 2px 3px;
                     background-color: transparent;

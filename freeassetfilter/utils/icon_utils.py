@@ -5,15 +5,13 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
+2. 商业使用：需联系 qpdrfc123@gmail.com 获取书面授权；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
-2. 商业使用：需联系 qpdrfc123@gmail.com 获取书面授权
-项目地址：https://github.com/Dorufoc/FreeAssetFilter
-许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 图标处理工具模块
 """
 
@@ -425,8 +423,8 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
         QPixmap - 如果转换成功则返回Pixmap，否则返回None
     """
     try:
-        from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QTransform, QGuiApplication
-        from PyQt5.QtCore import Qt, QPoint
+        from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QTransform, QGuiApplication
+        from PySide6.QtCore import Qt, QPoint
         from PIL import Image, ImageFilter, ImageEnhance
         import io
         
@@ -548,7 +546,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
                 # 如果图像已经是目标大小，直接返回
                 if width == size and height == size:
                     pixmap = QPixmap.fromImage(qimage)
-                    from PyQt5.QtGui import QGuiApplication
+                    from PySide6.QtGui import QGuiApplication
                     pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                     return pixmap
                 
@@ -595,7 +593,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
                 
                 # 转换为QPixmap
                 pixmap = QPixmap.fromImage(processed_qimage)
-                from PyQt5.QtGui import QGuiApplication
+                from PySide6.QtGui import QGuiApplication
                 pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 
                 return pixmap
@@ -612,8 +610,8 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
     except Exception as e:
         # 如果PIL处理失败，回退到Qt的处理方式
         try:
-            from PyQt5.QtGui import QPixmap, QImage, QPainter
-            from PyQt5.QtCore import Qt
+            from PySide6.QtGui import QPixmap, QImage, QPainter
+            from PySide6.QtCore import Qt
             
             # 获取图标信息
             icon_info = ICONINFO()

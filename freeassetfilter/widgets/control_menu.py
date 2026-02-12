@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -15,9 +15,9 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 用于播放器等控件的弹出式控制菜单
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
-from PyQt5.QtCore import Qt, QRect, QSize, QPoint
-from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFontMetrics
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
+from PySide6.QtCore import Qt, QRect, QSize, QPoint
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFontMetrics
 
 
 class CustomControlMenu(QWidget):
@@ -41,7 +41,7 @@ class CustomControlMenu(QWidget):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         
         # 获取应用实例和DPI缩放因子
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
@@ -226,7 +226,7 @@ class CustomControlMenu(QWidget):
         """
         绘制菜单外观，包括圆角和阴影
         """
-        from PyQt5.QtCore import QRectF
+        from PySide6.QtCore import QRectF
         
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -273,7 +273,7 @@ class CustomControlMenu(QWidget):
         更新菜单样式，用于主题变化时
         """
         # 获取应用实例和settings_manager
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         settings_manager = None
         if hasattr(app, 'settings_manager'):

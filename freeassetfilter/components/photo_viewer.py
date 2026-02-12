@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -17,19 +17,19 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import sys
 import os
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QScrollArea, QGroupBox, QGridLayout,
     QMessageBox, QSizePolicy
 )
 
 from freeassetfilter.widgets.D_more_menu import D_MoreMenu
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QImage, QPixmap, QPainter, QPen, QColor, QCursor,
     QFont, QIcon
 )
-from PyQt5.QtCore import (
-    Qt, QPoint, QRect, QSize, QTimer, pyqtSignal, QMimeData, QUrl,
+from PySide6.QtCore import (
+    Qt, QPoint, QRect, QSize, QTimer, Signal, QMimeData, QUrl,
     QThread
 )
 
@@ -42,8 +42,8 @@ class RawProcessor(QThread):
     """
     RAW文件异步处理器
     """
-    processing_complete = pyqtSignal(QImage, str)  # 处理完成信号
-    processing_failed = pyqtSignal(str)  # 处理失败信号
+    processing_complete = Signal(QImage, str)  # 处理完成信号
+    processing_failed = Signal(str)  # 处理失败信号
     
     def __init__(self, image_path):
         super().__init__()
@@ -73,7 +73,7 @@ class RawProcessor(QThread):
                         use_camera_wb=True
                     )
             
-            from PyQt5.QtGui import QGuiApplication
+            from PySide6.QtGui import QGuiApplication
             device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
             
             height, width, channel = rgb.shape
@@ -95,8 +95,8 @@ class IcoProcessor(QThread):
     ICO文件异步处理器
     将ICO格式转换为位图进行预览
     """
-    processing_complete = pyqtSignal(QImage, str)
-    processing_failed = pyqtSignal(str)
+    processing_complete = Signal(QImage, str)
+    processing_failed = Signal(str)
 
     def __init__(self, image_path):
         super().__init__()
@@ -277,8 +277,8 @@ class HeifAvifProcessor(QThread):
     """
     HEIC/AVIF文件异步处理器
     """
-    processing_complete = pyqtSignal(QImage, str)
-    processing_failed = pyqtSignal(str)
+    processing_complete = Signal(QImage, str)
+    processing_failed = Signal(str)
 
     def __init__(self, image_path):
         super().__init__()
@@ -356,9 +356,9 @@ class PSDProcessor(QThread):
     PSD文件异步处理器
     使用psd-tools库解析PSD文件，合成所有图层和应用图层效果
     """
-    processing_complete = pyqtSignal(str)  # 发送临时文件路径
-    processing_failed = pyqtSignal(str)
-    processing_progress = pyqtSignal(int, str)  # 进度信号
+    processing_complete = Signal(str)  # 发送临时文件路径
+    processing_failed = Signal(str)
+    processing_progress = Signal(int, str)  # 进度信号
 
     def __init__(self, image_path):
         super().__init__()
@@ -437,7 +437,7 @@ class ImageWidget(QWidget):
     """
     图片显示部件，支持缩放、像素信息显示等功能
     """
-    pixel_info_changed = pyqtSignal(dict)
+    pixel_info_changed = Signal(dict)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -670,7 +670,7 @@ class ImageWidget(QWidget):
         """
         try:
             if self.original_image:
-                from PyQt5.QtGui import QGuiApplication
+                from PySide6.QtGui import QGuiApplication
                 device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
                 
                 if hasattr(self.parent(), 'viewport') and self.parent().viewport():
@@ -701,7 +701,7 @@ class ImageWidget(QWidget):
         """
         try:
             if self.original_image:
-                from PyQt5.QtGui import QGuiApplication
+                from PySide6.QtGui import QGuiApplication
                 device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
                 
                 if hasattr(self.parent(), 'viewport') and self.parent().viewport():
@@ -758,7 +758,7 @@ class ImageWidget(QWidget):
         if self.pixmap and self.scaled_image:
             try:
                 # 获取设备像素比
-                from PyQt5.QtGui import QGuiApplication
+                from PySide6.QtGui import QGuiApplication
                 device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
                 
                 # 计算图片的逻辑像素尺寸
@@ -852,7 +852,7 @@ class ImageWidget(QWidget):
             # 无论鼠标是否在图片上，都可以进行缩放
             if self.original_image and self.scaled_image:
                 # 获取设备像素比
-                from PyQt5.QtGui import QGuiApplication
+                from PySide6.QtGui import QGuiApplication
                 device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
                 
                 # 计算图片的逻辑像素尺寸
@@ -1129,8 +1129,8 @@ class PhotoViewer(QWidget):
         """
         super().__init__(parent)
         
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtGui import QFont
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QFont
         app = QApplication.instance()
         
         self.global_font = getattr(app, 'global_font', QFont())
@@ -1253,4 +1253,4 @@ if __name__ == "__main__":
         viewer.load_image_from_path(image_path)
     
     viewer.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

@@ -5,15 +5,15 @@ FreeAssetFilter 进度条类自定义控件
 包含各种进度条类UI组件，如自定义进度条、数值控制条、音量控制条等
 """
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
     QScrollArea
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QPointF, QPropertyAnimation, QEasingCurve, pyqtProperty, QTime
-from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QLinearGradient
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect
-from PyQt5.QtSvg import QSvgRenderer
+from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize, QPointF, QPropertyAnimation, QEasingCurve, Property, QTime
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QLinearGradient
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
+from PySide6.QtSvg import QSvgRenderer
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
@@ -31,9 +31,9 @@ class CustomProgressBar(QWidget):
     - 提供丰富的信号机制
     - 支持横向和纵向布局
     """
-    valueChanged = pyqtSignal(int)  # 值变化信号
-    userInteracting = pyqtSignal()  # 用户开始交互信号
-    userInteractionEnded = pyqtSignal()  # 用户结束交互信号
+    valueChanged = Signal(int)  # 值变化信号
+    userInteracting = Signal()  # 用户开始交互信号
+    userInteractionEnded = Signal()  # 用户结束交互信号
     
     # 方向常量
     Horizontal = 0
@@ -355,8 +355,8 @@ class CustomProgressBar(QWidget):
                     temp_pixmap = SvgRenderer.render_svg_to_pixmap(self._middle_icon_path, icon_size, self.dpi_scale)
                     
                     # 将临时 pixmap 旋转 90 度
-                    from PyQt5.QtCore import Qt as QtCore
-                    from PyQt5.QtGui import QTransform
+                    from PySide6.QtCore import Qt as QtCore
+                    from PySide6.QtGui import QTransform
                     transform = QTransform()
                     transform.rotate(90)
                     rotated_pixmap = temp_pixmap.transformed(transform, QtCore.SmoothTransformation)
@@ -587,9 +587,9 @@ class D_ProgressBar(QWidget):
         userInteractionEnded: 用户结束交互时发出
     """
 
-    valueChanged = pyqtSignal(int)
-    userInteracting = pyqtSignal()
-    userInteractionEnded = pyqtSignal()
+    valueChanged = Signal(int)
+    userInteracting = Signal()
+    userInteractionEnded = Signal()
 
     Horizontal = 0
     Vertical = 1
@@ -649,7 +649,7 @@ class D_ProgressBar(QWidget):
         self._display_value_storage = value
         self.update()
 
-    _display_value = pyqtProperty(int, fget=_get_display_value, fset=_set_display_value)
+    _display_value = Property(int, fget=_get_display_value, fset=_set_display_value)
 
     def _on_animation_value_changed(self, value):
         """动画值变化时的回调"""
@@ -1147,7 +1147,7 @@ class D_ProgressBar(QWidget):
         """
         绘制进度条
         """
-        from PyQt5.QtCore import Qt as QtCore
+        from PySide6.QtCore import Qt as QtCore
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -1290,9 +1290,9 @@ class CustomValueBar(QWidget):
     自定义数值控制条组件
     支持横向和竖向两种显示方式，滑块为圆形设计
     """
-    valueChanged = pyqtSignal(int)  # 值变化信号
-    userInteracting = pyqtSignal()  # 用户开始交互信号
-    userInteractionEnded = pyqtSignal()  # 用户结束交互信号
+    valueChanged = Signal(int)  # 值变化信号
+    userInteracting = Signal()  # 用户开始交互信号
+    userInteractionEnded = Signal()  # 用户结束交互信号
     
     # 方向常量
     Horizontal = 0
@@ -1314,14 +1314,14 @@ class CustomValueBar(QWidget):
         # 设置尺寸参数
         # 尺寸关系：进度条高度 = 滑块半径，滑块直径 = 2 × 进度条高度
         # 这样滑块比进度条大，视觉上更协调
-        self._bar_size = int(3 * self.dpi_scale)  # 进度条尺寸（横向为高度，竖向为宽度）
-        self._handle_radius = self._bar_size  # 滑块半径 = 进度条尺寸
-        self._bar_radius = self._bar_size // 2  # 圆角半径 = 进度条尺寸的一半
+        self._bar_height = int(3 * self.dpi_scale)  # 进度条高度（与CustomProgressBar保持一致）
+        self._handle_radius = self._bar_height  # 滑块半径 = 进度条高度
+        self._bar_radius = self._bar_height // 2  # 圆角半径 = 进度条高度的一半
         
         # 应用DPI缩放因子到尺寸
         scaled_min_width = int(100 * self.dpi_scale)
-        scaled_min_height = self._bar_size + self._handle_radius * 2  # 总高度 = 进度条尺寸 + 2×滑块半径
-        scaled_square_dim = self._bar_size + self._handle_radius * 2
+        scaled_min_height = self._bar_height + self._handle_radius * 2  # 总高度 = 进度条高度 + 2×滑块半径
+        scaled_square_dim = self._bar_height + self._handle_radius * 2
         
         # 根据方向设置最小和最大尺寸，应用DPI缩放
         if self._orientation == self.Horizontal:
@@ -1561,7 +1561,7 @@ class CustomValueBar(QWidget):
         绘制数值控制条
         """
         # 确保Qt已导入
-        from PyQt5.QtCore import Qt
+        from PySide6.QtCore import Qt
         
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -1571,13 +1571,13 @@ class CustomValueBar(QWidget):
         if self._orientation == self.Horizontal:
             # 横向绘制
             # 计算数值条参数
-            bar_y = (rect.height() - self._bar_size) // 2
+            bar_y = (rect.height() - self._bar_height) // 2
             bar_length = rect.width() - 2 * self._handle_radius
             
             # 绘制背景
             bg_rect = QRect(
                 self._handle_radius, bar_y, 
-                bar_length, self._bar_size
+                bar_length, self._bar_height
             )
             
             if self._gradient_mode and len(self._gradient_colors) >= 2:
@@ -1598,7 +1598,7 @@ class CustomValueBar(QWidget):
             progress_length = int(bar_length * progress_ratio)
             progress_rect = QRect(
                 self._handle_radius, bar_y, 
-                progress_length, self._bar_size
+                progress_length, self._bar_height
             )
             
             if self._gradient_mode:
@@ -1613,11 +1613,11 @@ class CustomValueBar(QWidget):
             # 确保滑块不会超出数值条范围
             handle_x = min(handle_x, rect.width() - self._handle_radius * 2)
             # 计算对齐位置（进度条中心与滑块中心对齐）
-            # bar_y + bar_size/2 = handle_y + handle_radius
-            # handle_y = bar_y + bar_size/2 - handle_radius
-            # 由于 bar_size = handle_radius:
+            # bar_y + bar_height/2 = handle_y + handle_radius
+            # handle_y = bar_y + bar_height/2 - handle_radius
+            # 由于 bar_height = handle_radius:
             # handle_y = bar_y + handle_radius/2 - handle_radius = bar_y - handle_radius/2
-            offset_y = (self._bar_size - self._handle_radius * 2) // 2
+            offset_y = (self._bar_height - self._handle_radius * 2) // 2
             handle_y = bar_y + offset_y
             
             # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
@@ -1640,13 +1640,13 @@ class CustomValueBar(QWidget):
         else:  # Vertical
             # 竖向绘制
             # 计算数值条参数
-            bar_x = (rect.width() - self._bar_size) // 2
+            bar_x = (rect.width() - self._bar_height) // 2
             bar_length = rect.height() - 2 * self._handle_radius
             
             # 绘制背景
             bg_rect = QRect(
                 bar_x, self._handle_radius, 
-                self._bar_size, bar_length
+                self._bar_height, bar_length
             )
             
             painter.setBrush(QBrush(self._bg_color))
@@ -1666,7 +1666,7 @@ class CustomValueBar(QWidget):
                 progress_rect = QRect(
                     bar_x, 
                     self._handle_radius + (bar_length - progress_length),  # 底部对齐
-                    self._bar_size, 
+                    self._bar_height, 
                     progress_length
                 )
                 
@@ -1680,11 +1680,11 @@ class CustomValueBar(QWidget):
             handle_y = max(handle_y, self._handle_radius)
             handle_y = min(handle_y, rect.height() - self._handle_radius * 2)
             # 计算对齐位置（进度条中心与滑块中心对齐）
-            # bar_x + bar_size/2 = handle_x + handle_radius
-            # handle_x = bar_x + bar_size/2 - handle_radius
-            # 由于 bar_size = handle_radius:
+            # bar_x + bar_height/2 = handle_x + handle_radius
+            # handle_x = bar_x + bar_height/2 - handle_radius
+            # 由于 bar_height = handle_radius:
             # handle_x = bar_x + handle_radius/2 - handle_radius = bar_x - handle_radius/2
-            offset_x = (self._bar_size - self._handle_radius * 2) // 2
+            offset_x = (self._bar_height - self._handle_radius * 2) // 2
             handle_x = bar_x + offset_x
             
             # 绘制圆形滑块：内部填充为纯白色，边框为蓝色
@@ -1783,7 +1783,7 @@ class CustomVolumeBar(QWidget):
     自定义音量控制条
     支持点击任意位置调整音量和拖拽功能
     """
-    valueChanged = pyqtSignal(int)  # 值变化信号
+    valueChanged = Signal(int)  # 值变化信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1942,7 +1942,7 @@ class CustomVolumeBar(QWidget):
         绘制音量条
         """
         # 确保Qt已导入
-        from PyQt5.QtCore import Qt
+        from PySide6.QtCore import Qt
         
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)

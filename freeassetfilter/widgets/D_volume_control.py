@@ -6,9 +6,9 @@ FreeAssetFilter 自定义音量控制组件
 用于在 video player 中提供自定义的音量控制功能
 """
 
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QApplication
-from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QEvent
-from PyQt5.QtGui import QFont
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QApplication
+from PySide6.QtCore import Qt, Signal, QPoint, QEvent
+from PySide6.QtGui import QFont
 
 from .button_widgets import CustomButton
 from .D_volume import D_Volume
@@ -28,8 +28,8 @@ class DVolumeControl(QWidget):
     - 与当前音量大小保持同步
     """
 
-    valueChanged = pyqtSignal(int)
-    mutedChanged = pyqtSignal(bool)
+    valueChanged = Signal(int)
+    mutedChanged = Signal(bool)
 
     def __init__(self, parent=None):
         """

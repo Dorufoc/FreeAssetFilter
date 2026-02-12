@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -24,22 +24,23 @@ from datetime import datetime
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QDialog, QApplication,
     QPushButton, QLabel, QComboBox, QLineEdit, QScrollArea,
-    QHeaderView, QGroupBox, QGridLayout, QMenu, QAction,
+    QHeaderView, QGroupBox, QGridLayout, QMenu,
     QFrame, QSplitter, QSizePolicy, QInputDialog, QListWidget, QProgressBar,
     QProgressDialog
 )
-from PyQt5.QtCore import (
-    Qt, pyqtSignal, QThread, QObject, QEvent, QTimer,
+from PySide6.QtCore import (
+    Qt, Signal, QThread, QObject, QEvent, QTimer,
     QFileInfo, QDateTime, QPoint, QSize, QRect, QRectF, QUrl
 )
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QIcon, QPixmap, QFont, QFontMetrics, QColor, QCursor,
-    QBrush, QPainter, QPen, QPalette, QImage, QFontDatabase
+    QBrush, QPainter, QPen, QPalette, QImage, QFontDatabase, QAction
 )
-from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtSvgWidgets import QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
 from freeassetfilter.widgets.file_block_card import FileBlockCard
@@ -57,10 +58,10 @@ class ThumbnailGeneratorThread(QThread):
     缩略图生成后台线程
     在后台线程中生成缩略图，避免阻塞UI
     """
-    progress_updated = pyqtSignal(int, int, dict)  # 当前索引、总數、文件信息
-    thumbnail_created = pyqtSignal(dict)  # 文件信息
-    finished = pyqtSignal(int, int)  # 成功数、总數
-    error_occurred = pyqtSignal(str, Exception)  # 文件路径、错误
+    progress_updated = Signal(int, int, dict)  # 当前索引、总數、文件信息
+    thumbnail_created = Signal(dict)  # 文件信息
+    finished = Signal(int, int)  # 成功数、总數
+    error_occurred = Signal(str, Exception)  # 文件路径、错误
 
     def __init__(self, file_selector, files_to_generate):
         super().__init__()
@@ -100,9 +101,9 @@ class CustomFileSelector(QWidget):
     """
     
     # 定义信号
-    file_selected = pyqtSignal(dict)  # 当文件被选中时发出
-    file_right_clicked = pyqtSignal(dict)  # 当文件被右键点击时发出
-    file_selection_changed = pyqtSignal(dict, bool)  # 当文件选择状态改变时发出
+    file_selected = Signal(dict)  # 当文件被选中时发出
+    file_right_clicked = Signal(dict)  # 当文件被右键点击时发出
+    file_selection_changed = Signal(dict, bool)  # 当文件选择状态改变时发出
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -312,13 +313,8 @@ class CustomFileSelector(QWidget):
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
         self.drive_combo.itemClicked.connect(self._on_drive_changed)
-        # 设置字体大小与全局默认字体大小一致
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        drive_combo_font = QFont(self.global_font)
-        drive_combo_font.setPointSize(scaled_font_size)
-        self.drive_combo.setFont(drive_combo_font)
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        self.drive_combo.setFont(self.global_font)
         dir_layout.addWidget(self.drive_combo)
         
         # 目录显示区域（可编辑）
@@ -461,33 +457,36 @@ class CustomFileSelector(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        
+
         scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
         scroll_area.verticalScrollBar().apply_theme_from_settings()
-        
+
         SmoothScroller.apply_to_scroll_area(scroll_area)
-        
+
+        # 滚动区域外边距，与文件存储池保持一致
+        scaled_padding = int(3 * self.dpi_scale)
         scrollbar_style = f"""
             QScrollArea {{
                 border: 1px solid {normal_color};
                 border-radius: 8px;
                 background-color: {base_color};
-                padding: 0px;
+                padding: {scaled_padding}px;
             }}
             QScrollArea > QWidget > QWidget {{
                 background-color: {base_color};
             }}
         """
         scroll_area.setStyleSheet(scrollbar_style)
-        
+
         self.files_container = QWidget()
         self.files_layout = QGridLayout(self.files_container)
         self.files_container.setObjectName("FilesContainer")
         self.files_container.setStyleSheet(f"#FilesContainer {{ border: none; background-color: {base_color}; }}")
         scaled_card_spacing = int(5 * self.dpi_scale)
-        scaled_card_margin = int(5 * self.dpi_scale)
+        # 布局外边距与文件存储池保持一致：左右有边距，上下无边距
+        scaled_card_margin = int(3 * self.dpi_scale)
         self.files_layout.setSpacing(scaled_card_spacing)
-        self.files_layout.setContentsMargins(scaled_card_margin, scaled_card_margin, scaled_card_margin, scaled_card_margin)
+        self.files_layout.setContentsMargins(scaled_card_margin, 0, scaled_card_margin, 0)
         self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         
         scroll_area.setWidget(self.files_container)
@@ -592,7 +591,7 @@ class CustomFileSelector(QWidget):
             info_msg.set_text("所有文件都已有缩略图，无需重新生成")
             info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             info_msg.buttonClicked.connect(info_msg.close)
-            info_msg.exec_()
+            info_msg.exec()
             return
 
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
@@ -665,7 +664,7 @@ class CustomFileSelector(QWidget):
             result_msg.set_text(result_text)
             result_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             result_msg.buttonClicked.connect(result_msg.close)
-            result_msg.exec_()
+            result_msg.exec()
 
         self._thumbnail_thread.progress_updated.connect(on_progress_updated)
         self._thumbnail_thread.thumbnail_created.connect(on_thumbnail_created)
@@ -735,7 +734,7 @@ class CustomFileSelector(QWidget):
             confirm_msg.close()
 
         confirm_msg.buttonClicked.connect(on_confirm_clicked)
-        confirm_msg.exec_()
+        confirm_msg.exec()
 
         if is_confirmed:
             if not self or not hasattr(self, 'isVisible') or not self.isVisible():
@@ -786,7 +785,7 @@ class CustomFileSelector(QWidget):
                                 success_msg.close()
 
                             success_msg.buttonClicked.connect(on_success_ok_clicked)
-                            success_msg.exec_()
+                            success_msg.exec()
                     else:
                         if self and hasattr(self, 'isVisible') and self.isVisible():
                             empty_msg = CustomMessageBox(self)
@@ -798,7 +797,7 @@ class CustomFileSelector(QWidget):
                                 empty_msg.close()
 
                             empty_msg.buttonClicked.connect(on_empty_ok_clicked)
-                            empty_msg.exec_()
+                            empty_msg.exec()
                 else:
                     if self and hasattr(self, 'isVisible') and self.isVisible():
                         not_exist_msg = CustomMessageBox(self)
@@ -810,7 +809,7 @@ class CustomFileSelector(QWidget):
                             not_exist_msg.close()
 
                         not_exist_msg.buttonClicked.connect(on_not_exist_ok_clicked)
-                        not_exist_msg.exec_()
+                        not_exist_msg.exec()
             except Exception as e:
                 print(f"清理缩略图缓存失败: {e}")
                 # 清理失败错误提示
@@ -823,7 +822,7 @@ class CustomFileSelector(QWidget):
                     error_msg.close()
                 
                 error_msg.buttonClicked.connect(on_error_ok_clicked)
-                error_msg.exec_()
+                error_msg.exec()
     
     def _create_thumbnail(self, file_path):
         """
@@ -1416,7 +1415,7 @@ class CustomFileSelector(QWidget):
         
         dialog.buttonClicked.connect(on_button_clicked)
         
-        dialog.exec_()
+        dialog.exec()
     
     def _on_favorite_card_clicked(self, path, favorite, dialog, favorites_cards):
         """
@@ -1444,7 +1443,7 @@ class CustomFileSelector(QWidget):
             input_dialog.close()
         
         input_dialog.buttonClicked.connect(on_button_clicked)
-        input_dialog.exec_()
+        input_dialog.exec()
         
         if result == 0:
             new_name = input_dialog.get_input()
@@ -1477,7 +1476,7 @@ class CustomFileSelector(QWidget):
             msg_box.close()
         
         msg_box.buttonClicked.connect(on_button_clicked)
-        msg_box.exec_()
+        msg_box.exec()
         
         if result == 0:
             self.favorites = [f for f in self.favorites if not (f['path'] == favorite['path'] and f['name'] == favorite['name'])]
@@ -1503,7 +1502,7 @@ class CustomFileSelector(QWidget):
                 msg_box.set_text("该路径已在收藏夹中")
                 msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 msg_box.buttonClicked.connect(msg_box.close)
-                msg_box.exec_()
+                msg_box.exec()
                 return
         
         default_name = os.path.basename(current_path) or current_path
@@ -1522,7 +1521,7 @@ class CustomFileSelector(QWidget):
             input_dialog.close()
         
         input_dialog.buttonClicked.connect(on_button_clicked)
-        input_dialog.exec_()
+        input_dialog.exec()
         
         if result == 0:
             name = input_dialog.get_input()
@@ -1544,7 +1543,7 @@ class CustomFileSelector(QWidget):
                     dialog.close()
                 
                 success_msg.buttonClicked.connect(on_success_ok)
-                success_msg.exec_()
+                success_msg.exec()
     
     def _on_favorite_double_clicked(self, item, dialog):
         """
@@ -1610,7 +1609,7 @@ class CustomFileSelector(QWidget):
                         input_dialog.close()
                     
                     input_dialog.buttonClicked.connect(on_button_clicked)
-                    input_dialog.exec_()
+                    input_dialog.exec()
                     
                     if result == 0:  # 0表示确定按钮
                         new_name = input_dialog.get_input()
@@ -1645,7 +1644,7 @@ class CustomFileSelector(QWidget):
                 confirm_msg.close()
             
             confirm_msg.buttonClicked.connect(on_delete_clicked)
-            confirm_msg.exec_()
+            confirm_msg.exec()
             
             if is_confirmed:
                 # 从收藏夹列表中删除
@@ -1675,7 +1674,7 @@ class CustomFileSelector(QWidget):
                 info_msg.set_text("该路径已在收藏夹中")
                 info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 info_msg.buttonClicked.connect(info_msg.close)
-                info_msg.exec_()
+                info_msg.exec()
                 return
         
         # 使用CustomMessageBox的输入模式获取收藏夹名称
@@ -1694,7 +1693,7 @@ class CustomFileSelector(QWidget):
             input_dialog.close()
         
         input_dialog.buttonClicked.connect(on_button_clicked)
-        input_dialog.exec_()
+        input_dialog.exec()
         
         if result == 0:  # 0表示确定按钮
             name = input_dialog.get_input()
@@ -1938,7 +1937,7 @@ class CustomFileSelector(QWidget):
             warning_msg.set_text("无效的路径")
             warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             warning_msg.buttonClicked.connect(warning_msg.close)
-            warning_msg.exec_()
+            warning_msg.exec()
     
     def _update_filter_button_style(self):
         """
@@ -1982,7 +1981,7 @@ class CustomFileSelector(QWidget):
             filter_dialog.close()
         
         filter_dialog.buttonClicked.connect(on_button_clicked)
-        filter_dialog.exec_()
+        filter_dialog.exec()
         
         if result == 0:  # 0表示确认按钮
             filter_pattern = filter_dialog.get_input().strip()
@@ -2122,6 +2121,10 @@ class CustomFileSelector(QWidget):
     
     def _load_next_batch(self):
         """分批加载下一批卡片"""
+        # 如果不在加载状态，说明路径已切换或刷新被中断，直接返回
+        if not self._is_loading:
+            return
+        
         if not self._pending_files:
             self._is_loading = False
             if hasattr(self, '_fixed_max_cols'):
@@ -2196,25 +2199,57 @@ class CustomFileSelector(QWidget):
         self._pending_files = []
         self._loaded_count = 0
         self._is_loading = False
-        
+
         if hasattr(self, '_last_max_cols'):
             del self._last_max_cols
-        
+
         if hasattr(self, '_last_card_width'):
             del self._last_card_width
-        
+
         if hasattr(self, '_last_container_width'):
             del self._last_container_width
-        
+
+        # 先收集所有需要删除的widget，避免在迭代过程中修改布局
+        widgets_to_delete = []
+        for i in range(self.files_layout.count()):
+            try:
+                item = self.files_layout.itemAt(i)
+                if item is not None:
+                    widget = item.widget()
+                    if widget is not None:
+                        widgets_to_delete.append(widget)
+            except RuntimeError:
+                # 布局已被修改，忽略错误
+                pass
+
+        # 从布局中移除所有item
         while self.files_layout.count() > 0:
-            item = self.files_layout.itemAt(0)
-            if item is not None:
-                self.files_layout.removeItem(item)
-                widget = item.widget()
-                if widget is not None:
+            try:
+                item = self.files_layout.takeAt(0)
+                if item is not None:
+                    # takeAt已经移除了item，不需要再调用removeItem
+                    del item
+            except RuntimeError:
+                break
+
+        # 删除所有widget
+        for widget in widgets_to_delete:
+            try:
+                # 先隐藏widget
+                widget.setVisible(False)
+                # 安全地断开信号连接
+                try:
                     widget.disconnect()
-                    widget.deleteLater()
-        
+                except (RuntimeError, TypeError):
+                    pass
+                # 从父widget中移除
+                widget.setParent(None)
+                # 使用deleteLater延迟删除
+                widget.deleteLater()
+            except RuntimeError:
+                # widget已被删除，忽略错误
+                pass
+
         self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
     
     def _get_files(self):
@@ -2294,7 +2329,7 @@ class CustomFileSelector(QWidget):
                 error_msg.set_text(f"读取目录失败: {e}")
                 error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 error_msg.buttonClicked.connect(error_msg.close)
-                error_msg.exec_()
+                error_msg.exec()
         
         return files
     
@@ -2522,7 +2557,7 @@ class CustomFileSelector(QWidget):
             container_width = self.files_container.width()
 
         if container_width <= 0:
-            from PyQt5.QtCore import QTimer
+            from PySide6.QtCore import QTimer
             QTimer.singleShot(50, self._update_all_cards_width)
             return
 
@@ -2860,7 +2895,7 @@ class CustomFileSelector(QWidget):
                     pass
                 
                 # 备用方案：使用QFileIconProvider来获取文件图标
-                from PyQt5.QtWidgets import QFileIconProvider
+                from PySide6.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
                 file_info_qt = QFileInfo(file_path)
                 icon = icon_provider.icon(file_info_qt)
@@ -2993,7 +3028,7 @@ class CustomFileSelector(QWidget):
                 file_path = file_info["path"]
                 
                 # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
-                from PyQt5.QtWidgets import QFileIconProvider
+                from PySide6.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
                 file_info_qt = QFileInfo(file_path)
                 icon = icon_provider.icon(file_info_qt)
@@ -3090,7 +3125,7 @@ class CustomFileSelector(QWidget):
             else:
                 # 普通文件类型，优先使用QSvgWidget直接渲染SVG
                 try:
-                    from PyQt5.QtSvg import QSvgWidget
+                    from PySide6.QtSvgWidgets import QSvgWidget
                     
                     # 读取SVG文件内容并进行颜色替换预处理
                     with open(icon_path, 'r', encoding='utf-8') as f:
@@ -3150,7 +3185,7 @@ class CustomFileSelector(QWidget):
             suffix = suffix.lower()
             if suffix in ["lnk", "exe"]:
                 # 对于lnk和exe文件，使用QFileIconProvider获取图标
-                from PyQt5.QtWidgets import QFileIconProvider
+                from PySide6.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
                 file_info_qt = QFileInfo(file_info['path'])
                 icon = icon_provider.icon(file_info_qt)
@@ -3305,7 +3340,7 @@ class CustomFileSelector(QWidget):
                 return True
         elif event.type() == QEvent.Resize:
             #print(f"[DEBUG] resize事件触发 from {obj.objectName() if hasattr(obj, 'objectName') else str(obj)}")
-            from PyQt5.QtCore import QTimer
+            from PySide6.QtCore import QTimer
             QTimer.singleShot(50, self._update_all_cards_width)
             if self._pending_files and not self._is_loading:
                 QTimer.singleShot(100, self._load_remaining_on_scroll)
@@ -3429,19 +3464,13 @@ class CustomFileSelector(QWidget):
         
         # 添加关闭按钮
         close_btn = QPushButton("关闭")
-        # 使用全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        scaled_font_size = int(default_font_size * dpi_scale)
-        font = close_btn.font()
-        font.setPointSize(scaled_font_size)
-        close_btn.setFont(font)
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        close_btn.setFont(self.global_font)
         close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn, 0, Qt.AlignRight)
         
         # 显示对话框
-        dialog.exec_()
+        dialog.exec()
     
     def _remove_from_staging_pool(self, card):
         """
@@ -3853,7 +3882,7 @@ class CustomFileSelector(QWidget):
         scanner.start()
         
         # 显示进度对话框
-        progress_dialog.exec_()
+        progress_dialog.exec()
         
         # 如果CSV文件生成成功，显示时间线组件
         if csv_path:
@@ -3930,4 +3959,4 @@ if __name__ == "__main__":
     window.setCentralWidget(selector)
     
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

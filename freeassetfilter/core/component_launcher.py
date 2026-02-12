@@ -5,11 +5,11 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
-项目地址：https://github.com/Dorufoc/FreeMediaClub
-许可协议：https://github.com/Dorufoc/FreeMediaClub/blob/main/LICENSE
+项目地址：https://github.com/Dorufoc/FreeAssetFilter
+许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
 
 组件启动器
 用于快速启动项目中的各个独立组件
@@ -21,7 +21,7 @@ import shutil
 import re
 from datetime import datetime, timedelta
 import chardet
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, 
     QWidget, QLabel, QGroupBox, QTextEdit, 
     QScrollArea, QHBoxLayout, QMessageBox, QSizePolicy,
@@ -30,8 +30,9 @@ from PyQt5.QtWidgets import (
 # 导入自定义输入框组件
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from PyQt5.QtCore import Qt, QProcess, QTimer
-from PyQt5.QtGui import QFont, QColor
+from freeassetfilter.core.settings_manager import SettingsManager
+from PySide6.QtCore import Qt, QProcess, QTimer
+from PySide6.QtGui import QFont, QColor
 
 class ComponentLauncher(QMainWindow):
     def __init__(self):
@@ -40,8 +41,11 @@ class ComponentLauncher(QMainWindow):
         self.setGeometry(100, 100, 900, 800)
         self.setMinimumSize(800, 600)
         
-        # 设置字体
-        font = QFont()
+        # 从设置管理器获取字体设置
+        self.settings_manager = SettingsManager()
+        font_size = self.settings_manager.get_setting("font.size", 10)
+        font_style = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
+        font = QFont(font_style, font_size)
         QApplication.setFont(font)
         
         # 组件配置
@@ -152,7 +156,10 @@ class ComponentLauncher(QMainWindow):
         # 添加标题
         title_label = QLabel("组件启动器")
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setFont(QFont("Arial", 14, QFont.Bold))
+        title_font = QFont(self.settings_manager.get_setting("font.style", "Microsoft YaHei"), self.settings_manager.get_setting("font.size", 10))
+        title_font.setPointSize(int(self.settings_manager.get_setting("font.size", 10) * 1.4))
+        title_font.setWeight(QFont.Bold)
+        title_label.setFont(title_font)
         title_label.setStyleSheet("color: #000000; background-color: #f0f0f0; padding: 8px;")
         title_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         main_layout.addWidget(title_label)
@@ -237,7 +244,7 @@ class ComponentLauncher(QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setPlaceholderText("组件输出日志将显示在这里...")
         self.log_text.setMinimumHeight(200)
-        self.log_text.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; font-family: Courier; font-size: 9pt;")
+        self.log_text.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; font-family: Courier;")
         self.log_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         log_layout.addWidget(self.log_text)
         
@@ -271,14 +278,17 @@ class ComponentLauncher(QMainWindow):
         
         # 组件标题
         name_label = QLabel(component["name"])
-        name_label.setFont(QFont("Arial", 11, QFont.Bold))
+        name_font = QFont(self.settings_manager.get_setting("font.style", "Microsoft YaHei"), self.settings_manager.get_setting("font.size", 10))
+        name_font.setPointSize(int(self.settings_manager.get_setting("font.size", 10) * 1.1))
+        name_font.setWeight(QFont.Bold)
+        name_label.setFont(name_font)
         name_label.setStyleSheet("color: #2c3e50; background-color: #f8f9fa; padding: 5px; border-radius: 3px;")
         layout.addWidget(name_label)
         
         # 组件描述
         desc_label = QLabel(component["description"])
         desc_label.setWordWrap(True)
-        desc_label.setStyleSheet("color: #555555; font-size: 9pt;")
+        desc_label.setStyleSheet("color: #555555;")
         desc_label.setMinimumHeight(30)
         desc_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(desc_label)
@@ -368,7 +378,7 @@ class ComponentLauncher(QMainWindow):
                     msg_box.set_title("启动失败")
                     msg_box.set_text(f"无法启动组件: {component_name}")
                     msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                    msg_box.exec_()
+                    msg_box.exec()
             except Exception as e:
                 # 解析错误信息
                 error_info = self._parse_error(str(e))
@@ -387,7 +397,7 @@ class ComponentLauncher(QMainWindow):
                 msg_box.set_title("启动错误")
                 msg_box.set_text(f"启动组件时发生错误: {component_name}\n{str(e)}")
                 msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                msg_box.exec_()
+                msg_box.exec()
     
     def _read_process_output(self, process, component_name):
         """读取进程输出"""
@@ -438,7 +448,7 @@ class ComponentLauncher(QMainWindow):
         
         log_text = QTextEdit()
         log_text.setReadOnly(True)
-        log_text.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; font-family: Courier; font-size: 9pt;")
+        log_text.setStyleSheet("background-color: #f8f9fa; border: 1px solid #ddd; font-family: Courier;")
         
         # 提取指定组件的日志
         logs = self.log_text.toPlainText()
@@ -458,7 +468,7 @@ class ComponentLauncher(QMainWindow):
         layout.addWidget(buttons)
         
         dialog.setLayout(layout)
-        dialog.exec_()
+        dialog.exec()
     
     def _save_component_logs(self, component_name, logs):
         """保存组件日志到文件"""
@@ -475,7 +485,7 @@ class ComponentLauncher(QMainWindow):
             msg_box.set_title("保存成功")
             msg_box.set_text(f"日志已成功保存到:\n{log_path}")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            msg_box.exec_()
+            msg_box.exec()
         except Exception as e:
             self._log(f"保存日志失败: {str(e)}", component=component_name, level="ERROR")
             from freeassetfilter.widgets.D_widgets import CustomMessageBox
@@ -483,7 +493,7 @@ class ComponentLauncher(QMainWindow):
             msg_box.set_title("保存失败")
             msg_box.set_text(f"保存日志时发生错误:\n{str(e)}")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            msg_box.exec_()
+            msg_box.exec()
     
     def _copy_recent_logs(self):
         """复制最近一次启动的日志"""
@@ -511,7 +521,7 @@ class ComponentLauncher(QMainWindow):
             msg_box.set_title("复制成功")
             msg_box.set_text("最近一次启动的日志已复制到剪贴板！")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            msg_box.exec_()
+            msg_box.exec()
             self._log("已复制最近一次启动的日志", level="INFO")
         except Exception as e:
             self._log(f"复制日志失败: {str(e)}", level="ERROR")
@@ -520,7 +530,7 @@ class ComponentLauncher(QMainWindow):
             msg_box.set_title("复制失败")
             msg_box.set_text(f"复制日志时发生错误:\n{str(e)}")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            msg_box.exec_()
+            msg_box.exec()
     
     def _log(self, message, level="INFO", component="Launcher", file="", line=""):
         """添加日志信息"""
@@ -690,7 +700,7 @@ class ComponentLauncher(QMainWindow):
                 confirm_msg.close()
             
             confirm_msg.buttonClicked.connect(on_confirm_clicked)
-            confirm_msg.exec_()
+            confirm_msg.exec()
             
             if is_confirmed:
                 # 停止所有进程
@@ -708,4 +718,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     launcher = ComponentLauncher()
     launcher.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -21,16 +21,16 @@ import os
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox, QApplication, QSplitter
 )
 
 # 导入自定义按钮
 from freeassetfilter.widgets.D_widgets import CustomButton
-from PyQt5.QtCore import Qt
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
-from PyQt5.QtGui import QFont
+from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal, QTimer, QThread
+from PySide6.QtGui import QFont
 
 from freeassetfilter.components.file_info_previewer import FileInfoPreviewer
 from freeassetfilter.components.folder_content_list import FolderContentList
@@ -45,16 +45,16 @@ class UnifiedPreviewer(QWidget):
     """
 
     # 信号定义
-    open_in_selector_requested = pyqtSignal(str)  # 请求在文件选择器中打开路径
-    preview_started = pyqtSignal(dict)  # 预览开始信号，传递文件信息
-    preview_cleared = pyqtSignal()  # 预览清除信号
+    open_in_selector_requested = Signal(str)  # 请求在文件选择器中打开路径
+    preview_started = Signal(dict)  # 预览开始信号，传递文件信息
+    preview_cleared = Signal()  # 预览清除信号
 
     def __init__(self, parent=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtGui import QFont
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QFont
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(app, 'global_font', QFont())
@@ -93,7 +93,7 @@ class UnifiedPreviewer(QWidget):
         self.idle_detection_enabled = False  # 是否启用idle检测
         
         # 初始化idle检测定时器
-        from PyQt5.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         self.idle_detection_timer = QTimer(self)
         self.idle_detection_timer.setInterval(1000)  # 每秒清理一次过期事件
         self.idle_detection_timer.timeout.connect(self._cleanup_idle_events)
@@ -209,13 +209,10 @@ class UnifiedPreviewer(QWidget):
         # 添加默认提示信息
         self.default_label = QLabel("请选择一个文件进行预览")
         self.default_label.setAlignment(Qt.AlignCenter)
-        
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 14)
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        scaled_font_size = int(default_font_size * dpi_scale)
-        
-        self.default_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999;")
+
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        self.default_label.setFont(self.global_font)
+        self.default_label.setStyleSheet("color: #999;")
         self.preview_layout.addWidget(self.default_label)
         
         # 将预览区域添加到分割器
@@ -462,7 +459,7 @@ class UnifiedPreviewer(QWidget):
             msg_box.set_title("错误")
             msg_box.set_text(f"文件不存在: {file_path}")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            msg_box.exec_()
+            msg_box.exec()
             return
         
         try:
@@ -481,7 +478,7 @@ class UnifiedPreviewer(QWidget):
             msg_box.set_title("错误")
             msg_box.set_text(f"无法打开文件: {str(e)}")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            msg_box.exec_()
+            msg_box.exec()
 
     def _locate_file_in_selector(self):
         """
@@ -502,7 +499,7 @@ class UnifiedPreviewer(QWidget):
             msg_box.set_title("错误")
             msg_box.set_text(f"目录不存在: {file_dir}")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            msg_box.exec_()
+            msg_box.exec()
             return
 
         # 发送信号请求在文件选择器中打开该路径
@@ -1261,13 +1258,10 @@ class UnifiedPreviewer(QWidget):
                 
                 # 启用自动换行，确保文本根据宽度调整
                 info_label.setWordWrap(True)
-                
-                # 使用全局统一字体大小，与LibreOffice提示样式保持一致
-                app = QApplication.instance()
-                default_font_size = getattr(app, 'default_font_size', 14)
-                dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-                scaled_font_size = int(default_font_size * dpi_scale)
-                info_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999; font-weight: normal;")
+
+                # 使用全局字体，让Qt6自动处理DPI缩放
+                info_label.setFont(self.global_font)
+                info_label.setStyleSheet("color: #999;")
                 
                 info_layout.addWidget(info_label)
                 
@@ -1374,9 +1368,9 @@ class UnifiedPreviewer(QWidget):
         优化：避免在后台线程中创建UI组件，只处理媒体加载逻辑
         """
         # 信号定义
-        preview_created = pyqtSignal(object, str)  # 预览组件创建完成，参数：组件实例，预览类型
-        preview_error = pyqtSignal(str)  # 预览创建失败，参数：错误信息
-        preview_progress = pyqtSignal(int, str)  # 预览进度更新，参数：进度(0-100)，状态描述
+        preview_created = Signal(object, str)  # 预览组件创建完成，参数：组件实例，预览类型
+        preview_error = Signal(str)  # 预览创建失败，参数：错误信息
+        preview_progress = Signal(int, str)  # 预览进度更新，参数：进度(0-100)，状态描述
         
         def __init__(self, file_path, preview_type, parent=None):
             super().__init__(parent)
@@ -1553,16 +1547,13 @@ class UnifiedPreviewer(QWidget):
                     info_message = "LibreOffice组件缺失\n\n预览Office类文件需要LibreOffice组件支持。\n\n请将LibreOfficePortable解压后放置于:\nFreeassetfilter/data文件夹内\n\n文件夹结构应为：\nFreeAssetFliter/data/LibreOfficePortable/..."
                     info_label = QLabel(info_message)
                     info_label.setAlignment(Qt.AlignCenter)
-                    
+
                     # 启用自动换行，确保文本根据宽度调整
                     info_label.setWordWrap(True)
-                    
-                    # 使用全局统一字体大小
-                    app = QApplication.instance()
-                    default_font_size = getattr(app, 'default_font_size', 14)
-                    dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-                    scaled_font_size = int(default_font_size * dpi_scale)
-                    info_label.setStyleSheet(f"font-size: {scaled_font_size}pt; color: #999; font-weight: normal;")
+
+                    # 使用全局字体，让Qt6自动处理DPI缩放
+                    info_label.setFont(self.global_font)
+                    info_label.setStyleSheet("color: #999;")
                     
                     info_layout.addWidget(info_label)
                     
@@ -1745,7 +1736,7 @@ class UnifiedPreviewer(QWidget):
             self._current_settings_window = ModernSettingsWindow(parent_widget)
             self._current_settings_window.settings_saved.connect(self._update_appearance_after_settings_change)
             self._current_settings_window.finished.connect(self._on_settings_window_closed)
-            self._current_settings_window.exec_()
+            self._current_settings_window.exec()
         except (RuntimeError, AttributeError):
             self._current_settings_window = None
         except Exception as e:
@@ -1839,7 +1830,7 @@ class UnifiedPreviewer(QWidget):
 
 # 测试代码
 if __name__ == "__main__":
-    from PyQt5.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication, QMainWindow
     
     app = QApplication(sys.argv)
     window = QMainWindow()
@@ -1862,4 +1853,4 @@ if __name__ == "__main__":
     previewer.set_file(test_file)
     
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

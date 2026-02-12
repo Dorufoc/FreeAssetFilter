@@ -37,7 +37,7 @@ import sys
 import os
 import ctypes
 from ctypes import wintypes
-from PyQt5.QtCore import QObject, pyqtSignal, QTimer, pyqtSlot
+from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
 
 class MouseActivityMonitor(QObject):
@@ -53,10 +53,10 @@ class MouseActivityMonitor(QObject):
         timeout_callback (callable): 空闲超时时的回调函数
     """
 
-    mouse_moved = pyqtSignal()
+    mouse_moved = Signal()
     """鼠标移动信号"""
 
-    timeout_reached = pyqtSignal()
+    timeout_reached = Signal()
     """空闲超时信号"""
 
     def __init__(self, parent=None, timeout=3000):
@@ -219,7 +219,7 @@ class MouseActivityMonitor(QObject):
             self._hide_timer.stop()
             self._hide_timer.start(self._timeout)
 
-    @pyqtSlot()
+    @Slot()
     def _on_mouse_moved(self):
         """鼠标移动时的处理"""
         self.mouse_moved.emit()
@@ -234,7 +234,7 @@ class MouseActivityMonitor(QObject):
             self._hide_timer.stop()
             self._hide_timer.start(self._timeout)
 
-    @pyqtSlot()
+    @Slot()
     def _on_timeout(self):
         """空闲超时处理"""
         self.timeout_reached.emit()

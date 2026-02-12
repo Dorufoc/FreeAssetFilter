@@ -49,7 +49,7 @@ class SettingsManager:
 
         self.default_settings = {
             "font": {
-                "size": 8,
+                "size": 10,
                 "style": "Microsoft YaHei"
             },
             "appearance": {
@@ -65,7 +65,7 @@ class SettingsManager:
             },
             "file_selector": {
                 "auto_clear_thumbnail_cache": True,
-                "restore_last_path": False,
+                "restore_last_path": True,
                 "default_layout": "card",
                 "cache_cleanup_period": 7,
                 "cache_cleanup_threshold": 500,
@@ -87,7 +87,8 @@ class SettingsManager:
                 "use_default_speed": True,
                 "default_speed": 1.0,
                 "last_volume": 100,
-                "last_speed": 1.0
+                "last_speed": 1.0,
+                "enable_fullscreen": False
             },
             "developer": {
                 "debug_mode": False,

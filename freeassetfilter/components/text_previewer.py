@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -29,22 +29,22 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QComboBox, QSlider, QTextEdit, QFrame, QApplication,
-    QGridLayout, QSizePolicy, QMessageBox, QToolBar, QAction,
+    QGridLayout, QSizePolicy, QMessageBox, QToolBar,
     QLineEdit, QPushButton, QWidgetAction
 )
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QFont, QIcon, QTextCursor, QTextDocument, QSyntaxHighlighter,
     QTextCharFormat, QColor, QFontDatabase, QPalette, QPainter,
-    QTextFormat, QBrush, QTextBlock
+    QTextFormat, QBrush, QTextBlock, QAction
 )
-from PyQt5.QtCore import (
-    Qt, QSize, QTimer, pyqtSignal, QThread, QStringListModel,
+from PySide6.QtCore import (
+    Qt, QSize, QTimer, Signal, QThread, QStringListModel,
     QRegularExpression, QMutex, QMutexLocker
 )
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QFont, QIcon, QTextCursor, QTextDocument, QSyntaxHighlighter,
     QTextCharFormat, QColor, QFontDatabase, QPalette, QPainter,
     QTextFormat, QBrush, QTextBlock
@@ -496,7 +496,7 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
     """
     FreeAssetFilter语法高亮器适配器
     
-    将新的FAF语法高亮器适配为PyQt5的QSyntaxHighlighter接口
+    将新的FAF语法高亮器适配为PySide6的QSyntaxHighlighter接口
     支持所有17种编程语言和标记语言
     """
     
@@ -631,7 +631,7 @@ class ZoomDisabledTextEdit(QTextEdit):
     """
     
     # 信号：字体大小变化通知，参数为变化量（正数表示增大，负数表示减小）
-    font_size_change_requested = pyqtSignal(int)
+    font_size_change_requested = Signal(int)
     
     def __init__(self, parent=None):
         """
@@ -759,7 +759,7 @@ class LineNumberArea(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         # 创建带左上和左下圆角的矩形路径，圆角大小与整体风格一致（8px）
-        from PyQt5.QtGui import QPainterPath
+        from PySide6.QtGui import QPainterPath
         radius = 8  # 圆角半径，与主窗口整体风格一致
         path = QPainterPath()
         # 从左上角圆角开始
@@ -850,9 +850,9 @@ class LineNumberArea(QWidget):
 class TextPreviewThread(QThread):
     """文本加载后台线程"""
     
-    finished = pyqtSignal(str, bool)
-    error = pyqtSignal(str)
-    progress = pyqtSignal(int)
+    finished = Signal(str, bool)
+    error = Signal(str)
+    progress = Signal(int)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1097,11 +1097,9 @@ class TextPreviewWidget(QWidget):
         self.text_edit.customContextMenuRequested.connect(self._show_context_menu)
         # 连接字体大小变化信号
         self.text_edit.font_size_change_requested.connect(self._on_font_size_change_requested)
-        
-        default_font = QFont()
-        default_font.setPointSize(int(self.default_font_size * self.dpi_scale))
-        # 设置字重为Regular（正常），避免字体过细
-        default_font.setWeight(QFont.Normal)
+
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        default_font = QFont(self.global_font)
         self.text_edit.setFont(default_font)
 
         app = QApplication.instance()

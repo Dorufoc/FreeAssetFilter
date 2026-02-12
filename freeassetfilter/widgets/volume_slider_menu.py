@@ -5,9 +5,9 @@ FreeAssetFilter 独立音量条浮动菜单组件
 用于提供独立的音量控制功能，可在自定义权重中使用
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal
-from PyQt5.QtGui import QIcon, QFont
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication
+from PySide6.QtCore import Qt, QPoint, Signal
+from PySide6.QtGui import QIcon, QFont
 
 # 导入现有的自定义控件
 from .control_menu import CustomControlMenu
@@ -22,8 +22,8 @@ class VolumeSliderMenu(QWidget):
     独立音量条浮动菜单组件
     包含音量按钮和可弹出的音量条菜单
     """
-    valueChanged = pyqtSignal(int)  # 音量值变化信号
-    mutedChanged = pyqtSignal(bool)  # 静音状态变化信号
+    valueChanged = Signal(int)  # 音量值变化信号
+    mutedChanged = Signal(bool)  # 静音状态变化信号
     
     def __init__(self, parent=None):
         """
@@ -105,7 +105,7 @@ class VolumeSliderMenu(QWidget):
         self.volume_button.setFixedSize(button_size, button_size)
         
         # 创建包含音量条和百分比标签的容器
-        from PyQt5.QtWidgets import QVBoxLayout, QLabel
+        from PySide6.QtWidgets import QVBoxLayout, QLabel
         container = QWidget()
         container.setStyleSheet("QWidget { background-color: transparent; border: none; }")
         container_layout = QVBoxLayout(container)
@@ -115,11 +115,7 @@ class VolumeSliderMenu(QWidget):
         # 创建百分比显示标签
         self.volume_label = QLabel(f"{self._volume}%")
         self.volume_label.setAlignment(Qt.AlignCenter)
-        self.volume_label.setFont(self.global_font)  # 使用全局字体
-        
-        # 设置标签样式，确保美观
-        # 字体大小根据DPI缩放，颜色与应用风格一致
-        font_size = int(6 * self.dpi_scale)
+        self.volume_label.setFont(self.global_font)  # 使用全局字体，让Qt6自动处理DPI缩放
         
         # 获取secondary_color
         app = QApplication.instance()
@@ -127,7 +123,7 @@ class VolumeSliderMenu(QWidget):
         if hasattr(app, 'settings_manager'):
             text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
-        self.volume_label.setStyleSheet(f"QLabel {{ font-size: {font_size}px; color: {text_color}; font-weight: normal; }}")
+        self.volume_label.setStyleSheet(f"QLabel {{ color: {text_color}; font-weight: normal; }}")
         
         # 添加标签和音量条到容器
         container_layout.addWidget(self.volume_label)
@@ -252,7 +248,7 @@ class VolumeSliderMenu(QWidget):
             # 连接按钮的leaveEvent
             self.volume_button.leaveEvent = self._on_button_leave
             # 启动定时器，3秒后检查是否需要关闭菜单
-            from PyQt5.QtCore import QTimer
+            from PySide6.QtCore import QTimer
             QTimer.singleShot(3000, self._check_leave_and_close)
             
     def hide_menu(self):
@@ -280,10 +276,10 @@ class VolumeSliderMenu(QWidget):
         鼠标离开音量按钮事件
         """
         # 启动定时器，3秒后检查是否需要关闭菜单
-        from PyQt5.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         QTimer.singleShot(3000, self._check_leave_and_close)
         # 调用父类的leaveEvent
-        from PyQt5.QtWidgets import QPushButton
+        from PySide6.QtWidgets import QPushButton
         super(QPushButton, self.volume_button).leaveEvent(event)
         
     def _on_menu_click(self, event):
@@ -324,8 +320,8 @@ class VolumeSliderMenu(QWidget):
         检查是否真正离开组件，并在离开3秒后关闭菜单
         """
         # 检查鼠标是否在组件或菜单上
-        from PyQt5.QtCore import QPoint, QRect
-        from PyQt5.QtGui import QCursor
+        from PySide6.QtCore import QPoint, QRect
+        from PySide6.QtGui import QCursor
         
         # 获取全局鼠标位置，使用兼容Qt 5所有版本的QCursor.pos()
         global_pos = QCursor.pos()
@@ -378,9 +374,8 @@ class VolumeSliderMenu(QWidget):
             if hasattr(app, 'settings_manager'):
                 text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
             
-            # 更新标签样式
-            font_size = int(6 * self.dpi_scale)
-            self.volume_label.setStyleSheet(f"QLabel {{ font-size: {font_size}px; color: {text_color}; font-weight: normal; }}")
+            # 更新标签样式，使用全局字体让Qt6自动处理DPI缩放
+            self.volume_label.setStyleSheet(f"QLabel {{ color: {text_color}; font-weight: normal; }}")
         
         # 更新其他组件样式
         if hasattr(self, 'volume_button'):

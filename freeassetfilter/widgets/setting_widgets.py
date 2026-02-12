@@ -5,13 +5,13 @@ FreeAssetFilter 设置项类自定义控件
 包含高度可定制的设置项控件，支持多种交互类型
 """
 
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QSizePolicy, QApplication, QLineEdit,
-    QSpacerItem
+    QSpacerItem, QLayout
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSize
-from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush
 
 # 导入现有自定义控件
 from .input_widgets import CustomInputBox
@@ -41,10 +41,10 @@ class CustomSettingItem(QWidget):
     VALUE_BAR_TYPE = 3
     
     # 信号定义
-    switch_toggled = pyqtSignal(bool)  # 开关状态变化信号
-    button_clicked = pyqtSignal(int)  # 按钮组点击信号，参数为按钮索引
-    input_submitted = pyqtSignal(str)  # 输入框提交信号
-    value_changed = pyqtSignal(int)  # 数值条值变化信号
+    switch_toggled = Signal(bool)  # 开关状态变化信号
+    button_clicked = Signal(int)  # 按钮组点击信号，参数为按钮索引
+    input_submitted = Signal(str)  # 输入框提交信号
+    value_changed = Signal(int)  # 数值条值变化信号
     
     def __init__(self, parent=None,
                  text="", secondary_text="",
@@ -109,7 +109,7 @@ class CustomSettingItem(QWidget):
         scaled_border_width = int(1 * self.dpi_scale)
         
         # 添加阴影效果，增强视觉层次感
-        from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(int(1 * self.dpi_scale))
         shadow.setOffset(0, int(1 * self.dpi_scale))
@@ -170,64 +170,55 @@ class CustomSettingItem(QWidget):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(int(1 * self.dpi_scale))  # 添加适当间距，避免文字重叠
-        
+
         # 主文本
         self.main_text_label = QLabel(self.text)
         self.main_text_label.setFont(self.global_font)
-        scaled_font_size = int(self.default_font_size * self.dpi_scale)
         # 获取主题文本颜色
         app = QApplication.instance()
         text_color = "#333333"  # 默认使用secondary_color作为默认值
-        
+
         # 尝试从应用实例获取主题颜色
         if hasattr(app, 'settings_manager'):
             # 优先获取secondary_color
             text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-        
+
         self.main_text_label.setStyleSheet("""
             QLabel {
                 color: %s;
-                font-family: '%s';
-                font-size: %dpx;
                 text-align: left;
-                font-weight: normal;
             }
-        """ % (text_color, self.global_font.family(), scaled_font_size))
+        """ % text_color)
         self.main_text_label.setWordWrap(True)  # 允许文字换行
         self.main_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 顶部对齐，避免垂直居中导致的重叠
         layout.addWidget(self.main_text_label)
         
         # 如果有辅助文本，则显示双行模式
         if self.secondary_text:
-            # 辅助文本字号为黑色文字大小的1/1.3取整
-            secondary_font_size = int(scaled_font_size)
             self.secondary_text_label = QLabel(self.secondary_text)
             self.secondary_text_label.setFont(self.global_font)
             # 获取主题辅助文本颜色
             app = QApplication.instance()
-            
+
             # 尝试获取normal_color
             normal_color_str = "#808080"  # 默认值
 
             # 优先从应用实例获取设置管理器
             if hasattr(app, 'settings_manager'):
                 normal_color_str = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
-            
+
             # 使用QColor将颜色加深30%
-            from PyQt5.QtGui import QColor
+            from PySide6.QtGui import QColor
             normal_color = QColor(normal_color_str)
             # darker(130)表示加深30%（100=不变，>100=加深，<100=变亮）
             secondary_text_color = normal_color.darker(130).name()
-            
+
             self.secondary_text_label.setStyleSheet("""
                 QLabel {
                     color: %s;
-                    font-family: '%s';
-                    font-size: %dpx;
                     text-align: left;
-                    font-weight: normal;
                 }
-            """ % (secondary_text_color, self.global_font.family(), secondary_font_size))
+            """ % secondary_text_color)
             self.secondary_text_label.setWordWrap(True)  # 允许文字换行
             self.secondary_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 顶部对齐
             layout.addWidget(self.secondary_text_label)
@@ -259,8 +250,8 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        # 设置布局约束，允许完全自适应内容大小
-        layout.setSizeConstraint(layout.SetMinAndMaxSize)
+        # 设置布局约束，允许完全自适应内容大小 (Qt6中使用SizeConstraint枚举)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         
         # 创建自定义开关控件
         initial_value = self.kwargs.get('initial_value', False)
@@ -287,12 +278,12 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        # 设置布局约束，允许完全自适应内容大小
-        layout.setSizeConstraint(layout.SetMinAndMaxSize)
+        # 设置布局约束，允许完全自适应内容大小 (Qt6中使用SizeConstraint枚举)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         # 应用DPI缩放因子到按钮间距
         scaled_spacing = int(2 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
-        
+
         # 获取按钮配置
         buttons = self.kwargs.get('buttons', [{'text': '确定', 'type': 'primary'}])
         
@@ -331,12 +322,12 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        # 设置布局约束，允许完全自适应内容大小
-        layout.setSizeConstraint(layout.SetMinAndMaxSize)
+        # 设置布局约束，允许完全自适应内容大小 (Qt6中使用SizeConstraint枚举)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         # 应用DPI缩放因子到组件间距
         scaled_spacing = int(2 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
-        
+
         # 创建文本输入框
         placeholder = self.kwargs.get('placeholder', '')
         initial_text = self.kwargs.get('initial_text', '')
@@ -376,12 +367,12 @@ class CustomSettingItem(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        # 设置布局约束，允许完全自适应内容大小
-        layout.setSizeConstraint(layout.SetMinAndMaxSize)
+        # 设置布局约束，允许完全自适应内容大小 (Qt6中使用SizeConstraint枚举)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         # 应用DPI缩放因子到组件间距
         scaled_spacing = int(4 * self.dpi_scale)
         layout.setSpacing(scaled_spacing)
-        
+
         # 数值控制条
         min_value = self.kwargs.get('min_value', 0)
         max_value = self.kwargs.get('max_value', 100)
@@ -394,24 +385,21 @@ class CustomSettingItem(QWidget):
         # 数值显示
         self.value_label = QLabel(str(initial_value))
         self.value_label.setFont(self.global_font)
-        # 应用DPI缩放因子到字体大小
-        scaled_font_size = int(self.default_font_size * self.dpi_scale)
         # 获取主题文本颜色
         app = QApplication.instance()
         text_color = "#333333"  # 默认使用secondary_color作为默认值
-        
+
         # 尝试从应用实例获取主题颜色
         if hasattr(app, 'settings_manager'):
             # 优先获取secondary_color
             text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-        
+
         self.value_label.setStyleSheet("""
             QLabel {
                 color: %s;
-                font-size: %dpx;
                 text-align: center;
             }
-        """ % (text_color, scaled_font_size))
+        """ % text_color)
         
         # 连接信号
         self.value_bar.valueChanged.connect(self._on_value_changed)

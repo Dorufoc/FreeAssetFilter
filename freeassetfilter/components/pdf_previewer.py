@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -18,13 +18,13 @@ PDF预览器组件
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QSizePolicy, QSpacerItem, QApplication, QFrame
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QRect, QRectF, QPoint
-from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QRegion, QPainterPath
-from PyQt5.QtWidgets import QScroller
+from PySide6.QtCore import Qt, Signal, QTimer, QRect, QRectF, QPoint
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QRegion, QPainterPath
+from PySide6.QtWidgets import QScroller
 
 # 导入自定义控件
 from freeassetfilter.widgets.button_widgets import CustomButton
@@ -82,7 +82,7 @@ class PDFPageWidget(QWidget):
                 self.setFixedSize(logical_size[0], logical_size[1])
             else:
                 # 获取设备像素比
-                from PyQt5.QtGui import QGuiApplication
+                from PySide6.QtGui import QGuiApplication
                 device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
                 # 设置控件大小为逻辑像素大小（物理像素 / 设备像素比）
                 logical_size = pixmap.size() / device_pixel_ratio
@@ -165,7 +165,7 @@ class PDFPreviewer(QWidget):
         pdf_render_finished: PDF渲染完成时发出
     """
     
-    pdf_render_finished = pyqtSignal()
+    pdf_render_finished = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -271,13 +271,12 @@ class PDFPreviewer(QWidget):
         self.prev_button.clicked.connect(self._go_to_prev_page)
         control_layout.addWidget(self.prev_button)
         
-        # 页码标签 - 使用settings.json中的secondary_color和全局字体大小
+        # 页码标签 - 使用全局字体，让Qt6自动处理DPI缩放
         self.page_label = QLabel("0/0")
         self.page_label.setAlignment(Qt.AlignCenter)
-        scaled_font_size = int(self.default_font_size * self.dpi_scale)
+        self.page_label.setFont(self.global_font)
         self.page_label.setStyleSheet(f"""
             QLabel {{
-                font-size: {scaled_font_size}px;
                 color: {self.secondary_color};
             }}
         """)
@@ -515,7 +514,7 @@ class PDFPreviewer(QWidget):
             (logical_width, logical_height) 逻辑显示尺寸
         """
         # 获取设备像素比
-        from PyQt5.QtGui import QGuiApplication
+        from PySide6.QtGui import QGuiApplication
         device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
         
         # 获取滚动区域可视宽度（减去滚动条宽度和边距）
@@ -595,7 +594,7 @@ class PDFPreviewer(QWidget):
             page = self.pdf_document.load_page(page_num)
             
             # 获取设备像素比
-            from PyQt5.QtGui import QGuiApplication
+            from PySide6.QtGui import QGuiApplication
             device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
             
             # 计算逻辑尺寸（控件大小）
@@ -790,7 +789,7 @@ class PDFPreviewer(QWidget):
         max_text = f"{max_page_num_str}/{max_page_num_str}"
 
         # 使用QFontMetrics计算文本宽度
-        from PyQt5.QtGui import QFontMetrics
+        from PySide6.QtGui import QFontMetrics
         font = self.page_label.font()
         font_metrics = QFontMetrics(font)
         text_width = font_metrics.horizontalAdvance(max_text)
@@ -826,11 +825,14 @@ class PDFPreviewer(QWidget):
         
         error_label = QLabel(message)
         error_label.setAlignment(Qt.AlignCenter)
-        error_label.setStyleSheet(f"""
-            QLabel {{
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        error_font = QFont(self.global_font)
+        error_font.setPointSize(int(self.global_font.pointSize() * 1.2))
+        error_label.setFont(error_font)
+        error_label.setStyleSheet("""
+            QLabel {
                 color: #FF4444;
-                font-size: {int(14 * self.dpi_scale)}px;
-            }}
+            }
         """)
         self.content_layout.addWidget(error_label)
         

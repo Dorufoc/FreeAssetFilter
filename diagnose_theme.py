@@ -25,7 +25,7 @@ class MockSettingsManager:
         return default
 
 # 先创建QApplication
-from PyQt5.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 app = QApplication.instance()
 if not app:
     app = QApplication(sys.argv)

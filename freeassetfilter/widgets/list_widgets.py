@@ -5,14 +5,14 @@ FreeAssetFilter 列表类自定义控件
 包含各种列表类UI组件，如自定义选择列表项、自定义选择列表等
 """
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
     QScrollArea
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
-from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
@@ -26,8 +26,8 @@ class CustomSelectListItem(QWidget):
     """
     自定义选择列表项组件
     """
-    clicked = pyqtSignal(int)  # 单击信号，传递索引
-    doubleClicked = pyqtSignal(int)  # 双击信号，传递索引
+    clicked = Signal(int)  # 单击信号，传递索引
+    doubleClicked = Signal(int)  # 双击信号，传递索引
     
     def __init__(self, parent=None, index=0, text="", icon_path="", is_selected=False):
         super().__init__(parent)
@@ -138,7 +138,7 @@ class CustomSelectListItem(QWidget):
         更新列表项样式
         支持未选中、hover、选中三种状态
         """
-        from PyQt5.QtGui import QColor
+        from PySide6.QtGui import QColor
 
         app = QApplication.instance()
         settings_manager = getattr(app, 'settings_manager', None)
@@ -252,9 +252,9 @@ class CustomSelectList(QWidget):
     - 支持单选模式和多选模式
     """
     # 信号定义
-    itemClicked = pyqtSignal(int)  # 单项点击信号，传递索引
-    itemDoubleClicked = pyqtSignal(int)  # 单项双击信号，传递索引
-    selectionChanged = pyqtSignal(list)  # 选择变化信号，传递选中索引列表
+    itemClicked = Signal(int)  # 单项点击信号，传递索引
+    itemDoubleClicked = Signal(int)  # 单项双击信号，传递索引
+    selectionChanged = Signal(list)  # 选择变化信号，传递选中索引列表
     
     def __init__(self, parent=None, default_width=75, default_height=50, min_width=50, min_height=37.5, selection_mode="single"):
         """
@@ -536,7 +536,7 @@ class CustomSelectList(QWidget):
         Returns:
             int: 计算出的宽度
         """
-        from PyQt5.QtGui import QFontMetrics
+        from PySide6.QtGui import QFontMetrics
         
         app = QApplication.instance()
         dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -589,7 +589,7 @@ class CustomSelectList(QWidget):
         dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         global_font = getattr(app, 'global_font', QFont())
         
-        from PyQt5.QtGui import QFontMetrics
+        from PySide6.QtGui import QFontMetrics
         font_metrics = QFontMetrics(global_font)
         
         max_text_width = 0

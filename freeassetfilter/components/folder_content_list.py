@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -22,15 +22,15 @@ from datetime import datetime
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QPushButton, QSplitter, QFrame, QSizePolicy,
     QFileIconProvider, QMenu, QApplication
 )
-from PyQt5.QtCore import (
-    Qt, pyqtSignal, QFileInfo, QDateTime
+from PySide6.QtCore import (
+    Qt, Signal, QFileInfo, QDateTime
 )
-from PyQt5.QtGui import (
+from PySide6.QtGui import (
     QIcon, QFont, QColor, QBrush
 )
 
@@ -49,14 +49,14 @@ class FolderContentList(QWidget):
     """
 
     # 定义信号：请求在文件选择器中打开当前路径
-    open_in_selector_requested = pyqtSignal(str)
+    open_in_selector_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
-        from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtGui import QFont
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QFont
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
@@ -136,16 +136,14 @@ class FolderContentList(QWidget):
         self.content_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.content_list.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
 
-        # 应用平滑滚动到 QListWidget 的视口
-        SmoothScroller.apply(self.content_list)
+        # 应用平滑滚动到 QListWidget 的视口，启用触摸滚动（同时支持鼠标拖动和触摸）
+        SmoothScroller.apply(self.content_list, enable_mouse_drag=True)
 
-        # 创建列表字体（使用原始字体大小，Qt会自动处理DPI缩放）
-        list_font = QFont(self.global_font)
-        list_font.setPointSize(default_font_size)
-        self.content_list.setFont(list_font)
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        self.content_list.setFont(self.global_font)
 
         # 存储字体供条目使用
-        self.scaled_font = list_font
+        self.scaled_font = self.global_font
 
         # 获取颜色设置
         current_colors = app.settings_manager.get_setting("appearance.colors", {
@@ -180,6 +178,7 @@ class FolderContentList(QWidget):
         self.content_list.setFocusPolicy(Qt.NoFocus)
 
         # 设置 QListWidget 的样式（与压缩包预览器保持一致）
+        # 注意：字体大小由setFont设置，不在样式表中指定
         self.content_list.setStyleSheet(f"""
             QListWidget {{
                 show-decoration-selected: 0;
@@ -188,7 +187,6 @@ class FolderContentList(QWidget):
                 border: none;
                 border-radius: {border_radius}px;
                 padding: 6px;
-                font-size: {default_font_size}px;
             }}
             QListWidget::item {{
                 height: {scaled_item_height}px;
@@ -199,7 +197,6 @@ class FolderContentList(QWidget):
                 outline: none;
                 margin: {item_margin}px {item_margin}px 0 {item_margin}px;
                 padding-left: 8px;
-                font-size: {default_font_size}px;
             }}
             QListWidget::item:hover {{
                 color: {secondary_color};
@@ -313,7 +310,7 @@ class FolderContentList(QWidget):
 
 # 测试代码
 if __name__ == "__main__":
-    from PyQt5.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication, QMainWindow
     
     app = QApplication(sys.argv)
     
@@ -325,4 +322,4 @@ if __name__ == "__main__":
     window.setCentralWidget(folder_list)
     
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -21,13 +21,13 @@ import shutil
 
 # 添加项目根目录到Python路径，确保包能被正确导入
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QSlider, QLabel,
     QFileDialog, QStyle, QMessageBox, QGraphicsBlurEffect, QSizePolicy
 )
-from PyQt5.QtGui import QFont
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QRect, QSize, QPoint, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QPauseAnimation, QMetaObject
-from PyQt5.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage, QCursor, QPainterPath
+from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer, Signal, Slot, QRect, QSize, QPoint, QPropertyAnimation, QEasingCurve, QSequentialAnimationGroup, QPauseAnimation, QMetaObject
+from PySide6.QtGui import QIcon, QPainter, QColor, QPen, QBrush, QPixmap, QImage, QCursor, QPainterPath
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets.D_widgets import CustomButton
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
@@ -65,7 +65,7 @@ class VideoPlayer(QWidget):
     """
     
     # 添加idle事件信号，用于异常检测
-    idle_event = pyqtSignal()
+    idle_event = Signal()
     
     def __init__(self, parent=None):
         """
@@ -416,208 +416,46 @@ class VideoPlayer(QWidget):
         
         # 添加媒体区域到主布局
         main_layout.addWidget(self.media_frame, 1)
-        
-        # 控制按钮区域 - 根据Figma设计稿更新样式，应用DPI缩放
-        control_container = QWidget()
-        # 应用DPI缩放因子到控制栏样式，使用透明背景和无边框
-        scaled_border_radius = int(17.5 * self.dpi_scale)
-        scaled_border = int(0.5 * self.dpi_scale)
-        control_container.setStyleSheet(f"background-color: transparent; border: none; border-radius: {scaled_border_radius}px {scaled_border_radius}px {scaled_border_radius}px {scaled_border_radius}px;")
-        self.control_layout = QHBoxLayout(control_container)
-        scaled_margin = int(7.5 * self.dpi_scale)
-        scaled_spacing = int(7.5 * self.dpi_scale)
-        self.control_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
-        self.control_layout.setSpacing(scaled_spacing)
-        
-        # 播放/暂停按钮 - 使用CustomButton组件，确保与文件选择器按钮大小一致
-        self.play_button = CustomButton(
-            text="",
-            parent=self,
-            button_type="primary",
-            display_mode="icon"
+
+        # 使用独立的播放器控制栏组件（延迟导入避免循环导入）
+        from freeassetfilter.widgets.player_control_bar import PlayerControlBar
+        self.control_bar = PlayerControlBar(parent=self, show_lut_controls=True)
+        self.control_bar.set_volume(self._current_volume)
+        self.control_bar.set_speed(self._current_speed)
+
+        # 根据设置控制全屏按钮的显示/隐藏
+        self._update_detach_button_visibility()
+
+        # 连接控制栏信号到播放器方法
+        self.control_bar.playPauseClicked.connect(self.toggle_play_pause)
+        self.control_bar.progressChanged.connect(self._handle_value_change)
+        self.control_bar.userInteractStarted.connect(self._handle_user_start_interact)
+        self.control_bar.userInteractEnded.connect(self._handle_user_end_interact)
+        self.control_bar.volumeChanged.connect(self.set_volume)
+        self.control_bar.muteChanged.connect(self._on_muted_changed)
+        self.control_bar.speedChanged.connect(self._on_speed_changed_from_control_bar)
+        self.control_bar.loadLutClicked.connect(self.load_cube_file)
+        self.control_bar.comparisonClicked.connect(self.toggle_comparison_mode)
+        self.control_bar.detachClicked.connect(self._toggle_detach_window)
+
+        # 连接音量交互结束信号，用于保存音量设置
+        self.control_bar.volume_control._d_volume._progress_bar.userInteractionEnded.connect(
+            lambda: self.save_volume_setting(self._current_volume)
         )
-        
-        # 初始化鼠标悬停状态变量（保留但不再使用，由CustomButton动画系统接管）
-        self._is_mouse_over_play_button = False
-        
-        # 设置播放按钮SVG图标
-        self._update_play_button_icon()
-        self.play_button.clicked.connect(self.toggle_play_pause)
-        self.control_layout.addWidget(self.play_button)
-        
-        # 进度条和时间标签 - 从主布局移动到播放按钮右侧
-        # 创建一个垂直布局容器，用于放置进度条、时间标签和音量控件
-        progress_time_container = QWidget()
-        progress_time_container.setStyleSheet("background-color: transparent; border: none;")
-        progress_time_layout = QVBoxLayout(progress_time_container)
-        progress_time_layout.setContentsMargins(0, 0, 0, 0)
-        progress_time_layout.setSpacing(2)
-        
-        # 自定义进度条设置
-        self.progress_slider.setRange(0, 1000)
-        self.progress_slider.setValue(0)
-        # 设置进度条为可交互状态
-        self.progress_slider.setInteractive(True)
-        # 连接交互信号
-        self.progress_slider.userInteracting.connect(self._handle_user_start_interact)
-        self.progress_slider.userInteractionEnded.connect(self._handle_user_end_interact)
-        progress_time_layout.addWidget(self.progress_slider)
-        
-        # 创建一个水平布局来放置时间标签和音量控制
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        # 应用DPI缩放因子到间距
-        scaled_spacing = int(5 * self.dpi_scale)
-        bottom_layout.setSpacing(scaled_spacing)
-        
-        # 获取secondary_color
-        settings_manager = SettingsManager()
-        secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#000000")
 
-        # 时间标签样式，应用DPI缩放
-        scaled_padding = int(2.5 * self.dpi_scale)
-        scaled_font_size = int(8 * self.dpi_scale)
-        scaled_border = int(0.5 * self.dpi_scale)
-        self.time_label.setStyleSheet(f"""
-            color: {secondary_color};
-            background-color: transparent;
-            padding: 0 {scaled_padding}px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            font-size: {scaled_font_size}px;
-            text-align: left;
-            border: none;
-        """)
-        bottom_layout.addWidget(self.time_label)
-        
-        # 添加伸缩项
-        bottom_layout.addStretch(1)
-        
-        # 音量图标按钮设置，应用DPI缩放
-        # 创建自定义音量控制组件
-        self.volume_control = DVolumeControl(self)
+        # 添加控制栏到主布局
+        main_layout.addWidget(self.control_bar)
 
-        # 使用已经加载的音量设置
-        self.volume_control.set_volume(self._current_volume)
-        # 将音量设置到播放器核心
-        self.set_volume(self._current_volume)
-
-        # 设置自定义音量控制组件的信号连接
-        self.volume_control.valueChanged.connect(self.set_volume)
-        self.volume_control.mutedChanged.connect(self._on_muted_changed)
-
-        # 连接用户交互结束信号，用于保存音量设置到 last_volume
-        self.volume_control._d_volume._progress_bar.userInteractionEnded.connect(lambda: self.save_volume_setting(self._current_volume))
-
-        # 添加自定义音量控制组件到布局
-        bottom_layout.addWidget(self.volume_control)
-        
-        # 添加倍速控制下拉菜单，应用DPI缩放
-        self.speed_dropdown = CustomDropdownMenu(self, position="top")
-        scaled_drive_width = int(40 * self.dpi_scale)
-        self.speed_dropdown.set_fixed_width(scaled_drive_width)
-        # 移除下拉菜单的父级关系，使其不占用布局空间
-        self.speed_dropdown.setParent(None)
-        # 设置倍速选项和默认值 - 使用加载的倍速设置
-        self.speed_dropdown.set_items([f"{speed}x" for speed in self.speed_options], default_item=f"{self._current_speed}x")
-        # 显式更新当前选中项，确保显示正确的默认倍速
-        self.speed_dropdown.set_current_item(f"{self._current_speed}x")
-        # 连接倍速选择信号
-        self.speed_dropdown.itemClicked.connect(self._on_speed_selected)
-        # 设置字体大小与全局默认字体大小一致
-        scaled_font_size = int(self.default_font_size * self.dpi_scale)
-        speed_dropdown_font = QFont(self.global_font)
-        speed_dropdown_font.setPointSize(scaled_font_size)
-        self.speed_dropdown.setFont(speed_dropdown_font)
-        
-        # 创建自定义按钮来触发下拉菜单
-        self.speed_button = CustomButton(
-            text=f"{self._current_speed}x",
-            button_type="normal",
-            display_mode="text",
-            height=18
-        )
-        # 设置固定高度，但宽度自适应内容
-        speed_button_height = int(18 * self.dpi_scale)
-        self.speed_button.setFixedHeight(speed_button_height)
-        # 设置下拉菜单的目标按钮为自定义按钮
-        self.speed_dropdown.set_target_button(self.speed_button)
-        
-        # 在自定义按钮的点击事件中显示下拉菜单
-        def show_speed_menu():
-            self.speed_dropdown.set_target_button(self.speed_button)
-            self.speed_dropdown.show_menu()
-        
-        self.speed_button.clicked.connect(show_speed_menu)
-        bottom_layout.addWidget(self.speed_button)
-        
-        # 应用DPI缩放因子到按钮样式（用于Cube按钮）
-        scaled_padding = int(2.5 * self.dpi_scale)
-        scaled_padding_right = int(5 * self.dpi_scale)
-        scaled_border_radius = int(2.5 * self.dpi_scale)
-        scaled_min_width = int(40 * self.dpi_scale)
-        scaled_font_size = int(8 * self.dpi_scale)
-        scaled_border = int(0.5 * self.dpi_scale)
-        
-        # 添加Cube色彩映射控件
-        # 创建Cube文件选择按钮
-        self.load_cube_button = CustomButton(
-            text="加载LUT",
-            button_type="normal",
-            display_mode="text",
-            height=18
-        )
-        # 设置固定大小，与音量按钮保持一致
-        cube_button_size = int(18 * self.dpi_scale)
-        self.load_cube_button.setFixedSize(cube_button_size, cube_button_size)
-        self.load_cube_button.clicked.connect(self.load_cube_file)
-        bottom_layout.addWidget(self.load_cube_button)
-        
-        # 添加对比预览模式切换按钮
-        self.comparison_button = CustomButton(
-            text="对比预览",
-            button_type="normal",
-            display_mode="text",
-            height=18
-        )
-        # 设置固定大小，与音量按钮保持一致
-        comparison_button_size = int(18 * self.dpi_scale)
-        self.comparison_button.setFixedSize(comparison_button_size, comparison_button_size)
-        self.comparison_button.setCheckable(True)
-        self.comparison_button.clicked.connect(self.toggle_comparison_mode)
-        bottom_layout.addWidget(self.comparison_button)
-        # 默认隐藏对比预览按钮
-        self.comparison_button.hide()
-
-        # 添加窗口分离按钮 - 使用maxsize图标
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        icons_path = os.path.join(current_dir, '..', 'icons')
-        icons_path = os.path.abspath(icons_path)
-        self._maxsize_icon_path = os.path.join(icons_path, 'maxsize.svg')
-        self._minisize_icon_path = os.path.join(icons_path, 'minisize.svg')
-
-        self._detached_button = CustomButton(
-            text=self._maxsize_icon_path,
-            button_type="normal",
-            display_mode="icon",
-            height=18,
-            tooltip_text="分离窗口"
-        )
-        # 设置固定大小，与音量按钮保持一致
-        detached_button_size = int(18 * self.dpi_scale)
-        self._detached_button.setFixedSize(detached_button_size, detached_button_size)
-        self._detached_button.clicked.connect(self._toggle_detach_window)
-        bottom_layout.addWidget(self._detached_button)
-
-        # 将底部布局添加到进度时间布局
-        progress_time_layout.addLayout(bottom_layout)
-        
-        # 将进度时间布局添加到控制布局
-        self.control_layout.addWidget(progress_time_container, 1)
-        
-        # 添加控制区域到主布局
-        main_layout.addWidget(control_container)
-        
-        # 倍速控制菜单已通过CustomDropdownMenu实现，无需额外初始化
+        # 保存控制栏引用到各个UI组件，保持向后兼容
+        self.play_button = self.control_bar.play_button
+        self.progress_slider = self.control_bar.progress_slider
+        self.time_label = self.control_bar.time_label
+        self.volume_control = self.control_bar.volume_control
+        self.speed_button = self.control_bar.speed_button
+        self.speed_dropdown = self.control_bar.speed_dropdown
+        self.load_cube_button = self.control_bar.load_cube_button
+        self.comparison_button = self.control_bar.comparison_button
+        self._detached_button = self.control_bar.detach_button
     
     def toggle_speed_menu(self):
         """
@@ -652,7 +490,7 @@ class VideoPlayer(QWidget):
     
     def _on_speed_selected(self, speed):
         """
-        处理倍速选择
+        处理倍速选择（来自下拉菜单）
         """
         # 将字符串类型的速度值转换为浮点数
         if isinstance(speed, str):
@@ -669,8 +507,18 @@ class VideoPlayer(QWidget):
 
         # 保存倍速设置到 last_speed
         self.save_speed_setting(speed)
-    
 
+    def _on_speed_changed_from_control_bar(self, speed):
+        """
+        处理控制栏的倍速变化信号
+        
+        Args:
+            speed: 播放速度值
+        """
+        # 设置播放速度
+        self.set_speed(speed)
+        # 保存倍速设置
+        self.save_speed_setting(speed)
     
     def _update_play_button_icon(self):
         """
@@ -757,8 +605,11 @@ class VideoPlayer(QWidget):
         """
         if self.player_core:
             try:
-                # 更新播放/暂停按钮图标
-                self._update_play_button_icon()
+                # 更新播放/暂停按钮图标（通过控制栏）
+                if hasattr(self, 'control_bar') and self.control_bar:
+                    self.control_bar.set_playing(self.player_core.is_playing)
+                else:
+                    self._update_play_button_icon()
                 
                 # 只有在用户不交互时才更新进度条
                 if not self._user_interacting:
@@ -769,12 +620,18 @@ class VideoPlayer(QWidget):
                     if duration > 0:
                         # 计算进度百分比
                         progress = (current_time / duration) * 1000
-                        self.progress_slider.setValue(int(progress))
                         
-                        # 更新时间标签
-                        current_time_str = self._format_time(current_time / 1000)
-                        duration_str = self._format_time(duration / 1000)
-                        self.time_label.setText(f"{current_time_str} / {duration_str}")
+                        # 使用控制栏更新进度
+                        if hasattr(self, 'control_bar') and self.control_bar:
+                            self.control_bar.set_progress(int(progress))
+                            current_time_str = self._format_time(current_time / 1000)
+                            duration_str = self._format_time(duration / 1000)
+                            self.control_bar.set_time_text(current_time_str, duration_str)
+                        else:
+                            self.progress_slider.setValue(int(progress))
+                            current_time_str = self._format_time(current_time / 1000)
+                            duration_str = self._format_time(duration / 1000)
+                            self.time_label.setText(f"{current_time_str} / {duration_str}")
                 
                 # 对比预览模式下同步左右播放器
                 if self.comparison_mode and hasattr(self, 'original_player_core') and self.original_player_core:
@@ -1119,32 +976,38 @@ class VideoPlayer(QWidget):
                 # print("[VideoPlayer] 移除LUT效果...")
                 self.clear_cube_file()
                 # 恢复按钮为普通样式
-                self.load_cube_button.set_button_type("normal")
+                if hasattr(self, 'control_bar') and self.control_bar:
+                    self.control_bar.set_lut_loaded(False)
+                else:
+                    self.load_cube_button.set_button_type("normal")
             else:
                 # 没有LUT应用，触发LUT文件导入
                 # 打开文件选择对话框
                 cube_file, _ = QFileDialog.getOpenFileName(
-                    self, 
-                    "选择Cube文件", 
-                    "", 
+                    self,
+                    "选择Cube文件",
+                    "",
                     "Cube文件 (*.cube);;所有文件 (*.*)"
                 )
-                
+
                 if cube_file:
                     # 获取应用数据目录
                     data_dir = get_app_data_path()
                     # 构建目标Cube文件路径
                     target_cube_path = os.path.join(data_dir, "lut.cube")
-                    
+
                     # 复制用户选择的Cube文件到data目录，并重命名为lut.cube
                     shutil.copy2(cube_file, target_cube_path)
                     # print(f"[VideoPlayer] 已将Cube文件复制到: {target_cube_path}")
-                    
+
                     # 使用复制后的Cube文件
                     self.set_cube_file(target_cube_path)
                     # print(f"[VideoPlayer] 成功加载Cube文件: {cube_file}")
                     # 更新按钮为强调样式状态
-                    self.load_cube_button.set_button_type("primary")
+                    if hasattr(self, 'control_bar') and self.control_bar:
+                        self.control_bar.set_lut_loaded(True)
+                    else:
+                        self.load_cube_button.set_button_type("primary")
         except Exception as e:
             print(f"[VideoPlayer] LUT操作失败: {e}")
             import traceback
@@ -1161,7 +1024,10 @@ class VideoPlayer(QWidget):
                 # 实现对比预览逻辑
                 self._enable_comparison_mode()
                 # 激活状态使用强调样式
-                self.comparison_button.set_button_type("primary")
+                if hasattr(self, 'control_bar') and self.control_bar:
+                    self.control_bar.set_comparison_mode(True)
+                else:
+                    self.comparison_button.set_button_type("primary")
                 # 发送视频重新配置命令，确保两个视频区域都能正确显示
                 if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
                     self.player_core._execute_command(['video-reconfig'])
@@ -1172,7 +1038,10 @@ class VideoPlayer(QWidget):
                 # 恢复正常预览模式
                 self._disable_comparison_mode()
                 # 未激活状态使用普通样式
-                self.comparison_button.set_button_type("normal")
+                if hasattr(self, 'control_bar') and self.control_bar:
+                    self.control_bar.set_comparison_mode(False)
+                else:
+                    self.comparison_button.set_button_type("normal")
                 # 发送视频重新配置命令，确保恢复后视频能正确显示
                 if self.player_core and hasattr(self.player_core, '_mpv') and self.player_core._mpv is not None:
                     self.player_core._execute_command(['video-reconfig'])
@@ -1435,18 +1304,25 @@ class VideoPlayer(QWidget):
                 
                 # 提取并显示音频元数据和封面
                 self.extract_audio_metadata(file_path, background_style)
-                
+
                 # 隐藏LUT按钮，因为音频没有画面需要应用LUT
-                self.load_cube_button.hide()
-                self.comparison_button.hide()
+                if hasattr(self, 'control_bar') and self.control_bar:
+                    self.control_bar.show_lut_controls(False)
+                else:
+                    self.load_cube_button.hide()
+                    self.comparison_button.hide()
             else:
                 # 显示LUT按钮，因为视频有画面需要应用LUT
-                self.load_cube_button.show()
-                # 只有在已经加载LUT的情况下才显示对比预览按钮
-                if self.cube_loaded:
-                    self.comparison_button.show()
+                if hasattr(self, 'control_bar') and self.control_bar:
+                    self.control_bar.show_lut_controls(True)
+                    self.control_bar.set_lut_loaded(self.cube_loaded)
                 else:
-                    self.comparison_button.hide()
+                    self.load_cube_button.show()
+                    # 只有在已经加载LUT的情况下才显示对比预览按钮
+                    if self.cube_loaded:
+                        self.comparison_button.show()
+                    else:
+                        self.comparison_button.hide()
                 
                 # 清除音频封面数据（视频模式下不显示音频封面）
                 self._audio_cover_data = None
@@ -1863,7 +1739,7 @@ class VideoPlayer(QWidget):
                 image_data.seek(0)
                 pixmap = QPixmap()
                 pixmap.loadFromData(image_data.read())
-                from PyQt5.QtGui import QGuiApplication
+                from PySide6.QtGui import QGuiApplication
                 pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 
                 # 应用圆角矩形遮罩到中央封面
@@ -1898,7 +1774,7 @@ class VideoPlayer(QWidget):
                 bg_image_data.seek(0)
                 bg_pixmap = QPixmap()
                 bg_pixmap.loadFromData(bg_image_data.read())
-                from PyQt5.QtGui import QGuiApplication
+                from PySide6.QtGui import QGuiApplication
                 bg_pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 
                 # 设置背景封面并应用高斯模糊效果
@@ -1924,7 +1800,7 @@ class VideoPlayer(QWidget):
         Returns:
             QPainterPath: 圆角矩形路径
         """
-        from PyQt5.QtGui import QPainterPath
+        from PySide6.QtGui import QPainterPath
         path = QPainterPath()
         
         # 绘制圆角矩形
@@ -1992,7 +1868,7 @@ class VideoPlayer(QWidget):
         # 创建默认背景
         default_pixmap = QPixmap(size, size)
         default_pixmap.fill(QColor(51, 51, 51))  # 深灰色背景
-        from PyQt5.QtGui import QGuiApplication
+        from PySide6.QtGui import QGuiApplication
         default_pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         
         # 设置到封面标签
@@ -2101,7 +1977,7 @@ class VideoPlayer(QWidget):
     def set_volume(self, volume):
         """
         设置音量
-        
+
         Args:
             volume: 音量值（0-100）
         """
@@ -2109,7 +1985,7 @@ class VideoPlayer(QWidget):
             volume = 0
         elif volume > 100:
             volume = 100
-            
+
         if self.player_core:
             if self.comparison_mode:
                 # 对比预览模式下：
@@ -2125,9 +2001,13 @@ class VideoPlayer(QWidget):
                 # 同时控制原始视频播放器（如果存在）
                 if hasattr(self, 'original_player_core') and self.original_player_core:
                     self.original_player_core.set_volume(volume)
-            
+
             self._current_volume = volume
             self._previous_volume = volume
+
+            # 同步控制栏音量显示
+            if hasattr(self, 'control_bar') and self.control_bar:
+                self.control_bar.set_volume(volume)
 
         # 更新自定义音量控制组件的状态
         if hasattr(self, 'volume_control') and self.volume_control:
@@ -2323,6 +2203,31 @@ class VideoPlayer(QWidget):
         """
         pass
 
+    def _update_detach_button_visibility(self):
+        """
+        根据设置更新分离窗口按钮的显示/隐藏
+        读取 player.enable_fullscreen 设置，控制全屏按钮的可见性
+        """
+        try:
+            # 获取设置管理器
+            settings_manager = None
+            app = QApplication.instance()
+            if app is not None and hasattr(app, 'settings_manager'):
+                settings_manager = app.settings_manager
+            else:
+                settings_manager = SettingsManager()
+
+            # 读取设置
+            enable_fullscreen = settings_manager.get_setting("player.enable_fullscreen", False)
+
+            # 设置按钮可见性
+            if self.control_bar:
+                self.control_bar.set_detach_button_visible(enable_fullscreen)
+        except Exception as e:
+            # 如果读取设置失败，默认隐藏按钮
+            if self.control_bar:
+                self.control_bar.set_detach_button_visible(False)
+
     def _toggle_detach_window(self):
         """
         切换窗口分离/合并状态
@@ -2345,7 +2250,7 @@ class VideoPlayer(QWidget):
             self._current_file_path_before_detach = self._current_file_path
 
             # 创建独立窗口
-            from PyQt5.QtWidgets import QMainWindow
+            from PySide6.QtWidgets import QMainWindow
 
             class DetachedVideoWindow(QMainWindow):
                 """分离的视频播放窗口 - 无边框全屏窗口
@@ -2376,29 +2281,47 @@ class VideoPlayer(QWidget):
                     central_layout.setContentsMargins(0, 0, 0, 0)
                     central_layout.setSpacing(0)
                     
-                    self.video_player.media_frame.setParent(central_widget)
-                    self.video_player.media_frame.setStyleSheet("background-color: transparent;")
-                    self.video_player.media_frame.setGeometry(central_widget.rect())
-                    central_layout.addWidget(self.video_player.media_frame, 1)
-                    
-                    if self.video_player.media_frame.layout():
-                        self.video_player.media_frame.layout().update()
-                        self.video_player.video_frame.setGeometry(self.video_player.media_frame.rect())
+                    # 注意：media_frame 的父窗口设置由 setup_media_frame 方法处理
+                    # 这里只创建占位符，不直接操作 media_frame
                     
                     self._create_control_overlay()
                     
                     self.setMouseTracking(True)
+                    # 使用事件过滤器处理双击事件，避免直接替换 mouseDoubleClickEvent
                     self.video_frame = self.video_player.media_frame
-                    self.video_frame.setMouseTracking(True)
-                    self.video_frame.mouseDoubleClickEvent = self._on_video_double_click
+                    if self.video_frame:
+                        self.video_frame.setMouseTracking(True)
 
                     self.installEventFilter(self)
 
                     self._hide_control_bar_visible = True
 
-                    self._mouse_monitor = MouseActivityMonitor(timeout=3000)
-                    self._mouse_monitor.activity_callback = self._on_mouse_activity
-                    self._mouse_monitor.timeout_callback = self._on_timeout_reached
+                    self._mouse_monitor = None
+                
+                def setup_media_frame(self):
+                    """设置媒体框架到分离窗口（在窗口显示后调用）"""
+                    # 将 media_frame 从原父窗口移除并添加到分离窗口
+                    if self.video_player.media_frame:
+                        self.video_player.media_frame.setParent(self.centralWidget())
+                        self.video_player.media_frame.setStyleSheet("background-color: transparent;")
+                        self.video_player.media_frame.setGeometry(self.centralWidget().rect())
+                        
+                        # 添加到布局
+                        layout = self.centralWidget().layout()
+                        if layout:
+                            layout.addWidget(self.video_player.media_frame, 1)
+                        
+                        # 更新 video_frame 几何属性
+                        if self.video_player.media_frame.layout():
+                            self.video_player.media_frame.layout().update()
+                            self.video_player.video_frame.setGeometry(self.video_player.media_frame.rect())
+                
+                def start_mouse_monitor(self):
+                    """启动鼠标监控（在窗口显示后调用）"""
+                    if self._mouse_monitor is None:
+                        self._mouse_monitor = MouseActivityMonitor(timeout=3000)
+                        self._mouse_monitor.activity_callback = self._on_mouse_activity
+                        self._mouse_monitor.timeout_callback = self._on_timeout_reached
                     self._mouse_monitor.start()
                 
                 def _create_control_overlay(self):
@@ -2517,12 +2440,14 @@ class VideoPlayer(QWidget):
                 
                 def showEvent(self, event):
                     super().showEvent(event)
+                    # 在窗口显示后设置 media_frame
+                    self.setup_media_frame()
                     if hasattr(self, 'control_overlay') and self.control_overlay:
                         self.control_overlay.show()
                         self.control_overlay.raise_()
                         self._hide_control_bar_visible = True
-                    if hasattr(self, '_mouse_monitor') and self._mouse_monitor:
-                        self._mouse_monitor.reset_timer()
+                    # 启动鼠标监控
+                    self.start_mouse_monitor()
                 
                 def closeEvent(self, event):
                     if hasattr(self, '_mouse_monitor') and self._mouse_monitor:
@@ -2542,7 +2467,7 @@ class VideoPlayer(QWidget):
                     if obj == self:
                         if event.type() == event.WindowDeactivate:
                             # 窗口失去焦点时，延迟重新激活
-                            from PyQt5.QtCore import QTimer
+                            from PySide6.QtCore import QTimer
                             QTimer.singleShot(100, self._ensure_focus)
                         elif event.type() == event.WindowActivate:
                             # 窗口获得焦点时，确保在最前
@@ -2624,6 +2549,10 @@ class VideoPlayer(QWidget):
             if self.player_core and self._saved_playing_state:
                 self.player_core.pause()
 
+            # 清除MPV窗口绑定（在窗口操作前）
+            if self.player_core:
+                self.player_core.clear_window()
+
             # 创建并显示独立窗口
             self._detached_window = DetachedVideoWindow(self)
 
@@ -2639,19 +2568,31 @@ class VideoPlayer(QWidget):
             # 更新分离状态
             self._is_detached = True
 
-            # 更新按钮图标为minisize，提示文本改为"合并窗口"
-            self._detached_button._icon_path = self._minisize_icon_path
-            self._detached_button._render_icon()
-            self._detached_button.update()
-            self._detached_button._tooltip_text = "合并窗口"
+            # 更新控制栏的分离状态
+            if hasattr(self, 'control_bar') and self.control_bar:
+                self.control_bar.set_detached(True)
+            else:
+                # 向后兼容：直接更新按钮
+                self._detached_button._icon_path = self._minisize_icon_path
+                self._detached_button._render_icon()
+                self._detached_button.update()
+                self._detached_button._tooltip_text = "合并窗口"
 
-            # 重新绑定MPV播放器到新的视频窗口（只切换窗口，不重新加载媒体）
-            if self.video_frame and self.player_core:
-                # 切换窗口句柄
-                self.player_core.set_window(self.video_frame.winId())
-                # 根据保存的播放状态恢复（如果之前是播放状态则恢复播放）
-                if self._saved_playing_state:
-                    self.player_core.play()
+            # 延迟重新绑定MPV播放器到新的视频窗口
+            # 等待 showEvent 中的 setup_media_frame 完成
+            def _delayed_bind_player():
+                if not self._is_detached:
+                    return
+                if self.video_frame and self.player_core:
+                    # 切换窗口句柄
+                    self.player_core.set_window(self.video_frame.winId())
+                    # 根据保存的播放状态恢复（如果之前是播放状态则恢复播放）
+                    if self._saved_playing_state:
+                        self.player_core.play()
+                    print("[VideoPlayer] MPV播放器已重新绑定到分离窗口")
+
+            # 使用延迟，确保窗口完全显示并设置好 media_frame 后再绑定MPV
+            QTimer.singleShot(100, _delayed_bind_player)
 
             print("[VideoPlayer] 窗口已分离为独立窗口")
 
@@ -2714,11 +2655,15 @@ class VideoPlayer(QWidget):
             # 更新分离状态
             self._is_detached = False
 
-            # 更新按钮图标为maxsize，提示文本改为"分离窗口"
-            self._detached_button._icon_path = self._maxsize_icon_path
-            self._detached_button._render_icon()
-            self._detached_button.update()
-            self._detached_button._tooltip_text = "分离窗口"
+            # 更新控制栏的分离状态
+            if hasattr(self, 'control_bar') and self.control_bar:
+                self.control_bar.set_detached(False)
+            else:
+                # 向后兼容：直接更新按钮
+                self._detached_button._icon_path = self._maxsize_icon_path
+                self._detached_button._render_icon()
+                self._detached_button.update()
+                self._detached_button._tooltip_text = "分离窗口"
 
             # 重新绑定MPV播放器到原来的视频窗口（只切换窗口，不重新加载媒体）
             if self.video_frame and self.player_core:

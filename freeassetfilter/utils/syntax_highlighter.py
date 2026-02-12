@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -40,12 +40,12 @@ import json
 import plistlib
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import List, Dict, Optional, Tuple, Union, Callable, Any
+from typing import List, Dict, Optional, Tuple, Union, Callable, Any, TYPE_CHECKING
 from pathlib import Path
 
-# PyQt5 导入
-from PyQt5.QtGui import QColor, QTextCharFormat, QFont
-from PyQt5.QtCore import Qt
+# PySide6 导入
+from PySide6.QtGui import QColor, QTextCharFormat, QFont
+from PySide6.QtCore import Qt
 
 # 尝试导入 pysyntect
 try:
@@ -61,6 +61,7 @@ try:
     SYNTECT_AVAILABLE = True
 except ImportError:
     SYNTECT_AVAILABLE = False
+    Style = None  # 类型占位
 
 # 尝试导入 Pygments 作为备选方案
 try:
@@ -1187,7 +1188,7 @@ class SyntectHighlighter:
             print(f"[SyntectHighlighter] 高亮失败: {e}")
             return [Token(line, TokenType.DEFAULT, 0, len(line))]
     
-    def _map_syntect_style_to_token_type(self, style: Style) -> TokenType:
+    def _map_syntect_style_to_token_type(self, style) -> TokenType:
         """将 Syntect 样式映射为 TokenType
         
         参数：
@@ -1852,7 +1853,7 @@ def is_dark_mode() -> bool:
         是否为深色模式
     """
     try:
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
         if app and hasattr(app, 'settings_manager'):
             # 使用正确的设置键名 appearance.theme

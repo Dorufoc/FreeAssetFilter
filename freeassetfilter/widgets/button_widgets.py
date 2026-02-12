@@ -5,13 +5,13 @@ FreeAssetFilter 按钮类自定义控件
 包含各种按钮类UI组件，如自定义按钮等
 """
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QPushButton, QWidget, QSizePolicy, QApplication, QStyleOptionButton
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QTimer, QPropertyAnimation, pyqtProperty, QEasingCurve, QParallelAnimationGroup
-from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
-from PyQt5.QtWidgets import QStyle
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize, QTimer, QPropertyAnimation, Property, QEasingCurve, QParallelAnimationGroup
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
+from PySide6.QtWidgets import QStyle
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
@@ -29,7 +29,7 @@ class CustomButton(QPushButton):
     - 支持非线性动画过渡效果
     """
     
-    @pyqtProperty(QColor)
+    @Property(QColor)
     def anim_bg_color(self):
         return self._anim_bg_color
     
@@ -38,7 +38,7 @@ class CustomButton(QPushButton):
         self._anim_bg_color = color
         self._update_button_style()
     
-    @pyqtProperty(QColor)
+    @Property(QColor)
     def anim_border_color(self):
         return self._anim_border_color
     
@@ -47,7 +47,7 @@ class CustomButton(QPushButton):
         self._anim_border_color = color
         self._update_button_style()
     
-    @pyqtProperty(QColor)
+    @Property(QColor)
     def anim_text_color(self):
         return self._anim_text_color
     
@@ -63,7 +63,6 @@ class CustomButton(QPushButton):
 
         scaled_border_radius = self._height // 2
         scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
-        scaled_font_size = int(getattr(QApplication.instance(), 'default_font_size', 18) * self.dpi_scale)
 
         if self.button_type == "primary":
             border_width = int(0.5 * self.dpi_scale)
@@ -83,7 +82,6 @@ class CustomButton(QPushButton):
                 border: {border_width}px solid {get_color_string(self._anim_border_color)};
                 border-radius: {scaled_border_radius}px;
                 padding: {scaled_padding};
-                font-size: {scaled_font_size}px;
                 font-weight: 600;
             }}
         """)
@@ -583,20 +581,16 @@ class CustomButton(QPushButton):
         
         # 设置固定高度，与CustomInputBox保持一致
         self.setFixedHeight(self._height)
-        
-        # 从app对象获取全局默认字体大小
-        default_font_size = getattr(app, 'default_font_size', 18)
-        
+
         # 应用最新的DPI缩放因子到按钮样式参数
         # 计算适合的圆角半径，确保在各种尺寸下都合适
         # 所有按钮都使用高度的一半作为圆角半径，确保圆角完整覆盖边缘
         scaled_border_radius = self._height // 2
         scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
-        scaled_font_size = int(default_font_size * self.dpi_scale)
         scaled_border_width = int(1 * self.dpi_scale)  # 边框宽度随DPI缩放
         scaled_primary_border_width = int(0.5 * self.dpi_scale)  # 主要按钮边框宽度随DPI缩放
-        
-        # 更新全局字体大小，确保文字显示正确
+
+        # 更新全局字体，确保使用settings.json中定义的字体大小
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
@@ -645,7 +639,6 @@ class CustomButton(QPushButton):
                     border: {scaled_primary_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
-                    font-size: {scaled_font_size}px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
@@ -691,7 +684,6 @@ class CustomButton(QPushButton):
                     border: {scaled_primary_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
-                    font-size: {scaled_font_size}px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
@@ -738,7 +730,6 @@ class CustomButton(QPushButton):
                     border: {scaled_primary_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
-                    font-size: {scaled_font_size}px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
@@ -784,7 +775,6 @@ class CustomButton(QPushButton):
                     border: {scaled_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
-                    font-size: {scaled_font_size}px;
                     font-weight: 600;
                 }}
                 QPushButton:hover {{
@@ -1106,15 +1096,14 @@ class CustomButton(QPushButton):
             
             # 如果有图标路径，使用SvgRenderer预处理并渲染SVG
             if self._icon_path and os.path.exists(self._icon_path):
-                painter = QPainter(self)
+                # 设置渲染提示（使用已创建的painter）
                 painter.setRenderHint(QPainter.Antialiasing)
                 painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
                 painter.setRenderHint(QPainter.TextAntialiasing, True)
-                painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
                 
                 try:
-                    from PyQt5.QtSvg import QSvgRenderer
-                    from PyQt5.QtCore import QRectF
+                    from PySide6.QtSvg import QSvgRenderer
+                    from PySide6.QtCore import QRectF
                     
                     # 读取SVG文件内容并进行颜色替换预处理
                     with open(self._icon_path, 'r', encoding='utf-8') as f:
@@ -1153,8 +1142,6 @@ class CustomButton(QPushButton):
                         
                         # 绘制图标
                         painter.drawPixmap(icon_rect, self._icon_pixmap)
-                
-                painter.end()
         else:
             # 文字模式，调用父类绘制文字
             super().paintEvent(event)

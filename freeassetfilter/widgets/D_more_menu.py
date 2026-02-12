@@ -13,9 +13,9 @@ FreeAssetFilter 自定义右键菜单控件
 - 宽度自适应文本内容
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QFrame
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QSize, QTimer, QEvent, QRect
-from PyQt5.QtGui import QFont, QFontMetrics, QColor, QPainter, QBrush, QPen
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QFrame
+from PySide6.QtCore import Qt, QPoint, Signal, QSize, QTimer, QEvent, QRect
+from PySide6.QtGui import QFont, QFontMetrics, QColor, QPainter, QBrush, QPen
 
 from .D_hover_menu import D_HoverMenu
 
@@ -65,7 +65,6 @@ class D_MoreMenuItem(QPushButton):
 
     def _apply_stylesheet(self):
         """应用样式表"""
-        font_size = int(self.global_font.pointSize() * self.dpi_scale)
         # 圆角大小与外层一致
         border_radius = int(4 * self.dpi_scale)
         border_radius_item = 0
@@ -87,7 +86,6 @@ class D_MoreMenuItem(QPushButton):
 
         self.setStyleSheet(f"""
             QPushButton {{
-                font-size: {font_size}px;
                 color: {text_color};
                 padding: {padding_v}px {padding_right}px {padding_v}px {padding_left}px;
                 background-color: transparent;
@@ -134,7 +132,7 @@ class D_MoreMenu(QWidget):
     - 支持超时自动隐藏
     - 宽度自适应文本内容
     """
-    itemClicked = pyqtSignal(object)
+    itemClicked = Signal(object)
 
     def __init__(self, parent=None):
         """

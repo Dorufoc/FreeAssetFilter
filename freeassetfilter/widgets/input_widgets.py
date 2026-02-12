@@ -5,14 +5,14 @@ FreeAssetFilter 输入类自定义控件
 包含各种输入类UI组件，如自定义输入框等
 """
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
     QScrollArea
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize, QRectF
-from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize, QRectF
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 from .D_more_menu import D_MoreMenu
 
@@ -30,11 +30,11 @@ class CustomInputBox(QWidget):
     """
     
     # 内容变化信号，当输入内容改变时发出
-    textChanged = pyqtSignal(str)
+    textChanged = Signal(str)
     # 焦点变化信号，当控件获得或失去焦点时发出
-    focusChanged = pyqtSignal(bool)
+    focusChanged = Signal(bool)
     # 编辑完成信号，当用户按下回车键或失去焦点时发出
-    editingFinished = pyqtSignal(str)
+    editingFinished = Signal(str)
     
     def __init__(self,
                  parent=None,
@@ -133,14 +133,6 @@ class CustomInputBox(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # 从app对象获取全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-        
-        # 应用DPI缩放因子到输入框样式
-        scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        
         # 创建QLineEdit作为实际输入控件
         self.line_edit = QLineEdit()
         self.line_edit.setFont(self.global_font)
@@ -148,25 +140,26 @@ class CustomInputBox(QWidget):
         # 为line_edit添加内部边距，确保不会覆盖父控件的边框
         # 获取主题文本颜色
         text_color = "#333333"  # 使用secondary_color
-        
+
         # 尝试从应用实例获取主题颜色
         app = QApplication.instance()
         if hasattr(app, 'settings_manager'):
             text_color = app.settings_manager.get_setting("appearance.colors.input_text", "#000000")
+
+        # 计算左侧内边距，应用DPI缩放
+        padding_left = int(8 * self.dpi_scale)
         
         self.line_edit.setStyleSheet("""
             QLineEdit {
                 background-color: transparent;
                 border: none;
                 color: %s;
-                font-size: %dpx;
-                padding: %s;
-                margin: 0px;
+                padding-left: %dpx;
             }
             QLineEdit:focus {
                 outline: none;
             }
-        """ % (text_color, scaled_font_size, scaled_padding))
+        """ % (text_color, padding_left))
         
         # 连接信号
         self.line_edit.textChanged.connect(self._on_text_changed)

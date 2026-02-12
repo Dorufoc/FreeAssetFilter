@@ -5,14 +5,14 @@ FreeAssetFilter PSD预览弹窗组件
 提供PSD文件处理时的进度显示和预览功能
 """
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
     QScrollArea, QProgressBar
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
-from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QImage
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QImage
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 
 class PSDProgressDialog(QDialog):
@@ -21,9 +21,9 @@ class PSDProgressDialog(QDialog):
     显示处理进度、当前操作和取消按钮
     """
     
-    processing_complete = pyqtSignal(QImage)  # 处理完成信号
-    processing_failed = pyqtSignal(str)  # 处理失败信号
-    cancelled = pyqtSignal()  # 取消信号
+    processing_complete = Signal(QImage)  # 处理完成信号
+    processing_failed = Signal(str)  # 处理失败信号
+    cancelled = Signal()  # 取消信号
     
     def __init__(self, parent=None, file_path=""):
         """
@@ -99,7 +99,7 @@ class PSDProgressDialog(QDialog):
         self.file_label = QLabel(os.path.basename(self.file_path) if self.file_path else "")
         self.file_label.setObjectName("FileLabel")
         self.file_label.setAlignment(Qt.AlignCenter)
-        self.file_label.setStyleSheet("color: #888; font-size: 9pt;")
+        self.file_label.setStyleSheet("color: #888;")
         body_layout.addWidget(self.file_label)
         
         self.status_label = QLabel("正在初始化...")
@@ -238,7 +238,7 @@ class PSDProgressDialog(QDialog):
             error_msg: 错误信息
         """
         self.status_label.setText(f"处理失败: {error_msg}")
-        self.status_label.setStyleSheet("color: #FF5252; font-size: 9pt;")
+        self.status_label.setStyleSheet("color: #FF5252;")
         
         self.processing_failed.emit(error_msg)
     

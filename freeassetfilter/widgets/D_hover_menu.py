@@ -13,9 +13,9 @@ FreeAssetFilter 自定义悬浮菜单组件
 - 支持目标控件移动时自动隐藏
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QApplication
-from PyQt5.QtCore import Qt, QPoint, QRect, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, pyqtProperty, QEvent
-from PyQt5.QtGui import QFont, QColor, QPainter, QBrush, QPen, QPainterPath
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QApplication
+from PySide6.QtCore import Qt, QPoint, QRect, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QEvent
+from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QPainterPath
 
 
 class D_HoverMenu(QWidget):
@@ -41,7 +41,7 @@ class D_HoverMenu(QWidget):
     Position_BottomLeft = "bottom_left"
     Position_BottomRight = "bottom_right"
 
-    closed = pyqtSignal()
+    closed = Signal()
 
     def __init__(self, parent=None, position="bottom"):
         """
@@ -102,7 +102,7 @@ class D_HoverMenu(QWidget):
         self.setWindowOpacity(self._opacity_value)
         self._update_mouse_transparency()
 
-    _menu_opacity = pyqtProperty(float, _get_opacity, _set_opacity)
+    _menu_opacity = Property(float, _get_opacity, _set_opacity)
 
     def _update_mouse_transparency(self):
         """根据透明度更新鼠标事件穿透"""
@@ -369,7 +369,10 @@ class D_HoverMenu(QWidget):
         elif self._target_widget:
             self._calculate_position()
         else:
-            screen_center = QApplication.desktop().screenGeometry().center()
+            # Qt6中使用primaryScreen替代desktop
+            screen = QApplication.primaryScreen()
+            screen_geometry = screen.geometry() if screen else self.screen().geometry()
+            screen_center = screen_geometry.center()
             pos = QPoint(screen_center.x() - self.width() // 2, screen_center.y() - self.height() // 2)
             self._adjust_to_screen(pos)
             self.move(pos)
@@ -452,7 +455,9 @@ class D_HoverMenu(QWidget):
         Args:
             pos: 位置引用
         """
-        screen_rect = QApplication.desktop().screenGeometry()
+        # Qt6中使用primaryScreen替代desktop
+        screen = QApplication.primaryScreen()
+        screen_rect = screen.geometry() if screen else self.screen().geometry()
         margin = int(2 * self.dpi_scale)
 
         if pos.x() < margin:
@@ -467,7 +472,7 @@ class D_HoverMenu(QWidget):
 
     def paintEvent(self, event):
         """绘制圆角卡片 - 与HoverTooltip样式完全一致"""
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
 
         if hasattr(app, 'settings_manager'):

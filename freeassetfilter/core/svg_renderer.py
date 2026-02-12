@@ -5,7 +5,7 @@ FreeAssetFilter v1.0
 
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -15,11 +15,12 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 提供高质量的SVG到QPixmap或QSvgWidget转换，确保正确处理RGBA通道
 """
 
-from PyQt5.QtCore import Qt, QSize, QThread
-from PyQt5.QtGui import QPainter, QPixmap, QImage, QColor
-from PyQt5.QtSvg import QSvgRenderer, QSvgWidget
-from PyQt5.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication
-from PyQt5.QtGui import QGuiApplication
+from PySide6.QtCore import Qt, QSize, QThread
+from PySide6.QtGui import QPainter, QPixmap, QImage, QColor
+from PySide6.QtSvgWidgets import QSvgWidget
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication
+from PySide6.QtGui import QGuiApplication
 import os
 import threading
 
@@ -342,7 +343,7 @@ class SvgRenderer:
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setRenderHint(QPainter.TextAntialiasing, True)
-            painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
+            painter.setRenderHint(QPainter.Antialiasing, True)
             
             # 渲染SVG图标
             svg_renderer.render(painter)
@@ -444,8 +445,7 @@ class SvgRenderer:
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setRenderHint(QPainter.TextAntialiasing, True)
-            painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
-            
+
             # 获取SVG的原始尺寸，确保正确渲染
             svg_size = svg_renderer.defaultSize()
             
@@ -547,7 +547,7 @@ class SvgRenderer:
                 text_label.move(0, 0)
                 
                 # 加载字体
-                from PyQt5.QtGui import QFont, QFontMetrics, QFontDatabase
+                from PySide6.QtGui import QFont, QFontMetrics, QFontDatabase
                 font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
                 font = QFont()
                 
@@ -564,18 +564,18 @@ class SvgRenderer:
                 
                 # 自适应调整字体大小，确保文字不超出图标边界
                 font_metrics = QFontMetrics(font)
-                text_width = font_metrics.width(text)
+                text_width = font_metrics.horizontalAdvance(text)
                 text_height = font_metrics.height()
-                
+
                 # 最小字体为容器大小的15%
                 min_font_size = int(scaled_icon_size * 0.15)
-                
+
                 # 调整字体大小，确保文字完全显示在容器内
                 while (text_width > scaled_icon_size * 0.8 or text_height > scaled_icon_size * 0.8) and base_font_size > min_font_size:
                     base_font_size -= 1
                     font.setPointSize(base_font_size)
                     font_metrics = QFontMetrics(font)
-                    text_width = font_metrics.width(text)
+                    text_width = font_metrics.horizontalAdvance(text)
                     text_height = font_metrics.height()
                 
                 # 设置文字颜色
@@ -604,14 +604,13 @@ class SvgRenderer:
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setRenderHint(QPainter.TextAntialiasing, True)
-            painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
-            
+
             # 绘制SVG底板
             painter.drawPixmap(0, 0, base_pixmap)
-            
+
             # 如果有文字，绘制文字
             if text:
-                from PyQt5.QtGui import QFont, QFontMetrics, QFontDatabase, QColor
+                from PySide6.QtGui import QFont, QFontMetrics, QFontDatabase, QColor
                 
                 # 加载字体
                 font_path = os.path.join(os.path.dirname(__file__), "..", "icons", "庞门正道标题体.ttf")
@@ -630,16 +629,16 @@ class SvgRenderer:
                 
                 # 自适应调整字体大小
                 font_metrics = QFontMetrics(font)
-                text_width = font_metrics.width(text)
+                text_width = font_metrics.horizontalAdvance(text)
                 text_height = font_metrics.height()
-                
+
                 min_font_size = int(scaled_icon_size * 0.15)
-                
+
                 while (text_width > scaled_icon_size * 0.8 or text_height > scaled_icon_size * 0.8) and base_font_size > min_font_size:
                     base_font_size -= 1
                     font.setPointSize(base_font_size)
                     font_metrics = QFontMetrics(font)
-                    text_width = font_metrics.width(text)
+                    text_width = font_metrics.horizontalAdvance(text)
                     text_height = font_metrics.height()
                 
                 # 设置文字颜色
@@ -760,8 +759,7 @@ class SvgRenderer:
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setRenderHint(QPainter.TextAntialiasing, True)
-            painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
-            
+
             # 渲染SVG
             svg_renderer.render(painter)
             

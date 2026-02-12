@@ -5,14 +5,14 @@ FreeAssetFilter 窗口类自定义控件
 包含各种窗口类UI组件，如自定义窗口、自定义消息框等
 """
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
     QScrollArea
 )
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QRect, QSize
-from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
-from PyQt5.QtWidgets import QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
+from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 # 导入自定义列表组件
 from .list_widgets import CustomSelectList
@@ -140,17 +140,14 @@ class CustomWindow(QWidget):
         
         # 标题标签
         title_label = QLabel(self.title)
-        # 从app对象获取全局默认字体大小
-        app = QApplication.instance()
-        default_font_size = getattr(app, 'default_font_size', 9)
-        scaled_font_size = int(default_font_size * self.dpi_scale)
-        title_label.setFont(self.global_font)
-        title_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: {scaled_font_size}px;
-                font-weight: 500;
+        # 使用全局字体，让Qt6自动处理DPI缩放
+        title_font = QFont(self.global_font)
+        title_font.setWeight(QFont.Medium)  # 字重500
+        title_label.setFont(title_font)
+        title_label.setStyleSheet("""
+            QLabel {
                 color: #000000;
-            }}
+            }
         """)
         title_layout.addWidget(title_label, 1)
         
@@ -382,7 +379,7 @@ class CustomMessageBox(QDialog):
     """
     
     # 按钮点击信号，传递按钮索引
-    buttonClicked = pyqtSignal(int)
+    buttonClicked = Signal(int)
     
     def __init__(self, parent=None):
         # 即使有parent，也要确保是独立窗口
@@ -429,9 +426,10 @@ class CustomMessageBox(QDialog):
         scaled_shadow_offset = int(2 * self.dpi_scale)
         scaled_body_margin = int(10 * self.dpi_scale)
         scaled_body_spacing = int(8 * self.dpi_scale)
-        scaled_title_font_size = int(12 * self.dpi_scale)
+        # 使用全局字体大小，确保与settings.json中的设置一致
+        scaled_title_font_size = int(self.global_font.pointSize() * 1.2)  # 标题使用1.2倍字体大小
         scaled_title_padding = f"{int(12 * self.dpi_scale)}px {int(15 * self.dpi_scale)}px 0 {int(15 * self.dpi_scale)}px"
-        scaled_text_font_size = int(8 * self.dpi_scale)
+        scaled_text_font_size = self.global_font.pointSize()  # 正文使用标准字体大小
         scaled_min_width = int(200 * self.dpi_scale)
         scaled_button_margin = int(4 * self.dpi_scale)
         scaled_button_spacing = int(6 * self.dpi_scale)
@@ -474,11 +472,12 @@ class CustomMessageBox(QDialog):
         
         # 1. 标题区
         self.title_label = QLabel()
-        self.title_label.setFont(self.global_font)
+        title_font = QFont(self.global_font)
+        title_font.setPointSize(int(self.global_font.pointSize() * 1.2))
+        title_font.setWeight(QFont.Normal)
+        self.title_label.setFont(title_font)
         self.title_label.setStyleSheet(f"""
             QLabel {{
-                font-size: {scaled_title_font_size}px;
-                font-weight: 400;
                 color: {secondary_color};
                 background-color: transparent;
                 padding: {scaled_title_padding};
@@ -501,7 +500,6 @@ class CustomMessageBox(QDialog):
         self.text_label.setFont(self.global_font)
         self.text_label.setStyleSheet(f"""
             QLabel {{
-                font-size: {scaled_text_font_size}px;
                 color: {secondary_color};
                 background-color: transparent;
                 padding: 0;

@@ -7,7 +7,7 @@ FreeAssetFilter v1.0.0
 master
 Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
-协议说明：本软件基于 MIT 协议开源
+协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -54,7 +54,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 sys.excepthook = handle_exception
 
 # 忽略sipPyTypeDict相关的弃用警告
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="PyQt5")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="PySide6")
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyTypeDict.*")
 
 # 添加父目录到Python路径，确保包能被正确导入
@@ -67,14 +67,14 @@ except ImportError:
 
 from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
 )
-from PyQt5.QtCore import Qt, QUrl, QEvent
-from PyQt5.QtWebEngineWidgets import QWebEngineView
-from PyQt5.QtWebChannel import QWebChannel
-from PyQt5.QtGui import QFont, QIcon
+from PySide6.QtCore import Qt, QUrl, QEvent
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtGui import QFont, QIcon
 
 # 导入自定义控件库
 from freeassetfilter.widgets.D_widgets import CustomWindow, CustomButton
@@ -107,7 +107,7 @@ class FreeAssetFilterApp(QMainWindow):
         screen = QApplication.primaryScreen()
         
         # 使用逻辑像素设置窗口大小，Qt会自动处理DPI
-        base_window_width = 850  # 基础逻辑像素（100%缩放时的大小）
+        base_window_width = 650  # 基础逻辑像素（100%缩放时的大小）
         
         # 获取系统缩放因子并设置为1.5倍
         screen = QApplication.primaryScreen()
@@ -133,7 +133,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 设置窗口大小
         self.resize(int(self.window_width), int(self.window_height))
         
-        # 使用PyQt5内置方法将窗口居中到可用屏幕区域
+        # 使用PySide6内置方法将窗口居中到可用屏幕区域
         # 获取窗口的几何尺寸
         window_geometry = self.frameGeometry()
         # 获取屏幕可用区域的中心点
@@ -188,7 +188,7 @@ class FreeAssetFilterApp(QMainWindow):
                         if hasattr(video_player, '_is_detached') and video_player._is_detached:
                             if hasattr(video_player, '_detached_window') and video_player._detached_window:
                                 # 使用定时器延迟执行，避免焦点争夺导致的闪烁
-                                from PyQt5.QtCore import QTimer
+                                from PySide6.QtCore import QTimer
                                 QTimer.singleShot(50, lambda: self._restore_detached_window_focus(video_player))
                 except ImportError:
                     pass
@@ -239,7 +239,7 @@ class FreeAssetFilterApp(QMainWindow):
         并关闭所有子窗口（包括全局设置窗口）
         """
         # 关闭所有子窗口，确保全局设置窗口等随主窗口关闭而销毁
-        from PyQt5.QtWidgets import QDialog
+        from PySide6.QtWidgets import QDialog
         for widget in self.findChildren(QDialog):
             widget.close()
         
@@ -379,7 +379,7 @@ class FreeAssetFilterApp(QMainWindow):
         - 监听窗口尺寸变化，稳定后重新计算卡片尺寸
         """
         super().resizeEvent(event)
-        from PyQt5.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         QTimer.singleShot(50, self._on_resize_stabilized)
     
     def _on_resize_stabilized(self):
@@ -406,8 +406,8 @@ class FreeAssetFilterApp(QMainWindow):
         if current_width <= 0:
             max_retries = 15
             if retry_count < max_retries:
-                from PyQt5.QtCore import QTimer
-                from PyQt5.QtWidgets import QApplication
+                from PySide6.QtCore import QTimer
+                from PySide6.QtWidgets import QApplication
                 QApplication.processEvents()
                 QTimer.singleShot(30, lambda: self._check_and_update_cards(retry_count + 1))
             return
@@ -421,7 +421,7 @@ class FreeAssetFilterApp(QMainWindow):
         - 状态变化时重新计算文件选择器卡片尺寸
         """
         if event.type() == QEvent.WindowStateChange:
-            from PyQt5.QtCore import QTimer
+            from PySide6.QtCore import QTimer
             QTimer.singleShot(200, self._on_window_state_changed)
         super().changeEvent(event)
     
@@ -431,7 +431,7 @@ class FreeAssetFilterApp(QMainWindow):
         - 延迟执行确保布局完成
         - 连续检测直到窗口尺寸稳定
         """
-        from PyQt5.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
         QApplication.processEvents()
         self._check_and_update_cards(retry_count=0)
     
@@ -582,15 +582,14 @@ class FreeAssetFilterApp(QMainWindow):
         status_layout.addStretch()
         
         # 状态标签
-        self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
+        self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setFont(self.global_font)
-        # 设置字体大小和边距，应用DPI缩放因子
-        app = QApplication.instance()
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        font_size = int(8 * dpi_scale)
+        # 使用小一号的字体
+        status_font = QFont(self.global_font)
+        status_font.setPointSize(int(self.global_font.pointSize() * 0.85))
+        self.status_label.setFont(status_font)
         margin = 0
-        self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #888888; margin-top: {margin}px;")
+        self.status_label.setStyleSheet(f"color: #888888; margin-top: {margin}px;")
         status_layout.addWidget(self.status_label)
         
         # 添加右侧占位符，将全局设置按钮推到右侧
@@ -898,14 +897,13 @@ class FreeAssetFilterApp(QMainWindow):
         
         status_layout.addStretch()
         
-        self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循MIT协议开源")
+        self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setFont(self.global_font)
-        # 设置字体大小，应用DPI缩放因子
-        app = QApplication.instance()
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        font_size = int(8 * dpi_scale)
-        self.status_label.setStyleSheet(f"font-size: {font_size}px; color: #888888; margin-top: 0px;")
+        # 使用小一号的字体
+        status_font = QFont(self.global_font)
+        status_font.setPointSize(int(self.global_font.pointSize() * 0.85))
+        self.status_label.setFont(status_font)
+        self.status_label.setStyleSheet("color: #888888; margin-top: 0px;")
         status_layout.addWidget(self.status_label)
         
         status_layout.addStretch()
@@ -1002,19 +1000,20 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 1. 添加标题标签
         title_label = QLabel("这是一个自定义窗口")
-        title_size = 18
+        title_font = QFont(self.global_font)
+        title_font.setPointSize(int(self.global_font.pointSize() * 1.5))
+        title_font.setWeight(QFont.Weight.Bold)
+        title_label.setFont(title_font)
         title_margin = 16
         title_label.setStyleSheet(f"""
             QLabel {{
-                font-size: {title_size}px;
-                font-weight: 600;
                 color: #333333;
                 margin-bottom: {title_margin}px;
                 text-align: center;
             }}
         """)
         self.custom_window.add_widget(title_label)
-        
+
         # 2. 添加说明文本
         info_label = QLabel("这个窗口具有以下特点：\n\n" \
                             "• 纯白圆角矩形外观\n" \
@@ -1022,11 +1021,10 @@ class FreeAssetFilterApp(QMainWindow):
                             "• 可拖拽移动（通过标题栏）\n" \
                             "• 支持内嵌其他控件\n" \
                             "• 带阴影效果")
-        info_size = 14
         info_margin = 24
+        info_label.setFont(self.global_font)
         info_label.setStyleSheet(f"""
             QLabel {{
-                font-size: {info_size}px;
                 color: #666666;
                 line-height: 1.6;
                 margin-bottom: {info_margin}px;
@@ -1220,7 +1218,7 @@ class FreeAssetFilterApp(QMainWindow):
                         confirm_msg.close()
 
                     confirm_msg.buttonClicked.connect(on_confirm_clicked)
-                    confirm_msg.exec_()
+                    confirm_msg.exec()
 
                     if is_confirmed:
                         self.restore_backup(backup_data)
@@ -1327,18 +1325,18 @@ def main():
                 1==1
                 #print(f"[DEBUG] 设置DPI感知失败: {e2}")
     
-    # 设置DPI相关属性
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
-    
+    # 设置DPI相关属性 (Qt6中已默认启用高DPI支持，无需手动设置)
+    # QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)  # Qt6中已弃用
+    # QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)      # Qt6中已弃用
+
     app = QApplication(sys.argv)
     
-    # 设置全局DPI缩放因子为系统缩放的1.5倍
+    # 设置全局DPI缩放因子为系统缩放的1.4倍
     screen = QApplication.primaryScreen()
     logical_dpi = screen.logicalDotsPerInch()
     physical_dpi = screen.physicalDotsPerInch()
     system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
-    app.dpi_scale_factor = system_scale * 1.5
+    app.dpi_scale_factor = system_scale * 1.4
     
     # 设置应用程序图标，用于任务栏显示
     icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
@@ -1348,9 +1346,8 @@ def main():
     from freeassetfilter.core.settings_manager import SettingsManager
     
     # 检测并设置全局字体
-    from PyQt5.QtGui import QFontDatabase, QFont
-    font_db = QFontDatabase()
-    font_families = font_db.families()
+    from PySide6.QtGui import QFontDatabase, QFont
+    font_families = QFontDatabase.families()
     
     # 加载 FiraCode-VF 字体（用于代码高亮显示）
     firacode_font_path = get_resource_path('freeassetfilter/icons/FiraCode-VF.ttf')
@@ -1364,7 +1361,7 @@ def main():
     settings_manager = SettingsManager()
     
     # 从设置管理器中获取字体设置
-    DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 8)  # 基础字体大小，可统一调整
+    DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 10)  # 基础字体大小，可统一调整
     saved_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")  # 从设置中获取保存的字体样式
     
     # 检查保存的字体是否可用，如果不可用则回退到微软雅黑
@@ -1544,7 +1541,7 @@ def main():
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
     
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 # 主程序入口
 if __name__ == "__main__":
