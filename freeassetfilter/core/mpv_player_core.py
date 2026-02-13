@@ -311,15 +311,19 @@ class MPVEventThread(QThread):
     MPV事件处理线程
     负责从MPV事件队列中获取事件并转发到主线程
     """
-    
+
     event_received = Signal(int, object)
-    
+
     def __init__(self, mpv_handle, parent=None):
         super().__init__(parent)
         self._mpv_handle = mpv_handle
         self._running = False
-        self._mutex = QMutex()
-        self._wait_condition = QWaitCondition()
+        try:
+            self._mutex = QMutex()
+            self._wait_condition = QWaitCondition()
+        except Exception:
+            self._mutex = None
+            self._wait_condition = None
     
     def run(self):
         """线程主循环"""
@@ -396,11 +400,14 @@ class MPVEventThread(QThread):
     
     def stop(self):
         """停止事件线程"""
-        self._mutex.lock()
-        self._running = False
-        self._wait_condition.wakeAll()
-        self._mutex.unlock()
-        
+        if self._mutex and self._wait_condition:
+            self._mutex.lock()
+            self._running = False
+            self._wait_condition.wakeAll()
+            self._mutex.unlock()
+        else:
+            self._running = False
+
         if self.isRunning():
             self.wait(1000)
 
@@ -1037,8 +1044,9 @@ class MPVPlayerCore(QObject):
         self._position_timer.start()
         # 使用 QTimer.singleShot 将音频检测推迟到主线程执行
         # 避免在事件线程中直接调用 MPV API 导致访问冲突
+        # 延迟100ms确保视频参数已准备好
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, self._check_audio_and_emit_loaded)
+        QTimer.singleShot(100, self._check_audio_and_emit_loaded)
 
     def _check_audio_and_emit_loaded(self):
         """

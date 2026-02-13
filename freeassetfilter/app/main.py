@@ -532,8 +532,8 @@ class FreeAssetFilterApp(QMainWindow):
         # 连接文件选择器的选中状态变化信号到存储池（自动添加/移除）
         self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
 
-        # 连接预览器的信号：请求在文件选择器中打开路径
-        self.unified_previewer.open_in_selector_requested.connect(lambda path: self.handle_navigate_to_path(path))
+        # 连接预览器的信号：请求在文件选择器中打开路径，同时传递文件信息以便滚动定位
+        self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
         
         # 连接文件临时存储池的信号到预览器
         self.file_staging_pool.item_right_clicked.connect(self.unified_previewer.set_file)
@@ -1104,7 +1104,7 @@ class FreeAssetFilterApp(QMainWindow):
         
         Args:
             path (str): 要导航到的路径
-            file_info (dict, optional): 文件信息，如果提供则导航后将其添加到暂存池
+            file_info (dict, optional): 文件信息，如果提供则导航后滚动到该文件位置
         """
         if hasattr(self, 'file_selector_a') and self.file_selector_a:
             path = os.path.normpath(path)
@@ -1114,6 +1114,9 @@ class FreeAssetFilterApp(QMainWindow):
                 if file_info:
                     self.file_staging_pool.add_file(file_info)
                 self.file_selector_a._update_file_selection_state()
+                # 滚动到目标文件位置
+                if file_info:
+                    self.file_selector_a.scroll_to_file(file_info)
             
             self.file_selector_a.refresh_files(callback=on_files_refreshed)
     

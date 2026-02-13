@@ -493,7 +493,10 @@ class CustomFileSelector(QWidget):
         
         scroll_area.viewport().installEventFilter(self)
         self.files_container.installEventFilter(self)
-        
+
+        # 保存滚动区域引用，用于滚动定位
+        self.files_scroll_area = scroll_area
+
         return scroll_area
     
     def _create_status_bar(self):
@@ -3975,6 +3978,77 @@ class CustomFileSelector(QWidget):
                 if widget_path_norm == self.previewing_file_path:
                     widget.set_previewing(True)
                     break
+
+    def scroll_to_file(self, file_info):
+        """
+        滚动到指定文件的位置
+        
+        Args:
+            file_info: 文件信息字典，需包含 'path' 键
+        """
+        if not file_info or 'path' not in file_info:
+            return
+
+        target_path = os.path.normpath(file_info['path'])
+
+        # 遍历所有已加载的卡片，查找目标文件
+        target_index = -1
+        for i in range(self.files_layout.count()):
+            widget = self.files_layout.itemAt(i).widget()
+            if widget is not None and hasattr(widget, 'file_info'):
+                widget_path_norm = os.path.normpath(widget.file_info.get('path', ''))
+                if widget_path_norm == target_path:
+                    target_index = i
+                    break
+
+        if target_index < 0:
+            return
+
+        # 获取滚动区域和视口
+        scroll_area = getattr(self, 'files_scroll_area', None)
+        if not scroll_area:
+            return
+
+        viewport = scroll_area.viewport()
+        vertical_scrollbar = scroll_area.verticalScrollBar()
+
+        # 获取当前布局的列数
+        max_cols = self._calculate_max_columns()
+        if max_cols <= 0:
+            max_cols = 3
+
+        # 计算目标卡片所在的行号（从0开始）
+        target_row = target_index // max_cols
+
+        # 获取卡片高度和间距（使用DPI缩放值）
+        spacing = int(5 * self.dpi_scale)
+        
+        # 使用实际卡片的平均高度进行计算
+        card_height = int(75 * self.dpi_scale)  # 默认高度
+        if self.files_layout.count() > 0:
+            first_item = self.files_layout.itemAt(0)
+            if first_item and first_item.widget():
+                card_height = first_item.widget().height()
+        
+        # 计算滚动位置：目标行 * (卡片高度 + 间距) + 上边距
+        # 注意：files_layout.setContentsMargins(scaled_card_margin, 0, scaled_card_margin, 0)，上边距为0
+        top_margin = 0
+        desired_scroll_pos = target_row * (card_height + spacing) + top_margin
+
+        # 获取视口可见区域高度
+        viewport_height = viewport.height()
+        max_scroll = vertical_scrollbar.maximum()
+
+        # 检查卡片是否超过视口高度
+        if card_height > viewport_height:
+            # 卡片高度超过视口，滚动到卡片底部刚好在视口底部
+            desired_scroll_pos = target_row * (card_height + spacing) + card_height - viewport_height
+
+        # 确保滚动值在有效范围内
+        desired_scroll_pos = max(0, min(desired_scroll_pos, max_scroll))
+
+        # 直接设置滚动位置，不使用动画
+        vertical_scrollbar.setValue(desired_scroll_pos)
 
 # 使用项目中的自定义提示弹窗实现CSV生成进度显示
 

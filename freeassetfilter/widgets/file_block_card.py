@@ -1218,7 +1218,10 @@ class FileBlockCard(QWidget):
         # 显示文件名（使用与原卡片相同的截断逻辑）
         text = self.file_info.get("name", "")
         font_metrics = QFontMetrics(font)
-        max_width = int(60 * self.dpi_scale)
+        # 根据拖拽卡片实际宽度动态计算文本最大宽度
+        drag_card_width = self._drag_card.width()
+        max_width = drag_card_width - int(4 * self.dpi_scale)
+        max_width = max(int(35 * self.dpi_scale), max_width)  # 确保最小宽度
         elided_text = font_metrics.elidedText(text, Qt.ElideRight, max_width)
         name_label.setText(elided_text)
 

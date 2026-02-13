@@ -131,10 +131,11 @@ class FolderContentList(QWidget):
         # 为 QListWidget 设置自定义丝滑滚动条
         self.content_list.setVerticalScrollBar(D_ScrollBar(self.content_list, Qt.Vertical))
         self.content_list.verticalScrollBar().apply_theme_from_settings()
+        # 禁用水平滚动条
+        self.content_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         # 启用 QListWidget 的像素级滚动模式以实现平滑滚动
         self.content_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
-        self.content_list.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
 
         # 应用平滑滚动到 QListWidget 的视口，启用触摸滚动（同时支持鼠标拖动和触摸）
         SmoothScroller.apply(self.content_list, enable_mouse_drag=True)
@@ -189,6 +190,7 @@ class FolderContentList(QWidget):
                 padding: 6px;
             }}
             QListWidget::item {{
+                width: -1;
                 height: {scaled_item_height}px;
                 color: {secondary_color};
                 background-color: {base_color};

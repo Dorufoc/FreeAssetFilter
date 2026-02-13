@@ -20,7 +20,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy, 
-    QStackedLayout, QFrame, QApplication, QMainWindow
+    QFrame, QApplication, QMainWindow
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen
@@ -95,6 +95,9 @@ class VideoPlayer(QWidget):
         idle_event: 空闲事件信号，用于异常检测
     """
     
+    VIDEO_MODE = "video"
+    AUDIO_MODE = "audio"
+    
     fileLoaded = Signal(str, bool)  # 文件路径, 是否为音频文件
     fileEnded = Signal()
     errorOccurred = Signal(str)
@@ -103,7 +106,7 @@ class VideoPlayer(QWidget):
     reattachCompleted = Signal()  # 重新附加完成信号
     idle_event = Signal()
     
-    def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True):
+    def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True, playback_mode: str = "video"):
         """
         初始化视频播放器
         
@@ -111,6 +114,7 @@ class VideoPlayer(QWidget):
             parent: 父窗口部件
             show_lut_controls: 是否显示LUT相关控制按钮
             show_detach_button: 是否显示分离窗口按钮
+            playback_mode: 播放模式，"video" 或 "audio"
         """
         super().__init__(parent)
         
@@ -120,24 +124,27 @@ class VideoPlayer(QWidget):
         
         self._current_file: str = ""
         self._is_detached: bool = False
+        self._playback_mode = playback_mode  # 播放模式：video 或 audio
+
         self._show_lut_controls = show_lut_controls
         self._show_detach_button = show_detach_button
-        
+
         self._user_interacting = False
         self._pending_seek_value: Optional[int] = None
-        
+
         self._mpv_core: Optional[MPVPlayerCore] = None
         self._video_widget: Optional[QWidget] = None
         self._is_mpv_embedded = False
-        
+
         # 分离窗口相关属性
         self._detach_window: Optional[QMainWindow] = None  # 分离窗口实例
         self._detach_video_surface: Optional[QWidget] = None  # 分离窗口中的视频表面
         self._detach_control_bar: Optional[PlayerControlBar] = None  # 分离窗口中的控制栏
+        self._detach_audio_background = None  # 分离窗口中的音频背景（仅音频模式使用）
         self._original_parent: Optional[QWidget] = None  # 原始父窗口
         self._original_geometry: Optional[QSize] = None  # 原始几何尺寸
         self._playback_state_before_detach: dict = {}  # 分离前的播放状态
-        self._is_switching_window: bool = False  # 是否正在切换窗口（防止回调冲突）
+        self._is_switching_window: bool = False  # 是否正在切换窗口（防止回调回调）
         
         self._init_ui()
         self._init_mpv_core()
@@ -151,24 +158,10 @@ class VideoPlayer(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        video_container = QWidget()
-        video_container.setStyleSheet("background-color: transparent;")
-        self._video_stack = QStackedLayout(video_container)
-        self._video_stack.setStackingMode(QStackedLayout.StackAll)
-        self._video_stack.setContentsMargins(0, 0, 0, 0)
-        
-        self._placeholder = VideoPlaceholder(self)
-        self._video_stack.addWidget(self._placeholder)
-
-        self._video_surface = QWidget()
-        self._video_surface.setStyleSheet("background-color: transparent;")
-        self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
-        self._video_surface.setAttribute(Qt.WA_NativeWindow)
-        self._video_stack.addWidget(self._video_surface)
-
-        self._video_stack.setCurrentWidget(self._placeholder)
-        
-        main_layout.addWidget(video_container, 1)
+        if self._playback_mode == self.VIDEO_MODE:
+            self._init_video_mode_ui(main_layout)
+        else:
+            self._init_audio_mode_ui(main_layout)
         
         self._control_bar = PlayerControlBar(
             self, 
@@ -178,6 +171,39 @@ class VideoPlayer(QWidget):
         main_layout.addWidget(self._control_bar)
         
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    
+    def _init_video_mode_ui(self, main_layout: QVBoxLayout):
+        """初始化视频模式UI布局"""
+        video_container = QWidget()
+        video_container.setStyleSheet("background-color: transparent;")
+        
+        video_layout = QVBoxLayout(video_container)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self._video_surface = QWidget()
+        self._video_surface.setStyleSheet("background-color: transparent;")
+        self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
+        self._video_surface.setAttribute(Qt.WA_NativeWindow)
+        video_layout.addWidget(self._video_surface)
+        
+        main_layout.addWidget(video_container, 1)
+    
+    def _init_audio_mode_ui(self, main_layout: QVBoxLayout):
+        """初始化音频模式UI布局"""
+        from freeassetfilter.widgets.audio_background import AudioBackground
+        
+        audio_container = QWidget()
+        audio_container.setStyleSheet("background-color: transparent;")
+        
+        audio_layout = QVBoxLayout(audio_container)
+        audio_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self._audio_background = AudioBackground(self)
+        audio_layout.addWidget(self._audio_background)
+        
+        self._video_surface = None
+        
+        main_layout.addWidget(audio_container, 1)
     
     def _init_mpv_core(self):
         """初始化MPV播放器核心"""
@@ -213,6 +239,11 @@ class VideoPlayer(QWidget):
         if self._is_mpv_embedded or not self._mpv_core:
             return
         
+        # 音频模式不需要嵌入MPV窗口
+        if self._playback_mode == self.AUDIO_MODE:
+            self._is_mpv_embedded = True
+            return
+        
         if not self._mpv_core.initialize():
             self.errorOccurred.emit("无法初始化MPV播放器")
             return
@@ -228,7 +259,6 @@ class VideoPlayer(QWidget):
         
         if self._mpv_core.set_window_id(win_id):
             self._is_mpv_embedded = True
-            self._video_stack.setCurrentWidget(self._video_surface)
             # 嵌入后立即同步几何尺寸
             self._sync_mpv_geometry()
     
@@ -406,20 +436,31 @@ class VideoPlayer(QWidget):
             central_layout = QVBoxLayout(central_widget)
             central_layout.setContentsMargins(0, 0, 0, 0)
             central_layout.setSpacing(0)
-            
+
             # 创建视频表面容器（填充整个区域）
             video_container = QWidget()
             video_container.setStyleSheet("background-color: black;")
             video_layout = QVBoxLayout(video_container)
             video_layout.setContentsMargins(0, 0, 0, 0)
-            
-            # 在视频容器中创建新的视频表面
-            self._detach_video_surface = QWidget()
-            self._detach_video_surface.setStyleSheet("background-color: black;")
-            self._detach_video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
-            self._detach_video_surface.setAttribute(Qt.WA_NativeWindow)
-            video_layout.addWidget(self._detach_video_surface)
-            
+
+            # 根据播放模式创建不同的内容
+            if self._playback_mode == self.AUDIO_MODE:
+                # 音频模式：只创建音频背景
+                from freeassetfilter.widgets.audio_background import AudioBackground
+                self._detach_audio_background = AudioBackground(video_container)
+                self._detach_audio_background.setGeometry(video_container.rect())
+                video_layout.addWidget(self._detach_audio_background)
+                self._detach_audio_background.load()
+                self._detach_audio_background.show()
+                self._detach_video_surface = None
+            else:
+                # 视频模式：创建视频表面
+                self._detach_video_surface = QWidget()
+                self._detach_video_surface.setStyleSheet("background-color: black;")
+                self._detach_video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
+                self._detach_video_surface.setAttribute(Qt.WA_NativeWindow)
+                video_layout.addWidget(self._detach_video_surface)
+
             central_layout.addWidget(video_container, 1)
             
             # 创建分离窗口的控制栏（固定在底部）
@@ -508,25 +549,29 @@ class VideoPlayer(QWidget):
         重新嵌入MPV窗口到分离窗口的视频表面
         将MPV的渲染目标从原窗口切换到分离窗口的新视频表面
         """
-        if not self._mpv_core or not self._detach_window or not self._detach_video_surface:
+        # 音频模式不需要绑定MPV窗口
+        if self._playback_mode == self.AUDIO_MODE:
             return
         
+        if not self._mpv_core or not self._detach_window or not self._detach_video_surface:
+            return
+
         try:
             # 确保分离窗口的视频表面控件准备好
             self._detach_video_surface.ensurePolished()
-            
+
             if not self._detach_video_surface.isVisible():
                 self._detach_video_surface.show()
-            
+
             # 处理事件队列，确保窗口已创建
             from PySide6.QtCore import QCoreApplication
             QCoreApplication.processEvents()
-            
+
             # 获取分离窗口视频表面的窗口句柄
             detach_win_id = int(self._detach_video_surface.winId())
-            
+
             print(f"[VideoPlayer] 准备绑定到分离窗口，句柄: {detach_win_id}")
-            
+
             # 重新设置MPV的渲染窗口
             if self._mpv_core.set_window_id(detach_win_id):
                 print(f"[VideoPlayer] MPV已重新绑定到分离窗口: {detach_win_id}")
@@ -534,7 +579,7 @@ class VideoPlayer(QWidget):
                 self._mpv_core.refresh_video()
             else:
                 print(f"[VideoPlayer] 警告: MPV重新绑定到分离窗口失败")
-                
+
         except Exception as e:
             print(f"[VideoPlayer] 重新嵌入MPV窗口失败: {e}")
             raise
@@ -577,6 +622,10 @@ class VideoPlayer(QWidget):
             # 现在可以安全关闭分离窗口了
             # MPV已经不再依赖分离窗口的句柄
             if self._detach_window:
+                # 清理分离窗口的音频背景
+                if self._detach_audio_background:
+                    self._detach_audio_background.unload()
+                    self._detach_audio_background = None
                 # 临时移除关闭事件处理，避免递归
                 self._detach_window.closeEvent = lambda event: event.accept()
                 self._detach_window.close()
@@ -634,35 +683,37 @@ class VideoPlayer(QWidget):
         """
         if not self._mpv_core:
             return
-        
+
+        # 音频模式不需要重新绑定MPV窗口
+        if self._playback_mode == self.AUDIO_MODE:
+            return
+
         try:
             # 确保原视频表面控件可见并准备好
             self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
             self._video_surface.setAttribute(Qt.WA_NativeWindow)
             self._video_surface.ensurePolished()
-            
+
             if not self._video_surface.isVisible():
                 self._video_surface.show()
-            
+
             # 处理事件队列，确保窗口已创建
             from PySide6.QtCore import QCoreApplication
             QCoreApplication.processEvents()
-            
+
             # 获取原视频表面的窗口句柄
             original_win_id = int(self._video_surface.winId())
-            
+
             print(f"[VideoPlayer] 准备绑定到原窗口，句柄: {original_win_id}")
-            
+
             # 重新设置MPV的渲染窗口
             if self._mpv_core.set_window_id(original_win_id):
                 print(f"[VideoPlayer] MPV已重新绑定到原窗口: {original_win_id}")
                 # 刷新视频渲染
                 self._mpv_core.refresh_video()
-                # 显示视频表面
-                self._video_stack.setCurrentWidget(self._video_surface)
             else:
                 print(f"[VideoPlayer] 警告: MPV重新绑定到原窗口失败")
-                
+
         except Exception as e:
             print(f"[VideoPlayer] 重新嵌入MPV到原窗口失败: {e}")
             raise
@@ -856,12 +907,9 @@ class VideoPlayer(QWidget):
 
         Args:
             file_path: 加载的文件路径
-            is_audio: 是否为纯音频文件（由MPV核心在主线程中检测）
+            is_audio: 是否为纯音频文件（由MPV核心在主线程中检测，但此处优先使用load_file传入的值）
         """
         self._current_file = file_path
-
-        # 显示视频渲染表面（音频和视频都使用相同的显示方式）
-        self._video_stack.setCurrentWidget(self._video_surface)
 
         self._control_bar.set_progress(0)
         self._control_bar.set_time_text("00:00", "00:00")
@@ -925,35 +973,43 @@ class VideoPlayer(QWidget):
         else:
             return f"{minutes:02d}:{secs:02d}"
     
-    def load_file(self, file_path: str) -> bool:
+    def load_file(self, file_path: str, is_audio: bool = False) -> bool:
         """
         加载视频文件
-        
+
         Args:
             file_path: 视频文件路径
-            
+            is_audio: 是否为纯音频文件（根据文件后缀名判断）
+
         Returns:
             bool: 加载是否成功
         """
         if not os.path.exists(file_path):
             self.errorOccurred.emit(f"文件不存在: {file_path}")
             return False
-        
+
         if not self._is_mpv_embedded:
             self._embed_mpv_window()
-        
+
         if not self._mpv_core:
             self.errorOccurred.emit("播放器未初始化")
             return False
-        
-        result = self._mpv_core.load_file(file_path)
 
-        if result:
+        # 根据播放模式处理文件加载
+        if self._playback_mode == self.AUDIO_MODE:
+            # 音频模式：直接加载并显示音频背景
             self._current_file = file_path
-            self._placeholder.hide()
-            # 视频加载后会自动开始播放，延迟更新播放按钮为暂停图标
-            # 使用 QTimer.singleShot 确保在异步信号处理完成后再更新状态
-            QTimer.singleShot(100, lambda: self._control_bar.set_playing(True))
+            result = self._mpv_core.load_file(file_path)
+            if result:
+                self._audio_background.load()
+                self._audio_background.show()
+                QTimer.singleShot(100, lambda: self._control_bar.set_playing(True))
+        else:
+            # 视频模式：直接加载视频
+            result = self._mpv_core.load_file(file_path)
+            if result:
+                self._current_file = file_path
+                QTimer.singleShot(100, lambda: self._control_bar.set_playing(True))
 
         return result
     
@@ -999,7 +1055,9 @@ class VideoPlayer(QWidget):
         if self._mpv_core:
             result = self._mpv_core.stop()
             if result:
-                self._video_stack.setCurrentWidget(self._placeholder)
+                # 卸载音频背景（如果已创建）
+                if self._audio_background is not None:
+                    self._audio_background.unload()
             return result
         return False
     
@@ -1160,26 +1218,18 @@ class VideoPlayer(QWidget):
         """
         return self._is_detached
     
-    def set_placeholder_message(self, message: str):
-        """
-        设置占位符提示消息
-        
-        Args:
-            message: 提示消息
-        """
-        self._placeholder.set_message(message)
-    
-    def load_media(self, file_path: str) -> bool:
+    def load_media(self, file_path: str, is_audio: bool = False) -> bool:
         """
         加载媒体文件（load_file的别名，用于兼容UnifiedPreviewer）
-        
+
         Args:
             file_path: 媒体文件路径
-            
+            is_audio: 是否为纯音频文件（根据文件后缀名判断）
+
         Returns:
             bool: 加载是否成功
         """
-        return self.load_file(file_path)
+        return self.load_file(file_path, is_audio)
     
     def toggle_play_pause(self) -> bool:
         """

@@ -867,6 +867,8 @@ class CustomMessageBox(QDialog):
             button_index (int): 按钮索引
         """
         self.buttonClicked.emit(button_index)
+        # 设置对话框的返回值
+        self.setResult(button_index)
         # 点击按钮后自动关闭弹窗
         self.close()
     

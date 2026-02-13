@@ -1821,37 +1821,58 @@ class ModernSettingsWindow(QDialog):
         confirm_box = CustomMessageBox(self)
         confirm_box.set_title("确认重置")
         confirm_box.set_text("重置后所有设置将恢复为默认值，此操作不可撤销。\n是否继续？")
-        confirm_box.set_buttons(["确认重置", "取消"], Qt.Vertical, ["warning", "secondary"])
+        confirm_box.set_buttons(["立即重启", "取消"], Qt.Vertical, ["warning", "secondary"])
 
-        if confirm_box.exec() == 0:
-            try:
-                # 调用设置管理器的重置方法
-                self.settings_manager.reset_to_defaults()
+        # 使用信号连接处理按钮点击，更可靠
+        def on_confirm_button_clicked(button_index):
+            if button_index == 0:
+                # 点击了"立即重启"按钮
+                try:
+                    # 调用设置管理器的重置方法
+                    self.settings_manager.reset_to_defaults()
 
-                # 保存默认设置到文件
-                self.settings_manager.save_settings()
+                    # 保存默认设置到文件
+                    self.settings_manager.save_settings()
 
-                # 重新加载设置到当前窗口
-                self.load_settings()
+                    # 显示带有关闭提示的成功消息
+                    self.show_reset_success_and_exit()
 
-                # 更新所有UI控件到默认值
-                self._update_ui_to_defaults()
+                except Exception as e:
+                    # 错误处理
+                    error_box = CustomMessageBox(self)
+                    error_box.set_title("重置失败")
+                    error_box.set_text(f"重置设置时发生错误：\n{str(e)}\n\n请尝试手动删除设置文件后重启程序。")
+                    error_box.set_buttons(["确定"], Qt.Horizontal, ["warning"])
+                    error_box.exec()
+                    print(f"重置设置失败: {e}")
 
-                # 显示成功提示
-                success_box = CustomMessageBox(self)
-                success_box.set_title("重置成功")
-                success_box.set_text("所有设置已恢复为默认值。\n部分设置可能需要重启程序后完全生效。")
-                success_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                success_box.exec()
+        confirm_box.buttonClicked.connect(on_confirm_button_clicked)
+        confirm_box.exec()
 
-            except Exception as e:
-                # 错误处理
-                error_box = CustomMessageBox(self)
-                error_box.set_title("重置失败")
-                error_box.set_text(f"重置设置时发生错误：\n{str(e)}\n\n请尝试手动删除设置文件后重启程序。")
-                error_box.set_buttons(["确定"], Qt.Horizontal, ["warning"])
-                error_box.exec()
-                print(f"重置设置失败: {e}")
+    def show_reset_success_and_exit(self):
+        """
+        显示重置成功消息并退出程序
+        """
+        success_box = CustomMessageBox(self)
+        success_box.set_title("重置成功")
+
+        # 获取主题颜色用于正文
+        app = QApplication.instance()
+        secondary_color = "#333333"
+        if hasattr(app, 'settings_manager'):
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+
+        # 设置提示文字，加粗红色显示
+        full_text = f"<span style='color: {secondary_color};'>所有设置已恢复为默认值</span><br><span style='font-weight: bold; color: #F44336;'>请手动重新启动程序</span>"
+
+        success_box.set_text(full_text)
+        success_box.set_buttons(["退出程序"], Qt.Horizontal, ["primary"])
+
+        # 显示消息框
+        success_box.exec()
+
+        # 消息框关闭后，终止主程序
+        QApplication.instance().quit()
 
     def _update_ui_to_defaults(self):
         """

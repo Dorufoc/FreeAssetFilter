@@ -670,13 +670,10 @@ class ImageWidget(QWidget):
         """
         try:
             if self.original_image:
-                from PySide6.QtGui import QGuiApplication
-                device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
+                viewport_size = self._get_viewport_size()
                 
-                if hasattr(self.parent(), 'viewport') and self.parent().viewport():
-                    viewport_size = self.parent().viewport().size()
-                else:
-                    viewport_size = self.size()
+                if viewport_size.width() <= 0 or viewport_size.height() <= 0:
+                    return
                 
                 available_logical_width = viewport_size.width()
                 available_logical_height = viewport_size.height()
@@ -695,41 +692,41 @@ class ImageWidget(QWidget):
             print(f"计算自适应缩放时出错: {e}")
             self.scale_factor = 1.0
     
+    def _get_viewport_size(self):
+        """
+        获取视口大小，优先使用ScrollArea的viewport
+        """
+        if hasattr(self.parent(), 'viewport') and self.parent().viewport():
+            return self.parent().viewport().size()
+        elif hasattr(self.parent(), 'parent') and self.parent().parent():
+            parent = self.parent().parent()
+            if hasattr(parent, 'viewport') and parent.viewport():
+                return parent.viewport().size()
+        return self.size()
+    
     def update_image(self):
         """
-        更新缩放后的图片，使用高DPI优化处理
+        更新缩放后的图片
         """
         try:
             if self.original_image:
-                from PySide6.QtGui import QGuiApplication
-                device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
-                
-                if hasattr(self.parent(), 'viewport') and self.parent().viewport():
-                    viewport_size = self.parent().viewport().size()
-                else:
-                    viewport_size = self.size()
-                
-                available_logical_width = viewport_size.width()
-                available_logical_height = viewport_size.height()
+                viewport_size = self._get_viewport_size()
                 
                 original_width = self.original_image.width()
                 original_height = self.original_image.height()
                 
                 logical_width = int(original_width * self.scale_factor)
                 logical_height = int(original_height * self.scale_factor)
-                physical_width = int(logical_width * device_pixel_ratio)
-                physical_height = int(logical_height * device_pixel_ratio)
                 
                 self.scaled_image = self.original_image.scaled(
-                    physical_width, physical_height, 
+                    logical_width, logical_height, 
                     Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
                 
                 self.pixmap = QPixmap.fromImage(self.scaled_image)
-                self.pixmap.setDevicePixelRatio(device_pixel_ratio)
                 
-                self._physical_image_width = physical_width
-                self._physical_image_height = physical_height
+                self._physical_image_width = self.scaled_image.width()
+                self._physical_image_height = self.scaled_image.height()
                 
                 self.setMinimumSize(0, 0)
         except Exception as e:
@@ -757,13 +754,9 @@ class ImageWidget(QWidget):
         
         if self.pixmap and self.scaled_image:
             try:
-                # 获取设备像素比
-                from PySide6.QtGui import QGuiApplication
-                device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
-                
-                # 计算图片的逻辑像素尺寸
-                logical_image_width = self._physical_image_width // device_pixel_ratio
-                logical_image_height = self._physical_image_height // device_pixel_ratio
+                # 使用scaled_image的实际逻辑像素尺寸，确保与is_valid_pixel_position一致
+                logical_image_width = self.scaled_image.width()
+                logical_image_height = self.scaled_image.height()
                 
                 # pan_offset 表示图片中心相对于视口中心的偏移
                 # 图片左上角 = 视口中心 - 图片尺寸/2 + pan_offset
@@ -851,14 +844,13 @@ class ImageWidget(QWidget):
         try:
             # 无论鼠标是否在图片上，都可以进行缩放
             if self.original_image and self.scaled_image:
-                # 获取设备像素比
-                from PySide6.QtGui import QGuiApplication
-                device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
+                # PySide6使用position()而不是pos()
+                wheel_pos = event.position().toPoint()
                 
-                # 计算图片的逻辑像素尺寸
+                # 使用scaled_image的实际逻辑像素尺寸
                 rect = self.rect()
-                logical_image_width = self._physical_image_width // device_pixel_ratio
-                logical_image_height = self._physical_image_height // device_pixel_ratio
+                logical_image_width = self.scaled_image.width()
+                logical_image_height = self.scaled_image.height()
                 
                 # 计算图片区域（与paintEvent一致）
                 image_left = rect.center().x() - logical_image_width // 2 + self.pan_offset.x()
@@ -866,8 +858,8 @@ class ImageWidget(QWidget):
                 image_rect = QRect(image_left, image_top, logical_image_width, logical_image_height)
                 
                 # 计算鼠标在图片中的位置（如果鼠标在图片外，使用图片中心）
-                if image_rect.contains(event.pos()):
-                    mouse_in_image = event.pos() - image_rect.topLeft()
+                if image_rect.contains(wheel_pos):
+                    mouse_in_image = wheel_pos - image_rect.topLeft()
                     # 转换为原始图片坐标
                     mouse_in_original_x = mouse_in_image.x() / logical_image_width * self.original_image.width()
                     mouse_in_original_y = mouse_in_image.y() / logical_image_height * self.original_image.height()
@@ -900,7 +892,7 @@ class ImageWidget(QWidget):
                     new_mouse_in_image = QPoint(int(new_mouse_in_image_x), int(new_mouse_in_image_y))
                     
                     # 调整pan_offset，使鼠标指向的点保持不变
-                    self.pan_offset += (event.pos() - new_image_rect.topLeft()) - new_mouse_in_image
+                    self.pan_offset += (wheel_pos - new_image_rect.topLeft()) - new_mouse_in_image
                     
                     self.update()
         except Exception as e:

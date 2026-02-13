@@ -46,7 +46,7 @@ class UnifiedPreviewer(QWidget):
     """
 
     # 信号定义
-    open_in_selector_requested = Signal(str)  # 请求在文件选择器中打开路径
+    open_in_selector_requested = Signal(str, object)  # 请求在文件选择器中打开路径，传递(目录路径, 文件信息)
     preview_started = Signal(dict)  # 预览开始信号，传递文件信息
     preview_cleared = Signal()  # 预览清除信号
 
@@ -217,6 +217,13 @@ class UnifiedPreviewer(QWidget):
         buttons_layout.setSpacing(int(10 * self.dpi_scale))
         buttons_layout.setContentsMargins(0, 0, 0, 0)
 
+        # 创建"复制到剪切板"按钮（图标模式，使用share.svg，位于默认方式打开按钮左侧）
+        share_icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons", "share.svg")
+        self.copy_to_clipboard_button = CustomButton(share_icon_path, button_type="normal", display_mode="icon", tooltip_text="复制文件")
+        self.copy_to_clipboard_button.clicked.connect(self._on_copy_to_clipboard_button_clicked)
+        self.copy_to_clipboard_button.hide()
+        buttons_layout.addWidget(self.copy_to_clipboard_button)
+
         # 创建"使用系统默认方式打开"按钮
         self.open_with_system_button = CustomButton("使用系统默认方式打开", button_type="secondary")
         self.open_with_system_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -230,6 +237,13 @@ class UnifiedPreviewer(QWidget):
         self.locate_in_selector_button.clicked.connect(self._locate_file_in_selector)
         self.locate_in_selector_button.hide()
         buttons_layout.addWidget(self.locate_in_selector_button, 1)
+
+        # 创建"清除预览"按钮（图标模式，使用close.svg）
+        close_icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons", "close.svg")
+        self.clear_preview_button = CustomButton(close_icon_path, button_type="normal", display_mode="icon", tooltip_text="清除预览")
+        self.clear_preview_button.clicked.connect(self._on_clear_preview_button_clicked)
+        self.clear_preview_button.hide()
+        buttons_layout.addWidget(self.clear_preview_button)
 
         main_layout.addLayout(buttons_layout)
     
@@ -285,7 +299,9 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(self.default_label)
             self.default_label.show()
             self.open_with_system_button.hide()
+            self.copy_to_clipboard_button.hide()
             self.locate_in_selector_button.hide()
+            self.clear_preview_button.hide()
             return
         
         # debug(f"获取文件信息: {self.current_file_info}")
@@ -433,7 +449,9 @@ class UnifiedPreviewer(QWidget):
         
         # 显示"使用系统默认方式打开"按钮和"定位到所在目录"按钮
         self.open_with_system_button.show()
+        self.copy_to_clipboard_button.show()
         self.locate_in_selector_button.show()
+        self.clear_preview_button.show()
         
     def _open_file_with_system(self):
         """
@@ -499,8 +517,68 @@ class UnifiedPreviewer(QWidget):
             msg_box.exec()
             return
 
-        # 发送信号请求在文件选择器中打开该路径
-        self.open_in_selector_requested.emit(file_dir)
+        # 发送信号请求在文件选择器中打开该路径，同时传递文件信息以便滚动定位
+        self.open_in_selector_requested.emit(file_dir, self.current_file_info)
+
+    def _on_clear_preview_button_clicked(self):
+        """
+        处理清除预览按钮点击事件
+        清除统一预览器的预览内容和文件信息
+        """
+        self._clear_preview()
+        
+        # 清除文件信息查看器内容
+        self.file_info_viewer.current_file = None
+        self.file_info_viewer.file_info = {}
+        # 清除所有标签的显示内容
+        if hasattr(self.file_info_viewer, 'basic_info_labels'):
+            for key, widget in self.file_info_viewer.basic_info_labels.items():
+                widget.setPlainText("")
+        if hasattr(self.file_info_viewer, 'details_info_widgets'):
+            for label_widget, value_widget in self.file_info_viewer.details_info_widgets:
+                label_widget.setText("")
+                value_widget.setPlainText("")
+        
+        # 隐藏清除预览按钮
+        self.clear_preview_button.hide()
+        
+        # 重置当前文件信息
+        self.current_file_info = None
+        
+        # 显示默认提示
+        self.default_label.show()
+
+    def _on_copy_to_clipboard_button_clicked(self):
+        """
+        处理复制到剪切板按钮点击事件
+        将当前预览文件复制到系统剪切板，并显示提示弹窗
+        """
+        if not self.current_file_info:
+            return
+        
+        file_path = self.current_file_info.get("path", "")
+        if not file_path or not os.path.exists(file_path):
+            return
+        
+        # 复制文件本体到剪切板
+        try:
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import QUrl, QMimeData
+            clipboard = QApplication.clipboard()
+            mime_data = QMimeData()
+            url = QUrl.fromLocalFile(file_path)
+            mime_data.setUrls([url])
+            clipboard.setMimeData(mime_data)
+            
+            # 显示提示弹窗
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("提示")
+            msg_box.set_text("文件已复制到剪切板")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec()
+        except Exception as e:
+            print(f"复制文件到剪切板失败: {e}")
 
     def _clear_preview(self, emit_signal=True):
         """
@@ -818,7 +896,7 @@ class UnifiedPreviewer(QWidget):
         try:
             from freeassetfilter.components.video_player import VideoPlayer
             
-            video_player = VideoPlayer()
+            video_player = VideoPlayer(playback_mode="video")
             
             # 连接分离窗口请求信号
             video_player.detachRequested.connect(self._on_video_detach_requested)
@@ -826,8 +904,8 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(video_player, 1)
             self.current_preview_widget = video_player
             self.current_preview_type = "video"
-            
-            video_player.load_media(file_path)
+
+            video_player.load_media(file_path, is_audio=False)
             video_player.play()
             
             print(f"[DEBUG] 视频预览组件已创建并开始播放: {file_path}")
@@ -1013,7 +1091,7 @@ class UnifiedPreviewer(QWidget):
             
             # 创建视频播放器（支持音频播放）
             debug("创建VideoPlayer实例")
-            audio_player = VideoPlayer()
+            audio_player = VideoPlayer(playback_mode="audio")
             
             # 连接分离窗口请求信号
             audio_player.detachRequested.connect(self._on_video_detach_requested)
@@ -1023,10 +1101,10 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(audio_player, 1)
             self.current_preview_widget = audio_player
             self.current_preview_type = "audio"
-            
+
             # 然后加载媒体文件
             debug("加载媒体文件")
-            audio_player.load_media(file_path)
+            audio_player.load_media(file_path, is_audio=True)
             debug("音频预览完成")
         except Exception as e:
             error_message = f"音频预览失败: {str(e)}"
