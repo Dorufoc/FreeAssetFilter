@@ -636,21 +636,18 @@ class CustomFileHorizontalCard(QWidget):
                 if os.path.exists(unknown_icon_path):
                     svg_widget = SvgRenderer.render_unknown_file_icon(unknown_icon_path, "?", scaled_icon_size, self.dpi_scale)
                     if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
-                        for child in self.icon_display.findChildren(QLabel):
-                            child.deleteLater()
-                        for child in self.icon_display.findChildren(QSvgWidget):
-                            child.deleteLater()
-                        for child in self.icon_display.findChildren(QWidget):
-                            child.deleteLater()
+                        # 先从布局中移除旧的 icon_display
+                        self.card_container.layout().removeWidget(self.icon_display)
+                        # 删除旧的 icon_display 及其所有子组件
+                        self._delete_icon_display_widget(self.icon_display)
+                        # 设置新 widget 的父组件
                         svg_widget.setParent(self.card_container)
                         svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
                         svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                         svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                         svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                         svg_widget.show()
-                        self.card_container.layout().removeWidget(self.icon_display)
-                        if isinstance(self.icon_display, QLabel):
-                            self.icon_display.deleteLater()
+                        # 更新 icon_display 引用并添加到布局
                         self.icon_display = svg_widget
                         self.card_container.layout().insertWidget(0, self.icon_display, alignment=Qt.AlignVCenter)
                 return
@@ -736,50 +733,23 @@ class CustomFileHorizontalCard(QWidget):
                 else:
                     svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale)
                 
-                if isinstance(svg_widget, QSvgWidget):
-                    for child in self.icon_display.findChildren(QLabel):
-                        child.deleteLater()
-                    for child in self.icon_display.findChildren(QSvgWidget):
-                        child.deleteLater()
-                    svg_widget.setParent(self.card_container)
-                    svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
-                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
-                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
-                    svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-                    svg_widget.show()
-                elif isinstance(svg_widget, QLabel):
-                    for child in self.icon_display.findChildren(QLabel):
-                        child.deleteLater()
-                    for child in self.icon_display.findChildren(QSvgWidget):
-                        child.deleteLater()
-                    svg_widget.setParent(self.card_container)
-                    svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
-                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
-                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
-                    svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-                    svg_widget.show()
-                elif isinstance(svg_widget, QWidget):
-                    for child in self.icon_display.findChildren(QLabel):
-                        child.deleteLater()
-                    for child in self.icon_display.findChildren(QSvgWidget):
-                        child.deleteLater()
-                    for child in self.icon_display.findChildren(QWidget):
-                        child.deleteLater()
-                    svg_widget.setParent(self.card_container)
-                    svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
-                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
-                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
-                    svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-                    svg_widget.show()
-                else:
-                    self._set_default_icon()
-                
-                if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)) and svg_widget.parent() == self.card_container:
+                if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
+                    # 先从布局中移除旧的 icon_display
                     self.card_container.layout().removeWidget(self.icon_display)
-                    if isinstance(self.icon_display, QLabel):
-                        self.icon_display.deleteLater()
+                    # 删除旧的 icon_display 及其所有子组件
+                    self._delete_icon_display_widget(self.icon_display)
+                    # 设置新 widget 的父组件
+                    svg_widget.setParent(self.card_container)
+                    svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
+                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
+                    svg_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                    svg_widget.show()
+                    # 更新 icon_display 引用并添加到布局
                     self.icon_display = svg_widget
                     self.card_container.layout().insertWidget(0, self.icon_display, alignment=Qt.AlignVCenter)
+                else:
+                    self._set_default_icon()
             else:
                 self._set_default_icon()
         except Exception as e:
@@ -884,6 +854,39 @@ class CustomFileHorizontalCard(QWidget):
         pixmap = QPixmap(self.icon_display.size())
         pixmap.fill(Qt.transparent)
         self.icon_display.setPixmap(pixmap)
+
+    def _delete_icon_display_widget(self, widget):
+        """
+        递归删除图标显示组件及其所有子组件
+
+        参数：
+            widget (QWidget): 要删除的组件
+        """
+        if widget is None:
+            return
+
+        widget.hide()
+
+        def recursive_delete(w):
+            """递归删除所有子组件"""
+            for child in w.findChildren(QLabel):
+                if child.parent() == w:
+                    recursive_delete(child)
+                    child.hide()
+                    child.deleteLater()
+            for child in w.findChildren(QSvgWidget):
+                if child.parent() == w:
+                    recursive_delete(child)
+                    child.hide()
+                    child.deleteLater()
+            for child in w.findChildren(QWidget):
+                if child.parent() == w:
+                    recursive_delete(child)
+                    child.hide()
+                    child.deleteLater()
+
+        recursive_delete(widget)
+        widget.deleteLater()
 
     def _format_size(self, size):
         """格式化文件大小"""

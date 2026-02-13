@@ -1947,12 +1947,12 @@ class CustomFileSelector(QWidget):
         """
         if hasattr(self, 'filter_btn'):
             # 检查是否有筛选条件（self.filter_pattern不等于"*"表示有筛选条件）
-            if self.filter_pattern != "*":
-                self.filter_btn.button_type = "primary"
-            else:
-                self.filter_btn.button_type = "normal"
-            # 应用新的样式
-            self.filter_btn.update_style()
+            new_button_type = "primary" if self.filter_pattern != "*" else "normal"
+            # 只有在按钮类型发生变化时才更新
+            if self.filter_btn.button_type != new_button_type:
+                self.filter_btn.button_type = new_button_type
+                # 重新初始化动画以应用新的按钮类型颜色
+                self.filter_btn._init_animations()
 
     def apply_filter(self):
         """
@@ -2164,6 +2164,8 @@ class CustomFileSelector(QWidget):
                 callback = self._refresh_callback
                 self._refresh_callback = None  # 清除回调引用
                 callback()
+            # 触发滚动条状态检查
+            self._trigger_scrollbar_check()
     
     def _load_remaining_on_scroll(self):
         """滚动时加载剩余的卡片"""
@@ -2189,6 +2191,8 @@ class CustomFileSelector(QWidget):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
             #print(f"[DEBUG] 滚动加载完成，共加载 {self._loaded_count} 个卡片")
+            # 触发滚动条状态检查
+            self._trigger_scrollbar_check()
     
     def _clear_files_layout(self):
         """
@@ -2251,6 +2255,30 @@ class CustomFileSelector(QWidget):
                 pass
 
         self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+    
+    def _trigger_scrollbar_check(self):
+        """
+        触发滚动条状态检查
+        在文件卡片加载完成后调用，确保滚动条正确显示/隐藏
+        """
+        # 获取滚动区域
+        scroll_area = None
+        parent_widget = self.files_container.parent()
+        while parent_widget and not isinstance(parent_widget, QScrollArea):
+            parent_widget = parent_widget.parent()
+        if parent_widget:
+            scroll_area = parent_widget
+        
+        if scroll_area:
+            # 获取垂直滚动条并触发状态检查
+            from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
+            scrollbar = scroll_area.verticalScrollBar()
+            if isinstance(scrollbar, D_ScrollBar):
+                # 使用多次延迟检查，确保布局已完全更新
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(50, scrollbar._check_and_update_width)
+                QTimer.singleShot(150, scrollbar._check_and_update_width)
+                QTimer.singleShot(300, scrollbar._check_and_update_width)
     
     def _get_files(self):
         """
@@ -2448,6 +2476,8 @@ class CustomFileSelector(QWidget):
         
         self._last_max_cols = max_cols
         self._update_all_cards_width()
+        # 每批卡片创建完成后触发滚动条状态检查
+        self._trigger_scrollbar_check()
     
     def _create_file_cards_batch(self, files):
         """

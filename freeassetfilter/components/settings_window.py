@@ -1470,7 +1470,8 @@ class ModernSettingsWindow(QDialog):
         
         main_layout = QVBoxLayout(theme_window)
         
-        self.theme_editor = ThemeEditor()
+        # 创建主题编辑器，指定父控件为theme_window以确保正确的生命周期管理
+        self.theme_editor = ThemeEditor(parent=theme_window)
         
         main_layout.addWidget(self.theme_editor)
         

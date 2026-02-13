@@ -195,6 +195,7 @@ class CustomButton(QPushButton):
             normal_bg = QColor(base_color)
             hover_bg = darken_color(base_color, 0.1)
             pressed_bg = darken_color(base_color, 0.2)
+            # 边框颜色使用 base_color，与背景色保持一致
             normal_border = QColor(base_color)
             hover_border = QColor(base_color)
             pressed_border = QColor(base_color)
@@ -453,6 +454,16 @@ class CustomButton(QPushButton):
         """
         更新按钮样式
         """
+        # 停止所有正在运行的动画，防止动画与样式表冲突
+        if hasattr(self, '_hover_anim_group'):
+            self._hover_anim_group.stop()
+        if hasattr(self, '_leave_anim_group'):
+            self._leave_anim_group.stop()
+        if hasattr(self, '_press_anim_group'):
+            self._press_anim_group.stop()
+        if hasattr(self, '_release_anim_group'):
+            self._release_anim_group.stop()
+
         # 获取应用实例和最新的DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -519,7 +530,7 @@ class CustomButton(QPushButton):
         current_colors["button_normal_hover"] = darken_color(base_color, 0.1)  # 底层色加深10%
         current_colors["button_normal_pressed"] = darken_color(base_color, 0.2)  # 底层色加深20%
         current_colors["button_normal_text"] = secondary_color  # 次选色
-        current_colors["button_normal_border"] = secondary_color  # 次选色
+        current_colors["button_normal_border"] = base_color  # 底层色，与背景色一致
         
         # 次选样式按钮颜色
         current_colors["button_secondary_normal"] = base_color  # 底层色
@@ -681,7 +692,7 @@ class CustomButton(QPushButton):
                 QPushButton {{
                     background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_primary_border_width}px solid {border_color};
+                    border: {scaled_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-weight: 600;
@@ -727,7 +738,7 @@ class CustomButton(QPushButton):
                 QPushButton {{
                     background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_primary_border_width}px solid {border_color};
+                    border: {scaled_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-weight: 600;
@@ -971,11 +982,13 @@ class CustomButton(QPushButton):
     def set_button_type(self, button_type):
         """
         设置按钮类型
-        
+
         Args:
             button_type (str): 按钮类型，可选值："primary"、"secondary"、"normal"、"warning"
         """
         self.button_type = button_type
+        # 重新初始化动画，确保动画颜色与新的按钮类型一致
+        self._init_animations()
         self.update_style()
         self.resizeEvent(None)  # 触发resizeEvent，更新圆角半径
     

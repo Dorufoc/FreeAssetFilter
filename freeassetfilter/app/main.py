@@ -1330,7 +1330,14 @@ def main():
     # QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)      # Qt6中已弃用
 
     app = QApplication(sys.argv)
-    
+
+    # 预导入 cv2，避免多线程环境下的导入竞态条件
+    # cv2 的初始化涉及复杂的类型系统，必须在主线程中完成
+    try:
+        import cv2
+    except ImportError:
+        pass
+
     # 设置全局DPI缩放因子为系统缩放的1.4倍
     screen = QApplication.primaryScreen()
     logical_dpi = screen.logicalDotsPerInch()

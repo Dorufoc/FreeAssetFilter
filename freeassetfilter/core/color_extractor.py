@@ -8,11 +8,26 @@
 
 import io
 import math
+import os
 from collections import Counter
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from PySide6.QtGui import QColor
 from PIL import Image
+
+# 用于处理音频文件元数据
+try:
+    from mutagen import File as mutagen_file
+    from mutagen.mp3 import MP3
+    from mutagen.flac import FLAC
+    from mutagen.oggvorbis import OggVorbis
+    from mutagen.mp4 import MP4
+except ImportError:
+    mutagen_file = None
+    MP3 = None
+    FLAC = None
+    OggVorbis = None
+    MP4 = None
 
 
 def extract_cover_colors(cover_data: bytes, num_colors: int = 5, 
@@ -178,3 +193,193 @@ def adjust_colors_for_gradient(colors: List[QColor]) -> List[QColor]:
         result.append(sorted_colors[idx])
     
     return result
+
+
+def extract_cover_from_audio(file_path: str) -> Optional[bytes]:
+    """
+    从音频文件中提取封面图像数据
+    
+    支持的格式：MP3(ID3)、FLAC、OGG、M4A/AAC
+    
+    Args:
+        file_path: 音频文件路径
+    
+    Returns:
+        封面图像的二进制数据，如果没有封面则返回None
+    """
+    if not mutagen_file:
+        print("[ColorExtractor] mutagen库未安装，无法提取封面")
+        return None
+    
+    try:
+        audio = mutagen_file(file_path)
+        if not audio:
+            return None
+        
+        # MP3文件 (ID3标签)
+        if isinstance(audio, MP3):
+            if audio.tags:
+                for tag in audio.tags.values():
+                    if tag.FrameID == 'APIC':  # 附件图片帧
+                        return tag.data
+        
+        # FLAC文件
+        elif isinstance(audio, FLAC):
+            if audio.pictures:
+                return audio.pictures[0].data
+        
+        # OGG文件
+        elif isinstance(audio, OggVorbis):
+            if 'metadata_block_picture' in audio:
+                import base64
+                picture_data = base64.b64decode(audio['metadata_block_picture'][0])
+                # 跳过Ogg FLAC picture block header (4 bytes type + 4 bytes mime length + ...)
+                # 简化处理：尝试直接作为图片数据
+                try:
+                    Image.open(io.BytesIO(picture_data))
+                    return picture_data
+                except:
+                    pass
+        
+        # MP4/M4A文件
+        elif isinstance(audio, MP4):
+            # MP4封面通常在 'covr' 原子中
+            if 'covr' in audio:
+                cover_data = audio['covr'][0]
+                if isinstance(cover_data, bytes):
+                    return cover_data
+        
+        # 通用方式：尝试查找附件图片
+        if hasattr(audio, 'tags') and audio.tags:
+            # 常见的封面标签名
+            cover_tags = ['APIC:', 'APIC', 'COVER', 'cover', 'Cover',
+                         'METADATA_BLOCK_PICTURE', 'metadata_block_picture']
+            for tag_name in cover_tags:
+                if tag_name in audio.tags:
+                    data = audio.tags[tag_name]
+                    if isinstance(data, list) and data:
+                        data = data[0]
+                    if hasattr(data, 'data'):
+                        return data.data
+                    elif isinstance(data, bytes):
+                        return data
+        
+        return None
+        
+    except Exception as e:
+        print(f"[ColorExtractor] 提取封面失败: {e}")
+        return None
+
+
+def generate_colors_from_accent(accent_hex: str = "#B036EE") -> List[QColor]:
+    """
+    基于强调色生成5种协调的主题色
+    
+    使用HSL色彩空间进行色相偏移，生成协调的颜色组合
+    
+    Args:
+        accent_hex: 强调色的十六进制字符串，默认为紫色
+    
+    Returns:
+        5种QColor对象的列表
+    """
+    try:
+        accent_color = QColor(accent_hex)
+        if not accent_color.isValid():
+            accent_color = QColor("#B036EE")
+    except:
+        accent_color = QColor("#B036EE")
+    
+    h, s, v, a = accent_color.getHsv()
+    
+    colors = []
+    
+    # 生成5种颜色：基准色 + 4种变体
+    # 使用色相偏移和饱和度/明度调整来创建协调的配色
+    variations = [
+        (0, 1.0, 1.0),           # 基准色
+        (30, 0.9, 1.05),         # 色相+30，饱和度90%，明度105%
+        (-30, 0.95, 0.95),       # 色相-30，饱和度95%，明度95%
+        (60, 0.85, 1.1),         # 色相+60，饱和度85%，明度110%
+        (-60, 0.8, 0.9),         # 色相-60，饱和度80%，明度90%
+    ]
+    
+    for hue_offset, sat_factor, val_factor in variations:
+        new_h = (h + hue_offset) % 360
+        new_s = max(0, min(255, int(s * sat_factor)))
+        new_v = max(0, min(255, int(v * val_factor)))
+        
+        color = QColor.fromHsv(new_h, new_s, new_v, a)
+        colors.append(color)
+    
+    return colors
+
+
+def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> List[QColor]:
+    """
+    为音频文件获取主题色
+    
+    优先从封面提取颜色，如果没有封面则基于强调色生成
+    
+    Args:
+        file_path: 音频文件路径
+        accent_hex: 强调色（当无封面时使用）
+    
+    Returns:
+        5种QColor对象的列表
+    """
+    # 验证文件路径
+    if not file_path or not os.path.exists(file_path):
+        print(f"[ColorExtractor] 音频文件不存在: {file_path}")
+        return generate_colors_from_accent(accent_hex)
+    
+    # 检查文件大小（避免处理过大的文件）
+    try:
+        file_size = os.path.getsize(file_path)
+        if file_size > 100 * 1024 * 1024:  # 100MB
+            print(f"[ColorExtractor] 音频文件过大，跳过封面提取: {file_size / 1024 / 1024:.1f}MB")
+            return generate_colors_from_accent(accent_hex)
+    except Exception as e:
+        print(f"[ColorExtractor] 检查文件大小失败: {e}")
+    
+    try:
+        # 尝试从音频文件提取封面
+        cover_data = extract_cover_from_audio(file_path)
+        
+        if cover_data:
+            # 检查封面数据大小
+            if len(cover_data) > 10 * 1024 * 1024:  # 10MB
+                print(f"[ColorExtractor] 封面图像过大，跳过: {len(cover_data) / 1024 / 1024:.1f}MB")
+                return generate_colors_from_accent(accent_hex)
+            
+            # 从封面提取颜色（增大min_distance确保颜色区分度）
+            colors = extract_cover_colors(cover_data, num_colors=5, min_distance=70.0)
+            
+            # 验证提取的颜色数量和质量
+            if colors and len(colors) >= 5:
+                # 检查颜色之间的平均距离，确保区分度
+                total_distance = 0
+                count = 0
+                for i in range(len(colors)):
+                    for j in range(i + 1, len(colors)):
+                        total_distance += color_distance(colors[i], colors[j])
+                        count += 1
+                
+                avg_distance = total_distance / count if count > 0 else 0
+                
+                if avg_distance >= 40.0:  # 平均距离阈值
+                    print(f"[ColorExtractor] 从封面提取到 {len(colors)} 种颜色，平均距离: {avg_distance:.1f}")
+                    return colors
+                else:
+                    print(f"[ColorExtractor] 封面颜色区分度不足({avg_distance:.1f})，使用强调色")
+            else:
+                print(f"[ColorExtractor] 封面提取颜色数量不足: {len(colors) if colors else 0}")
+        else:
+            print(f"[ColorExtractor] 音频文件无封面: {os.path.basename(file_path)}")
+    
+    except Exception as e:
+        print(f"[ColorExtractor] 提取主题色时发生异常: {e}")
+    
+    # 降级：基于强调色生成
+    print(f"[ColorExtractor] 使用强调色生成主题色: {accent_hex}")
+    return generate_colors_from_accent(accent_hex)

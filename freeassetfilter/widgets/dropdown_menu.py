@@ -448,10 +448,16 @@ class CustomDropdownMenu(QWidget):
             self.list_container.setFixedWidth(self._fixed_width - scroll_bar_width)
         else:
             # 自适应宽度：优先使用外部目标按钮的宽度，否则使用内部main_button的宽度
+            button_width = None
             if self._external_target_button:
                 button_width = self._external_target_button.width()
-            else:
+            elif self.main_button:
                 button_width = self.main_button.width()
+
+            # 如果没有可用的按钮宽度，使用默认宽度
+            if button_width is None or button_width <= 0:
+                button_width = int(60 * self.dpi_scale)  # 默认宽度60px，应用DPI缩放
+
             self.scroll_area.setFixedWidth(button_width)
             # 列表容器宽度减去滚动条宽度，避免文字被遮挡
             self.list_container.setFixedWidth(button_width - scroll_bar_width)

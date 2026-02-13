@@ -6,7 +6,7 @@ FreeAssetFilter 现代主题编辑器
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QScrollArea, QApplication, QLabel
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer, QEvent
 from PySide6.QtGui import QFont
 
 from freeassetfilter.widgets.theme_card import ThemeCard
@@ -192,8 +192,12 @@ class ThemeEditor(QScrollArea):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
-        self.setVerticalScrollBar(D_ScrollBar(self, Qt.Vertical))
-        self.verticalScrollBar().apply_theme_from_settings()
+        # 创建并设置自定义滚动条
+        scrollbar = D_ScrollBar(self, Qt.Vertical)
+        self.setVerticalScrollBar(scrollbar)
+        # 延迟应用主题设置，确保滚动条完全初始化
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: scrollbar.apply_theme_from_settings() if scrollbar else None)
         
         SmoothScroller.apply(self)
         
@@ -364,7 +368,7 @@ class ThemeEditor(QScrollArea):
     
     def eventFilter(self, obj, event):
         """事件过滤器，用于检测视口大小变化"""
-        if obj == self.viewport() and event.type() == event.Resize:
+        if obj == self.viewport() and event.type() == QEvent.Resize:
             QTimer.singleShot(50, self._on_viewport_resized)
         return super().eventFilter(obj, event)
     

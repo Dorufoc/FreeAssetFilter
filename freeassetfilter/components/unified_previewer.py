@@ -38,6 +38,7 @@ from freeassetfilter.components.archive_browser import ArchiveBrowser
 from freeassetfilter.widgets.D_widgets import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 
+
 class UnifiedPreviewer(QWidget):
     """
     统一文件预览器组件
@@ -84,20 +85,6 @@ class UnifiedPreviewer(QWidget):
         # 预览加载状态标志，防止快速点击导致多个预览组件同时运行
         self.is_loading_preview = False
         
-        # Idle事件异常检测相关属性
-        self.idle_events = []  # 用于存储idle事件的时间戳，实现滑动时间窗口
-        self.idle_event_window = 5000  # 滑动时间窗口大小，单位ms
-        self.idle_event_threshold = 5  # 时间窗口内允许的最大idle事件数
-        self.idle_detection_timer = None  # 用于定期清理过期事件的定时器
-        self.video_load_time = 0  # 视频加载时间，用于忽略刚加载时的idle事件
-        self.idle_detection_enabled = False  # 是否启用idle检测
-        
-        # 初始化idle检测定时器
-        from PySide6.QtCore import QTimer
-        self.idle_detection_timer = QTimer(self)
-        self.idle_detection_timer.setInterval(1000)  # 每秒清理一次过期事件
-        self.idle_detection_timer.timeout.connect(self._cleanup_idle_events)
-
         # 保存主窗口引用，避免循环导入和运行时查找
         self.main_window = parent
         
@@ -117,30 +104,14 @@ class UnifiedPreviewer(QWidget):
                 from freeassetfilter.components.text_previewer import TextPreviewWidget
                 
                 if isinstance(self.current_preview_widget, VideoPlayer):
-                    try:
-                        self.current_preview_widget.idle_event.disconnect(self._on_video_idle_event)
-                    except (TypeError, RuntimeError):
-                        pass
-                    
-                    # 停止idle检测定时器
-                    if self.idle_detection_timer and self.idle_detection_timer.isActive():
-                        self.idle_detection_timer.stop()
-                    
-                    self.idle_events.clear()
-                    self.idle_detection_enabled = False
-                    
-                    # 获取VideoPlayer实例
                     old_widget = self.current_preview_widget
                     self.preview_layout.removeWidget(old_widget)
                     self.current_preview_widget = None
                     
-                    # 关键：调用VideoPlayer的closeEvent方法来正确释放MPV资源
-                    # 这会触发player_core.cleanup()，从而正确销毁dll
                     old_widget.close()
                     old_widget.setParent(None)
                 
                 elif isinstance(self.current_preview_widget, TextPreviewWidget):
-                    # 对于文本预览器，调用cleanup方法释放QWebEngineView资源
                     old_widget = self.current_preview_widget
                     if hasattr(old_widget, 'cleanup'):
                         old_widget.cleanup()
@@ -275,11 +246,12 @@ class UnifiedPreviewer(QWidget):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
         
-        # debug(f"接收到file_selected信号，文件信息: {file_info}")
+        debug(f"接收到file_selected信号，文件信息: {file_info}")
         
         # 检查是否正在加载预览，如果是则忽略新的请求
+        debug(f"is_loading_preview: {self.is_loading_preview}")
         if self.is_loading_preview:
-            # debug("正在加载预览中，忽略新的预览请求")
+            debug("正在加载预览中，忽略新的预览请求")
             return
         
         self.current_file_info = file_info
@@ -288,24 +260,23 @@ class UnifiedPreviewer(QWidget):
         self.preview_started.emit(file_info)
         
         # 更新文件信息查看器
-        # debug("更新文件信息查看器")
+        debug("更新文件信息查看器")
         self.file_info_viewer.set_file(file_info)
         
         # 根据文件类型显示不同的预览内容
-        # debug("调用_show_preview()显示预览")
+        debug("调用_show_preview()显示预览")
         self._show_preview()
     
     def _show_preview(self):
         """
         根据文件类型显示预览内容，确保只有一个预览组件在工作
         """
-        # 生成带时间戳的debug信息
-        # import datetime
-        # def debug(msg):
-        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        #     print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
+        def debug(msg):
+            import datetime
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
         
-        # debug("开始处理文件预览")
+        debug("开始处理文件预览")
         
         if not self.current_file_info:
             # 没有文件信息时，显示默认提示
@@ -350,18 +321,19 @@ class UnifiedPreviewer(QWidget):
         
         # debug(f"确定预览类型: {preview_type}")
         
+        debug(f"current_preview_type: {self.current_preview_type}, preview_type: {preview_type}")
+        debug(f"current_preview_widget: {self.current_preview_widget}")
+        
         # 检查当前预览组件是否可以处理该类型
         # 如果预览类型相同，直接更新组件
         if preview_type == self.current_preview_type and self.current_preview_widget:
             # 更新现有组件
-            # debug(f"预览类型相同，直接更新组件: {preview_type}")
+            debug(f"预览类型相同，直接更新组件: {preview_type}")
             self._update_preview_widget(file_path, preview_type)
         else:
             # 设置加载状态为True，防止快速点击触发多个预览
             self.is_loading_preview = True
-            
-            # 对于所有预览类型，都使用后台线程加载，确保UI响应
-            # debug(f"预览类型不同，创建新组件: {preview_type}")
+            debug(f"预览类型不同，创建新组件: {preview_type}, is_loading_preview=True")
             
             # 显示进度条弹窗
             title = "正在加载预览"
@@ -407,18 +379,35 @@ class UnifiedPreviewer(QWidget):
             self._clear_preview(emit_signal=False)
             
             # 检查并终止现有线程（如果存在）
-            if hasattr(self, '_preview_thread') and self._preview_thread and self._preview_thread.isRunning():
-                # debug("发现正在运行的后台线程，尝试取消并终止")
-                self._preview_thread.cancel()
-                # 等待线程终止，最多等待1秒
-                self._preview_thread.wait(1000)
-                if self._preview_thread.isRunning():
-                    # debug("线程终止超时")
+            if hasattr(self, '_preview_thread') and self._preview_thread:
+                try:
+                    if self._preview_thread.isRunning():
+                        # debug("发现正在运行的后台线程，尝试取消并终止")
+                        self._preview_thread.cancel()
+                        # 等待线程终止，最多等待500毫秒，避免阻塞主线程
+                        self._preview_thread.wait(500)
+                except Exception as e:
+                    # 忽略线程操作中的异常
                     pass
+                finally:
+                    # 安全地清理旧线程对象
+                    try:
+                        self._preview_thread.deleteLater()
+                    except Exception:
+                        pass
+                    self._preview_thread = None
             
             # 创建后台加载线程
             # debug(f"创建后台加载线程，预览类型: {preview_type}, 文件路径: {file_path}")
-            self._preview_thread = self.PreviewLoaderThread(file_path, preview_type)
+            try:
+                self._preview_thread = self.PreviewLoaderThread(file_path, preview_type, self)
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] 创建 PreviewLoaderThread 失败: {e}")
+                traceback.print_exc()
+                self.is_loading_preview = False
+                self._on_file_read_finished()
+                return
             
             # 连接线程信号
             # debug("连接线程信号")
@@ -428,7 +417,15 @@ class UnifiedPreviewer(QWidget):
             
             # 启动线程
             # debug("启动后台加载线程")
-            self._preview_thread.start()
+            try:
+                self._preview_thread.start()
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] 启动 PreviewLoaderThread 失败: {e}")
+                traceback.print_exc()
+                self.is_loading_preview = False
+                self._on_file_read_finished()
+                return
             
             # 更新当前预览类型
             # debug(f"更新当前预览类型: {preview_type}")
@@ -568,25 +565,14 @@ class UnifiedPreviewer(QWidget):
             try:
                 from freeassetfilter.components.video_player import VideoPlayer
                 if isinstance(self.current_preview_widget, VideoPlayer):
-                    # 先调用cleanup方法（这会先停止事件线程，再停止播放，确保清理彻底）
-                    if hasattr(self.current_preview_widget.player_core, 'cleanup'):
-                        self.current_preview_widget.player_core.cleanup()
+                    mpv_core = getattr(self.current_preview_widget, '_mpv_core', None)
                     
-                    # 同时处理比较模式下的原始播放器核心
-                    if hasattr(self.current_preview_widget, 'original_player_core'):
-                        if hasattr(self.current_preview_widget.original_player_core, 'cleanup'):
-                            self.current_preview_widget.original_player_core.cleanup()
-                    
-                    # 作为安全网，再次调用stop确保播放完全停止
-                    self.current_preview_widget.player_core.stop()
-                    if hasattr(self.current_preview_widget, 'original_player_core'):
-                        self.current_preview_widget.original_player_core.stop()
-                    
-                    # 最后禁用滤镜资源
-                    if hasattr(self.current_preview_widget.player_core, 'disable_cube_filter'):
-                        self.current_preview_widget.player_core.disable_cube_filter()
-                    if hasattr(self.current_preview_widget, 'original_player_core'):
-                        self.current_preview_widget.original_player_core.disable_cube_filter()
+                    if mpv_core:
+                        mpv_core.stop()
+                        if hasattr(mpv_core, 'close'):
+                            mpv_core.close()
+                        if hasattr(mpv_core, 'disable_cube_filter'):
+                            mpv_core.disable_cube_filter()
             except Exception as e:
                 print(f"清理VideoPlayer组件时出错: {e}")
 
@@ -665,8 +651,7 @@ class UnifiedPreviewer(QWidget):
             # 确保组件处于正确状态
             if preview_type in ["video", "audio"]:
                 # 视频和音频组件都有load_media方法
-                if hasattr(self.current_preview_widget, 'stop'):
-                    self.current_preview_widget.stop()
+                # 直接调用load_media，它内部会处理停止上一个播放
                 if hasattr(self.current_preview_widget, 'load_media'):
                     self.current_preview_widget.load_media(file_path)
             elif preview_type == "image":
@@ -757,6 +742,7 @@ class UnifiedPreviewer(QWidget):
                 if gif_viewer.load_gif(file_path):
                     self.preview_layout.addWidget(gif_viewer, 1)
                     self.current_preview_widget = gif_viewer
+                    self.current_preview_type = "image"
                     return
 
             elif file_ext == '.webp':
@@ -766,6 +752,7 @@ class UnifiedPreviewer(QWidget):
                     if gif_viewer.load_gif(file_path):
                         self.preview_layout.addWidget(gif_viewer, 1)
                         self.current_preview_widget = gif_viewer
+                        self.current_preview_type = "image"
                         return
 
             from freeassetfilter.components.photo_viewer import PhotoViewer
@@ -775,6 +762,7 @@ class UnifiedPreviewer(QWidget):
             
             self.preview_layout.addWidget(photo_viewer, 1)
             self.current_preview_widget = photo_viewer
+            self.current_preview_type = "image"
         except Exception as e:
             self._show_error_with_copy_button(f"图片预览失败: {str(e)}")
 
@@ -800,101 +788,6 @@ class UnifiedPreviewer(QWidget):
         except Exception:
             return False
     
-    def _cleanup_idle_events(self):
-        """
-        清理过期的idle事件，保持滑动时间窗口的有效性
-        """
-        import time
-        current_time = time.time() * 1000  # 转换为ms
-        
-        # 过滤掉时间窗口外的事件
-        self.idle_events = [event for event in self.idle_events 
-                          if current_time - event < self.idle_event_window]
-    
-    def _on_video_idle_event(self):
-        """
-        处理视频播放器的idle事件，检测异常并在必要时重新加载
-        """
-        import time
-        current_time = time.time() * 1000  # 转换为ms
-        
-        # 如果刚加载视频（5秒内），忽略idle事件
-        if current_time - self.video_load_time < 5000:
-            print(f"[DEBUG] 视频刚加载，忽略idle事件")
-            return
-        
-        # 将当前idle事件添加到时间窗口
-        self.idle_events.append(current_time)
-        
-        # 检测idle事件异常
-        self._detect_idle_anomaly()
-    
-    def _detect_idle_anomaly(self):
-        """
-        检测idle事件是否异常：时间窗口内事件数量超过阈值
-        """
-        # 先清理过期事件
-        self._cleanup_idle_events()
-        
-        # 检查事件数量是否超过阈值
-        if len(self.idle_events) > self.idle_event_threshold:
-            print(f"[ERROR] Idle事件异常！{self.idle_event_window}ms内检测到{len(self.idle_events)}个事件，超过阈值{self.idle_event_threshold}")
-            
-            # 重新加载视频播放器
-            self._reload_video_player()
-    
-    def _reload_video_player(self):
-        """
-        重新加载视频播放器模块和当前视频
-        """
-        try:
-            print("[INFO] 开始重新加载视频播放器...")
-            
-            # 获取当前播放的文件路径
-            current_file_path = None
-            if hasattr(self, 'current_file_info') and self.current_file_info:
-                current_file_path = self.current_file_info.get("path")
-            
-            if not current_file_path:
-                print("[ERROR] 无法获取当前播放的文件路径")
-                return
-            
-            # 移除当前的视频播放器组件
-            if hasattr(self, 'current_preview_widget') and self.current_preview_widget:
-                from freeassetfilter.components.video_player import VideoPlayer
-                if isinstance(self.current_preview_widget, VideoPlayer):
-                    # 断开信号连接
-                    self.current_preview_widget.idle_event.disconnect(self._on_video_idle_event)
-                    
-                    # 停止播放并移除组件
-                    self.current_preview_widget.stop()
-                    self.preview_layout.removeWidget(self.current_preview_widget)
-                    self.current_preview_widget.deleteLater()
-                    self.current_preview_widget = None
-            
-            # 重置idle检测状态
-            self.idle_events.clear()
-            self.idle_detection_enabled = False
-            
-            # 重新加载视频播放器模块
-            import importlib
-            import freeassetfilter.components.video_player
-            import freeassetfilter.core.mpv_player_core
-            
-            # 重新导入模块
-            importlib.reload(freeassetfilter.core.mpv_player_core)
-            importlib.reload(freeassetfilter.components.video_player)
-            
-            print("[INFO] 视频播放器模块重新加载完成")
-            
-            # 重新创建视频播放器并加载视频
-            self._show_video_preview(current_file_path)
-            
-        except Exception as e:
-            import traceback
-            print(f"[ERROR] 重新加载视频播放器失败: {str(e)}")
-            traceback.print_exc()
-    
     def _show_video_preview(self, file_path):
         """
         显示视频预览
@@ -904,40 +797,91 @@ class UnifiedPreviewer(QWidget):
             file_path (str): 视频文件路径
         """
         try:
-            # 使用统一的VideoPlayer组件处理视频文件
             from freeassetfilter.components.video_player import VideoPlayer
             
-            # 创建VideoPlayer视频播放器
             video_player = VideoPlayer()
             
-            # 连接idle事件信号，用于异常检测
-            video_player.idle_event.connect(self._on_video_idle_event)
+            # 连接分离窗口请求信号
+            video_player.detachRequested.connect(self._on_video_detach_requested)
             
-            # 添加到布局
-            self.preview_layout.addWidget(video_player, 1)  # 设置伸展因子1，使预览组件占据剩余空间
+            self.preview_layout.addWidget(video_player, 1)
             self.current_preview_widget = video_player
+            self.current_preview_type = "video"
             
-            # 记录视频加载时间
-            import time
-            self.video_load_time = time.time() * 1000  # 转换为ms
-            
-            # 加载并播放视频文件
             video_player.load_media(file_path)
             video_player.play()
-            
-            # 启用idle检测
-            self.idle_detection_enabled = True
-            self.idle_detection_timer.start()
             
             print(f"[DEBUG] 视频预览组件已创建并开始播放: {file_path}")
         except Exception as e:
             import traceback
-            # 打印详细错误信息到控制台
             print(f"[ERROR] 视频预览失败: {str(e)}")
             traceback.print_exc()
-            # 显示友好的错误信息到界面
             error_message = f"视频预览失败: {str(e)}"
             self._show_error_with_copy_button(error_message)
+        finally:
+            self.is_loading_preview = False
+    
+    def _on_video_detach_requested(self):
+        """
+        处理视频播放器分离窗口请求
+        当播放器从分离窗口返回时，重新添加到预览布局
+        """
+        try:
+            from freeassetfilter.components.video_player import VideoPlayer
+            
+            # 获取当前视频播放器
+            video_player = self.current_preview_widget
+            if not isinstance(video_player, VideoPlayer):
+                return
+            
+            # 如果播放器处于分离状态，说明是分离操作，不需要处理
+            if video_player.is_detached():
+                return
+            
+            # 保存当前播放状态
+            current_file = video_player.get_current_file()
+            
+            # 播放器已经从分离窗口移除，重新添加到布局
+            # 使用延迟添加，确保窗口已完全关闭
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(50, lambda: self._do_reattach_video_player(video_player, current_file))
+                
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] 处理视频分离请求失败: {str(e)}")
+            traceback.print_exc()
+    
+    def _do_reattach_video_player(self, video_player, current_file):
+        """
+        实际执行视频播放器重新附加到布局
+        
+        Args:
+            video_player: 视频播放器实例
+            current_file: 当前播放的文件路径
+        """
+        try:
+            from freeassetfilter.components.video_player import VideoPlayer
+            
+            if not isinstance(video_player, VideoPlayer):
+                return
+            
+            # 检查播放器是否已经在布局中
+            if video_player.parent() is not None:
+                print(f"[DEBUG] 视频播放器已经在布局中，无需重新添加")
+                return
+            
+            # 重新添加到布局
+            self.preview_layout.addWidget(video_player, 1)
+            
+            # 注意：MPV重新嵌入现在在VideoPlayer._finish_reattach中处理
+            # 这里只需要确保播放器添加到布局即可
+            
+            print(f"[DEBUG] 视频播放器已重新附加到预览区域: {current_file}")
+            
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] 重新附加视频播放器失败: {str(e)}")
+            traceback.print_exc()
     
     def keyPressEvent(self, event):
         """
@@ -1038,19 +982,40 @@ class UnifiedPreviewer(QWidget):
         Args:
             file_path (str): 音频文件路径
         """
+        import datetime
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            print(f"[{timestamp}] [_show_audio_preview] {msg}")
+        
+        debug(f"开始加载音频: {file_path}")
         try:
             # 使用视频播放器组件处理音频文件，因为它已经支持音频播放
             from freeassetfilter.components.video_player import VideoPlayer
             
             # 创建视频播放器（支持音频播放）
+            debug("创建VideoPlayer实例")
             audio_player = VideoPlayer()
-            audio_player.load_media(file_path)
             
-            self.preview_layout.addWidget(audio_player, 1)  # 设置伸展因子1，使预览组件占据剩余空间
+            # 连接分离窗口请求信号
+            audio_player.detachRequested.connect(self._on_video_detach_requested)
+            
+            # 先添加到布局，确保widget被正确初始化
+            debug("添加到布局")
+            self.preview_layout.addWidget(audio_player, 1)
             self.current_preview_widget = audio_player
+            self.current_preview_type = "audio"
+            
+            # 然后加载媒体文件
+            debug("加载媒体文件")
+            audio_player.load_media(file_path)
+            debug("音频预览完成")
         except Exception as e:
             error_message = f"音频预览失败: {str(e)}"
+            debug(f"异常: {error_message}")
             self._show_error_with_copy_button(error_message)
+        finally:
+            debug(f"设置is_loading_preview=False")
+            self.is_loading_preview = False
     
     def _show_pdf_preview(self, file_path):
         """
@@ -1074,6 +1039,7 @@ class UnifiedPreviewer(QWidget):
             
             self.preview_layout.addWidget(pdf_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = pdf_previewer
+            self.current_preview_type = "pdf"
         except Exception as e:
             error_message = f"PDF预览失败: {str(e)}"
             self._show_error_with_copy_button(error_message)
@@ -1310,9 +1276,12 @@ class UnifiedPreviewer(QWidget):
             self.is_loading_preview = False
             
             # 清理线程资源
-            if hasattr(self, '_preview_thread'):
-                self._preview_thread.deleteLater()
-                delattr(self, '_preview_thread')
+            if hasattr(self, '_preview_thread') and self._preview_thread:
+                try:
+                    self._preview_thread.deleteLater()
+                except Exception:
+                    pass
+                self._preview_thread = None
     
     def _on_preview_error(self, error_message):
         """
@@ -1357,10 +1326,13 @@ class UnifiedPreviewer(QWidget):
             self.is_loading_preview = False
             
             # 清理线程资源
-            if hasattr(self, '_preview_thread'):
-                self._preview_thread.deleteLater()
-                delattr(self, '_preview_thread')
-    
+            if hasattr(self, '_preview_thread') and self._preview_thread:
+                try:
+                    self._preview_thread.deleteLater()
+                except Exception:
+                    pass
+                self._preview_thread = None
+
     class PreviewLoaderThread(QThread):
         """
         预览加载后台线程
@@ -1371,13 +1343,22 @@ class UnifiedPreviewer(QWidget):
         preview_created = Signal(object, str)  # 预览组件创建完成，参数：组件实例，预览类型
         preview_error = Signal(str)  # 预览创建失败，参数：错误信息
         preview_progress = Signal(int, str)  # 预览进度更新，参数：进度(0-100)，状态描述
-        
+
         def __init__(self, file_path, preview_type, parent=None):
-            super().__init__(parent)
+            """
+            初始化预览加载线程
+
+            Args:
+                file_path (str): 要预览的文件路径
+                preview_type (str): 预览类型
+                parent (QObject, optional): 父对象，默认为 None
+            """
+            # 显式调用 QThread 的 __init__，避免 super() 在嵌套类中的问题
+            QThread.__init__(self, parent)
             self.file_path = file_path
             self.preview_type = preview_type
             self.is_cancelled = False
-        
+
         def run(self):
             """
             后台线程执行逻辑
@@ -1385,10 +1366,10 @@ class UnifiedPreviewer(QWidget):
             """
             try:
                 self.preview_progress.emit(10, "正在准备预览...")
-                
+
                 # 注意：UI组件必须在主线程中创建，所以我们只在后台线程中处理非UI逻辑
                 # 实际的UI组件创建将在主线程中完成
-                
+
                 # 对于不同的预览类型，执行不同的预处理逻辑
                 if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir", "document", "font", "unknown"]:
                     # 模拟进度更新，确保UI能响应
@@ -1397,30 +1378,30 @@ class UnifiedPreviewer(QWidget):
                         if self.is_cancelled:
                             self.preview_error.emit("预览已取消")
                             return
-                        self.preview_progress.emit(i, f"正在准备预览...")
+                        self.preview_progress.emit(i, "正在准备预览...")
                         # 短暂休眠，让主线程有机会处理事件
                         time.sleep(0.1)
-                    
+
                     # 标记预览准备完成
                     self.preview_progress.emit(100, "预览准备完成")
-                    
+
                     # 发送信号，通知主线程创建预览组件
                     # 注意：我们不在后台线程中创建UI组件，而是让主线程创建
                     self.preview_created.emit(None, self.preview_type)
                 else:
                     self.preview_error.emit("不支持的预览类型")
-                    
+
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 self.preview_error.emit(str(e))
-        
+
         def cancel(self):
             """
             取消预览加载
             """
             self.is_cancelled = True
-    
+
     def _simulate_video_progress(self):
         """
         模拟视频加载进度，当视频播放器没有进度信号时使用
@@ -1458,6 +1439,7 @@ class UnifiedPreviewer(QWidget):
             
             self.preview_layout.addWidget(text_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = text_previewer
+            self.current_preview_type = "text"
         except Exception as e:
             error_message = f"文本预览失败: {str(e)}"
             self._show_error_with_copy_button(error_message)
@@ -1483,6 +1465,7 @@ class UnifiedPreviewer(QWidget):
 
             self.preview_layout.addWidget(font_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = font_previewer
+            self.current_preview_type = "font"
         except Exception as e:
             error_message = f"字体预览失败: {str(e)}"
             self._show_error_with_copy_button(error_message)
@@ -1752,9 +1735,12 @@ class UnifiedPreviewer(QWidget):
         except (RuntimeError, AttributeError):
             pass
     
-    def _update_appearance_after_settings_change(self):
+    def _update_appearance_after_settings_change(self, settings=None):
         """
         设置更新后更新应用外观
+
+        参数:
+            settings (dict, optional): 保存的设置字典，由settings_saved信号传递
         """
         try:
             app = QApplication.instance()
@@ -1767,7 +1753,7 @@ class UnifiedPreviewer(QWidget):
 
             # 更新时间线按钮的可见性
             self._update_timeline_button_visibility()
-            
+
             if self._current_settings_window is not None:
                 try:
                     if self._current_settings_window.isVisible():

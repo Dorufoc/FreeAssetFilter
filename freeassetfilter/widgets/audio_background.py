@@ -13,12 +13,14 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 2. 封面模糊 - 使用音频封面图像，拉伸到1440P并模糊处理
 """
 
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGraphicsDropShadowEffect
 from PySide6.QtCore import Qt, QTimer, QPointF, Signal, QRect
 from PySide6.QtGui import QPainter, QColor, QRadialGradient, QBrush, QLinearGradient, QPixmap, QImage
+from PySide6.QtSvgWidgets import QSvgWidget
 from PIL import Image, ImageFilter
 import io
 import random
+import os
 
 
 class AudioBackground(QWidget):
@@ -90,7 +92,41 @@ class AudioBackground(QWidget):
         # 封面模糊相关属性
         self._cover_data = None  # 原始封面数据
         self._blurred_pixmap = None  # 模糊处理后的1440P图像
-        
+
+        # 封面显示相关属性（用于流体背景模式）
+        self._cover_pixmap = None  # 封面图像（用于中央显示）
+        self._cover_size = 200  # 封面显示尺寸
+
+        # 创建封面显示容器（用于显示封面或SVG图标）
+        # 使用QWidget作为居中容器，通过布局系统实现居中，避免手动计算像素值
+        self._cover_container = QWidget(self)
+        self._cover_container.setStyleSheet("background: transparent; border: none;")
+        self._cover_container.hide()
+
+        # 使用垂直布局实现垂直居中
+        self._cover_layout = QVBoxLayout(self._cover_container)
+        self._cover_layout.setContentsMargins(0, 0, 0, 0)
+        self._cover_layout.setAlignment(Qt.AlignCenter)
+
+        # 封面图像标签 - 使用Qt.AlignCenter实现内容居中
+        self._cover_label = QLabel()
+        self._cover_label.setAlignment(Qt.AlignCenter)
+        self._cover_label.setStyleSheet("background: transparent; border: none;")
+        self._cover_label.hide()
+        self._cover_layout.addWidget(self._cover_label, alignment=Qt.AlignCenter)
+
+        # SVG图标容器 - 使用QWidget包装以实现居中
+        self._svg_container = QWidget()
+        self._svg_container.setStyleSheet("background: transparent; border: none;")
+        self._svg_container_layout = QVBoxLayout(self._svg_container)
+        self._svg_container_layout.setContentsMargins(0, 0, 0, 0)
+        self._svg_container_layout.setAlignment(Qt.AlignCenter)
+        self._svg_container.hide()
+        self._cover_layout.addWidget(self._svg_container, alignment=Qt.AlignCenter)
+
+        # SVG图标widget
+        self._svg_widget = None
+
         # 设置透明背景
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("background-color: transparent;")
@@ -113,11 +149,15 @@ class AudioBackground(QWidget):
         
         self._is_loaded = True
         self.setVisible(True)
-        
+
         # 根据模式启动相应的背景
         if self._current_mode == self.MODE_FLUID:
             self._start_fluid_animation()
-        
+
+        # 显示封面容器（布局系统会自动处理居中）
+        self._cover_container.show()
+        self._cover_container.setGeometry(self.rect())
+
         self.update()
     
     def unload(self):
@@ -126,14 +166,24 @@ class AudioBackground(QWidget):
             return
         
         self._is_loaded = False
-        
+
         # 停止流体动画
         self._stop_fluid_animation()
-        
+
         # 清除封面数据
         self._cover_data = None
         self._blurred_pixmap = None
-        
+        self._cover_pixmap = None
+
+        # 隐藏封面显示
+        self._cover_label.hide()
+        self._svg_container.hide()
+        self._cover_container.hide()
+        if self._svg_widget:
+            self._svg_widget.hide()
+            self._svg_widget.deleteLater()
+            self._svg_widget = None
+
         self.setVisible(False)
     
     def isLoaded(self) -> bool:
@@ -354,17 +404,134 @@ class AudioBackground(QWidget):
         if self._is_loaded and self._current_mode == self.MODE_FLUID:
             self.update()
     
+    # ==================== 封面显示方法（流体背景模式）====================
+
+    def setAudioCover(self, cover_data: bytes = None):
+        """
+        设置音频封面图像（用于流体背景模式的中央显示）
+
+        Args:
+            cover_data: 封面图像的二进制数据，如果为None则显示默认音乐图标
+        """
+        # 隐藏当前的封面显示
+        self._cover_label.hide()
+        self._svg_container.hide()
+        if self._svg_widget:
+            self._svg_widget.hide()
+            self._svg_widget.deleteLater()
+            self._svg_widget = None
+
+        if cover_data:
+            try:
+                # 从二进制数据加载图像
+                image = Image.open(io.BytesIO(cover_data))
+
+                # 转换为RGBA模式
+                if image.mode != 'RGBA':
+                    image = image.convert('RGBA')
+
+                # 缩放到合适的显示尺寸（保持比例）
+                max_size = self._cover_size
+                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+
+                # 转换为QPixmap
+                self._cover_pixmap = self._pil_to_pixmap(image)
+                print(f"[AudioBackground] 已加载音频封面: {image.size}")
+
+                # 显示封面图像（布局系统会自动居中）
+                self._cover_label.setPixmap(self._cover_pixmap)
+                self._cover_label.setFixedSize(self._cover_pixmap.size())
+                self._cover_label.show()
+
+            except Exception as e:
+                print(f"[AudioBackground] 加载封面失败: {e}")
+                self._cover_pixmap = None
+                # 加载默认SVG图标
+                self._load_default_cover()
+        else:
+            self._cover_pixmap = None
+            # 加载默认SVG图标
+            self._load_default_cover()
+
+    def _load_default_cover(self):
+        """加载默认音乐图标（SVG）"""
+        try:
+            # 查找音乐图标SVG文件
+            possible_paths = [
+                os.path.join(os.path.dirname(__file__), '..', 'icons', '音乐_playing.svg'),
+                os.path.join(os.path.dirname(__file__), '..', 'icons', '音乐.svg'),
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', '音乐_playing.svg'),
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons', '音乐.svg'),
+            ]
+
+            svg_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    svg_path = path
+                    break
+
+            if not svg_path:
+                print("[AudioBackground] 未找到音乐SVG图标")
+                return
+
+            # 读取SVG文件并进行颜色替换
+            from ..core.svg_renderer import SvgRenderer
+            with open(svg_path, 'r', encoding='utf-8') as f:
+                svg_content = f.read()
+            svg_content = SvgRenderer._replace_svg_colors(svg_content)
+
+            # 创建QSvgWidget并添加到SVG容器布局中
+            self._svg_widget = QSvgWidget()
+            self._svg_widget.load(svg_content.encode('utf-8'))
+            self._svg_widget.setStyleSheet("background: transparent; border: none;")
+
+            # 获取SVG原始尺寸并设置widget大小
+            svg_size = self._svg_widget.renderer().defaultSize()
+            aspect_ratio = svg_size.width() / svg_size.height() if svg_size.height() > 0 else 1.0
+
+            # 计算适合cover_size的尺寸（保持比例）
+            if aspect_ratio >= 1:
+                widget_width = self._cover_size
+                widget_height = int(self._cover_size / aspect_ratio)
+            else:
+                widget_height = self._cover_size
+                widget_width = int(self._cover_size * aspect_ratio)
+
+            self._svg_widget.setFixedSize(widget_width, widget_height)
+
+            # 将SVG widget添加到容器布局中（布局会自动居中）
+            self._svg_container_layout.addWidget(self._svg_widget, alignment=Qt.AlignCenter)
+            self._svg_container.show()
+
+            print(f"[AudioBackground] 已加载默认音乐图标: {svg_path}, 尺寸: {widget_width}x{widget_height}")
+
+        except Exception as e:
+            print(f"[AudioBackground] 加载默认图标失败: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def resizeEvent(self, event):
+        """
+        大小调整事件
+        使用QT原生对齐功能，通过设置封面容器几何区域实现居中
+        """
+        super().resizeEvent(event)
+        # 封面容器使用整个父窗口区域，布局系统会自动居中内容
+        if self._is_loaded and self._cover_container.isVisible():
+            self._cover_container.setGeometry(self.rect())
+        self.update()
+
     # ==================== 封面模糊方法 ====================
-    
+
     def setCoverData(self, cover_data: bytes):
         """
         设置封面数据（用于封面模糊模式）
-        
+
         Args:
             cover_data: 封面图像的二进制数据
         """
         self._cover_data = cover_data
-        
+
         if self._is_loaded and self._current_mode == self.MODE_COVER_BLUR:
             self._process_cover()
             self.update()
@@ -520,7 +687,9 @@ class AudioBackground(QWidget):
         painter.setBrush(QBrush(overlay))
         painter.setPen(Qt.NoPen)
         painter.drawRect(0, 0, width, height)
-    
+
+        # 封面图像现在通过 _cover_container widget 显示，不需要在这里绘制
+
     def _paint_cover_blur_background(self, painter: QPainter, width: int, height: int):
         """绘制封面模糊背景"""
         # 1. 绘制黑色背景（100%不透明）

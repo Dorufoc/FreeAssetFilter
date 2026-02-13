@@ -12,7 +12,6 @@ from .pdf_previewer import PDFPreviewer
 from .photo_viewer import PhotoViewer
 from .text_previewer import TextPreviewer
 from .unified_previewer import UnifiedPreviewer
-from .video_player import VideoPlayer
 from .theme_editor import ThemeEditor
 
 __all__ = [

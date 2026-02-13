@@ -864,6 +864,7 @@ class D_ProgressBar(QWidget):
                 self._animation.stop()
                 self._display_value_storage = value
                 self.update()
+                self.valueChanged.emit(value)
             else:
                 self._animation.stop()
                 self._animation.setStartValue(self._display_value)
@@ -1021,13 +1022,14 @@ class D_ProgressBar(QWidget):
 
         if event.button() == Qt.LeftButton:
             self._is_pressed = True
+            self._animation_suspended = True
 
             if self._animation.state() == QPropertyAnimation.Running:
                 self._animation.stop()
 
             self._display_value_storage = self._value
-            self._update_value_from_event(event)
             self.userInteracting.emit()
+            self._update_value_from_event(event)
 
     def mouseMoveEvent(self, event):
         """
@@ -1053,6 +1055,7 @@ class D_ProgressBar(QWidget):
 
         if self._is_pressed and event.button() == Qt.LeftButton:
             self._is_pressed = False
+            self._animation_suspended = False
             self.userInteractionEnded.emit()
             self.update()
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 FreeAssetFilter 滚动条组件
-带悬停动画效果和平滑滚动的滚动条
+带悬停动画效果、平滑滚动和动态宽度控制的滚动条
 """
 
 from PySide6.QtCore import Qt, QPoint, QTimer, Signal, QObject, QPropertyAnimation, Property, QEasingCurve
@@ -12,7 +12,7 @@ import time
 
 class D_ScrollBar(QScrollBar):
     """
-    带悬停动画效果和平滑滚动的滚动条
+    带悬停动画效果、平滑滚动和动态宽度控制的滚动条
     
     特点：
     - 滑块悬停时平滑变色
@@ -21,6 +21,7 @@ class D_ScrollBar(QScrollBar):
     - 支持非线性动画过渡效果
     - 支持触摸惯性滚动
     - 支持滚轮平滑滚动
+    - 支持动态宽度控制（内容无需滚动时自动隐藏）
     """
     
     scroll_finished = Signal()
@@ -51,11 +52,145 @@ class D_ScrollBar(QScrollBar):
         self._anim_handle_color_value = QColor(self._normal_color)
         self._updating_style = False
         
+        # 动态宽度控制相关属性
+        self._default_width = 4  # 默认滚动条宽度（像素）
+        self._current_width = 0  # 当前宽度初始为0（隐藏状态）
+        self._scroll_area = None  # 关联的滚动区域
+        
         self._init_animations()
         self._update_style()
         self._init_smooth_scroll()
         
         self.setAttribute(Qt.WA_Hover, True)
+        
+        # 连接值变化信号以检测滚动需求变化
+        self.rangeChanged.connect(self._on_range_changed)
+    
+    def set_scroll_area(self, scroll_area):
+        """
+        设置关联的滚动区域，用于检测内容是否需要滚动
+        
+        Args:
+            scroll_area: QScrollArea 实例
+        """
+        # 如果之前有关联的滚动区域，断开连接
+        if self._scroll_area and self._scroll_area != scroll_area:
+            try:
+                self.rangeChanged.disconnect(self._on_range_changed)
+            except:
+                pass
+        
+        self._scroll_area = scroll_area
+        if scroll_area:
+            # 监听D_ScrollBar自身的rangeChanged信号
+            # 注意：当D_ScrollBar被设置为QScrollArea的滚动条后，
+            # QScrollArea会自动更新D_ScrollBar的range，触发其rangeChanged信号
+            self.rangeChanged.connect(self._on_range_changed)
+            # 初始检查
+            self._check_and_update_width()
+        else:
+            # 断开信号连接
+            try:
+                self.rangeChanged.disconnect(self._on_range_changed)
+            except:
+                pass
+    
+    def _on_range_changed(self, min_val=0, max_val=0):
+        """滚动范围变化时触发宽度检查"""
+        # 直接检查并更新宽度，不使用延迟
+        self._check_and_update_width()
+    
+    def _check_and_update_width(self):
+        """
+        检查内容是否需要滚动，并更新滚动条宽度
+        
+        当内容无需滚动时，将滚动条宽度设为0px
+        当内容需要滚动时，恢复默认宽度
+        """
+        needs_scroll = self._needs_scroll()
+        target_width = self._default_width if needs_scroll else 0
+        
+        # 如果宽度没有变化，直接返回
+        if self._current_width == target_width:
+            return
+        
+        # 直接设置宽度，不使用动画
+        self._current_width = target_width
+        self._update_style()
+    
+    def _needs_scroll(self):
+        """
+        检测内容是否需要滚动
+        
+        Returns:
+            bool: 是否需要滚动
+        """
+        # 首先检查滚动条自身的range（最可靠的指标）
+        if self.maximum() > self.minimum():
+            return True
+        
+        # 如果range为0，但关联了滚动区域，进一步检查内容尺寸
+        # 这种情况可能发生在滚动条range还未更新时
+        if self._scroll_area and self._scroll_area.widget():
+            viewport = self._scroll_area.viewport()
+            content = self._scroll_area.widget()
+            
+            if viewport and content:
+                if self.orientation() == Qt.Vertical:
+                    # 垂直方向：比较内容高度和视口高度
+                    # 添加一个小的阈值避免边界情况
+                    content_height = content.height()
+                    viewport_height = viewport.height()
+                    # 使用更宽松的判断条件
+                    return content_height > viewport_height + 5
+                else:
+                    # 水平方向：比较内容宽度和视口宽度
+                    content_width = content.width()
+                    viewport_width = viewport.width()
+                    return content_width > viewport_width + 5
+        
+        return False
+    
+    def set_default_width(self, width):
+        """
+        设置滚动条默认宽度
+        
+        Args:
+            width: 默认宽度（像素）
+        """
+        self._default_width = max(0, width)
+        self._check_and_update_width()
+    
+    def update_width_immediately(self):
+        """立即更新滚动条宽度（无动画）"""
+        needs_scroll = self._needs_scroll()
+        self._current_width = self._default_width if needs_scroll else 0
+        if self._width_animation and self._width_animation.state() == QPropertyAnimation.Running:
+            self._width_animation.stop()
+        self._update_style()
+    
+    def set_periodic_check_interval(self, interval_ms):
+        """
+        设置定期检测间隔
+        
+        Args:
+            interval_ms: 检测间隔（毫秒），默认500ms
+        """
+        self._periodic_check_timer.setInterval(max(100, interval_ms))
+    
+    def enable_periodic_check(self, enabled=True):
+        """
+        启用或禁用定期检测
+        
+        Args:
+            enabled: 是否启用定期检测
+        """
+        if enabled:
+            if not self._periodic_check_timer.isActive():
+                self._periodic_check_timer.start()
+        else:
+            if self._periodic_check_timer.isActive():
+                self._periodic_check_timer.stop()
     
     def _init_animations(self):
         """初始化颜色动画"""
@@ -134,13 +269,15 @@ class D_ScrollBar(QScrollBar):
     
     def _update_style(self):
         """更新样式表"""
-        if self._updating_style:
-            return
+        # 移除重入保护，因为动画需要频繁更新样式
+        # if self._updating_style:
+        #     return
         
         self._updating_style = True
         
         is_vertical = self.orientation() == Qt.Vertical
-        width = int(4 * self._dpi_scale)
+        # 使用动态计算的宽度
+        width = int(self._current_width * self._dpi_scale)
         radius = int(2 * self._dpi_scale)
         min_size = int(15 * self._dpi_scale)
         
@@ -378,7 +515,7 @@ class SmoothScroller:
         return scroller
     
     @staticmethod
-    def apply_to_scroll_area(scroll_area, gesture_type=QScroller.TouchGesture, enable_mouse_drag=False):
+    def apply_to_scroll_area(scroll_area, gesture_type=QScroller.TouchGesture, enable_mouse_drag=False, enable_smart_width=True):
         """
         为 QScrollArea 应用平滑滚动
 
@@ -386,14 +523,75 @@ class SmoothScroller:
             scroll_area: QScrollArea 实例
             gesture_type: 手势类型
             enable_mouse_drag: 是否同时启用鼠标拖动滚动（模拟触摸滚动）
+            enable_smart_width: 是否启用智能宽度控制（内容无需滚动时隐藏滚动条）
         """
         if not isinstance(scroll_area, QScrollArea):
             return None
 
         SmoothScroller._configure_scroll_area(scroll_area)
         SmoothScroller.apply(scroll_area, gesture_type, enable_mouse_drag)
+        
+        # 启用智能宽度控制
+        if enable_smart_width:
+            SmoothScroller._enable_smart_width(scroll_area)
 
         return scroll_area
+    
+    @staticmethod
+    def _enable_smart_width(scroll_area):
+        """
+        为滚动区域启用智能宽度控制
+        
+        自动检测内容是否需要滚动，当不需要时隐藏滚动条
+        """
+        if not isinstance(scroll_area, QScrollArea):
+            return
+        
+        # 获取当前滚动条
+        v_scrollbar = scroll_area.verticalScrollBar()
+        h_scrollbar = scroll_area.horizontalScrollBar()
+        
+        # 如果已经是 D_ScrollBar，设置关联
+        if isinstance(v_scrollbar, D_ScrollBar):
+            v_scrollbar.set_scroll_area(scroll_area)
+        
+        if isinstance(h_scrollbar, D_ScrollBar):
+            h_scrollbar.set_scroll_area(scroll_area)
+        
+        # 监听内容变化
+        def on_content_changed():
+            # 使用单次定时器延迟检查，确保布局已更新
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(50, do_check)
+        
+        def do_check():
+            if isinstance(v_scrollbar, D_ScrollBar):
+                v_scrollbar._check_and_update_width()
+            if isinstance(h_scrollbar, D_ScrollBar):
+                h_scrollbar._check_and_update_width()
+        
+        # 使用事件过滤器监听尺寸变化
+        class ResizeEventFilter(QObject):
+            def __init__(self, callback):
+                super().__init__()
+                self.callback = callback
+            
+            def eventFilter(self, obj, event):
+                from PySide6.QtCore import QEvent
+                if event.type() == QEvent.Resize:
+                    self.callback()
+                return super().eventFilter(obj, event)
+        
+        # 创建并安装事件过滤器
+        if not hasattr(scroll_area, '_smart_width_filter'):
+            scroll_area._smart_width_filter = ResizeEventFilter(on_content_changed)
+            scroll_area.installEventFilter(scroll_area._smart_width_filter)
+            if scroll_area.widget():
+                scroll_area.widget().installEventFilter(scroll_area._smart_width_filter)
+        
+        # 初始检查
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, do_check)
     
     @staticmethod
     def _configure_scroll_area(scroll_area):
