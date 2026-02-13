@@ -654,6 +654,25 @@ class UnifiedPreviewer(QWidget):
                 # 直接调用load_media，它内部会处理停止上一个播放
                 if hasattr(self.current_preview_widget, 'load_media'):
                     self.current_preview_widget.load_media(file_path)
+                    # 如果视频播放组件已经启动，再次发送播放信号，避免意外暂停
+                    # 使用延迟确保MPV完成文件加载后再发送播放指令
+                    from PySide6.QtCore import QTimer
+                    def ensure_playing():
+                        try:
+                            # 检查组件是否仍然存在且有效
+                            if (self.current_preview_widget and 
+                                hasattr(self.current_preview_widget, 'play') and
+                                hasattr(self.current_preview_widget, '_mpv_core')):
+                                mpv_core = self.current_preview_widget._mpv_core
+                                # 确保MPV核心已初始化且没有正在播放
+                                if mpv_core and mpv_core._initialized:
+                                    if not mpv_core.is_playing():
+                                        self.current_preview_widget.play()
+                        except Exception as e:
+                            # 忽略任何错误，避免崩溃
+                            print(f"[UnifiedPreviewer] 确保播放状态时出错: {e}")
+                    # 延迟300毫秒，确保MPV有足够时间完成文件加载
+                    QTimer.singleShot(300, ensure_playing)
             elif preview_type == "image":
                 # 图片预览组件
                 if hasattr(self.current_preview_widget, 'load_image_from_path'):
