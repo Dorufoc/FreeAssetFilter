@@ -266,14 +266,7 @@ class SvgRenderer:
             svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
             svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
             
-            svg_size = svg_widget.renderer().defaultSize()
-            aspect_ratio = svg_size.width() / svg_size.height() if svg_size.height() > 0 else 1.0
-            
-            if scaled_icon_size / svg_size.height() < 1:
-                svg_widget.setFixedHeight(scaled_icon_size)
-                svg_widget.setFixedWidth(int(scaled_icon_size * aspect_ratio))
-            else:
-                svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+            svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
             
             container = QWidget()
             container.setFixedSize(scaled_icon_size, scaled_icon_size)

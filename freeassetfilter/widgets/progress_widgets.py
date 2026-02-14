@@ -626,9 +626,10 @@ class D_ProgressBar(QWidget):
         self._handle_border_width = max(1, int(2 * self.dpi_scale))
         self._handle_border_color = QColor("#FFFFFF")
 
-        self._animation_duration = 150
+        self._animation_duration = 250
+        self._animation_easing_curve = QEasingCurve.InOutQuart
         self._animation = QPropertyAnimation(self, b"_display_value")
-        self._animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._animation.setEasingCurve(self._animation_easing_curve)
         self._animation.valueChanged.connect(self._on_animation_value_changed)
         self._animation.finished.connect(self._on_animation_finished)
 
@@ -674,9 +675,58 @@ class D_ProgressBar(QWidget):
         设置动画缓动曲线
 
         Args:
-            easing_curve (QEasingCurve): 缓动曲线类型
+            easing_curve (QEasingCurve or str): 缓动曲线类型，可以是 QEasingCurve 对象或字符串名称
+                支持的字符串名称:
+                - 'Linear': 线性动画
+                - 'InQuad', 'OutQuad', 'InOutQuad': 二次曲线
+                - 'InCubic', 'OutCubic', 'InOutCubic': 三次曲线
+                - 'InQuart', 'OutQuart', 'InOutQuart': 四次曲线（默认）
+                - 'InQuint', 'OutQuint', 'InOutQuint': 五次曲线
+                - 'InSine', 'OutSine', 'InOutSine': 正弦曲线
+                - 'InExpo', 'OutExpo', 'InOutExpo': 指数曲线
+                - 'InCirc', 'OutCirc', 'InOutCirc': 圆形曲线
+                - 'InElastic', 'OutElastic', 'InOutElastic': 弹性曲线
+                - 'InBack', 'OutBack', 'InOutBack': 回退曲线
         """
-        self._animation.setEasingCurve(easing_curve)
+        if isinstance(easing_curve, str):
+            # 通过字符串名称设置缓动曲线
+            curve_map = {
+                'Linear': QEasingCurve.Linear,
+                'InQuad': QEasingCurve.InQuad,
+                'OutQuad': QEasingCurve.OutQuad,
+                'InOutQuad': QEasingCurve.InOutQuad,
+                'InCubic': QEasingCurve.InCubic,
+                'OutCubic': QEasingCurve.OutCubic,
+                'InOutCubic': QEasingCurve.InOutCubic,
+                'InQuart': QEasingCurve.InQuart,
+                'OutQuart': QEasingCurve.OutQuart,
+                'InOutQuart': QEasingCurve.InOutQuart,
+                'InQuint': QEasingCurve.InQuint,
+                'OutQuint': QEasingCurve.OutQuint,
+                'InOutQuint': QEasingCurve.InOutQuint,
+                'InSine': QEasingCurve.InSine,
+                'OutSine': QEasingCurve.OutSine,
+                'InOutSine': QEasingCurve.InOutSine,
+                'InExpo': QEasingCurve.InExpo,
+                'OutExpo': QEasingCurve.OutExpo,
+                'InOutExpo': QEasingCurve.InOutExpo,
+                'InCirc': QEasingCurve.InCirc,
+                'OutCirc': QEasingCurve.OutCirc,
+                'InOutCirc': QEasingCurve.InOutCirc,
+                'InElastic': QEasingCurve.InElastic,
+                'OutElastic': QEasingCurve.OutElastic,
+                'InOutElastic': QEasingCurve.InOutElastic,
+                'InBack': QEasingCurve.InBack,
+                'OutBack': QEasingCurve.OutBack,
+                'InOutBack': QEasingCurve.InOutBack,
+            }
+            easing_curve_type = curve_map.get(easing_curve, QEasingCurve.InOutQuart)
+            self._animation_easing_curve = QEasingCurve(easing_curve_type)
+            self._animation.setEasingCurve(self._animation_easing_curve)
+        else:
+            # 直接使用 QEasingCurve 对象
+            self._animation_easing_curve = easing_curve
+            self._animation.setEasingCurve(easing_curve)
 
     def setAnimationEnabled(self, enabled):
         """
@@ -687,6 +737,7 @@ class D_ProgressBar(QWidget):
         """
         if enabled:
             self._animation.setDuration(self._animation_duration)
+            self._animation.setEasingCurve(self._animation_easing_curve)
         else:
             self._animation.setDuration(0)
 

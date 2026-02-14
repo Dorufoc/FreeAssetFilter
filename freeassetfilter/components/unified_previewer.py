@@ -640,17 +640,30 @@ class UnifiedPreviewer(QWidget):
                     print(f"停止预览组件时出错: {e}")
             
             # 对于VideoPlayer组件，确保完全停止所有播放器核心
+            # 这是关键步骤：必须确保MPV完全销毁后才能创建新的播放器，否则会导致访问冲突
+            video_player_widget = None
             try:
                 from freeassetfilter.components.video_player import VideoPlayer
                 if isinstance(self.current_preview_widget, VideoPlayer):
-                    mpv_core = getattr(self.current_preview_widget, '_mpv_core', None)
+                    video_player_widget = self.current_preview_widget
+                    # 调用cleanup方法进行完整的资源清理
+                    if hasattr(video_player_widget, 'cleanup'):
+                        try:
+                            video_player_widget.cleanup()
+                        except Exception as e:
+                            print(f"调用VideoPlayer.cleanup()时出错: {e}")
                     
-                    if mpv_core:
-                        mpv_core.stop()
-                        if hasattr(mpv_core, 'close'):
-                            mpv_core.close()
-                        if hasattr(mpv_core, 'disable_cube_filter'):
-                            mpv_core.disable_cube_filter()
+
+
+                    # 处理事件，确保清理操作完成
+                    # 使用 ExcludeUserInputEvents 标志排除用户输入事件，避免在处理过程中
+                    # 触发鼠标/键盘事件导致重入问题（如eventFilter中的事件处理）
+                    from PySide6.QtCore import QCoreApplication, QEventLoop
+                    QCoreApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+                    # 等待一小段时间确保MPV资源完全释放
+                    from PySide6.QtCore import QThread
+                    QThread.msleep(200)  # 等待200ms让MPV完全释放
             except Exception as e:
                 print(f"清理VideoPlayer组件时出错: {e}")
 
@@ -668,6 +681,9 @@ class UnifiedPreviewer(QWidget):
                     widget = item.widget()
                     if widget is not None:
                         self.preview_layout.removeWidget(widget)
+                        # 对于VideoPlayer，先隐藏再销毁，确保窗口句柄被正确释放
+                        if widget is video_player_widget:
+                            widget.hide()
                         widget.deleteLater()
         
         # 确保布局中只保留控制栏
@@ -895,11 +911,20 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             from freeassetfilter.components.video_player import VideoPlayer
+            from freeassetfilter.core.settings_manager import SettingsManager
             
-            video_player = VideoPlayer(playback_mode="video")
+            # 从设置中读取播放器配置
+            settings_manager = SettingsManager()
+            initial_volume = settings_manager.get_player_volume()
+            initial_speed = settings_manager.get_player_speed()
             
-            # 连接分离窗口请求信号
-            video_player.detachRequested.connect(self._on_video_detach_requested)
+            # 创建视频播放器，传递初始设置
+            video_player = VideoPlayer(
+                playback_mode="video",
+                show_detach_button=False,
+                initial_volume=initial_volume,
+                initial_speed=initial_speed
+            )
             
             self.preview_layout.addWidget(video_player, 1)
             self.current_preview_widget = video_player
@@ -918,67 +943,7 @@ class UnifiedPreviewer(QWidget):
         finally:
             self.is_loading_preview = False
     
-    def _on_video_detach_requested(self):
-        """
-        处理视频播放器分离窗口请求
-        当播放器从分离窗口返回时，重新添加到预览布局
-        """
-        try:
-            from freeassetfilter.components.video_player import VideoPlayer
-            
-            # 获取当前视频播放器
-            video_player = self.current_preview_widget
-            if not isinstance(video_player, VideoPlayer):
-                return
-            
-            # 如果播放器处于分离状态，说明是分离操作，不需要处理
-            if video_player.is_detached():
-                return
-            
-            # 保存当前播放状态
-            current_file = video_player.get_current_file()
-            
-            # 播放器已经从分离窗口移除，重新添加到布局
-            # 使用延迟添加，确保窗口已完全关闭
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(50, lambda: self._do_reattach_video_player(video_player, current_file))
-                
-        except Exception as e:
-            import traceback
-            print(f"[ERROR] 处理视频分离请求失败: {str(e)}")
-            traceback.print_exc()
-    
-    def _do_reattach_video_player(self, video_player, current_file):
-        """
-        实际执行视频播放器重新附加到布局
-        
-        Args:
-            video_player: 视频播放器实例
-            current_file: 当前播放的文件路径
-        """
-        try:
-            from freeassetfilter.components.video_player import VideoPlayer
-            
-            if not isinstance(video_player, VideoPlayer):
-                return
-            
-            # 检查播放器是否已经在布局中
-            if video_player.parent() is not None:
-                print(f"[DEBUG] 视频播放器已经在布局中，无需重新添加")
-                return
-            
-            # 重新添加到布局
-            self.preview_layout.addWidget(video_player, 1)
-            
-            # 注意：MPV重新嵌入现在在VideoPlayer._finish_reattach中处理
-            # 这里只需要确保播放器添加到布局即可
-            
-            print(f"[DEBUG] 视频播放器已重新附加到预览区域: {current_file}")
-            
-        except Exception as e:
-            import traceback
-            print(f"[ERROR] 重新附加视频播放器失败: {str(e)}")
-            traceback.print_exc()
+
     
     def keyPressEvent(self, event):
         """
@@ -990,8 +955,9 @@ class UnifiedPreviewer(QWidget):
             try:
                 from freeassetfilter.components.video_player import VideoPlayer
                 if isinstance(self.current_preview_widget, VideoPlayer):
+                    video_player = self.current_preview_widget
                     # 调用视频播放器的播放/暂停方法
-                    self.current_preview_widget.toggle_play_pause()
+                    video_player.toggle_play_pause()
                 else:
                     # 如果不是视频播放器，调用父类的默认处理
                     super().keyPressEvent(event)
@@ -1088,13 +1054,24 @@ class UnifiedPreviewer(QWidget):
         try:
             # 使用视频播放器组件处理音频文件，因为它已经支持音频播放
             from freeassetfilter.components.video_player import VideoPlayer
+            from freeassetfilter.core.settings_manager import SettingsManager
             
-            # 创建视频播放器（支持音频播放）
+            # 从设置中读取播放器配置
+            settings_manager = SettingsManager()
+            enable_detach = settings_manager.get_setting("player.enable_fullscreen", False)
+            initial_volume = settings_manager.get_player_volume()
+            initial_speed = settings_manager.get_player_speed()
+            
+            # 创建视频播放器（支持音频播放），传递初始设置
+            # 音频模式下隐藏LUT按钮和分离窗口按钮
             debug("创建VideoPlayer实例")
-            audio_player = VideoPlayer(playback_mode="audio")
-            
-            # 连接分离窗口请求信号
-            audio_player.detachRequested.connect(self._on_video_detach_requested)
+            audio_player = VideoPlayer(
+                playback_mode="audio",
+                show_lut_controls=False,
+                show_detach_button=False,
+                initial_volume=initial_volume,
+                initial_speed=initial_speed
+            )
             
             # 先添加到布局，确保widget被正确初始化
             debug("添加到布局")
@@ -1450,8 +1427,8 @@ class UnifiedPreviewer(QWidget):
                 preview_type (str): 预览类型
                 parent (QObject, optional): 父对象，默认为 None
             """
-            # 显式调用 QThread 的 __init__，避免 super() 在嵌套类中的问题
-            QThread.__init__(self, parent)
+            # 使用 super() 正确调用父类初始化方法
+            super().__init__(parent)
             self.file_path = file_path
             self.preview_type = preview_type
             self.is_cancelled = False

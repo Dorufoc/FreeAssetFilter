@@ -80,24 +80,27 @@ class FileBlockCard(QWidget):
     
     def _apply_animated_style(self):
         """应用动画颜色到卡片样式"""
-        if not hasattr(self, '_style_colors'):
+        if not hasattr(self, '_style_colors') or not hasattr(self, '_anim_bg_color') or not hasattr(self, '_anim_border_color'):
             return
         
-        scaled_border_radius = int(8 * self.dpi_scale)
-        normal_border_width = int(1 * self.dpi_scale)
-        # 预览态使用2倍边框宽度
-        scaled_border_width = normal_border_width * 2 if self._is_previewing else normal_border_width
-        
-        r, g, b, a = self._anim_bg_color.red(), self._anim_bg_color.green(), self._anim_bg_color.blue(), self._anim_bg_color.alpha()
-        bg_color = f"rgba({r}, {g}, {b}, {a})"
-        
-        # 预览态使用secondary_color作为边框颜色，其他状态使用动画边框颜色
-        if self._is_previewing:
-            border_color = self.secondary_color
-        else:
-            border_color = self._anim_border_color.name()
-        
-        self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
+        try:
+            scaled_border_radius = int(8 * self.dpi_scale)
+            normal_border_width = int(1 * self.dpi_scale)
+            # 预览态使用2倍边框宽度
+            scaled_border_width = normal_border_width * 2 if self._is_previewing else normal_border_width
+            
+            r, g, b, a = self._anim_bg_color.red(), self._anim_bg_color.green(), self._anim_bg_color.blue(), self._anim_bg_color.alpha()
+            bg_color = f"rgba({r}, {g}, {b}, {a})"
+            
+            # 预览态使用secondary_color作为边框颜色，其他状态使用动画边框颜色
+            if self._is_previewing:
+                border_color = self.secondary_color
+            else:
+                border_color = self._anim_border_color.name()
+            
+            self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
+        except Exception:
+            pass
     
     def __init__(self, file_info, dpi_scale=1.0, parent=None):
         """
@@ -722,8 +725,6 @@ class FileBlockCard(QWidget):
         
         self._unpreview_anim_group.addAnimation(self._anim_unpreview_bg)
         self._unpreview_anim_group.addAnimation(self._anim_unpreview_border)
-        
-        self._apply_animated_style()
     
     def _trigger_hover_animation(self):
         """触发悬停动画"""

@@ -237,8 +237,8 @@ class CustomInputBox(QWidget):
             border_color = self._border_color
             background_color = self._background_color
         
-        # 边框宽度设置为1，应用DPI缩放
-        scaled_border_width = int(1 * self.dpi_scale)
+        # 边框宽度设置为1.5，应用DPI缩放
+        scaled_border_width = 1.5
         
         # 绘制背景矩形 - 使用整个控件区域，确保不会出现间隙
         rect = self.rect()

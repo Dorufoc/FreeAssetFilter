@@ -175,63 +175,8 @@ class FreeAssetFilterApp(QMainWindow):
     def changeEvent(self, event):
         """
         窗口状态变化事件
-        当主窗口获得焦点且存在分离的视频窗口时，将焦点还给分离窗口
         """
-        if event.type() == event.WindowStateChange or event.type() == event.ActivationChange:
-            # 检查是否有分离的视频窗口
-            if hasattr(self, 'unified_previewer'):
-                try:
-                    from freeassetfilter.components.video_player import VideoPlayer
-                    if isinstance(self.unified_previewer.current_preview_widget, VideoPlayer):
-                        video_player = self.unified_previewer.current_preview_widget
-                        # 如果视频播放器处于分离状态，将焦点还给分离窗口
-                        if hasattr(video_player, '_is_detached') and video_player._is_detached:
-                            if hasattr(video_player, '_detached_window') and video_player._detached_window:
-                                # 使用定时器延迟执行，避免焦点争夺导致的闪烁
-                                from PySide6.QtCore import QTimer
-                                QTimer.singleShot(50, lambda: self._restore_detached_window_focus(video_player))
-                except ImportError:
-                    pass
         super().changeEvent(event)
-
-    def _restore_detached_window_focus(self, video_player):
-        """
-        恢复分离窗口的焦点和置顶状态
-        """
-        try:
-            if (hasattr(video_player, '_detached_window') and
-                video_player._detached_window and
-                hasattr(video_player, '_is_detached') and
-                video_player._is_detached):
-
-                detached_window = video_player._detached_window
-
-                # 将分离窗口置顶
-                detached_window.raise_()
-                detached_window.activateWindow()
-
-                # 在Windows上使用Win32 API确保窗口置顶
-                try:
-                    import ctypes
-                    from ctypes import wintypes
-
-                    # 获取窗口句柄
-                    hwnd = int(detached_window.winId())
-
-                    # 使用SetWindowPos将窗口置顶（但不使用TOPMOST，避免真正的置顶）
-                    # SWP_NOMOVE | SWP_NOSIZE = 0x0001 | 0x0002 = 0x0003
-                    # HWND_TOP = 0
-                    ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0,
-                                                       0x0003 | 0x0010 | 0x0040)
-
-                    # 强制激活窗口
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-
-                except Exception as e:
-                    print(f"[MainWindow] Win32 API调用失败: {e}")
-
-        except Exception as e:
-            print(f"[MainWindow] 恢复分离窗口焦点失败: {e}")
 
     def closeEvent(self, event):
         """
@@ -259,20 +204,6 @@ class FreeAssetFilterApp(QMainWindow):
             thumbnail_cleaner = get_thumbnail_cleaner()
             deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails()
             #print(f"[DEBUG] 退出前自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
-
-        # 关闭分离的视频播放窗口（如果存在）
-        if hasattr(self, 'unified_previewer'):
-            try:
-                from freeassetfilter.components.video_player import VideoPlayer
-                # 检查统一预览器的当前预览组件是否是视频播放器
-                if isinstance(self.unified_previewer.current_preview_widget, VideoPlayer):
-                    video_player = self.unified_previewer.current_preview_widget
-                    # 如果视频播放器处于分离状态，先合并回主窗口
-                    if hasattr(video_player, '_is_detached') and video_player._is_detached:
-                        if hasattr(video_player, '_detached_window') and video_player._detached_window:
-                            video_player._detached_window.close()
-            except ImportError:
-                pass
 
         # 清理统一预览器中的临时PDF文件
         if hasattr(self, 'unified_previewer'):
@@ -315,8 +246,9 @@ class FreeAssetFilterApp(QMainWindow):
                     from freeassetfilter.components.video_player import VideoPlayer
                     # 检查统一预览器的当前预览组件是否是视频播放器
                     if isinstance(self.unified_previewer.current_preview_widget, VideoPlayer):
+                        video_player = self.unified_previewer.current_preview_widget
                         # 调用视频播放器的播放/暂停方法
-                        self.unified_previewer.current_preview_widget.toggle_play_pause()
+                        video_player.toggle_play_pause()
                     else:
                         # 如果不是视频播放器，调用父类的默认处理
                         super().keyPressEvent(event)
@@ -1118,7 +1050,7 @@ class FreeAssetFilterApp(QMainWindow):
                 if file_info:
                     self.file_selector_a.scroll_to_file(file_info)
             
-            self.file_selector_a.refresh_files(callback=on_files_refreshed)
+            self.file_selector_a.refresh_files(callback=on_files_refreshed, scroll_to_top=not file_info)
     
     def handle_file_added_to_pool(self, file_info):
         """

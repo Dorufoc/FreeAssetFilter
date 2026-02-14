@@ -213,7 +213,7 @@ class CustomFileHorizontalCard(QWidget):
         # 缩略图/图标显示组件
         self.icon_display = QLabel()
         self.icon_display.setAlignment(Qt.AlignCenter)
-        self.icon_display.setFixedSize(int(20 * self.dpi_scale), int(20 * self.dpi_scale))
+        self.icon_display.setFixedSize(int(40 * self.dpi_scale), int(40 * self.dpi_scale))
         self.icon_display.setStyleSheet('background: transparent; border: none;')
         # 设置鼠标事件穿透，避免鼠标移动到图标上时触发父容器的Leave事件
         self.icon_display.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -1215,11 +1215,16 @@ class CustomFileHorizontalCard(QWidget):
                 self._cancel_drag()
             elif self._touch_start_pos is not None and not self._is_touch_dragging:
                 # 如果不是拖拽，处理点击
-                debug(f"普通点击，发出 clicked 信号")
+                # 重要：在发出 clicked 信号前先停止长按定时器，避免预览期间误触发长按
+                debug(f"普通点击，先停止长按定时器，再发出 clicked 信号")
+                self._long_press_timer.stop()
+                self._is_long_pressing = False
                 self.clicked.emit(self._file_path)
-            # 停止长按定时器
-            self._long_press_timer.stop()
-            self._is_long_pressing = False
+            else:
+                # 其他情况也停止定时器
+                self._long_press_timer.stop()
+                self._is_long_pressing = False
+            # 重置触摸相关状态
             self._touch_start_pos = None
             self._is_touch_dragging = False
         super().mouseReleaseEvent(event)

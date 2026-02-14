@@ -1,0 +1,1483 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+FreeAssetFilter v1.0
+
+Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+
+协议说明：本软件基于 AGPL-3.0 协议开源
+1. 个人非商业使用：需保留本注释及开发者署名；
+
+项目地址：https://github.com/Dorufoc/FreeAssetFilter
+许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
+
+MPV管理器模块
+集中式MPV控制管理模块，作为所有组件访问MPV功能的唯一接口
+
+功能特性：
+- 单例模式：确保全局只有一个MPV实例管理者
+- 操作队列：处理多个组件的并发请求，避免操作序列冲突
+- 标准化API：封装所有MPV控制命令
+- 资源锁定：防止多个组件同时访问DLL导致程序崩溃
+- 状态管理：实时跟踪MPV当前状态并提供查询接口
+- 错误处理：确保单个操作失败不会影响整体系统稳定性
+- 日志记录：便于调试和问题追踪
+
+使用说明：
+所有需要与MPV交互的组件必须通过此管理模块进行操作，
+禁止直接访问MPV DLL或创建独立的MPV实例。
+"""
+
+import os
+import sys
+import time
+import threading
+import traceback
+from enum import Enum, IntEnum
+from dataclasses import dataclass, field
+from typing import Optional, Callable, Dict, Any, List, Union, Tuple
+from queue import Queue, Empty
+from threading import Lock, RLock, Event
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
+
+from PySide6.QtCore import (
+    QObject, Signal, Slot, QThread, QMutex, QWaitCondition,
+    QTimer, Qt, QMetaObject, Q_ARG
+)
+from PySide6.QtWidgets import QWidget
+
+# 导入MPV核心
+from freeassetfilter.core.mpv_player_core import (
+    MPVPlayerCore, MpvEndFileReason, MpvErrorCode
+)
+
+
+class MPVOperationType(Enum):
+    """MPV操作类型枚举"""
+    INITIALIZE = "initialize"
+    CLOSE = "close"
+    LOAD_FILE = "load_file"
+    PLAY = "play"
+    PAUSE = "pause"
+    STOP = "stop"
+    SEEK = "seek"
+    SET_POSITION = "set_position"
+    SET_VOLUME = "set_volume"
+    SET_SPEED = "set_speed"
+    SET_MUTED = "set_muted"
+    SET_LOOP = "set_loop"
+    SET_WINDOW_ID = "set_window_id"
+    GET_POSITION = "get_position"
+    GET_DURATION = "get_duration"
+    GET_VOLUME = "get_volume"
+    GET_SPEED = "get_speed"
+    IS_PLAYING = "is_playing"
+    IS_PAUSED = "is_paused"
+    IS_MUTED = "is_muted"
+    GET_VIDEO_SIZE = "get_video_size"
+
+
+@dataclass
+class MPVOperation:
+    """MPV操作数据类"""
+    operation_type: MPVOperationType
+    args: Tuple = field(default_factory=tuple)
+    kwargs: Dict[str, Any] = field(default_factory=dict)
+    future: Optional[Future] = None
+    priority: int = 5  # 优先级：1-10，数字越小优先级越高
+    timestamp: float = field(default_factory=time.time)
+    component_id: str = "unknown"  # 发起操作的组件标识
+
+
+@dataclass
+class MPVState:
+    """MPV状态数据类"""
+    is_initialized: bool = False
+    is_playing: bool = False
+    is_paused: bool = False
+    is_muted: bool = False
+    position: float = 0.0
+    duration: float = 0.0
+    volume: int = 100
+    speed: float = 1.0
+    loop_mode: str = "no"
+    current_file: str = ""
+    video_width: int = 0
+    video_height: int = 0
+    error_code: int = 0
+    error_message: str = ""
+    last_update: float = field(default_factory=time.time)
+
+
+class MPVManagerLogger:
+    """MPV管理器日志记录器"""
+
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+        self.log_history: List[Dict[str, Any]] = []
+        self.max_history = 1000
+
+    def log(self, level: str, message: str, **kwargs):
+        """记录日志"""
+        if not self.enabled:
+            return
+
+        log_entry = {
+            "timestamp": time.time(),
+            "level": level,
+            "message": message,
+            **kwargs
+        }
+
+        self.log_history.append(log_entry)
+
+        # 限制历史记录大小
+        if len(self.log_history) > self.max_history:
+            self.log_history = self.log_history[-self.max_history:]
+
+        # 打印到控制台
+        print(f"[MPVManager][{level}] {message}")
+
+    def debug(self, message: str, **kwargs):
+        """记录调试日志"""
+        self.log("DEBUG", message, **kwargs)
+
+    def info(self, message: str, **kwargs):
+        """记录信息日志"""
+        self.log("INFO", message, **kwargs)
+
+    def warning(self, message: str, **kwargs):
+        """记录警告日志"""
+        self.log("WARNING", message, **kwargs)
+
+    def error(self, message: str, **kwargs):
+        """记录错误日志"""
+        self.log("ERROR", message, **kwargs)
+
+    def get_recent_logs(self, count: int = 100) -> List[Dict[str, Any]]:
+        """获取最近的日志记录"""
+        return self.log_history[-count:]
+
+
+class MPVManager(QObject):
+    """
+    MPV管理器类（单例模式）
+
+    集中式MPV控制管理模块，作为所有组件访问MPV功能的唯一接口。
+    确保操作的原子性和顺序性，提供可靠的资源管理和冲突解决机制。
+
+    使用示例：
+        # 获取管理器实例
+        manager = MPVManager()
+
+        # 初始化MPV
+        manager.initialize()
+
+        # 加载文件
+        manager.load_file("/path/to/video.mp4")
+
+        # 播放控制
+        manager.play()
+        manager.pause()
+        manager.seek(30.0)  # 跳转到30秒
+
+        # 获取状态
+        state = manager.get_state()
+        print(f"当前位置: {state.position}")
+
+        # 关闭MPV
+        manager.close()
+    """
+
+    # 信号定义
+    stateChanged = Signal(MPVState)  # 状态变化信号
+    positionChanged = Signal(float, float)  # 位置变化信号（位置，时长）
+    volumeChanged = Signal(int)  # 音量变化信号
+    mutedChanged = Signal(bool)  # 静音状态变化信号
+    speedChanged = Signal(float)  # 播放速度变化信号
+    fileLoaded = Signal(str, bool)  # 文件加载完成信号（路径，是否为音频）
+    fileEnded = Signal(int)  # 文件播放结束信号（结束原因）
+    errorOccurred = Signal(int, str)  # 错误发生信号（错误码，错误信息）
+
+    # 单例实例
+    _instance: Optional['MPVManager'] = None
+    _instance_lock = Lock()
+
+    def __new__(cls, *args, **kwargs):
+        """实现单例模式"""
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self, parent=None, enable_logging: bool = True):
+        """
+        初始化MPV管理器
+
+        Args:
+            parent: 父对象
+            enable_logging: 是否启用日志记录
+        """
+        # 避免重复初始化
+        if self._initialized:
+            return
+
+        super().__init__(parent)
+
+        # 初始化日志记录器
+        self._logger = MPVManagerLogger(enabled=enable_logging)
+        self._logger.info("MPV管理器初始化开始")
+
+        # MPV核心实例
+        self._mpv_core: Optional[MPVPlayerCore] = None
+
+        # 状态管理
+        self._current_state = MPVState()
+        self._state_lock = RLock()
+
+        # 资源锁定
+        self._resource_lock = RLock()
+        self._is_busy = False
+
+        # 操作队列
+        self._operation_queue: Queue = Queue()
+        self._queue_lock = Lock()
+        self._operation_thread: Optional[threading.Thread] = None
+        self._stop_event = Event()
+
+        # 组件注册表
+        self._registered_components: Dict[str, Dict[str, Any]] = {}
+        self._component_lock = RLock()
+
+        # 初始化标志
+        self._initialized = True
+        self._is_shutting_down = False
+
+        self._logger.info("MPV管理器初始化完成")
+
+    def _start_operation_thread(self):
+        """启动操作处理线程"""
+        if self._operation_thread is None or not self._operation_thread.is_alive():
+            self._stop_event.clear()
+            self._operation_thread = threading.Thread(
+                target=self._process_operations,
+                name="MPVOperationThread",
+                daemon=True
+            )
+            self._operation_thread.start()
+            self._logger.info("操作处理线程已启动")
+
+    def _stop_operation_thread(self):
+        """停止操作处理线程"""
+        if self._operation_thread and self._operation_thread.is_alive():
+            self._stop_event.set()
+            self._operation_thread.join(timeout=5.0)
+            self._logger.info("操作处理线程已停止")
+
+    def _cleanup_resources(self):
+        """清理资源"""
+        self._logger.info("清理MPV管理器资源")
+        # 清空操作队列
+        while not self._operation_queue.empty():
+            try:
+                self._operation_queue.get_nowait()
+            except:
+                break
+        # 清空组件注册表
+        self._registered_components.clear()
+        # 重置状态
+        self._current_state = MPVState()
+        self._current_file = ""
+        self._position = 0.0
+        self._duration = 0.0
+        self._volume = 100
+        self._muted = False
+        self._speed = 1.0
+        self._loop = "no"
+
+    def _process_operations(self):
+        """处理操作队列的主循环"""
+        self._logger.info("操作处理循环开始")
+
+        while not self._stop_event.is_set():
+            try:
+                # 从队列获取操作，超时1秒
+                operation = self._operation_queue.get(timeout=1.0)
+
+                if operation is None:
+                    continue
+
+                self._logger.debug(
+                    f"处理操作: {operation.operation_type.value}, "
+                    f"组件: {operation.component_id}"
+                )
+
+                # 执行操作
+                result = self._execute_operation(operation)
+
+                # 设置Future结果
+                if operation.future and not operation.future.done():
+                    operation.future.set_result(result)
+
+            except Empty:
+                # 队列为空，继续循环
+                continue
+            except Exception as e:
+                self._logger.error(f"处理操作时出错: {e}")
+                traceback.print_exc()
+
+        self._logger.info("操作处理循环结束")
+
+    def _execute_operation(self, operation: MPVOperation) -> Any:
+        """
+        执行单个操作
+
+        Args:
+            operation: 操作对象
+
+        Returns:
+            操作结果
+        """
+        operation_type = operation.operation_type
+        args = operation.args
+        kwargs = operation.kwargs
+
+        try:
+            with self._resource_lock:
+                self._is_busy = True
+
+                if operation_type == MPVOperationType.INITIALIZE:
+                    return self._do_initialize()
+
+                elif operation_type == MPVOperationType.CLOSE:
+                    return self._do_close()
+
+                elif operation_type == MPVOperationType.LOAD_FILE:
+                    return self._do_load_file(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.PLAY:
+                    return self._do_play()
+
+                elif operation_type == MPVOperationType.PAUSE:
+                    return self._do_pause()
+
+                elif operation_type == MPVOperationType.STOP:
+                    return self._do_stop()
+
+                elif operation_type == MPVOperationType.SEEK:
+                    return self._do_seek(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.SET_POSITION:
+                    return self._do_set_position(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.SET_VOLUME:
+                    return self._do_set_volume(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.SET_SPEED:
+                    return self._do_set_speed(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.SET_MUTED:
+                    return self._do_set_muted(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.SET_LOOP:
+                    return self._do_set_loop(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.SET_WINDOW_ID:
+                    return self._do_set_window_id(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.GET_POSITION:
+                    return self._do_get_position()
+
+                elif operation_type == MPVOperationType.GET_DURATION:
+                    return self._do_get_duration()
+
+                elif operation_type == MPVOperationType.GET_VOLUME:
+                    return self._do_get_volume()
+
+                elif operation_type == MPVOperationType.GET_SPEED:
+                    return self._do_get_speed()
+
+                elif operation_type == MPVOperationType.IS_PLAYING:
+                    return self._do_is_playing()
+
+                elif operation_type == MPVOperationType.IS_PAUSED:
+                    return self._do_is_paused()
+
+                elif operation_type == MPVOperationType.IS_MUTED:
+                    return self._do_is_muted()
+
+                elif operation_type == MPVOperationType.GET_VIDEO_SIZE:
+                    return self._do_get_video_size()
+
+                else:
+                    raise ValueError(f"未知操作类型: {operation_type}")
+
+        except Exception as e:
+            self._logger.error(
+                f"执行操作 {operation_type.value} 失败: {e}",
+                component_id=operation.component_id
+            )
+            traceback.print_exc()
+
+            # 设置错误状态
+            with self._state_lock:
+                self._current_state.error_code = MpvErrorCode.GENERIC
+                self._current_state.error_message = str(e)
+                self._current_state.last_update = time.time()
+
+            # 发射错误信号
+            self.errorOccurred.emit(MpvErrorCode.GENERIC, str(e))
+
+            # 重新抛出异常，让Future捕获
+            raise
+
+        finally:
+            self._is_busy = False
+
+    def _submit_operation(
+        self,
+        operation_type: MPVOperationType,
+        *args,
+        component_id: str = "unknown",
+        priority: int = 5,
+        **kwargs
+    ) -> Future:
+        """
+        提交操作到队列
+
+        Args:
+            operation_type: 操作类型
+            *args: 位置参数
+            component_id: 组件标识
+            priority: 优先级
+            **kwargs: 关键字参数
+
+        Returns:
+            Future对象，用于获取操作结果
+        """
+        if self._is_shutting_down:
+            raise RuntimeError("MPV管理器正在关闭，无法接受新操作")
+
+        future = Future()
+
+        operation = MPVOperation(
+            operation_type=operation_type,
+            args=args,
+            kwargs=kwargs,
+            future=future,
+            priority=priority,
+            component_id=component_id
+        )
+
+        with self._queue_lock:
+            self._operation_queue.put(operation)
+
+        self._logger.debug(
+            f"操作已提交: {operation_type.value}, "
+            f"组件: {component_id}"
+        )
+
+        return future
+
+    # ==================== 具体操作实现 ====================
+
+    def _do_initialize(self) -> bool:
+        """执行初始化操作"""
+        self._logger.info("开始初始化MPV核心")
+
+        if self._mpv_core is not None:
+            self._logger.warning("MPV核心已存在，先关闭旧实例")
+            self._do_close()
+
+        self._mpv_core = MPVPlayerCore()
+
+        # 连接信号
+        self._mpv_core.stateChanged.connect(self._on_state_changed)
+        self._mpv_core.positionChanged.connect(self._on_position_changed)
+        self._mpv_core.durationChanged.connect(self._on_duration_changed)
+        self._mpv_core.volumeChanged.connect(self._on_volume_changed)
+        self._mpv_core.speedChanged.connect(self._on_speed_changed)
+        self._mpv_core.mutedChanged.connect(self._on_muted_changed)
+        self._mpv_core.fileLoaded.connect(self._on_file_loaded)
+        self._mpv_core.fileEnded.connect(self._on_file_ended)
+        self._mpv_core.errorOccurred.connect(self._on_error_occurred)
+
+        # 初始化MPV
+        success = self._mpv_core.initialize()
+
+        if success:
+            with self._state_lock:
+                self._current_state.is_initialized = True
+                self._current_state.last_update = time.time()
+            self._logger.info("MPV核心初始化成功")
+        else:
+            self._logger.error("MPV核心初始化失败")
+            self._mpv_core = None
+
+        return success
+
+    def _do_close(self) -> bool:
+        """执行关闭操作"""
+        self._logger.info("开始关闭MPV核心")
+
+        if self._mpv_core is None:
+            self._logger.warning("MPV核心不存在，无需关闭")
+            return True
+
+        # 断开信号连接
+        try:
+            self._mpv_core.stateChanged.disconnect(self._on_state_changed)
+            self._mpv_core.positionChanged.disconnect(self._on_position_changed)
+            self._mpv_core.durationChanged.disconnect(self._on_duration_changed)
+            self._mpv_core.volumeChanged.disconnect(self._on_volume_changed)
+            self._mpv_core.speedChanged.disconnect(self._on_speed_changed)
+            self._mpv_core.mutedChanged.disconnect(self._on_muted_changed)
+            self._mpv_core.fileLoaded.disconnect(self._on_file_loaded)
+            self._mpv_core.fileEnded.disconnect(self._on_file_ended)
+            self._mpv_core.errorOccurred.disconnect(self._on_error_occurred)
+        except Exception as e:
+            self._logger.warning(f"断开信号连接时出错: {e}")
+
+        # 关闭MPV核心
+        try:
+            self._mpv_core.close()
+        except Exception as e:
+            self._logger.error(f"关闭MPV核心时出错: {e}")
+
+        self._mpv_core = None
+
+        # 重置状态
+        with self._state_lock:
+            self._current_state = MPVState()
+
+        self._logger.info("MPV核心已关闭")
+        return True
+
+    def _do_load_file(self, file_path: str, is_audio: bool = False) -> bool:
+        """执行加载文件操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._logger.info(f"加载文件: {file_path}, 音频: {is_audio}")
+
+        # MPVPlayerCore.load_file 只接受 file_path 参数
+        success = self._mpv_core.load_file(file_path)
+
+        if success:
+            with self._state_lock:
+                self._current_state.current_file = file_path
+                self._current_state.last_update = time.time()
+
+        return success
+
+    def _do_play(self) -> bool:
+        """执行播放操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.play()
+
+        with self._state_lock:
+            self._current_state.is_playing = True
+            self._current_state.is_paused = False
+            self._current_state.last_update = time.time()
+
+        return True
+
+    def _do_pause(self) -> bool:
+        """执行暂停操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.pause()
+
+        with self._state_lock:
+            self._current_state.is_paused = True
+            self._current_state.last_update = time.time()
+
+        return True
+
+    def _do_stop(self) -> bool:
+        """执行停止操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.stop()
+
+        with self._state_lock:
+            self._current_state.is_playing = False
+            self._current_state.is_paused = False
+            self._current_state.position = 0.0
+            self._current_state.last_update = time.time()
+
+        return True
+
+    def _do_seek(self, position: float) -> bool:
+        """执行跳转操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.seek(position)
+        return True
+
+    def _do_set_position(self, position: float) -> bool:
+        """执行设置位置操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.set_position(position)
+
+        with self._state_lock:
+            self._current_state.position = position
+            self._current_state.last_update = time.time()
+
+        return True
+
+    def _do_set_volume(self, volume: int) -> bool:
+        """执行设置音量操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.set_volume(volume)
+
+        with self._state_lock:
+            self._current_state.volume = volume
+            self._current_state.last_update = time.time()
+
+        return True
+
+    def _do_set_speed(self, speed: float) -> bool:
+        """执行设置速度操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.set_speed(speed)
+
+        with self._state_lock:
+            self._current_state.speed = speed
+            self._current_state.last_update = time.time()
+
+        return True
+
+    def _do_set_muted(self, muted: bool) -> bool:
+        """执行设置静音操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.set_muted(muted)
+
+        with self._state_lock:
+            self._current_state.is_muted = muted
+            self._current_state.last_update = time.time()
+
+        return True
+
+    def _do_set_loop(self, loop_mode: str) -> bool:
+        """执行设置循环模式操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        self._mpv_core.set_loop(loop_mode)
+
+        with self._state_lock:
+            self._current_state.loop_mode = loop_mode
+            self._current_state.last_update = time.time()
+
+        return True
+
+    def _do_set_window_id(self, window_id: int) -> bool:
+        """执行设置窗口ID操作"""
+        if self._mpv_core is None:
+            raise RuntimeError("MPV核心未初始化")
+
+        return self._mpv_core.set_window_id(window_id)
+
+    def _do_get_position(self) -> float:
+        """执行获取位置操作"""
+        if self._mpv_core is None:
+            return 0.0
+
+        result = self._mpv_core.get_position()
+        return result if result is not None else 0.0
+
+    def _do_get_duration(self) -> float:
+        """执行获取时长操作"""
+        if self._mpv_core is None:
+            return 0.0
+
+        result = self._mpv_core.get_duration()
+        return result if result is not None else 0.0
+
+    def _do_get_volume(self) -> int:
+        """执行获取音量操作"""
+        if self._mpv_core is None:
+            return 100
+
+        return self._mpv_core.get_volume()
+
+    def _do_get_speed(self) -> float:
+        """执行获取速度操作"""
+        if self._mpv_core is None:
+            return 1.0
+
+        return self._mpv_core.get_speed()
+
+    def _do_is_playing(self) -> bool:
+        """执行获取是否正在播放操作"""
+        if self._mpv_core is None:
+            return False
+
+        return self._mpv_core.is_playing()
+
+    def _do_is_paused(self) -> bool:
+        """执行获取是否暂停操作"""
+        if self._mpv_core is None:
+            return False
+
+        return self._mpv_core.is_paused()
+
+    def _do_is_muted(self) -> bool:
+        """执行获取是否静音操作"""
+        if self._mpv_core is None:
+            return False
+
+        return self._mpv_core.is_muted()
+
+    def _do_get_video_size(self) -> Tuple[int, int]:
+        """执行获取视频尺寸操作"""
+        if self._mpv_core is None:
+            return (0, 0)
+
+        return self._mpv_core.get_video_size()
+
+    # ==================== 信号处理回调 ====================
+
+    def _on_state_changed(self, is_playing: bool):
+        """播放状态变化回调"""
+        with self._state_lock:
+            self._current_state.is_playing = is_playing
+            if is_playing:
+                self._current_state.is_paused = False
+            self._current_state.last_update = time.time()
+
+        self.stateChanged.emit(self._current_state)
+
+    def _on_position_changed(self, position: float, duration: float):
+        """位置变化回调"""
+        with self._state_lock:
+            self._current_state.position = position
+            self._current_state.duration = duration
+            self._current_state.last_update = time.time()
+
+        self.positionChanged.emit(position, duration)
+
+    def _on_duration_changed(self, duration: float):
+        """时长变化回调"""
+        with self._state_lock:
+            self._current_state.duration = duration
+            self._current_state.last_update = time.time()
+        self.positionChanged.emit(self._current_state.position, duration)
+
+    def _on_volume_changed(self, volume: int):
+        """音量变化回调"""
+        with self._state_lock:
+            self._current_state.volume = volume
+            self._current_state.last_update = time.time()
+        self.volumeChanged.emit(volume)
+
+    def _on_speed_changed(self, speed: float):
+        """速度变化回调"""
+        with self._state_lock:
+            self._current_state.speed = speed
+            self._current_state.last_update = time.time()
+        self.speedChanged.emit(speed)
+
+    def _on_muted_changed(self, muted: bool):
+        """静音状态变化回调"""
+        with self._state_lock:
+            self._current_state.is_muted = muted
+            self._current_state.last_update = time.time()
+        self.mutedChanged.emit(muted)
+
+    def _on_file_loaded(self, file_path: str, is_audio: bool):
+        """文件加载完成回调"""
+        with self._state_lock:
+            self._current_state.current_file = file_path
+            self._current_state.last_update = time.time()
+
+        self.fileLoaded.emit(file_path, is_audio)
+
+    def _on_file_ended(self, reason: int):
+        """文件播放结束回调"""
+        with self._state_lock:
+            self._current_state.is_playing = False
+            self._current_state.is_paused = False
+            self._current_state.last_update = time.time()
+
+        self.fileEnded.emit(reason)
+
+    def _on_error_occurred(self, error_code: int, error_message: str):
+        """错误发生回调"""
+        with self._state_lock:
+            self._current_state.error_code = error_code
+            self._current_state.error_message = error_message
+            self._current_state.last_update = time.time()
+
+        self.errorOccurred.emit(error_code, error_message)
+
+    # ==================== 公共API接口 ====================
+
+    def initialize(self, timeout: float = 10.0) -> bool:
+        """
+        初始化MPV管理器
+
+        Args:
+            timeout: 超时时间（秒）
+
+        Returns:
+            是否初始化成功
+        """
+        self._start_operation_thread()
+
+        future = self._submit_operation(
+            MPVOperationType.INITIALIZE,
+            component_id="manager",
+            priority=1
+        )
+
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            self._logger.error("初始化操作超时")
+            return False
+
+    def close(self, timeout: float = 10.0) -> bool:
+        """
+        关闭MPV管理器
+
+        Args:
+            timeout: 超时时间（秒）
+
+        Returns:
+            是否关闭成功
+        """
+        # 如果已经在关闭中，直接返回
+        if self._is_shutting_down:
+            return True
+
+        self._is_shutting_down = True
+
+        # 如果操作线程未运行，直接清理并重置状态
+        if not self._operation_thread or not self._operation_thread.is_alive():
+            self._cleanup_resources()
+            self._is_shutting_down = False  # 重置关闭标志，允许重新初始化
+            return True
+
+        try:
+            # 直接执行关闭操作，不通过队列（避免_is_shutting_down检查）
+            result = self._do_close()
+            self._stop_operation_thread()
+            self._cleanup_resources()
+            self._is_shutting_down = False  # 重置关闭标志，允许重新初始化
+            return result
+        except Exception as e:
+            self._logger.error(f"关闭MPV管理器时出错: {e}")
+            self._stop_operation_thread()
+            self._cleanup_resources()
+            self._is_shutting_down = False  # 重置关闭标志，允许重新初始化
+            return False
+
+    def load_file(
+        self,
+        file_path: str,
+        is_audio: bool = False,
+        component_id: str = "unknown",
+        timeout: float = 30.0
+    ) -> bool:
+        """
+        加载媒体文件
+
+        Args:
+            file_path: 文件路径
+            is_audio: 是否为音频文件
+            component_id: 组件标识
+            timeout: 超时时间（秒）
+
+        Returns:
+            是否加载成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.LOAD_FILE,
+            file_path,
+            is_audio,
+            component_id=component_id,
+            priority=3
+        )
+
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            self._logger.error(f"加载文件操作超时: {file_path}")
+            return False
+
+    def play(self, component_id: str = "unknown") -> bool:
+        """
+        开始播放
+
+        Args:
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.PLAY,
+            component_id=component_id,
+            priority=2
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def pause(self, component_id: str = "unknown") -> bool:
+        """
+        暂停播放
+
+        Args:
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.PAUSE,
+            component_id=component_id,
+            priority=2
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def stop(self, component_id: str = "unknown") -> bool:
+        """
+        停止播放
+
+        Args:
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.STOP,
+            component_id=component_id,
+            priority=2
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def seek(
+        self,
+        position: float,
+        component_id: str = "unknown"
+    ) -> bool:
+        """
+        跳转到指定位置
+
+        Args:
+            position: 目标位置（秒）
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SEEK,
+            position,
+            component_id=component_id,
+            priority=3
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def set_position(
+        self,
+        position: float,
+        component_id: str = "unknown"
+    ) -> bool:
+        """
+        设置播放位置
+
+        Args:
+            position: 目标位置（秒）
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SET_POSITION,
+            position,
+            component_id=component_id,
+            priority=3
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def set_volume(
+        self,
+        volume: int,
+        component_id: str = "unknown"
+    ) -> bool:
+        """
+        设置音量
+
+        Args:
+            volume: 音量值（0-100）
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SET_VOLUME,
+            volume,
+            component_id=component_id,
+            priority=4
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def set_speed(
+        self,
+        speed: float,
+        component_id: str = "unknown"
+    ) -> bool:
+        """
+        设置播放速度
+
+        Args:
+            speed: 播放速度（0.5-2.0）
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SET_SPEED,
+            speed,
+            component_id=component_id,
+            priority=4
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def set_muted(
+        self,
+        muted: bool,
+        component_id: str = "unknown"
+    ) -> bool:
+        """
+        设置静音状态
+
+        Args:
+            muted: 是否静音
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SET_MUTED,
+            muted,
+            component_id=component_id,
+            priority=4
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def set_loop(
+        self,
+        loop_mode: str,
+        component_id: str = "unknown"
+    ) -> bool:
+        """
+        设置循环模式
+
+        Args:
+            loop_mode: 循环模式（"no", "inf", "number"）
+            component_id: 组件标识
+
+        Returns:
+            是否操作成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SET_LOOP,
+            loop_mode,
+            component_id=component_id,
+            priority=4
+        )
+
+        try:
+            return future.result(timeout=5.0)
+        except FutureTimeoutError:
+            return False
+
+    def set_window_id(
+        self,
+        window_id: int,
+        component_id: str = "unknown"
+    ) -> bool:
+        """
+        设置视频输出窗口ID
+
+        Args:
+            window_id: 窗口句柄ID
+            component_id: 组件标识
+
+        Returns:
+            是否设置成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SET_WINDOW_ID,
+            window_id,
+            component_id=component_id,
+            priority=1
+        )
+
+        try:
+            return future.result(timeout=10.0)
+        except FutureTimeoutError:
+            return False
+
+    def get_position(self) -> float:
+        """
+        获取当前播放位置
+
+        Returns:
+            当前位置（秒）
+        """
+        future = self._submit_operation(
+            MPVOperationType.GET_POSITION,
+            priority=5
+        )
+
+        try:
+            return future.result(timeout=1.0)
+        except FutureTimeoutError:
+            return 0.0
+
+    def get_duration(self) -> float:
+        """
+        获取媒体总时长
+
+        Returns:
+            总时长（秒）
+        """
+        future = self._submit_operation(
+            MPVOperationType.GET_DURATION,
+            priority=5
+        )
+
+        try:
+            return future.result(timeout=1.0)
+        except FutureTimeoutError:
+            return 0.0
+
+    def get_volume(self) -> int:
+        """
+        获取当前音量
+
+        Returns:
+            音量值（0-100）
+        """
+        future = self._submit_operation(
+            MPVOperationType.GET_VOLUME,
+            priority=5
+        )
+
+        try:
+            return future.result(timeout=1.0)
+        except FutureTimeoutError:
+            return 100
+
+    def get_speed(self) -> float:
+        """
+        获取当前播放速度
+
+        Returns:
+            播放速度
+        """
+        future = self._submit_operation(
+            MPVOperationType.GET_SPEED,
+            priority=5
+        )
+
+        try:
+            return future.result(timeout=1.0)
+        except FutureTimeoutError:
+            return 1.0
+
+    def is_playing(self) -> bool:
+        """
+        获取是否正在播放
+
+        Returns:
+            是否正在播放
+        """
+        future = self._submit_operation(
+            MPVOperationType.IS_PLAYING,
+            priority=5
+        )
+
+        try:
+            return future.result(timeout=1.0)
+        except FutureTimeoutError:
+            return False
+
+    def is_paused(self) -> bool:
+        """
+        获取是否暂停
+
+        Returns:
+            是否暂停
+        """
+        future = self._submit_operation(
+            MPVOperationType.IS_PAUSED,
+            priority=5
+        )
+
+        try:
+            return future.result(timeout=1.0)
+        except FutureTimeoutError:
+            return False
+
+    def is_muted(self) -> bool:
+        """
+        获取是否静音
+
+        Returns:
+            是否静音
+        """
+        future = self._submit_operation(
+            MPVOperationType.IS_MUTED,
+            priority=5
+        )
+
+        try:
+            return future.result(timeout=1.0)
+        except FutureTimeoutError:
+            return False
+
+    def get_video_size(self) -> Tuple[int, int]:
+        """
+        获取视频尺寸
+
+        Returns:
+            (宽度, 高度)元组
+        """
+        future = self._submit_operation(
+            MPVOperationType.GET_VIDEO_SIZE,
+            priority=5
+        )
+
+        try:
+            return future.result(timeout=1.0)
+        except FutureTimeoutError:
+            return (0, 0)
+
+    def get_state(self) -> MPVState:
+        """
+        获取当前状态
+
+        Returns:
+            当前状态的数据类副本
+        """
+        with self._state_lock:
+            # 返回副本，避免外部修改
+            return MPVState(
+                is_initialized=self._current_state.is_initialized,
+                is_playing=self._current_state.is_playing,
+                is_paused=self._current_state.is_paused,
+                is_muted=self._current_state.is_muted,
+                position=self._current_state.position,
+                duration=self._current_state.duration,
+                volume=self._current_state.volume,
+                speed=self._current_state.speed,
+                loop_mode=self._current_state.loop_mode,
+                current_file=self._current_state.current_file,
+                video_width=self._current_state.video_width,
+                video_height=self._current_state.video_height,
+                error_code=self._current_state.error_code,
+                error_message=self._current_state.error_message,
+                last_update=self._current_state.last_update
+            )
+
+    def is_busy(self) -> bool:
+        """
+        获取是否正在处理操作
+
+        Returns:
+            是否忙碌
+        """
+        return self._is_busy
+
+    def is_initialized(self) -> bool:
+        """
+        获取是否已初始化
+
+        Returns:
+            是否已初始化
+        """
+        with self._state_lock:
+            return self._current_state.is_initialized
+
+    def get_position_direct(self) -> Optional[float]:
+        """
+        直接获取当前播放位置（不经过队列，用于UI快速更新）
+        
+        Returns:
+            当前位置（秒），失败返回None
+        """
+        if self._mpv_core is None:
+            return None
+        return self._mpv_core.get_position()
+
+    def get_duration_direct(self) -> Optional[float]:
+        """
+        直接获取媒体总时长（不经过队列，用于UI快速更新）
+        
+        Returns:
+            总时长（秒），失败返回None
+        """
+        if self._mpv_core is None:
+            return None
+        return self._mpv_core.get_duration()
+
+    # ==================== 组件管理 ====================
+
+    def register_component(
+        self,
+        component_id: str,
+        component_type: str,
+        callback: Optional[Callable] = None
+    ) -> bool:
+        """
+        注册组件
+
+        Args:
+            component_id: 组件唯一标识
+            component_type: 组件类型
+            callback: 回调函数
+
+        Returns:
+            是否注册成功
+        """
+        with self._component_lock:
+            if component_id in self._registered_components:
+                self._logger.warning(f"组件已存在: {component_id}")
+                return False
+
+            self._registered_components[component_id] = {
+                "type": component_type,
+                "callback": callback,
+                "registered_at": time.time()
+            }
+
+        self._logger.info(f"组件已注册: {component_id}, 类型: {component_type}")
+        return True
+
+    def unregister_component(self, component_id: str) -> bool:
+        """
+        注销组件
+
+        Args:
+            component_id: 组件唯一标识
+
+        Returns:
+            是否注销成功
+        """
+        with self._component_lock:
+            if component_id not in self._registered_components:
+                return False
+
+            del self._registered_components[component_id]
+
+        self._logger.info(f"组件已注销: {component_id}")
+        return True
+
+    def get_registered_components(self) -> Dict[str, Dict[str, Any]]:
+        """
+        获取已注册的组件列表
+
+        Returns:
+            组件字典
+        """
+        with self._component_lock:
+            return self._registered_components.copy()
+
+    # ==================== 日志管理 ====================
+
+    def get_logs(self, count: int = 100) -> List[Dict[str, Any]]:
+        """
+        获取最近的日志
+
+        Args:
+            count: 日志条数
+
+        Returns:
+            日志列表
+        """
+        return self._logger.get_recent_logs(count)
+
+    def clear_logs(self):
+        """清空日志"""
+        self._logger.log_history.clear()
+
+    # ==================== 析构 ====================
+
+    def __del__(self):
+        """析构函数"""
+        try:
+            if self._mpv_core is not None:
+                self.close()
+        except Exception:
+            pass
+
+
+# 便捷函数，用于快速获取管理器实例
+def get_mpv_manager(enable_logging: bool = True) -> MPVManager:
+    """
+    获取MPV管理器实例
+
+    Args:
+        enable_logging: 是否启用日志
+
+    Returns:
+        MPVManager实例
+    """
+    return MPVManager(enable_logging=enable_logging)

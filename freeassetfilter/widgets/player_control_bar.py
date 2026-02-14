@@ -91,6 +91,8 @@ class PlayerControlBar(QWidget):
         self._is_detached = False
         self._is_lut_loaded = False
         self._speed = 1.0  # 当前播放倍速
+        self._block_volume_signal = False  # 用于阻止音量信号循环
+        self._block_speed_signal = False   # 用于阻止倍速信号循环
 
         self._show_lut_controls = show_lut_controls
         self._show_detach_button = show_detach_button
@@ -149,7 +151,9 @@ class PlayerControlBar(QWidget):
         )
         self._progress_bar.setRange(0, 1000)
         self._progress_bar.setValue(0)
-        self._progress_bar.setAnimationEnabled(False)
+        self._progress_bar.setAnimationEasingCurve(QEasingCurve(QEasingCurve.Linear))
+        self._progress_bar.setAnimationDuration(200)
+        self._progress_bar.setAnimationEnabled(True)
         progress_time_layout.addWidget(self._progress_bar)
 
         bottom_layout = QHBoxLayout()
@@ -336,9 +340,13 @@ class PlayerControlBar(QWidget):
     
     def _update_progress_bar(self):
         """更新进度条"""
-        if self._duration > 0 and not self._user_interacting:
-            progress = int((self._current_position / self._duration) * 1000)
-            self._progress_bar.setValue(progress, use_animation=False)
+        if not self._user_interacting:
+            if self._duration > 0:
+                progress = int((self._current_position / self._duration) * 1000)
+            else:
+                progress = 0
+            
+            self._progress_bar.setValue(progress, use_animation=True)
     
     def _update_play_button_icon(self):
         """更新播放按钮图标"""
@@ -376,8 +384,9 @@ class PlayerControlBar(QWidget):
         self.loadLutClicked.emit()
 
     def _on_detach_button_clicked(self):
-        """分离窗口按钮点击处理"""
-        self.detachClicked.emit()
+        """分离窗口按钮点击处理 - 功能已禁用"""
+        # 分离窗口功能已移除，保留按钮但不做任何操作
+        pass
 
     def _on_volume_value_changed(self, value: int):
         """
@@ -432,14 +441,15 @@ class PlayerControlBar(QWidget):
             self._is_playing = is_playing
             self._update_play_button_icon()
     
-    def set_progress(self, value: int):
+    def set_progress(self, value: int, use_animation: bool = True):
         """
         设置进度条值
         
         Args:
             value: 进度值（0-1000）
+            use_animation: 是否使用动画，默认为 True
         """
-        self._progress_bar.setValue(value, use_animation=False)
+        self._progress_bar.setValue(value, use_animation=use_animation)
     
     def set_range(self, minimum: int, maximum: int):
         """
@@ -487,12 +497,14 @@ class PlayerControlBar(QWidget):
         self._duration = max(0, duration)
         self._update_time_display()
     
-    def set_volume(self, volume: int):
+    def set_volume(self, volume: int, emit_signal: bool = True):
         """
         设置音量
 
         Args:
             volume: 音量值（0-100）
+            emit_signal: 是否发射volumeChanged信号，默认为True
+                        当从MPV回调更新UI时设置为False以避免循环
         """
         volume = max(0, min(100, volume))
         if self._volume != volume:
@@ -503,7 +515,9 @@ class PlayerControlBar(QWidget):
             # 同步更新音量控制组件显示
             if hasattr(self, '_volume_control'):
                 self._volume_control.set_volume(volume)
-            self.volumeChanged.emit(volume)
+            # 仅在允许时发射信号，避免循环触发
+            if emit_signal and not self._block_volume_signal:
+                self.volumeChanged.emit(volume)
 
     def set_muted(self, muted: bool):
         """
@@ -519,24 +533,28 @@ class PlayerControlBar(QWidget):
                 self._volume_control.set_muted(muted)
             self.muteChanged.emit(muted)
 
-    def set_speed(self, speed: float):
+    def set_speed(self, speed: float, emit_signal: bool = True):
         """
         设置播放倍速
 
         Args:
             speed: 倍速值
+            emit_signal: 是否发射speedChanged信号，默认为True
+                        当从MPV回调更新UI时设置为False以避免循环
         """
-        if self._speed != speed:
-            self._speed = speed
-            # 同步更新下拉菜单选中项
-            if hasattr(self, '_speed_menu'):
-                # 查找对应的选项并设置为当前选中
-                for item in self._speed_menu._items:
-                    if item.get('data') == speed:
-                        self._speed_menu.set_current_item(item)
-                        break
-            # 更新按钮样式
-            self._update_speed_button_style()
+        old_speed = self._speed
+        self._speed = speed
+        # 同步更新下拉菜单选中项
+        if hasattr(self, '_speed_menu'):
+            # 查找对应的选项并设置为当前选中
+            for item in self._speed_menu._items:
+                if item.get('data') == speed:
+                    self._speed_menu.set_current_item(item)
+                    break
+        # 无论速度值是否变化，都更新按钮样式，确保每次都检查当前速度是否为1.0
+        self._update_speed_button_style()
+        # 仅在速度值变化且允许时发射信号，避免循环触发
+        if old_speed != speed and emit_signal and not self._block_speed_signal:
             self.speedChanged.emit(speed)
 
     def _update_speed_button_style(self):

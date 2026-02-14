@@ -18,9 +18,11 @@ from PySide6.QtCore import Qt, QTimer, QPointF, Signal, QRect
 from PySide6.QtGui import QPainter, QColor, QRadialGradient, QBrush, QLinearGradient, QPixmap, QImage
 from PySide6.QtSvgWidgets import QSvgWidget
 from PIL import Image, ImageFilter
+from collections import Counter
 import io
 import random
 import os
+import math
 
 
 class AudioBackground(QWidget):
@@ -109,14 +111,16 @@ class AudioBackground(QWidget):
         self._cover_layout.setAlignment(Qt.AlignCenter)
 
         # 封面图像标签 - 使用Qt.AlignCenter实现内容居中
-        self._cover_label = QLabel()
+        # 注意：必须指定父对象为_cover_container，以便使用其布局系统进行居中
+        self._cover_label = QLabel(self._cover_container)
         self._cover_label.setAlignment(Qt.AlignCenter)
         self._cover_label.setStyleSheet("background: transparent; border: none;")
         self._cover_label.hide()
         self._cover_layout.addWidget(self._cover_label, alignment=Qt.AlignCenter)
 
         # SVG图标容器 - 使用QWidget包装以实现居中
-        self._svg_container = QWidget()
+        # 注意：必须指定父对象为_cover_container，以便使用其布局系统进行居中
+        self._svg_container = QWidget(self._cover_container)
         self._svg_container.setStyleSheet("background: transparent; border: none;")
         self._svg_container_layout = QVBoxLayout(self._svg_container)
         self._svg_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -156,7 +160,9 @@ class AudioBackground(QWidget):
 
         # 显示封面容器（布局系统会自动处理居中）
         self._cover_container.show()
-        self._cover_container.setGeometry(self.rect())
+        # 使用延迟调用确保AudioBackground已经有正确尺寸
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self._cover_container.setGeometry(self.rect()))
 
         self.update()
     
@@ -409,9 +415,10 @@ class AudioBackground(QWidget):
     def setAudioCover(self, cover_data: bytes = None):
         """
         设置音频封面图像（用于流体背景模式的中央显示）
+        同时从封面提取主色调设置流体背景颜色
 
         Args:
-            cover_data: 封面图像的二进制数据，如果为None则显示默认音乐图标
+            cover_data: 封面图像的二进制数据，如果为None则显示默认音乐图标并使用强调色主题
         """
         # 隐藏当前的封面显示
         self._cover_label.hide()
@@ -432,26 +439,370 @@ class AudioBackground(QWidget):
 
                 # 缩放到合适的显示尺寸（保持比例）
                 max_size = self._cover_size
-                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                display_image = image.copy()
+                display_image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
                 # 转换为QPixmap
-                self._cover_pixmap = self._pil_to_pixmap(image)
-                print(f"[AudioBackground] 已加载音频封面: {image.size}")
+                self._cover_pixmap = self._pil_to_pixmap(display_image)
+                print(f"[AudioBackground] 已加载音频封面: {display_image.size}")
 
                 # 显示封面图像（布局系统会自动居中）
                 self._cover_label.setPixmap(self._cover_pixmap)
-                self._cover_label.setFixedSize(self._cover_pixmap.size())
+                # 不设置固定大小，让布局系统控制居中
+                self._cover_label.setMinimumSize(self._cover_pixmap.size())
                 self._cover_label.show()
+                # 强制更新布局
+                self._cover_layout.update()
+
+                # 从封面提取颜色并设置流体背景
+                self._extract_colors_from_cover(image)
 
             except Exception as e:
                 print(f"[AudioBackground] 加载封面失败: {e}")
                 self._cover_pixmap = None
-                # 加载默认SVG图标
+                # 加载默认SVG图标并使用强调色主题
                 self._load_default_cover()
+                self.useAccentTheme()
         else:
             self._cover_pixmap = None
-            # 加载默认SVG图标
+            # 加载默认SVG图标并使用强调色主题
             self._load_default_cover()
+            self.useAccentTheme()
+        # 确保封面容器大小正确并更新布局
+        self._cover_container.setGeometry(self.rect())
+        self._cover_layout.update()
+
+    def _extract_colors_from_cover(self, image: Image.Image):
+        """
+        从封面图像中提取5个占比最高且差异明显的颜色作为流体背景配色
+        使用K-Means聚类 + CIEDE2000色差算法，在Lab色彩空间进行颜色提取
+
+        Args:
+            image: PIL Image对象
+        """
+        try:
+            import random
+
+            # 缩小图像以加快处理速度，同时保持足够的颜色信息
+            small_image = image.copy()
+            small_image.thumbnail((150, 150), Image.Resampling.LANCZOS)
+
+            # 获取所有像素颜色
+            pixels = list(small_image.getdata())
+
+            # 过滤掉透明像素和接近白色/黑色的像素
+            valid_pixels = []
+            for r, g, b, a in pixels:
+                if a < 128:
+                    continue
+                brightness = (r + g + b) / 3
+                if brightness > 240 or brightness < 20:
+                    continue
+                valid_pixels.append((r, g, b))
+
+            if len(valid_pixels) < 10:
+                self.useAccentTheme()
+                return
+
+            # 随机采样以减少计算量（最多5000个像素）
+            if len(valid_pixels) > 5000:
+                valid_pixels = random.sample(valid_pixels, 5000)
+
+            # 将RGB转换为Lab色彩空间
+            def rgb_to_lab(rgb):
+                """将RGB转换为Lab色彩空间"""
+                r, g, b = [x / 255.0 for x in rgb]
+
+                # RGB to XYZ
+                r = r if r > 0.04045 else r / 12.92
+                g = g if g > 0.04045 else g / 12.92
+                b = b if b > 0.04045 else b / 12.92
+
+                r = ((r + 0.055) / 1.055) ** 2.4 if r > 0.04045 else r
+                g = ((g + 0.055) / 1.055) ** 2.4 if g > 0.04045 else g
+                b = ((b + 0.055) / 1.055) ** 2.4 if b > 0.04045 else b
+
+                r *= 100
+                g *= 100
+                b *= 100
+
+                x = r * 0.4124 + g * 0.3576 + b * 0.1805
+                y = r * 0.2126 + g * 0.7152 + b * 0.0722
+                z = r * 0.0193 + g * 0.1192 + b * 0.9505
+
+                # XYZ to Lab
+                x /= 95.047
+                y /= 100.0
+                z /= 108.883
+
+                x = x ** (1/3) if x > 0.008856 else 7.787 * x + 16/116
+                y = y ** (1/3) if y > 0.008856 else 7.787 * y + 16/116
+                z = z ** (1/3) if z > 0.008856 else 7.787 * z + 16/116
+
+                L = 116 * y - 16
+                a = 500 * (x - y)
+                b_val = 200 * (y - z)
+
+                return (L, a, b_val)
+
+            # 将Lab转换回RGB
+            def lab_to_rgb(lab):
+                """将Lab转换回RGB"""
+                L, a, b_val = lab
+
+                y = (L + 16) / 116
+                x = a / 500 + y
+                z = y - b_val / 200
+
+                x = x ** 3 if x ** 3 > 0.008856 else (x - 16/116) / 7.787
+                y = y ** 3 if y ** 3 > 0.008856 else (y - 16/116) / 7.787
+                z = z ** 3 if z ** 3 > 0.008856 else (z - 16/116) / 7.787
+
+                x *= 95.047
+                y *= 100.0
+                z *= 108.883
+
+                x /= 100
+                y /= 100
+                z /= 100
+
+                r = x * 3.2406 + y * -1.5372 + z * -0.4986
+                g = x * -0.9689 + y * 1.8758 + z * 0.0415
+                b = x * 0.0557 + y * -0.2040 + z * 1.0570
+
+                r = 1.055 * (r ** (1/2.4)) - 0.055 if r > 0.0031308 else 12.92 * r
+                g = 1.055 * (g ** (1/2.4)) - 0.055 if g > 0.0031308 else 12.92 * g
+                b = 1.055 * (b ** (1/2.4)) - 0.055 if b > 0.0031308 else 12.92 * b
+
+                r = max(0, min(1, r))
+                g = max(0, min(1, g))
+                b = max(0, min(1, b))
+
+                return (int(r * 255), int(g * 255), int(b * 255))
+
+            # 计算CIEDE2000色差
+            def ciede2000(lab1, lab2):
+                """计算两个Lab颜色之间的CIEDE2000色差"""
+                L1, a1, b1 = lab1
+                L2, a2, b2 = lab2
+
+                # 计算C和h
+                C1 = math.sqrt(a1**2 + b1**2)
+                C2 = math.sqrt(a2**2 + b2**2)
+                C_avg = (C1 + C2) / 2
+
+                G = 0.5 * (1 - math.sqrt(C_avg**7 / (C_avg**7 + 25**7)))
+
+                a1_prime = a1 * (1 + G)
+                a2_prime = a2 * (1 + G)
+
+                C1_prime = math.sqrt(a1_prime**2 + b1**2)
+                C2_prime = math.sqrt(a2_prime**2 + b2**2)
+
+                h1_prime = math.degrees(math.atan2(b1, a1_prime)) % 360
+                h2_prime = math.degrees(math.atan2(b2, a2_prime)) % 360
+
+                # 计算ΔL', ΔC', ΔH'
+                delta_L_prime = L2 - L1
+                delta_C_prime = C2_prime - C1_prime
+
+                if C1_prime * C2_prime == 0:
+                    delta_h_prime = 0
+                else:
+                    if abs(h2_prime - h1_prime) <= 180:
+                        delta_h_prime = h2_prime - h1_prime
+                    elif h2_prime - h1_prime > 180:
+                        delta_h_prime = h2_prime - h1_prime - 360
+                    else:
+                        delta_h_prime = h2_prime - h1_prime + 360
+
+                delta_H_prime = 2 * math.sqrt(C1_prime * C2_prime) * math.sin(math.radians(delta_h_prime / 2))
+
+                # 计算权重函数
+                L_avg = (L1 + L2) / 2
+                C_avg_prime = (C1_prime + C2_prime) / 2
+
+                if C1_prime * C2_prime == 0:
+                    h_avg_prime = h1_prime + h2_prime
+                else:
+                    if abs(h1_prime - h2_prime) <= 180:
+                        h_avg_prime = (h1_prime + h2_prime) / 2
+                    elif h1_prime + h2_prime < 360:
+                        h_avg_prime = (h1_prime + h2_prime + 360) / 2
+                    else:
+                        h_avg_prime = (h1_prime + h2_prime - 360) / 2
+
+                T = (1 -
+                     0.17 * math.cos(math.radians(h_avg_prime - 30)) +
+                     0.24 * math.cos(math.radians(2 * h_avg_prime)) +
+                     0.32 * math.cos(math.radians(3 * h_avg_prime + 6)) -
+                     0.20 * math.cos(math.radians(4 * h_avg_prime - 63)))
+
+                delta_theta = 30 * math.exp(-((h_avg_prime - 275) / 25) ** 2)
+                R_C = 2 * math.sqrt(C_avg_prime**7 / (C_avg_prime**7 + 25**7))
+                S_L = 1 + (0.015 * (L_avg - 50) ** 2) / math.sqrt(20 + (L_avg - 50) ** 2)
+                S_C = 1 + 0.045 * C_avg_prime
+                S_H = 1 + 0.015 * C_avg_prime * T
+                R_T = -math.sin(math.radians(2 * delta_theta)) * R_C
+
+                # 计算最终色差
+                delta_E = math.sqrt(
+                    (delta_L_prime / S_L) ** 2 +
+                    (delta_C_prime / S_C) ** 2 +
+                    (delta_H_prime / S_H) ** 2 +
+                    R_T * (delta_C_prime / S_C) * (delta_H_prime / S_H)
+                )
+
+                return delta_E
+
+            # K-Means聚类
+            def kmeans_lab(pixels_rgb, k=8, max_iters=50):
+                """在Lab空间进行K-Means聚类"""
+                # 转换为Lab空间
+                pixels_lab = [rgb_to_lab(p) for p in pixels_rgb]
+
+                # 随机初始化聚类中心
+                random.shuffle(pixels_lab)
+                centroids = pixels_lab[:k]
+                cluster_sizes = [0] * k
+
+                for iteration in range(max_iters):
+                    # 分配像素到最近的聚类中心
+                    clusters = [[] for _ in range(k)]
+                    new_cluster_sizes = [0] * k
+
+                    for pixel in pixels_lab:
+                        min_dist = float('inf')
+                        closest = 0
+                        for i, centroid in enumerate(centroids):
+                            dist = ciede2000(pixel, centroid)
+                            if dist < min_dist:
+                                min_dist = dist
+                                closest = i
+                        clusters[closest].append(pixel)
+                        new_cluster_sizes[closest] += 1
+
+                    # 更新聚类中心
+                    new_centroids = []
+                    for i, cluster in enumerate(clusters):
+                        if cluster:
+                            # 计算加权平均
+                            avg_L = sum(p[0] for p in cluster) / len(cluster)
+                            avg_a = sum(p[1] for p in cluster) / len(cluster)
+                            avg_b = sum(p[2] for p in cluster) / len(cluster)
+                            new_centroids.append((avg_L, avg_a, avg_b))
+                        else:
+                            # 空聚类，随机选择一个新的中心
+                            new_centroids.append(random.choice(pixels_lab))
+
+                    # 检查收敛
+                    converged = True
+                    for i in range(k):
+                        if ciede2000(centroids[i], new_centroids[i]) > 1.0:
+                            converged = False
+                            break
+
+                    centroids = new_centroids
+                    cluster_sizes = new_cluster_sizes
+
+                    if converged:
+                        break
+
+                return centroids, cluster_sizes
+
+            # 执行K-Means聚类（K=8，后续筛选为5个）
+            centroids, cluster_sizes = kmeans_lab(valid_pixels, k=8, max_iters=30)
+
+            # 将聚类中心按像素数量排序
+            centroid_info = list(zip(centroids, cluster_sizes))
+            centroid_info.sort(key=lambda x: x[1], reverse=True)
+
+            # 使用CIEDE2000筛选差异明显的颜色（阈值：20）
+            min_delta_e = 20  # CIEDE2000色差阈值
+            selected_colors_lab = []
+
+            for centroid, size in centroid_info:
+                if len(selected_colors_lab) >= 5:
+                    break
+
+                # 检查与已选颜色的差异
+                is_different = True
+                for selected in selected_colors_lab:
+                    delta_e = ciede2000(centroid, selected)
+                    if delta_e < min_delta_e:
+                        is_different = False
+                        break
+
+                if is_different:
+                    selected_colors_lab.append(centroid)
+
+            # 如果选不够5个，降低阈值继续选择
+            if len(selected_colors_lab) < 5:
+                for centroid, size in centroid_info:
+                    if len(selected_colors_lab) >= 5:
+                        break
+                    if centroid not in selected_colors_lab:
+                        # 检查与已选颜色的差异（使用更低的阈值）
+                        is_different = True
+                        for selected in selected_colors_lab:
+                            delta_e = ciede2000(centroid, selected)
+                            if delta_e < 10:  # 降低阈值
+                                is_different = False
+                                break
+                        if is_different:
+                            selected_colors_lab.append(centroid)
+
+            # 如果仍然不足5个，生成互补色
+            while len(selected_colors_lab) < 5:
+                if len(selected_colors_lab) == 0:
+                    # 随机生成
+                    new_lab = (random.uniform(20, 80), random.uniform(-100, 100), random.uniform(-100, 100))
+                else:
+                    # 找到已有颜色在Lab空间中距离最远的点
+                    avg_L = sum(c[0] for c in selected_colors_lab) / len(selected_colors_lab)
+                    avg_a = sum(c[1] for c in selected_colors_lab) / len(selected_colors_lab)
+                    avg_b = sum(c[2] for c in selected_colors_lab) / len(selected_colors_lab)
+                    # 在Lab空间中取反方向
+                    new_lab = (100 - avg_L, -avg_a, -avg_b)
+
+                # 验证差异性
+                is_different = True
+                for selected in selected_colors_lab:
+                    if ciede2000(new_lab, selected) < min_delta_e:
+                        is_different = False
+                        break
+
+                if is_different:
+                    selected_colors_lab.append(new_lab)
+                else:
+                    # 强制添加，但进行随机扰动
+                    perturbed = (
+                        max(0, min(100, new_lab[0] + random.uniform(-20, 20))),
+                        max(-128, min(127, new_lab[1] + random.uniform(-30, 30))),
+                        max(-128, min(127, new_lab[2] + random.uniform(-30, 30)))
+                    )
+                    selected_colors_lab.append(perturbed)
+
+            # 转换为RGB
+            final_colors = [lab_to_rgb(lab) for lab in selected_colors_lab[:5]]
+
+            # 转换为QColor列表
+            qt_colors = [QColor(r, g, b) for r, g, b in final_colors]
+
+            # 设置自定义颜色主题
+            self.setCustomColors(qt_colors)
+
+            # 打印调试信息
+            debug_info = []
+            for i, (lab, _) in enumerate(zip(selected_colors_lab[:5], cluster_sizes)):
+                debug_info.append(f"Lab{i}=({lab[0]:.0f},{lab[1]:.0f},{lab[2]:.0f})")
+            print(f"[AudioBackground] 从封面提取了5个颜色: {', '.join(debug_info)}")
+
+        except Exception as e:
+            print(f"[AudioBackground] 从封面提取颜色失败: {e}")
+            import traceback
+            traceback.print_exc()
+            self.useAccentTheme()
 
     def _load_default_cover(self):
         """加载默认音乐图标（SVG）"""
@@ -502,6 +853,9 @@ class AudioBackground(QWidget):
             # 将SVG widget添加到容器布局中（布局会自动居中）
             self._svg_container_layout.addWidget(self._svg_widget, alignment=Qt.AlignCenter)
             self._svg_container.show()
+            # 强制更新布局
+            self._svg_container_layout.update()
+            self._cover_layout.update()
 
             print(f"[AudioBackground] 已加载默认音乐图标: {svg_path}, 尺寸: {widget_width}x{widget_height}")
 
@@ -695,20 +1049,23 @@ class AudioBackground(QWidget):
         # 1. 绘制黑色背景（100%不透明）
         painter.fillRect(0, 0, width, height, QColor("#000000"))
         
-        # 2. 绘制模糊图像（50%透明度）
+        # 2. 绘制模糊图像（100%不透明，完全填充）
         if self._blurred_pixmap and not self._blurred_pixmap.isNull():
             display_rect = self._calculate_scaled_rect()
             
             scaled_pixmap = self._blurred_pixmap.scaled(
                 display_rect.width(),
                 display_rect.height(),
-                Qt.KeepAspectRatio,
+                Qt.KeepAspectRatioByExpanding,
                 Qt.SmoothTransformation
             )
             
-            painter.setOpacity(0.5)
-            painter.drawPixmap(display_rect.x(), display_rect.y(), scaled_pixmap)
+            # 计算居中位置
+            draw_x = (width - scaled_pixmap.width()) // 2
+            draw_y = (height - scaled_pixmap.height()) // 2
+            
             painter.setOpacity(1.0)
+            painter.drawPixmap(draw_x, draw_y, scaled_pixmap)
     
     def clear(self):
         """清除数据"""

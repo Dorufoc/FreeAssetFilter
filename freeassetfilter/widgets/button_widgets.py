@@ -64,10 +64,7 @@ class CustomButton(QPushButton):
         scaled_border_radius = self._height // 2
         scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
 
-        if self.button_type == "primary":
-            border_width = int(0.5 * self.dpi_scale)
-        else:
-            border_width = int(1 * self.dpi_scale)
+        border_width = 1.5
 
         # 处理颜色字符串，支持透明色
         def get_color_string(color):
@@ -598,8 +595,7 @@ class CustomButton(QPushButton):
         # 所有按钮都使用高度的一半作为圆角半径，确保圆角完整覆盖边缘
         scaled_border_radius = self._height // 2
         scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
-        scaled_border_width = int(1 * self.dpi_scale)  # 边框宽度随DPI缩放
-        scaled_primary_border_width = int(0.5 * self.dpi_scale)  # 主要按钮边框宽度随DPI缩放
+        fixed_border_width = 1.5  # 固定边框宽度1.5px，不随DPI缩放
 
         # 更新全局字体，确保使用settings.json中定义的字体大小
         self.global_font = getattr(app, 'global_font', QFont())
@@ -647,7 +643,7 @@ class CustomButton(QPushButton):
                 QPushButton {{
                     background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_primary_border_width}px solid {border_color};
+                    border: {fixed_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-weight: 600;
@@ -692,7 +688,7 @@ class CustomButton(QPushButton):
                 QPushButton {{
                     background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_border_width}px solid {border_color};
+                    border: {fixed_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-weight: 600;
@@ -738,7 +734,7 @@ class CustomButton(QPushButton):
                 QPushButton {{
                     background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_border_width}px solid {border_color};
+                    border: {fixed_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-weight: 600;
@@ -783,7 +779,7 @@ class CustomButton(QPushButton):
                 QPushButton {{
                     background-color: {bg_color};
                     color: {text_color};
-                    border: {scaled_border_width}px solid {border_color};
+                    border: {fixed_border_width}px solid {border_color};
                     border-radius: {scaled_border_radius}px;
                     padding: {scaled_padding};
                     font-weight: 600;
@@ -1028,7 +1024,7 @@ class CustomButton(QPushButton):
         
         # 获取样式参数（与update_style中保持一致）
         scaled_padding_horizontal = int(6 * self.dpi_scale)  # 水平方向内边距
-        border_width = int(0.5 * self.dpi_scale) if self.button_type == "primary" else int(1 * self.dpi_scale)
+        border_width = 1.5  # 固定边框宽度1.5px，不随DPI缩放
         
         # 计算最小宽度：文本宽度 + 左右内边距 + 左右边框 + 安全边距
         # 安全边距用于防止某些字体或渲染差异导致的裁切

@@ -182,6 +182,9 @@ class CustomFileSelector(QWidget):
         self._lazy_load_timer.setInterval(16)  # 每16ms加载一批（约60fps）
         self._lazy_load_timer.timeout.connect(self._load_next_batch)
         
+        # 首次显示标志位，用于避免初始化时卡片重叠
+        self._first_show = True
+        
         # 初始化悬浮详细信息组件
         self.hover_tooltip = HoverTooltip(self)
         
@@ -217,8 +220,19 @@ class CustomFileSelector(QWidget):
         
         # 初始化按钮样式
         self._update_filter_button_style()
-        # 初始化文件列表
-        self.refresh_files()
+        # 不在这里初始化文件列表，而是在showEvent中初始化，避免卡片重叠
+    
+    def showEvent(self, event):
+        """
+        窗口显示事件处理
+        - 首次显示时才初始化文件列表，避免初始化时卡片重叠
+        """
+        super().showEvent(event)
+        if self._first_show:
+            self._first_show = False
+            # 延迟一点时间确保布局已经完成
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(50, self.refresh_files)
     
     def load_last_path(self):
         """
@@ -496,6 +510,9 @@ class CustomFileSelector(QWidget):
 
         # 保存滚动区域引用，用于滚动定位
         self.files_scroll_area = scroll_area
+
+        # 连接滚动条valueChanged信号，实现滚动时的懒加载
+        scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
 
         return scroll_area
     
@@ -1972,8 +1989,8 @@ class CustomFileSelector(QWidget):
         current_pattern = self.filter_pattern if self.filter_pattern != "*" else ""
         filter_dialog.set_input(text=current_pattern, placeholder="正则表达式筛选条件")
         
-        # 设置确认、取消和移除筛选按钮
-        filter_dialog.set_buttons(["确认", "取消", "移除筛选"], Qt.Horizontal, ["primary", "normal", "normal"])
+        # 设置确认、移除筛选和取消按钮
+        filter_dialog.set_buttons(["确认", "移除筛选", "取消"], Qt.Horizontal, ["primary", "secondary", "normal"])
         
         # 记录结果
         result = None
@@ -1992,7 +2009,7 @@ class CustomFileSelector(QWidget):
             # 更新筛选按钮样式
             self._update_filter_button_style()
             self.refresh_files()
-        elif result == 2:  # 2表示移除筛选按钮
+        elif result == 1:  # 1表示移除筛选按钮
             # 移除筛选条件
             self.filter_pattern = "*"
             # 更新筛选按钮样式
@@ -2055,12 +2072,13 @@ class CustomFileSelector(QWidget):
             # 设置当前盘符为选中项
             self.drive_combo.set_current_item(current_drive)
     
-    def refresh_files(self, callback=None):
+    def refresh_files(self, callback=None, scroll_to_top=True):
         """
         刷新文件列表
         
         Args:
             callback (callable, optional): 文件卡片生成完成后的回调函数
+            scroll_to_top (bool, optional): 是否滚动到顶端，默认为True
         """
         import datetime
         def debug(msg):
@@ -2108,6 +2126,13 @@ class CustomFileSelector(QWidget):
             
             self.files_container.setMinimumHeight(total_height)
             #debug(f"设置内容区域最小高度: {total_height} (总行数: {total_rows}, 卡片高度: {card_height}, 间距: {spacing})")
+        
+        # 如果需要滚动到顶端，立即设置滚动条位置
+        if scroll_to_top and hasattr(self, 'files_scroll_area'):
+            scroll_area = self.files_scroll_area
+            if scroll_area:
+                scrollbar = scroll_area.verticalScrollBar()
+                scrollbar.setValue(0)
         
         #debug(f"开始懒加载，共 {self._all_files_count} 个文件，每批 {self._batch_size} 个")
         
@@ -2169,7 +2194,27 @@ class CustomFileSelector(QWidget):
                 callback()
             # 触发滚动条状态检查
             self._trigger_scrollbar_check()
-    
+
+    def _on_scroll_value_changed(self, value):
+        """滚动值变化时的槽函数，用于触发懒加载
+        
+        Args:
+            value: 当前滚动条的值
+        """
+        if not self._pending_files or self._is_loading:
+            return
+        
+        scroll_area = self.files_scroll_area
+        if not scroll_area:
+            return
+        
+        scrollbar = scroll_area.verticalScrollBar()
+        max_value = scrollbar.maximum()
+        
+        # 当滚动到接近底部时触发加载（还有约30%未滚动时就开始加载）
+        if value >= max_value * 0.7:
+            QTimer.singleShot(100, self._load_remaining_on_scroll)
+
     def _load_remaining_on_scroll(self):
         """滚动时加载剩余的卡片"""
         if not self._pending_files or self._is_loading:
