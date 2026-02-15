@@ -612,87 +612,113 @@ class UnifiedPreviewer(QWidget):
         
         # 停止当前预览组件的播放（如果是视频或音频）
         if self.current_preview_widget:
-            # 对于文本预览器，需要特别处理QWebEngineView的资源释放
-            try:
-                from freeassetfilter.components.text_previewer import TextPreviewWidget
-                if isinstance(self.current_preview_widget, TextPreviewWidget):
-                    # 调用cleanup方法进行完整的资源清理
-                    if hasattr(self.current_preview_widget, 'cleanup'):
-                        self.current_preview_widget.cleanup()
-            except Exception as e:
-                print(f"清理TextPreviewWidget组件时出错: {e}")
-            
-            # 对于字体预览器，需要特别处理字体资源释放
-            try:
-                from freeassetfilter.components.font_previewer import FontPreviewWidget
-                if isinstance(self.current_preview_widget, FontPreviewWidget):
-                    # 调用cleanup方法进行完整的资源清理
-                    if hasattr(self.current_preview_widget, 'cleanup'):
-                        self.current_preview_widget.cleanup()
-            except Exception as e:
-                print(f"清理FontPreviewWidget组件时出错: {e}")
-            
-            # 停止播放
-            if hasattr(self.current_preview_widget, 'stop'):
-                try:
-                    self.current_preview_widget.stop()
-                except Exception as e:
-                    print(f"停止预览组件时出错: {e}")
-            
-            # 对于VideoPlayer组件，确保完全停止所有播放器核心
-            # 这是关键步骤：必须确保MPV完全销毁后才能创建新的播放器，否则会导致访问冲突
-            video_player_widget = None
+            # 检查是否是VideoPlayer且已经分离到独立窗口
+            is_detached_video_player = False
             try:
                 from freeassetfilter.components.video_player import VideoPlayer
                 if isinstance(self.current_preview_widget, VideoPlayer):
-                    video_player_widget = self.current_preview_widget
-                    # 调用cleanup方法进行完整的资源清理
-                    if hasattr(video_player_widget, 'cleanup'):
-                        try:
-                            video_player_widget.cleanup()
-                        except Exception as e:
-                            print(f"调用VideoPlayer.cleanup()时出错: {e}")
-                    
-
-
-                    # 处理事件，确保清理操作完成
-                    # 使用 ExcludeUserInputEvents 标志排除用户输入事件，避免在处理过程中
-                    # 触发鼠标/键盘事件导致重入问题（如eventFilter中的事件处理）
-                    from PySide6.QtCore import QCoreApplication, QEventLoop
-                    QCoreApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
-
-                    # 等待一小段时间确保MPV资源完全释放
-                    from PySide6.QtCore import QThread
-                    QThread.msleep(200)  # 等待200ms让MPV完全释放
+                    # 检查是否有分离窗口
+                    if hasattr(self.current_preview_widget, '_detached_window') and self.current_preview_widget._detached_window:
+                        is_detached_video_player = True
+                        print(f"[UnifiedPreviewer] 视频播放器已分离到独立窗口，跳过清理")
             except Exception as e:
-                print(f"清理VideoPlayer组件时出错: {e}")
+                print(f"检查VideoPlayer分离状态时出错: {e}")
+            
+            # 如果已经分离，就跳过清理
+            if not is_detached_video_player:
+                # 对于文本预览器，需要特别处理QWebEngineView的资源释放
+                try:
+                    from freeassetfilter.components.text_previewer import TextPreviewWidget
+                    if isinstance(self.current_preview_widget, TextPreviewWidget):
+                        # 调用cleanup方法进行完整的资源清理
+                        if hasattr(self.current_preview_widget, 'cleanup'):
+                            self.current_preview_widget.cleanup()
+                except Exception as e:
+                    print(f"清理TextPreviewWidget组件时出错: {e}")
+                
+                # 对于字体预览器，需要特别处理字体资源释放
+                try:
+                    from freeassetfilter.components.font_previewer import FontPreviewWidget
+                    if isinstance(self.current_preview_widget, FontPreviewWidget):
+                        # 调用cleanup方法进行完整的资源清理
+                        if hasattr(self.current_preview_widget, 'cleanup'):
+                            self.current_preview_widget.cleanup()
+                except Exception as e:
+                    print(f"清理FontPreviewWidget组件时出错: {e}")
+                
+                # 停止播放
+                if hasattr(self.current_preview_widget, 'stop'):
+                    try:
+                        self.current_preview_widget.stop()
+                    except Exception as e:
+                        print(f"停止预览组件时出错: {e}")
+                
+                # 对于VideoPlayer组件，确保完全停止所有播放器核心
+                # 这是关键步骤：必须确保MPV完全销毁后才能创建新的播放器，否则会导致访问冲突
+                video_player_widget = None
+                try:
+                    from freeassetfilter.components.video_player import VideoPlayer
+                    if isinstance(self.current_preview_widget, VideoPlayer):
+                        video_player_widget = self.current_preview_widget
+                        # 调用cleanup方法进行完整的资源清理
+                        if hasattr(video_player_widget, 'cleanup'):
+                            try:
+                                video_player_widget.cleanup()
+                            except Exception as e:
+                                print(f"调用VideoPlayer.cleanup()时出错: {e}")
+                        
 
-            # 注意：不要调用 self.current_preview_widget.disconnect()
-            # 因为这会断开所有信号连接，包括 QWebEngineView 等内部组件的信号
-            # 可能导致程序卡死。使用 removeWidget 和 deleteLater 已经足够
+                        # 处理事件，确保清理操作完成
+                        # 使用 ExcludeUserInputEvents 标志排除用户输入事件，避免在处理过程中
+                        # 触发鼠标/键盘事件导致重入问题（如eventFilter中的事件处理）
+                        from PySide6.QtCore import QCoreApplication, QEventLoop
+                        QCoreApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
-            # 清除布局中的所有组件，除了控制栏
-            # 控制栏是第一个组件，所以只清除从索引1开始的组件
-            for i in reversed(range(self.preview_layout.count())):
-                if i == 0:  # 保留控制栏
-                    continue
-                item = self.preview_layout.itemAt(i)
+                        # 等待一小段时间确保MPV资源完全释放
+                        from PySide6.QtCore import QThread
+                        QThread.msleep(200)  # 等待200ms让MPV完全释放
+                except Exception as e:
+                    print(f"清理VideoPlayer组件时出错: {e}")
+
+                # 注意：不要调用 self.current_preview_widget.disconnect()
+                # 因为这会断开所有信号连接，包括 QWebEngineView 等内部组件的信号
+                # 可能导致程序卡死。使用 removeWidget 和 deleteLater 已经足够
+
+                # 清除布局中的所有组件，除了控制栏
+                # 控制栏是第一个组件，所以只清除从索引1开始的组件
+                for i in reversed(range(self.preview_layout.count())):
+                    if i == 0:  # 保留控制栏
+                        continue
+                    item = self.preview_layout.itemAt(i)
+                    if item is not None:
+                        widget = item.widget()
+                        if widget is not None:
+                            self.preview_layout.removeWidget(widget)
+                            # 对于VideoPlayer，先隐藏再销毁，确保窗口句柄被正确释放
+                            if widget is video_player_widget:
+                                widget.hide()
+                            widget.deleteLater()
+        
+        # 检查是否是VideoPlayer且已经分离到独立窗口
+        is_detached_video_player = False
+        try:
+            from freeassetfilter.components.video_player import VideoPlayer
+            if isinstance(self.current_preview_widget, VideoPlayer):
+                if hasattr(self.current_preview_widget, '_detached_window') and self.current_preview_widget._detached_window:
+                    is_detached_video_player = True
+        except Exception as e:
+            print(f"检查VideoPlayer分离状态时出错: {e}")
+        
+        # 只有当播放器未分离时才清理布局
+        if not is_detached_video_player:
+            # 确保布局中只保留控制栏
+            while self.preview_layout.count() > 1:  # 1表示只保留控制栏
+                item = self.preview_layout.takeAt(1)  # 从索引1开始移除
                 if item is not None:
                     widget = item.widget()
                     if widget is not None:
-                        self.preview_layout.removeWidget(widget)
-                        # 对于VideoPlayer，先隐藏再销毁，确保窗口句柄被正确释放
-                        if widget is video_player_widget:
-                            widget.hide()
                         widget.deleteLater()
         
-        # 确保布局中只保留控制栏
-        while self.preview_layout.count() > 1:  # 1表示只保留控制栏
-            item = self.preview_layout.takeAt(1)  # 从索引1开始移除
-            if item is not None:
-                widget = item.widget()
-                if widget is not None:
-                    widget.deleteLater()
         # 重置临时PDF文件路径，但不删除缓存文件
         print("=== 进入_clear_preview方法 ===")
         print(f"hasattr(temp_pdf_path): {hasattr(self, 'temp_pdf_path')}")
@@ -704,9 +730,11 @@ class UnifiedPreviewer(QWidget):
             print("已重置temp_pdf_path为None")
         print("=== 退出_clear_preview方法 ===")
         
-        # 重置当前预览组件和类型
-        self.current_preview_widget = None
-        self.current_preview_type = None
+        # 只有当播放器未分离时才重置当前预览组件和类型
+        if not is_detached_video_player:
+            # 重置当前预览组件和类型
+            self.current_preview_widget = None
+            self.current_preview_type = None
         
         # 根据参数决定是否发出预览清除信号
         # 在切换预览类型时不发出信号，避免清除新设置的预览态
@@ -915,13 +943,14 @@ class UnifiedPreviewer(QWidget):
             
             # 从设置中读取播放器配置
             settings_manager = SettingsManager()
+            enable_detach = settings_manager.get_setting("player.enable_fullscreen", False)
             initial_volume = settings_manager.get_player_volume()
             initial_speed = settings_manager.get_player_speed()
             
             # 创建视频播放器，传递初始设置
             video_player = VideoPlayer(
                 playback_mode="video",
-                show_detach_button=False,
+                show_detach_button=enable_detach,
                 initial_volume=initial_volume,
                 initial_speed=initial_speed
             )

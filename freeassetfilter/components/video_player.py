@@ -47,6 +47,51 @@ from freeassetfilter.widgets.player_control_bar import PlayerControlBar
 from freeassetfilter.core.settings_manager import SettingsManager
 
 
+class DetachedVideoWindow(QWidget):
+    """
+    独立视频窗口
+    用于承载分离后的视频播放器
+    """
+    
+    closed = Signal()  # 窗口关闭信号
+    
+    def __init__(self, parent=None):
+        """
+        初始化独立视频窗口
+        
+        Args:
+            parent: 父窗口
+        """
+        super().__init__(parent)
+        
+        self._video_player = None
+        
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        self.global_font = getattr(app, 'global_font', QFont())
+        
+        self._init_ui()
+        self.setWindowTitle("视频播放器 - FreeAssetFilter")
+        self.resize(1280, 720)  # 默认尺寸
+    
+    def _init_ui(self):
+        """初始化UI"""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+    
+    def set_video_player(self, video_player: 'VideoPlayer'):
+        """设置视频播放器"""
+        self._video_player = video_player
+        if self.layout():
+            self.layout().addWidget(video_player)
+    
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        self.closed.emit()
+        super().closeEvent(event)
+
+
 class VideoPlaceholder(QWidget):
     """
     视频占位符控件
@@ -146,6 +191,10 @@ class VideoPlayer(QWidget):
 
         self._user_interacting = False
         self._pending_seek_value: Optional[int] = None
+        
+        # 分离窗口相关变量
+        self._detached_window: Optional[DetachedVideoWindow] = None
+        self._original_parent = parent  # 保存原始父窗口引用
 
         # MPV管理器实例（单例）
         self._mpv_manager: Optional[MPVManager] = None
@@ -345,13 +394,17 @@ class VideoPlayer(QWidget):
             self._mpv_manager.set_speed(self._initial_speed, component_id=self._component_id)
             return
         
-        self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
-        self._video_surface.setAttribute(Qt.WA_NativeWindow)
+        # 确保视频渲染区域有正确的窗口属性
+        self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
+        self._video_surface.setAttribute(Qt.WA_NativeWindow, True)
         
+        # 确保视频渲染区域可见
         if not self._video_surface.isVisible():
             self._video_surface.show()
         
+        # 获取窗口ID
         win_id = int(self._video_surface.winId())
+        print(f"[VideoPlayer] 视频渲染窗口ID: {win_id}")
         
         if self._mpv_manager.set_window_id(win_id, component_id=self._component_id):
             self._is_mpv_embedded = True
@@ -360,6 +413,34 @@ class VideoPlayer(QWidget):
             # 嵌入后立即应用初始设置（音量和倍速）
             self._mpv_manager.set_volume(self._initial_volume, component_id=self._component_id)
             self._mpv_manager.set_speed(self._initial_speed, component_id=self._component_id)
+    
+    def _reconnect_mpv_window(self):
+        """
+        重新连接MPV窗口到新的渲染区域
+        用于窗口分离/恢复时，只重新设置窗口ID，不重置MPV内核
+        """
+        if not self._mpv_manager:
+            return
+        
+        print(f"[VideoPlayer] 重新连接MPV窗口")
+        
+        # 确保视频渲染区域有正确的窗口属性
+        self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
+        self._video_surface.setAttribute(Qt.WA_NativeWindow, True)
+        
+        # 确保视频渲染区域可见
+        if not self._video_surface.isVisible():
+            self._video_surface.show()
+        
+        # 重新获取窗口ID
+        win_id = int(self._video_surface.winId())
+        print(f"[VideoPlayer] 新视频渲染窗口ID: {win_id}")
+        
+        # 重新设置窗口ID
+        if self._mpv_manager.set_window_id(win_id, component_id=self._component_id):
+            print(f"[VideoPlayer] MPV窗口重新连接成功")
+            # 同步几何尺寸
+            self._sync_mpv_geometry()
     
     def _on_play_pause_clicked(self):
         """播放/暂停按钮点击处理"""
@@ -581,10 +662,11 @@ class VideoPlayer(QWidget):
         pass
 
     def _on_detach_clicked(self):
-        """分离窗口按钮点击处理 - 功能已禁用"""
-        # 分离窗口功能已移除，此方法保留但不做任何操作
-        print(f"[VideoPlayer] 分离窗口功能已禁用")
-        pass
+        """分离窗口按钮点击处理"""
+        if self._detached_window is None:
+            self._detach_to_window()
+        else:
+            self._reattach_to_parent()
     
     def _save_playback_state(self):
         """
@@ -649,6 +731,86 @@ class VideoPlayer(QWidget):
         else:
             self._mpv_manager.pause(component_id=self._component_id)
             self._control_bar.set_playing(False)
+    
+    def _detach_to_window(self):
+        """
+        将视频播放器分离到独立窗口
+        """
+        print(f"[VideoPlayer] 开始分离窗口")
+        
+        # 保存原始父窗口和布局
+        self._original_parent = self.parent()
+        self._original_layout = None
+        if self._original_parent and hasattr(self._original_parent, 'layout'):
+            self._original_layout = self._original_parent.layout()
+        
+        # 先将播放器从原布局中移除
+        if self._original_layout:
+            self._original_layout.removeWidget(self)
+        
+        # 创建独立窗口
+        self._detached_window = DetachedVideoWindow(None)
+        
+        # 将播放器添加到独立窗口
+        self.setParent(self._detached_window)
+        self._detached_window.layout().addWidget(self)
+        
+        # 显示独立窗口
+        self._detached_window.show()
+        
+        # 更新控制栏的分离状态
+        self._control_bar.set_detached(True)
+        
+        # 连接独立窗口的关闭信号
+        self._detached_window.closed.connect(self._reattach_to_parent)
+        
+        # 延迟执行，确保窗口完全显示后再重新连接MPV
+        def delayed_reconnect():
+            print(f"[VideoPlayer] 延迟重新连接MPV窗口")
+            # 确保窗口已经显示
+            self._detached_window.raise_()
+            self._detached_window.activateWindow()
+            
+            # 只重新连接MPV窗口到新的渲染区域
+            self._reconnect_mpv_window()
+        
+        QTimer.singleShot(100, delayed_reconnect)
+        
+        print(f"[VideoPlayer] 窗口分离完成")
+    
+    def _reattach_to_parent(self):
+        """
+        将视频播放器恢复到原父窗口
+        """
+        print(f"[VideoPlayer] 开始恢复窗口")
+        
+        # 隐藏并关闭独立窗口
+        if self._detached_window:
+            # 先将播放器从独立窗口中移除
+            if self._detached_window.layout():
+                self._detached_window.layout().removeWidget(self)
+            
+            self._detached_window.hide()
+            self._detached_window.deleteLater()
+            self._detached_window = None
+        
+        # 更新控制栏的分离状态
+        self._control_bar.set_detached(False)
+        
+        # 将播放器重新添加到原父窗口
+        if self._original_parent and self._original_layout:
+            self.setParent(self._original_parent)
+            self._original_layout.addWidget(self)
+        
+        # 延迟执行，重新连接MPV窗口
+        def delayed_reconnect():
+            print(f"[VideoPlayer] 延迟重新连接MPV窗口")
+            # 只重新连接MPV窗口到新的渲染区域
+            self._reconnect_mpv_window()
+        
+        QTimer.singleShot(100, delayed_reconnect)
+        
+        print(f"[VideoPlayer] 窗口恢复完成")
     
 
 

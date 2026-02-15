@@ -384,9 +384,8 @@ class PlayerControlBar(QWidget):
         self.loadLutClicked.emit()
 
     def _on_detach_button_clicked(self):
-        """分离窗口按钮点击处理 - 功能已禁用"""
-        # 分离窗口功能已移除，保留按钮但不做任何操作
-        pass
+        """分离窗口按钮点击处理"""
+        self.detachClicked.emit()
 
     def _on_volume_value_changed(self, value: int):
         """
