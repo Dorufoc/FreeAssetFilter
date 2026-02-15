@@ -146,8 +146,9 @@ class CustomInputBox(QWidget):
         if hasattr(app, 'settings_manager'):
             text_color = app.settings_manager.get_setting("appearance.colors.input_text", "#000000")
 
-        # 计算左侧内边距，应用DPI缩放
+        # 计算内边距，应用DPI缩放
         padding_left = int(8 * self.dpi_scale)
+        padding_right = int(8 * self.dpi_scale)
         
         self.line_edit.setStyleSheet("""
             QLineEdit {
@@ -155,11 +156,12 @@ class CustomInputBox(QWidget):
                 border: none;
                 color: %s;
                 padding-left: %dpx;
+                padding-right: %dpx;
             }
             QLineEdit:focus {
                 outline: none;
             }
-        """ % (text_color, padding_left))
+        """ % (text_color, padding_left, padding_right))
         
         # 连接信号
         self.line_edit.textChanged.connect(self._on_text_changed)

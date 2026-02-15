@@ -803,9 +803,14 @@ class FreeAssetFilterApp(QMainWindow):
         
         self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
         self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
+        self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
         self.file_staging_pool.item_right_clicked.connect(self.unified_previewer.set_file)
         self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
         self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
+        self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
+        self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
+        self.unified_previewer.preview_started.connect(self.handle_preview_started)
+        self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
         
         main_layout.addWidget(splitter, 1)
         

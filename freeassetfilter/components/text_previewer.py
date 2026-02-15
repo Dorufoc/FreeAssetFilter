@@ -982,6 +982,29 @@ class TextPreviewWidget(QWidget):
         self._init_ui()
         self._apply_theme()
     
+    def _hex_to_rgba(self, hex_color, alpha=0.5):
+        """
+        将十六进制颜色转换为RGBA格式
+        
+        参数：
+            hex_color (str): 十六进制颜色，如 "#RRGGBB"
+            alpha (float): 透明度，范围 0.0-1.0，默认 0.5
+            
+        返回：
+            str: RGBA格式字符串，如 "rgba(51, 51, 51, 0.5)"
+        """
+        try:
+            if not hex_color or not hex_color.startswith('#') or len(hex_color) != 7:
+                return hex_color
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+            return f'rgba({r}, {g}, {b}, {alpha})'
+        except Exception:
+            return hex_color
+    
+
+    
     def _init_ui(self):
         """初始化UI"""
         layout = QVBoxLayout(self)
@@ -1091,7 +1114,8 @@ class TextPreviewWidget(QWidget):
         # 创建文本编辑器（使用禁用缩放的自定义类）
         self.text_edit = ZoomDisabledTextEdit()
         self.text_edit.setReadOnly(True)
-        self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+        # 从全局设置读取默认换行模式
+        self._apply_word_wrap_from_settings()
         self.text_edit.setUndoRedoEnabled(False)
         self.text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
         self.text_edit.customContextMenuRequested.connect(self._show_context_menu)
@@ -1105,10 +1129,12 @@ class TextPreviewWidget(QWidget):
         app = QApplication.instance()
         base_color = "#FFFFFF"
         second_color = "#333333"
+        accent_color = "#0A59F7"
         if hasattr(app, 'settings_manager'):
             base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
             second_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-
+            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7")
+        
         self.text_edit.setStyleSheet(f"""
             QTextEdit {{
                 background-color: {base_color};
@@ -1117,6 +1143,19 @@ class TextPreviewWidget(QWidget):
                 padding: 10px;
             }}
         """)
+        
+        palette = self.text_edit.palette()
+        palette.setColor(QPalette.Base, QColor(base_color))
+        palette.setColor(QPalette.Text, QColor(second_color))
+        
+        if accent_color and accent_color.startswith('#') and len(accent_color) == 7:
+            r = int(accent_color[1:3], 16)
+            g = int(accent_color[3:5], 16)
+            b = int(accent_color[5:7], 16)
+            selection_color = QColor(r, g, b, int(255 * 0.5))
+            palette.setColor(QPalette.Highlight, selection_color)
+        
+        self.text_edit.setPalette(palette)
         
         scroll_bar = D_ScrollBar(self.text_edit, Qt.Vertical)
         self.text_edit.setVerticalScrollBar(scroll_bar)
@@ -1141,6 +1180,18 @@ class TextPreviewWidget(QWidget):
         SmoothScroller.apply_to_scroll_area(self.text_edit)
         
         self._init_context_menu()
+    
+    def _apply_word_wrap_from_settings(self):
+        """从全局设置读取并应用换行模式"""
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            word_wrap = app.settings_manager.get_setting("text_preview.word_wrap", True)
+            if word_wrap:
+                self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+                self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            else:
+                self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+                self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     
     def _update_line_number_width(self):
         """更新行号区域宽度"""
@@ -1256,6 +1307,7 @@ class TextPreviewWidget(QWidget):
         bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
         base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
         secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7")
 
         self.setStyleSheet(f"""
             background-color: {bg_color};
@@ -1269,6 +1321,19 @@ class TextPreviewWidget(QWidget):
                 padding: 10px;
             }}
         """)
+        
+        palette = self.text_edit.palette()
+        palette.setColor(QPalette.Base, QColor(base_color))
+        palette.setColor(QPalette.Text, QColor(secondary_color))
+        
+        if accent_color and accent_color.startswith('#') and len(accent_color) == 7:
+            r = int(accent_color[1:3], 16)
+            g = int(accent_color[3:5], 16)
+            b = int(accent_color[5:7], 16)
+            selection_color = QColor(r, g, b, int(255 * 0.5))
+            palette.setColor(QPalette.Highlight, selection_color)
+        
+        self.text_edit.setPalette(palette)
 
         # 如果存在代码高亮器，更新其配色方案以匹配当前主题
         if self.current_highlighter is not None:
@@ -1280,6 +1345,14 @@ class TextPreviewWidget(QWidget):
                 palette = self.text_edit.palette()
                 palette.setColor(QPalette.Base, bg_color)
                 palette.setColor(QPalette.Text, fg_color)
+                
+                if accent_color and accent_color.startswith('#') and len(accent_color) == 7:
+                    r = int(accent_color[1:3], 16)
+                    g = int(accent_color[3:5], 16)
+                    b = int(accent_color[5:7], 16)
+                    selection_color = QColor(r, g, b, int(255 * 0.5))
+                    palette.setColor(QPalette.Highlight, selection_color)
+                
                 self.text_edit.setPalette(palette)
             except Exception:
                 pass
@@ -1326,9 +1399,68 @@ class TextPreviewWidget(QWidget):
             palette = self.text_edit.palette()
             palette.setColor(QPalette.Base, bg_color)
             palette.setColor(QPalette.Text, fg_color)
+            
+            # 重新应用选中样式
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7")
+                if accent_color and accent_color.startswith('#') and len(accent_color) == 7:
+                    r = int(accent_color[1:3], 16)
+                    g = int(accent_color[3:5], 16)
+                    b = int(accent_color[5:7], 16)
+                    selection_color = QColor(r, g, b, int(255 * 0.5))
+                    palette.setColor(QPalette.Highlight, selection_color)
+            
             self.text_edit.setPalette(palette)
         except Exception:
             pass
+    
+    def _reset_display_state(self):
+        """
+        重置所有显示状态到初始状态
+        
+        在加载新文件前调用，确保从任何模式切换到其他模式时
+        所有字体、样式、显示状态都被正确重置
+        """
+        # 重置文本编辑器状态
+        self.text_edit.clear()
+        self.text_edit.setDocument(QTextDocument())
+        
+        # 清除语法高亮器
+        if self.current_highlighter:
+            self.current_highlighter.deleteLater()
+            self.current_highlighter = None
+        
+        # 重置模式标志
+        self.is_markdown = False
+        self.file_content = ""
+        
+        # 恢复默认字体（不刷新显示，因为此时还没有内容）
+        self._restore_default_font(refresh_display=False)
+        
+        # 重置行号区域状态
+        if hasattr(self, 'line_number_area') and self.line_number_area:
+            self.line_number_area.hide()
+        
+        # 重置换行模式为默认（纯文本模式的默认换行）
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            word_wrap = app.settings_manager.get_setting("text_preview.word_wrap", True)
+        else:
+            word_wrap = True
+        
+        if word_wrap:
+            self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        else:
+            self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # 清除搜索状态
+        self._clear_search()
+        
+        # 重新应用主题，确保调色板正确
+        self._apply_theme()
     
     def set_file(self, file_path):
         """
@@ -1342,24 +1474,18 @@ class TextPreviewWidget(QWidget):
         
         self.current_file_path = file_path
         
-        self._clear_search()
-        
+        # 先停止正在运行的加载线程
         if self._thread and self._thread.isRunning():
             self._thread.abort()
             self._thread.wait()
         
-        self.text_edit.clear()
-        self.text_edit.setDocument(QTextDocument())
+        # 完全重置显示状态，确保任何模式都能正确切换
+        self._reset_display_state()
         
-        if self.current_highlighter:
-            self.current_highlighter.deleteLater()
-            self.current_highlighter = None
-        
-        self.file_content = ""
-        self.is_markdown = False
-        
+        # 开始加载动画
         self._start_loading()
         
+        # 获取编码设置
         current_item = self.encoding_dropdown._current_item
         if isinstance(current_item, dict):
             encoding = current_item.get('text', '')
@@ -1368,6 +1494,7 @@ class TextPreviewWidget(QWidget):
         if encoding == "自动检测":
             encoding = "auto"
         
+        # 异步加载文件
         self._load_file_async(file_path, encoding)
     
     def _load_file_async(self, file_path, encoding):
@@ -1576,10 +1703,10 @@ class TextPreviewWidget(QWidget):
 
             current_font = self.text_edit.font()
             font_family = current_font.family()
-            # 使用当前字体大小滑块的值作为基准，实现等比例缩放
+            # 使用当前字体大小滑块的值作为基准，与普通文本保持一致
             # 优先使用滑块当前值，确保用户调整字体大小后能够实时反映
             current_slider_value = self.font_size_slider.value()
-            font_size = int(current_slider_value * self.dpi_scale)
+            font_size = current_slider_value
             
             is_dark = False
             app = QApplication.instance()
@@ -1606,7 +1733,7 @@ class TextPreviewWidget(QWidget):
             
             header_style = f"""
                 <style>
-                    body {{ font-family: {font_family}, sans-serif; font-size: {font_size}px; line-height: 1.6; color: {secondary_color}; margin: 0; padding: 0; }}
+                    body {{ font-family: {font_family}, sans-serif; font-size: {font_size}pt; line-height: 1.6; color: {secondary_color}; margin: 0; padding: 0; }}
                     div {{ color: {secondary_color}; }}
                     p {{ color: {secondary_color}; margin: 0.5em 0; }}
                     li {{ color: {secondary_color}; margin: 0.3em 0; }}
@@ -1651,10 +1778,20 @@ class TextPreviewWidget(QWidget):
             
             html = f"<html><head>{header_style}</head><body>{html}</body></html>"
 
-            # Markdown 模式下启用自动换行（根据显示区域宽度自适应）
-            self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-            # 禁用水平滚动条，确保内容自动换行不溢出
-            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            # Markdown 模式下根据设置启用/禁用自动换行
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                markdown_word_wrap = app.settings_manager.get_setting("text_preview.markdown_word_wrap", True)
+            else:
+                markdown_word_wrap = True
+                
+            if markdown_word_wrap:
+                self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+                self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            else:
+                self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+                self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                
             self.text_edit.setHtml(html)
             self.is_markdown = True
             
@@ -1671,10 +1808,24 @@ class TextPreviewWidget(QWidget):
             else:
                 self.line_number_area.show()
 
-        # 纯文本/代码模式下禁用自动换行（保持原有行为）
-        self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
-        # 恢复水平滚动条，方便查看长行代码
-        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # 从全局设置读取换行模式
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            if file_type == 'text':
+                word_wrap = app.settings_manager.get_setting("text_preview.word_wrap", True)
+            else:
+                # 代码文件默认不换行
+                word_wrap = False
+        else:
+            word_wrap = (file_type == 'text')
+
+        if word_wrap:
+            self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        else:
+            self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            
         self.text_edit.setPlainText(content)
         self.is_markdown = False
 
@@ -1741,8 +1892,13 @@ class TextPreviewWidget(QWidget):
             code_font.setWeight(QFont.Medium)
             self.text_edit.setFont(code_font)
     
-    def _restore_default_font(self):
-        """恢复默认字体"""
+    def _restore_default_font(self, refresh_display=True):
+        """
+        恢复默认字体
+        
+        Args:
+            refresh_display (bool): 是否刷新显示，默认True。在重置状态时设为False
+        """
         if not hasattr(self, 'text_edit') or self.text_edit is None:
             return
         default_font = QFont()
@@ -1751,7 +1907,8 @@ class TextPreviewWidget(QWidget):
         # 设置字重为Medium（中等），使文字更清晰易读
         default_font.setWeight(QFont.Medium)
         self.text_edit.setFont(default_font)
-        self._refresh_display()
+        if refresh_display:
+            self._refresh_display()
     
     def _change_font(self, font_name):
         """更改字体"""
