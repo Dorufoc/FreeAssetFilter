@@ -44,6 +44,7 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen
 from freeassetfilter.core.mpv_player_core import MPVPlayerCore, MpvEndFileReason
 from freeassetfilter.core.mpv_manager import MPVManager, MPVState
 from freeassetfilter.widgets.player_control_bar import PlayerControlBar
+from freeassetfilter.widgets.D_hover_menu import D_HoverMenu
 from freeassetfilter.core.settings_manager import SettingsManager
 
 
@@ -54,6 +55,7 @@ class DetachedVideoWindow(QWidget):
     """
     
     closed = Signal()  # 窗口关闭信号
+    focusChanged = Signal(bool)  # 窗口焦点变化信号，True表示获得焦点，False表示失去焦点
     
     def __init__(self, parent=None):
         """
@@ -70,9 +72,12 @@ class DetachedVideoWindow(QWidget):
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(app, 'global_font', QFont())
         
+        # 设置无边框窗口
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
+        
         self._init_ui()
         self.setWindowTitle("视频播放器 - FreeAssetFilter")
-        self.resize(1280, 720)  # 默认尺寸
+        self.showFullScreen()  # 显示为全屏窗口
     
     def _init_ui(self):
         """初始化UI"""
@@ -85,6 +90,16 @@ class DetachedVideoWindow(QWidget):
         self._video_player = video_player
         if self.layout():
             self.layout().addWidget(video_player)
+    
+    def focusInEvent(self, event):
+        """窗口获得焦点事件"""
+        super().focusInEvent(event)
+        self.focusChanged.emit(True)
+    
+    def focusOutEvent(self, event):
+        """窗口失去焦点事件"""
+        super().focusOutEvent(event)
+        self.focusChanged.emit(False)
     
     def closeEvent(self, event):
         """窗口关闭事件"""
@@ -195,6 +210,10 @@ class VideoPlayer(QWidget):
         # 分离窗口相关变量
         self._detached_window: Optional[DetachedVideoWindow] = None
         self._original_parent = parent  # 保存原始父窗口引用
+        
+        # 浮动控制栏相关
+        self._floating_control_bar: Optional[D_HoverMenu] = None
+        self._is_floating_mode = False  # 是否处于浮动模式
 
         # MPV管理器实例（单例）
         self._mpv_manager: Optional[MPVManager] = None
@@ -243,7 +262,73 @@ class VideoPlayer(QWidget):
         self._control_bar.set_detach_button_visible(self._show_detach_button)
         main_layout.addWidget(self._control_bar)
         
+        # 初始化浮动控制栏
+        self._init_floating_control_bar()
+        
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    
+    def _init_floating_control_bar(self):
+        """初始化浮动控制栏"""
+        # 不在这里初始化，而是在需要时动态设置
+        self._floating_control_bar = None
+    
+    def _switch_to_floating_mode(self):
+        """切换到浮动控制栏模式"""
+        if self._is_floating_mode:
+            return
+        
+        print(f"[VideoPlayer] 切换到浮动控制栏模式")
+        self._is_floating_mode = True
+        
+        # 从原布局中移除控制栏
+        main_layout = self.layout()
+        if main_layout:
+            main_layout.removeWidget(self._control_bar)
+        
+        # 创建浮动控制栏（以分离窗口为父窗口）
+        # 注意：不使用子控件模式，因为MPV原生窗口可能会覆盖子控件
+        parent_widget = self._detached_window if self._detached_window else self
+        self._floating_control_bar = D_HoverMenu(
+            parent_widget, 
+            position=D_HoverMenu.Position_Bottom,
+            stay_on_top=False,  # 禁用强制置顶
+            hide_on_window_move=False,  # 窗口移动时不隐藏
+            use_sub_widget_mode=False,  # 不使用子控件模式，使用独立窗口模式
+            fill_width=True,  # 横向填充整个显示区域
+            margin=30  # 添加30像素的外边距
+        )
+        self._floating_control_bar.set_timeout_enabled(False)  # 禁用超时，常驻显示
+        self._floating_control_bar.set_content(self._control_bar)
+        
+        # 设置浮动控制栏的目标为视频渲染区域
+        if hasattr(self, '_video_surface'):
+            self._floating_control_bar.set_target_widget(self._video_surface)
+        
+        # 显示浮动控制栏
+        self._floating_control_bar.show()
+    
+    def _switch_to_fixed_mode(self):
+        """切换回固定控制栏模式"""
+        if not self._is_floating_mode:
+            return
+        
+        print(f"[VideoPlayer] 切换到固定控制栏模式")
+        self._is_floating_mode = False
+        
+        # 隐藏浮动控制栏
+        if self._floating_control_bar:
+            self._floating_control_bar.hide()
+            # 从浮动控制栏中移除内容
+            self._floating_control_bar.clear_content()
+            self._floating_control_bar.deleteLater()
+            self._floating_control_bar = None
+        
+        # 将控制栏添加回原布局
+        main_layout = self.layout()
+        if main_layout:
+            main_layout.addWidget(self._control_bar)
+        
+        self._control_bar.show()
     
     def _init_video_mode_ui(self, main_layout: QVBoxLayout):
         """初始化视频模式UI布局"""
@@ -763,20 +848,45 @@ class VideoPlayer(QWidget):
         
         # 连接独立窗口的关闭信号
         self._detached_window.closed.connect(self._reattach_to_parent)
+        # 连接独立窗口的焦点变化信号
+        self._detached_window.focusChanged.connect(self._on_detached_window_focus_changed)
         
-        # 延迟执行，确保窗口完全显示后再重新连接MPV
-        def delayed_reconnect():
-            print(f"[VideoPlayer] 延迟重新连接MPV窗口")
+        # 延迟执行，确保窗口完全显示后再处理
+        def delayed_init():
+            print(f"[VideoPlayer] 延迟初始化分离窗口")
             # 确保窗口已经显示
             self._detached_window.raise_()
             self._detached_window.activateWindow()
             
+            # 切换到浮动控制栏模式
+            self._switch_to_floating_mode()
+            
             # 只重新连接MPV窗口到新的渲染区域
             self._reconnect_mpv_window()
         
-        QTimer.singleShot(100, delayed_reconnect)
+        QTimer.singleShot(100, delayed_init)
         
         print(f"[VideoPlayer] 窗口分离完成")
+    
+    def _on_detached_window_focus_changed(self, has_focus: bool):
+        """
+        分离窗口焦点变化处理
+        
+        Args:
+            has_focus: 窗口是否获得焦点
+        """
+        print(f"[VideoPlayer] 分离窗口焦点变化: has_focus={has_focus}")
+        
+        # 只有在浮动模式下才处理
+        if not self._is_floating_mode or not self._floating_control_bar:
+            return
+        
+        if has_focus:
+            # 获得焦点时立即显示控制栏
+            self._floating_control_bar.show_immediately()
+        else:
+            # 失去焦点时立即隐藏控制栏
+            self._floating_control_bar.hide_immediately()
     
     def _reattach_to_parent(self):
         """
@@ -784,8 +894,18 @@ class VideoPlayer(QWidget):
         """
         print(f"[VideoPlayer] 开始恢复窗口")
         
+        # 先切换回固定控制栏模式
+        self._switch_to_fixed_mode()
+        
         # 隐藏并关闭独立窗口
         if self._detached_window:
+            # 断开信号连接
+            try:
+                self._detached_window.closed.disconnect(self._reattach_to_parent)
+                self._detached_window.focusChanged.disconnect(self._on_detached_window_focus_changed)
+            except Exception as e:
+                print(f"[VideoPlayer] 断开信号连接时出错: {e}")
+            
             # 先将播放器从独立窗口中移除
             if self._detached_window.layout():
                 self._detached_window.layout().removeWidget(self)

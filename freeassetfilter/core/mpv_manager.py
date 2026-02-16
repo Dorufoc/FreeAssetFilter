@@ -136,7 +136,7 @@ class MPVManagerLogger:
             self.log_history = self.log_history[-self.max_history:]
 
         # 打印到控制台
-        print(f"[MPVManager][{level}] {message}")
+        #print(f"[MPVManager][{level}] {message}")
 
     def debug(self, message: str, **kwargs):
         """记录调试日志"""

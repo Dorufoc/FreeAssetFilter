@@ -43,18 +43,38 @@ class D_HoverMenu(QWidget):
 
     closed = Signal()
 
-    def __init__(self, parent=None, position="bottom"):
+    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0):
         """
         初始化悬浮菜单
 
         Args:
             parent: 父窗口部件
             position: 初始弹出位置，可选值：top, bottom, left, right, top_left, top_right, bottom_left, bottom_right
+            stay_on_top: 是否保持在顶层
+            hide_on_window_move: 是否在窗口移动时隐藏
+            use_sub_widget_mode: 是否使用子控件模式（作为父窗口的子控件，而不是独立窗口）
+            fill_width: 是否横向填充整个父窗口宽度
+            margin: 外边距（像素）
         """
         super().__init__(parent)
-
-        self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        self._stay_on_top = stay_on_top
+        self._hide_on_window_move = hide_on_window_move
+        self._use_sub_widget_mode = use_sub_widget_mode
+        self._fill_width = fill_width
+        self._margin = margin
+        
+        if use_sub_widget_mode:
+            # 子控件模式：作为父窗口的子控件
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setAttribute(Qt.WA_NoSystemBackground, True)
+        else:
+            # 独立窗口模式：使用 Tool 标志而不是 ToolTip，作为父窗口的子窗口
+            window_flags = Qt.Tool | Qt.FramelessWindowHint
+            if stay_on_top:
+                window_flags |= Qt.WindowStaysOnTopHint
+            self.setWindowFlags(window_flags)
+            self.setAttribute(Qt.WA_TranslucentBackground)
 
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -303,7 +323,7 @@ class D_HoverMenu(QWidget):
 
     def eventFilter(self, obj, event):
         """事件过滤器 - 监听目标控件及其顶层窗口的移动事件"""
-        if event.type() == QEvent.Move:
+        if event.type() == QEvent.Move and self._hide_on_window_move:
             if obj == self._target_widget:
                 if self._is_visible and not self._is_animating:
                     self._fade_out()
@@ -361,10 +381,21 @@ class D_HoverMenu(QWidget):
         """显示菜单（带淡入动画）"""
         if self._custom_position_callback and self._target_widget:
             target_rect = self._target_widget.rect()
-            target_global = self._target_widget.mapToGlobal(QPoint(0, 0))
-            target_rect.moveTo(target_global)
+            
+            if self._use_sub_widget_mode:
+                # 子控件模式：使用相对于父窗口的坐标
+                target_local = self._target_widget.mapTo(self.parent(), QPoint(0, 0))
+                target_rect.moveTo(target_local)
+            else:
+                # 独立窗口模式：使用全局坐标
+                target_global = self._target_widget.mapToGlobal(QPoint(0, 0))
+                target_rect.moveTo(target_global)
+            
             pos = self._custom_position_callback(target_rect, self.size())
-            self._adjust_to_screen(pos)
+            
+            if not self._use_sub_widget_mode:
+                self._adjust_to_screen(pos)
+            
             self.move(pos)
         elif self._target_widget:
             self._calculate_position()
@@ -374,7 +405,10 @@ class D_HoverMenu(QWidget):
             screen_geometry = screen.geometry() if screen else self.screen().geometry()
             screen_center = screen_geometry.center()
             pos = QPoint(screen_center.x() - self.width() // 2, screen_center.y() - self.height() // 2)
-            self._adjust_to_screen(pos)
+            
+            if not self._use_sub_widget_mode:
+                self._adjust_to_screen(pos)
+            
             self.move(pos)
 
         self._fade_in()
@@ -385,6 +419,53 @@ class D_HoverMenu(QWidget):
             self._fade_out()
         elif not self._is_animating:
             super().hide()
+    
+    def hide_immediately(self):
+        """立即隐藏菜单（无动画）"""
+        self._is_visible = False
+        self._stop_timeout_timer()
+        super().hide()
+    
+    def show_immediately(self):
+        """立即显示菜单（无动画）"""
+        self._is_visible = True
+        self._stop_timeout_timer()
+        self.setWindowOpacity(1.0)
+        self._update_mouse_transparency()
+        
+        if self._custom_position_callback and self._target_widget:
+            target_rect = self._target_widget.rect()
+            
+            if self._use_sub_widget_mode:
+                # 子控件模式：使用相对于父窗口的坐标
+                target_local = self._target_widget.mapTo(self.parent(), QPoint(0, 0))
+                target_rect.moveTo(target_local)
+            else:
+                # 独立窗口模式：使用全局坐标
+                target_global = self._target_widget.mapToGlobal(QPoint(0, 0))
+                target_rect.moveTo(target_global)
+            
+            pos = self._custom_position_callback(target_rect, self.size())
+            
+            if not self._use_sub_widget_mode:
+                self._adjust_to_screen(pos)
+            
+            self.move(pos)
+        elif self._target_widget:
+            self._calculate_position()
+        else:
+            # Qt6中使用primaryScreen替代desktop
+            screen = QApplication.primaryScreen()
+            screen_geometry = screen.geometry() if screen else self.screen().geometry()
+            screen_center = screen_geometry.center()
+            pos = QPoint(screen_center.x() - self.width() // 2, screen_center.y() - self.height() // 2)
+            
+            if not self._use_sub_widget_mode:
+                self._adjust_to_screen(pos)
+            
+            self.move(pos)
+        
+        super().show()
 
     def toggle(self):
         """切换显示/隐藏状态"""
@@ -413,19 +494,31 @@ class D_HoverMenu(QWidget):
             return
 
         target_rect = self._target_widget.rect()
-        target_global = self._target_widget.mapToGlobal(QPoint(0, 0))
-        target_rect.moveTo(target_global)
+        
+        if self._use_sub_widget_mode:
+            # 子控件模式：使用相对于父窗口的坐标
+            target_local = self._target_widget.mapTo(self.parent(), QPoint(0, 0))
+            target_rect.moveTo(target_local)
+        else:
+            # 独立窗口模式：使用全局坐标
+            target_global = self._target_widget.mapToGlobal(QPoint(0, 0))
+            target_rect.moveTo(target_global)
 
         pos = QPoint()
         menu_width = self.width()
         menu_height = self.height()
+
+        # 如果需要横向填充，设置菜单宽度与目标控件宽度一致（减去外边距）
+        if self._fill_width:
+            menu_width = target_rect.width() - 2 * self._margin
+            self.setFixedWidth(menu_width)
 
         if self._position == self.Position_Top:
             pos.setX(target_rect.center().x() - menu_width // 2 + self._offset_x)
             pos.setY(target_rect.top() - menu_height - self._offset_y)
         elif self._position == self.Position_Bottom:
             pos.setX(target_rect.center().x() - menu_width // 2 + self._offset_x)
-            pos.setY(target_rect.bottom() + self._offset_y)
+            pos.setY(target_rect.bottom() + self._offset_y - self._margin)
         elif self._position == self.Position_Left:
             pos.setX(target_rect.left() - menu_width - self._offset_x)
             pos.setY(target_rect.center().y() - menu_height // 2 + self._offset_y)
@@ -445,7 +538,14 @@ class D_HoverMenu(QWidget):
             pos.setX(target_rect.right() + self._offset_x)
             pos.setY(target_rect.bottom() + self._offset_y)
 
-        self._adjust_to_screen(pos)
+        # 调整位置以适应外边距
+        if self._fill_width:
+            if self._position == self.Position_Bottom:
+                # 底部位置，调整x坐标以考虑外边距
+                pos.setX(target_rect.left() + self._margin)
+
+        if not self._use_sub_widget_mode:
+            self._adjust_to_screen(pos)
         self.move(pos)
 
     def _adjust_to_screen(self, pos):
