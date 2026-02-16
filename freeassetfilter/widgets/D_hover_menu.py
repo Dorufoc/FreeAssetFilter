@@ -17,6 +17,8 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QApplication
 from PySide6.QtCore import Qt, QPoint, QRect, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QEvent
 from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QPainterPath
 
+from freeassetfilter.utils.mouse_activity_monitor import MouseActivityMonitor
+
 
 class D_HoverMenu(QWidget):
     """
@@ -89,14 +91,27 @@ class D_HoverMenu(QWidget):
         self._is_animating = False
         self._timeout_enabled = True
         self._timeout_duration = 5000
-        self._fade_duration = 200
+        self._fade_duration = 300
 
         self._fade_animation = None
         self._opacity_value = 1.0
 
+        self._vertical_offset = 0
+        self._vertical_animation = None
+        self._vertical_animation_duration = 300
+        self._base_position = QPoint(0, 0)
+
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_timeout)
+
+        self._auto_hide_enabled = False
+        self._mouse_activity_monitor = MouseActivityMonitor(self, timeout=5000)
+        self._mouse_activity_monitor.mouse_moved.connect(self._show_control_bar)
+        self._mouse_activity_monitor.timeout_reached.connect(self._hide_control_bar)
+        self._mouse_monitor_active = False
+        
+        self._target_widget_clicked = False
 
         self._init_ui()
         self._setup_animation()
@@ -124,6 +139,17 @@ class D_HoverMenu(QWidget):
 
     _menu_opacity = Property(float, _get_opacity, _set_opacity)
 
+    def _get_vertical_offset(self):
+        """获取垂直偏移量"""
+        return self._vertical_offset
+
+    def _set_vertical_offset(self, offset):
+        """设置垂直偏移量并更新位置"""
+        self._vertical_offset = offset
+        self._update_position_with_offset()
+
+    _menu_vertical_offset = Property(float, _get_vertical_offset, _set_vertical_offset)
+
     def _update_mouse_transparency(self):
         """根据透明度更新鼠标事件穿透"""
         if self._opacity_value <= 0.01:
@@ -135,8 +161,12 @@ class D_HoverMenu(QWidget):
         """设置渐变动画"""
         self._fade_animation = QPropertyAnimation(self, b"_menu_opacity")
         self._fade_animation.setDuration(self._fade_duration)
-        self._fade_animation.setEasingCurve(QEasingCurve.InOutQuad)
+        self._fade_animation.setEasingCurve(QEasingCurve.OutCubic)
         self._fade_animation.finished.connect(self._on_animation_finished)
+
+        self._vertical_animation = QPropertyAnimation(self, b"_menu_vertical_offset")
+        self._vertical_animation.setDuration(self._vertical_animation_duration)
+        self._vertical_animation.setEasingCurve(QEasingCurve.OutCubic)
 
     def set_timeout_enabled(self, enabled):
         """
@@ -546,7 +576,9 @@ class D_HoverMenu(QWidget):
 
         if not self._use_sub_widget_mode:
             self._adjust_to_screen(pos)
-        self.move(pos)
+        
+        self._base_position = pos
+        self._update_position_with_offset()
 
     def _adjust_to_screen(self, pos):
         """
@@ -607,3 +639,155 @@ class D_HoverMenu(QWidget):
             QBoxLayout: 内容布局对象
         """
         return self._content_layout
+
+    def _update_position_with_offset(self):
+        """根据垂直偏移更新菜单位置"""
+        if not self._target_widget:
+            return
+
+        final_pos = QPoint(self._base_position)
+        final_pos.setY(final_pos.y() + self._vertical_offset)
+        
+        if not self._use_sub_widget_mode:
+            self._adjust_to_screen(final_pos)
+        
+        self.move(final_pos)
+
+    def set_vertical_offset(self, offset, animate=False):
+        """
+        设置垂直偏移量
+
+        Args:
+            offset: 垂直偏移量（像素）
+            animate: 是否使用动画过渡，默认为 False
+        """
+        if animate:
+            self.animate_to_vertical_offset(offset)
+        else:
+            self._vertical_animation.stop()
+            self._vertical_offset = offset
+            self._update_position_with_offset()
+
+    def animate_to_vertical_offset(self, target_offset):
+        """
+        动画过渡到指定的垂直偏移量
+
+        Args:
+            target_offset: 目标垂直偏移量（像素）
+        """
+        self._vertical_animation.stop()
+        self._vertical_animation.setStartValue(self._vertical_offset)
+        self._vertical_animation.setEndValue(target_offset)
+        self._vertical_animation.start()
+
+    def stop_vertical_animation(self):
+        """停止垂直位置动画"""
+        if self._vertical_animation:
+            self._vertical_animation.stop()
+
+    def reset_vertical_animation(self):
+        """重置垂直位置动画（停止并重置偏移量为0）"""
+        self._vertical_animation.stop()
+        self._vertical_offset = 0
+        self._update_position_with_offset()
+
+    def set_vertical_animation_duration(self, duration):
+        """
+        设置垂直位置动画的持续时间
+
+        Args:
+            duration: 动画持续时间（毫秒）
+        """
+        self._vertical_animation_duration = max(50, duration)
+        if self._vertical_animation:
+            self._vertical_animation.setDuration(self._vertical_animation_duration)
+
+    def _show_control_bar(self):
+        """
+        显示控制栏：将垂直偏移量设置为0，同时淡入
+        """
+        if not self._auto_hide_enabled:
+            return
+        # 同时执行垂直位置动画和透明度淡入
+        self.animate_to_vertical_offset(0)
+        # 确保窗口可见
+        if not self.isVisible():
+            super().show()
+        # 淡入动画
+        self._fade_animation.stop()
+        self._fade_animation.setStartValue(self._get_opacity())
+        self._fade_animation.setEndValue(1.0)
+        self._fade_animation.start()
+
+    def show_control_bar(self):
+        """
+        公共方法：显示控制栏
+        可以被外部调用，例如当检测到鼠标点击时
+        """
+        self._show_control_bar()
+        if self._mouse_monitor_active:
+            self._mouse_activity_monitor.reset_timer()
+
+    def _hide_control_bar(self):
+        """
+        隐藏控制栏：将垂直偏移量设置为20像素，同时淡出
+        """
+        if not self._auto_hide_enabled:
+            return
+        # 只移动20像素
+        self.animate_to_vertical_offset(20)
+        # 淡出动画
+        self._fade_animation.stop()
+        self._fade_animation.setStartValue(self._get_opacity())
+        self._fade_animation.setEndValue(0.0)
+        self._fade_animation.start()
+
+    def set_auto_hide_enabled(self, enabled):
+        """
+        启用或禁用自动隐藏功能
+
+        Args:
+            enabled: 是否启用自动隐藏
+        """
+        self._auto_hide_enabled = enabled
+        if enabled:
+            if not self._mouse_monitor_active:
+                self._mouse_activity_monitor.start()
+                self._mouse_monitor_active = True
+            self._show_control_bar()
+        else:
+            if self._mouse_monitor_active:
+                self._mouse_activity_monitor.stop()
+                self._mouse_monitor_active = False
+            self._show_control_bar()
+
+    def is_auto_hide_enabled(self):
+        """
+        检查自动隐藏功能是否启用
+
+        Returns:
+            bool: 是否启用自动隐藏
+        """
+        return self._auto_hide_enabled
+
+    def closeEvent(self, event):
+        """
+        重写closeEvent，确保停止监控
+
+        Args:
+            event: 关闭事件
+        """
+        if self._mouse_monitor_active:
+            self._mouse_activity_monitor.stop()
+            self._mouse_monitor_active = False
+        super().closeEvent(event)
+
+    def __del__(self):
+        """
+        析构函数，确保停止监控
+        """
+        try:
+            if hasattr(self, '_mouse_activity_monitor') and self._mouse_activity_monitor:
+                self._mouse_activity_monitor.stop()
+        except:
+            pass

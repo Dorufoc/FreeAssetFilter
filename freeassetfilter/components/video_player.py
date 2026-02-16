@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy,
     QFrame, QApplication
 )
-from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize
+from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QEvent
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen
 
 from freeassetfilter.core.mpv_player_core import MPVPlayerCore, MpvEndFileReason
@@ -297,7 +297,7 @@ class VideoPlayer(QWidget):
             fill_width=True,  # 横向填充整个显示区域
             margin=30  # 添加30像素的外边距
         )
-        self._floating_control_bar.set_timeout_enabled(False)  # 禁用超时，常驻显示
+        self._floating_control_bar.set_auto_hide_enabled(True)  # 启用自动隐藏功能
         self._floating_control_bar.set_content(self._control_bar)
         
         # 设置浮动控制栏的目标为视频渲染区域
@@ -317,6 +317,7 @@ class VideoPlayer(QWidget):
         
         # 隐藏浮动控制栏
         if self._floating_control_bar:
+            self._floating_control_bar.set_auto_hide_enabled(False)
             self._floating_control_bar.hide()
             # 从浮动控制栏中移除内容
             self._floating_control_bar.clear_content()
@@ -342,6 +343,7 @@ class VideoPlayer(QWidget):
         self._video_surface.setStyleSheet("background-color: transparent;")
         self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
         self._video_surface.setAttribute(Qt.WA_NativeWindow)
+        self._video_surface.installEventFilter(self)
         video_layout.addWidget(self._video_surface)
         
         main_layout.addWidget(video_container, 1)
@@ -944,6 +946,14 @@ class VideoPlayer(QWidget):
         else:
             super().keyPressEvent(event)
     
+    def mousePressEvent(self, event):
+        """
+        处理鼠标点击事件
+        """
+        super().mousePressEvent(event)
+        if self._is_floating_mode and self._floating_control_bar:
+            self._floating_control_bar.show_control_bar()
+
     def mouseDoubleClickEvent(self, event):
         """
         处理鼠标双击事件
@@ -961,6 +971,10 @@ class VideoPlayer(QWidget):
         Returns:
             bool: 是否已处理事件
         """
+        if obj == self._video_surface:
+            if event.type() == QEvent.MouseButtonPress:
+                if self._is_floating_mode and self._floating_control_bar:
+                    self._floating_control_bar.show_control_bar()
         return super().eventFilter(obj, event)
     
     def _on_mpv_state_changed(self, is_playing: bool):
