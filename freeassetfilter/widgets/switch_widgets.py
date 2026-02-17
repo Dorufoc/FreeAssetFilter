@@ -53,19 +53,15 @@ class CustomSwitch(QWidget):
         self.icon_ratio = 462 / 256  # 图标宽高比约为1.8:1
         
         # 计算控件尺寸
-        width = int(self._height * self.icon_ratio)
-        self.setFixedSize(width, self._height)
-        
-        # 设置布局为垂直布局
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(0)
+        self._width = int(self._height * self.icon_ratio)
+        self.setFixedSize(self._width, self._height)
         
         # 创建一个透明的按钮作为点击区域，覆盖整个控件
         self.click_button = QPushButton(self)
         self.click_button.setCheckable(True)
         self.click_button.setChecked(initial_value)
-        self.click_button.setFixedSize(width, self._height)
+        self.click_button.setFixedSize(self._width, self._height)
+        self.click_button.move(0, 0)
         self.click_button.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
@@ -86,10 +82,6 @@ class CustomSwitch(QWidget):
         from PySide6.QtSvgWidgets import QSvgWidget
         self.svg_widget = QSvgWidget(self)
         self.svg_widget.setStyleSheet("background: transparent;")
-        
-        # 布局添加控件
-        self.layout.addWidget(self.click_button)
-        self.layout.addWidget(self.svg_widget)
         
         # 连接信号
         self.click_button.toggled.connect(self._on_switch_toggled)
@@ -161,8 +153,18 @@ class CustomSwitch(QWidget):
         大小变化事件，重新渲染图标
         """
         super().resizeEvent(event)
-        # 更新点击按钮大小
+        # 更新点击按钮大小和位置
         self.click_button.setFixedSize(self.width(), self.height())
+        self.click_button.move(0, 0)
+        # 更新图标
+        self._update_switch_icon()
+    
+    def update_style(self):
+        """
+        更新开关样式，用于主题更新
+        """
+        # 清除SVG颜色缓存，确保使用最新颜色
+        SvgRenderer._invalidate_color_cache()
         # 更新图标
         self._update_switch_icon()
     

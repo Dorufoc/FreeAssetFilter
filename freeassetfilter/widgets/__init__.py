@@ -31,6 +31,8 @@ from .audio_background import AudioBackground
 from .scrolling_text import ScrollingText
 # 导入播放器控制栏组件
 from .player_control_bar import PlayerControlBar
+# 导入轮盘选色组件
+from .color_wheel_picker import ColorWheelPicker, ColorWheelPickerWidget, D_ColorWheelPickerMenu
 
 __all__ = [
     'CustomButton',
@@ -49,5 +51,8 @@ __all__ = [
     'D_MenuListItem',
     'AudioBackground',
     'ScrollingText',
-    'PlayerControlBar'
+    'PlayerControlBar',
+    'ColorWheelPicker',
+    'ColorWheelPickerWidget',
+    'D_ColorWheelPickerMenu'
 ]

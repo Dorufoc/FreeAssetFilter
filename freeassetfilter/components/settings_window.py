@@ -973,6 +973,20 @@ class ModernSettingsWindow(QDialog):
         """
         添加通用设置项（包含原外观设置中的主题和字体设置）
         """
+        # 导入所需组件
+        from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
+        from freeassetfilter.widgets.color_wheel_picker import D_ColorWheelPickerMenu
+        
+        # 预设主题配置
+        self.preset_themes = {
+            "活力蓝": {"accent_color": "#007AFF"},
+            "热情红": {"accent_color": "#FF3B30"},
+            "蜂蜜黄": {"accent_color": "#FFCC00"},
+            "宝石青": {"accent_color": "#34C759"},
+            "魅力紫": {"accent_color": "#AF52DE"},
+            "清雅墨": {"accent_color": "#5856D6"}
+        }
+        
         # 主题设置组
         theme_group = QGroupBox("主题")
         theme_group.setStyleSheet(self.group_box_style)
@@ -1014,11 +1028,88 @@ class ModernSettingsWindow(QDialog):
 
         self.theme_switch.switch_toggled.connect(on_theme_toggled)
         theme_layout.addWidget(self.theme_switch)
-
-        # 主题颜色设置按钮
-        self.theme_color_button = CustomButton("自定义主题颜色", button_type="secondary")
-        self.theme_color_button.clicked.connect(self._open_theme_color_settings)
-        theme_layout.addWidget(self.theme_color_button)
+        
+        # 获取当前颜色以确定初始主题
+        current_accent = self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+        
+        # 确定初始主题
+        initial_theme = "自定义"
+        for theme_name, theme_data in self.preset_themes.items():
+            if theme_data["accent_color"].upper() == current_accent.upper():
+                initial_theme = theme_name
+                break
+        
+        # 创建主题选择设置项
+        self.theme_selector_setting = CustomSettingItem(
+            text="主题颜色",
+            secondary_text="选择预设主题或自定义颜色",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": initial_theme, "type": "primary"}]
+        )
+        
+        # 主题选择下拉菜单
+        def on_theme_selector_clicked(button_index):
+            theme_options = list(self.preset_themes.keys()) + ["自定义"]
+            self.theme_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            self.theme_dropdown_menu.set_items(theme_options, default_item=initial_theme)
+            
+            def on_theme_item_clicked(selected_theme):
+                self.theme_selector_setting.button_group[0].setText(selected_theme)
+                
+                if selected_theme == "自定义":
+                    # 显示自定义颜色输入框
+                    if hasattr(self, "custom_color_input"):
+                        self.custom_color_input.setVisible(True)
+                else:
+                    # 隐藏自定义颜色输入框
+                    if hasattr(self, "custom_color_input"):
+                        self.custom_color_input.setVisible(False)
+                    
+                    # 应用预设主题
+                    theme_data = self.preset_themes[selected_theme]
+                    accent_color = theme_data["accent_color"]
+                    self.current_settings.update({"appearance.colors.accent_color": accent_color})
+                    
+                    # 使SVG颜色缓存失效
+                    SvgRenderer._invalidate_color_cache()
+                    
+                    # 更新UI
+                    self._update_theme_display()
+            
+            self.theme_dropdown_menu.itemClicked.connect(on_theme_item_clicked)
+            button = self.theme_selector_setting.button_group[button_index]
+            self.theme_dropdown_menu.set_target_button(button)
+            self.theme_dropdown_menu.show_menu()
+        
+        self.theme_selector_setting.button_clicked.connect(on_theme_selector_clicked)
+        theme_layout.addWidget(self.theme_selector_setting)
+        
+        # 自定义颜色输入框（初始隐藏）
+        self.custom_color_input = CustomSettingItem(
+            text="自定义颜色",
+            secondary_text="输入十六进制颜色值（如 #FF0000）",
+            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
+            placeholder="#RRGGBB",
+            initial_text=current_accent,
+            button_text="应用"
+        )
+        
+        def on_custom_color_applied(hex_color):
+            hex_color = hex_color.strip()
+            if not hex_color.startswith("#"):
+                hex_color = "#" + hex_color
+            if len(hex_color) == 7:
+                try:
+                    QColor(hex_color)
+                    self.current_settings.update({"appearance.colors.accent_color": hex_color})
+                    SvgRenderer._invalidate_color_cache()
+                    self._update_theme_display()
+                except:
+                    pass
+        
+        self.custom_color_input.input_submitted.connect(on_custom_color_applied)
+        self.custom_color_input.setVisible(initial_theme == "自定义")
+        theme_layout.addWidget(self.custom_color_input)
 
         self.scroll_layout.addWidget(theme_group)
 
@@ -1454,44 +1545,6 @@ class ModernSettingsWindow(QDialog):
         # 显示对话框
         warning_dialog.exec()
 
-    def _open_theme_color_settings(self):
-        """
-        打开主题颜色设置窗口
-        """
-        from freeassetfilter.components.theme_editor import ThemeEditor
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton
-        from PySide6.QtCore import Qt
-        
-        theme_window = QDialog(self)
-        theme_window.setWindowTitle("主题设置")
-        theme_window.resize(450, 350)
-        
-        theme_window.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowCloseButtonHint)
-        
-        main_layout = QVBoxLayout(theme_window)
-        
-        # 创建主题编辑器，指定父控件为theme_window以确保正确的生命周期管理
-        self.theme_editor = ThemeEditor(parent=theme_window)
-        
-        main_layout.addWidget(self.theme_editor)
-        
-        buttons_layout = QHBoxLayout()
-        buttons_layout.setAlignment(Qt.AlignCenter)
-        
-        from freeassetfilter.widgets.button_widgets import CustomButton
-        
-        reset_button = CustomButton("重置", button_type="secondary", height=20)
-        reset_button.clicked.connect(lambda: self.theme_editor.on_reset_clicked())
-        buttons_layout.addWidget(reset_button)
-        
-        confirm_button = CustomButton("确定", button_type="primary", height=20)
-        confirm_button.clicked.connect(lambda: self._on_theme_confirmed(theme_window))
-        buttons_layout.addWidget(confirm_button)
-        
-        main_layout.addLayout(buttons_layout)
-        
-        theme_window.exec()
-
     def _on_open_settings_json_clicked(self, button_index):
         """
         打开settings.json文件按钮点击事件
@@ -1519,32 +1572,7 @@ class ModernSettingsWindow(QDialog):
                 subprocess.call(['open', settings_file_path])
         except Exception as e:
             print(f"打开设置文件失败: {e}")
-
-    def _on_theme_confirmed(self, theme_window):
-        """
-        主题颜色确认按钮点击事件
-        将选中的主题强调色应用到 current_settings，并关闭对话框
-        """
-        theme = self.theme_editor.get_selected_theme()
-        if theme and "colors" in theme:
-            accent_color = theme["colors"][0]
-            self.current_settings.update({f"appearance.colors.accent_color": accent_color})
-            
-            # 使SVG颜色缓存失效，确保下次渲染时使用新颜色
-            SvgRenderer._invalidate_color_cache()
         
-        theme_window.close()
-        
-    def _apply_selected_theme(self, theme):
-        """
-        应用选中的主题强调色
-        """
-        if theme and "colors" in theme:
-            accent_color = theme["colors"][0]
-            self.current_settings.update({f"appearance.colors.accent_color": accent_color})
-            
-            self._update_theme_display()
-    
     def _update_theme_display(self):
         """
         更新UI显示的主题颜色
@@ -1556,9 +1584,6 @@ class ModernSettingsWindow(QDialog):
         normal_color = self.current_settings.get("appearance.colors.normal_color", "#e0e0e0")
         auxiliary_color = self.current_settings.get("appearance.colors.auxiliary_color", "#f1f3f3")
         accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
-        
-        dark2 = self._darken_color(auxiliary_color, 0.1)
-        dark5 = self._darken_color(auxiliary_color, 0.2)
         
         self.setStyleSheet(f"""
             QDialog {{ 
@@ -1591,30 +1616,9 @@ class ModernSettingsWindow(QDialog):
                         item.widget().setStyleSheet(title_style)
                         break
         
-        card_style = f"""
-            QPushButton {{
-                background-color: {auxiliary_color};
-                border: none;
-                border-radius: 2px;
-                padding: 0;
-                height: 15px;
-                width: 85px;
-                text-align: center;
-                color: {secondary_color};
-            }}
-            QPushButton:hover {{ 
-                background-color: {dark2}; 
-            }}
-            QPushButton:pressed {{ 
-                background-color: {dark5}; 
-            }}
-            QPushButton:checked {{ 
-                background-color: {accent_color}; 
-                color: {base_color}; 
-            }}
-        """
+        # 让所有导航按钮更新自己的样式
         for button in self.navigation_buttons:
-            button.setStyleSheet(card_style)
+            button.update_style()
         
         content_style = f"""
             QWidget {{ 
@@ -1664,13 +1668,34 @@ class ModernSettingsWindow(QDialog):
         
         SmoothScroller.apply_to_scroll_area(self.scroll_area)
         
-        # 更新所有分组框样式
+        # 更新所有分组框样式并更新其中的自定义按钮和开关
         for child in self.scroll_content.children():
             if isinstance(child, QVBoxLayout):
                 for i in range(child.count()):
                     item = child.itemAt(i)
                     if item and isinstance(item.widget(), QGroupBox):
-                        item.widget().setStyleSheet(self.group_box_style)
+                        group_box = item.widget()
+                        group_box.setStyleSheet(self.group_box_style)
+                        
+                        # 遍历分组框中的所有子控件，更新自定义按钮和开关
+                        from freeassetfilter.widgets.button_widgets import CustomButton
+                        from freeassetfilter.widgets.switch_widgets import CustomSwitch
+                        from freeassetfilter.widgets.setting_widgets import CustomSettingItem
+                        
+                        for widget in group_box.findChildren(QWidget):
+                            if isinstance(widget, CustomButton):
+                                widget.update_style()
+                            elif isinstance(widget, CustomSwitch):
+                                widget.update_style()
+                            elif isinstance(widget, CustomSettingItem):
+                                # 更新 CustomSettingItem 中的按钮和开关
+                                if hasattr(widget, 'button_group'):
+                                    for btn in widget.button_group:
+                                        btn.update_style()
+                                if hasattr(widget, 'switch_button'):
+                                    widget.switch_button.update_style()
+                                if hasattr(widget, 'submit_button'):
+                                    widget.submit_button.update_style()
     
 
     
