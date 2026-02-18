@@ -56,3 +56,6 @@ progress_widgets_summary.md
 FreeAssetFilter.zip
 .VSCodeCounter/
 .venv/
+freeassetfilter/core/cpp_color_extractor/build.py
+freeassetfilter/core/cpp_color_extractor/build_manual.py
+test_audio_background.py

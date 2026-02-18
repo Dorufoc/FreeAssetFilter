@@ -4,16 +4,33 @@
 颜色提取工具模块
 
 从音乐封面图像中提取主色调，用于流体渐变背景渲染
+
+本模块优先使用 C++ 实现以获得更高性能，如果 C++ 模块不可用则自动降级到纯 Python 实现。
 """
 
 import io
 import math
 import os
+import time
+import struct
 from collections import Counter
 from typing import List, Optional, Tuple
 
 from PySide6.QtGui import QColor
 from PIL import Image
+
+# 尝试导入 C++ 扩展模块
+_CPP_AVAILABLE = False
+_CPP_MODULE = None
+
+try:
+    from .cpp_color_extractor import color_extractor_cpp
+    _CPP_AVAILABLE = True
+    _CPP_MODULE = color_extractor_cpp
+    print("[ColorExtractor] C++ 扩展模块加载成功，将使用高性能实现")
+except ImportError as e:
+    print(f"[ColorExtractor] C++ 扩展模块加载失败: {e}")
+    print("[ColorExtractor] 将使用纯 Python 实现（性能较低）")
 
 # 用于处理音频文件元数据
 try:
@@ -30,15 +47,40 @@ except ImportError:
     MP4 = None
 
 
+def _prepare_image_data_for_cpp(cover_data: bytes) -> bytes:
+    """
+    将图像数据转换为 C++ 模块可用的格式
+    
+    格式：前4字节宽度 + 4字节高度 + RGB像素数据
+    """
+    try:
+        image = Image.open(io.BytesIO(cover_data))
+        
+        # 转换为 RGBA 模式
+        if image.mode != 'RGBA':
+            image = image.convert('RGBA')
+        
+        width, height = image.size
+        pixels = image.tobytes()
+        
+        # 打包数据：宽度(4字节) + 高度(4字节) + 像素数据
+        header = struct.pack('ii', width, height)
+        return header + pixels
+    except Exception as e:
+        raise ValueError(f"图像解码失败: {e}")
+
+
 def extract_cover_colors(cover_data: bytes, num_colors: int = 5, 
                          min_distance: float = 50.0) -> List[QColor]:
     """
     从封面图像数据中提取主色调
     
+    优先使用 C++ 实现以获得更高性能，如果失败则降级到 Python 实现。
+    
     Args:
         cover_data: 封面图像的二进制数据
         num_colors: 要提取的颜色数量
-        min_distance: 颜色之间的最小欧氏距离（用于去重）
+        min_distance: 颜色之间的最小距离（用于去重）
     Returns:
         提取的主色调列表（QColor对象）
     """
@@ -46,6 +88,46 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
         print("[ColorExtractor] 封面数据为空")
         return []
     
+    # 优先使用 C++ 实现
+    if _CPP_AVAILABLE:
+        try:
+            start_time = time.time()
+            
+            # 准备图像数据
+            cpp_data = _prepare_image_data_for_cpp(cover_data)
+            
+            # 调用 C++ 函数（CIEDE2000 距离默认 20.0）
+            cpp_min_distance = min_distance / 2.5  # 转换欧氏距离到近似 CIEDE2000 距离
+            colors_rgb = _CPP_MODULE.extract_colors(
+                cpp_data, 
+                num_colors=num_colors, 
+                min_distance=cpp_min_distance,
+                max_image_size=150
+            )
+            
+            elapsed = (time.time() - start_time) * 1000
+            
+            # 转换为 QColor 列表
+            result = [QColor(r, g, b) for r, g, b in colors_rgb]
+            
+            print(f"[ColorExtractor] C++ 提取到 {len(result)} 个颜色，耗时 {elapsed:.2f}ms")
+            for i, c in enumerate(result):
+                print(f"  颜色{i+1}: RGB({c.red()}, {c.green()}, {c.blue()})")
+            
+            return result
+            
+        except Exception as e:
+            print(f"[ColorExtractor] C++ 提取失败: {e}，降级到 Python 实现")
+    
+    # 降级到 Python 实现
+    return _extract_cover_colors_python(cover_data, num_colors, min_distance)
+
+
+def _extract_cover_colors_python(cover_data: bytes, num_colors: int = 5, 
+                                 min_distance: float = 50.0) -> List[QColor]:
+    """
+    Python 实现的颜色提取（作为 fallback）
+    """
     try:
         image = Image.open(io.BytesIO(cover_data))
     except Exception as e:
@@ -82,7 +164,7 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
             colors.append(QColor(128, 128, 128))
         
         result = colors[:num_colors]
-        print(f"[ColorExtractor] 提取到 {len(result)} 个颜色")
+        print(f"[ColorExtractor] Python 提取到 {len(result)} 个颜色")
         for i, c in enumerate(result):
             print(f"  颜色{i+1}: RGB({c.red()}, {c.green()}, {c.blue()})")
         
@@ -383,3 +465,15 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
     # 降级：基于强调色生成
     print(f"[ColorExtractor] 使用强调色生成主题色: {accent_hex}")
     return generate_colors_from_accent(accent_hex)
+
+
+def is_cpp_available() -> bool:
+    """检查 C++ 扩展模块是否可用"""
+    return _CPP_AVAILABLE
+
+
+def get_extractor_version() -> str:
+    """获取当前使用的提取器版本信息"""
+    if _CPP_AVAILABLE:
+        return f"C++ ({_CPP_MODULE.__version__})"
+    return "Python (fallback)"
