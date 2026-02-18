@@ -105,6 +105,10 @@ class SettingsManager:
                 "markdown_custom_font_family": "Microsoft YaHei",
                 "markdown_use_global_font_size": True,
                 "markdown_custom_font_size": 12
+            },
+            "video": {
+                "lut_files": [],
+                "active_lut_id": None
             }
         }
         self.settings = self.load_settings()
@@ -143,7 +147,11 @@ class SettingsManager:
             "file_staging": self.default_settings["file_staging"].copy(),
             "player": self.default_settings["player"].copy(),
             "developer": self.default_settings["developer"].copy(),
-            "text_preview": self.default_settings["text_preview"].copy()
+            "text_preview": self.default_settings["text_preview"].copy(),
+            "video": {
+                "lut_files": [],
+                "active_lut_id": None
+            }
         }
 
     def get_player_volume(self):

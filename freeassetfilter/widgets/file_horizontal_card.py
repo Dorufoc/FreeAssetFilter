@@ -149,6 +149,7 @@ class CustomFileHorizontalCard(QWidget):
         self._display_name = display_name  # 显示名称，优先于文件系统中的文件名
         self._single_line_mode = single_line_mode  # 是否使用单行文本格式
         self._path_exists = True  # 路径是否存在，用于收藏夹中标记已删除的路径
+        self._custom_info_text = None  # 自定义第二行文本，如果设置则优先显示
 
         # 鼠标悬停标志，用于跟踪鼠标是否在卡片区域内
         self._is_mouse_over = False
@@ -233,34 +234,30 @@ class CustomFileHorizontalCard(QWidget):
         
         # 文件名标签
         self.name_label = QLabel()
-        self.name_label.setAlignment(Qt.AlignLeft)
+        self.name_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.name_label.setWordWrap(False)
         # 设置最小宽度为0，允许自由收缩
         self.name_label.setMinimumWidth(0)
-        # 忽略文字自然长度，允许自由收缩
+        # 忽略文字自然长度，允许自由收缩，让Qt自动处理省略
         self.name_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         # 设置字体大小和粗细，直接使用全局字体让Qt6自动处理DPI缩放
         name_font = QFont(self.global_font)
         name_font.setBold(True)  # 字重600
         self.name_label.setFont(name_font)
-        # 初始设置默认样式，后续会在update_card_style中更新为主题颜色
-        self.name_label.setStyleSheet("background: transparent; border: none;")
         text_layout.addWidget(self.name_label)
 
         # 文件信息标签
         self.info_label = QLabel()
-        self.info_label.setAlignment(Qt.AlignLeft)
+        self.info_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.info_label.setWordWrap(False)
         # 设置最小宽度为0，允许自由收缩
         self.info_label.setMinimumWidth(0)
-        # 忽略文字自然长度，允许自由收缩
+        # 忽略文字自然长度，允许自由收缩，让Qt自动处理省略
         self.info_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         # 设置字体大小，直接使用全局字体让Qt6自动处理DPI缩放
         info_font = QFont(self.global_font)
         info_font.setWeight(QFont.Normal)  # 设置为正常字重
         self.info_label.setFont(info_font)
-        # 初始设置默认样式，后续会在update_card_style中更新为主题颜色
-        self.info_label.setStyleSheet("background: transparent; border: none;")
         
         # 根据单行模式决定是否显示文件信息标签
         if not self._single_line_mode:
@@ -360,6 +357,17 @@ class CustomFileHorizontalCard(QWidget):
         self._path_exists = exists
         self._load_file_info()
         self._set_file_icon()
+
+    def set_custom_info_text(self, text):
+        """
+        设置自定义第二行文本
+        如果设置，将优先显示此文本而不是默认的文件路径和大小
+
+        参数：
+            text (str): 自定义信息文本
+        """
+        self._custom_info_text = text
+        self._load_file_info()
 
     def set_selected(self, selected):
         """
@@ -510,6 +518,9 @@ class CustomFileHorizontalCard(QWidget):
             normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#808080")
             secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
 
+            # 计算文本最大宽度
+            max_width = self._calculate_text_max_width()
+
             # 如果路径不存在，显示删除线效果和提示文字
             if not self._path_exists:
                 # 优先使用_display_name
@@ -518,19 +529,12 @@ class CustomFileHorizontalCard(QWidget):
                 else:
                     file_name = os.path.basename(self._file_path)
 
-                # 获取当前组件宽度
-                component_width = self.width()
-                if component_width <= 0:
-                    component_width = int(87.5 * self.dpi_scale)
-
-                # 计算可用宽度
-                name_font_metrics = QFontMetrics(self.name_label.font())
-                icon_margin = int(10 * self.dpi_scale)
-                available_width = max(0, component_width - icon_margin)
-
                 # 添加删除线效果和（已移动或删除）后缀
                 display_name = f"{file_name}（已移动或删除）"
-                elided_name = name_font_metrics.elidedText(display_name, Qt.ElideRight, available_width)
+
+                # 使用QFontMetrics计算省略文本
+                name_font_metrics = QFontMetrics(self.name_label.font())
+                elided_name = name_font_metrics.elidedText(display_name, Qt.ElideRight, max_width)
 
                 # 设置带删除线的样式，使用normal_color（灰色）
                 self.name_label.setText(elided_name)
@@ -539,7 +543,7 @@ class CustomFileHorizontalCard(QWidget):
                 # 显示路径信息，使用normal_color（灰色）
                 info_text = self._file_path
                 info_font_metrics = QFontMetrics(self.info_label.font())
-                elided_info = info_font_metrics.elidedText(info_text, Qt.ElideRight, available_width)
+                elided_info = info_font_metrics.elidedText(info_text, Qt.ElideRight, max_width)
                 self.info_label.setText(elided_info)
                 self.info_label.setStyleSheet(f"background: transparent; border: none; color: {normal_color};")
                 self.info_label.show()
@@ -562,44 +566,6 @@ class CustomFileHorizontalCard(QWidget):
             else:
                 file_size = self._format_size(file_info.size())
 
-            # 计算文本宽度，设置自动截断
-            # 获取当前组件宽度作为参考（减去图标和边距）
-            component_width = self.width()
-            # 调试信息：打印组件宽度
-            #print(f"_load_file_info called, component_width: {component_width}")
-            if component_width <= 0:
-                # 如果组件宽度还未计算，使用一个默认值
-                component_width = int(87.5 * self.dpi_scale)
-                #print(f"Using default component_width: {component_width}")
-
-            # 文件名截断处理
-            name_font_metrics = QFontMetrics(self.name_label.font())
-            # 留一些边距和图标的宽度
-            icon_margin = int(10 * self.dpi_scale)
-            available_width = component_width - icon_margin  # 图标宽度 + 边距
-            # 调试信息：打印可用宽度计算
-            #print(f"icon_margin: {icon_margin}, available_width: {available_width}")
-            if available_width < 0:
-                available_width = 0
-                #print(f"available_width < 0, setting to 0")
-
-            # 调试信息：打印文字截断前的完整文本
-            #print(f"Original file name: '{file_name}'")
-
-            elided_file_name = name_font_metrics.elidedText(file_name, Qt.ElideRight, available_width)
-
-            # 文件信息截断处理
-            info_text = f"{file_path}  {file_size}"
-
-            # 调试信息：打印文字截断前的完整文本
-            #print(f"Original info text: '{info_text}'")
-            info_font_metrics = QFontMetrics(self.info_label.font())
-            elided_info_text = info_font_metrics.elidedText(info_text, Qt.ElideRight, available_width)
-
-            # 调试信息：打印截断后的文本
-            #print(f"Elided file name: '{elided_file_name}'")
-            #print(f"Elided info text: '{elided_info_text}'")
-
             # 恢复默认样式，使用secondary_color
             self.name_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
             self.info_label.setStyleSheet(f"background: transparent; border: none; color: {secondary_color};")
@@ -608,20 +574,56 @@ class CustomFileHorizontalCard(QWidget):
             if self._single_line_mode:
                 # 单行模式下，将文件信息合并到文件名标签中
                 combined_text = f"{file_name} ({file_size})"
-                # 计算合并文本的截断显示
-                combined_elided_text = name_font_metrics.elidedText(combined_text, Qt.ElideRight, available_width)
-                self.name_label.setText(combined_elided_text)
+                # 使用QFontMetrics计算省略文本
+                name_font_metrics = QFontMetrics(self.name_label.font())
+                elided_combined = name_font_metrics.elidedText(combined_text, Qt.ElideRight, max_width)
+                self.name_label.setText(elided_combined)
                 # 隐藏文件信息标签
                 self.info_label.hide()
             else:
                 # 多行模式下，分别显示文件名和文件信息
+                name_font_metrics = QFontMetrics(self.name_label.font())
+                elided_file_name = name_font_metrics.elidedText(file_name, Qt.ElideRight, max_width)
                 self.name_label.setText(elided_file_name)
+
+                # 文件信息省略处理
+                # 如果设置了自定义信息文本，则优先显示
+                if self._custom_info_text:
+                    info_text = self._custom_info_text
+                else:
+                    info_text = f"{file_path}  {file_size}"
+                info_font_metrics = QFontMetrics(self.info_label.font())
+                elided_info_text = info_font_metrics.elidedText(info_text, Qt.ElideRight, max_width)
                 self.info_label.setText(elided_info_text)
                 # 显示文件信息标签
                 self.info_label.show()
 
         except Exception as e:
             print(f"加载文件信息失败: {e}")
+
+    def _calculate_text_max_width(self):
+        """
+        计算文本显示的最大宽度
+        
+        返回值：
+            int: 文本最大宽度（像素）
+        """
+        # 获取卡片内容布局的边距
+        card_layout = self.card_container.layout()
+        layout_margins = card_layout.contentsMargins()
+        
+        # 计算水平方向的边距和间距
+        # 左边距 + 右边距 + 图标宽度 + 图标与文本间距 + 右侧预留空间
+        icon_width = int(40 * self.dpi_scale)
+        layout_spacing = card_layout.spacing()
+        horizontal_margin = layout_margins.left() + layout_margins.right()
+        
+        # 计算最大宽度：卡片宽度 - 所有固定占用空间
+        max_width = self.width() - horizontal_margin - icon_width - layout_spacing - int(10 * self.dpi_scale)
+        
+        # 确保最小宽度，避免极端情况下显示异常
+        min_width = int(50 * self.dpi_scale)
+        return max(min_width, max_width)
 
     def _set_file_icon(self):
         """设置文件图标或缩略图"""
@@ -1236,11 +1238,9 @@ class CustomFileHorizontalCard(QWidget):
             super().mouseDoubleClickEvent(event)
     
     def resizeEvent(self, event):
-        """处理大小变化事件，重新计算文字截断"""
+        """处理大小变化事件，重新计算文本省略"""
         super().resizeEvent(event)
-        # 调试信息：打印卡片宽度
-        #print(f"resizeEvent triggered, card width: {self.width()}")
-        # 当卡片尺寸改变时，重新计算文字的截断显示
+        # 当卡片尺寸改变时，重新计算文本的省略显示
         if self._file_path:
             self._load_file_info()
 

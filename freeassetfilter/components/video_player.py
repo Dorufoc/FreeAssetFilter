@@ -401,7 +401,8 @@ class VideoPlayer(QWidget):
         self._control_bar.volumeChanged.connect(self._on_volume_changed)
         self._control_bar.muteChanged.connect(self._on_mute_changed)
         self._control_bar.speedChanged.connect(self._on_speed_changed)
-        self._control_bar.loadLutClicked.connect(self._on_load_lut_clicked)
+        self._control_bar.lutSelected.connect(self._on_lut_selected)
+        self._control_bar.lutCleared.connect(self._on_lut_cleared)
         self._control_bar.detachClicked.connect(self._on_detach_clicked)
         
     def _connect_manager_signals(self):
@@ -744,9 +745,29 @@ class VideoPlayer(QWidget):
         if self._settings_manager:
             self._settings_manager.save_player_speed(speed)
 
-    def _on_load_lut_clicked(self):
-        """加载LUT按钮点击处理"""
-        pass
+    def _on_lut_selected(self, lut_path: str):
+        """
+        LUT选择处理
+        
+        Args:
+            lut_path: 选中的LUT文件路径
+        """
+        print(f"[VideoPlayer] 收到LUT选择信号: {lut_path}")
+        if self._mpv_manager:
+            print(f"[VideoPlayer] MPV管理器存在，调用load_lut")
+            success = self._mpv_manager.load_lut(lut_path, component_id=self._component_id)
+            print(f"[VideoPlayer] load_lut结果: {success}")
+            if success:
+                self._control_bar.set_lut_loaded(True)
+            else:
+                self.errorOccurred.emit("加载LUT失败")
+    
+    def _on_lut_cleared(self):
+        """LUT清除处理"""
+        if self._mpv_manager:
+            success = self._mpv_manager.unload_lut(component_id=self._component_id)
+            if success:
+                self._control_bar.set_lut_loaded(False)
 
     def _on_detach_clicked(self):
         """分离窗口按钮点击处理"""
@@ -940,9 +961,16 @@ class VideoPlayer(QWidget):
         """
         处理键盘按键事件
         - 空格键：切换播放/暂停
+        - ESC键：退出分离窗口无边框全屏模式
         """
         if event.key() == Qt.Key_Space:
             self.toggle_play_pause()
+        elif event.key() == Qt.Key_Escape:
+            # 如果处于分离窗口模式，按ESC键恢复到原父窗口
+            if self._detached_window is not None:
+                self._reattach_to_parent()
+            else:
+                super().keyPressEvent(event)
         else:
             super().keyPressEvent(event)
     

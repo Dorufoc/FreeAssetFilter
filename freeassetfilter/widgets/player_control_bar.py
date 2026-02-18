@@ -30,6 +30,7 @@ from .progress_widgets import D_ProgressBar
 from .button_widgets import CustomButton
 from .D_volume_control import DVolumeControl
 from .dropdown_menu import CustomDropdownMenu
+from .lut_manager_dialog import LutManagerDialog
 
 
 class PlayerControlBar(QWidget):
@@ -54,6 +55,8 @@ class PlayerControlBar(QWidget):
         loadLutClicked: 加载LUT按钮点击信号
         detachClicked: 分离窗口按钮点击信号
         speedChanged: 倍速变化信号 (speed: float)
+        lutSelected: LUT选择信号 (lut_path: str)
+        lutCleared: LUT清除信号
     """
 
     playPauseClicked = Signal()
@@ -65,6 +68,8 @@ class PlayerControlBar(QWidget):
     loadLutClicked = Signal()
     detachClicked = Signal()
     speedChanged = Signal(float)
+    lutSelected = Signal(str)
+    lutCleared = Signal()
     
     def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True):
         """
@@ -381,7 +386,58 @@ class PlayerControlBar(QWidget):
 
     def _on_lut_button_clicked(self):
         """LUT按钮点击处理"""
-        self.loadLutClicked.emit()
+        # 打开LUT管理弹窗
+        self._open_lut_manager_dialog()
+    
+    def _open_lut_manager_dialog(self):
+        """打开LUT管理弹窗"""
+        # 获取设置管理器
+        app = QApplication.instance()
+        settings_manager = getattr(app, 'settings_manager', None)
+        
+        # 创建并显示LUT管理弹窗
+        dialog = LutManagerDialog(self, settings_manager)
+        dialog.lutSelected.connect(self._on_lut_selected)
+        dialog.lutCleared.connect(self._on_lut_cleared)
+        
+        dialog.exec()
+    
+    def _on_lut_selected(self, lut_path: str):
+        """LUT选择处理"""
+        self._is_lut_loaded = True
+        self._update_lut_button_style()
+        self.lutSelected.emit(lut_path)
+    
+    def _on_lut_cleared(self):
+        """LUT清除处理"""
+        self._is_lut_loaded = False
+        self._update_lut_button_style()
+        self.lutCleared.emit()
+    
+    def _update_lut_button_style(self):
+        """更新LUT按钮样式（根据LUT加载状态）"""
+        if not hasattr(self, '_lut_button'):
+            return
+        
+        # 根据LUT状态设置按钮高亮
+        if self._is_lut_loaded:
+            # LUT已加载，使用强调样式
+            self._lut_button.set_button_type("primary")
+        else:
+            # LUT未加载，使用普通样式
+            self._lut_button.set_button_type("normal")
+        
+        self._lut_button.update()
+    
+    def set_lut_loaded(self, loaded: bool):
+        """
+        设置LUT加载状态
+        
+        Args:
+            loaded: 是否已加载LUT
+        """
+        self._is_lut_loaded = loaded
+        self._update_lut_button_style()
 
     def _on_detach_button_clicked(self):
         """分离窗口按钮点击处理"""

@@ -385,8 +385,10 @@ class CustomMessageBox(QDialog):
         # 即使有parent，也要确保是独立窗口
         super().__init__(parent)
         # 设置窗口标志为顶级窗口，确保独立显示
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # 使用Dialog标志确保正确的窗口类型，同时保持无边框和透明背景
+        # 注意：不使用NoDropShadowWindowHint，让Qt处理系统阴影，我们使用自定义阴影
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         # 确保窗口不被父窗口裁剪
         self.setWindowFlag(Qt.WindowTransparentForInput, False)  # 允许接收输入
         # 移除了保持在最顶层的设置，让窗口可以被其他窗口覆盖
@@ -420,10 +422,12 @@ class CustomMessageBox(QDialog):
         初始化自定义提示窗口UI
         """
         # 应用DPI缩放因子到UI参数
-        scaled_margin = int(5 * self.dpi_scale)
         scaled_radius = int(6 * self.dpi_scale)
-        scaled_shadow_radius = int(30 * self.dpi_scale)
-        scaled_shadow_offset = int(2 * self.dpi_scale)
+        # 增加阴影模糊半径和偏移量，使阴影更加明显
+        scaled_shadow_radius = int(40 * self.dpi_scale)
+        scaled_shadow_offset = int(4 * self.dpi_scale)
+        # 边距必须足够大以容纳阴影效果，至少为阴影模糊半径的一半
+        scaled_margin = int(25 * self.dpi_scale)
         scaled_body_margin = int(10 * self.dpi_scale)
         scaled_body_spacing = int(8 * self.dpi_scale)
         # 使用全局字体大小，确保与settings.json中的设置一致
@@ -458,12 +462,13 @@ class CustomMessageBox(QDialog):
             }}
         """)
         
-        # 添加阴影效果
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(scaled_shadow_radius)
-        shadow.setOffset(0, scaled_shadow_offset)
-        shadow.setColor(QColor(0, 0, 0, 40))
-        self.window_body.setGraphicsEffect(shadow)
+        # 添加阴影效果到窗口主体
+        # 注意：阴影会在控件外部渲染，需要父控件有透明背景才能看到
+        self.shadow_effect = QGraphicsDropShadowEffect(self.window_body)
+        self.shadow_effect.setBlurRadius(scaled_shadow_radius)
+        self.shadow_effect.setOffset(0, scaled_shadow_offset)
+        self.shadow_effect.setColor(QColor(0, 0, 0, 80))
+        self.window_body.setGraphicsEffect(self.shadow_effect)
         
         # 窗口主体布局 - 正确的纵向排列顺序
         self.body_layout = QVBoxLayout(self.window_body)
@@ -878,6 +883,10 @@ class CustomMessageBox(QDialog):
         """
         self.window_body.adjustSize()
         self.adjustSize()
+        # 调整大小后刷新阴影效果
+        if hasattr(self, 'shadow_effect') and self.shadow_effect:
+            self.shadow_effect.setEnabled(False)
+            self.shadow_effect.setEnabled(True)
     
     def mousePressEvent(self, event):
         """
@@ -906,11 +915,14 @@ class CustomMessageBox(QDialog):
     
     def showEvent(self, event):
         """
-        显示事件，确保窗口居中
+        显示事件，确保窗口居中并刷新阴影效果
         """
         super().showEvent(event)
         # 确保窗口居中
         self.center()
+        # 强制刷新阴影效果
+        if hasattr(self, 'shadow_effect') and self.shadow_effect:
+            self.window_body.update()
     
     def center(self):
         """

@@ -658,7 +658,7 @@ class ModernSettingsWindow(QDialog):
             text="自动清理缩略图缓存",
             secondary_text="退出应用时自动清理缩略图缓存",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True)
+            initial_value=self._get_current_setting_value("file_selector.auto_clear_thumbnail_cache", True)
         )
         self.auto_clear_cache_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.auto_clear_thumbnail_cache": value}))
         file_selector_layout.addWidget(self.auto_clear_cache_switch)
@@ -670,7 +670,7 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
             min_value=1,
             max_value=30,
-            initial_value=self.settings_manager.get_setting("file_selector.cache_cleanup_period", 7)
+            initial_value=self._get_current_setting_value("file_selector.cache_cleanup_period", 7)
         )
         self.cache_cleanup_period.value_changed.connect(lambda value: self.current_settings.update({"file_selector.cache_cleanup_period": value}))
         file_selector_layout.addWidget(self.cache_cleanup_period)
@@ -682,7 +682,7 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
             min_value=100,
             max_value=2000,
-            initial_value=self.settings_manager.get_setting("file_selector.cache_cleanup_threshold", 500)
+            initial_value=self._get_current_setting_value("file_selector.cache_cleanup_threshold", 500)
         )
         self.cache_cleanup_threshold.value_changed.connect(lambda value: self.current_settings.update({"file_selector.cache_cleanup_threshold": value}))
         file_selector_layout.addWidget(self.cache_cleanup_threshold)
@@ -692,7 +692,7 @@ class ModernSettingsWindow(QDialog):
             text="恢复上次路径",
             secondary_text="启动时恢复上次打开的目录",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("file_selector.restore_last_path", True)
+            initial_value=self._get_current_setting_value("file_selector.restore_last_path", True)
         )
         self.restore_last_path_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.restore_last_path": value}))
         file_selector_layout.addWidget(self.restore_last_path_switch)
@@ -702,7 +702,7 @@ class ModernSettingsWindow(QDialog):
             text="触控操作优化",
             secondary_text="启用后可以长按卡片拖拽到文件存储池和统一预览器实现对应操作",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("file_selector.touch_optimization", True)
+            initial_value=self._get_current_setting_value("file_selector.touch_optimization", True)
         )
         self.touch_optimization_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.touch_optimization": value}))
         file_selector_layout.addWidget(self.touch_optimization_switch)
@@ -712,7 +712,7 @@ class ModernSettingsWindow(QDialog):
             text="鼠标按钮交换",
             secondary_text="启用后交换鼠标左键和右键的预览/选中的功能",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+            initial_value=self._get_current_setting_value("file_selector.mouse_buttons_swap", False)
         )
         self.mouse_buttons_swap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.mouse_buttons_swap": value}))
         file_selector_layout.addWidget(self.mouse_buttons_swap_switch)
@@ -729,7 +729,7 @@ class ModernSettingsWindow(QDialog):
             text="时间线视图",
             secondary_text="在文件选择器中显示时间线按钮",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("file_selector.timeline_view_enabled", False)
+            initial_value=self._get_current_setting_value("file_selector.timeline_view_enabled", False)
         )
         self.timeline_view_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.timeline_view_enabled": value}))
         experimental_layout.addWidget(self.timeline_view_switch)
@@ -749,7 +749,7 @@ class ModernSettingsWindow(QDialog):
             text="自动恢复记录",
             secondary_text="启动时自动恢复暂存池记录",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("file_staging.auto_restore_records", True)
+            initial_value=self._get_current_setting_value("file_staging.auto_restore_records", True)
         )
         self.auto_restore_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.auto_restore_records": value}))
         file_staging_layout.addWidget(self.auto_restore_switch)
@@ -760,7 +760,7 @@ class ModernSettingsWindow(QDialog):
             secondary_text="设置默认的数据导出路径",
             interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
             placeholder="输入导出数据路径",
-            initial_text=self.settings_manager.get_setting("file_staging.default_export_data_path", ""),
+            initial_text=self._get_current_setting_value("file_staging.default_export_data_path", ""),
             button_text="应用"
         )
         
@@ -776,7 +776,7 @@ class ModernSettingsWindow(QDialog):
             secondary_text="设置默认的文件导出路径",
             interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
             placeholder="输入导出文件路径",
-            initial_text=self.settings_manager.get_setting("file_staging.default_export_file_path", ""),
+            initial_text=self._get_current_setting_value("file_staging.default_export_file_path", ""),
             button_text="应用"
         )
         
@@ -791,7 +791,7 @@ class ModernSettingsWindow(QDialog):
             text="导出后删除原始文件",
             secondary_text="导出后自动删除原始文件",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("file_staging.delete_original_after_export", False)
+            initial_value=self._get_current_setting_value("file_staging.delete_original_after_export", False)
         )
         self.delete_original_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.delete_original_after_export": value}))
         file_staging_layout.addWidget(self.delete_original_switch)
@@ -801,7 +801,7 @@ class ModernSettingsWindow(QDialog):
             text="触控操作优化",
             secondary_text="启用后可以长按存储池卡片拖拽到文件选择器取消选中，拖拽到统一预览器实现预览",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("file_staging.touch_optimization", True)
+            initial_value=self._get_current_setting_value("file_staging.touch_optimization", True)
         )
         self.staging_touch_optimization_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.touch_optimization": value}))
         file_staging_layout.addWidget(self.staging_touch_optimization_switch)
@@ -822,7 +822,7 @@ class ModernSettingsWindow(QDialog):
             text="使用默认音量",
             secondary_text="开启后每次启动都将使用设置的默认音量，否则继承上次播放的音量",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("player.use_default_volume", False)
+            initial_value=self._get_current_setting_value("player.use_default_volume", False)
         )
         self.use_default_volume_switch.switch_toggled.connect(lambda value: self._on_use_default_volume_changed(value))
         volume_layout.addWidget(self.use_default_volume_switch)
@@ -834,7 +834,7 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
             min_value=0,
             max_value=100,
-            initial_value=self.settings_manager.get_setting("player.default_volume", 100)
+            initial_value=self._get_current_setting_value("player.default_volume", 100)
         )
         self.default_volume_bar.value_changed.connect(lambda value: self.current_settings.update({"player.default_volume": value}))
         # 根据开关状态设置初始可见性
@@ -853,7 +853,7 @@ class ModernSettingsWindow(QDialog):
             text="使用默认倍速",
             secondary_text="开启后每次启动都将使用设置的默认倍速，否则继承上次播放的倍速",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("player.use_default_speed", True)
+            initial_value=self._get_current_setting_value("player.use_default_speed", True)
         )
         self.use_default_speed_switch.switch_toggled.connect(lambda value: self._on_use_default_speed_changed(value))
         speed_layout.addWidget(self.use_default_speed_switch)
@@ -861,7 +861,7 @@ class ModernSettingsWindow(QDialog):
         # 默认倍速选择按钮（仅在开启使用默认倍速时显示）
         from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
         speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
-        current_speed = self.settings_manager.get_setting("player.default_speed", 1.0)
+        current_speed = self._get_current_setting_value("player.default_speed", 1.0)
 
         self.default_speed_setting = CustomSettingItem(
             text="默认倍速",
@@ -901,7 +901,7 @@ class ModernSettingsWindow(QDialog):
 
         # 背景样式选择（流体动画、封面模糊）
         background_styles = ["流体动画", "封面模糊"]
-        current_style = self.settings_manager.get_setting("player.audio_background_style", "流体动画")
+        current_style = self._get_current_setting_value("player.audio_background_style", "流体动画")
 
         self.audio_background_style_setting = CustomSettingItem(
             text="背景样式",
@@ -938,7 +938,7 @@ class ModernSettingsWindow(QDialog):
             text="播放器全屏化",
             secondary_text="开启后播放器控制栏将显示全屏按钮（分离窗口按钮）",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("player.enable_fullscreen", False)
+            initial_value=self._get_current_setting_value("player.enable_fullscreen", False)
         )
         self.enable_fullscreen_switch.switch_toggled.connect(
             lambda value: self.current_settings.update({"player.enable_fullscreen": value})
@@ -997,7 +997,7 @@ class ModernSettingsWindow(QDialog):
             text="深色主题",
             secondary_text="启用深色主题模式",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("appearance.theme", "default") == "dark"
+            initial_value=self._get_current_setting_value("appearance.theme", "default") == "dark"
         )
         def on_theme_toggled(value):
             theme_value = "dark" if value else "default"
@@ -1030,7 +1030,7 @@ class ModernSettingsWindow(QDialog):
         theme_layout.addWidget(self.theme_switch)
         
         # 获取当前颜色以确定初始主题
-        current_accent = self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+        current_accent = self._get_current_setting_value("appearance.colors.accent_color", "#007AFF")
         
         # 确定初始主题
         initial_theme = "自定义"
@@ -1090,7 +1090,7 @@ class ModernSettingsWindow(QDialog):
             secondary_text="输入十六进制颜色值（如 #FF0000）",
             interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
             placeholder="#RRGGBB",
-            initial_text=current_accent,
+            initial_text=self._get_current_setting_value("appearance.colors.accent_color", "#007AFF"),
             button_text="应用"
         )
         
@@ -1123,7 +1123,7 @@ class ModernSettingsWindow(QDialog):
         font_families = _get_font_families_cached()
 
         # 获取当前字体设置
-        current_font = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
+        current_font = self._get_current_setting_value("font.style", "Microsoft YaHei")
 
         # 创建字体样式选择控件，使用按钮组交互类型
         self.font_style_setting = CustomSettingItem(
@@ -1162,7 +1162,7 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
             min_value=6,
             max_value=40,
-            initial_value=self.settings_manager.get_setting("font.size", 20)
+            initial_value=self._get_current_setting_value("font.size", 20)
         )
         self.font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"font.size": value}))
         font_layout.addWidget(self.font_size_bar)
@@ -1183,7 +1183,7 @@ class ModernSettingsWindow(QDialog):
             text="自动换行",
             secondary_text="为文本提供自动换行功能",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("text_preview.word_wrap", True)
+            initial_value=self._get_current_setting_value("text_preview.word_wrap", True)
         )
         self.text_word_wrap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"text_preview.word_wrap": value}))
         text_preview_layout.addWidget(self.text_word_wrap_switch)
@@ -1193,7 +1193,7 @@ class ModernSettingsWindow(QDialog):
             text="使用全局字体",
             secondary_text="开启时文本预览将自动使用全局字体进行渲染",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("text_preview.use_global_font", True)
+            initial_value=self._get_current_setting_value("text_preview.use_global_font", True)
         )
         self.use_global_font_switch.switch_toggled.connect(lambda value: self._on_use_global_font_changed(value))
         text_preview_layout.addWidget(self.use_global_font_switch)
@@ -1201,7 +1201,7 @@ class ModernSettingsWindow(QDialog):
         # 自定义加载字体选择（仅在关闭使用全局字体时显示）
         from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
         font_families = _get_font_families_cached()
-        current_custom_font = self.settings_manager.get_setting("text_preview.custom_font_family", "Microsoft YaHei")
+        current_custom_font = self._get_current_setting_value("text_preview.custom_font_family", "Microsoft YaHei")
 
         self.custom_font_setting = CustomSettingItem(
             text="自定义加载字体",
@@ -1233,7 +1233,7 @@ class ModernSettingsWindow(QDialog):
             text="使用全局字体大小",
             secondary_text="开启时文本预览将自动使用全局字体大小进行渲染",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("text_preview.use_global_font_size", True)
+            initial_value=self._get_current_setting_value("text_preview.use_global_font_size", True)
         )
         self.use_global_font_size_switch.switch_toggled.connect(lambda value: self._on_use_global_font_size_changed(value))
         text_preview_layout.addWidget(self.use_global_font_size_switch)
@@ -1245,7 +1245,7 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
             min_value=4,
             max_value=40,
-            initial_value=self.settings_manager.get_setting("text_preview.custom_font_size", 12)
+            initial_value=self._get_current_setting_value("text_preview.custom_font_size", 12)
         )
         self.custom_font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"text_preview.custom_font_size": value}))
         # 根据开关状态设置初始可见性
@@ -1264,7 +1264,7 @@ class ModernSettingsWindow(QDialog):
             text="自动换行",
             secondary_text="为Markdown文本提供自动换行功能",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("text_preview.markdown_word_wrap", True)
+            initial_value=self._get_current_setting_value("text_preview.markdown_word_wrap", True)
         )
         self.markdown_word_wrap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"text_preview.markdown_word_wrap": value}))
         markdown_layout.addWidget(self.markdown_word_wrap_switch)
@@ -1274,13 +1274,13 @@ class ModernSettingsWindow(QDialog):
             text="使用全局字体",
             secondary_text="开启时Markdown预览将自动使用全局字体进行渲染",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("text_preview.markdown_use_global_font", True)
+            initial_value=self._get_current_setting_value("text_preview.markdown_use_global_font", True)
         )
         self.markdown_use_global_font_switch.switch_toggled.connect(lambda value: self._on_markdown_use_global_font_changed(value))
         markdown_layout.addWidget(self.markdown_use_global_font_switch)
 
         # Markdown自定义加载字体选择（仅在关闭使用全局字体时显示）
-        current_markdown_font = self.settings_manager.get_setting("text_preview.markdown_custom_font_family", "Microsoft YaHei")
+        current_markdown_font = self._get_current_setting_value("text_preview.markdown_custom_font_family", "Microsoft YaHei")
 
         self.markdown_custom_font_setting = CustomSettingItem(
             text="自定义加载字体",
@@ -1312,7 +1312,7 @@ class ModernSettingsWindow(QDialog):
             text="使用全局字体大小",
             secondary_text="开启时Markdown预览将自动使用全局字体大小进行渲染",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("text_preview.markdown_use_global_font_size", True)
+            initial_value=self._get_current_setting_value("text_preview.markdown_use_global_font_size", True)
         )
         self.markdown_use_global_font_size_switch.switch_toggled.connect(lambda value: self._on_markdown_use_global_font_size_changed(value))
         markdown_layout.addWidget(self.markdown_use_global_font_size_switch)
@@ -1324,7 +1324,7 @@ class ModernSettingsWindow(QDialog):
             interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
             min_value=4,
             max_value=40,
-            initial_value=self.settings_manager.get_setting("text_preview.markdown_custom_font_size", 12)
+            initial_value=self._get_current_setting_value("text_preview.markdown_custom_font_size", 12)
         )
         self.markdown_custom_font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"text_preview.markdown_custom_font_size": value}))
         # 根据开关状态设置初始可见性
@@ -1389,7 +1389,7 @@ class ModernSettingsWindow(QDialog):
             text="启用实验性功能",
             secondary_text="开启后将解锁未经验证的高级功能，可能导致不稳定",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self.settings_manager.get_setting("developer.experimental_feature_enabled", False)
+            initial_value=self._get_current_setting_value("developer.experimental_feature_enabled", False)
         )
         self.experimental_feature_switch.switch_toggled.connect(self._on_experimental_feature_toggled)
         self.scroll_layout.addWidget(self.experimental_feature_switch)
@@ -1579,11 +1579,11 @@ class ModernSettingsWindow(QDialog):
         """
         self._update_styles()
         
-        base_color = self.current_settings.get("appearance.colors.base_color", "#FFFFFF")
-        secondary_color = self.current_settings.get("appearance.colors.secondary_color", "#333333")
-        normal_color = self.current_settings.get("appearance.colors.normal_color", "#e0e0e0")
-        auxiliary_color = self.current_settings.get("appearance.colors.auxiliary_color", "#f1f3f3")
-        accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
+        base_color = self._get_current_setting_value("appearance.colors.base_color", "#FFFFFF")
+        secondary_color = self._get_current_setting_value("appearance.colors.secondary_color", "#333333")
+        normal_color = self._get_current_setting_value("appearance.colors.normal_color", "#e0e0e0")
+        auxiliary_color = self._get_current_setting_value("appearance.colors.auxiliary_color", "#f1f3f3")
+        accent_color = self._get_current_setting_value("appearance.colors.accent_color", "#007AFF")
         
         self.setStyleSheet(f"""
             QDialog {{ 
@@ -1638,9 +1638,7 @@ class ModernSettingsWindow(QDialog):
         """
         self.content_title.setStyleSheet(content_title_style)
         
-        # 更新滚动区域样式
-        normal_color = self.current_settings.get("appearance.colors.normal_color", "#e0e0e0")
-        accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
+        # 更新滚动区域样式（使用之前已经获取的颜色变量）
         
         scroll_style = f"""
             QScrollArea {{ 
@@ -1725,9 +1723,9 @@ class ModernSettingsWindow(QDialog):
         """
         更新所有样式表
         """
-        base_color = self.current_settings.get("appearance.colors.base_color", "#FFFFFF")
-        secondary_color = self.current_settings.get("appearance.colors.secondary_color", "#333333")
-        auxiliary_color = self.current_settings.get("appearance.colors.auxiliary_color", "#f1f3f3")
+        base_color = self._get_current_setting_value("appearance.colors.base_color", "#FFFFFF")
+        secondary_color = self._get_current_setting_value("appearance.colors.secondary_color", "#333333")
+        auxiliary_color = self._get_current_setting_value("appearance.colors.auxiliary_color", "#f1f3f3")
         
         self.group_box_style = f"""
             QGroupBox {{
@@ -1749,6 +1747,22 @@ class ModernSettingsWindow(QDialog):
             }}
         """
     
+    def _get_current_setting_value(self, key_path, default=None):
+        """
+        获取当前设置值
+        优先从 self.current_settings 中读取，没有则从 settings_manager 读取
+        
+        Args:
+            key_path (str): 设置键路径
+            default: 默认值
+            
+        Returns:
+            设置值
+        """
+        if key_path in self.current_settings:
+            return self.current_settings[key_path]
+        return self.settings_manager.get_setting(key_path, default)
+    
     def load_settings(self):
         """
         加载当前设置
@@ -1758,6 +1772,9 @@ class ModernSettingsWindow(QDialog):
             "appearance.colors.base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF"),
             "appearance.colors.secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
             "appearance.colors.auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f3"),
+            "appearance.colors.accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
+            "appearance.colors.normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
+            "appearance.colors.custom_design_color": self.settings_manager.get_setting("appearance.colors.custom_design_color", "#27BE24"),
             "font.size": self.settings_manager.get_setting("font.size", 20),
             "font.style": self.settings_manager.get_setting("font.style", "Microsoft YaHei"),
             "file_selector.auto_clear_thumbnail_cache": self.settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True),
@@ -1766,12 +1783,32 @@ class ModernSettingsWindow(QDialog):
             "file_selector.restore_last_path": self.settings_manager.get_setting("file_selector.restore_last_path", True),
             "file_selector.return_shortcut": self.settings_manager.get_setting("file_selector.return_shortcut", "middle_click"),
             "file_selector.timeline_view_enabled": self.settings_manager.get_setting("file_selector.timeline_view_enabled", False),
+            "file_selector.touch_optimization": self.settings_manager.get_setting("file_selector.touch_optimization", True),
+            "file_selector.mouse_buttons_swap": self.settings_manager.get_setting("file_selector.mouse_buttons_swap", False),
             "file_staging.auto_restore_records": self.settings_manager.get_setting("file_staging.auto_restore_records", True),
             "file_staging.default_export_data_path": self.settings_manager.get_setting("file_staging.default_export_data_path", ""),
             "file_staging.default_export_file_path": self.settings_manager.get_setting("file_staging.default_export_file_path", ""),
             "file_staging.delete_original_after_export": self.settings_manager.get_setting("file_staging.delete_original_after_export", False),
+            "file_staging.touch_optimization": self.settings_manager.get_setting("file_staging.touch_optimization", True),
             "player.speed": self.settings_manager.get_setting("player.speed", 1.0),
-            "player.volume": self.settings_manager.get_setting("player.volume", 100)
+            "player.volume": self.settings_manager.get_setting("player.volume", 100),
+            "player.use_default_volume": self.settings_manager.get_setting("player.use_default_volume", False),
+            "player.default_volume": self.settings_manager.get_setting("player.default_volume", 100),
+            "player.use_default_speed": self.settings_manager.get_setting("player.use_default_speed", True),
+            "player.default_speed": self.settings_manager.get_setting("player.default_speed", 1.0),
+            "player.audio_background_style": self.settings_manager.get_setting("player.audio_background_style", "流体动画"),
+            "player.enable_fullscreen": self.settings_manager.get_setting("player.enable_fullscreen", False),
+            "text_preview.word_wrap": self.settings_manager.get_setting("text_preview.word_wrap", True),
+            "text_preview.use_global_font": self.settings_manager.get_setting("text_preview.use_global_font", True),
+            "text_preview.custom_font_family": self.settings_manager.get_setting("text_preview.custom_font_family", "Microsoft YaHei"),
+            "text_preview.use_global_font_size": self.settings_manager.get_setting("text_preview.use_global_font_size", True),
+            "text_preview.custom_font_size": self.settings_manager.get_setting("text_preview.custom_font_size", 12),
+            "text_preview.markdown_word_wrap": self.settings_manager.get_setting("text_preview.markdown_word_wrap", True),
+            "text_preview.markdown_use_global_font": self.settings_manager.get_setting("text_preview.markdown_use_global_font", True),
+            "text_preview.markdown_custom_font_family": self.settings_manager.get_setting("text_preview.markdown_custom_font_family", "Microsoft YaHei"),
+            "text_preview.markdown_use_global_font_size": self.settings_manager.get_setting("text_preview.markdown_use_global_font_size", True),
+            "text_preview.markdown_custom_font_size": self.settings_manager.get_setting("text_preview.markdown_custom_font_size", 12),
+            "developer.experimental_feature_enabled": self.settings_manager.get_setting("developer.experimental_feature_enabled", False)
         }
     
     def save_settings(self):

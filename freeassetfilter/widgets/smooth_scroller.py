@@ -107,21 +107,16 @@ class D_ScrollBar(QScrollBar):
         当内容无需滚动时，将滚动条宽度设为0px
         当内容需要滚动时，恢复默认宽度
         """
-        try:
-            if not self or not self.isVisible():
-                return
-            needs_scroll = self._needs_scroll()
-            target_width = self._default_width if needs_scroll else 0
-            
-            # 如果宽度没有变化，直接返回
-            if self._current_width == target_width:
-                return
-            
-            # 直接设置宽度，不使用动画
-            self._current_width = target_width
-            self._update_style()
-        except RuntimeError:
-            pass
+        needs_scroll = self._needs_scroll()
+        target_width = self._default_width if needs_scroll else 0
+        
+        # 如果宽度没有变化，直接返回
+        if self._current_width == target_width:
+            return
+        
+        # 直接设置宽度，不使用动画
+        self._current_width = target_width
+        self._update_style()
     
     def _needs_scroll(self):
         """
@@ -130,34 +125,29 @@ class D_ScrollBar(QScrollBar):
         Returns:
             bool: 是否需要滚动
         """
-        try:
-            if not self:
-                return False
-            # 首先检查滚动条自身的range（最可靠的指标）
-            if self.maximum() > self.minimum():
-                return True
+        # 首先检查滚动条自身的range（最可靠的指标）
+        if self.maximum() > self.minimum():
+            return True
+        
+        # 如果range为0，但关联了滚动区域，进一步检查内容尺寸
+        # 这种情况可能发生在滚动条range还未更新时
+        if self._scroll_area and self._scroll_area.widget():
+            viewport = self._scroll_area.viewport()
+            content = self._scroll_area.widget()
             
-            # 如果range为0，但关联了滚动区域，进一步检查内容尺寸
-            # 这种情况可能发生在滚动条range还未更新时
-            if self._scroll_area and self._scroll_area.widget():
-                viewport = self._scroll_area.viewport()
-                content = self._scroll_area.widget()
-                
-                if viewport and content:
-                    if self.orientation() == Qt.Vertical:
-                        # 垂直方向：比较内容高度和视口高度
-                        # 添加一个小的阈值避免边界情况
-                        content_height = content.height()
-                        viewport_height = viewport.height()
-                        # 使用更宽松的判断条件
-                        return content_height > viewport_height + 5
-                    else:
-                        # 水平方向：比较内容宽度和视口宽度
-                        content_width = content.width()
-                        viewport_width = viewport.width()
-                        return content_width > viewport_width + 5
-        except RuntimeError:
-            pass
+            if viewport and content:
+                if self.orientation() == Qt.Vertical:
+                    # 垂直方向：比较内容高度和视口高度
+                    # 添加一个小的阈值避免边界情况
+                    content_height = content.height()
+                    viewport_height = viewport.height()
+                    # 使用更宽松的判断条件
+                    return content_height > viewport_height + 5
+                else:
+                    # 水平方向：比较内容宽度和视口宽度
+                    content_width = content.width()
+                    viewport_width = viewport.width()
+                    return content_width > viewport_width + 5
         
         return False
     
@@ -575,13 +565,10 @@ class SmoothScroller:
             QTimer.singleShot(50, do_check)
         
         def do_check():
-            try:
-                if isinstance(v_scrollbar, D_ScrollBar):
-                    v_scrollbar._check_and_update_width()
-                if isinstance(h_scrollbar, D_ScrollBar):
-                    h_scrollbar._check_and_update_width()
-            except RuntimeError:
-                pass
+            if isinstance(v_scrollbar, D_ScrollBar):
+                v_scrollbar._check_and_update_width()
+            if isinstance(h_scrollbar, D_ScrollBar):
+                h_scrollbar._check_and_update_width()
         
         # 使用事件过滤器监听尺寸变化
         class ResizeEventFilter(QObject):
@@ -604,12 +591,7 @@ class SmoothScroller:
         
         # 初始检查
         from PySide6.QtCore import QTimer
-        def initial_check():
-            try:
-                do_check()
-            except RuntimeError:
-                pass
-        QTimer.singleShot(100, initial_check)
+        QTimer.singleShot(100, do_check)
     
     @staticmethod
     def _configure_scroll_area(scroll_area):

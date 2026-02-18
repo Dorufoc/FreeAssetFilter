@@ -98,6 +98,9 @@ class AudioBackground(QWidget):
         # 封面显示相关属性（用于流体背景模式）
         self._cover_pixmap = None  # 封面图像（用于中央显示）
         self._cover_size = 200  # 封面显示尺寸
+        self._max_cover_size = 200  # 封面最大尺寸
+        self._min_cover_size = 80  # 封面最小尺寸
+        self._cover_margin = 40  # 封面与窗口边缘的最小间距
 
         # 创建封面显示容器（用于显示封面或SVG图标）
         # 使用QWidget作为居中容器，通过布局系统实现居中，避免手动计算像素值
@@ -162,9 +165,18 @@ class AudioBackground(QWidget):
         self._cover_container.show()
         # 使用延迟调用确保AudioBackground已经有正确尺寸
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: self._cover_container.setGeometry(self.rect()))
+        QTimer.singleShot(0, lambda: self._init_cover_container_geometry())
 
         self.update()
+
+    def _init_cover_container_geometry(self):
+        """
+        初始化封面容器几何区域
+        在组件加载时根据窗口大小调整封面尺寸
+        """
+        self._cover_container.setGeometry(self.rect())
+        # 根据当前窗口大小调整封面尺寸
+        self._update_cover_size()
     
     def unload(self):
         """卸载背景组件"""
@@ -420,6 +432,9 @@ class AudioBackground(QWidget):
         Args:
             cover_data: 封面图像的二进制数据，如果为None则显示默认音乐图标并使用强调色主题
         """
+        # 保存原始封面数据以便后续重新加载
+        self._cover_data = cover_data
+
         # 隐藏当前的封面显示
         self._cover_label.hide()
         self._svg_container.hide()
@@ -864,16 +879,66 @@ class AudioBackground(QWidget):
             import traceback
             traceback.print_exc()
 
-    def resizeEvent(self, event):
+    def _reload_current_cover(self):
         """
-        大小调整事件
-        使用QT原生对齐功能，通过设置封面容器几何区域实现居中
+        重新加载当前封面图像以应用新的尺寸
+        使用原始封面数据重新生成指定尺寸的封面图像
         """
-        super().resizeEvent(event)
-        # 封面容器使用整个父窗口区域，布局系统会自动居中内容
-        if self._is_loaded and self._cover_container.isVisible():
-            self._cover_container.setGeometry(self.rect())
-        self.update()
+        if self._cover_data is None:
+            return
+
+        try:
+            # 从原始数据重新加载图像
+            image = Image.open(io.BytesIO(self._cover_data))
+
+            # 转换为RGBA模式
+            if image.mode != 'RGBA':
+                image = image.convert('RGBA')
+
+            # 缩放到新的显示尺寸（保持比例）
+            display_image = image.copy()
+            display_image.thumbnail((self._cover_size, self._cover_size), Image.Resampling.LANCZOS)
+
+            # 转换为QPixmap
+            self._cover_pixmap = self._pil_to_pixmap(display_image)
+
+            # 更新封面显示
+            self._cover_label.setPixmap(self._cover_pixmap)
+            self._cover_label.setMinimumSize(self._cover_pixmap.size())
+            self._cover_layout.update()
+
+            print(f"[AudioBackground] 封面已重新调整尺寸: {display_image.size}")
+
+        except Exception as e:
+            print(f"[AudioBackground] 重新加载封面失败: {e}")
+
+    def _reload_current_svg(self):
+        """
+        重新调整SVG图标尺寸
+        """
+        if self._svg_widget is None:
+            return
+
+        try:
+            # 获取SVG原始尺寸
+            svg_size = self._svg_widget.renderer().defaultSize()
+            aspect_ratio = svg_size.width() / svg_size.height() if svg_size.height() > 0 else 1.0
+
+            # 计算适合新cover_size的尺寸（保持比例）
+            if aspect_ratio >= 1:
+                widget_width = self._cover_size
+                widget_height = int(self._cover_size / aspect_ratio)
+            else:
+                widget_height = self._cover_size
+                widget_width = int(self._cover_size * aspect_ratio)
+
+            self._svg_widget.setFixedSize(widget_width, widget_height)
+            self._svg_container_layout.update()
+
+            print(f"[AudioBackground] SVG图标已重新调整尺寸: {widget_width}x{widget_height}")
+
+        except Exception as e:
+            print(f"[AudioBackground] 重新调整SVG尺寸失败: {e}")
 
     # ==================== 封面模糊方法 ====================
 
@@ -972,9 +1037,65 @@ class AudioBackground(QWidget):
     # ==================== 绘制方法 ====================
     
     def resizeEvent(self, event):
-        """大小调整事件"""
+        """
+        大小调整事件
+        窗口大小变化时更新封面容器几何区域，确保封面图片始终居中显示
+        同时根据窗口大小自动调整封面尺寸
+        """
         super().resizeEvent(event)
+        # 封面容器使用整个父窗口区域，布局系统会自动居中内容
+        if self._is_loaded and self._cover_container.isVisible():
+            self._cover_container.setGeometry(self.rect())
+            # 根据窗口大小自动调整封面尺寸
+            self._update_cover_size()
         self.update()
+
+    def _update_cover_size(self):
+        """
+        根据窗口大小自动调整封面尺寸
+        优先保持封面居中，空间不足时缩小，空间充足时恢复
+        """
+        if not self._is_loaded:
+            return
+
+        # 获取当前窗口可用空间（减去控制栏高度约100像素，边距只影响布局不影响图片本身）
+        available_width = self.width()
+        available_height = self.height() - 100
+
+        # 计算当前封面尺寸是否能容纳在可用空间中
+        current_size = self._cover_size
+
+        # 如果当前尺寸可以容纳且未达到最大尺寸，尝试恢复
+        if current_size <= available_width and current_size <= available_height:
+            # 如果当前尺寸小于最大尺寸，尝试恢复到最大尺寸
+            if current_size < self._max_cover_size:
+                # 计算可以恢复到的尺寸（不超过最大尺寸）
+                new_size = min(self._max_cover_size, int(min(available_width, available_height)))
+                # 只有当新尺寸大于当前尺寸时才更新
+                if new_size > current_size:
+                    self._cover_size = new_size
+                    # 重新加载当前封面以应用新尺寸
+                    if self._cover_pixmap is not None:
+                        self._reload_current_cover()
+                    elif self._svg_widget is not None:
+                        self._reload_current_svg()
+            return
+
+        # 空间不足，需要缩小封面
+        # 计算适合当前窗口的最大封面尺寸
+        max_size = min(available_width, available_height)
+
+        # 限制在最小和最大尺寸之间（最小尺寸限制图片本身的大小，不受边距影响）
+        new_size = max(self._min_cover_size, min(self._max_cover_size, int(max_size)))
+
+        # 如果尺寸发生变化，更新封面显示
+        if new_size != self._cover_size:
+            self._cover_size = new_size
+            # 重新加载当前封面以应用新尺寸
+            if self._cover_pixmap is not None:
+                self._reload_current_cover()
+            elif self._svg_widget is not None:
+                self._reload_current_svg()
     
     def paintEvent(self, event):
         """绘制事件"""

@@ -163,6 +163,12 @@ class MPVCommandType(IntEnum):
     GET_SPEED = 15
     GET_VIDEO_SIZE = 16
     IS_AUDIO_ONLY = 17
+    SET_VF_FILTER = 18
+    LOAD_GLSL_SHADER = 19
+    SET_GLSL_SHADERS = 20
+    CLEAR_GLSL_SHADERS = 21
+    SET_LUT = 22
+    CLEAR_LUT = 23
     CLOSE = 99
 
 
@@ -480,7 +486,7 @@ class MPVPlayerCore(QObject):
     def _configure_mpv(self, mpv_handle: c_void_p):
         """配置MPV基本参数"""
         config = {
-            "vo": "gpu",
+            "vo": "gpu-next",
             "hwdec": "auto-safe",
             "keep-open": "yes",
             "idle": "once",
@@ -716,6 +722,18 @@ class MPVPlayerCore(QObject):
                 result = (int(w), int(h))
             elif cmd_type == MPVCommandType.IS_AUDIO_ONLY:
                 result = self._is_audio_only_internal(mpv_handle)
+            elif cmd_type == MPVCommandType.SET_VF_FILTER:
+                result = self._set_vf_filter_internal(mpv_handle, *args, **kwargs)
+            elif cmd_type == MPVCommandType.LOAD_GLSL_SHADER:
+                result = self._load_glsl_shader_internal(mpv_handle, *args, **kwargs)
+            elif cmd_type == MPVCommandType.SET_GLSL_SHADERS:
+                result = self._set_glsl_shaders_internal(mpv_handle, *args, **kwargs)
+            elif cmd_type == MPVCommandType.CLEAR_GLSL_SHADERS:
+                result = self._clear_glsl_shaders_internal(mpv_handle, *args, **kwargs)
+            elif cmd_type == MPVCommandType.SET_LUT:
+                result = self._set_lut_internal(mpv_handle, *args, **kwargs)
+            elif cmd_type == MPVCommandType.CLEAR_LUT:
+                result = self._clear_lut_internal(mpv_handle)
             elif cmd_type == MPVCommandType.CLOSE:
                 self._stop_event.set()
                 result = True
@@ -838,6 +856,140 @@ class MPVPlayerCore(QObject):
             with self._state_lock:
                 self._loop_mode = loop_mode
         return result >= 0
+    
+    def _set_vf_filter_internal(self, mpv_handle: c_void_p, filter_string: str, **kwargs) -> bool:
+        """内部设置视频滤镜实现"""
+        try:
+            if filter_string:
+                # 使用vf add命令添加滤镜
+                cmd_args = [b"vf", b"add", filter_string.encode('utf-8'), None]
+                cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
+                result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
+                print(f"[LUT] vf add命令结果: {result}")
+                
+                # 尝试强制视频重新配置以应用滤镜
+                if result >= 0:
+                    try:
+                        reconfig_args = [b"video-reconfig", None]
+                        reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
+                        reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
+                        print(f"[LUT] video-reconfig结果: {reconfig_result}")
+                    except Exception as e2:
+                        print(f"[LUT] video-reconfig失败: {e2}")
+                
+                return result >= 0
+            else:
+                # 清除滤镜
+                clear_cmd = [b"vf", b"cl", None]
+                clear_array = (c_char_p * len(clear_cmd))(*clear_cmd)
+                result = self._dll_loader.dll.mpv_command(mpv_handle, clear_array)
+                print(f"[LUT] 清除vf结果: {result}")
+                return result >= 0
+        except Exception as e:
+            print(f"[LUT] 设置vf滤镜失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _load_glsl_shader_internal(self, mpv_handle: c_void_p, shader_path: str, **kwargs) -> bool:
+        """内部加载GLSL着色器实现（方式2）"""
+        try:
+            # 使用load glsl-shaders命令
+            cmd_args = [b"load", b"glsl-shaders", shader_path.encode('utf-8'), None]
+            cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
+            result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
+            print(f"[LUT] load glsl-shaders命令结果: {result}")
+            
+            # 尝试强制视频重新配置
+            if result >= 0:
+                try:
+                    reconfig_args = [b"video-reconfig", None]
+                    reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
+                    reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
+                    print(f"[LUT] video-reconfig结果: {reconfig_result}")
+                except Exception as e2:
+                    print(f"[LUT] video-reconfig失败: {e2}")
+            
+            return result >= 0
+        except Exception as e:
+            print(f"[LUT] 加载GLSL着色器失败: {e}")
+            return False
+    
+    def _set_glsl_shaders_internal(self, mpv_handle: c_void_p, shader_list: str, **kwargs) -> bool:
+        """内部设置GLSL着色器列表实现（方式3）"""
+        try:
+            # 使用set glsl-shaders命令
+            cmd_args = [b"set", b"glsl-shaders", shader_list.encode('utf-8'), None]
+            cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
+            result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
+            print(f"[LUT] set glsl-shaders命令结果: {result}")
+            
+            if result < 0:
+                # 尝试使用set_property_string
+                result2 = self._dll_loader.dll.mpv_set_property_string(
+                    mpv_handle, b"glsl-shaders", shader_list.encode('utf-8')
+                )
+                print(f"[LUT] set_property_string glsl-shaders结果: {result2}")
+                result = result2
+            
+            # 尝试强制视频重新配置
+            if result >= 0:
+                try:
+                    reconfig_args = [b"video-reconfig", None]
+                    reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
+                    reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
+                    print(f"[LUT] video-reconfig结果: {reconfig_result}")
+                except Exception as e2:
+                    print(f"[LUT] video-reconfig失败: {e2}")
+            
+            return result >= 0
+        except Exception as e:
+            print(f"[LUT] 设置GLSL着色器失败: {e}")
+            return False
+    
+    def _clear_glsl_shaders_internal(self, mpv_handle: c_void_p, **kwargs) -> bool:
+        """内部清除GLSL着色器实现"""
+        try:
+            # 使用glsl-shaders clr命令清除着色器
+            cmd_args = [b"glsl-shaders", b"clr", None]
+            cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
+            result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
+            print(f"[LUT] glsl-shaders clr命令结果: {result}")
+            return result >= 0
+        except Exception as e:
+            print(f"[LUT] 清除GLSL着色器失败: {e}")
+            return False
+    
+    def _set_lut_internal(self, mpv_handle: c_void_p, lut_path: str, **kwargs) -> bool:
+        """内部设置LUT实现（使用--lut选项）"""
+        try:
+            abs_path = os.path.abspath(lut_path).replace("\\", "/")
+            result = self._dll_loader.dll.mpv_set_option_string(
+                mpv_handle,
+                b"lut",
+                abs_path.encode('utf-8')
+            )
+            print(f"[LUT] set lut={abs_path} 结果: {result}")
+            return result >= 0
+        except Exception as e:
+            print(f"[LUT] 设置LUT失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _clear_lut_internal(self, mpv_handle: c_void_p, **kwargs) -> bool:
+        """内部清除LUT实现"""
+        try:
+            result = self._dll_loader.dll.mpv_set_option_string(
+                mpv_handle,
+                b"lut",
+                b""
+            )
+            print(f"[LUT] 清除lut结果: {result}")
+            return result >= 0
+        except Exception as e:
+            print(f"[LUT] 清除LUT失败: {e}")
+            return False
     
     def _set_window_id_internal(self, mpv_handle: c_void_p, window_id: int, **kwargs) -> bool:
         """内部设置窗口ID实现"""
@@ -1120,6 +1272,78 @@ class MPVPlayerCore(QObject):
             bool: 操作是否成功
         """
         return self.set_loop(mode)
+    
+    def set_vf_filter(self, filter_string: str) -> bool:
+        """
+        设置视频滤镜（如LUT）
+        
+        Args:
+            filter_string: 滤镜字符串，如 "lut3d=file=path/to/lut.cube"
+            
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.SET_VF_FILTER, filter_string, timeout=5.0)
+        return result if result is not None else False
+    
+    def load_glsl_shader(self, shader_path: str) -> bool:
+        """
+        加载GLSL着色器（方式2）
+        
+        Args:
+            shader_path: 着色器文件路径
+            
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.LOAD_GLSL_SHADER, shader_path, timeout=5.0)
+        return result if result is not None else False
+    
+    def set_glsl_shaders(self, shader_list: str) -> bool:
+        """
+        设置GLSL着色器列表（方式3）
+        
+        Args:
+            shader_list: 着色器列表JSON字符串
+            
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.SET_GLSL_SHADERS, shader_list, timeout=5.0)
+        return result if result is not None else False
+    
+    def clear_glsl_shaders(self) -> bool:
+        """
+        清除所有GLSL着色器
+        
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.CLEAR_GLSL_SHADERS, timeout=5.0)
+        return result if result is not None else False
+    
+    def set_lut(self, lut_path: str) -> bool:
+        """
+        设置LUT（使用--lut选项）
+        
+        Args:
+            lut_path: LUT文件路径（.cube格式）
+            
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.SET_LUT, lut_path, timeout=5.0)
+        return result if result is not None else False
+    
+    def clear_lut(self) -> bool:
+        """
+        清除LUT
+        
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.CLEAR_LUT, timeout=5.0)
+        return result if result is not None else False
     
     def set_window_id(self, window_id: int) -> bool:
         """

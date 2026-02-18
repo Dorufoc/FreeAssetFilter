@@ -75,6 +75,8 @@ class MPVOperationType(Enum):
     IS_PAUSED = "is_paused"
     IS_MUTED = "is_muted"
     GET_VIDEO_SIZE = "get_video_size"
+    LOAD_LUT = "load_lut"
+    UNLOAD_LUT = "unload_lut"
 
 
 @dataclass
@@ -107,6 +109,7 @@ class MPVState:
     error_code: int = 0
     error_message: str = ""
     last_update: float = field(default_factory=time.time)
+    current_lut: str = ""  # 当前加载的LUT文件路径
 
 
 class MPVManagerLogger:
@@ -198,6 +201,8 @@ class MPVManager(QObject):
     fileLoaded = Signal(str, bool)  # 文件加载完成信号（路径，是否为音频）
     fileEnded = Signal(int)  # 文件播放结束信号（结束原因）
     errorOccurred = Signal(int, str)  # 错误发生信号（错误码，错误信息）
+    lutLoaded = Signal(str)  # LUT加载完成信号（LUT路径）
+    lutUnloaded = Signal()  # LUT卸载完成信号
 
     # 单例实例
     _instance: Optional['MPVManager'] = None
@@ -410,6 +415,12 @@ class MPVManager(QObject):
 
                 elif operation_type == MPVOperationType.GET_VIDEO_SIZE:
                     return self._do_get_video_size()
+
+                elif operation_type == MPVOperationType.LOAD_LUT:
+                    return self._do_load_lut(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.UNLOAD_LUT:
+                    return self._do_unload_lut()
 
                 else:
                     raise ValueError(f"未知操作类型: {operation_type}")
@@ -751,6 +762,102 @@ class MPVManager(QObject):
             return (0, 0)
 
         return self._mpv_core.get_video_size()
+
+    def _do_load_lut(self, lut_file_path: str) -> bool:
+        """
+        执行加载LUT操作
+
+        Args:
+            lut_file_path: LUT文件路径
+
+        Returns:
+            bool: 是否成功
+        """
+        if self._mpv_core is None:
+            print(f"[LUT] MPV未初始化")
+            return False
+
+        try:
+            import os
+            abs_path = os.path.abspath(lut_file_path)
+            print(f"[LUT] 加载LUT文件: {abs_path}")
+            print(f"[LUT] 文件存在: {os.path.exists(abs_path)}")
+
+            abs_path2 = abs_path.replace("\\", "/")
+            
+            print(f"[LUT] 尝试使用 --lut 选项")
+            result = self._mpv_core.set_lut(abs_path2)
+            print(f"[LUT] --lut 方式结果: {result}")
+            
+            if not result:
+                print(f"[LUT] 尝试方式1 (vf add lavfi-lut3d)")
+                filter_arg = f"lavfi-lut3d=file='{abs_path2}'" if ' ' in abs_path2 else f"lavfi-lut3d=file={abs_path2}"
+                result = self._mpv_core.set_vf_filter(filter_arg)
+                print(f"[LUT] 方式1 结果: {result}")
+            
+            if not result:
+                print(f"[LUT] 尝试方式2 (load glsl-shaders)")
+                result = self._mpv_core.load_glsl_shader(abs_path2)
+                print(f"[LUT] 方式2 结果: {result}")
+            
+            if not result:
+                print(f"[LUT] 尝试方式3 (set glsl-shaders)")
+                shader_list = f'["{abs_path2}"]'
+                result = self._mpv_core.set_glsl_shaders(shader_list)
+                print(f"[LUT] 方式3 结果: {result}")
+
+            if result:
+                with self._state_lock:
+                    self._current_state.current_lut = lut_file_path
+                    self._current_state.last_update = time.time()
+
+                self.lutLoaded.emit(lut_file_path)
+                return True
+            else:
+                print(f"[LUT] 所有方式都失败")
+                return False
+
+        except Exception as e:
+            print(f"加载LUT失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _do_unload_lut(self) -> bool:
+        """
+        执行卸载LUT操作
+
+        Returns:
+            bool: 是否成功
+        """
+        if self._mpv_core is None:
+            return False
+
+        try:
+            result = self._mpv_core.clear_lut()
+            print(f"[LUT] 清除lut结果: {result}")
+            
+            if not result:
+                result = self._mpv_core.clear_glsl_shaders()
+                print(f"[LUT] 清除glsl着色器结果: {result}")
+            
+            if not result:
+                result = self._mpv_core.set_vf_filter("")
+                print(f"[LUT] 清除vf滤镜结果: {result}")
+
+            if result:
+                with self._state_lock:
+                    self._current_state.current_lut = ""
+                    self._current_state.last_update = time.time()
+
+                self.lutUnloaded.emit()
+                return True
+            else:
+                return False
+
+        except Exception as e:
+            print(f"卸载LUT失败: {e}")
+            return False
 
     # ==================== 信号处理回调 ====================
 
@@ -1310,6 +1417,64 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return (0, 0)
 
+    def load_lut(self, lut_file_path: str, component_id: str = "unknown", timeout: float = 5.0) -> bool:
+        """
+        加载LUT文件
+
+        Args:
+            lut_file_path: LUT文件路径
+            component_id: 组件标识
+            timeout: 超时时间（秒）
+
+        Returns:
+            是否加载成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.LOAD_LUT,
+            lut_file_path,
+            component_id=component_id,
+            priority=3
+        )
+
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            self._logger.error(f"加载LUT操作超时: {lut_file_path}")
+            return False
+
+    def unload_lut(self, component_id: str = "unknown", timeout: float = 5.0) -> bool:
+        """
+        卸载LUT文件
+
+        Args:
+            component_id: 组件标识
+            timeout: 超时时间（秒）
+
+        Returns:
+            是否卸载成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.UNLOAD_LUT,
+            component_id=component_id,
+            priority=3
+        )
+
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            self._logger.error("卸载LUT操作超时")
+            return False
+
+    def get_current_lut(self) -> str:
+        """
+        获取当前加载的LUT文件路径
+
+        Returns:
+            LUT文件路径，未加载则返回空字符串
+        """
+        with self._state_lock:
+            return self._current_state.current_lut
+
     def get_state(self) -> MPVState:
         """
         获取当前状态
@@ -1334,7 +1499,8 @@ class MPVManager(QObject):
                 video_height=self._current_state.video_height,
                 error_code=self._current_state.error_code,
                 error_message=self._current_state.error_message,
-                last_update=self._current_state.last_update
+                last_update=self._current_state.last_update,
+                current_lut=self._current_state.current_lut
             )
 
     def is_busy(self) -> bool:
