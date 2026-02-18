@@ -230,7 +230,12 @@ class VideoPlayer(QWidget):
         self._sync_timer.timeout.connect(self._sync_progress_from_player)
 
         # 初始化设置管理器并读取初始设置
-        self._settings_manager = SettingsManager()
+        # 从 QApplication 实例获取 SettingsManager，如果不存在则创建新实例
+        app = QApplication.instance()
+        if app and hasattr(app, 'settings_manager'):
+            self._settings_manager = app.settings_manager
+        else:
+            self._settings_manager = SettingsManager()
         self._initial_volume = initial_volume if initial_volume is not None else self._settings_manager.get_player_volume()
         self._initial_speed = initial_speed if initial_speed is not None else self._settings_manager.get_player_speed()
 

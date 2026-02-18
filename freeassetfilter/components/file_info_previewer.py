@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox,
     QSizePolicy, QFormLayout, QApplication, QTextEdit
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QRunnable, QThreadPool
 from PySide6.QtGui import QFont, QCursor, QTextOption
 
 # 导入项目自定义控件
@@ -93,6 +93,89 @@ except ImportError:
     chardet = None
 
 
+class AudioInfoTask(QRunnable):
+    """
+    音频信息获取任务
+    在后台线程中执行音频信息获取，避免阻塞主线程
+    """
+    def __init__(self, file_path: str, task_id: int, callback):
+        super().__init__()
+        self.file_path = file_path
+        self.task_id = task_id
+        self.callback = callback
+        self._is_cancelled = False
+
+    def cancel(self):
+        """取消任务"""
+        self._is_cancelled = True
+
+    def run(self):
+        """执行音频信息获取"""
+        info = {}
+
+        if mutagen_file:
+            try:
+                audio = mutagen_file(self.file_path)
+                if audio:
+                    if hasattr(audio.info, 'length'):
+                        info["时长"] = self._format_duration(audio.info.length)
+                    if hasattr(audio.info, 'bitrate'):
+                        info["比特率"] = self._format_bitrate(audio.info.bitrate)
+                    if hasattr(audio.info, 'channels'):
+                        info["声道数"] = audio.info.channels
+                    if hasattr(audio.info, 'sample_rate'):
+                        info["采样率"] = f"{audio.info.sample_rate} Hz"
+            except Exception:
+                pass
+
+        if not info:
+            try:
+                result = subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", self.file_path],
+                    capture_output=True, text=True, check=True
+                )
+                ffprobe_data = json.loads(result.stdout)
+                if "format" in ffprobe_data:
+                    format_info = ffprobe_data["format"]
+                    info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
+                    info["比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
+            except Exception:
+                info["时长"] = "无法获取"
+                info["比特率"] = "无法获取"
+
+        # 调用回调函数，传递任务ID和结果
+        if not self._is_cancelled and self.callback:
+            self.callback(self.task_id, info)
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """格式化时长"""
+        if seconds < 0:
+            return "无法获取"
+
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def _format_bitrate(bitrate: int) -> str:
+        """格式化比特率"""
+        if bitrate < 0:
+            return "无法获取"
+
+        if bitrate < 1000:
+            return f"{bitrate} bps"
+        elif bitrate < 1000000:
+            return f"{bitrate / 1000:.1f} Kbps"
+        else:
+            return f"{bitrate / 1000000:.1f} Mbps"
+
+
 class FileInfoPreviewer:
     """
     文件信息预览器组件
@@ -100,9 +183,15 @@ class FileInfoPreviewer:
     文本内容根据窗口大小自适应换行显示
     """
 
+    audioInfoLoaded = Signal(dict)  # 音频信息加载完成信号
+
     def __init__(self):
         self.current_file = None
         self.file_info = {}
+
+        # 音频信息获取任务管理
+        self._audio_task_id = 0
+        self._current_audio_task = None
 
         # 获取全局字体和DPI缩放因子
         app = QApplication.instance()
@@ -526,40 +615,76 @@ class FileInfoPreviewer:
             }
 
     def _get_audio_info(self, file_path: str) -> Dict[str, Any]:
-        """获取音频文件基本信息"""
-        info = {}
+        """
+        获取音频文件信息
+        先返回基本信息，然后在后台异步获取详细信息
+        """
+        # 取消之前的音频信息获取任务
+        self._cancel_audio_task()
 
-        if mutagen_file:
-            try:
-                audio = mutagen_file(file_path)
-                if audio:
-                    if hasattr(audio.info, 'length'):
-                        info["时长"] = self._format_duration(audio.info.length)
-                    if hasattr(audio.info, 'bitrate'):
-                        info["比特率"] = self._format_bitrate(audio.info.bitrate)
-                    if hasattr(audio.info, 'channels'):
-                        info["声道数"] = audio.info.channels
-                    if hasattr(audio.info, 'sample_rate'):
-                        info["采样率"] = f"{audio.info.sample_rate} Hz"
-            except Exception:
-                pass
+        # 返回基本信息（异步加载中状态）
+        info = {
+            "时长": "加载中...",
+            "比特率": "加载中...",
+            "声道数": "加载中...",
+            "采样率": "加载中..."
+        }
 
-        if not info:
-            try:
-                result = subprocess.run(
-                    ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
-                    capture_output=True, text=True, check=True
-                )
-                ffprobe_data = json.loads(result.stdout)
-                if "format" in ffprobe_data:
-                    format_info = ffprobe_data["format"]
-                    info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
-                    info["比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
-            except Exception:
-                info["时长"] = "无法获取"
-                info["比特率"] = "无法获取"
+        # 启动后台任务获取详细信息
+        self._start_audio_info_task(file_path)
 
         return info
+
+    def _cancel_audio_task(self):
+        """取消当前的音频信息获取任务"""
+        if self._current_audio_task:
+            self._current_audio_task.cancel()
+            self._current_audio_task = None
+
+    def _start_audio_info_task(self, file_path: str):
+        """
+        启动音频信息获取后台任务
+
+        Args:
+            file_path: 音频文件路径
+        """
+        # 生成新的任务ID
+        self._audio_task_id += 1
+        current_task_id = self._audio_task_id
+
+        # 创建并启动后台任务
+        task = AudioInfoTask(file_path, current_task_id, self._on_audio_info_loaded)
+        self._current_audio_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _on_audio_info_loaded(self, task_id: int, info: Dict[str, Any]):
+        """
+        音频信息加载完成回调
+
+        Args:
+            task_id: 任务ID，用于验证是否是最新的任务
+            info: 音频信息字典
+        """
+        # 检查任务ID是否匹配（避免旧任务结果覆盖新任务）
+        if task_id != self._audio_task_id:
+            return
+
+        # 清除当前任务引用
+        self._current_audio_task = None
+
+        # 更新文件信息
+        if "details" not in self.file_info:
+            self.file_info["details"] = {}
+
+        # 更新音频相关信息
+        for key, value in info.items():
+            self.file_info["details"][key] = value
+
+        # 发射信号通知UI更新
+        self.audioInfoLoaded.emit(info)
+
+        # 更新UI显示
+        self.update_ui()
 
     def _get_audio_advanced_info(self, file_path: str) -> Dict[str, Any]:
         """获取音频文件高级信息"""
