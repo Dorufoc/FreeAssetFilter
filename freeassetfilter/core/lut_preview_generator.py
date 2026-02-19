@@ -30,6 +30,17 @@ except ImportError:
 
 from freeassetfilter.utils.lut_utils import CubeLUTParser, get_lut_preview_dir
 
+CPP_LUT_PREVIEW_AVAILABLE = False
+try:
+    import sys
+    cpp_module_path = str(Path(__file__).parent / "cpp_lut_preview")
+    if cpp_module_path not in sys.path:
+        sys.path.insert(0, cpp_module_path)
+    from lut_preview_cpp import generate_preview_from_data as cpp_generate_preview
+    CPP_LUT_PREVIEW_AVAILABLE = True
+except Exception as e:
+    print(f"C++ LUT预览模块不可用，将使用Python实现: {e}")
+
 
 class LUTPreviewGenerator:
     """
@@ -98,6 +109,58 @@ class LUTPreviewGenerator:
                 return pixmap.scaled(output_size[0], output_size[1], 
                                    Qt.KeepAspectRatio, Qt.SmoothTransformation)
         
+        # 优先使用 C++ 实现
+        if CPP_LUT_PREVIEW_AVAILABLE:
+            return self._generate_preview_cpp(lut_file_path, output_size, cache_path)
+        
+        # 回退到 Python 实现
+        return self._generate_preview_python(lut_file_path, output_size, cache_path)
+    
+    def _generate_preview_cpp(self, lut_file_path: str,
+                             output_size: Tuple[int, int],
+                             cache_path: Optional[str]) -> Optional[QPixmap]:
+        """使用 C++ 实现生成预览"""
+        try:
+            # 加载参考图像
+            if self._reference_image is None:
+                if not self.load_reference_image():
+                    return None
+            
+            # 读取 LUT 文件内容（解决中文路径问题）
+            with open(lut_file_path, 'r', encoding='utf-8') as f:
+                lut_content = f.read()
+            
+            # 转换为 numpy 数组
+            import numpy as np
+            img_array = np.array(self._reference_image.resize(output_size, Image.Resampling.LANCZOS))
+            
+            # 调用 C++ 模块生成预览
+            png_data = cpp_generate_preview(
+                lut_content,
+                img_array,
+                output_size[0],
+                output_size[1]
+            )
+            
+            # 将 PNG 数据转换为 QPixmap
+            from io import BytesIO
+            qimage = QImage.fromData(png_data)
+            pixmap = QPixmap.fromImage(qimage)
+            
+            # 保存缓存
+            if cache_path and not pixmap.isNull():
+                pixmap.save(cache_path, 'PNG')
+            
+            return pixmap
+            
+        except Exception as e:
+            print(f"C++ 预览生成失败，回退到Python: {e}")
+            return self._generate_preview_python(lut_file_path, output_size, cache_path)
+    
+    def _generate_preview_python(self, lut_file_path: str, 
+                                output_size: Tuple[int, int],
+                                cache_path: Optional[str]) -> Optional[QPixmap]:
+        """使用 Python 实现生成预览"""
         # 加载参考图像
         if self._reference_image is None:
             if not self.load_reference_image():

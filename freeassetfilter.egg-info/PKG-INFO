@@ -1,0 +1,80 @@
+Metadata-Version: 2.4
+Name: freeassetfilter
+Version: 1.0.0
+Summary: FreeAssetFilter - 免费资产筛选器
+Home-page: https://github.com/Dorufoc/FreeAssetFilter
+Author: Dorufoc | renmoren
+Author-email: qpdrfc123@gmail.com | renmoren@foxmail.com
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: End Users/Desktop
+Classifier: Topic :: Multimedia
+Classifier: License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Operating System :: MacOS
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: PySide6>=6.4.0
+Requires-Dist: PySide6-Addons>=6.4.0
+Requires-Dist: PySide6-Essentials>=6.4.0
+Requires-Dist: shiboken6>=6.4.0
+Requires-Dist: Pillow>=9.0.0
+Requires-Dist: pillow-heif>=0.10.0
+Requires-Dist: imageio>=2.15.0
+Requires-Dist: aggdraw>=1.3.15
+Requires-Dist: psd-tools>=1.9.0
+Requires-Dist: PyMuPDF>=1.20.0
+Requires-Dist: rawpy>=0.17.0
+Requires-Dist: opencv-python>=4.5.0
+Requires-Dist: mutagen>=1.45.0
+Requires-Dist: rarfile>=4.0
+Requires-Dist: py7zr>=0.20.0
+Requires-Dist: pycdlib>=1.0.0
+Requires-Dist: multivolumefile>=0.2.0
+Requires-Dist: pybcj>=0.5.0
+Requires-Dist: pyppmd>=0.18.0
+Requires-Dist: pyzstd>=0.15.0
+Requires-Dist: inflate64>=0.3.0
+Requires-Dist: brotli>=1.0.0
+Requires-Dist: pycryptodomex>=3.15.0
+Requires-Dist: texttable>=1.6.0
+Requires-Dist: chardet>=4.0.0
+Requires-Dist: packaging>=20.0
+Requires-Dist: Pygments>=2.12.0
+Requires-Dist: Markdown>=3.4.0
+Requires-Dist: ExifRead>=2.3.0
+Requires-Dist: numpy>=1.21.0
+Requires-Dist: scipy>=1.7.0
+Requires-Dist: scikit-image>=0.19.0
+Requires-Dist: networkx>=2.6.0
+Requires-Dist: tifffile>=2021.0.0
+Requires-Dist: psutil>=5.8.0
+Requires-Dist: attrs>=21.0.0
+Requires-Dist: lazy_loader>=0.1.0
+Requires-Dist: importlib_metadata>=4.0.0
+Requires-Dist: zipp>=3.5.0
+Requires-Dist: typing_extensions>=4.0.0
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# FreeAssetFilter
+
+FreeAssetFilter是一款基于PySide6开发的多功能文件预览和管理工具，旨在为用户提供高效、直观的文件浏览、预览和筛选体验。该工具支持多种文件类型的快速预览，包括图片、视频、音频、PDF、文档和字体等，同时提供强大的文件筛选和临时存储功能，帮助用户更高效地管理和处理各种类型的文件资源。
+
+# （说明文件正在施工中……）

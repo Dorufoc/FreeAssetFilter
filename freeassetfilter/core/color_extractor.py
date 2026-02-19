@@ -70,17 +70,18 @@ def _prepare_image_data_for_cpp(cover_data: bytes) -> bytes:
         raise ValueError(f"图像解码失败: {e}")
 
 
-def extract_cover_colors(cover_data: bytes, num_colors: int = 5, 
-                         min_distance: float = 50.0) -> List[QColor]:
+def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
+                         min_distance: float = 150.0) -> List[QColor]:
     """
     从封面图像数据中提取主色调
-    
+
     优先使用 C++ 实现以获得更高性能，如果失败则降级到 Python 实现。
-    
+
     Args:
         cover_data: 封面图像的二进制数据
         num_colors: 要提取的颜色数量
-        min_distance: 颜色之间的最小距离（用于去重）
+        min_distance: 颜色之间的最小欧氏距离（用于去重，默认150，范围50-200）
+                       值越大，提取的颜色差异越大；值越小，颜色越相似
     Returns:
         提取的主色调列表（QColor对象）
     """
@@ -96,8 +97,8 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
             # 准备图像数据
             cpp_data = _prepare_image_data_for_cpp(cover_data)
             
-            # 调用 C++ 函数（CIEDE2000 距离默认 20.0）
-            cpp_min_distance = min_distance / 2.5  # 转换欧氏距离到近似 CIEDE2000 距离
+            # 调用 C++ 函数（CIEDE2000 距离默认 60.0）
+            cpp_min_distance = min_distance / 2.0  # 转换欧氏距离到近似 CIEDE2000 距离（150/2.0=75）
             colors_rgb = _CPP_MODULE.extract_colors(
                 cpp_data, 
                 num_colors=num_colors, 

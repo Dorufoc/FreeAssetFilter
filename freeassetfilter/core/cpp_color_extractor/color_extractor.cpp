@@ -272,9 +272,8 @@ std::vector<Cluster> kmeans_lab(const std::vector<Lab>& pixels, int k = 8, int m
     std::vector<Lab> centroids;
     centroids.reserve(k);
     
-    // 随机初始化聚类中心
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    // 随机初始化聚类中心（使用固定种子以确保结果可重复）
+    std::mt19937 gen(42);  // 固定种子
     std::uniform_int_distribution<size_t> dist(0, pixels.size() - 1);
     
     for (int i = 0; i < k; ++i) {
@@ -321,8 +320,10 @@ std::vector<Cluster> kmeans_lab(const std::vector<Lab>& pixels, int k = 8, int m
                 new_centroids[j].a /= cluster_sizes[j];
                 new_centroids[j].b /= cluster_sizes[j];
             } else {
-                // 空聚类，随机选择一个新的中心
-                new_centroids[j] = pixels[dist(gen)];
+                // 空聚类，选择一个新的中心（使用固定序列）
+                static std::mt19937 empty_gen(12345);  // 固定种子
+                std::uniform_int_distribution<size_t> empty_dist(0, pixels.size() - 1);
+                new_centroids[j] = pixels[empty_dist(empty_gen)];
             }
         }
         
@@ -452,11 +453,10 @@ std::vector<std::tuple<uint8_t, uint8_t, uint8_t>> extract_colors(
         throw std::runtime_error("有效像素数量不足");
     }
     
-    // 随机采样以减少计算量
+    // 随机采样以减少计算量（使用固定种子以确保结果可重复）
     if (scaled_pixels.size() > 5000) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::shuffle(scaled_pixels.begin(), scaled_pixels.end(), gen);
+        std::mt19937 sample_gen(123);  // 固定种子
+        std::shuffle(scaled_pixels.begin(), scaled_pixels.end(), sample_gen);
         scaled_pixels.resize(5000);
     }
     
@@ -533,9 +533,8 @@ std::vector<std::tuple<uint8_t, uint8_t, uint8_t>> extract_colors(
         }
     }
     
-    // 如果仍然不足，生成互补色
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    // 如果仍然不足，生成互补色（使用固定种子以确保结果可重复）
+    std::mt19937 color_gen(999);  // 固定种子
     std::uniform_real_distribution<float> dist_L(20.0f, 80.0f);
     std::uniform_real_distribution<float> dist_ab(-100.0f, 100.0f);
     std::uniform_real_distribution<float> dist_perturb(-30.0f, 30.0f);
@@ -544,7 +543,7 @@ std::vector<std::tuple<uint8_t, uint8_t, uint8_t>> extract_colors(
         Lab new_lab;
         
         if (selected_colors.empty()) {
-            new_lab = Lab(dist_L(gen), dist_ab(gen), dist_ab(gen));
+            new_lab = Lab(dist_L(color_gen), dist_ab(color_gen), dist_ab(color_gen));
         } else {
             // 计算已有颜色的平均值并取反
             float avg_L = 0, avg_a = 0, avg_b = 0;
@@ -574,9 +573,9 @@ std::vector<std::tuple<uint8_t, uint8_t, uint8_t>> extract_colors(
         } else {
             // 添加扰动
             Lab perturbed(
-                std::max(0.0f, std::min(100.0f, new_lab.L + dist_perturb(gen))),
-                std::max(-128.0f, std::min(127.0f, new_lab.a + dist_perturb(gen) * 1.5f)),
-                std::max(-128.0f, std::min(127.0f, new_lab.b + dist_perturb(gen) * 1.5f))
+                std::max(0.0f, std::min(100.0f, new_lab.L + dist_perturb(color_gen))),
+                std::max(-128.0f, std::min(127.0f, new_lab.a + dist_perturb(color_gen) * 1.5f)),
+                std::max(-128.0f, std::min(127.0f, new_lab.b + dist_perturb(color_gen) * 1.5f))
             );
             selected_colors.push_back(perturbed);
         }
@@ -646,11 +645,10 @@ std::vector<std::tuple<uint8_t, uint8_t, uint8_t>> extract_colors_from_numpy(
         throw std::runtime_error("有效像素数量不足");
     }
     
-    // 随机采样
+    // 随机采样（使用固定种子以确保结果可重复）
     if (lab_pixels.size() > 5000) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::shuffle(lab_pixels.begin(), lab_pixels.end(), gen);
+        std::mt19937 numpy_sample_gen(456);  // 固定种子
+        std::shuffle(lab_pixels.begin(), lab_pixels.end(), numpy_sample_gen);
         lab_pixels.resize(5000);
     }
     
@@ -681,10 +679,9 @@ std::vector<std::tuple<uint8_t, uint8_t, uint8_t>> extract_colors_from_numpy(
         }
     }
     
-    // 补充颜色
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> dist_perturb(-30.0f, 30.0f);
+    // 补充颜色（使用固定种子以确保结果可重复）
+    std::mt19937 numpy_color_gen(789);  // 固定种子
+    std::uniform_real_distribution<float> numpy_dist_perturb(-30.0f, 30.0f);
     
     while (selected_colors.size() < static_cast<size_t>(num_colors)) {
         float avg_L = 0, avg_a = 0, avg_b = 0;
@@ -696,9 +693,9 @@ std::vector<std::tuple<uint8_t, uint8_t, uint8_t>> extract_colors_from_numpy(
         avg_b /= selected_colors.size();
         
         Lab new_lab(
-            std::max(0.0f, std::min(100.0f, 100.0f - avg_L + dist_perturb(gen))),
-            std::max(-128.0f, std::min(127.0f, -avg_a + dist_perturb(gen) * 1.5f)),
-            std::max(-128.0f, std::min(127.0f, -avg_b + dist_perturb(gen) * 1.5f))
+            std::max(0.0f, std::min(100.0f, 100.0f - avg_L + numpy_dist_perturb(numpy_color_gen))),
+            std::max(-128.0f, std::min(127.0f, -avg_a + numpy_dist_perturb(numpy_color_gen) * 1.5f)),
+            std::max(-128.0f, std::min(127.0f, -avg_b + numpy_dist_perturb(numpy_color_gen) * 1.5f))
         );
         
         selected_colors.push_back(new_lab);
@@ -729,14 +726,14 @@ PYBIND11_MODULE(color_extractor_cpp, m) {
           "从图像数据中提取主色调",
           py::arg("image_data"),
           py::arg("num_colors") = 5,
-          py::arg("min_distance") = 20.0f,
+          py::arg("min_distance") = 75.0f,  // 增大默认阈值到75，获得更大的色彩差异性
           py::arg("max_image_size") = 150);
-    
+
     m.def("extract_colors_from_numpy", &extract_colors_from_numpy,
           "从 numpy 数组中提取主色调",
           py::arg("image_array"),
           py::arg("num_colors") = 5,
-          py::arg("min_distance") = 20.0f);
+          py::arg("min_distance") = 75.0f);  // 增大默认阈值到75，获得更大的色彩差异性
     
     m.def("rgb_to_lab", [](uint8_t r, uint8_t g, uint8_t b) -> std::tuple<float, float, float> {
         Lab lab = rgb_to_lab(r, g, b);

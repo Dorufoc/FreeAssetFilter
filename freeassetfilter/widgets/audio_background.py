@@ -179,11 +179,11 @@ class ColorExtractionTask(QRunnable):
             header = struct.pack('ii', width, height)
             image_data = header + pixels
             
-            # 调用 C++ 函数提取颜色
+            # 调用 C++ 函数提取颜色（增大min_distance以获得更大的色彩差异性）
             colors_rgb = self._cpp_module.extract_colors(
                 image_data,
                 num_colors=5,
-                min_distance=20.0,
+                min_distance=75.0,  # 增大到75，使颜色差异更明显
                 max_image_size=150
             )
             
@@ -247,8 +247,8 @@ class ColorExtractionTask(QRunnable):
             centroid_info = list(zip(centroids, cluster_sizes))
             centroid_info.sort(key=lambda x: x[1], reverse=True)
             
-            # 使用CIEDE2000筛选差异明显的颜色
-            min_delta_e = 20
+            # 使用CIEDE2000筛选差异明显的颜色（增大阈值以获得更大的色彩差异性）
+            min_delta_e = 75  # 增大到75，使颜色差异更明显
             selected_colors_lab = []
             
             for centroid, size in centroid_info:
@@ -1326,8 +1326,8 @@ class AudioBackground(QWidget):
             centroid_info = list(zip(centroids, cluster_sizes))
             centroid_info.sort(key=lambda x: x[1], reverse=True)
 
-            # 使用CIEDE2000筛选差异明显的颜色（阈值：20）
-            min_delta_e = 20  # CIEDE2000色差阈值
+            # 使用CIEDE2000筛选差异明显的颜色（增大阈值以获得更大的色彩差异性）
+            min_delta_e = 75  # CIEDE2000色差阈值，增大到75使颜色差异更明显
             selected_colors_lab = []
 
             for centroid, size in centroid_info:

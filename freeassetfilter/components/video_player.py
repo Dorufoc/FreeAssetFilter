@@ -1208,6 +1208,8 @@ class VideoPlayer(QWidget):
                 self._audio_background.setAudioCover(cover_data)
                 self._audio_background.setCoverData(cover_data)
                 
+                # 设置为无限单曲循环模式
+                self.set_loop_mode("yes")
                 # 应用播放器设置（音量和倍速）
                 self._apply_player_settings()
         else:
@@ -1215,6 +1217,8 @@ class VideoPlayer(QWidget):
             result = self._mpv_manager.load_file(file_path, component_id=self._component_id)
             if result:
                 self._current_file = file_path
+                # 设置为无限单曲循环模式
+                self.set_loop_mode("yes")
                 # 应用播放器设置（音量和倍速）
                 self._apply_player_settings()
 
