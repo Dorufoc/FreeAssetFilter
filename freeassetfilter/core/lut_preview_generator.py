@@ -16,8 +16,10 @@ LUT预览生成器模块
 """
 
 import os
+import time
 from pathlib import Path
 from typing import Optional, Tuple
+import numpy as np
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtCore import Qt
 
@@ -30,16 +32,7 @@ except ImportError:
 
 from freeassetfilter.utils.lut_utils import CubeLUTParser, get_lut_preview_dir
 
-CPP_LUT_PREVIEW_AVAILABLE = False
-try:
-    import sys
-    cpp_module_path = str(Path(__file__).parent / "cpp_lut_preview")
-    if cpp_module_path not in sys.path:
-        sys.path.insert(0, cpp_module_path)
-    from lut_preview_cpp import generate_preview_from_data as cpp_generate_preview
-    CPP_LUT_PREVIEW_AVAILABLE = True
-except Exception as e:
-    print(f"C++ LUT预览模块不可用，将使用Python实现: {e}")
+from freeassetfilter.core.cpp_lut_preview import warmup as cpp_warmup, generate_preview as cpp_generate_preview, is_cpp_available as _cpp_available
 
 
 class LUTPreviewGenerator:
@@ -62,7 +55,17 @@ class LUTPreviewGenerator:
         
         self.reference_image_path = str(reference_image_path)
         self._reference_image = None
-        
+        self._reference_image_scaled = {}
+    
+    def preload(self):
+        """预加载参考图像和相关资源"""
+        self.load_reference_image()
+        if self._reference_image is not None:
+            for size in [(160, 160), (320, 320)]:
+                self._reference_image_scaled[size] = np.array(
+                    self._reference_image.resize(size, Image.Resampling.LANCZOS)
+                )
+    
     def load_reference_image(self) -> bool:
         """
         加载参考图像
@@ -110,7 +113,7 @@ class LUTPreviewGenerator:
                                    Qt.KeepAspectRatio, Qt.SmoothTransformation)
         
         # 优先使用 C++ 实现
-        if CPP_LUT_PREVIEW_AVAILABLE:
+        if _cpp_available():
             return self._generate_preview_cpp(lut_file_path, output_size, cache_path)
         
         # 回退到 Python 实现
@@ -120,19 +123,36 @@ class LUTPreviewGenerator:
                              output_size: Tuple[int, int],
                              cache_path: Optional[str]) -> Optional[QPixmap]:
         """使用 C++ 实现生成预览"""
+        import time
+        _t0 = time.perf_counter()
+        
         try:
             # 加载参考图像
             if self._reference_image is None:
+                _t1 = time.perf_counter()
+                print(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 参考图像未加载，开始加载")
                 if not self.load_reference_image():
                     return None
+                _t2 = time.perf_counter()
+                print(f"[LUT生成] {(_t2-_t1)*1000:.1f}ms - 参考图像加载完成")
+            
+            # 使用预缩放的图像缓存
+            size_key = output_size
+            if size_key not in self._reference_image_scaled:
+                _t1 = time.perf_counter()
+                print(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 创建缩放缓存 {size_key}")
+                self._reference_image_scaled[size_key] = np.array(
+                    self._reference_image.resize(size_key, Image.Resampling.LANCZOS)
+                )
+            img_array = self._reference_image_scaled[size_key]
+            _t1 = time.perf_counter()
+            print(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 图像准备完成")
             
             # 读取 LUT 文件内容（解决中文路径问题）
             with open(lut_file_path, 'r', encoding='utf-8') as f:
                 lut_content = f.read()
-            
-            # 转换为 numpy 数组
-            import numpy as np
-            img_array = np.array(self._reference_image.resize(output_size, Image.Resampling.LANCZOS))
+            _t2 = time.perf_counter()
+            print(f"[LUT生成] {(_t2-_t0)*1000:.1f}ms - LUT文件读取完成，大小={len(lut_content)}")
             
             # 调用 C++ 模块生成预览
             png_data = cpp_generate_preview(
@@ -141,6 +161,8 @@ class LUTPreviewGenerator:
                 output_size[0],
                 output_size[1]
             )
+            _t3 = time.perf_counter()
+            print(f"[LUT生成] {(_t3-_t0)*1000:.1f}ms - C++ 处理完成，PNG大小={len(png_data)}")
             
             # 将 PNG 数据转换为 QPixmap
             from io import BytesIO
@@ -150,6 +172,9 @@ class LUTPreviewGenerator:
             # 保存缓存
             if cache_path and not pixmap.isNull():
                 pixmap.save(cache_path, 'PNG')
+            
+            _t4 = time.perf_counter()
+            print(f"[LUT生成] {(_t4-_t0)*1000:.1f}ms - 全部完成")
             
             return pixmap
             
@@ -281,6 +306,7 @@ def get_preview_generator() -> LUTPreviewGenerator:
     global _preview_generator
     if _preview_generator is None:
         _preview_generator = LUTPreviewGenerator()
+        _preview_generator.preload()
     return _preview_generator
 
 

@@ -90,6 +90,20 @@ from freeassetfilter.components.file_staging_pool import FileStagingPool
 # 导入SVG渲染器，用于主题更新时清除SVG颜色缓存
 from freeassetfilter.core.svg_renderer import SvgRenderer
 
+# 预热 C++ LUT 预览模块
+try:
+    from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
+    print("[预热] 开始预热 LUT 预览 C++ 模块...")
+    lut_cpp_warmup()
+    
+    # 预加载 LUT 生成器（包含参考图像）
+    from freeassetfilter.core.lut_preview_generator import get_preview_generator
+    print("[预热] 预加载 LUT 生成器...")
+    get_preview_generator()
+    print("[预热] LUT 预览 C++ 模块预热完成")
+except Exception as e:
+    print(f"[预热] LUT 预览 C++ 模块预热失败: {e}")
+
 
 class FreeAssetFilterApp(QMainWindow):
     """
