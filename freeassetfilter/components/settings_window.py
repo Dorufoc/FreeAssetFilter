@@ -118,8 +118,8 @@ class ModernSettingsWindow(QDialog):
         """
         初始化现代化设置窗口UI
         """
-        self.setMinimumSize(560, 380)
-        self.resize(560, 380)
+        self.setMinimumSize(660, 420)
+        self.resize(660, 420)
 
         self.setStyleSheet(f"""
             QDialog {{ 
@@ -753,48 +753,6 @@ class ModernSettingsWindow(QDialog):
         )
         self.auto_restore_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.auto_restore_records": value}))
         file_staging_layout.addWidget(self.auto_restore_switch)
-        
-        # 默认导出数据路径设置
-        self.default_export_data_path = CustomSettingItem(
-            text="默认导出数据路径",
-            secondary_text="设置默认的数据导出路径",
-            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
-            placeholder="输入导出数据路径",
-            initial_text=self._get_current_setting_value("file_staging.default_export_data_path", ""),
-            button_text="应用"
-        )
-        
-        # 导出数据路径应用按钮点击处理
-        def on_export_data_path_applied(text):
-            self.current_settings.update({"file_staging.default_export_data_path": text})
-        self.default_export_data_path.input_submitted.connect(on_export_data_path_applied)
-        file_staging_layout.addWidget(self.default_export_data_path)
-        
-        # 默认导出文件路径设置
-        self.default_export_file_path = CustomSettingItem(
-            text="默认导出文件路径",
-            secondary_text="设置默认的文件导出路径",
-            interaction_type=CustomSettingItem.INPUT_BUTTON_TYPE,
-            placeholder="输入导出文件路径",
-            initial_text=self._get_current_setting_value("file_staging.default_export_file_path", ""),
-            button_text="应用"
-        )
-        
-        # 导出文件路径应用按钮点击处理
-        def on_export_file_path_applied(text):
-            self.current_settings.update({"file_staging.default_export_file_path": text})
-        self.default_export_file_path.input_submitted.connect(on_export_file_path_applied)
-        file_staging_layout.addWidget(self.default_export_file_path)
-        
-        # 导出后删除原始文件
-        self.delete_original_switch = CustomSettingItem(
-            text="导出后删除原始文件",
-            secondary_text="导出后自动删除原始文件",
-            interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self._get_current_setting_value("file_staging.delete_original_after_export", False)
-        )
-        self.delete_original_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.delete_original_after_export": value}))
-        file_staging_layout.addWidget(self.delete_original_switch)
 
         # 触控操作优化
         self.staging_touch_optimization_switch = CustomSettingItem(
@@ -807,6 +765,43 @@ class ModernSettingsWindow(QDialog):
         file_staging_layout.addWidget(self.staging_touch_optimization_switch)
 
         self.scroll_layout.addWidget(file_staging_group)
+
+        # 实验性功能组
+        experimental_group = QGroupBox("实验性")
+        experimental_group.setStyleSheet(self.group_box_style)
+        experimental_layout = QVBoxLayout(experimental_group)
+
+        # 导出后删除原始文件
+        self.delete_original_switch = CustomSettingItem(
+            text="导出后删除原始文件",
+            secondary_text="导出后自动删除原始文件",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self._get_current_setting_value("file_staging.delete_original_after_export", False)
+        )
+        self.delete_original_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.delete_original_after_export": value}))
+        experimental_layout.addWidget(self.delete_original_switch)
+
+        # 默认数据路径设置
+        self.default_export_data_path = CustomSettingItem(
+            text="默认数据路径",
+            secondary_text="设置默认的数据导入导出路径（JSON文件）",
+            interaction_type=CustomSettingItem.FOLDER_BUTTON_TYPE,
+            initial_text=self._get_current_setting_value("file_staging.default_export_data_path", "")
+        )
+        self.default_export_data_path.folder_selected.connect(lambda path: self.current_settings.update({"file_staging.default_export_data_path": path}))
+        experimental_layout.addWidget(self.default_export_data_path)
+
+        # 默认导出文件路径设置
+        self.default_export_file_path = CustomSettingItem(
+            text="默认导出文件路径",
+            secondary_text="设置默认的文件导出路径",
+            interaction_type=CustomSettingItem.FOLDER_BUTTON_TYPE,
+            initial_text=self._get_current_setting_value("file_staging.default_export_file_path", "")
+        )
+        self.default_export_file_path.folder_selected.connect(lambda path: self.current_settings.update({"file_staging.default_export_file_path": path}))
+        experimental_layout.addWidget(self.default_export_file_path)
+
+        self.scroll_layout.addWidget(experimental_group)
 
     def _add_player_settings(self):
         """

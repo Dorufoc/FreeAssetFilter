@@ -39,12 +39,14 @@ class CustomSettingItem(QWidget):
     BUTTON_GROUP_TYPE = 1
     INPUT_BUTTON_TYPE = 2
     VALUE_BAR_TYPE = 3
+    FOLDER_BUTTON_TYPE = 4
     
     # 信号定义
     switch_toggled = Signal(bool)  # 开关状态变化信号
     button_clicked = Signal(int)  # 按钮组点击信号，参数为按钮索引
     input_submitted = Signal(str)  # 输入框提交信号
     value_changed = Signal(int)  # 数值条值变化信号
+    folder_selected = Signal(str)  # 文件夹选择信号
     
     def __init__(self, parent=None,
                  text="", secondary_text="",
@@ -149,7 +151,8 @@ class CustomSettingItem(QWidget):
         """ % (background_color, scaled_border_width, border_color, scaled_border_radius, hover_background, hover_border))
         
         # 设置主控件大小策略，允许自适应内容
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 使用 Preferred 而不是 Fixed，允许控件根据内容自动调整高度
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
         # 左侧文本区域
         self.text_widget = self._create_text_widget()
@@ -157,8 +160,8 @@ class CustomSettingItem(QWidget):
         
         # 右侧交互区域
         self.interaction_widget = self._create_interaction_widget()
-        # 设置交互区域的大小策略，确保它能获得足够的空间
-        self.interaction_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        # 设置交互区域的大小策略，垂直方向使用 Preferred 以允许随文本区域扩展
+        self.interaction_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         # 使用更合适的布局权重，确保交互区域能获得足够的空间
         main_layout.addWidget(self.interaction_widget, 0, Qt.AlignRight | Qt.AlignVCenter)
         # 确保布局能够正确计算最小尺寸
@@ -167,6 +170,8 @@ class CustomSettingItem(QWidget):
     def _create_text_widget(self):
         """创建左侧文本区域"""
         widget = QWidget()
+        # 设置文本区域的大小策略，允许垂直方向扩展以适应多行文本
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(int(1 * self.dpi_scale))  # 添加适当间距，避免文字重叠
@@ -191,8 +196,12 @@ class CustomSettingItem(QWidget):
         """ % text_color)
         self.main_text_label.setWordWrap(True)  # 允许文字换行
         self.main_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 顶部对齐，避免垂直居中导致的重叠
+        # 设置大小策略，允许标签根据内容调整高度
+        self.main_text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # 确保标签能够根据内容自动调整高度
+        self.main_text_label.setMinimumHeight(0)
         layout.addWidget(self.main_text_label)
-        
+
         # 如果有辅助文本，则显示双行模式
         if self.secondary_text:
             self.secondary_text_label = QLabel(self.secondary_text)
@@ -221,8 +230,12 @@ class CustomSettingItem(QWidget):
             """ % secondary_text_color)
             self.secondary_text_label.setWordWrap(True)  # 允许文字换行
             self.secondary_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 顶部对齐
+            # 设置大小策略，允许标签根据内容调整高度
+            self.secondary_text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            # 确保标签能够根据内容自动调整高度
+            self.secondary_text_label.setMinimumHeight(0)
             layout.addWidget(self.secondary_text_label)
-        
+
         return widget
     
     def _create_interaction_widget(self):
@@ -239,10 +252,13 @@ class CustomSettingItem(QWidget):
         elif self.interaction_type == self.VALUE_BAR_TYPE:
             # 数值控制条控件
             return self._create_value_bar_widget()
+        elif self.interaction_type == self.FOLDER_BUTTON_TYPE:
+            # 文件夹选择按钮控件
+            return self._create_folder_button_widget()
         else:
             # 未知类型，返回空控件
             widget = QWidget()
-            widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
             return widget
     
     def _create_switch_widget(self):
@@ -262,12 +278,88 @@ class CustomSettingItem(QWidget):
         
         layout.addWidget(self.switch_button)
         
-        # 设置容器大小策略，允许自适应内容
-        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # 设置容器大小策略，垂直方向使用 Preferred 以允许随内容扩展
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # 确保容器没有宽度限制，允许完全自适应内容
         widget.setMinimumWidth(0)
         widget.setMaximumWidth(16777215)
         return widget
+
+    def _create_folder_button_widget(self):
+        """创建文件夹选择按钮控件"""
+        from PySide6.QtWidgets import QFileDialog
+        
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+        scaled_spacing = int(2 * self.dpi_scale)
+        layout.setSpacing(scaled_spacing)
+        
+        initial_path = self.kwargs.get('initial_text', "")
+        
+        self.folder_path_label = QLabel(initial_path if initial_path else "未设置")
+        self.folder_path_label.setFont(self.global_font)
+        self.folder_path_label.setStyleSheet("""
+            QLabel {
+                color: #808080;
+                padding-left: 5px;
+            }
+        """)
+        self.folder_path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        
+        self.folder_button = CustomButton("选择文件夹", button_type="normal")
+        self.folder_button.clicked.connect(self._on_folder_button_clicked)
+        
+        layout.addWidget(self.folder_path_label)
+        layout.addWidget(self.folder_button)
+
+        # 设置容器大小策略，垂直方向使用 Preferred 以允许随内容扩展
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        widget.setMinimumWidth(0)
+        widget.setMaximumWidth(16777215)
+        return widget
+
+    def _on_folder_button_clicked(self):
+        """文件夹按钮点击处理"""
+        from PySide6.QtWidgets import QFileDialog
+        
+        current_path = self.folder_path_label.text() if self.folder_path_label.text() != "未设置" else ""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "选择文件夹", current_path if current_path else ""
+        )
+        
+        if folder_path:
+            self.folder_path_label.setText(folder_path)
+            self.folder_path_label.setStyleSheet("""
+                QLabel {
+                    color: #333333;
+                    padding-left: 5px;
+                }
+            """)
+            self.folder_selected.emit(folder_path)
+    
+    def set_input_text(self, text):
+        """设置输入框文本（兼容方法）"""
+        if self.interaction_type == self.FOLDER_BUTTON_TYPE and hasattr(self, 'folder_path_label'):
+            if text:
+                self.folder_path_label.setText(text)
+                self.folder_path_label.setStyleSheet("""
+                    QLabel {
+                        color: #333333;
+                        padding-left: 5px;
+                    }
+                """)
+            else:
+                self.folder_path_label.setText("未设置")
+                self.folder_path_label.setStyleSheet("""
+                    QLabel {
+                        color: #808080;
+                        padding-left: 5px;
+                    }
+                """)
+        elif hasattr(self, 'input_box'):
+            self.input_box.setText(text)
     
     def _on_switch_toggled(self, checked):
         """开关状态变化处理"""
@@ -305,14 +397,14 @@ class CustomSettingItem(QWidget):
             
             layout.addWidget(btn)
             self.button_group.append(btn)
-        
-        # 设置容器大小策略，允许自适应内容
-        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # 设置容器大小策略，垂直方向使用 Preferred 以允许随内容扩展
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # 确保容器没有宽度限制，允许完全自适应内容
         widget.setMinimumWidth(0)
         widget.setMaximumWidth(16777215)
         return widget
-    
+
     def _on_button_clicked(self, button_index):
         """按钮点击处理"""
         self.button_clicked.emit(button_index)
@@ -349,14 +441,14 @@ class CustomSettingItem(QWidget):
         
         layout.addWidget(self.input_box, 1)  # 输入框占主要空间
         layout.addWidget(self.submit_button, 0)  # 按钮占固定空间
-        
-        # 设置容器大小策略，允许自适应内容
-        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # 设置容器大小策略，垂直方向使用 Preferred 以允许随内容扩展
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # 确保容器没有宽度限制，允许完全自适应内容
         widget.setMinimumWidth(0)
         widget.setMaximumWidth(16777215)
         return widget
-    
+
     def _on_input_button_clicked(self):
         """输入按钮点击处理"""
         text = self.input_box.get_text()
@@ -406,9 +498,9 @@ class CustomSettingItem(QWidget):
         
         layout.addWidget(self.value_bar)
         layout.addWidget(self.value_label)
-        
-        # 设置容器大小策略，允许自适应内容
-        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # 设置容器大小策略，垂直方向使用 Preferred 以允许随内容扩展
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # 确保容器没有宽度限制，允许完全自适应内容
         widget.setMinimumWidth(0)
         widget.setMaximumWidth(16777215)

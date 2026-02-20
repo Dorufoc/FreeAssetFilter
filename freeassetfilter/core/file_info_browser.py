@@ -270,10 +270,7 @@ class FileInfoBrowser:
             "修改时间": QLabel("-"),
             "权限": QLabel("-"),
             "所有者": QLabel("-"),
-            "组": QLabel("-"),
-            "MD5": QLabel("点击查看"),
-            "SHA1": QLabel("点击查看"),
-            "SHA256": QLabel("点击查看")
+            "组": QLabel("-")
         }
         
         # 存储详细信息标签，用于动态添加和删除
@@ -283,8 +280,7 @@ class FileInfoBrowser:
         # 使用有序列表确保基本信息顺序一致
         basic_info_order = [
             "文件名", "文件路径", "文件大小", "文件类型",
-            "创建时间", "修改时间", "权限", "所有者",
-            "组", "MD5", "SHA1", "SHA256"
+            "创建时间", "修改时间", "权限", "所有者", "组"
         ]
         
         # 存储基本信息控件的引用
@@ -303,17 +299,6 @@ class FileInfoBrowser:
             widget.setMinimumWidth(0)
             widget.setContextMenuPolicy(Qt.CustomContextMenu)
             widget.setStyleSheet(f"color: {secondary_color}; border: none;")
-            
-            # 为MD5、SHA1、SHA256添加点击事件（仅当值为"点击查看"时）
-            if key in ["MD5", "SHA1", "SHA256"]:
-                if widget.text() == "点击查看":
-                    widget.setCursor(QCursor(Qt.PointingHandCursor))
-                    widget.setStyleSheet(f"color: {secondary_color}; text-decoration: underline; border: none;")
-                    widget.mousePressEvent = lambda event, key=key: self._load_detailed_info()
-                else:
-                    # 如果已经有值，则使用普通样式
-                    widget.setCursor(QCursor(Qt.ArrowCursor))
-                    widget.setStyleSheet(f"color: {secondary_color}; border: none;")
             
             # 创建标签文本
             label_widget = QLabel(key + ":")
@@ -386,6 +371,25 @@ class FileInfoBrowser:
         Args:
             file_info (Dict[str, Any]): 文件信息字典
         """
+        # 清除之前动态创建的校验码字段
+        hash_keys = ["MD5", "SHA1", "SHA256"]
+        for key in hash_keys:
+            if key in self.basic_info_labels:
+                widget = self.basic_info_labels[key]
+                # 从布局中移除
+                self.info_layout.removeWidget(widget)
+                # 获取对应的标签并移除
+                label_idx = self.info_layout.getWidgetPosition(widget)[0]
+                if label_idx >= 0:
+                    label_item = self.info_layout.itemAt(label_idx, QFormLayout.LabelRole)
+                    if label_item:
+                        label_widget = label_item.widget()
+                        if label_widget:
+                            self.info_layout.removeWidget(label_widget)
+                            label_widget.deleteLater()
+                widget.deleteLater()
+                del self.basic_info_labels[key]
+        
         self.current_file = file_info
         self.extract_file_info()
         self.update_ui()
@@ -417,9 +421,6 @@ class FileInfoBrowser:
             # 对于大文件，不执行任何可能阻塞的详细信息提取
             # 避免使用PIL、moviepy、opencv等库打开大文件
             # 避免读取文件内容或元数据
-            
-            # 可以在后续添加异步提取机制，但当前优先确保UI响应
-            self.file_info["details"]["详细信息"] = "为保证程序响应速度，未提取详细信息"
     
     def _get_basic_info(self, file_path: str) -> Dict[str, str]:
         """
@@ -445,10 +446,7 @@ class FileInfoBrowser:
                 "权限": "无法获取",
                 "所有者": "无法获取",
                 "组": "无法获取",
-                "文件类型": "目录" if os.path.isdir(file_path) else "文件",
-                "MD5": "点击查看",
-                "SHA1": "点击查看",
-                "SHA256": "点击查看"
+                "文件类型": "目录" if os.path.isdir(file_path) else "文件"
             }
         
         # 移除文件哈希计算，避免阻塞主线程
@@ -461,10 +459,7 @@ class FileInfoBrowser:
             "权限": oct(stat.st_mode)[-3:],
             "所有者": f"{stat.st_uid}",
             "组": f"{stat.st_gid}",
-            "文件类型": "目录" if os.path.isdir(file_path) else "文件",
-            "MD5": "点击查看",  # 移除文件哈希计算，避免阻塞
-            "SHA1": "点击查看",  # 移除文件哈希计算，避免阻塞
-            "SHA256": "点击查看"  # 移除文件哈希计算，避免阻塞
+            "文件类型": "目录" if os.path.isdir(file_path) else "文件"
         }
     
     def _get_file_hash(self, file_path: str, hash_func) -> str:
@@ -1170,9 +1165,34 @@ class FileInfoBrowser:
         # 先检查缓存
         cached_info = self._get_cached_info(file_path)
         if cached_info:
-            self.file_info["basic"].update(cached_info["basic"])
+            # 只更新详细信息，校验码在update_ui中动态添加
             self.file_info["details"].update(cached_info["details"])
             self.update_ui()
+            
+            # 动态添加校验码显示（从缓存中获取）
+            hash_keys = ["MD5", "SHA1", "SHA256"]
+            for key in hash_keys:
+                if key in cached_info["basic"] and cached_info["basic"][key] not in ["-", "点击查看", None]:
+                    if key not in self.basic_info_labels:
+                        widget = QLabel(cached_info["basic"][key])
+                        widget.setWordWrap(True)
+                        widget.setFont(self.global_font)
+                        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                        widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+                        widget.setMinimumWidth(0)
+                        widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                        widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                        
+                        label_widget = QLabel(key + ":")
+                        label_widget.setFont(self.global_font)
+                        label_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                        label_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+                        label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                        label_widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                        
+                        self.info_layout.addRow(label_widget, widget)
+                        self.basic_info_labels[key] = widget
+            
             return
         
         # 显示加载状态
@@ -1269,15 +1289,38 @@ class FileInfoBrowser:
         if hasattr(self, 'loading_dialog'):
             self.loading_dialog.close()
         
-        # 更新文件信息
-        self.file_info["basic"].update(result["basic"])
+        # 只更新详细信息，校验码单独处理
         self.file_info["details"].update(result["details"])
         
         # 保存到缓存
         self._save_to_cache(self.current_file["path"], result)
         
-        # 更新UI
+        # 更新UI显示详细信息
         self.update_ui()
+        
+        # 动态添加校验码显示
+        hash_keys = ["MD5", "SHA1", "SHA256"]
+        for key in hash_keys:
+            if key in result["basic"] and result["basic"][key] not in ["-", "点击查看", None]:
+                if key not in self.basic_info_labels:
+                    widget = QLabel(result["basic"][key])
+                    widget.setWordWrap(True)
+                    widget.setFont(self.global_font)
+                    widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                    widget.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+                    widget.setMinimumWidth(0)
+                    widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                    widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                    
+                    label_widget = QLabel(key + ":")
+                    label_widget.setFont(self.global_font)
+                    label_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    label_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+                    label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                    label_widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                    
+                    self.info_layout.addRow(label_widget, widget)
+                    self.basic_info_labels[key] = widget
     
     def _on_loading_error(self, error_msg):
         """
@@ -1424,33 +1467,14 @@ class FileInfoBrowser:
         if not self.file_info:
             return
         
+        # 注意：校验码（MD5、SHA1、SHA256）不会在这里自动显示
+        # 它们只在用户触发加载后才动态创建
+        
         # 更新基本信息
         if "basic" in self.file_info:
             for key, value in self.file_info["basic"].items():
                 if hasattr(self, 'basic_info_labels') and key in self.basic_info_labels:
                     self.basic_info_labels[key].setText(str(value))
-                    
-                    # 如果是哈希值字段，根据值的状态设置不同样式
-                    if key in ["MD5", "SHA1", "SHA256"]:
-                        from PySide6.QtCore import Qt
-                        from PySide6.QtGui import QCursor
-                        from PySide6.QtWidgets import QSizePolicy
-                        widget = self.basic_info_labels[key]
-                        if str(value) == "点击查看":
-                            # 设置为可点击的链接样式
-                            widget.setCursor(QCursor(Qt.PointingHandCursor))
-                            widget.setStyleSheet(f"color: {self.secondary_color}; text-decoration: underline; border: none;")
-                            # 重新绑定点击事件
-                            widget.mousePressEvent = lambda event, key=key: self._load_detailed_info()
-                        else:
-                            # 如果已经有值，则使用普通样式
-                            widget.setCursor(QCursor(Qt.ArrowCursor))
-                            widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
-                            # 确保换行和尺寸策略正确
-                            widget.setWordWrap(True)
-                            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-                            # 移除点击事件
-                            widget.mousePressEvent = lambda event: super(type(widget), widget).mousePressEvent(event)
         
         # 更新自定义标签
         if hasattr(self, 'custom_tags_browser'):

@@ -50,8 +50,8 @@ class LUTPreviewGenerator:
         """
         if reference_image_path is None:
             # 使用默认参考图像路径
-            base_dir = Path(__file__).parent.parent.parent
-            reference_image_path = base_dir / "data" / "reference.png"
+            base_dir = Path(__file__).parent.parent
+            reference_image_path = base_dir / "icons" / "lut_reference.png"
         
         self.reference_image_path = str(reference_image_path)
         self._reference_image = None
@@ -61,7 +61,7 @@ class LUTPreviewGenerator:
         """预加载参考图像和相关资源"""
         self.load_reference_image()
         if self._reference_image is not None:
-            for size in [(160, 160), (320, 320)]:
+            for size in [(256, 256), (512, 512)]:
                 self._reference_image_scaled[size] = np.array(
                     self._reference_image.resize(size, Image.Resampling.LANCZOS)
                 )
@@ -89,7 +89,7 @@ class LUTPreviewGenerator:
             return False
     
     def generate_preview(self, lut_file_path: str, 
-                        output_size: Tuple[int, int] = (160, 160),
+                        output_size: Tuple[int, int] = (256, 256),
                         cache_path: Optional[str] = None) -> Optional[QPixmap]:
         """
         生成LUT预览图
@@ -311,7 +311,7 @@ def get_preview_generator() -> LUTPreviewGenerator:
 
 
 def generate_lut_preview(lut_file_path: str, lut_id: str,
-                        output_size: Tuple[int, int] = (160, 160)) -> Optional[QPixmap]:
+                        output_size: Tuple[int, int] = (256, 256)) -> Optional[QPixmap]:
     """
     生成LUT预览图的便捷函数
     
@@ -344,8 +344,8 @@ def create_default_reference_image(output_path: Optional[str] = None) -> bool:
     
     try:
         if output_path is None:
-            base_dir = Path(__file__).parent.parent.parent
-            output_path = base_dir / "data" / "reference.png"
+            base_dir = Path(__file__).parent.parent
+            output_path = base_dir / "icons" / "lut_reference.png"
         
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)

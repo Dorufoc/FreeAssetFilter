@@ -84,6 +84,10 @@ class FileStagingPool(QWidget):
         self.previewing_file_path = None  # 当前处于预览态的文件路径
         self._active_size_calculators = []  # 跟踪活动的文件夹大小计算线程
         
+        # 获取设置管理器引用
+        app = QApplication.instance()
+        self.settings_manager = getattr(app, 'settings_manager', None)
+        
         # 备份文件路径
         self.backup_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'staging_pool_backup.json')
         # 确保数据目录存在
@@ -771,9 +775,18 @@ class FileStagingPool(QWidget):
         # 获取所有文件信息
         all_files = self.items
         
+        # 获取默认导出文件路径作为初始目录
+        initial_dir = ""
+        if self.settings_manager:
+            export_file_path = self.settings_manager.get_setting("file_staging.default_export_file_path", "")
+            if export_file_path and os.path.isdir(export_file_path):
+                initial_dir = export_file_path
+            elif export_file_path and os.path.isfile(export_file_path):
+                initial_dir = os.path.dirname(export_file_path)
+        
         # 选择目标目录
         while True:
-            target_dir = QFileDialog.getExistingDirectory(self, "选择导出目录")
+            target_dir = QFileDialog.getExistingDirectory(self, "选择导出目录", initial_dir if initial_dir else "")
             if not target_dir:
                 return
             
@@ -994,8 +1007,8 @@ class FileStagingPool(QWidget):
         msg_box.set_title("导入/导出数据")
         msg_box.set_text("请选择操作:")
         
-        # 设置按钮，使用垂直排列
-        msg_box.set_buttons(["导入数据", "导出数据", "取消"], Qt.Vertical, ["normal", "normal", "normal"])
+        # 设置按钮，使用垂直排列，导入和导出使用强调样式
+        msg_box.set_buttons(["导入数据", "导出数据", "取消"], Qt.Vertical, ["primary", "primary", "normal"])
         
         # 记录用户选择
         user_choice = -1
@@ -1031,9 +1044,18 @@ class FileStagingPool(QWidget):
         from PySide6.QtWidgets import QFileDialog
         import json
         
+        # 获取默认导出数据路径作为初始目录
+        initial_dir = ""
+        if self.settings_manager:
+            export_data_path = self.settings_manager.get_setting("file_staging.default_export_data_path", "")
+            if export_data_path and os.path.isdir(export_data_path):
+                initial_dir = export_data_path
+            elif export_data_path and os.path.isfile(export_data_path):
+                initial_dir = os.path.dirname(export_data_path)
+        
         # 打开文件选择对话框，选择JSON文件
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择导入文件", "", "JSON文件 (*.json)"
+            self, "选择导入文件", initial_dir, "JSON文件 (*.json)"
         )
         
         if file_path:
@@ -1508,9 +1530,22 @@ class FileStagingPool(QWidget):
         current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         default_filename = f"FAF_{current_time}.json"
         
+        # 获取默认导出数据路径作为初始目录
+        initial_dir = ""
+        if self.settings_manager:
+            export_data_path = self.settings_manager.get_setting("file_staging.default_export_data_path", "")
+            if export_data_path and os.path.isdir(export_data_path):
+                initial_dir = export_data_path
+            elif export_data_path and os.path.isfile(export_data_path):
+                initial_dir = os.path.dirname(export_data_path)
+        
         # 打开文件保存对话框，选择保存路径
+        if initial_dir:
+            default_path = os.path.join(initial_dir, default_filename)
+        else:
+            default_path = default_filename
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "选择导出文件", default_filename, "JSON文件 (*.json)"
+            self, "选择导出文件", default_path, "JSON文件 (*.json)"
         )
         
         if file_path:

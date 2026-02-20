@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox,
     QSizePolicy, QFormLayout, QApplication, QTextEdit
 )
-from PySide6.QtCore import Qt, QThread, Signal, QRunnable, QThreadPool
+from PySide6.QtCore import Qt, QThread, Signal, QRunnable, QThreadPool, QObject
 from PySide6.QtGui import QFont, QCursor, QTextOption
 
 # 导入项目自定义控件
@@ -176,7 +176,7 @@ class AudioInfoTask(QRunnable):
             return f"{bitrate / 1000000:.1f} Mbps"
 
 
-class FileInfoPreviewer:
+class FileInfoPreviewer(QObject):
     """
     文件信息预览器组件
     负责提取和管理各种类型文件的详细信息
@@ -186,6 +186,7 @@ class FileInfoPreviewer:
     audioInfoLoaded = Signal(dict)  # 音频信息加载完成信号
 
     def __init__(self):
+        super().__init__()
         self.current_file = None
         self.file_info = {}
 
@@ -386,6 +387,9 @@ class FileInfoPreviewer:
         scroll_area.horizontalScrollBar().set_colors(
             self.normal_color, self.secondary_color, self.accent_color, self.auxiliary_color
         )
+        
+        # 保存滚动区域引用，用于后续滚动控制
+        self.scroll_area = scroll_area
 
         SmoothScroller.apply_to_scroll_area(scroll_area)
 
@@ -440,8 +444,7 @@ class FileInfoPreviewer:
         self.basic_info_labels = {}
         basic_info_order = [
             "文件名", "文件路径", "文件大小", "文件类型",
-            "创建时间", "修改时间", "权限", "所有者",
-            "组", "MD5", "SHA1", "SHA256"
+            "创建时间", "修改时间", "权限", "所有者", "组"
         ]
 
         # 存储基本信息控件的引用
@@ -486,6 +489,18 @@ class FileInfoPreviewer:
 
         main_layout.addWidget(self.info_group)
 
+        # 添加"更多信息"按钮（次选样式）
+        self.more_info_btn = CustomButton(
+            text="更多信息",
+            parent=main_widget,
+            button_type="secondary",
+            display_mode="text"
+        )
+        self.more_info_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.more_info_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.more_info_btn.clicked.connect(self._load_detailed_info)
+        main_layout.addWidget(self.more_info_btn)
+
         # 将主widget设置为滚动区域的内容
         scroll_area.setWidget(main_widget)
 
@@ -498,9 +513,37 @@ class FileInfoPreviewer:
         Args:
             file_info (Dict[str, Any]): 文件信息字典
         """
+        # 清除之前动态创建的校验码字段
+        hash_keys = ["MD5", "SHA1", "SHA256"]
+        for key in hash_keys:
+            if key in self.basic_info_widgets:
+                # 从布局中移除并删除控件
+                widget_pair = self.basic_info_widgets[key]
+                label_widget = widget_pair["label"]
+                value_widget = widget_pair["value"]
+                
+                label_widget.hide()
+                value_widget.hide()
+                label_widget.deleteLater()
+                value_widget.deleteLater()
+                
+                # 从字典中移除
+                del self.basic_info_widgets[key]
+                if key in self.basic_info_labels:
+                    del self.basic_info_labels[key]
+        
         self.current_file = file_info
         self.extract_file_info()
+        
+        # 显示"更多信息"按钮
+        if hasattr(self, 'more_info_btn'):
+            self.more_info_btn.show()
+        
         self.update_ui()
+        
+        # 滚动到顶部，确保每次加载新文件时显示最顶端的内容
+        if hasattr(self, 'scroll_area'):
+            self.scroll_area.verticalScrollBar().setValue(0)
 
     def extract_file_info(self):
         """
@@ -524,7 +567,6 @@ class FileInfoPreviewer:
         else:
             file_ext = self.current_file["suffix"].lower()
             self.file_info["details"]["文件类型"] = file_ext
-            self.file_info["details"]["详细信息"] = "为保证程序响应速度，未提取详细信息"
 
     def _get_basic_info(self, file_path: str) -> Dict[str, str]:
         """
@@ -548,10 +590,7 @@ class FileInfoPreviewer:
                 "权限": "无法获取",
                 "所有者": "无法获取",
                 "组": "无法获取",
-                "文件类型": "目录" if os.path.isdir(file_path) else "文件",
-                "MD5": "点击查看",
-                "SHA1": "点击查看",
-                "SHA256": "点击查看"
+                "文件类型": "目录" if os.path.isdir(file_path) else "文件"
             }
 
         return {
@@ -563,10 +602,7 @@ class FileInfoPreviewer:
             "权限": oct(stat.st_mode)[-3:],
             "所有者": f"{stat.st_uid}",
             "组": f"{stat.st_gid}",
-            "文件类型": "目录" if os.path.isdir(file_path) else "文件",
-            "MD5": "点击查看",
-            "SHA1": "点击查看",
-            "SHA256": "点击查看"
+            "文件类型": "目录" if os.path.isdir(file_path) else "文件"
         }
 
     def _get_file_hash(self, file_path: str, hash_func) -> str:
@@ -688,25 +724,47 @@ class FileInfoPreviewer:
 
     def _get_audio_advanced_info(self, file_path: str) -> Dict[str, Any]:
         """获取音频文件高级信息"""
+        # 不解析音频元数据，避免大型二进制数据导致的问题
+        return {}
+
+    def _get_audio_info_sync(self, file_path: str) -> Dict[str, Any]:
+        """
+        同步获取音频文件信息（用于后台线程）
+        直接返回实际值，不启动异步任务
+        """
         info = {}
 
         if mutagen_file:
             try:
                 audio = mutagen_file(file_path)
                 if audio:
-                    metadata = {}
-                    for key, value in audio.items():
-                        try:
-                            metadata[key] = str(value)
-                        except:
-                            pass
-                    if metadata:
-                        info["元数据"] = metadata
-
-                    if hasattr(audio.info, 'codec'):
-                        info["编码格式"] = audio.info.codec
+                    if hasattr(audio.info, 'length'):
+                        info["时长"] = self._format_duration(audio.info.length)
+                    if hasattr(audio.info, 'bitrate'):
+                        info["比特率"] = self._format_bitrate(audio.info.bitrate)
+                    if hasattr(audio.info, 'channels'):
+                        info["声道数"] = audio.info.channels
+                    if hasattr(audio.info, 'sample_rate'):
+                        info["采样率"] = f"{audio.info.sample_rate} Hz"
             except Exception:
                 pass
+
+        if not info or "时长" not in info:
+            try:
+                result = subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
+                    capture_output=True, text=True, check=True
+                )
+                ffprobe_data = json.loads(result.stdout)
+                if "format" in ffprobe_data:
+                    format_info = ffprobe_data["format"]
+                    info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
+                    info["比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
+            except Exception:
+                if "时长" not in info:
+                    info["时长"] = "无法获取"
+                if "比特率" not in info:
+                    info["比特率"] = "无法获取"
 
         return info
 
@@ -1094,11 +1152,54 @@ class FileInfoPreviewer:
 
         # 先检查缓存
         cached_info = self._get_cached_info(file_path)
+        cache_valid = False
         if cached_info:
-            self.file_info["basic"].update(cached_info["basic"])
-            self.file_info["details"].update(cached_info["details"])
-            self.update_ui()
-            return
+            # 检查缓存是否有效（不包含"加载中..."状态）
+            cached_details = cached_info["details"].copy()
+            audio_keys = ["时长", "比特率", "声道数", "采样率"]
+            has_loading = any(cached_details.get(key) == "加载中..." for key in audio_keys)
+            
+            if not has_loading:
+                cache_valid = True
+                # 过滤掉音频元数据，避免显示大型二进制数据
+                if "元数据" in cached_details:
+                    del cached_details["元数据"]
+                self.file_info["details"].update(cached_details)
+                
+                # 隐藏"更多信息"按钮
+                if hasattr(self, 'more_info_btn'):
+                    self.more_info_btn.hide()
+                
+                # 更新UI显示详细信息
+                self.update_ui()
+                
+                # 添加校验码显示（从缓存中获取）
+                hash_keys = ["MD5", "SHA1", "SHA256"]
+                for key in hash_keys:
+                    if key in cached_info["basic"] and cached_info["basic"][key] not in ["-", "点击查看", None]:
+                        if key not in self.basic_info_widgets:
+                            value = cached_info["basic"][key]
+                            value_widget = self._create_value_widget(str(value), is_clickable=False)
+                            
+                            label_widget = QLabel(key + ":")
+                            label_widget.setFont(self.global_font)
+                            label_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                            label_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+                            label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                            label_widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                            
+                            self._connect_context_menu(label_widget, key)
+                            self._connect_context_menu(value_widget, key)
+                            
+                            self.info_layout.addRow(label_widget, value_widget)
+                            
+                            self.basic_info_labels[key] = value_widget
+                            self.basic_info_widgets[key] = {
+                                "label": label_widget,
+                                "value": value_widget
+                            }
+                
+                return
 
         # 显示加载状态
         self._show_loading_dialog()
@@ -1132,8 +1233,7 @@ class FileInfoPreviewer:
                             details.update(self.parent._get_video_info(self.file_path))
                             details.update(self.parent._get_video_advanced_info(self.file_path))
                         elif file_ext in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
-                            details.update(self.parent._get_audio_info(self.file_path))
-                            details.update(self.parent._get_audio_advanced_info(self.file_path))
+                            details.update(self.parent._get_audio_info_sync(self.file_path))
                         elif file_ext in ["txt", "md", "rst", "py", "java", "cpp", "js", "html", "css", "php", "c", "h", "cs", "go", "rb", "swift", "kt", "yml", "yaml", "json", "xml"]:
                             details.update(self.parent._get_text_info(self.file_path))
                             details.update(self.parent._get_text_advanced_info(self.file_path))
@@ -1175,11 +1275,47 @@ class FileInfoPreviewer:
         if hasattr(self, 'loading_dialog'):
             self.loading_dialog.close()
 
-        self.file_info["basic"].update(result["basic"])
-        self.file_info["details"].update(result["details"])
+        # 只更新详细信息到 file_info，校验码单独处理
+        # 过滤掉音频元数据
+        result_details = result["details"].copy()
+        if "元数据" in result_details:
+            del result_details["元数据"]
+        self.file_info["details"].update(result_details)
 
         self._save_to_cache(self.current_file["path"], result)
+        
+        # 隐藏"更多信息"按钮
+        if hasattr(self, 'more_info_btn'):
+            self.more_info_btn.hide()
+        
+        # 更新UI显示详细信息
         self.update_ui()
+        
+        # 动态添加校验码显示
+        hash_keys = ["MD5", "SHA1", "SHA256"]
+        for key in hash_keys:
+            if key in result["basic"] and result["basic"][key] not in ["-", "点击查看", None]:
+                if key not in self.basic_info_widgets:
+                    value = result["basic"][key]
+                    value_widget = self._create_value_widget(str(value), is_clickable=False)
+                    
+                    label_widget = QLabel(key + ":")
+                    label_widget.setFont(self.global_font)
+                    label_widget.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    label_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+                    label_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+                    label_widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                    
+                    self._connect_context_menu(label_widget, key)
+                    self._connect_context_menu(value_widget, key)
+                    
+                    self.info_layout.addRow(label_widget, value_widget)
+                    
+                    self.basic_info_labels[key] = value_widget
+                    self.basic_info_widgets[key] = {
+                        "label": label_widget,
+                        "value": value_widget
+                    }
 
     def _on_loading_error(self, error_msg):
         """加载出错时的处理"""
@@ -1226,7 +1362,19 @@ class FileInfoPreviewer:
                 with open(cache_file, "r", encoding="utf-8") as f:
                     cache_data = json.load(f)
 
-            cache_data[file_path] = info
+            # 过滤掉音频的"加载中..."状态和元数据，避免缓存无效数据
+            info_to_cache = {
+                "basic": info.get("basic", {}),
+                "details": {}
+            }
+            for key, value in info.get("details", {}).items():
+                if key == "元数据":
+                    continue  # 不缓存元数据
+                if value == "加载中...":
+                    continue  # 不缓存"加载中..."状态
+                info_to_cache["details"][key] = value
+
+            cache_data[file_path] = info_to_cache
 
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
@@ -1275,6 +1423,9 @@ class FileInfoPreviewer:
         if not self.file_info:
             return
 
+        # 注意：校验码（MD5、SHA1、SHA256）不会在这里自动显示
+        # 它们只在用户点击"更多信息"按钮后才动态创建
+
         # 更新基本信息
         if "basic" in self.file_info:
             for key, value in self.file_info["basic"].items():
@@ -1287,27 +1438,15 @@ class FileInfoPreviewer:
 
                     # 如果是哈希值字段，根据值的状态设置不同样式
                     if key in ["MD5", "SHA1", "SHA256"]:
-                        if str(value) == "点击查看":
-                            widget.setCursor(QCursor(Qt.PointingHandCursor))
-                            widget.setStyleSheet(f"""
-                                QTextEdit {{
-                                    color: {self.secondary_color};
-                                    text-decoration: underline;
-                                    background-color: transparent;
-                                    border: none;
-                                }}
-                            """)
-                            widget.mousePressEvent = lambda event, k=key: self._load_detailed_info()
-                        else:
-                            widget.setCursor(QCursor(Qt.ArrowCursor))
-                            widget.setStyleSheet(f"""
-                                QTextEdit {{
-                                    color: {self.secondary_color};
-                                    background-color: transparent;
-                                    border: none;
-                                }}
-                            """)
-                            widget.mousePressEvent = lambda event: None
+                        widget.setCursor(QCursor(Qt.ArrowCursor))
+                        widget.setStyleSheet(f"""
+                            QTextEdit {{
+                                color: {self.secondary_color};
+                                background-color: transparent;
+                                border: none;
+                            }}
+                        """)
+                        widget.mousePressEvent = lambda event: None
 
         # 清空之前的详细信息标签
         if hasattr(self, 'details_info_widgets'):
