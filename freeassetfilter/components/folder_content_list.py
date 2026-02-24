@@ -48,8 +48,8 @@ class FolderContentList(QWidget):
     显示给定路径下的所有文件和文件夹
     """
 
-    # 定义信号：请求在文件选择器中打开当前路径
-    open_in_selector_requested = Signal(str)
+    # 定义信号：请求在文件选择器中打开当前路径（路径，文件信息）
+    open_in_selector_requested = Signal(str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -244,7 +244,9 @@ class FolderContentList(QWidget):
         发出信号请求主应用程序在文件选择器中打开当前路径
         """
         if self.current_path and os.path.exists(self.current_path):
-            self.open_in_selector_requested.emit(self.current_path)
+            # 创建文件信息字典，与 unified_previewer 格式保持一致
+            file_info = {"path": self.current_path, "is_directory": True}
+            self.open_in_selector_requested.emit(self.current_path, file_info)
         
     def load_folder_content(self):
         """

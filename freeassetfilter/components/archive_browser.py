@@ -1191,38 +1191,56 @@ class ArchiveBrowser(QWidget):
         获取ISO文件中的文件列表
         """
         files = []
+        dirs = set()
         
         iso = pycdlib.PyCdlib()
         iso.open(self.archive_path)
         
         # ISO文件系统的根目录是'/'
         root_path = '/' if not self.current_path else f'/{self.current_path}'
+        # 标准化路径（去除尾部斜杠，除了根目录）
+        normalized_root = root_path.rstrip('/') if root_path != '/' else root_path
         
         try:
-            for child in iso.listdir(path=root_path):
-                # 跳过隐藏文件
-                if child.startswith('.'):
-                    continue
-                
-                # 检查是否是目录
-                is_dir = False
-                try:
-                    # 尝试列出子目录，如果成功则是目录
-                    iso.listdir(path=f'{root_path}{child}')
-                    is_dir = True
-                except:
-                    pass
-                
-                files.append({
-                    "name": child,
-                    "path": child if not self.current_path else f"{self.current_path}/{child}",
-                    "is_dir": is_dir,
-                    "size": 0,  # ISO文件系统获取大小较复杂，暂时设为0
-                    "modified": "",  # ISO文件系统获取修改时间较复杂，暂时设为空
-                    "suffix": os.path.splitext(child)[1].lower()[1:] if not is_dir and '.' in child else ''
-                })
+            # 使用 walk 方法遍历ISO文件系统
+            for dirname, dirlist, filelist in iso.walk(iso_path=root_path):
+                # 标准化当前目录路径用于比较
+                normalized_dirname = dirname.rstrip('/') if dirname != '/' else dirname
+                # 只处理当前目录下的直接子项
+                if normalized_dirname == normalized_root:
+                    # 添加目录
+                    for dir_name in dirlist:
+                        # 跳过隐藏文件
+                        if dir_name.startswith('.'):
+                            continue
+                        dirs.add(dir_name)
+                    
+                    # 添加文件
+                    for file_name in filelist:
+                        # 跳过隐藏文件
+                        if file_name.startswith('.'):
+                            continue
+                        files.append({
+                            "name": file_name,
+                            "path": file_name if not self.current_path else f"{self.current_path}/{file_name}",
+                            "is_dir": False,
+                            "size": 0,  # ISO文件系统获取大小较复杂，暂时设为0
+                            "modified": "",  # ISO文件系统获取修改时间较复杂，暂时设为空
+                            "suffix": os.path.splitext(file_name)[1].lower()[1:] if '.' in file_name else ''
+                        })
         finally:
             iso.close()
+        
+        # 添加目录到文件列表
+        for dir_name in sorted(dirs):
+            files.append({
+                "name": dir_name,
+                "path": dir_name if not self.current_path else f"{self.current_path}/{dir_name}",
+                "is_dir": True,
+                "size": 0,
+                "modified": "",
+                "suffix": ""
+            })
         
         return sorted(files, key=lambda x: (not x["is_dir"], x["name"].lower()))
     
