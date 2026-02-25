@@ -26,7 +26,9 @@ import traceback
 import faulthandler
 
 # 启用faulthandler，捕获C++层崩溃
-faulthandler.enable()
+# 注意：在windowed模式（无控制台）下，sys.stderr可能为None，需要检查
+if sys.stderr is not None:
+    faulthandler.enable()
 
 # 定义异常处理函数
 def handle_exception(exc_type, exc_value, exc_traceback):
