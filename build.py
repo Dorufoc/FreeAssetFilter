@@ -368,13 +368,13 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
         sys.executable,
         "-m", "nuitka",
         "--standalone",
+        # 使用follow-imports，但排除freeassetfilter包的编译
         "--follow-imports",
         # 使用MSVC编译器（Windows上Nuitka默认使用MSVC，不需要额外参数）
         f"--output-dir={output_dir}",
         f"--output-filename={PROJECT_NAME}",
         "--enable-plugin=pyside6",
         "--enable-plugin=multiprocessing",
-        "--include-package=freeassetfilter",
         # 优化选项：减小体积
         "--lto=yes",  # 启用链接时优化
         "--remove-output",  # 移除中间输出文件
@@ -390,37 +390,14 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
     for src, dst in dll_files:
         cmd.append(f"--include-data-files={src}={dst}")
     
-    # 注意：PYD文件不需要显式包含，Nuitka会自动检测Python扩展模块
-    # 我们只需要确保模块所在的包被包含即可
+    # 注意：我们使用--follow-imports，但不再使用--include-package=freeassetfilter
+    # 这样freeassetfilter包的代码会以.pyc字节码形式放在外部目录
+    # 不会编译进exe，主exe只包含Python解释器和启动代码
     
-    # 包含C++扩展模块所在的包
+    # 包含C++扩展模块所在的包，确保.pyd文件被正确打包
+    # 使用--include-package-data来包含数据文件（包括.pyd）
     cmd.append("--include-package=freeassetfilter.core.cpp_color_extractor")
     cmd.append("--include-package=freeassetfilter.core.cpp_lut_preview")
-    
-    # 包含其他重要包
-    important_packages = [
-        "PIL",
-        "numpy",
-        "cv2",
-        "skimage",
-        "scipy",
-        "psd_tools",
-        "rawpy",
-        "pymupdf",
-        "mutagen",
-        "rarfile",
-        "py7zr",
-        "pygments",
-        "markdown",
-        "exifread",
-        "pillow_heif",
-        "aggdraw",
-        "imageio",
-        "psutil",
-    ]
-    
-    for pkg in important_packages:
-        cmd.append(f"--include-package={pkg}")
     
     # 添加入口文件
     cmd.append(str(entry_point))

@@ -72,6 +72,12 @@ except ImportError:
     rarfile = None
     py7zr = None
 
+# 用于处理ISO文件
+try:
+    import pycdlib
+except ImportError:
+    pycdlib = None
+
 # 用于处理图像文件
 try:
     from PIL import Image
@@ -997,6 +1003,20 @@ class FileInfoPreviewer(QObject):
                     info["文件数"] = len(szf.getnames())
                     info["总大小"] = "无法获取"
                     info["压缩率"] = "无法计算"
+            elif file_ext == '.iso' and pycdlib:
+                # 使用 pycdlib 处理 ISO 文件
+                iso = pycdlib.PyCdlib()
+                iso.open(file_path)
+                try:
+                    file_count = 0
+                    # 使用 walk 方法遍历所有文件
+                    for dirname, dirlist, filelist in iso.walk(iso_path='/'):
+                        file_count += len(filelist)
+                    info["文件数"] = file_count
+                    info["总大小"] = self._format_size(os.path.getsize(file_path))
+                    info["压缩率"] = "N/A"
+                finally:
+                    iso.close()
         except Exception:
             info["文件数"] = "无法获取"
             info["总大小"] = "无法获取"
@@ -1036,6 +1056,23 @@ class FileInfoPreviewer(QObject):
                             "大小": self._format_size(file.size),
                             "修改时间": datetime.fromtimestamp(file.mtime).strftime("%Y-%m-%d %H:%M:%S") if file.mtime else "未知"
                         })
+            elif file_ext == '.iso' and pycdlib:
+                # 使用 pycdlib 处理 ISO 文件
+                iso = pycdlib.PyCdlib()
+                iso.open(file_path)
+                try:
+                    # 使用 walk 方法遍历所有文件
+                    for dirname, dirlist, filelist in iso.walk(iso_path='/'):
+                        # 添加文件到列表
+                        for file_name in filelist:
+                            full_path = f"{dirname}/{file_name}" if dirname != '/' else f"/{file_name}"
+                            content_list.append({
+                                "名称": full_path,
+                                "大小": "未知",  # pycdlib 获取文件大小较复杂
+                                "修改时间": "未知"
+                            })
+                finally:
+                    iso.close()
 
             if content_list:
                 info["内容列表"] = content_list[:10]
