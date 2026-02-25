@@ -364,6 +364,9 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
     entry_point = project_root / ENTRY_POINT
     output_dir = project_root / OUTPUT_DIR
     
+    # 图标路径
+    icon_path = project_root / "freeassetfilter" / "icons" / "FAF-main.ico"
+    
     cmd = [
         sys.executable,
         "-m", "nuitka",
@@ -375,6 +378,8 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
         f"--output-filename={PROJECT_NAME}",
         "--enable-plugin=pyside6",
         "--enable-plugin=multiprocessing",
+        # 设置图标
+        f"--windows-icon-from-ico={icon_path}",
         # 优化选项：减小体积
         "--lto=yes",  # 启用链接时优化
         "--remove-output",  # 移除中间输出文件
@@ -390,14 +395,13 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
     for src, dst in dll_files:
         cmd.append(f"--include-data-files={src}={dst}")
     
+    # 包含PYD文件（C++扩展模块）
+    for src, dst in pyd_files:
+        cmd.append(f"--include-data-files={src}={dst}")
+    
     # 注意：我们使用--follow-imports，但不再使用--include-package=freeassetfilter
     # 这样freeassetfilter包的代码会以.pyc字节码形式放在外部目录
     # 不会编译进exe，主exe只包含Python解释器和启动代码
-    
-    # 包含C++扩展模块所在的包，确保.pyd文件被正确打包
-    # 使用--include-package-data来包含数据文件（包括.pyd）
-    cmd.append("--include-package=freeassetfilter.core.cpp_color_extractor")
-    cmd.append("--include-package=freeassetfilter.core.cpp_lut_preview")
     
     # 添加入口文件
     cmd.append(str(entry_point))

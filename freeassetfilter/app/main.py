@@ -72,8 +72,6 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
 )
 from PySide6.QtCore import Qt, QUrl, QEvent
-from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QFont, QIcon
 
 # 导入自定义控件库

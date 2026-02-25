@@ -22,19 +22,28 @@ def _try_import_cpp_module():
     global CPP_LUT_PREVIEW_AVAILABLE, _cpp_module
     
     try:
-        import sys
-        cpp_module_path = str(Path(__file__).parent)
-        if cpp_module_path not in sys.path:
-            sys.path.insert(0, cpp_module_path)
-        
-        from lut_preview_cpp import generate_preview_from_data as _cpp_generate_preview
-        _cpp_module = _cpp_generate_preview
+        # 尝试相对导入（打包后的标准方式）
+        from . import lut_preview_cpp
+        _cpp_module = lut_preview_cpp.generate_preview_from_data
         CPP_LUT_PREVIEW_AVAILABLE = True
-        logger.info("[LUTPreviewCPP] C++ 扩展模块加载成功")
+        logger.info("[LUTPreviewCPP] C++ 扩展模块加载成功（相对导入）")
         return True
-    except ImportError as e:
-        logger.warning(f"[LUTPreviewCPP] C++ 扩展模块加载失败: {e}")
-        return False
+    except ImportError as e1:
+        # 回退到绝对导入（开发环境）
+        try:
+            import sys
+            cpp_module_path = str(Path(__file__).parent)
+            if cpp_module_path not in sys.path:
+                sys.path.insert(0, cpp_module_path)
+            
+            from lut_preview_cpp import generate_preview_from_data as _cpp_generate_preview
+            _cpp_module = _cpp_generate_preview
+            CPP_LUT_PREVIEW_AVAILABLE = True
+            logger.info("[LUTPreviewCPP] C++ 扩展模块加载成功（绝对导入）")
+            return True
+        except ImportError as e2:
+            logger.warning(f"[LUTPreviewCPP] C++ 扩展模块加载失败: {e1}, {e2}")
+            return False
 
 
 def warmup():
