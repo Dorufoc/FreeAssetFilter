@@ -45,7 +45,7 @@ class D_HoverMenu(QWidget):
 
     closed = Signal()
 
-    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0):
+    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None):
         """
         初始化悬浮菜单
 
@@ -57,6 +57,7 @@ class D_HoverMenu(QWidget):
             use_sub_widget_mode: 是否使用子控件模式（作为父窗口的子控件，而不是独立窗口）
             fill_width: 是否横向填充整个父窗口宽度
             margin: 外边距（像素）
+            border_radius: 圆角半径（像素），默认为None表示使用默认值4像素
         """
         super().__init__(parent)
         
@@ -65,6 +66,7 @@ class D_HoverMenu(QWidget):
         self._use_sub_widget_mode = use_sub_widget_mode
         self._fill_width = fill_width
         self._margin = margin
+        self._border_radius = border_radius if border_radius is not None else 8
         
         if use_sub_widget_mode:
             # 子控件模式：作为父窗口的子控件
@@ -628,7 +630,7 @@ class D_HoverMenu(QWidget):
         painter.setBrush(brush)
 
         rect = QRect(0, 0, self.width() - 1, self.height() - 1)
-        radius = 4
+        radius = self._border_radius
         painter.drawRoundedRect(rect, radius, radius)
 
     def content_layout(self):
@@ -769,6 +771,25 @@ class D_HoverMenu(QWidget):
             bool: 是否启用自动隐藏
         """
         return self._auto_hide_enabled
+
+    def set_border_radius(self, radius):
+        """
+        设置圆角半径
+
+        Args:
+            radius: 圆角半径（像素），必须 >= 0
+        """
+        self._border_radius = max(0, radius)
+        self.update()  # 触发重绘
+
+    def get_border_radius(self):
+        """
+        获取当前圆角半径
+
+        Returns:
+            int: 圆角半径（像素）
+        """
+        return self._border_radius
 
     def closeEvent(self, event):
         """

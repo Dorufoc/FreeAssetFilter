@@ -37,7 +37,7 @@ class ThemeEditor(QScrollArea):
             {"name": "活力蓝", "colors": ["#0A59F7"]},
             {"name": "热情红", "colors": ["#FC5454"]},
             {"name": "蜂蜜黄", "colors": ["#F0C54D"]},
-            {"name": "宝石青", "colors": ["#58D9C0"]},
+            {"name": "清新绿", "colors": ["#58D9C0"]},
             {"name": "魅力紫", "colors": ["#B036EE"]},
             {"name": "清雅墨", "colors": ["#383F4C"]}
         ]

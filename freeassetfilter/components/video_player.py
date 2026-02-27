@@ -192,7 +192,7 @@ class VideoPlayer(QWidget):
     errorOccurred = Signal(str)
     idle_event = Signal()
     
-    def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True, playback_mode: str = "video", initial_volume: int = None, initial_speed: float = None):
+    def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True, playback_mode: str = "video", initial_volume: int = None, initial_speed: float = None, control_bar_border_radius: int = None):
         """
         初始化视频播放器
         
@@ -203,6 +203,7 @@ class VideoPlayer(QWidget):
             playback_mode: 播放模式，"video" 或 "audio"
             initial_volume: 初始音量值 (0-100)，None表示从设置读取
             initial_speed: 初始倍速值，None表示从设置读取
+            control_bar_border_radius: 浮动控制栏圆角半径（像素），None表示使用默认值4像素
         """
         super().__init__(parent)
         
@@ -226,6 +227,7 @@ class VideoPlayer(QWidget):
         # 浮动控制栏相关
         self._floating_control_bar: Optional[D_HoverMenu] = None
         self._is_floating_mode = False  # 是否处于浮动模式
+        self._control_bar_border_radius = control_bar_border_radius  # 浮动控制栏圆角半径
 
         # MPV管理器实例（单例）
         self._mpv_manager: Optional[MPVManager] = None
@@ -312,7 +314,8 @@ class VideoPlayer(QWidget):
             hide_on_window_move=False,  # 窗口移动时不隐藏
             use_sub_widget_mode=False,  # 不使用子控件模式，使用独立窗口模式
             fill_width=True,  # 横向填充整个显示区域
-            margin=30  # 添加30像素的外边距
+            margin=30,  # 添加30像素的外边距
+            border_radius=self._control_bar_border_radius if self._control_bar_border_radius is not None else 8  # 圆角半径
         )
         self._floating_control_bar.set_auto_hide_enabled(True)  # 启用自动隐藏功能
         self._floating_control_bar.set_content(self._control_bar)
@@ -1452,6 +1455,27 @@ class VideoPlayer(QWidget):
     def update_style(self):
         """更新样式，用于主题变化时调用"""
         self._control_bar.update_style()
+
+    def set_control_bar_border_radius(self, radius: int):
+        """
+        设置浮动控制栏的圆角半径
+        
+        Args:
+            radius: 圆角半径（像素），必须 >= 0
+        """
+        self._control_bar_border_radius = max(0, radius)
+        # 如果浮动控制栏已创建，动态更新圆角
+        if self._floating_control_bar is not None:
+            self._floating_control_bar.set_border_radius(self._control_bar_border_radius)
+
+    def get_control_bar_border_radius(self) -> int:
+        """
+        获取浮动控制栏的圆角半径
+        
+        Returns:
+            int: 圆角半径（像素）
+        """
+        return self._control_bar_border_radius if self._control_bar_border_radius is not None else 8
 
     def cleanup(self):
         """

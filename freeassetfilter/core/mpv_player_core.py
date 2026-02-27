@@ -507,6 +507,13 @@ class MPVPlayerCore(QObject):
             "panscan": "0",
             "video-align-x": "0",
             "video-align-y": "0",
+            "input-default-bindings": "no",  # 禁用默认键盘绑定，让Qt处理键盘事件
+            "input-vo-keyboard": "no",  # 禁用视频输出键盘输入
+            "input-ar-delay": "999999",  # 设置自动重复延迟为极大值，禁用按键重复
+            "input-ar-rate": "1",  # 设置自动重复速率为最小
+            "stop-playback-on-init-failure": "no",  # 初始化失败不停止播放
+            "load-scripts": "no",  # 禁用脚本加载，防止脚本拦截输入
+            "load-auto-profiles": "no",  # 禁用自动配置文件
         }
         
         for name, value in config.items():

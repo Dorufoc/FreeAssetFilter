@@ -234,7 +234,23 @@ class SettingsManager:
                 debug(f"设置保存失败: {e}")
                 print(f"保存设置失败: {e}")
     
-    def get_setting(self, key_path, default=None):
+    def get_setting(self, key_path, default=None, use_file_for_colors=False):
+        """
+        获取设置值
+
+        Args:
+            key_path: 设置键路径，如 "appearance.colors.accent_color"
+            default: 默认值
+            use_file_for_colors: 如果为True，颜色设置直接从JSON文件读取，绕过内存缓存
+
+        Returns:
+            设置值
+        """
+        # 如果是颜色设置且要求从文件读取，直接读取文件
+        if use_file_for_colors and "appearance.colors." in key_path:
+            color_key = key_path.replace("appearance.colors.", "")
+            return self.get_color_from_file(color_key, default)
+
         if self.settings is None:
             return default
 
@@ -248,11 +264,20 @@ class SettingsManager:
                 return value
             except (KeyError, TypeError):
                 if default is not None:
-                    self.set_setting(key_path, default)
-                    self.save_settings()
+                    # 使用auto_save=True确保默认值被持久化
+                    self.set_setting(key_path, default, auto_save=True)
                 return default
     
-    def set_setting(self, key_path, value):
+    def set_setting(self, key_path, value, auto_save=False):
+        """
+        设置配置值
+
+        Args:
+            key_path: 配置键路径，如 "appearance.colors.accent_color"
+            value: 配置值
+            auto_save: 是否自动保存到文件，默认为False
+                      设置为True时立即写入JSON，否则只在内存中更新
+        """
         import datetime
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -274,6 +299,9 @@ class SettingsManager:
 
             if "appearance.colors" in key_path:
                 debug(f"设置完成: {key_path} = {value}")
+
+            # 只有显式要求时才自动保存
+            if auto_save:
                 self.save_settings()
     
     def _merge_settings(self, default, loaded):
@@ -317,3 +345,48 @@ class SettingsManager:
     def reset_to_defaults(self):
         with self._settings_lock:
             self.settings = self._create_default_settings_copy()
+
+    def get_color_from_file(self, color_key, default=None):
+        """
+        直接从JSON文件读取颜色值，绕过内存缓存
+        用于前端获取颜色，确保获取到的是持久化的颜色值
+
+        Args:
+            color_key: 颜色键名，如 "accent_color", "secondary_color" 等
+            default: 默认值，如果文件中没有该颜色则返回此值
+
+        Returns:
+            str: 颜色值（十六进制格式）
+        """
+        with self._settings_lock:
+            try:
+                if os.path.exists(self._settings_file):
+                    with open(self._settings_file, "r", encoding="utf-8") as f:
+                        file_settings = json.load(f)
+                        colors = file_settings.get("appearance", {}).get("colors", {})
+                        return colors.get(color_key, default)
+                else:
+                    # 文件不存在时返回默认值
+                    return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
+            except Exception as e:
+                print(f"从文件读取颜色失败: {e}")
+                return default
+
+    def get_all_colors_from_file(self):
+        """
+        直接从JSON文件读取所有颜色值，绕过内存缓存
+
+        Returns:
+            dict: 颜色字典，包含所有颜色键值对
+        """
+        with self._settings_lock:
+            try:
+                if os.path.exists(self._settings_file):
+                    with open(self._settings_file, "r", encoding="utf-8") as f:
+                        file_settings = json.load(f)
+                        return file_settings.get("appearance", {}).get("colors", self.default_settings["appearance"]["colors"].copy())
+                else:
+                    return self.default_settings["appearance"]["colors"].copy()
+            except Exception as e:
+                print(f"从文件读取所有颜色失败: {e}")
+                return self.default_settings["appearance"]["colors"].copy()

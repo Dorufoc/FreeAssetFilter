@@ -958,3 +958,14 @@ class CustomMessageBox(QDialog):
                 screen_rect.center().x() - self.width() // 2,
                 screen_rect.center().y() - self.height() // 2
             )
+    
+    def keyPressEvent(self, event):
+        """
+        键盘按下事件，阻止ESC键关闭弹窗
+        """
+        if event.key() == Qt.Key_Escape:
+            # 忽略ESC键，不执行任何操作
+            event.ignore()
+        else:
+            # 其他按键正常处理
+            super().keyPressEvent(event)

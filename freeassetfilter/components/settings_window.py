@@ -977,9 +977,9 @@ class ModernSettingsWindow(QDialog):
             "活力蓝": {"accent_color": "#007AFF"},
             "热情红": {"accent_color": "#FF3B30"},
             "蜂蜜黄": {"accent_color": "#FFCC00"},
-            "宝石青": {"accent_color": "#34C759"},
+            "清新绿": {"accent_color": "#34C759"},
             "魅力紫": {"accent_color": "#AF52DE"},
-            "清雅墨": {"accent_color": "#5856D6"}
+            "清雅墨": {"accent_color": "#5A6C8B"}
         }
         
         # 主题设置组
@@ -1019,7 +1019,8 @@ class ModernSettingsWindow(QDialog):
                 for color_key, color_value in light_colors.items():
                     self.current_settings.update({f"appearance.colors.{color_key}": color_value})
 
-            self._update_styles()
+            # 不再立即刷新样式，只在保存时应用
+            # self._update_styles()
 
         self.theme_switch.switch_toggled.connect(on_theme_toggled)
         theme_layout.addWidget(self.theme_switch)
@@ -1065,11 +1066,9 @@ class ModernSettingsWindow(QDialog):
                     accent_color = theme_data["accent_color"]
                     self.current_settings.update({"appearance.colors.accent_color": accent_color})
                     
-                    # 使SVG颜色缓存失效
-                    SvgRenderer._invalidate_color_cache()
-                    
-                    # 更新UI
-                    self._update_theme_display()
+                    # 不再立即刷新样式和使SVG缓存失效，只在保存时应用
+                    # SvgRenderer._invalidate_color_cache()
+                    # self._update_theme_display()
             
             self.theme_dropdown_menu.itemClicked.connect(on_theme_item_clicked)
             button = self.theme_selector_setting.button_group[button_index]
@@ -1097,8 +1096,9 @@ class ModernSettingsWindow(QDialog):
                 try:
                     QColor(hex_color)
                     self.current_settings.update({"appearance.colors.accent_color": hex_color})
-                    SvgRenderer._invalidate_color_cache()
-                    self._update_theme_display()
+                    # 不再立即刷新样式和使SVG缓存失效，只在保存时应用
+                    # SvgRenderer._invalidate_color_cache()
+                    # self._update_theme_display()
                 except:
                     pass
         
@@ -1811,43 +1811,81 @@ class ModernSettingsWindow(QDialog):
         保存设置
         """
         font_changed = self._check_font_changed()
-        
+        theme_changed = self._check_theme_changed()
+        colors_changed = self._check_colors_changed()
+
         for key, value in self.current_settings.items():
             self.settings_manager.set_setting(key, value)
-        
+
         self.settings_manager.save_settings()
-        
+
         app = self.parent() if self.parent() else None
-        
+
         if app and hasattr(app, 'unified_previewer'):
             try:
                 app.unified_previewer.stop_preview()
             except Exception:
                 pass
-        
-        self._apply_theme_if_needed()
-        
+
+        # 主题或颜色变更时，使SVG缓存失效并应用主题
+        if theme_changed or colors_changed:
+            SvgRenderer._invalidate_color_cache()
+            self._apply_theme_if_needed()
+
         if font_changed:
             self._show_font_change_reminder()
-        
+
         self.settings_saved.emit(self.current_settings)
-        
+
         self.close()
     
     def _check_font_changed(self):
         """
         检查字体设置是否有变更
-        
+
         Returns:
             bool: 如果字体设置有变更返回 True，否则返回 False
         """
         original_font_style = self.settings_manager.get_setting("font.style", "Microsoft YaHei")
         original_font_size = self.settings_manager.get_setting("font.size", 20)
-        
+
         current_font_style = self.current_settings.get("font.style", original_font_style)
         current_font_size = self.current_settings.get("font.size", original_font_size)
-        
+
         return current_font_style != original_font_style or current_font_size != original_font_size
+
+    def _check_theme_changed(self):
+        """
+        检查主题模式（深色/浅色）是否有变更
+
+        Returns:
+            bool: 如果主题模式有变更返回 True，否则返回 False
+        """
+        original_theme = self.settings_manager.get_setting("appearance.theme", "default")
+        current_theme = self.current_settings.get("appearance.theme", original_theme)
+        return original_theme != current_theme
+
+    def _check_colors_changed(self):
+        """
+        检查主题颜色是否有变更
+
+        Returns:
+            bool: 如果任何主题颜色有变更返回 True，否则返回 False
+        """
+        color_keys = [
+            "appearance.colors.accent_color",
+            "appearance.colors.secondary_color",
+            "appearance.colors.normal_color",
+            "appearance.colors.auxiliary_color",
+            "appearance.colors.base_color"
+        ]
+
+        for key in color_keys:
+            original_value = self.settings_manager.get_setting(key)
+            current_value = self.current_settings.get(key, original_value)
+            if original_value != current_value:
+                return True
+        return False
     
     def _show_font_change_reminder(self):
         """

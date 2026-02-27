@@ -403,9 +403,10 @@ class FreeAssetFilterApp(QMainWindow):
         normal_color = "#e0e0e0"  # 默认普通色
         base_color = "#212121"  # 默认基础色
         if hasattr(app, 'settings_manager'):
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")  # 辅助色
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")  # 普通色
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")  # 基础色
+            # 颜色直接从JSON文件读取，绕过内存缓存
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5", use_file_for_colors=True)  # 辅助色
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0", use_file_for_colors=True)  # 普通色
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121", use_file_for_colors=True)  # 基础色
         self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
         self.setCentralWidget(self.central_widget)
         
@@ -733,9 +734,10 @@ class FreeAssetFilterApp(QMainWindow):
         
         self._backup_ui_state()
         
-        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
-        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        # 颜色直接从JSON文件读取，绕过内存缓存
+        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5", use_file_for_colors=True)
+        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0", use_file_for_colors=True)
+        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121", use_file_for_colors=True)
         border_radius = 8
         
         old_central_widget = getattr(self, 'central_widget', None)
