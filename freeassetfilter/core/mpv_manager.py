@@ -259,6 +259,11 @@ class MPVManager(QObject):
         # 初始化标志
         self._initialized = True
         self._is_shutting_down = False
+        
+        # 清理状态跟踪（用于检测上次异步清理是否完成）
+        self._cleanup_event = Event()
+        self._cleanup_event.set()  # 初始状态为已完成
+        self._async_cleanup_thread: Optional[threading.Thread] = None
 
         self._logger.info("MPV管理器初始化完成")
 
@@ -274,12 +279,15 @@ class MPVManager(QObject):
             self._operation_thread.start()
             self._logger.info("操作处理线程已启动")
 
-    def _stop_operation_thread(self):
+    def _stop_operation_thread(self, timeout: float = 2.0):
         """停止操作处理线程"""
         if self._operation_thread and self._operation_thread.is_alive():
             self._stop_event.set()
-            self._operation_thread.join(timeout=5.0)
-            self._logger.info("操作处理线程已停止")
+            self._operation_thread.join(timeout=timeout)
+            if self._operation_thread.is_alive():
+                self._logger.warning(f"操作处理线程未在 {timeout}s 内停止")
+            else:
+                self._logger.info("操作处理线程已停止")
 
     def _cleanup_resources(self):
         """清理资源"""
@@ -936,16 +944,29 @@ class MPVManager(QObject):
 
     # ==================== 公共API接口 ====================
 
-    def initialize(self, timeout: float = 10.0) -> bool:
+    def initialize(self, timeout: float = 10.0, wait_for_cleanup: bool = True) -> bool:
         """
         初始化MPV管理器
 
         Args:
-            timeout: 超时时间（秒）
+            timeout: 初始化超时时间（秒）
+            wait_for_cleanup: 是否等待上次清理完成（默认为True）
 
         Returns:
             是否初始化成功
         """
+        # 检查并等待上次清理完成（避免冲突）
+        if wait_for_cleanup and not self.ensure_cleanup_complete(timeout=5.0):
+            self._logger.warning("上次清理未完成，可能存在资源冲突")
+            # 继续尝试初始化，但记录警告
+        
+        # 如果正在关闭中，等待关闭完成
+        if self._is_shutting_down:
+            self._logger.info("等待关闭完成后再初始化...")
+            if not self.wait_for_cleanup(timeout=5.0):
+                self._logger.error("等待关闭完成超时")
+                return False
+
         self._start_operation_thread()
 
         future = self._submit_operation(
@@ -960,41 +981,139 @@ class MPVManager(QObject):
             self._logger.error("初始化操作超时")
             return False
 
-    def close(self, timeout: float = 10.0) -> bool:
+    def close(self, async_mode: bool = True, timeout: float = 2.0) -> bool:
         """
         关闭MPV管理器
 
         Args:
-            timeout: 超时时间（秒）
+            async_mode: 是否异步关闭（True=立即返回，后台清理）
+            timeout: 同步模式下的超时时间（秒）
 
         Returns:
-            是否关闭成功
+            是否关闭成功（异步模式下总是返回True）
         """
         # 如果已经在关闭中，直接返回
         if self._is_shutting_down:
+            # 如果不是异步模式，等待上次清理完成
+            if not async_mode:
+                self.wait_for_cleanup(timeout)
             return True
 
         self._is_shutting_down = True
+        self._cleanup_event.clear()  # 标记清理开始
 
         # 如果操作线程未运行，直接清理并重置状态
         if not self._operation_thread or not self._operation_thread.is_alive():
             self._cleanup_resources()
-            self._is_shutting_down = False  # 重置关闭标志，允许重新初始化
+            self._is_shutting_down = False
+            self._cleanup_event.set()  # 标记清理完成
             return True
 
+        if async_mode:
+            # 异步模式：启动后台线程执行关闭
+            self._async_cleanup_thread = threading.Thread(
+                target=self._do_async_close,
+                args=(timeout,),
+                name="MPVAsyncCleanupThread",
+                daemon=True
+            )
+            self._async_cleanup_thread.start()
+            return True
+        else:
+            # 同步模式：直接执行关闭
+            try:
+                result = self._do_sync_close(timeout)
+                return result
+            except Exception as e:
+                self._logger.error(f"关闭MPV管理器时出错: {e}")
+                self._do_force_cleanup()
+                return False
+    
+    def _do_sync_close(self, timeout: float = 2.0) -> bool:
+        """同步关闭"""
         try:
-            # 直接执行关闭操作，不通过队列（避免_is_shutting_down检查）
+            # 预清理 - 让 MPV 进入空闲状态
+            if self._mpv_core:
+                self._mpv_core.pre_cleanup()
+            
+            # 执行关闭操作
             result = self._do_close()
-            self._stop_operation_thread()
+            self._stop_operation_thread(timeout)
             self._cleanup_resources()
-            self._is_shutting_down = False  # 重置关闭标志，允许重新初始化
+            self._is_shutting_down = False
+            self._cleanup_event.set()  # 标记清理完成
             return result
         except Exception as e:
-            self._logger.error(f"关闭MPV管理器时出错: {e}")
-            self._stop_operation_thread()
+            self._logger.error(f"同步关闭时出错: {e}")
+            self._do_force_cleanup()
+            raise
+    
+    def _do_async_close(self, timeout: float = 3.0):
+        """异步关闭 - 在后台执行"""
+        try:
+            self._logger.info("开始异步关闭MPV管理器")
+            
+            # 预清理
+            if self._mpv_core:
+                self._mpv_core.pre_cleanup()
+            
+            # 执行关闭
+            self._do_close()
+            self._stop_operation_thread(timeout)
             self._cleanup_resources()
-            self._is_shutting_down = False  # 重置关闭标志，允许重新初始化
-            return False
+            
+            self._logger.info("异步关闭MPV管理器完成")
+        except Exception as e:
+            self._logger.error(f"异步关闭时出错: {e}")
+        finally:
+            self._is_shutting_down = False
+            self._cleanup_event.set()  # 标记清理完成
+            self._async_cleanup_thread = None
+    
+    def _do_force_cleanup(self):
+        """强制清理 - 在出错时使用"""
+        try:
+            self._stop_operation_thread(1.0)
+            self._cleanup_resources()
+        except Exception as e:
+            self._logger.error(f"强制清理时出错: {e}")
+        finally:
+            self._is_shutting_down = False
+            self._cleanup_event.set()
+    
+    def wait_for_cleanup(self, timeout: float = 5.0) -> bool:
+        """
+        等待清理完成
+        
+        Args:
+            timeout: 最大等待时间（秒）
+            
+        Returns:
+            bool: 是否在超时前完成清理
+        """
+        return self._cleanup_event.wait(timeout=timeout)
+    
+    def is_cleanup_complete(self) -> bool:
+        """检查清理是否已完成"""
+        return self._cleanup_event.is_set()
+    
+    def ensure_cleanup_complete(self, timeout: float = 5.0) -> bool:
+        """
+        确保上次清理已完成（在初始化前调用）
+        
+        Args:
+            timeout: 最大等待时间（秒）
+            
+        Returns:
+            bool: 清理是否完成
+        """
+        if not self._cleanup_event.is_set():
+            self._logger.info("等待上次清理完成...")
+            completed = self._cleanup_event.wait(timeout=timeout)
+            if not completed:
+                self._logger.warning(f"等待清理完成超时（{timeout}s）")
+            return completed
+        return True
 
     def load_file(
         self,

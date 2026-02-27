@@ -1477,12 +1477,15 @@ class VideoPlayer(QWidget):
         """
         return self._control_bar_border_radius if self._control_bar_border_radius is not None else 8
 
-    def cleanup(self):
+    def cleanup(self, async_mode: bool = True):
         """
         清理资源，用于在组件被销毁前进行完整的资源释放
         这是关键方法：必须确保MPV完全销毁后才能创建新的播放器，否则会导致访问冲突
+        
+        Args:
+            async_mode: 是否异步关闭（默认True，不阻塞UI）
         """
-        print(f"[VideoPlayer] ========== 开始清理资源 ==========")
+        print(f"[VideoPlayer] ========== 开始清理资源 (async={async_mode}) ==========")
 
         # 停止进度同步定时器
         print(f"[VideoPlayer] 停止进度同步定时器...")
@@ -1490,7 +1493,7 @@ class VideoPlayer(QWidget):
             self._sync_timer.stop()
             print(f"[VideoPlayer] 进度同步定时器已停止")
 
-        # 停止播放
+        # 停止播放（预清理的一部分）
         print(f"[VideoPlayer] 停止播放...")
         if self._mpv_manager:
             try:
@@ -1508,29 +1511,48 @@ class VideoPlayer(QWidget):
             except Exception as e:
                 print(f"[VideoPlayer] 卸载音频背景时出错: {e}")
 
-        # 关闭MPV管理器
-        print(f"[VideoPlayer] 关闭MPV管理器...")
+        # 关闭MPV管理器（使用异步模式，不阻塞UI）
+        print(f"[VideoPlayer] 关闭MPV管理器 (async={async_mode})...")
         if self._mpv_manager:
             try:
-                self._mpv_manager.close()
-                print(f"[VideoPlayer] MPV管理器已关闭")
+                self._mpv_manager.close(async_mode=async_mode, timeout=2.0)
+                if async_mode:
+                    print(f"[VideoPlayer] MPV管理器异步关闭已启动")
+                else:
+                    print(f"[VideoPlayer] MPV管理器已关闭")
             except Exception as e:
                 print(f"[VideoPlayer] 关闭MPV管理器时出错: {e}")
             finally:
-                self._mpv_manager = None
+                # 异步模式下不立即置空，让后台线程完成清理
+                if not async_mode:
+                    self._mpv_manager = None
 
         # 标记为未嵌入状态
         self._is_mpv_embedded = False
         print(f"[VideoPlayer] ========== 资源清理完成 ==========")
+    
+    def wait_for_cleanup(self, timeout: float = 5.0) -> bool:
+        """
+        等待清理完成（在异步模式下使用）
+        
+        Args:
+            timeout: 最大等待时间（秒）
+            
+        Returns:
+            bool: 是否在超时前完成清理
+        """
+        if self._mpv_manager:
+            return self._mpv_manager.wait_for_cleanup(timeout=timeout)
+        return True
 
     def closeEvent(self, event):
         """
         关闭事件处理
         确保资源正确关闭并清理
         """
-        # 关闭MPV管理器
+        # 使用异步模式关闭MPV管理器，避免阻塞UI
         if self._mpv_manager:
-            self._mpv_manager.close()
+            self._mpv_manager.close(async_mode=True, timeout=2.0)
 
         super().closeEvent(event)
     

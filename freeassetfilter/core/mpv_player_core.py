@@ -1514,22 +1514,113 @@ class MPVPlayerCore(QObject):
         """
         return False
     
-    def close(self):
-        """关闭播放器并释放资源"""
+    def pre_cleanup(self):
+        """
+        预清理 - 让 MPV 进入空闲状态，加速后续销毁
+        在调用 close() 之前先调用此方法，可以显著缩短销毁时间
+        """
+        if not self._initialized or not self._mpv_handle:
+            return
+        
+        try:
+            # 1. 先暂停播放（停止解码器工作）
+            self._pause_internal(self._mpv_handle)
+            time.sleep(0.03)  # 给30ms让解码器停止
+            
+            # 2. 停止播放（释放文件句柄）
+            self._stop_internal(self._mpv_handle)
+            time.sleep(0.02)  # 给20ms释放文件
+            
+            # 3. 清除视频滤镜/LUT（如果有）
+            try:
+                self._clear_glsl_shaders_internal(self._mpv_handle)
+                self._set_vf_filter_internal(self._mpv_handle, "")
+                self._clear_lut_internal(self._mpv_handle)
+            except:
+                pass
+                
+        except Exception as e:
+            print(f"[MPVPlayerCore] 预清理时出错: {e}")
+    
+    def close(self, async_mode=False, timeout=1.0):
+        """
+        关闭播放器并释放资源
+        
+        Args:
+            async_mode: 是否异步关闭（True=立即返回，后台清理）
+            timeout: 同步模式下的最大等待时间（秒）
+        """
         if not self._initialized:
             return
         
-        self._send_command(MPVCommandType.CLOSE, timeout=5.0)
+        # 预清理 - 让 MPV 进入空闲状态
+        self.pre_cleanup()
+        
+        # 发送关闭命令
+        self._send_command(MPVCommandType.CLOSE, timeout=0.5)
         self._stop_event.set()
         
+        if async_mode:
+            # 异步模式：启动后台线程执行清理
+            cleanup_thread = threading.Thread(
+                target=self._async_cleanup,
+                args=(timeout,),
+                daemon=True
+            )
+            cleanup_thread.start()
+        else:
+            # 同步模式：短超时等待
+            self._sync_cleanup(timeout)
+    
+    def _sync_cleanup(self, timeout=1.0):
+        """同步清理 - 短超时等待"""
         if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=5.0)
-            self._worker_thread = None
+            self._worker_thread.join(timeout=timeout)
+            
+            # 如果还在运行，记录警告但继续（不阻塞）
+            if self._worker_thread.is_alive():
+                print(f"[MPVPlayerCore] 警告：工作线程未在 {timeout}s 内结束，强制继续")
+        
+        self._worker_thread = None
         
         with self._state_lock:
             self._initialized = False
             self._is_playing = False
             self._is_paused = False
+    
+    def _async_cleanup(self, timeout=2.0):
+        """异步清理 - 在后台完成"""
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=timeout)
+        
+        self._worker_thread = None
+        
+        with self._state_lock:
+            self._initialized = False
+            self._is_playing = False
+            self._is_paused = False
+        
+        print("[MPVPlayerCore] 异步清理完成")
+    
+    def is_closing(self):
+        """检查是否正在关闭"""
+        return self._stop_event.is_set()
+    
+    def wait_for_close(self, timeout=5.0):
+        """
+        等待关闭完成
+        
+        Args:
+            timeout: 最大等待时间（秒）
+            
+        Returns:
+            bool: 是否在超时前完成关闭
+        """
+        if not self._worker_thread:
+            return True
+        
+        self._worker_thread.join(timeout=timeout)
+        return not self._worker_thread.is_alive()
     
     def __del__(self):
         """析构函数"""
