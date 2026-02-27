@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QFrame, QApplication
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QEvent
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QKeyEvent
 
 from freeassetfilter.core.mpv_player_core import MPVPlayerCore, MpvEndFileReason
 from freeassetfilter.core.mpv_manager import MPVManager, MPVState
@@ -105,6 +105,18 @@ class DetachedVideoWindow(QWidget):
         """窗口关闭事件"""
         self.closed.emit()
         super().closeEvent(event)
+    
+    def keyPressEvent(self, event: QKeyEvent):
+        """
+        处理键盘按键事件
+        - ESC键：退出全屏并恢复到原父窗口
+        """
+        if event.key() == Qt.Key_Escape:
+            # ESC键退出分离窗口模式，恢复到原父窗口
+            if self._video_player is not None:
+                self._video_player._reattach_to_parent()
+        else:
+            super().keyPressEvent(event)
 
 
 class VideoPlaceholder(QWidget):

@@ -190,7 +190,8 @@ class UnifiedPreviewer(QWidget):
         self.content_splitter.addWidget(self.preview_area)
         
         # 创建文件信息区域
-        self.info_group = QGroupBox(" ")
+        # 使用 QWidget 替代 QGroupBox，避免空白标题导致的边框缺口问题
+        self.info_group = QWidget()
         self.info_group.setObjectName("InfoGroup")
         self.info_group.setStyleSheet(f"#InfoGroup {{ background-color: {background_color}; border: 1px solid {normal_color}; }}")
         self.info_layout = QVBoxLayout(self.info_group)
@@ -530,14 +531,14 @@ class UnifiedPreviewer(QWidget):
         # 清除文件信息查看器内容
         self.file_info_viewer.current_file = None
         self.file_info_viewer.file_info = {}
-        # 清除所有标签的显示内容
+        # 重置所有标签的显示内容为初始状态 "-"
         if hasattr(self.file_info_viewer, 'basic_info_labels'):
             for key, widget in self.file_info_viewer.basic_info_labels.items():
-                widget.setPlainText("")
+                widget.setPlainText("-")
         if hasattr(self.file_info_viewer, 'details_info_widgets'):
             for label_widget, value_widget in self.file_info_viewer.details_info_widgets:
                 label_widget.setText("")
-                value_widget.setPlainText("")
+                value_widget.setPlainText("-")
         
         # 隐藏清除预览按钮
         self.clear_preview_button.hide()

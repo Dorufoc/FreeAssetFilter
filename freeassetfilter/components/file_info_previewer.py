@@ -407,7 +407,6 @@ class FileInfoPreviewer(QObject):
         scaled_group_right_margin = int(10 * self.dpi_scale)
         scaled_group_bottom_margin = int(4 * self.dpi_scale)
         scaled_info_spacing = int(4 * self.dpi_scale)
-        scaled_title_left = int(10 * self.dpi_scale)
 
         # 创建主widget
         main_widget = QWidget()
@@ -418,18 +417,14 @@ class FileInfoPreviewer(QObject):
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(scaled_spacing)
 
-        # 创建统一的信息组，包含所有信息
-        self.info_group = QGroupBox(" ")
+        # 创建统一的信息组容器，包含所有信息
+        # 使用 QWidget 替代 QGroupBox，避免空白标题导致的边框缺口问题
+        self.info_group = QWidget()
         self.info_group.setFont(self.global_font)
         self.info_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.info_group.setStyleSheet(f"""
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                subcontrol-position: top left;
-                left: {scaled_title_left}px;
-                color: {self.secondary_color};
-            }}
-            QGroupBox {{
+            QWidget {{
+                background-color: {self.auxiliary_color};
                 border: none;
             }}
         """)

@@ -479,6 +479,24 @@ class FileBlockCard(QWidget):
         except Exception:
             return False
 
+    def _is_previewer_loading(self):
+        """
+        检查统一预览器是否正在加载
+        在预览器加载期间禁用长按拖拽功能，避免判断异常
+
+        Returns:
+            bool: 预览器是否正在加载
+        """
+        try:
+            main_window = self.window()
+            if main_window and hasattr(main_window, 'unified_previewer'):
+                previewer = main_window.unified_previewer
+                if previewer and hasattr(previewer, 'is_loading_preview'):
+                    return previewer.is_loading_preview
+        except Exception:
+            pass
+        return False
+
     def eventFilter(self, obj, event):
         """事件过滤器，处理鼠标事件"""
         if obj == self:
@@ -490,8 +508,8 @@ class FileBlockCard(QWidget):
                     # 物理左键按下
                     self._touch_start_pos = event.pos()
                     self._is_touch_dragging = False
-                    # 只有在触控操作优化开启时才启动长按定时器
-                    if self._is_touch_optimization_enabled():
+                    # 只有在触控操作优化开启且预览器未在加载时才启动长按定时器
+                    if self._is_touch_optimization_enabled() and not self._is_previewer_loading():
                         self._long_press_timer.start(self._long_press_duration)
                     self._drag_start_pos = event.globalPos()
                 elif event.button() == Qt.RightButton:
@@ -500,7 +518,8 @@ class FileBlockCard(QWidget):
                         # 交换时，物理右键执行原左键功能（预览）
                         self._touch_start_pos = event.pos()
                         self._is_touch_dragging = False
-                        if self._is_touch_optimization_enabled():
+                        # 只有在触控操作优化开启且预览器未在加载时才启动长按定时器
+                        if self._is_touch_optimization_enabled() and not self._is_previewer_loading():
                             self._long_press_timer.start(self._long_press_duration)
                         self._drag_start_pos = event.globalPos()
                     else:
@@ -1010,7 +1029,12 @@ class FileBlockCard(QWidget):
         """
         处理长按事件
         当用户长按卡片时触发，开始拖拽操作
+        在预览器加载期间禁用长按拖拽功能，避免判断异常
         """
+        # 如果预览器正在加载，不执行拖拽
+        if self._is_previewer_loading():
+            self._is_long_pressing = False
+            return
         self._is_long_pressing = True
         self._start_drag()
     

@@ -178,11 +178,11 @@ class ThemeEditor(QScrollArea):
         """
         if self.settings_manager:
             return {
-                "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
+                "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7"),
                 "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
                 "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
                 "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),
-                "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#f1f3f5")
+                "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
             }
         return None
     
@@ -554,8 +554,8 @@ class ThemeEditor(QScrollArea):
         重置按钮点击事件
         重置所有颜色设置为默认值
         """
-        # 默认强调色设置
-        default_accent_color = "#007AFF"
+        # 默认强调色设置 - 活力蓝
+        default_accent_color = "#0A59F7"
         
         # 更新设置管理器中的颜色设置
         if self.settings_manager:
