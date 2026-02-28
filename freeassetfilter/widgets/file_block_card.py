@@ -26,6 +26,7 @@ from PySide6.QtSvgWidgets import QSvgWidget
 
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 
 
 class FileBlockCard(QWidget):
@@ -251,12 +252,12 @@ class FileBlockCard(QWidget):
                 base_icon_size = int(38 * self.dpi_scale)
                 
                 svg_widget = None
-                if icon_path.endswith("未知底板.svg"):
+                if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
                     display_suffix = suffix.upper()
                     if len(display_suffix) > 5:
                         display_suffix = "FILE"
                     svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale)
-                elif icon_path.endswith("压缩文件.svg"):
+                elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                     display_suffix = "." + suffix
                     svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale)
                 else:
@@ -326,42 +327,7 @@ class FileBlockCard(QWidget):
     
     def _get_icon_path(self):
         """获取文件图标路径"""
-        icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
-        
-        if self.file_info.get("is_dir", False):
-            return os.path.join(icon_dir, "文件夹.svg")
-        
-        suffix = self.file_info.get("suffix", "").lower()
-        
-        video_formats = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf", "3gp", "vob", "m2ts", "ts", "mts"]
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf"]
-        audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
-        document_formats = ["pdf", "ppt", "pptx", "xls", "xlsx", "doc", "docx", "txt", "md", "rst", "rtf"]
-        font_formats = ["ttf", "otf", "woff", "woff2", "eot"]
-        archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "iso", "cab", "arj"]
-        
-        if suffix in video_formats:
-            return os.path.join(icon_dir, "视频.svg")
-        elif suffix in image_formats:
-            return os.path.join(icon_dir, "图像.svg")
-        elif suffix == "pdf":
-            return os.path.join(icon_dir, "PDF.svg")
-        elif suffix in ["ppt", "pptx"]:
-            return os.path.join(icon_dir, "PPT.svg")
-        elif suffix in ["xls", "xlsx"]:
-            return os.path.join(icon_dir, "表格.svg")
-        elif suffix in ["doc", "docx"]:
-            return os.path.join(icon_dir, "Word文档.svg")
-        elif suffix in document_formats:
-            return os.path.join(icon_dir, "文档.svg")
-        elif suffix in font_formats:
-            return os.path.join(icon_dir, "字体.svg")
-        elif suffix in audio_formats:
-            return os.path.join(icon_dir, "音乐.svg")
-        elif suffix in archive_formats:
-            return os.path.join(icon_dir, "压缩文件.svg")
-        else:
-            return os.path.join(icon_dir, "未知底板.svg")
+        return get_file_icon_path(self.file_info)
     
     def _create_labels(self):
         """创建文本标签"""
@@ -1209,12 +1175,12 @@ class FileBlockCard(QWidget):
                 icon_path = self._get_icon_path()
                 if icon_path and os.path.exists(icon_path):
                     svg_widget = None
-                    if icon_path.endswith("未知底板.svg"):
+                    if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
                         display_suffix = suffix.upper()
                         if len(display_suffix) > 5:
                             display_suffix = "FILE"
                         svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale)
-                    elif icon_path.endswith("压缩文件.svg"):
+                    elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                         display_suffix = "." + suffix
                         svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale)
                     else:

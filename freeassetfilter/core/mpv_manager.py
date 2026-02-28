@@ -315,6 +315,7 @@ class MPVManager(QObject):
         self._logger.info("操作处理循环开始")
 
         while not self._stop_event.is_set():
+            operation = None
             try:
                 # 从队列获取操作，超时1秒
                 operation = self._operation_queue.get(timeout=1.0)
@@ -340,6 +341,9 @@ class MPVManager(QObject):
             except Exception as e:
                 self._logger.error(f"处理操作时出错: {e}")
                 traceback.print_exc()
+                # 设置Future异常，避免调用方永久阻塞
+                if operation and operation.future and not operation.future.done():
+                    operation.future.set_exception(e)
 
         self._logger.info("操作处理循环结束")
 
@@ -449,7 +453,7 @@ class MPVManager(QObject):
             # 发射错误信号
             self.errorOccurred.emit(MpvErrorCode.GENERIC, str(e))
 
-            # 重新抛出异常，让Future捕获
+            # 抛出异常，由 _process_operations 统一处理并设置 Future 异常
             raise
 
         finally:
@@ -980,6 +984,9 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             self._logger.error("初始化操作超时")
             return False
+        except Exception as e:
+            self._logger.error(f"initialize 操作异常: {e}")
+            return False
 
     def close(self, async_mode: bool = True, timeout: float = 2.0) -> bool:
         """
@@ -1147,6 +1154,9 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             self._logger.error(f"加载文件操作超时: {file_path}")
             return False
+        except Exception as e:
+            self._logger.error(f"load_file 操作异常: {e}", component_id=component_id)
+            return False
 
     def play(self, component_id: str = "unknown") -> bool:
         """
@@ -1167,6 +1177,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=5.0)
         except FutureTimeoutError:
+            return False
+        except Exception as e:
+            self._logger.error(f"play 操作异常: {e}", component_id=component_id)
             return False
 
     def pause(self, component_id: str = "unknown") -> bool:
@@ -1189,6 +1202,9 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
+        except Exception as e:
+            self._logger.error(f"pause 操作异常: {e}", component_id=component_id)
+            return False
 
     def stop(self, component_id: str = "unknown") -> bool:
         """
@@ -1209,6 +1225,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=5.0)
         except FutureTimeoutError:
+            return False
+        except Exception as e:
+            self._logger.error(f"stop 操作异常: {e}", component_id=component_id)
             return False
 
     def seek(
@@ -1237,6 +1256,9 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
+        except Exception as e:
+            self._logger.error(f"seek 操作异常: {e}", component_id=component_id)
+            return False
 
     def set_position(
         self,
@@ -1263,6 +1285,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=5.0)
         except FutureTimeoutError:
+            return False
+        except Exception as e:
+            self._logger.error(f"set_position 操作异常: {e}", component_id=component_id)
             return False
 
     def set_volume(
@@ -1291,6 +1316,9 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
+        except Exception as e:
+            self._logger.error(f"set_volume 操作异常: {e}", component_id=component_id)
+            return False
 
     def set_speed(
         self,
@@ -1317,6 +1345,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=5.0)
         except FutureTimeoutError:
+            return False
+        except Exception as e:
+            self._logger.error(f"set_speed 操作异常: {e}", component_id=component_id)
             return False
 
     def set_muted(
@@ -1345,6 +1376,9 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
+        except Exception as e:
+            self._logger.error(f"set_muted 操作异常: {e}", component_id=component_id)
+            return False
 
     def set_loop(
         self,
@@ -1371,6 +1405,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=5.0)
         except FutureTimeoutError:
+            return False
+        except Exception as e:
+            self._logger.error(f"set_loop 操作异常: {e}", component_id=component_id)
             return False
 
     def set_window_id(
@@ -1399,6 +1436,9 @@ class MPVManager(QObject):
             return future.result(timeout=10.0)
         except FutureTimeoutError:
             return False
+        except Exception as e:
+            self._logger.error(f"set_window_id 操作异常: {e}", component_id=component_id)
+            return False
 
     def get_position(self) -> float:
         """
@@ -1415,6 +1455,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=1.0)
         except FutureTimeoutError:
+            return 0.0
+        except Exception as e:
+            self._logger.error(f"get_position 操作异常: {e}")
             return 0.0
 
     def get_duration(self) -> float:
@@ -1433,6 +1476,9 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 0.0
+        except Exception as e:
+            self._logger.error(f"get_duration 操作异常: {e}")
+            return 0.0
 
     def get_volume(self) -> int:
         """
@@ -1449,6 +1495,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=1.0)
         except FutureTimeoutError:
+            return 100
+        except Exception as e:
+            self._logger.error(f"get_volume 操作异常: {e}")
             return 100
 
     def get_speed(self) -> float:
@@ -1467,6 +1516,9 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 1.0
+        except Exception as e:
+            self._logger.error(f"get_speed 操作异常: {e}")
+            return 1.0
 
     def is_playing(self) -> bool:
         """
@@ -1483,6 +1535,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=1.0)
         except FutureTimeoutError:
+            return False
+        except Exception as e:
+            self._logger.error(f"is_playing 操作异常: {e}")
             return False
 
     def is_paused(self) -> bool:
@@ -1501,6 +1556,9 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return False
+        except Exception as e:
+            self._logger.error(f"is_paused 操作异常: {e}")
+            return False
 
     def is_muted(self) -> bool:
         """
@@ -1518,6 +1576,9 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return False
+        except Exception as e:
+            self._logger.error(f"is_muted 操作异常: {e}")
+            return False
 
     def get_video_size(self) -> Tuple[int, int]:
         """
@@ -1534,6 +1595,9 @@ class MPVManager(QObject):
         try:
             return future.result(timeout=1.0)
         except FutureTimeoutError:
+            return (0, 0)
+        except Exception as e:
+            self._logger.error(f"get_video_size 操作异常: {e}")
             return (0, 0)
 
     def load_lut(self, lut_file_path: str, component_id: str = "unknown", timeout: float = 5.0) -> bool:
@@ -1560,6 +1624,9 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             self._logger.error(f"加载LUT操作超时: {lut_file_path}")
             return False
+        except Exception as e:
+            self._logger.error(f"load_lut 操作异常: {e}", component_id=component_id)
+            return False
 
     def unload_lut(self, component_id: str = "unknown", timeout: float = 5.0) -> bool:
         """
@@ -1582,6 +1649,9 @@ class MPVManager(QObject):
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             self._logger.error("卸载LUT操作超时")
+            return False
+        except Exception as e:
+            self._logger.error(f"unload_lut 操作异常: {e}", component_id=component_id)
             return False
 
     def get_current_lut(self) -> str:

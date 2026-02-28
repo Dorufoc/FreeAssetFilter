@@ -520,10 +520,15 @@ class SvgRenderer:
             container.setFixedSize(scaled_icon_size, scaled_icon_size)
             container.setStyleSheet('background: transparent; border: none;')
             container.setAttribute(Qt.WA_TranslucentBackground, True)
-            
+
+            # 读取SVG文件内容并进行颜色替换预处理
+            with open(icon_path, 'r', encoding='utf-8') as f:
+                svg_content = f.read()
+            svg_content = SvgRenderer._replace_svg_colors(svg_content)
+
             # 使用QSvgWidget渲染SVG底板
             svg_widget = QSvgWidget(container)
-            svg_widget.load(icon_path)
+            svg_widget.load(svg_content.encode('utf-8'))
             svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
             svg_widget.setStyleSheet('background: transparent; border: none;')
             svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)

@@ -3,10 +3,10 @@
 """
 FreeAssetFilter 悬浮详细信息组件
 当鼠标放到控件上时，显示当前鼠标指针所指向的文本内容
-鼠标静止1秒才会显示，鼠标移动则立即隐藏
+鼠标静止1秒才会显示，鼠标移动或点击则立即隐藏
 
-使用 MouseActivityMonitor 全局鼠标钩子来检测鼠标移动状态，
-确保 tooltip 在鼠标移走时能够及时隐藏。
+使用 GlobalMouseMonitor 全局鼠标钩子来检测鼠标移动和点击状态，
+确保 tooltip 在鼠标移动或点击时能够及时隐藏，即使鼠标仍在控件范围内。
 """
 
 import weakref
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QWidget, QLabel, QApplication
 from PySide6.QtCore import Qt, QPoint, QTimer, QRect, QEvent, QPropertyAnimation, QEasingCurve, Property, QByteArray
 from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase, QTransform, QCursor
 
-from freeassetfilter.utils.mouse_activity_monitor import MouseActivityMonitor
+from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
 
 
 class HoverTooltip(QWidget):
@@ -22,7 +22,8 @@ class HoverTooltip(QWidget):
     悬浮详细信息组件
     特点：
     - 鼠标静止1秒后显示
-    - 鼠标移动则立即隐藏（使用全局鼠标钩子检测）
+    - 鼠标移动或点击则立即隐藏（使用全局鼠标钩子检测）
+    - 即使鼠标仍在控件范围内，移动或点击也会隐藏
     - 白色圆角卡片样式
     - 灰色400字重文字
     """
@@ -83,9 +84,11 @@ class HoverTooltip(QWidget):
         self.target_widgets = []  # 存储目标控件的弱引用列表
         
         # 鼠标活动监控器（全局鼠标钩子）
-        # 用于检测鼠标移动状态，当鼠标移动时立即隐藏tooltip
-        self._mouse_monitor = MouseActivityMonitor(self, timeout=100)
+        # 用于检测鼠标移动、点击和滚轮状态，当鼠标移动、点击或滚动时立即隐藏tooltip
+        self._mouse_monitor = GlobalMouseMonitor(self)
         self._mouse_monitor.mouse_moved.connect(self._on_global_mouse_moved)
+        self._mouse_monitor.mouse_clicked.connect(self._on_global_mouse_clicked)
+        self._mouse_monitor.mouse_scrolled.connect(self._on_global_mouse_scrolled)
         self._mouse_monitor_active = False
 
         # 动画相关属性
@@ -310,11 +313,15 @@ class HoverTooltip(QWidget):
         """
         全局鼠标移动回调函数
         
-        当检测到全局鼠标移动时，立即隐藏tooltip。
-        这是通过 MouseActivityMonitor 的全局钩子实现的，
-        可以确保即使鼠标快速移出目标控件，tooltip也能及时隐藏。
+        当检测到全局鼠标移动时，立即隐藏tooltip并重启定时器。
+        无论鼠标是否在目标控件范围内，只要移动就隐藏，
+        这是为了确保tooltip不会遮挡用户操作。
         """
-        # 检查鼠标是否还在目标控件上
+        # 只要tooltip正在显示，鼠标移动就立即隐藏
+        if self.isVisible():
+            self._fade_out()
+        
+        # 检查鼠标是否还在目标控件上，如果是则重启定时器
         current_widget = QApplication.widgetAt(QCursor.pos())
         is_over_target = False
         
@@ -327,11 +334,42 @@ class HoverTooltip(QWidget):
             except RuntimeError:
                 continue
         
-        # 如果鼠标不在目标控件上，隐藏tooltip
-        if not is_over_target:
-            self._fade_out()
+        # 如果鼠标在目标控件上，更新位置并重启定时器
+        if is_over_target:
+            self.last_mouse_pos = QCursor.pos()
+            self.timer.start()
+        else:
+            # 鼠标不在目标控件上，停止定时器和监控
             self.timer.stop()
             self._stop_mouse_monitor()
+
+    def _on_global_mouse_clicked(self):
+        """
+        全局鼠标点击回调函数
+
+        当检测到全局鼠标点击时，立即隐藏tooltip。
+        无论鼠标是否在目标控件范围内，只要点击就隐藏。
+        """
+        # 只要tooltip正在显示，鼠标点击就立即隐藏
+        if self.isVisible():
+            self._fade_out()
+
+        # 点击时停止定时器
+        self.timer.stop()
+
+    def _on_global_mouse_scrolled(self):
+        """
+        全局鼠标滚轮滚动回调函数
+
+        当检测到全局鼠标滚轮滚动时，立即隐藏tooltip。
+        无论鼠标是否在目标控件范围内，只要滚动就隐藏。
+        """
+        # 只要tooltip正在显示，鼠标滚轮滚动就立即隐藏
+        if self.isVisible():
+            self._fade_out()
+
+        # 滚动时停止定时器
+        self.timer.stop()
 
     def eventFilter(self, obj, event):
         """事件过滤器，监听鼠标事件"""

@@ -975,10 +975,10 @@ class ModernSettingsWindow(QDialog):
         # 预设主题配置
         self.preset_themes = {
             "活力蓝": {"accent_color": "#007AFF"},
-            "热情红": {"accent_color": "#FF3B30"},
-            "蜂蜜黄": {"accent_color": "#FFCC00"},
-            "清新绿": {"accent_color": "#34C759"},
-            "魅力紫": {"accent_color": "#AF52DE"},
+            "热情红": {"accent_color": "#DD5940"},
+            "蜂蜜黄": {"accent_color": "#EAB348"},
+            "清新绿": {"accent_color": "#78B86C"},
+            "魅力紫": {"accent_color": "#9554CF"},
             "清雅墨": {"accent_color": "#5A6C8B"}
         }
         
@@ -1105,6 +1105,35 @@ class ModernSettingsWindow(QDialog):
         self.custom_color_input.input_submitted.connect(on_custom_color_applied)
         self.custom_color_input.setVisible(initial_theme == "自定义")
         theme_layout.addWidget(self.custom_color_input)
+
+        # 图标样式选择
+        icon_styles = ["扁平", "质感", "统一"]
+        current_icon_style = self._get_current_setting_value("appearance.icon_style", 0)
+        current_icon_style_text = icon_styles[current_icon_style] if current_icon_style in [0, 1, 2] else icon_styles[0]
+
+        self.icon_style_setting = CustomSettingItem(
+            text="图标样式",
+            secondary_text="选择文件图标的显示风格",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": current_icon_style_text, "type": "primary"}]
+        )
+
+        def on_icon_style_button_clicked(button_index):
+            self.icon_style_dropdown = CustomDropdownMenu(self, position="bottom")
+            self.icon_style_dropdown.set_items(icon_styles, default_item=current_icon_style_text)
+
+            def on_icon_style_item_clicked(selected_style):
+                style_index = icon_styles.index(selected_style) if selected_style in icon_styles else 0
+                self.current_settings.update({"appearance.icon_style": style_index})
+                self.icon_style_setting.button_group[0].setText(selected_style)
+
+            self.icon_style_dropdown.itemClicked.connect(on_icon_style_item_clicked)
+            button = self.icon_style_setting.button_group[button_index]
+            self.icon_style_dropdown.set_target_button(button)
+            self.icon_style_dropdown.show_menu()
+
+        self.icon_style_setting.button_clicked.connect(on_icon_style_button_clicked)
+        theme_layout.addWidget(self.icon_style_setting)
 
         self.scroll_layout.addWidget(theme_group)
 

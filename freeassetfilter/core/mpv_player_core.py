@@ -25,7 +25,7 @@ from ctypes import c_void_p, c_int, c_int64, c_double, c_char_p, POINTER, Struct
 from typing import Optional, Callable, Dict, Any, List, Tuple, Union
 from enum import IntEnum
 
-from PySide6.QtCore import QObject, Signal, QThread, Qt
+from PySide6.QtCore import QObject, Signal, QThread, Qt, QTimer
 
 
 class MpvErrorCode(IntEnum):
@@ -386,8 +386,12 @@ class MPVPlayerCore(QObject):
         
         self._dll_loader = MPVDLLLoader()
         
-        self._command_queue = queue.Queue()
-        self._result_queue = queue.Queue()
+        # 使用 SimpleQueue 提高线程安全性
+        self._command_queue = queue.SimpleQueue()
+        self._result_queue = queue.SimpleQueue()
+        
+        # 信号队列用于线程安全地发射信号
+        self._signal_queue = queue.SimpleQueue()
         
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -444,25 +448,37 @@ class MPVPlayerCore(QObject):
             
             while not self._stop_event.is_set():
                 try:
-                    event_ptr = self._dll_loader.dll.mpv_wait_event(mpv_handle, 0.01)
-                    if event_ptr:
-                        event = event_ptr.contents
-                        self._handle_mpv_event(mpv_handle, event)
+                    # 使用 try-except 包装每个操作，防止单个操作失败导致整个循环崩溃
+                    try:
+                        event_ptr = self._dll_loader.dll.mpv_wait_event(mpv_handle, 0.01)
+                        if event_ptr:
+                            event = event_ptr.contents
+                            self._handle_mpv_event(mpv_handle, event)
+                    except Exception as e:
+                        if not self._stop_event.is_set():
+                            print(f"[MPVWorker] 事件处理错误: {e}")
                     
                     try:
-                        command = self._command_queue.get_nowait()
+                        command = self._command_queue.get(block=False)
                         self._process_command(mpv_handle, command)
                     except queue.Empty:
                         pass
+                    except Exception as e:
+                        if not self._stop_event.is_set():
+                            print(f"[MPVWorker] 命令处理错误: {e}")
                     
-                    current_time = time.time()
-                    if current_time - last_position_update >= position_update_interval:
-                        self._update_position_state(mpv_handle)
-                        last_position_update = current_time
+                    try:
+                        current_time = time.time()
+                        if current_time - last_position_update >= position_update_interval:
+                            self._update_position_state(mpv_handle)
+                            last_position_update = current_time
+                    except Exception as e:
+                        if not self._stop_event.is_set():
+                            print(f"[MPVWorker] 位置更新错误: {e}")
                         
                 except Exception as e:
                     if not self._stop_event.is_set():
-                        print(f"[MPVWorker] 错误: {e}")
+                        print(f"[MPVWorker] 主循环错误: {e}")
                         import traceback
                         traceback.print_exc()
             
@@ -669,17 +685,21 @@ class MPVPlayerCore(QObject):
         self.fileEnded.emit(reason)
     
     def _update_position_state(self, mpv_handle: c_void_p):
-        """更新播放位置状态"""
-        position = self._get_property_double(mpv_handle, "time-pos")
-        duration = self._get_property_double(mpv_handle, "duration")
-        
-        with self._state_lock:
-            if position is not None:
-                self._position = position
-            if duration is not None and duration > 0:
-                self._duration = duration
-        
-        self.positionChanged.emit(self._position, self._duration)
+        """更新播放位置状态（在工作线程中执行，不直接发射信号）"""
+        try:
+            position = self._get_property_double(mpv_handle, "time-pos")
+            duration = self._get_property_double(mpv_handle, "duration")
+            
+            with self._state_lock:
+                if position is not None:
+                    self._position = position
+                if duration is not None and duration > 0:
+                    self._duration = duration
+            
+            # 将信号放入队列，由主线程处理
+            self._signal_queue.put(('positionChanged', self._position, self._duration))
+        except Exception as e:
+            print(f"[MPVWorker] 更新位置状态时出错: {e}")
     
     def _process_command(self, mpv_handle: c_void_p, command: dict):
         """处理命令（在工作线程中执行）"""
@@ -749,7 +769,12 @@ class MPVPlayerCore(QObject):
             result = None
         
         if 'result_id' in command:
-            self._result_queue.put((command['result_id'], result))
+            try:
+                # 使用简单的元组，避免复杂对象
+                result_tuple = (command['result_id'], result)
+                self._result_queue.put(result_tuple)
+            except Exception as e:
+                print(f"[MPVWorker] 放入结果队列时出错: {e}")
     
     def _load_file_internal(self, mpv_handle: c_void_p, file_path: str, **kwargs) -> bool:
         """内部加载文件实现"""
@@ -1054,7 +1079,15 @@ class MPVPlayerCore(QObject):
     
     def _send_command(self, cmd_type: MPVCommandType, *args, **kwargs) -> Any:
         """发送命令到工作线程并等待结果"""
-        if not self._initialized or not self._worker_thread or not self._worker_thread.is_alive():
+        # 检查是否正在关闭或已关闭
+        if self._stop_event.is_set():
+            return None
+        
+        with self._state_lock:
+            if not self._initialized:
+                return None
+        
+        if not self._worker_thread or not self._worker_thread.is_alive():
             return None
         
         result_id = id(time.time())
@@ -1065,14 +1098,21 @@ class MPVPlayerCore(QObject):
             'result_id': result_id
         }
         
-        self._command_queue.put(command)
+        try:
+            self._command_queue.put(command, block=False)
+        except queue.Full:
+            return None
         
         start_time = time.time()
         timeout = kwargs.get('timeout', 5.0)
         
         while time.time() - start_time < timeout:
+            # 检查是否正在关闭
+            if self._stop_event.is_set():
+                return None
+            
             try:
-                rid, result = self._result_queue.get(timeout=0.01)
+                rid, result = self._result_queue.get(block=True, timeout=0.01)
                 if rid == result_id:
                     return result
             except queue.Empty:
@@ -1104,9 +1144,37 @@ class MPVPlayerCore(QObject):
         self._worker_thread.start()
         
         if self._initialized_event.wait(timeout=10.0):
+            # 启动信号处理定时器
+            self._start_signal_timer()
             return True
         
         return False
+    
+    def _start_signal_timer(self):
+        """启动信号处理定时器"""
+        self._signal_timer = QTimer(self)
+        self._signal_timer.timeout.connect(self._process_signal_queue)
+        self._signal_timer.start(50)  # 每50ms处理一次信号队列
+    
+    def _process_signal_queue(self):
+        """处理信号队列（在主线程中执行）"""
+        try:
+            while True:
+                try:
+                    signal_data = self._signal_queue.get(block=False)
+                    signal_name = signal_data[0]
+                    
+                    if signal_name == 'positionChanged':
+                        _, position, duration = signal_data
+                        self.positionChanged.emit(position, duration)
+                    # 可以在这里添加其他信号的处理
+                except queue.Empty:
+                    break
+                except Exception as e:
+                    print(f"[MPVPlayerCore] 处理信号时出错: {e}")
+                    break
+        except Exception as e:
+            print(f"[MPVPlayerCore] 处理信号队列时出错: {e}")
     
     def load_file(self, file_path: str) -> bool:
         """
@@ -1518,24 +1586,30 @@ class MPVPlayerCore(QObject):
         """
         预清理 - 让 MPV 进入空闲状态，加速后续销毁
         在调用 close() 之前先调用此方法，可以显著缩短销毁时间
+        注意：所有操作都通过命令队列发送，避免在工作线程外直接操作MPV句柄
         """
-        if not self._initialized or not self._mpv_handle:
+        with self._state_lock:
+            if not self._initialized:
+                return
+        
+        # 如果正在关闭，跳过预清理
+        if self._stop_event.is_set():
             return
         
         try:
-            # 1. 先暂停播放（停止解码器工作）
-            self._pause_internal(self._mpv_handle)
+            # 1. 先暂停播放（停止解码器工作）- 使用命令队列
+            self._send_command(MPVCommandType.PAUSE, timeout=0.5)
             time.sleep(0.03)  # 给30ms让解码器停止
             
-            # 2. 停止播放（释放文件句柄）
-            self._stop_internal(self._mpv_handle)
+            # 2. 停止播放（释放文件句柄）- 使用命令队列
+            self._send_command(MPVCommandType.STOP, timeout=0.5)
             time.sleep(0.02)  # 给20ms释放文件
             
-            # 3. 清除视频滤镜/LUT（如果有）
+            # 3. 清除视频滤镜/LUT（如果有）- 使用命令队列
             try:
-                self._clear_glsl_shaders_internal(self._mpv_handle)
-                self._set_vf_filter_internal(self._mpv_handle, "")
-                self._clear_lut_internal(self._mpv_handle)
+                self._send_command(MPVCommandType.CLEAR_GLSL_SHADERS, timeout=0.3)
+                self._send_command(MPVCommandType.SET_VF_FILTER, "", timeout=0.3)
+                self._send_command(MPVCommandType.CLEAR_LUT, timeout=0.3)
             except:
                 pass
                 
@@ -1550,15 +1624,23 @@ class MPVPlayerCore(QObject):
             async_mode: 是否异步关闭（True=立即返回，后台清理）
             timeout: 同步模式下的最大等待时间（秒）
         """
-        if not self._initialized:
-            return
+        with self._state_lock:
+            if not self._initialized:
+                return
         
-        # 预清理 - 让 MPV 进入空闲状态
+        # 首先设置停止事件，阻止新的命令发送
+        self._stop_event.set()
+        
+        # 停止信号处理定时器
+        if hasattr(self, '_signal_timer') and self._signal_timer:
+            self._signal_timer.stop()
+            self._signal_timer = None
+        
+        # 预清理 - 让 MPV 进入空闲状态（现在pre_cleanup会检查_stop_event）
         self.pre_cleanup()
         
-        # 发送关闭命令
-        self._send_command(MPVCommandType.CLOSE, timeout=0.5)
-        self._stop_event.set()
+        # 发送关闭命令（使用短超时，因为_stop_event已设置）
+        self._send_command(MPVCommandType.CLOSE, timeout=0.3)
         
         if async_mode:
             # 异步模式：启动后台线程执行清理

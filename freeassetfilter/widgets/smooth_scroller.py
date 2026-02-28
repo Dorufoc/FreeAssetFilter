@@ -4,7 +4,7 @@ FreeAssetFilter 滚动条组件
 带悬停动画效果、平滑滚动和动态宽度控制的滚动条
 """
 
-from PySide6.QtCore import Qt, QPoint, QTimer, Signal, QObject, QPropertyAnimation, Property, QEasingCurve
+from PySide6.QtCore import Qt, QPoint, QTimer, Signal, QObject, QPropertyAnimation, Property, QEasingCurve, QEvent
 from PySide6.QtWidgets import QScrollArea, QAbstractItemView, QScroller, QScrollerProperties, QApplication, QScrollBar
 from PySide6.QtGui import QColor, QWheelEvent
 import time
@@ -29,40 +29,44 @@ class D_ScrollBar(QScrollBar):
     def __init__(self, parent=None, orientation=Qt.Vertical):
         """
         初始化动画滚动条
-        
+
         Args:
             parent: 父控件
             orientation: 滚动条方向，Qt.Vertical 或 Qt.Horizontal
         """
         super().__init__(orientation, parent)
-        
+
         self._dpi_scale = 1.0
         self._is_hovering = False
         self._is_pressed = False
-        
+
         app = QApplication.instance()
         if app:
             self._dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+
         self._normal_color = QColor("#e0e0e0")
         self._hover_color = QColor("#333333")
         self._pressed_color = QColor("#007AFF")
         self._auxiliary_color = QColor("#f1f3f3")
-        
+
         self._anim_handle_color_value = QColor(self._normal_color)
         self._updating_style = False
-        
+
         # 动态宽度控制相关属性
         self._default_width = 4  # 默认滚动条宽度（像素）
         self._current_width = 0  # 当前宽度初始为0（隐藏状态）
         self._scroll_area = None  # 关联的滚动区域
-        
+
+        # QScroller 手势状态管理
+        self._scroller_target = None  # QScroller 目标控件
+        self._scroller_was_active = False  # 记录 QScroller 左键手势是否原本启用
+
         self._init_animations()
         self._update_style()
         self._init_smooth_scroll()
-        
+
         self.setAttribute(Qt.WA_Hover, True)
-        
+
         # 连接值变化信号以检测滚动需求变化
         self.rangeChanged.connect(self._on_range_changed)
     
@@ -369,36 +373,98 @@ class D_ScrollBar(QScrollBar):
         
         super().leaveEvent(event)
     
+    def _get_scroller_target(self):
+        """
+        获取关联的 QScroller 目标控件
+        通常是父控件或其视口
+        """
+        parent = self.parent()
+        if isinstance(parent, QScrollArea):
+            return parent.viewport()
+        # 对于 QListWidget 等 QAbstractItemView 子类
+        if hasattr(parent, 'viewport'):
+            return parent.viewport()
+        return parent
+
+    def _disable_scroller_gesture(self):
+        """
+        临时禁用 QScroller 的所有手势
+        在滚动条拖动开始时调用，确保滚动条操作不被劫持
+        """
+        if self._scroller_target is None:
+            self._scroller_target = self._get_scroller_target()
+
+        if self._scroller_target:
+            scroller = QScroller.scroller(self._scroller_target)
+            # 停止当前正在进行的滚动动画
+            if scroller.state() != QScroller.Inactive:
+                scroller.stop()
+            # 取消所有手势抓取
+            try:
+                QScroller.ungrabGesture(self._scroller_target, QScroller.LeftMouseButtonGesture)
+                QScroller.ungrabGesture(self._scroller_target, QScroller.TouchGesture)
+                self._scroller_was_active = True
+            except:
+                self._scroller_was_active = False
+
+    def _restore_scroller_gesture(self):
+        """
+        恢复 QScroller 的手势
+        在滚动条拖动结束时调用
+        """
+        if self._scroller_was_active and self._scroller_target:
+            try:
+                # 恢复所有手势
+                QScroller.grabGesture(self._scroller_target, QScroller.TouchGesture)
+                QScroller.grabGesture(self._scroller_target, QScroller.LeftMouseButtonGesture)
+            except:
+                pass
+        self._scroller_was_active = False
+
     def mousePressEvent(self, event):
-        """鼠标按下事件"""
+        """鼠标按下事件 - 临时禁用 QScroller 手势"""
         self._is_pressed = True
-        
+
+        # 临时禁用 QScroller 手势，防止与滚动条拖动冲突
+        self._disable_scroller_gesture()
+
         self._hover_anim.stop()
         self._anim_handle_color_value = QColor(self._anim_handle_color_value)
         self._press_anim.setStartValue(QColor(self._anim_handle_color_value))
         self._press_anim.setEndValue(QColor(self._pressed_color))
         self._press_anim.start()
-        
+
         super().mousePressEvent(event)
-    
+
+    def mouseMoveEvent(self, event):
+        """鼠标移动事件 - 在拖动期间阻止事件传播到父控件"""
+        if self._is_pressed:
+            # 当鼠标按下并在滚动条上移动时，阻止事件传播
+            # 这样可以防止 QScroller 在鼠标移动到滚动区域时劫持事件
+            event.accept()
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event):
-        """鼠标释放事件"""
+        """鼠标释放事件 - 恢复 QScroller 手势"""
         self._is_pressed = False
-        
+
+        # 恢复 QScroller 手势
+        self._restore_scroller_gesture()
+
         self._press_anim.stop()
         self._anim_handle_color_value = QColor(self._anim_handle_color_value)
-        
+
         if self._is_hovering:
             self._release_anim.setStartValue(QColor(self._anim_handle_color_value))
             self._release_anim.setEndValue(QColor(self._hover_color))
         else:
             self._release_anim.setStartValue(QColor(self._anim_handle_color_value))
             self._release_anim.setEndValue(QColor(self._normal_color))
-        
+
         self._release_anim.start()
-        
+
         super().mouseReleaseEvent(event)
-    
+
     def wheelEvent(self, event):
         """滚轮事件 - 平滑滚动，Ctrl+滚轮时交给父控件处理缩放"""
         # 当按下Ctrl时，不处理滚轮事件，让事件向上传播以支持缩放

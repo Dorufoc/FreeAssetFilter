@@ -25,6 +25,7 @@ class CustomDropdownMenu(QWidget):
     支持自适应文字显示和滚动布局
     """
     itemClicked = Signal(object)  # 列表项点击信号，传递选中项数据
+    menuOpening = Signal()  # 菜单即将打开信号，用于在显示菜单前刷新数据
     
     def __init__(self, parent=None, position="top", use_internal_button=True):
         """
@@ -479,6 +480,8 @@ class CustomDropdownMenu(QWidget):
         显示菜单
         """
         if not self._menu_visible:
+            # 发射菜单即将打开信号，允许外部在显示前刷新数据
+            self.menuOpening.emit()
             # 优先使用外部设置的目标按钮，否则使用内部main_button
             target_button = self._external_target_button if self._external_target_button else self.main_button
             # 如果没有目标按钮，无法显示菜单

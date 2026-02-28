@@ -459,9 +459,44 @@ class FileStagingPool(QWidget):
             
             # 实时保存备份
             self.save_backup()
-    
 
-    
+    def reload_all_cards(self):
+        """
+        重载所有卡片
+        清空当前所有卡片并重新创建，类似于应用启动时的初始化
+        用于主题变更或需要完全刷新卡片显示的场景
+        """
+        if not self.items:
+            return
+
+        # 保存当前项目列表的副本
+        items_to_reload = self.items.copy()
+
+        # 清除预览状态
+        self.previewing_file_path = None
+
+        # 移除所有卡片（包括拉伸因子）
+        while self.cards_layout.count() > 0:
+            item = self.cards_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # 清空卡片列表
+        self.cards.clear()
+        self.items.clear()
+
+        # 重新添加所有文件（这会重新创建卡片）
+        for file_info in items_to_reload:
+            # 检查文件是否仍然存在
+            if os.path.exists(file_info["path"]):
+                self.add_file(file_info)
+
+        # 更新统计信息
+        self.update_stats()
+
+        # 实时保存备份
+        self.save_backup()
+
     def _format_file_size(self, size_bytes):
         """
         将文件大小转换为自适应单位(B、KB、MB、GB、TB)

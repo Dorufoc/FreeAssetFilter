@@ -54,6 +54,7 @@ class SettingsManager:
             },
             "appearance": {
                 "theme": "default",
+                "icon_style": 0,
                 "colors": {
                     "accent_color": "#0A59F7",
                     "secondary_color": "#333333",
@@ -141,6 +142,7 @@ class SettingsManager:
             "font": self.default_settings["font"].copy(),
             "appearance": {
                 "theme": self.default_settings["appearance"]["theme"],
+                "icon_style": self.default_settings["appearance"]["icon_style"],
                 "colors": self.default_settings["appearance"]["colors"].copy()
             },
             "file_selector": self.default_settings["file_selector"].copy(),
@@ -311,6 +313,7 @@ class SettingsManager:
             "font": default["font"].copy(),
             "appearance": {
                 "theme": default["appearance"]["theme"],
+                "icon_style": default["appearance"]["icon_style"],
                 "colors": default["appearance"]["colors"].copy()
             },
             "file_selector": default["file_selector"].copy(),
@@ -325,6 +328,8 @@ class SettingsManager:
                 if key == "appearance":
                     if "theme" in value:
                         merged[key]["theme"] = value["theme"]
+                    if "icon_style" in value:
+                        merged[key]["icon_style"] = value["icon_style"]
                     if "colors" in value:
                         for color_key in base_color_keys:
                             if color_key in value["colors"]:

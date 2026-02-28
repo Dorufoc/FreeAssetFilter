@@ -1232,6 +1232,13 @@ def main():
     """
     print("=== FreeAssetFilter 主程序 ===")
     
+    # 获取通过文件关联传递进来的文件路径（Inno Setup通过命令行参数传递）
+    # sys.argv[0] 是程序本身的路径
+    # sys.argv[1] 是被打开的文件路径（如果有）
+    associated_file_path = sys.argv[1] if len(sys.argv) > 1 else None
+    if associated_file_path:
+        print(f"[文件关联] 接收到关联文件: {associated_file_path}")
+    
     # 修改sys.argv[0]以确保Windows任务栏显示正确图标
     sys.argv[0] = os.path.abspath(__file__)
     
@@ -1286,6 +1293,10 @@ def main():
     # QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)      # Qt6中已弃用
 
     app = QApplication(sys.argv)
+    
+    # 将关联文件路径存储到app对象，供其他组件访问
+    # 其他组件可以通过 QApplication.instance().associated_file_path 获取
+    app.associated_file_path = associated_file_path
 
     # 预导入 cv2，避免多线程环境下的导入竞态条件
     # cv2 的初始化涉及复杂的类型系统，必须在主线程中完成

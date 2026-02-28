@@ -10,6 +10,7 @@ from .path_utils import get_app_data_path, get_config_path, get_resource_path
 from .icon_utils import get_lnk_target, get_all_icons_from_exe, get_highest_resolution_icon
 from .fix_encoding import fix_file, fix_all_files
 from .mouse_activity_monitor import MouseActivityMonitor
+from .global_mouse_monitor import GlobalMouseMonitor
 
 __all__ = [
     'get_app_data_path',
@@ -20,5 +21,6 @@ __all__ = [
     'get_highest_resolution_icon',
     'fix_file',
     'fix_all_files',
-    'MouseActivityMonitor'
+    'MouseActivityMonitor',
+    'GlobalMouseMonitor'
 ]

@@ -121,14 +121,33 @@ class CustomButton(QPushButton):
         
         self.update_style()
         
-        # 初始化动画属性
-        self._init_animations()
+        # 初始化动画属性（延迟执行，避免多线程竞争导致的访问冲突）
+        self._animations_initialized = False
+        QTimer.singleShot(0, self._init_animations)
         
         # 延迟渲染图标，确保按钮尺寸已确定
         QTimer.singleShot(0, self._render_icon)
     
     def _init_animations(self):
-        """初始化按钮状态切换动画"""
+        """初始化按钮状态切换动画
+        
+        注意：此方法通过 QTimer.singleShot 延迟调用，以避免多线程环境下
+        Qt 属性动画系统的访问冲突问题。
+        """
+        # 防止重复初始化
+        if self._animations_initialized:
+            return
+        
+        # 线程安全检查：确保在主线程中执行
+        from PySide6.QtCore import QThread
+        if QThread.currentThread() != QApplication.instance().thread():
+            # 如果不在主线程，重新调度到主线程
+            QTimer.singleShot(0, self._init_animations)
+            return
+        
+        # 标记动画已初始化
+        self._animations_initialized = True
+        
         # 获取颜色配置
         app = QApplication.instance()
         if hasattr(app, 'settings_manager'):
@@ -366,6 +385,9 @@ class CustomButton(QPushButton):
     
     def enterEvent(self, event):
         """鼠标进入事件，触发动画"""
+        # 确保动画已初始化
+        if not getattr(self, '_animations_initialized', False):
+            return
         # 先停止可能正在进行的动画
         self._leave_anim_group.stop()
         self._hover_anim_group.stop()
@@ -390,6 +412,9 @@ class CustomButton(QPushButton):
     
     def leaveEvent(self, event):
         """鼠标离开事件，触发动画"""
+        # 确保动画已初始化
+        if not getattr(self, '_animations_initialized', False):
+            return
         self._hover_anim_group.stop()
         self._press_anim_group.stop()
         
@@ -406,6 +431,10 @@ class CustomButton(QPushButton):
     
     def mousePressEvent(self, event):
         """鼠标按下事件，触发动画"""
+        # 确保动画已初始化
+        if not getattr(self, '_animations_initialized', False):
+            super().mousePressEvent(event)
+            return
         self._hover_anim_group.stop()
         self._leave_anim_group.stop()
         
@@ -422,6 +451,10 @@ class CustomButton(QPushButton):
     
     def mouseReleaseEvent(self, event):
         """鼠标释放事件，触发动画"""
+        # 确保动画已初始化
+        if not getattr(self, '_animations_initialized', False):
+            super().mouseReleaseEvent(event)
+            return
         self._press_anim_group.stop()
         
         colors = self._style_colors
@@ -806,6 +839,10 @@ class CustomButton(QPushButton):
     def _update_anim_colors(self, current_colors, accent_color, secondary_color, base_color, settings_manager=None):
         """更新动画颜色配置"""
         if not hasattr(self, '_style_colors'):
+            return
+        
+        # 如果动画未初始化，跳过动画颜色更新
+        if not getattr(self, '_animations_initialized', False):
             return
 
         # 如果没有传入settings_manager，尝试从应用实例获取

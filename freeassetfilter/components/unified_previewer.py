@@ -661,14 +661,14 @@ class UnifiedPreviewer(QWidget):
                     from freeassetfilter.components.video_player import VideoPlayer
                     if isinstance(self.current_preview_widget, VideoPlayer):
                         video_player_widget = self.current_preview_widget
-                        # 调用cleanup方法进行完整的资源清理
+                        # 调用cleanup方法进行完整的资源清理（使用同步模式确保完全清理）
                         if hasattr(video_player_widget, 'cleanup'):
                             try:
-                                video_player_widget.cleanup()
+                                # 使用同步模式确保资源完全释放
+                                video_player_widget.cleanup(async_mode=False)
                             except Exception as e:
                                 print(f"调用VideoPlayer.cleanup()时出错: {e}")
                         
-
                         # 处理事件，确保清理操作完成
                         # 使用 ExcludeUserInputEvents 标志排除用户输入事件，避免在处理过程中
                         # 触发鼠标/键盘事件导致重入问题（如eventFilter中的事件处理）
@@ -677,7 +677,7 @@ class UnifiedPreviewer(QWidget):
 
                         # 等待一小段时间确保MPV资源完全释放
                         from PySide6.QtCore import QThread
-                        QThread.msleep(200)  # 等待200ms让MPV完全释放
+                        QThread.msleep(100)  # 等待100ms让MPV完全释放
                 except Exception as e:
                     print(f"清理VideoPlayer组件时出错: {e}")
 
@@ -1858,6 +1858,9 @@ class UnifiedPreviewer(QWidget):
             # 更新时间线按钮的可见性
             self._update_timeline_button_visibility()
 
+            # 刷新文件选择器和文件存储池的图标显示
+            self._refresh_file_selector_and_staging_pool()
+
             if self._current_settings_window is not None:
                 try:
                     if self._current_settings_window.isVisible():
@@ -1866,6 +1869,34 @@ class UnifiedPreviewer(QWidget):
                     pass
         except (RuntimeError, AttributeError):
             pass
+
+    def _refresh_file_selector_and_staging_pool(self):
+        """
+        刷新文件选择器和文件存储池的图标显示
+        在设置保存后调用，确保图标样式等设置变更生效
+        """
+        try:
+            main_window = None
+            if hasattr(self, 'main_window') and self.main_window is not None:
+                main_window = self.main_window
+            elif hasattr(self.parent(), 'main_window') and self.parent().main_window is not None:
+                main_window = self.parent().main_window
+
+            # 刷新文件选择器
+            if main_window is not None and hasattr(main_window, 'file_selector_a'):
+                file_selector = main_window.file_selector_a
+                # 刷新文件列表以更新图标显示
+                if hasattr(file_selector, 'refresh_files'):
+                    file_selector.refresh_files()
+
+            # 刷新文件存储池
+            if main_window is not None and hasattr(main_window, 'file_staging_pool'):
+                staging_pool = main_window.file_staging_pool
+                # 完全重载所有卡片，类似于应用启动时的初始化
+                if hasattr(staging_pool, 'reload_all_cards'):
+                    staging_pool.reload_all_cards()
+        except Exception as e:
+            print(f"[ERROR] 刷新文件选择器和存储池失败: {e}")
     
     def _update_timeline_button_visibility(self):
         """

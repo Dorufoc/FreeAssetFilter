@@ -32,6 +32,7 @@ sys.path.insert(
     os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 )
 from freeassetfilter.core.svg_renderer import SvgRenderer  # noqa: E402 模块级别的导入不在文件顶部（需要先添加路径）
+from freeassetfilter.utils.file_icon_helper import get_icon_path  # noqa: E402
 
 
 class CustomFileHorizontalCard(QWidget):
@@ -634,7 +635,8 @@ class CustomFileHorizontalCard(QWidget):
             if not self._path_exists:
                 scaled_icon_size = int(40 * self.dpi_scale)
                 icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
-                unknown_icon_path = os.path.join(icon_dir, "未知底板.svg")
+                # 使用get_icon_path获取支持样式切换的图标路径
+                unknown_icon_path = get_icon_path("未知底板", icon_dir)
                 if os.path.exists(unknown_icon_path):
                     svg_widget = SvgRenderer.render_unknown_file_icon(unknown_icon_path, "?", scaled_icon_size, self.dpi_scale)
                     if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
@@ -723,8 +725,13 @@ class CustomFileHorizontalCard(QWidget):
             if icon_path and os.path.exists(icon_path):
                 scaled_icon_size = int(40 * self.dpi_scale)
 
-                if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
-                    if icon_path.endswith("压缩文件.svg"):
+                # 判断是否为需要显示文字后缀的图标类型（支持样式切换后的文件名）
+                icon_basename = os.path.basename(icon_path)
+                is_unknown_icon = "未知底板" in icon_basename
+                is_archive_icon = "压缩文件" in icon_basename
+
+                if is_unknown_icon or is_archive_icon:
+                    if is_archive_icon:
                         display_suffix = "." + file_info.suffix()
                     else:
                         display_suffix = file_info.suffix().upper()
@@ -758,40 +765,37 @@ class CustomFileHorizontalCard(QWidget):
             print(f"设置文件图标失败: {e}")
 
     def _get_file_icon_path(self, suffix, is_dir=False):
-        """获取文件图标路径"""
+        """获取文件图标路径，支持图标样式切换"""
         icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
+
+        # 根据文件后缀返回对应的图标名称（不含.svg后缀）
         if is_dir:
-            return os.path.join(icon_dir, "文件夹.svg")
-        # 根据文件后缀返回对应的图标路径
-        icon_map = {
-            # 视频格式
-            'mp4': '视频.svg', 'mov': '视频.svg', 'avi': '视频.svg',
-            'mkv': '视频.svg', 'wmv': '视频.svg', 'flv': '视频.svg',
-            'webm': '视频.svg', 'm4v': '视频.svg', 'mpeg': '视频.svg',
-            'mpg': '视频.svg', 'mxf': '视频.svg',
-            # 图片格式
-            'jpg': '图像.svg', 'jpeg': '图像.svg', 'png': '图像.svg',
-            'gif': '图像.svg', 'bmp': '图像.svg', 'webp': '图像.svg',
-            'tiff': '图像.svg', 'svg': '图像.svg', 'avif': '图像.svg',
-            'cr2': '图像.svg', 'cr3': '图像.svg', 'nef': '图像.svg',
-            'arw': '图像.svg', 'dng': '图像.svg', 'orf': '图像.svg',
-            'psd': '图像.svg', 'psb': '图像.svg',
-            # 文档格式
-            'pdf': 'PDF.svg', 'ppt': 'PPT.svg', 'pptx': 'PPT.svg',
-            'xls': '表格.svg', 'xlsx': '表格.svg',
-            'doc': 'Word文档.svg', 'docx': 'Word文档.svg',
-            'txt': '文档.svg', 'md': '文档.svg', 'rtf': '文档.svg',
-            # 字体格式
-            'ttf': '字体.svg', 'otf': '字体.svg', 'woff': '字体.svg',
-            'woff2': '字体.svg', 'eot': '字体.svg',
-            # 音频格式
-            'mp3': '音乐.svg', 'wav': '音乐.svg', 'flac': '音乐.svg',
-            'aac': '音乐.svg', 'ogg': '音乐.svg', 'm4a': '音乐.svg',
-            # 压缩文件格式
-            'zip': '压缩文件.svg', 'rar': '压缩文件.svg', '7z': '压缩文件.svg',
-            'tar': '压缩文件.svg', 'gz': '压缩文件.svg', 'bz2': '压缩文件.svg',
-        }
-        return os.path.join(icon_dir, icon_map.get(suffix, "未知底板.svg"))
+            icon_name = "文件夹"
+        elif suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']:
+            icon_name = "视频"
+        elif suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'svg', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']:
+            icon_name = "图像"
+        elif suffix == 'pdf':
+            icon_name = "PDF"
+        elif suffix in ['ppt', 'pptx']:
+            icon_name = "PPT"
+        elif suffix in ['xls', 'xlsx']:
+            icon_name = "表格"
+        elif suffix in ['doc', 'docx']:
+            icon_name = "Word文档"
+        elif suffix in ['txt', 'md', 'rtf']:
+            icon_name = "文档"
+        elif suffix in ['ttf', 'otf', 'woff', 'woff2', 'eot']:
+            icon_name = "字体"
+        elif suffix in ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a']:
+            icon_name = "音乐"
+        elif suffix in ['zip', 'rar', '7z', 'tar', 'gz', 'bz2']:
+            icon_name = "压缩文件"
+        else:
+            icon_name = "未知底板"
+
+        # 使用get_icon_path获取支持样式切换的图标路径
+        return get_icon_path(icon_name, icon_dir)
 
     def _set_icon_pixmap(self, pixmap, size):
         """设置图标Pixmap"""
@@ -1869,8 +1873,13 @@ class CustomFileHorizontalCard(QWidget):
 
                     if icon_path and os.path.exists(icon_path):
                         svg_widget = None
-                        if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
-                            if icon_path.endswith("压缩文件.svg"):
+                        # 判断是否为需要显示文字后缀的图标类型（支持样式切换后的文件名）
+                        icon_basename = os.path.basename(icon_path)
+                        is_unknown_icon = "未知底板" in icon_basename
+                        is_archive_icon = "压缩文件" in icon_basename
+
+                        if is_unknown_icon or is_archive_icon:
+                            if is_archive_icon:
                                 display_suffix = "." + suffix
                             else:
                                 display_suffix = suffix.upper()
@@ -1914,8 +1923,13 @@ class CustomFileHorizontalCard(QWidget):
 
                         if icon_path and os.path.exists(icon_path):
                             svg_widget = None
-                            if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
-                                if icon_path.endswith("压缩文件.svg"):
+                            # 判断是否为需要显示文字后缀的图标类型（支持样式切换后的文件名）
+                            icon_basename = os.path.basename(icon_path)
+                            is_unknown_icon = "未知底板" in icon_basename
+                            is_archive_icon = "压缩文件" in icon_basename
+
+                            if is_unknown_icon or is_archive_icon:
+                                if is_archive_icon:
                                     display_suffix = "." + suffix
                                 else:
                                     display_suffix = suffix.upper()
@@ -2002,8 +2016,13 @@ class CustomFileHorizontalCard(QWidget):
                 icon_path = self._get_file_icon_path(suffix, is_dir)
                 if icon_path and os.path.exists(icon_path):
                     svg_widget = None
-                    if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
-                        if icon_path.endswith("压缩文件.svg"):
+                    # 判断是否为需要显示文字后缀的图标类型（支持样式切换后的文件名）
+                    icon_basename = os.path.basename(icon_path)
+                    is_unknown_icon = "未知底板" in icon_basename
+                    is_archive_icon = "压缩文件" in icon_basename
+
+                    if is_unknown_icon or is_archive_icon:
+                        if is_archive_icon:
                             display_suffix = "." + suffix
                         else:
                             display_suffix = suffix.upper()

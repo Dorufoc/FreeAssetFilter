@@ -51,6 +51,7 @@ from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.components.auto_timeline import AutoTimeline
+from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 
 
 class ThumbnailGeneratorThread(QThread):
@@ -319,17 +320,29 @@ class CustomFileSelector(QWidget):
         dir_layout = QHBoxLayout()
         dir_layout.setSpacing(5)
         
-        # 盘符选择器
-        self.drive_combo = CustomDropdownMenu(self, position="bottom")
-        # 设置固定宽度，增加盘符选择器的宽度，应用DPI缩放
-        scaled_drive_width = int(40 * self.dpi_scale)
-        self.drive_combo.set_fixed_width(scaled_drive_width)
+        # 盘符选择器 - 使用外部按钮+下拉菜单模式
+        # 创建盘符选择按钮，使用driver.svg图标
+        import os
+        driver_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "driver.svg")
+        self.drive_btn = CustomButton(driver_icon_path, button_type="normal", display_mode="icon", tooltip_text="选择盘符")
+        # 设置固定尺寸，与其他图标按钮保持一致
+        scaled_drive_btn_size = int(20 * self.dpi_scale)
+        self.drive_btn.setFixedSize(scaled_drive_btn_size, scaled_drive_btn_size)
+        # 创建下拉菜单（不使用内部按钮）
+        self.drive_combo = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
+        # 设置外部目标按钮
+        self.drive_combo.set_target_button(self.drive_btn)
+        # 设置固定宽度为25DX（25 * dpi_scale）
+        drive_combo_width = int(25 * self.dpi_scale)
+        self.drive_combo.set_fixed_width(drive_combo_width)
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
         self.drive_combo.itemClicked.connect(self._on_drive_changed)
-        # 使用全局字体，让Qt6自动处理DPI缩放
-        self.drive_combo.setFont(self.global_font)
-        dir_layout.addWidget(self.drive_combo)
+        # 连接菜单即将打开信号，在显示菜单前刷新盘符列表
+        self.drive_combo.menuOpening.connect(self._update_drive_list)
+        # 连接按钮点击事件到下拉菜单的toggle_menu
+        self.drive_btn.clicked.connect(self.drive_combo.toggle_menu)
+        dir_layout.addWidget(self.drive_btn)
         
         # 目录显示区域（可编辑）
         self.path_edit = CustomInputBox(
@@ -706,16 +719,22 @@ class CustomFileSelector(QWidget):
         return None
 
     def _refresh_staging_pool_thumbnails(self, staging_pool):
-        """刷新存储池中的缩略图显示"""
+        """刷新存储池中的卡片显示
+
+        完全重载所有横向卡片，类似于应用启动时的初始化
+        确保主题变更或设置更新后卡片显示完全刷新
+        """
         import os
         try:
-            #print(f"[DEBUG] 开始刷新存储池缩略图，卡片数量: {len(staging_pool.cards)}")
-            for i, (card, file_info) in enumerate(staging_pool.cards):
-                #print(f"[DEBUG] 刷新卡片 {i}: {file_info.get('path', 'Unknown')}")
-                card.refresh_thumbnail()
-            #print(f"[DEBUG] 存储池缩略图刷新完成")
+            # 调用存储池的reload_all_cards方法进行完全重载
+            if hasattr(staging_pool, 'reload_all_cards'):
+                staging_pool.reload_all_cards()
+            else:
+                # 兼容旧版本：仅刷新缩略图
+                for i, (card, file_info) in enumerate(staging_pool.cards):
+                    card.refresh_thumbnail()
         except Exception as e:
-            print(f"刷新存储池缩略图失败: {e}")
+            print(f"刷新存储池卡片失败: {e}")
 
     def _refresh_staging_pool_card(self, file_path):
         """刷新存储池中指定文件的卡片缩略图"""
@@ -3133,50 +3152,7 @@ class CustomFileSelector(QWidget):
                     return label
         
         # 确定要使用的SVG图标
-        icon_path = None
-        icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
-        
-        if file_info["is_dir"]:
-            # 文件夹使用文件夹图标
-            icon_path = os.path.join(icon_dir, "文件夹.svg")
-        else:
-            suffix = file_info["suffix"]
-            
-            if suffix in video_formats:
-                # 视频文件使用视频图标
-                icon_path = os.path.join(icon_dir, "视频.svg")
-            elif suffix in image_formats:
-                # 图像文件使用图像图标
-                icon_path = os.path.join(icon_dir, "图像.svg")
-            elif suffix in document_formats:
-                # 文档文件使用对应图标
-                if suffix == "pdf":
-                    # PDF文件使用专门的PDF图标
-                    icon_path = os.path.join(icon_dir, "PDF.svg")
-                elif suffix in ["ppt", "pptx", "ppsx"]:
-                    # PowerPoint文件使用PPT图标
-                    icon_path = os.path.join(icon_dir, "PPT.svg")
-                elif suffix in ["xls", "xlsx", "csv"]:
-                    # Excel文件使用表格图标
-                    icon_path = os.path.join(icon_dir, "表格.svg")
-                elif suffix in ["doc", "docx", "wps"]:
-                    # Word文件使用Word文档图标
-                    icon_path = os.path.join(icon_dir, "Word文档.svg")
-                else:
-                    # 其他文档使用默认文档图标
-                    icon_path = os.path.join(icon_dir, "文档.svg")
-            elif suffix in font_formats:
-                # 字体文件使用字体图标
-                icon_path = os.path.join(icon_dir, "字体.svg")
-            elif suffix in audio_formats:
-                # 音频文件使用音频图标
-                icon_path = os.path.join(icon_dir, "音乐.svg")
-            elif suffix in archive_formats:
-                # 压缩文件使用压缩文件图标
-                icon_path = os.path.join(icon_dir, "压缩文件.svg")
-            else:
-                # 未知文件类型使用未知底板图标
-                icon_path = os.path.join(icon_dir, "未知底板.svg")
+        icon_path = get_file_icon_path(file_info)
         
         # 加载并显示SVG图标
         if icon_path and os.path.exists(icon_path):
@@ -3251,68 +3227,12 @@ class CustomFileSelector(QWidget):
         archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "tar.gz", "tar.bz2", "tar.xz", "tar.lzma", "iso", "cab", "arj", "lzh", "ace", "z"]
 
         # 确定要使用的SVG图标
-        icon_path = None
-        icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
-        
-        if file_info["is_dir"]:
-            # 文件夹使用文件夹图标
-            icon_path = os.path.join(icon_dir, "文件夹.svg")
-        else:
-            suffix = file_info["suffix"]
-            
-            suffix = suffix.lower()
-            if suffix in ["lnk", "exe"]:
-                # 对于lnk和exe文件，使用QFileIconProvider获取图标
-                from PySide6.QtWidgets import QFileIconProvider
-                icon_provider = QFileIconProvider()
-                file_info_qt = QFileInfo(file_info['path'])
-                icon = icon_provider.icon(file_info_qt)
-                pixmap = icon.pixmap(icon_size, icon_size)
-                
-                # 如果获取到有效图标，直接返回
-                if not pixmap.isNull():
-                    return pixmap
-            
-            if suffix in video_formats:
-                # 视频文件使用视频图标
-                icon_path = os.path.join(icon_dir, "视频.svg")
-            elif suffix in image_formats:
-                # 图像文件使用图像图标
-                icon_path = os.path.join(icon_dir, "图像.svg")
-            elif suffix in document_formats:
-                # 文档文件使用对应图标
-                if suffix == "pdf":
-                    # PDF文件使用专门的PDF图标
-                    icon_path = os.path.join(icon_dir, "PDF.svg")
-                elif suffix in ["ppt", "pptx", "ppsx"]:
-                    # PowerPoint文件使用PPT图标
-                    icon_path = os.path.join(icon_dir, "PPT.svg")
-                elif suffix in ["xls", "xlsx", "csv"]:
-                    # Excel文件使用表格图标
-                    icon_path = os.path.join(icon_dir, "表格.svg")
-                elif suffix in ["doc", "docx", "wps"]:
-                    # Word文件使用Word文档图标
-                    icon_path = os.path.join(icon_dir, "Word文档.svg")
-                else:
-                    # 其他文档使用默认文档图标
-                    icon_path = os.path.join(icon_dir, "文档.svg")
-            elif suffix in font_formats:
-                # 字体文件使用字体图标
-                icon_path = os.path.join(icon_dir, "字体.svg")
-            elif suffix in audio_formats:
-                # 音频文件使用音频图标
-                icon_path = os.path.join(icon_dir, "音乐.svg")
-            elif suffix in archive_formats:
-                # 压缩文件使用压缩文件图标
-                icon_path = os.path.join(icon_dir, "压缩文件.svg")
-            else:
-                # 未知文件类型使用未知底板图标
-                icon_path = os.path.join(icon_dir, "未知底板.svg")
+        icon_path = get_file_icon_path(file_info)
 
         # 对于未知文件类型和压缩文件类型，需要传递后缀名信息
-        if icon_path and (icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg")):
+        if icon_path and (icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg") or icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg")):
             suffix_text = ""
-            if icon_path.endswith("压缩文件.svg"):
+            if icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                 suffix_text = "." + file_info["suffix"]
             else:
                 suffix_text = file_info["suffix"].upper()
