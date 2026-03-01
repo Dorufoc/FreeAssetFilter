@@ -110,12 +110,13 @@ class ZoomDisabledTextEdit(QTextEdit):
 class FontLoadThread(QThread):
     """字体加载后台线程"""
 
-    finished = Signal(bool, str, int)
-    error = Signal(str)
+    finished = Signal(int, bool, str, int)  # 添加请求ID参数
+    error = Signal(int, str)  # 添加请求ID参数
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.file_path = ""
+        self._request_id = 0
         self._mutex = QMutex()
         self._abort = False
 
@@ -123,6 +124,11 @@ class FontLoadThread(QThread):
         """设置要加载的字体文件"""
         with QMutexLocker(self._mutex):
             self.file_path = file_path
+
+    def set_request_id(self, request_id):
+        """设置请求ID"""
+        with QMutexLocker(self._mutex):
+            self._request_id = request_id
 
     def abort(self):
         """请求终止"""
@@ -135,31 +141,32 @@ class FontLoadThread(QThread):
             if self._abort:
                 return
             file_path = self.file_path
+            request_id = self._request_id
 
         try:
             if not os.path.exists(file_path):
-                self.error.emit(f"字体文件不存在: {file_path}")
+                self.error.emit(request_id, f"字体文件不存在: {file_path}")
                 return
 
             # 加载字体文件
             font_id = QFontDatabase.addApplicationFont(file_path)
 
             if font_id == -1:
-                self.error.emit("无法加载字体文件，可能格式不支持")
+                self.error.emit(request_id, "无法加载字体文件，可能格式不支持")
                 return
 
             # 获取字体族名称
             font_families = QFontDatabase.applicationFontFamilies(font_id)
 
             if not font_families:
-                self.error.emit("无法获取字体族名称")
+                self.error.emit(request_id, "无法获取字体族名称")
                 return
 
             font_family = font_families[0]
-            self.finished.emit(True, font_family, font_id)
+            self.finished.emit(request_id, True, font_family, font_id)
 
         except Exception as e:
-            self.error.emit(f"加载字体失败: {str(e)}")
+            self.error.emit(request_id, f"加载字体失败: {str(e)}")
 
 
 class FontPreviewWidget(QWidget):
@@ -183,6 +190,7 @@ class FontPreviewWidget(QWidget):
         self._thread = None
         self._mutex = QMutex()
         self._is_loading = False
+        self._load_request_id = 0  # 请求ID，用于防止过期回调
         
         self._init_ui()
         self._apply_theme()
@@ -388,26 +396,39 @@ class FontPreviewWidget(QWidget):
 
     def _load_font_async(self, file_path):
         """异步加载字体"""
-        # 如果之前有线程在运行，先断开信号连接再终止
-        if self._thread and self._thread.isRunning():
-            try:
-                self._thread.finished.disconnect(self._on_font_loaded)
-                self._thread.error.disconnect(self._on_load_error)
-            except (TypeError, RuntimeError):
-                pass
-            self._thread.abort()
-            self._thread.wait()
-            self._thread = None
+        with QMutexLocker(self._mutex):
+            # 递增请求ID
+            self._load_request_id += 1
+            current_request_id = self._load_request_id
+            self._is_loading = True
+            
+            # 如果之前有线程在运行，先断开信号连接再终止
+            if self._thread and self._thread.isRunning():
+                try:
+                    self._thread.finished.disconnect(self._on_font_loaded)
+                    self._thread.error.disconnect(self._on_load_error)
+                except (TypeError, RuntimeError):
+                    pass
+                self._thread.abort()
+                self._thread.wait()
+                self._thread = None
 
-        # 创建新线程并连接信号
-        self._thread = FontLoadThread(self)
-        self._thread.set_file(file_path)
-        self._thread.finished.connect(self._on_font_loaded)
-        self._thread.error.connect(self._on_load_error)
-        self._thread.start()
+            # 创建新线程并连接信号
+            self._thread = FontLoadThread(self)
+            self._thread.set_file(file_path)
+            self._thread.set_request_id(current_request_id)
+            self._thread.finished.connect(self._on_font_loaded)
+            self._thread.error.connect(self._on_load_error)
+            self._thread.start()
 
-    def _on_font_loaded(self, success, font_family, font_id):
+    def _on_font_loaded(self, request_id, success, font_family, font_id):
         """字体加载完成回调"""
+        with QMutexLocker(self._mutex):
+            # 忽略过期的回调
+            if request_id != self._load_request_id:
+                return
+            self._is_loading = False
+        
         if not success:
             self.text_edit.setPlainText(f"加载字体失败")
             return
@@ -419,8 +440,14 @@ class FontPreviewWidget(QWidget):
         # 更新字体显示
         self._update_font_display()
 
-    def _on_load_error(self, error_msg):
+    def _on_load_error(self, request_id, error_msg):
         """加载错误回调"""
+        with QMutexLocker(self._mutex):
+            # 忽略过期的回调
+            if request_id != self._load_request_id:
+                return
+            self._is_loading = False
+        
         self.text_edit.setPlainText(f"加载字体失败: {error_msg}")
     
     def _update_font_display(self):

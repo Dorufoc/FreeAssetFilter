@@ -453,8 +453,14 @@ class MPVManager(QObject):
                 self._current_state.error_message = str(e)
                 self._current_state.last_update = time.time()
 
-            # 发射错误信号
-            self.errorOccurred.emit(MpvErrorCode.GENERIC, str(e))
+            # 发射错误信号（使用 QMetaObject.invokeMethod 确保在主线程执行）
+            QMetaObject.invokeMethod(
+                self,
+                "_emit_error_occurred",
+                Qt.QueuedConnection,
+                Q_ARG(int, MpvErrorCode.GENERIC),
+                Q_ARG(str, str(e))
+            )
 
             # 抛出异常，由 _process_operations 统一处理并设置 Future 异常
             raise
@@ -940,8 +946,13 @@ class MPVManager(QObject):
 
         self.fileEnded.emit(reason)
 
+    @Slot(int, str)
+    def _emit_error_occurred(self, error_code: int, error_message: str):
+        """发射错误信号（供 QMetaObject.invokeMethod 调用）"""
+        self.errorOccurred.emit(error_code, error_message)
+
     def _on_error_occurred(self, error_code: int, error_message: str):
-        """错误发生回调"""
+        """错误发生回调（由 MPVPlayerCore 信号触发，已在主线程）"""
         with self._state_lock:
             self._current_state.error_code = error_code
             self._current_state.error_message = error_message
@@ -1062,16 +1073,18 @@ class MPVManager(QObject):
         """异步关闭 - 在后台执行"""
         try:
             self._logger.info("开始异步关闭MPV管理器")
-            
+
+            # 先停止操作线程，确保没有并发操作
+            self._stop_operation_thread(timeout)
+
             # 预清理
             if self._mpv_core:
                 self._mpv_core.pre_cleanup()
-            
+
             # 执行关闭
             self._do_close()
-            self._stop_operation_thread(timeout)
             self._cleanup_resources()
-            
+
             self._logger.info("异步关闭MPV管理器完成")
         except Exception as e:
             self._logger.error(f"异步关闭时出错: {e}")

@@ -40,7 +40,7 @@ from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PySide6.QtCore import (
-    Qt, Signal, QFileInfo, QThread
+    Qt, Signal, QFileInfo, QThread, QMetaObject, Q_ARG, QObject, QRunnable
 )
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QAction
 
@@ -935,7 +935,15 @@ class FileStagingPool(QWidget):
         """
         if hasattr(self, 'current_export_progress_bar'):
             self.current_export_progress_bar.setValue(value)
-    
+
+    def _emit_update_progress(self, progress):
+        """发射进度更新信号（供 QMetaObject.invokeMethod 调用）"""
+        self.update_progress.emit(progress)
+
+    def _emit_export_finished(self, success_count, error_count, errors):
+        """发射导出完成信号（供 QMetaObject.invokeMethod 调用）"""
+        self.export_finished.emit(success_count, error_count, errors)
+
     def on_export_finished(self, success_count, error_count, errors):
         """
         处理导出完成
@@ -1903,17 +1911,19 @@ class FileStagingPool(QWidget):
         file_hash = md5_hash.hexdigest()[:16]
         thumb_path = os.path.join(thumb_dir, f"{file_hash}.png")
 
-        class ThumbnailGenerator(QRunnable):
-            def __init__(self, file_path, thumb_path, callback):
+        class ThumbnailGenerator(QObject, QRunnable):
+            """缩略图生成器，使用信号机制替代回调函数以确保线程安全"""
+            thumbnail_ready = Signal(str)  # 缩略图生成完成信号
+
+            def __init__(self, file_path, thumb_path):
                 super().__init__()
                 self.file_path = file_path
                 self.thumb_path = thumb_path
-                self.callback = callback
 
             def run(self):
                 result_path = self._generate_thumbnail(self.file_path, self.thumb_path)
                 if result_path:
-                    self.callback(result_path)
+                    self.thumbnail_ready.emit(result_path)
 
             def _generate_thumbnail(self, file_path, thumb_path):
                 try:
@@ -1945,7 +1955,12 @@ class FileStagingPool(QWidget):
                     warning(f"生成缩略图失败: {file_path}, 错误: {e}")
                 return False
 
-        generator = ThumbnailGenerator(file_path, thumb_path, lambda x: None)
+        generator = ThumbnailGenerator(file_path, thumb_path)
+        # 连接信号到处理槽函数（使用 QueuedConnection 确保在主线程处理）
+        generator.thumbnail_ready.connect(
+            lambda path: None,  # 可以在这里添加实际的缩略图处理逻辑
+            Qt.QueuedConnection
+        )
         QThreadPool.globalInstance().start(generator)
     
     def calculate_total_file_size(self, files):
@@ -2050,12 +2065,24 @@ class FileStagingPool(QWidget):
                     error_count += 1
                     errors.append(f"{file_info['display_name']}: {str(e)}")
                 
-                # 发送进度更新信号
+                # 发送进度更新信号（使用 QMetaObject.invokeMethod 确保在主线程执行）
                 progress = i + 1
-                self.update_progress.emit(progress)
+                QMetaObject.invokeMethod(
+                    self,
+                    "_emit_update_progress",
+                    Qt.QueuedConnection,
+                    Q_ARG(int, progress)
+                )
             
-            # 发送导出完成信号
-            self.export_finished.emit(success_count, error_count, errors)
+            # 发送导出完成信号（使用 QMetaObject.invokeMethod 确保在主线程执行）
+            QMetaObject.invokeMethod(
+                self,
+                "_emit_export_finished",
+                Qt.QueuedConnection,
+                Q_ARG(int, success_count),
+                Q_ARG(int, error_count),
+                Q_ARG(list, errors)
+            )
         
         # 启动复制线程
         thread = threading.Thread(target=copy_thread)

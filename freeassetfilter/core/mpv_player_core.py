@@ -578,7 +578,7 @@ class MPVPlayerCore(QObject):
             self._is_seeking = True
         elif event_id == MpvEventId.PLAYBACK_RESTART:
             self._is_seeking = False
-            self.seekFinished.emit()
+            self._signal_queue.put(('seekFinished',))
         elif event_id == MpvEventId.SHUTDOWN:
             self._stop_event.set()
     
@@ -610,21 +610,21 @@ class MPVPlayerCore(QObject):
                 self._position = float(value)
             elif prop_name == "duration" and value is not None:
                 self._duration = float(value)
-                self.durationChanged.emit(self._duration)
+                self._signal_queue.put(('durationChanged', self._duration))
             elif prop_name == "pause":
                 is_paused = bool(value) if value is not None else False
                 self._is_paused = is_paused
                 self._is_playing = not is_paused
-                self.stateChanged.emit(self._is_playing)
+                self._signal_queue.put(('stateChanged', self._is_playing))
             elif prop_name == "volume" and value is not None:
                 self._volume = int(value)
-                self.volumeChanged.emit(self._volume)
+                self._signal_queue.put(('volumeChanged', self._volume))
             elif prop_name == "speed" and value is not None:
                 self._speed = float(value)
-                self.speedChanged.emit(self._speed)
+                self._signal_queue.put(('speedChanged', self._speed))
             elif prop_name == "mute":
                 self._muted = bool(value) if value is not None else False
-                self.mutedChanged.emit(self._muted)
+                self._signal_queue.put(('mutedChanged', self._muted))
             elif prop_name == "loop-file" and value is not None:
                 self._loop_mode = str(value)
             elif prop_name == "video-params/w" and value is not None:
@@ -633,7 +633,7 @@ class MPVPlayerCore(QObject):
                 if h_val is not None:
                     self._video_height = int(h_val)
                 if self._video_width > 0 and self._video_height > 0:
-                    self.videoSizeChanged.emit(self._video_width, self._video_height)
+                    self._signal_queue.put(('videoSizeChanged', self._video_width, self._video_height))
     
     def _handle_file_loaded_event(self, mpv_handle: c_void_p):
         """处理文件加载完成事件"""
@@ -645,7 +645,7 @@ class MPVPlayerCore(QObject):
         if duration is not None and duration > 0:
             with self._state_lock:
                 self._duration = duration
-            self.durationChanged.emit(self._duration)
+            self._signal_queue.put(('durationChanged', self._duration))
         
         # 获取当前的播放状态（MPV加载文件后会自动开始播放）
         # 使用 FLAG 类型获取 pause 属性
@@ -661,10 +661,9 @@ class MPVPlayerCore(QObject):
             self._is_paused = is_paused
             self._is_playing = not is_paused
         
-        # 发出状态变化信号，确保UI正确更新播放按钮状态
-        self.stateChanged.emit(self._is_playing)
-        
-        self.fileLoaded.emit(self._current_file, is_audio)
+        # 将信号放入队列，由主线程处理
+        self._signal_queue.put(('stateChanged', self._is_playing))
+        self._signal_queue.put(('fileLoaded', self._current_file, is_audio))
     
     def _handle_end_file_event(self, mpv_handle: c_void_p, event: MpvEvent):
         """处理文件播放结束事件"""
@@ -679,13 +678,13 @@ class MPVPlayerCore(QObject):
         with self._state_lock:
             self._is_playing = False
             self._is_paused = False
-        self.stateChanged.emit(False)
+        self._signal_queue.put(('stateChanged', False))
         
         if reason == MpvEndFileReason.ERROR:
             error_msg = self._dll_loader.get_error_string(error)
-            self.errorOccurred.emit(error, error_msg)
+            self._signal_queue.put(('errorOccurred', error, error_msg))
         
-        self.fileEnded.emit(reason)
+        self._signal_queue.put(('fileEnded', reason))
     
     def _update_position_state(self, mpv_handle: c_void_p):
         """更新播放位置状态（在工作线程中执行，不直接发射信号）"""
@@ -1077,8 +1076,8 @@ class MPVPlayerCore(QObject):
         return None
     
     def _emit_error(self, error_code: int, error_message: str):
-        """发射错误信号"""
-        self.errorOccurred.emit(error_code, error_message)
+        """发射错误信号（通过信号队列，由主线程处理）"""
+        self._signal_queue.put(('errorOccurred', error_code, error_message))
     
     def _send_command(self, cmd_type: MPVCommandType, *args, **kwargs) -> Any:
         """发送命令到工作线程并等待结果"""
@@ -1170,7 +1169,35 @@ class MPVPlayerCore(QObject):
                     if signal_name == 'positionChanged':
                         _, position, duration = signal_data
                         self.positionChanged.emit(position, duration)
-                    # 可以在这里添加其他信号的处理
+                    elif signal_name == 'seekFinished':
+                        self.seekFinished.emit()
+                    elif signal_name == 'durationChanged':
+                        _, duration = signal_data
+                        self.durationChanged.emit(duration)
+                    elif signal_name == 'stateChanged':
+                        _, is_playing = signal_data
+                        self.stateChanged.emit(is_playing)
+                    elif signal_name == 'volumeChanged':
+                        _, volume = signal_data
+                        self.volumeChanged.emit(volume)
+                    elif signal_name == 'speedChanged':
+                        _, speed = signal_data
+                        self.speedChanged.emit(speed)
+                    elif signal_name == 'mutedChanged':
+                        _, muted = signal_data
+                        self.mutedChanged.emit(muted)
+                    elif signal_name == 'videoSizeChanged':
+                        _, width, height = signal_data
+                        self.videoSizeChanged.emit(width, height)
+                    elif signal_name == 'fileLoaded':
+                        _, file_path, is_audio = signal_data
+                        self.fileLoaded.emit(file_path, is_audio)
+                    elif signal_name == 'fileEnded':
+                        _, reason = signal_data
+                        self.fileEnded.emit(reason)
+                    elif signal_name == 'errorOccurred':
+                        _, error_code, error_msg = signal_data
+                        self.errorOccurred.emit(error_code, error_msg)
                 except queue.Empty:
                     break
                 except Exception as e:

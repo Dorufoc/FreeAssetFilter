@@ -876,6 +876,11 @@ class TextPreviewThread(QThread):
         with QMutexLocker(self._mutex):
             self._abort = True
     
+    def _is_abort_requested(self) -> bool:
+        """检查是否请求终止"""
+        with QMutexLocker(self._mutex):
+            return self._abort
+
     def run(self):
         """执行文件加载"""
         with QMutexLocker(self._mutex):
@@ -883,24 +888,27 @@ class TextPreviewThread(QThread):
                 return
             file_path = self.file_path
             encoding = self.encoding
-        
+
         try:
             file_size = os.path.getsize(file_path)
-            
+
             if file_size > self.max_size:
                 self.error.emit(f"文件过大 ({file_size / 1024 / 1024:.1f}MB)，最大支持 {self.max_size / 1024 / 1024:.0f}MB")
                 return
-            
+
             content = ""
             detected_encoding = None
-            
+
             if encoding == "auto":
                 if CHARDET_AVAILABLE:
                     with open(file_path, 'rb') as f:
                         raw_data = f.read(1024 * 1024)
+                        if self._is_abort_requested():
+                            return
+
                         result = chardet.detect(raw_data)
                         detected_encoding = result.get('encoding', 'utf-8')
-                        
+
                         if detected_encoding and detected_encoding.lower() != 'ascii':
                             try:
                                 content = raw_data.decode(detected_encoding)
@@ -916,7 +924,10 @@ class TextPreviewThread(QThread):
                             except UnicodeDecodeError:
                                 content = raw_data.decode('utf-8', errors='replace')
                                 self.progress.emit(100)
-                    
+
+                    if self._is_abort_requested():
+                        return
+
                     if file_size > len(raw_data):
                         with open(file_path, 'r', encoding=detected_encoding or 'utf-8',
                                   errors='replace') as f:
@@ -928,6 +939,8 @@ class TextPreviewThread(QThread):
                             content = f.read()
                         detected_encoding = 'utf-8'
                     except UnicodeDecodeError:
+                        if self._is_abort_requested():
+                            return
                         try:
                             with open(file_path, 'r', encoding='gbk') as f:
                                 content = f.read()
@@ -946,9 +959,12 @@ class TextPreviewThread(QThread):
                 except Exception as e:
                     self.error.emit(f"无法使用 {encoding} 编码读取文件: {str(e)}")
                     return
-            
+
+            if self._is_abort_requested():
+                return
+
             self.finished.emit(content, True)
-            
+
         except Exception as e:
             self.error.emit(f"读取文件失败: {str(e)}")
 

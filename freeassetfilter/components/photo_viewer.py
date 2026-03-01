@@ -77,9 +77,6 @@ class RawProcessor(QThread):
                         use_camera_wb=True
                     )
             
-            from PySide6.QtGui import QGuiApplication
-            device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
-            
             height, width, channel = rgb.shape
             bytes_per_line = 3 * width
             bgr = np.zeros((height, width, 3), dtype=np.uint8)
@@ -87,7 +84,8 @@ class RawProcessor(QThread):
             bgr[:, :, 1] = rgb[:, :, 1]
             bgr[:, :, 2] = rgb[:, :, 0]
             
-            qimage = QImage(bgr.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            # 使用 .copy() 确保数据安全，防止 numpy 数组被释放后 QImage 访问无效内存
+            qimage = QImage(bgr.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
             self.processing_complete.emit(qimage, self.image_path)
         except Exception as e:
             error(f"加载RAW图片时出错: {e}")
@@ -333,16 +331,17 @@ class HeifAvifProcessor(QThread):
             
             img_bytes = img_array.tobytes()
             
+            # 使用 .copy() 确保数据安全，防止 numpy 数组被释放后 QImage 访问无效内存
             if img.mode == 'RGBA':
                 qimage = QImage(
                     img_bytes, width, height,
                     width * 4, QImage.Format_RGBA8888
-                )
+                ).copy()
             else:
                 qimage = QImage(
                     img_bytes, width, height,
                     width * 3, QImage.Format_RGB888
-                )
+                ).copy()
             
             if qimage.isNull():
                 raise Exception("QImage创建失败")
@@ -602,8 +601,8 @@ class ImageWidget(QWidget):
                     self.raw_processor.wait()
 
                 self.raw_processor = RawProcessor(image_path)
-                self.raw_processor.processing_complete.connect(self._on_raw_processing_complete)
-                self.raw_processor.processing_failed.connect(self._on_raw_processing_failed)
+                self.raw_processor.processing_complete.connect(self._on_raw_processing_complete, Qt.QueuedConnection)
+                self.raw_processor.processing_failed.connect(self._on_raw_processing_failed, Qt.QueuedConnection)
                 self.raw_processor.start()
 
                 return True
@@ -613,8 +612,8 @@ class ImageWidget(QWidget):
                     self.heif_avif_processor.wait()
 
                 self.heif_avif_processor = HeifAvifProcessor(image_path)
-                self.heif_avif_processor.processing_complete.connect(self._on_heif_avif_processing_complete)
-                self.heif_avif_processor.processing_failed.connect(self._on_heif_avif_processing_failed)
+                self.heif_avif_processor.processing_complete.connect(self._on_heif_avif_processing_complete, Qt.QueuedConnection)
+                self.heif_avif_processor.processing_failed.connect(self._on_heif_avif_processing_failed, Qt.QueuedConnection)
                 self.heif_avif_processor.start()
 
                 return True
@@ -624,8 +623,8 @@ class ImageWidget(QWidget):
                     self.ico_processor.wait()
 
                 self.ico_processor = IcoProcessor(image_path)
-                self.ico_processor.processing_complete.connect(self._on_ico_processing_complete)
-                self.ico_processor.processing_failed.connect(self._on_ico_processing_failed)
+                self.ico_processor.processing_complete.connect(self._on_ico_processing_complete, Qt.QueuedConnection)
+                self.ico_processor.processing_failed.connect(self._on_ico_processing_failed, Qt.QueuedConnection)
                 self.ico_processor.start()
 
                 return True
@@ -635,9 +634,9 @@ class ImageWidget(QWidget):
                     self.psd_processor.wait()
 
                 self.psd_processor = PSDProcessor(image_path)
-                self.psd_processor.processing_complete.connect(self._on_psd_processing_complete)
-                self.psd_processor.processing_failed.connect(self._on_psd_processing_failed)
-                self.psd_processor.processing_progress.connect(self._on_psd_processing_progress)
+                self.psd_processor.processing_complete.connect(self._on_psd_processing_complete, Qt.QueuedConnection)
+                self.psd_processor.processing_failed.connect(self._on_psd_processing_failed, Qt.QueuedConnection)
+                self.psd_processor.processing_progress.connect(self._on_psd_processing_progress, Qt.QueuedConnection)
                 self.psd_processor.start()
 
                 return True

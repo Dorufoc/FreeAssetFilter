@@ -256,10 +256,10 @@ class SettingsManager:
             color_key = key_path.replace("appearance.colors.", "")
             return self.get_color_from_file(color_key, default)
 
-        if self.settings is None:
-            return default
-
         with self._settings_lock:
+            if self.settings is None:
+                return default
+
             keys = key_path.split(".")
             value = self.settings
 

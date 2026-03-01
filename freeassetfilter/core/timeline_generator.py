@@ -18,6 +18,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import os
 import sys
 import csv
+import threading
 import concurrent.futures
 from itertools import groupby
 
@@ -100,20 +101,26 @@ class MergedEvent:
 class TimelineParams:
     """
     采用单例模式/解耦设计，管理 DPI 缩放、行高、像素比等核心参数
+    线程安全实现
     """
     _instance = None
+    _lock = threading.Lock()
     
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            # 初始化默认参数
-            cls._instance.px_per_second = 1.0  # 每秒像素数，控制缩放
-            cls._instance.row_height = 45       # 每行高度
-            cls._instance.gap_threshold = 30    # 默认容差值
-            cls._instance.gap_threshold_unit = 'sec'  # 默认容差单位：秒
-            cls._instance.global_start_time = None  # 全局起始时间
-            cls._instance.global_end_time = None    # 全局结束时间
-            cls._instance.dpi_scale = 1.0        # DPI缩放因子
+            with cls._lock:
+                # 双重检查锁定，确保线程安全
+                if cls._instance is None:
+                    instance = super().__new__(cls)
+                    # 初始化默认参数
+                    instance.px_per_second = 1.0  # 每秒像素数，控制缩放
+                    instance.row_height = 45       # 每行高度
+                    instance.gap_threshold = 30    # 默认容差值
+                    instance.gap_threshold_unit = 'sec'  # 默认容差单位：秒
+                    instance.global_start_time = None  # 全局起始时间
+                    instance.global_end_time = None    # 全局结束时间
+                    instance.dpi_scale = 1.0        # DPI缩放因子
+                    cls._instance = instance
         return cls._instance
         
     @property

@@ -25,6 +25,7 @@ import os
 import math
 import hashlib
 import time
+import threading
 
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
@@ -106,7 +107,7 @@ class ColorExtractionTask(QRunnable):
         self.cover_data = cover_data
         self.callback = callback
         self.widget_ref = widget_ref
-        self._is_cancelled = False
+        self._cancel_event = threading.Event()
         
         # 尝试导入 C++ 颜色提取模块
         self._cpp_available = False
@@ -120,15 +121,15 @@ class ColorExtractionTask(QRunnable):
     
     def cancel(self):
         """取消任务"""
-        self._is_cancelled = True
+        self._cancel_event.set()
     
     def is_cancelled(self) -> bool:
         """检查任务是否被取消"""
-        return self._is_cancelled
+        return self._cancel_event.is_set()
     
     def run(self):
         """在后台线程中执行颜色提取"""
-        if self._is_cancelled:
+        if self.is_cancelled():
             return
         
         try:
@@ -136,7 +137,7 @@ class ColorExtractionTask(QRunnable):
             if self._cpp_available:
                 colors = self._extract_colors_cpp()
                 if colors:
-                    if self.callback and not self._is_cancelled:
+                    if self.callback and not self.is_cancelled():
                         self.callback(self.task_id, colors)
                     return
                 warning("[ColorExtractionTask] C++ 提取失败，降级到 Python 实现")
@@ -144,16 +145,16 @@ class ColorExtractionTask(QRunnable):
             # 降级到 Python 实现
             colors = self._extract_colors_python()
 
-            if self._is_cancelled:
+            if self.is_cancelled():
                 return
 
             # 回调到主线程
-            if self.callback and not self._is_cancelled:
+            if self.callback and not self.is_cancelled():
                 self.callback(self.task_id, colors)
 
         except Exception as e:
             error(f"[ColorExtractionTask] 颜色提取失败: {e}")
-            if self.callback and not self._is_cancelled:
+            if self.callback and not self.is_cancelled():
                 self.callback(self.task_id, None)
     
     def _extract_colors_cpp(self) -> list:

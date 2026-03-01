@@ -21,6 +21,7 @@ import subprocess
 import platform
 import json
 import hashlib
+import threading
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
@@ -89,6 +90,11 @@ class FileInfoBrowser:
         self.current_file = None
         self.file_info = {}
         self.custom_tags = {}
+        
+        # 线程锁，用于保护共享状态
+        self._file_info_lock = threading.Lock()
+        self._thread_lock = threading.Lock()
+        self.load_thread = None
         
         # 获取全局字体和DPI缩放因子
         from PySide6.QtWidgets import QApplication
@@ -1254,11 +1260,17 @@ class FileInfoBrowser:
                 except Exception as e:
                     self.error.emit(str(e))
         
-        # 创建并启动线程
-        self.load_thread = LoadThread(file_path, self.file_info, self)
-        self.load_thread.finished.connect(self._on_loading_finished)
-        self.load_thread.error.connect(self._on_loading_error)
-        self.load_thread.start()
+        # 创建并启动线程（使用锁保护线程操作）
+        with self._thread_lock:
+            # 终止之前的线程（如果存在）
+            if self.load_thread and self.load_thread.isRunning():
+                self.load_thread.requestInterruption()
+                self.load_thread.wait(5000)
+            
+            self.load_thread = LoadThread(file_path, self.file_info, self)
+            self.load_thread.finished.connect(self._on_loading_finished, Qt.QueuedConnection)
+            self.load_thread.error.connect(self._on_loading_error, Qt.QueuedConnection)
+            self.load_thread.start()
     
     def _show_loading_dialog(self):
         """
@@ -1292,8 +1304,10 @@ class FileInfoBrowser:
         if hasattr(self, 'loading_dialog'):
             self.loading_dialog.close()
         
-        # 只更新详细信息，校验码单独处理
-        self.file_info["details"].update(result["details"])
+        # 使用锁保护共享数据修改
+        with self._file_info_lock:
+            # 只更新详细信息，校验码单独处理
+            self.file_info["details"].update(result["details"])
         
         # 保存到缓存
         self._save_to_cache(self.current_file["path"], result)

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
+import threading
 
 
 class CustomButton(QPushButton):
@@ -120,10 +121,13 @@ class CustomButton(QPushButton):
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
+        # 初始化动画锁和标志
+        self._anim_init_lock = threading.Lock()
+        self._animations_initialized = False
+        
         self.update_style()
         
         # 初始化动画属性（延迟执行，避免多线程竞争导致的访问冲突）
-        self._animations_initialized = False
         QTimer.singleShot(0, self._init_animations)
         
         # 延迟渲染图标，确保按钮尺寸已确定
@@ -131,23 +135,28 @@ class CustomButton(QPushButton):
     
     def _init_animations(self):
         """初始化按钮状态切换动画
-        
+
         注意：此方法通过 QTimer.singleShot 延迟调用，以避免多线程环境下
         Qt 属性动画系统的访问冲突问题。
         """
-        # 防止重复初始化
-        if self._animations_initialized:
-            return
-        
-        # 线程安全检查：确保在主线程中执行
-        from PySide6.QtCore import QThread
-        if QThread.currentThread() != QApplication.instance().thread():
-            # 如果不在主线程，重新调度到主线程
-            QTimer.singleShot(0, self._init_animations)
-            return
-        
-        # 标记动画已初始化
-        self._animations_initialized = True
+        # 使用锁防止竞态条件
+        with self._anim_init_lock:
+            # 防止重复初始化
+            if self._animations_initialized:
+                return
+
+            # 线程安全检查：确保在主线程中执行
+            from PySide6.QtCore import QThread
+            app = QApplication.instance()
+            if app is None:
+                return
+            if QThread.currentThread() != app.thread():
+                # 如果不在主线程，重新调度到主线程
+                QTimer.singleShot(0, self._init_animations)
+                return
+
+            # 标记动画已初始化
+            self._animations_initialized = True
         
         # 获取颜色配置
         app = QApplication.instance()

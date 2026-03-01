@@ -33,35 +33,38 @@ from freeassetfilter.utils.app_logger import info, debug, warning, error
 class SvgRenderer:
     _cached_colors = {}
     _color_cache_valid = False
+    _cache_lock = threading.Lock()
 
     @staticmethod
     def _invalidate_color_cache():
-        SvgRenderer._color_cache_valid = False
-        SvgRenderer._cached_colors.clear()
+        with SvgRenderer._cache_lock:
+            SvgRenderer._color_cache_valid = False
+            SvgRenderer._cached_colors.clear()
 
     @staticmethod
     def _ensure_color_cache():
-        if SvgRenderer._color_cache_valid:
-            return
+        with SvgRenderer._cache_lock:
+            if SvgRenderer._color_cache_valid:
+                return
 
-        try:
-            settings_manager = SettingsManager()
-            SvgRenderer._cached_colors = {
-                "accent_color": settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
-                "base_color": settings_manager.get_setting("appearance.colors.base_color", "#f1f3f5"),
-                "secondary_color": settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
-                "normal_color": settings_manager.get_setting("appearance.colors.normal_color", "#CECECE")
-            }
-            SvgRenderer._color_cache_valid = True
-        except Exception as e:
-            error(f"获取颜色设置失败: {e}")
-            SvgRenderer._cached_colors = {
-                "accent_color": "#007AFF",
-                "base_color": "#f1f3f5",
-                "secondary_color": "#333333",
-                "normal_color": "#CECECE"
-            }
-            SvgRenderer._color_cache_valid = True
+            try:
+                settings_manager = SettingsManager()
+                SvgRenderer._cached_colors = {
+                    "accent_color": settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
+                    "base_color": settings_manager.get_setting("appearance.colors.base_color", "#f1f3f5"),
+                    "secondary_color": settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
+                    "normal_color": settings_manager.get_setting("appearance.colors.normal_color", "#CECECE")
+                }
+                SvgRenderer._color_cache_valid = True
+            except Exception as e:
+                error(f"获取颜色设置失败: {e}")
+                SvgRenderer._cached_colors = {
+                    "accent_color": "#007AFF",
+                    "base_color": "#f1f3f5",
+                    "secondary_color": "#333333",
+                    "normal_color": "#CECECE"
+                }
+                SvgRenderer._color_cache_valid = True
 
     @staticmethod
     def _get_accent_color():
