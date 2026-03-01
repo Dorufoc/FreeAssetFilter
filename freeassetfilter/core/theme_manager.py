@@ -11,6 +11,9 @@ from PySide6.QtGui import QColor
 # 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class ThemeManager(QObject):
     """

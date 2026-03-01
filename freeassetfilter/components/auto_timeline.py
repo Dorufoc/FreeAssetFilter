@@ -23,6 +23,9 @@ from itertools import groupby
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, 
     QScrollArea, QPushButton, QLabel, QGroupBox,
@@ -958,7 +961,7 @@ class AutoTimeline(QWidget):
         if not folder_path or not os.path.exists(folder_path):
             return
         
-        print(f"正在加载文件夹: {folder_path}")
+        info(f"正在加载文件夹: {folder_path}")
         
         # 显示进度条
         self.progress_bar.setVisible(True)
@@ -969,7 +972,7 @@ class AutoTimeline(QWidget):
         self.scanner.scan_finished.connect(self.on_scan_finished)
         self.scanner.progress.connect(self.on_progress_update)
         self.scanner.start()
-        print(f"扫描线程已启动")
+        info(f"扫描线程已启动")
     
     def import_csv(self, file_path=None):
         """
@@ -1008,8 +1011,8 @@ class AutoTimeline(QWidget):
         # 隐藏进度条
         self.progress_bar.setVisible(False)
         
-        print(f"扫描完成，已生成CSV文件: {csv_path}")
-        print(f"扫描完成，已生成JSON记录: {json_path}")
+        info(f"扫描完成，已生成CSV文件: {csv_path}")
+        info(f"扫描完成，已生成JSON记录: {json_path}")
         
         # 保存生成的文件路径
         self.generated_csv_path = csv_path
@@ -1070,7 +1073,7 @@ class AutoTimeline(QWidget):
     
     def on_table_row_clicked(self, row_idx):
         """处理表格行点击事件"""
-        print(f"表格行点击: {row_idx}")
+        debug(f"表格行点击: {row_idx}")
         # 这里可以添加行点击后的处理逻辑，比如高亮对应的时间线
     
     def on_timeline_clicked(self, x, y, event_info):
@@ -1127,13 +1130,13 @@ class AutoTimeline(QWidget):
             self.json_result_ready.emit(json_str)
             
             # 打印JSON结果（用于调试）
-            print("点击事件的JSON结果:")
-            print(json_str)
+            debug("点击事件的JSON结果:")
+            debug(json_str)
         else:
             # 点击了空白区域，清空显示
             self.json_text_edit.setText("")
             self.file_list_table.setRowCount(0)
-            print("点击了时间线空白区域")
+            debug("点击了时间线空白区域")
     
     def adjust_timeline_width(self):
         """调整时间线宽度"""

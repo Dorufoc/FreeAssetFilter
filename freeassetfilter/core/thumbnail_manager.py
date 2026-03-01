@@ -16,6 +16,9 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 已移除所有缩略图生成功能
 """
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 # 模块导出
 __all__ = []
 

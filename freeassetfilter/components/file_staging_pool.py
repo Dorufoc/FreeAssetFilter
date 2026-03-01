@@ -22,6 +22,9 @@ import tempfile
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QScrollArea, QGroupBox, QListWidget, QListWidgetItem, 
@@ -628,9 +631,10 @@ class FileStagingPool(QWidget):
             drop_target (str): 放置目标类型 ('file_selector', 'previewer', 'none')
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [FileStagingPool.on_card_drag_ended] {msg}")
+            logger_debug(f"[{timestamp}] [FileStagingPool.on_card_drag_ended] {msg}")
 
         debug(f"拖拽结束，文件: {file_info.get('name', 'unknown')}, 目标: {drop_target}")
 
@@ -1029,9 +1033,9 @@ class FileStagingPool(QWidget):
             }
             with open(self.backup_file, 'w', encoding='utf-8') as f:
                 json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            print(f"[DEBUG] 保存备份成功，路径: {self.backup_file}, 项目数: {len(self.items)}, 最后路径: {last_path}")
+            debug(f"[DEBUG] 保存备份成功，路径: {self.backup_file}, 项目数: {len(self.items)}, 最后路径: {last_path}")
         except Exception as e:
-            print(f"保存文件列表备份失败: {e}")
+            warning(f"保存文件列表备份失败: {e}")
     
     def show_import_export_dialog(self):
         """
@@ -1200,7 +1204,7 @@ class FileStagingPool(QWidget):
                     hash_md5.update(chunk)
             return hash_md5.hexdigest()
         except Exception as e:
-            print(f"计算MD5失败: {e}")
+            warning(f"计算MD5失败: {e}")
             return None
     
     def show_unlinked_files_dialog(self, unlinked_files):
@@ -1733,7 +1737,7 @@ class FileStagingPool(QWidget):
             
             return file_info
         except Exception as e:
-            print(f"获取文件/文件夹信息失败: {e}")
+            error(f"获取文件/文件夹信息失败: {e}")
             return None
     
     def _add_folder_contents(self, folder_path):
@@ -1751,7 +1755,7 @@ class FileStagingPool(QWidget):
                     if file_info:
                         self.add_file(file_info)
         except Exception as e:
-            print(f"添加文件夹内容失败: {e}")
+            error(f"添加文件夹内容失败: {e}")
         self.items.clear()
         self.cards.clear()
         # 更新统计信息
@@ -1777,7 +1781,7 @@ class FileStagingPool(QWidget):
                 with open(self.backup_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
         except Exception as e:
-            print(f"加载文件列表备份失败: {e}")
+            warning(f"加载文件列表备份失败: {e}")
         return []
     
     def get_directory_space(self, directory):
@@ -1806,7 +1810,7 @@ class FileStagingPool(QWidget):
                 free_bytes = statvfs.f_frsize * statvfs.f_bavail
                 return total_bytes, free_bytes
         except Exception as e:
-            print(f"获取目录空间失败: {str(e)}")
+            warning(f"获取目录空间失败: {str(e)}")
             return None, None
     
     def _calculate_folder_size(self, folder_path):
@@ -1935,11 +1939,11 @@ class FileStagingPool(QWidget):
                                 cap.release()
                                 return thumb_path
                         except ImportError:
-                            print("OpenCV is not installed")
+                            warning("OpenCV is not installed")
                         except Exception as e:
-                            print(f"生成缩略图失败: {file_path}, 错误: {e}")
+                            warning(f"生成缩略图失败: {file_path}, 错误: {e}")
                 except Exception as e:
-                    print(f"生成缩略图失败: {file_path}, 错误: {e}")
+                    warning(f"生成缩略图失败: {file_path}, 错误: {e}")
                 return False
 
         generator = ThumbnailGenerator(file_path, thumb_path, lambda x: None)
@@ -1974,7 +1978,7 @@ class FileStagingPool(QWidget):
                     elif os.path.isdir(file_info["path"]):
                         calculating_folders.append(file_info["path"])
                 except Exception as e:
-                    print(f"计算文件大小失败: {str(e)}")
+                    warning(f"计算文件大小失败: {str(e)}")
         
         # 等待正在计算中的文件夹
         max_wait_time = 30
@@ -2004,12 +2008,12 @@ class FileStagingPool(QWidget):
                                     folder_size += os.path.getsize(file_path)
                             total_size += folder_size
                     except Exception as e:
-                        print(f"同步计算文件夹大小时失败: {str(e)}")
+                        warning(f"同步计算文件夹大小时失败: {str(e)}")
             
             calculating_folders = still_calculating
         
         if calculating_folders:
-            print(f"警告: {len(calculating_folders)}个文件夹体积计算超时，这些文件夹大小将被忽略")
+            warning(f"警告: {len(calculating_folders)}个文件夹体积计算超时，这些文件夹大小将被忽略")
         
         return total_size
     
@@ -2088,12 +2092,12 @@ class FileStagingPool(QWidget):
                 break
         
         # 调试输出
-        print(f"[FileStagingPool] set_previewing_file: {file_path}")
-        print(f"[FileStagingPool] normalized path: {file_path_norm}")
-        print(f"[FileStagingPool] found={found}, total_cards={len(self.cards)}")
+        debug(f"[FileStagingPool] set_previewing_file: {file_path}")
+        debug(f"[FileStagingPool] normalized path: {file_path_norm}")
+        debug(f"[FileStagingPool] found={found}, total_cards={len(self.cards)}")
         if self.cards:
             first_card_path = os.path.normcase(os.path.normpath(self.cards[0][1].get('path', '')))
-            print(f"[FileStagingPool] first card path: {first_card_path}")
+            debug(f"[FileStagingPool] first card path: {first_card_path}")
     
     def clear_previewing_state(self):
         """

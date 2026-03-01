@@ -17,6 +17,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
 
 
@@ -851,7 +852,7 @@ class D_ProgressBar(QWidget):
 
             return pixmap
         except Exception as e:
-            print(f"创建 colored pixmap 失败: {e}")
+            warning(f"创建 colored pixmap 失败: {e}")
             pixmap = QPixmap(size, size)
             pixmap.fill(Qt.transparent)
             return pixmap

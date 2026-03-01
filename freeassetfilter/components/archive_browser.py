@@ -25,6 +25,9 @@ import chardet
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QApplication,
     QLabel,
@@ -557,7 +560,7 @@ class ArchiveBrowser(QWidget):
                 with py7zr.SevenZipFile(self.archive_path, mode='r') as zf:
                     self.is_encrypted = zf.needs_password()
         except Exception as e:
-            print(f"检测加密状态失败: {e}")
+            error(f"检测加密状态失败: {e}")
         
         self.encryption_label.setText(f"加密状态: {'已加密' if self.is_encrypted else '未加密'}")
     
@@ -877,7 +880,7 @@ class ArchiveBrowser(QWidget):
                         modified_time = datetime.fromtimestamp(timestamp).isoformat()
                     except Exception as e:
                         # 转换失败，使用空字符串
-                        print(f"[DEBUG] 转换RAR文件修改时间失败: {e}, 文件: {rel_path}")
+                        debug(f"[DEBUG] 转换RAR文件修改时间失败: {e}, 文件: {rel_path}")
                         modified_time = ""
                     
                     files.append({

@@ -18,6 +18,9 @@ PDF预览器组件
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QSizePolicy, QSpacerItem, QApplication, QFrame
@@ -36,7 +39,7 @@ fitz = None
 try:
     import fitz  # PyMuPDF
 except ImportError:
-    print("[WARNING] PyMuPDF未安装，PDF预览功能将不可用")
+    warning("[WARNING] PyMuPDF未安装，PDF预览功能将不可用")
 
 
 class PDFPageWidget(QWidget):
@@ -637,7 +640,7 @@ class PDFPreviewer(QWidget):
                 self.pdf_render_finished.emit()
                 
         except Exception as e:
-            print(f"[ERROR] 渲染页面 {page_num} 失败: {e}")
+            error(f"[ERROR] 渲染页面 {page_num} 失败: {e}")
     
     def _cleanup_cache(self):
         """

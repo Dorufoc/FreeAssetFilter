@@ -26,6 +26,9 @@ from typing import Dict, Any, Optional, List
 
 from freeassetfilter.widgets.D_more_menu import D_MoreMenu
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 # 用于提取EXIF信息的库
 try:
     import exifread
@@ -1397,8 +1400,8 @@ class FileInfoBrowser:
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"保存缓存失败: {e}")
-    
+            error(f"保存缓存失败: {e}")
+
     def _format_size(self, size: int) -> str:
         """
         格式化文件大小

@@ -26,6 +26,8 @@ import math
 import hashlib
 import time
 
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class CoverCache:
     """
@@ -137,20 +139,20 @@ class ColorExtractionTask(QRunnable):
                     if self.callback and not self._is_cancelled:
                         self.callback(self.task_id, colors)
                     return
-                print(f"[ColorExtractionTask] C++ 提取失败，降级到 Python 实现")
-            
+                warning("[ColorExtractionTask] C++ 提取失败，降级到 Python 实现")
+
             # 降级到 Python 实现
             colors = self._extract_colors_python()
-            
+
             if self._is_cancelled:
                 return
-            
+
             # 回调到主线程
             if self.callback and not self._is_cancelled:
                 self.callback(self.task_id, colors)
-                
+
         except Exception as e:
-            print(f"[ColorExtractionTask] 颜色提取失败: {e}")
+            error(f"[ColorExtractionTask] 颜色提取失败: {e}")
             if self.callback and not self._is_cancelled:
                 self.callback(self.task_id, None)
     
@@ -186,14 +188,14 @@ class ColorExtractionTask(QRunnable):
                 min_distance=75.0,  # 增大到75，使颜色差异更明显
                 max_image_size=150
             )
-            
+
             elapsed = (time.time() - start_time) * 1000
-            print(f"[ColorExtractionTask] C++ 提取完成，耗时 {elapsed:.2f}ms")
-            
+            debug(f"[ColorExtractionTask] C++ 提取完成，耗时 {elapsed:.2f}ms")
+
             return colors_rgb
-            
+
         except Exception as e:
-            print(f"[ColorExtractionTask] C++ 提取异常: {e}")
+            warning(f"[ColorExtractionTask] C++ 提取异常: {e}")
             return None
     
     def _extract_colors_python(self) -> list:
@@ -308,12 +310,12 @@ class ColorExtractionTask(QRunnable):
             
             # 转换为RGB
             final_colors = [self._lab_to_rgb(lab) for lab in selected_colors_lab[:5]]
-            
-            print(f"[ColorExtractionTask] Python 提取完成")
+
+            debug("[ColorExtractionTask] Python 提取完成")
             return final_colors
-            
+
         except Exception as e:
-            print(f"[ColorExtractionTask] Python 提取失败: {e}")
+            warning(f"[ColorExtractionTask] Python 提取失败: {e}")
             return None
     
     def _rgb_to_lab(self, rgb):
@@ -957,14 +959,14 @@ class AudioBackground(QWidget):
                     self._cover_label.setMinimumSize(self._cover_pixmap.size())
                     self._cover_label.show()
                     self._cover_layout.update()
-                    print(f"[AudioBackground] 使用缓存的封面图像")
+                    debug("[AudioBackground] 使用缓存的封面图像")
 
                     # 使用缓存的颜色
                     if cached.get('colors'):
                         colors = cached['colors']
                         qt_colors = [QColor(r, g, b) for r, g, b in colors]
                         self.setCustomColors(qt_colors)
-                        print(f"[AudioBackground] 使用缓存的颜色主题")
+                        debug("[AudioBackground] 使用缓存的颜色主题")
                     else:
                         # 启动异步颜色提取
                         self._start_color_extraction(cover_data)
@@ -988,7 +990,7 @@ class AudioBackground(QWidget):
 
                 # 转换为QPixmap
                 self._cover_pixmap = self._pil_to_pixmap(display_image)
-                print(f"[AudioBackground] 已加载音频封面: {display_image.size}")
+                info(f"[AudioBackground] 已加载音频封面: {display_image.size}")
 
                 # 显示封面图像（布局系统会自动居中）
                 self._cover_label.setPixmap(self._cover_pixmap)
@@ -1008,7 +1010,7 @@ class AudioBackground(QWidget):
                 self._start_color_extraction(cover_data)
 
             except Exception as e:
-                print(f"[AudioBackground] 加载封面失败: {e}")
+                warning(f"[AudioBackground] 加载封面失败: {e}")
                 self._cover_pixmap = None
                 # 加载默认SVG图标并使用强调色主题
                 self._load_default_cover()
@@ -1043,7 +1045,7 @@ class AudioBackground(QWidget):
         )
         self._current_color_task = task
         self._thread_pool.start(task)
-        print(f"[AudioBackground] 启动颜色提取任务 #{task_id}")
+        debug(f"[AudioBackground] 启动颜色提取任务 #{task_id}")
 
     def _on_color_extraction_finished(self, task_id: int, colors: list):
         """
@@ -1055,7 +1057,7 @@ class AudioBackground(QWidget):
         """
         # 检查是否是当前任务（忽略已取消的旧任务）
         if self._current_color_task is None or task_id != self._current_color_task.task_id:
-            print(f"[AudioBackground] 忽略旧任务 #{task_id} 的结果")
+            debug(f"[AudioBackground] 忽略旧任务 #{task_id} 的结果")
             return
 
         self._current_color_task = None
@@ -1069,9 +1071,9 @@ class AudioBackground(QWidget):
             if self._cover_data:
                 self._cover_cache.put(self._cover_data, colors=colors[:5])
 
-            print(f"[AudioBackground] 任务 #{task_id} 完成，已应用提取的颜色主题")
+            info(f"[AudioBackground] 任务 #{task_id} 完成，已应用提取的颜色主题")
         else:
-            print(f"[AudioBackground] 任务 #{task_id} 未能提取足够颜色，使用默认主题")
+            warning(f"[AudioBackground] 任务 #{task_id} 未能提取足够颜色，使用默认主题")
             self.useAccentTheme()
 
     def _extract_colors_from_cover(self, image: Image.Image):
@@ -1405,10 +1407,10 @@ class AudioBackground(QWidget):
             debug_info = []
             for i, lab in enumerate(selected_colors_lab[:5]):
                 debug_info.append(f"Lab{i}=({lab[0]:.0f},{lab[1]:.0f},{lab[2]:.0f})")
-            print(f"[AudioBackground] 从封面提取了{len(selected_colors_lab)}个颜色: {', '.join(debug_info)}")
+            debug(f"[AudioBackground] 从封面提取了{len(selected_colors_lab)}个颜色: {', '.join(debug_info)}")
 
         except Exception as e:
-            print(f"[AudioBackground] 从封面提取颜色失败: {e}")
+            error(f"[AudioBackground] 从封面提取颜色失败: {e}")
             import traceback
             traceback.print_exc()
             self.useAccentTheme()
@@ -1431,7 +1433,7 @@ class AudioBackground(QWidget):
                     break
 
             if not svg_path:
-                print("[AudioBackground] 未找到音乐SVG图标")
+                warning("[AudioBackground] 未找到音乐SVG图标")
                 return
 
             # 清理布局中可能残留的widget
@@ -1472,10 +1474,10 @@ class AudioBackground(QWidget):
             self._svg_container_layout.update()
             self._cover_layout.update()
 
-            print(f"[AudioBackground] 已加载默认音乐图标: {svg_path}, 尺寸: {widget_width}x{widget_height}")
+            info(f"[AudioBackground] 已加载默认音乐图标: {svg_path}, 尺寸: {widget_width}x{widget_height}")
 
         except Exception as e:
-            print(f"[AudioBackground] 加载默认图标失败: {e}")
+            error(f"[AudioBackground] 加载默认图标失败: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1507,10 +1509,10 @@ class AudioBackground(QWidget):
             self._cover_label.setMinimumSize(self._cover_pixmap.size())
             self._cover_layout.update()
 
-            print(f"[AudioBackground] 封面已重新调整尺寸: {display_image.size}")
+            debug(f"[AudioBackground] 封面已重新调整尺寸: {display_image.size}")
 
         except Exception as e:
-            print(f"[AudioBackground] 重新加载封面失败: {e}")
+            warning(f"[AudioBackground] 重新加载封面失败: {e}")
 
     def _reload_current_svg(self):
         """
@@ -1535,10 +1537,10 @@ class AudioBackground(QWidget):
             self._svg_widget.setFixedSize(widget_width, widget_height)
             self._svg_container_layout.update()
 
-            print(f"[AudioBackground] SVG图标已重新调整尺寸: {widget_width}x{widget_height}")
+            debug(f"[AudioBackground] SVG图标已重新调整尺寸: {widget_width}x{widget_height}")
 
         except Exception as e:
-            print(f"[AudioBackground] 重新调整SVG尺寸失败: {e}")
+            warning(f"[AudioBackground] 重新调整SVG尺寸失败: {e}")
 
     # ==================== 封面模糊方法 ====================
 
@@ -1606,9 +1608,9 @@ class AudioBackground(QWidget):
             
             # 存入缓存
             cache.put(self._cover_data, blurred_pixmap=self._blurred_pixmap)
-            
+
         except Exception as e:
-            print(f"[AudioBackground] 处理封面失败: {e}")
+            error(f"[AudioBackground] 处理封面失败: {e}")
             self._blurred_pixmap = None
     
     def _pil_to_pixmap(self, pil_image) -> QPixmap:
@@ -1718,7 +1720,7 @@ class AudioBackground(QWidget):
         # 暂停流体动画
         if self._current_mode == self.MODE_FLUID and self._is_loaded:
             self.pauseAnimation()
-            print("[AudioBackground] 窗口隐藏，暂停动画")
+            debug("[AudioBackground] 窗口隐藏，暂停动画")
 
     def showEvent(self, event):
         """
@@ -1729,7 +1731,7 @@ class AudioBackground(QWidget):
         # 恢复流体动画
         if self._current_mode == self.MODE_FLUID and self._is_loaded:
             self.resumeAnimation()
-            print("[AudioBackground] 窗口显示，恢复动画")
+            debug("[AudioBackground] 窗口显示，恢复动画")
 
     def paintEvent(self, event):
         """绘制事件"""

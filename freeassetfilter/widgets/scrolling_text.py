@@ -8,6 +8,7 @@ FreeAssetFilter 滚动文本自定义控件
 from PySide6.QtWidgets import QWidget, QApplication, QSizePolicy
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, Signal, QPoint, Property
 from PySide6.QtGui import QFont, QColor, QFontMetrics, QPainter, QPaintEvent
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class ScrollingText(QWidget):

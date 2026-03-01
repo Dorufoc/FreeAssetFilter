@@ -18,6 +18,7 @@ from .hover_tooltip import HoverTooltip
 from .table_widgets import CustomTimelineTable
 from .D_hover_menu import D_HoverMenu
 from freeassetfilter.components.settings_window import ModernSettingsWindow
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 __all__ = [
     'CustomWindow', 'CustomButton', 'CustomProgressBar', 'CustomSelectListItem',

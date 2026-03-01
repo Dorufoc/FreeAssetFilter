@@ -34,6 +34,9 @@ from freeassetfilter.core.theme_manager import ThemeManager
 import os
 import sys
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 # 字体缓存，避免重复获取系统字体
 _cached_font_families = None
 
@@ -1595,7 +1598,7 @@ class ModernSettingsWindow(QDialog):
             elif os.name == 'posix':  # macOS 或 Linux
                 subprocess.call(['open', settings_file_path])
         except Exception as e:
-            print(f"打开设置文件失败: {e}")
+            warning(f"打开设置文件失败: {e}")
         
     def _update_theme_display(self):
         """
@@ -1968,7 +1971,7 @@ class ModernSettingsWindow(QDialog):
                     error_box.set_text(f"重置设置时发生错误：\n{str(e)}\n\n请尝试手动删除设置文件后重启程序。")
                     error_box.set_buttons(["确定"], Qt.Horizontal, ["warning"])
                     error_box.exec()
-                    print(f"重置设置失败: {e}")
+                    warning(f"重置设置失败: {e}")
 
         confirm_box.buttonClicked.connect(on_confirm_button_clicked)
         confirm_box.exec()

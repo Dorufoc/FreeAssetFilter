@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, QPoint, QTimer, QRect, QEvent, QPropertyAnimation
 from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase, QTransform, QCursor
 
 from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class HoverTooltip(QWidget):

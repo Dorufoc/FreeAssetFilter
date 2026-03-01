@@ -29,6 +29,9 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QComboBox, QSlider, QTextEdit, QFrame, QApplication,
@@ -2020,7 +2023,7 @@ class TextPreviewWidget(QWidget):
     def _perform_search(self):
         """执行搜索"""
         search_term = self.search_input.text()
-        print(f"[DEBUG] _perform_search: search_term = '{search_term}'")
+        debug(f"[DEBUG] _perform_search: search_term = '{search_term}'")
         if not search_term:
             self._clear_search()
             return
@@ -2032,13 +2035,13 @@ class TextPreviewWidget(QWidget):
         content = self.text_edit.toPlainText()
         
         pos = content.find(search_term)
-        print(f"[DEBUG] _perform_search: found at pos = {pos}")
+        debug(f"[DEBUG] _perform_search: found at pos = {pos}")
         
         while pos >= 0:
             self._search_results.append(pos)
             pos = content.find(search_term, pos + 1)
         
-        print(f"[DEBUG] _perform_search: results count = {len(self._search_results)}")
+        debug(f"[DEBUG] _perform_search: results count = {len(self._search_results)}")
         
         if self._search_results:
             self._current_search_index = 0
@@ -2050,37 +2053,37 @@ class TextPreviewWidget(QWidget):
     
     def _go_to_previous_match(self):
         """跳转到上一个匹配项"""
-        print(f"[DEBUG] _go_to_previous_match: results = {len(self._search_results)}, current = {self._current_search_index}")
+        debug(f"[DEBUG] _go_to_previous_match: results = {len(self._search_results)}, current = {self._current_search_index}")
         if not self._search_results:
-            print(f"[DEBUG] _go_to_previous_match: early return, no results")
+            debug(f"[DEBUG] _go_to_previous_match: early return, no results")
             return
         
         self._current_search_index = (self._current_search_index - 1) % len(self._search_results)
-        print(f"[DEBUG] _go_to_previous_match: new index = {self._current_search_index}")
+        debug(f"[DEBUG] _go_to_previous_match: new index = {self._current_search_index}")
         self._go_to_match(self._current_search_index)
         self._update_search_info()
     
     def _go_to_next_match(self):
         """跳转到下一个匹配项"""
-        print(f"[DEBUG] _go_to_next_match: results = {len(self._search_results)}, current = {self._current_search_index}")
+        debug(f"[DEBUG] _go_to_next_match: results = {len(self._search_results)}, current = {self._current_search_index}")
         if not self._search_results:
-            print(f"[DEBUG] _go_to_next_match: early return, no results")
+            debug(f"[DEBUG] _go_to_next_match: early return, no results")
             return
         
         self._current_search_index = (self._current_search_index + 1) % len(self._search_results)
-        print(f"[DEBUG] _go_to_next_match: new index = {self._current_search_index}")
+        debug(f"[DEBUG] _go_to_next_match: new index = {self._current_search_index}")
         self._go_to_match(self._current_search_index)
         self._update_search_info()
     
     def _go_to_match(self, index):
         """跳转到指定索引的匹配项"""
-        print(f"[DEBUG] _go_to_match: index = {index}, results count = {len(self._search_results)}")
+        debug(f"[DEBUG] _go_to_match: index = {index}, results count = {len(self._search_results)}")
         if not self._search_results or index < 0 or index >= len(self._search_results):
-            print(f"[DEBUG] _go_to_match: early return due to invalid index")
+            debug(f"[DEBUG] _go_to_match: early return due to invalid index")
             return
         
         pos = self._search_results[index]
-        print(f"[DEBUG] _go_to_match: pos = {pos}, term = '{self._search_term}'")
+        debug(f"[DEBUG] _go_to_match: pos = {pos}, term = '{self._search_term}'")
         
         self._highlight_search_results()
         
@@ -2091,7 +2094,7 @@ class TextPreviewWidget(QWidget):
     
     def _highlight_search_results(self):
         """高亮搜索结果"""
-        print(f"[DEBUG] _highlight_search_results: called with {len(self._search_results)} results")
+        debug(f"[DEBUG] _highlight_search_results: called with {len(self._search_results)} results")
         
         app = QApplication.instance()
         accent_color_hex = "#007AFF"
@@ -2128,7 +2131,7 @@ class TextPreviewWidget(QWidget):
             
             extra_selections.append(extra_selection)
         
-        print(f"[DEBUG] _highlight_search_results: setting {len(extra_selections)} extra selections")
+        debug(f"[DEBUG] _highlight_search_results: setting {len(extra_selections)} extra selections")
         self.text_edit.setExtraSelections(extra_selections)
         self.text_edit.viewport().update()
     

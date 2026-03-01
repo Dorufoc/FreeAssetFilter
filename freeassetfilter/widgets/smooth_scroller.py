@@ -7,6 +7,7 @@ FreeAssetFilter 滚动条组件
 from PySide6.QtCore import Qt, QPoint, QTimer, Signal, QObject, QPropertyAnimation, Property, QEasingCurve, QEvent
 from PySide6.QtWidgets import QScrollArea, QAbstractItemView, QScroller, QScrollerProperties, QApplication, QScrollBar
 from PySide6.QtGui import QColor, QWheelEvent
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 import time
 
 

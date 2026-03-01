@@ -19,6 +19,7 @@ import math
 
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.D_hover_menu import D_HoverMenu
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class ColorWheelPicker(QWidget):

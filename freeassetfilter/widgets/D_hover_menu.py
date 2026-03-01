@@ -15,9 +15,10 @@ FreeAssetFilter 自定义悬浮菜单组件
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QApplication
 from PySide6.QtCore import Qt, QPoint, QRect, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QEvent
-from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QPainterPath
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPainterPath
 
 from freeassetfilter.utils.mouse_activity_monitor import MouseActivityMonitor
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class D_HoverMenu(QWidget):

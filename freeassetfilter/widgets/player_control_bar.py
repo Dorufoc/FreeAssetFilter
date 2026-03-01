@@ -31,6 +31,7 @@ from .button_widgets import CustomButton
 from .D_volume_control import DVolumeControl
 from .dropdown_menu import CustomDropdownMenu
 from .lut_manager_dialog import LutManagerDialog
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class PlayerControlBar(QWidget):

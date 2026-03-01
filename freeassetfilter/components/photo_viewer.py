@@ -17,6 +17,10 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import sys
 import os
+
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QScrollArea, QGroupBox, QGridLayout,
@@ -86,7 +90,7 @@ class RawProcessor(QThread):
             qimage = QImage(bgr.data, width, height, bytes_per_line, QImage.Format_RGB888)
             self.processing_complete.emit(qimage, self.image_path)
         except Exception as e:
-            print(f"加载RAW图片时出错: {e}")
+            error(f"加载RAW图片时出错: {e}")
             self.processing_failed.emit(f"加载RAW图片时出错: {e}")
 
 
@@ -126,7 +130,7 @@ class IcoProcessor(QThread):
             raise Exception("无法从ICO文件创建图像")
 
         except Exception as e:
-            print(f"加载ICO文件时出错: {e}")
+            error(f"加载ICO文件时出错: {e}")
             import traceback
             traceback.print_exc()
             self.processing_failed.emit(f"加载ICO文件时出错: {e}")
@@ -345,7 +349,7 @@ class HeifAvifProcessor(QThread):
             
             self.processing_complete.emit(qimage, self.image_path)
         except Exception as e:
-            print(f"加载HEIC/AVIF图片时出错: {e}")
+            error(f"加载HEIC/AVIF图片时出错: {e}")
             import traceback
             traceback.print_exc()
             self.processing_failed.emit(f"加载HEIC/AVIF图片时出错: {e}")
@@ -415,7 +419,7 @@ class PSDProcessor(QThread):
             try:
                 composited.save(temp_path, 'PNG')
             except Exception as e:
-                print(f"保存临时文件时出错: {e}")
+                error(f"保存临时文件时出错: {e}")
                 self.processing_failed.emit(f"保存临时文件时出错: {e}")
                 return
 
@@ -424,10 +428,10 @@ class PSDProcessor(QThread):
 
         except ImportError as e:
             error_msg = f"缺少必要的库: {str(e)}。请安装psd-tools库: pip install psd-tools"
-            print(error_msg)
+            error(error_msg)
             self.processing_failed.emit(error_msg)
         except Exception as e:
-            print(f"加载PSD文件时出错: {e}")
+            error(f"加载PSD文件时出错: {e}")
             import traceback
             traceback.print_exc()
             self.processing_failed.emit(f"加载PSD文件时出错: {e}")
@@ -493,7 +497,7 @@ class ImageWidget(QWidget):
         """
         ICO文件处理失败槽函数
         """
-        print(error_msg)
+        error(error_msg)
         self.ico_processor = None
 
     def _on_heif_avif_processing_complete(self, qimage, image_path):
@@ -512,7 +516,7 @@ class ImageWidget(QWidget):
         """
         HEIC/AVIF文件处理失败槽函数
         """
-        print(error_msg)
+        error(error_msg)
         self.heif_avif_processor = None
 
     def _on_psd_processing_complete(self, temp_path):
@@ -527,7 +531,7 @@ class ImageWidget(QWidget):
             self.pan_offset = QPoint()
             QTimer.singleShot(100, self._delayed_fit_scale)
         else:
-            print(f"加载临时PSD文件失败: {temp_path}")
+            error(f"加载临时PSD文件失败: {temp_path}")
 
         self.psd_processor = None
 
@@ -535,7 +539,7 @@ class ImageWidget(QWidget):
         """
         PSD文件处理失败槽函数
         """
-        print(error_msg)
+        error(error_msg)
         self.psd_processor = None
 
     def _on_psd_processing_progress(self, progress, status):
@@ -569,7 +573,7 @@ class ImageWidget(QWidget):
         """
         RAW文件处理失败槽函数
         """
-        print(error_msg)
+        error(error_msg)
         self.raw_processor = None
     
     def set_image(self, image_path):
@@ -648,7 +652,7 @@ class ImageWidget(QWidget):
                 return True
             return False
         except Exception as e:
-            print(f"加载图片时出错: {e}")
+            error(f"加载图片时出错: {e}")
             return False
     
     def _delayed_fit_scale(self):
@@ -661,7 +665,7 @@ class ImageWidget(QWidget):
             self.update_image()
             self.update()
         except Exception as e:
-            print(f"延迟自适应缩放时出错: {e}")
+            error(f"延迟自适应缩放时出错: {e}")
     
     def calculate_fit_scale(self):
         """
@@ -689,7 +693,7 @@ class ImageWidget(QWidget):
                     
                     self.scale_factor = max(self.scale_factor, self.min_scale)
         except Exception as e:
-            print(f"计算自适应缩放时出错: {e}")
+            error(f"计算自适应缩放时出错: {e}")
             self.scale_factor = 1.0
     
     def _get_viewport_size(self):
@@ -730,7 +734,7 @@ class ImageWidget(QWidget):
                 
                 self.setMinimumSize(0, 0)
         except Exception as e:
-            print(f"更新图片时出错: {e}")
+            error(f"更新图片时出错: {e}")
     
     def paintEvent(self, event):
         """
@@ -785,7 +789,7 @@ class ImageWidget(QWidget):
                         self.mouse_pos.x(), image_rect.bottom()
                     )
             except Exception as e:
-                print(f"绘制图片时出错: {e}")
+                error(f"绘制图片时出错: {e}")
         painter.end()
     
     def mousePressEvent(self, event):
@@ -802,7 +806,7 @@ class ImageWidget(QWidget):
                 if self.is_valid_pixel_position(event.pos()):
                     self.update_pixel_info(event.pos())
         except Exception as e:
-            print(f"处理鼠标按下事件时出错: {e}")
+            error(f"处理鼠标按下事件时出错: {e}")
     
     def mouseReleaseEvent(self, event):
         """
@@ -813,7 +817,7 @@ class ImageWidget(QWidget):
                 self.is_panning = False
                 self.setCursor(QCursor(Qt.ArrowCursor))
         except Exception as e:
-            print(f"处理鼠标释放事件时出错: {e}")
+            error(f"处理鼠标释放事件时出错: {e}")
     
     def mouseMoveEvent(self, event):
         """
@@ -835,7 +839,7 @@ class ImageWidget(QWidget):
             # 实时刷新界面，确保十字线跟随鼠标移动
             self.update()
         except Exception as e:
-            print(f"处理鼠标移动事件时出错: {e}")
+            error(f"处理鼠标移动事件时出错: {e}")
     
     def wheelEvent(self, event):
         """
@@ -896,7 +900,7 @@ class ImageWidget(QWidget):
                     
                     self.update()
         except Exception as e:
-            print(f"处理鼠标滚轮事件时出错: {e}")
+            error(f"处理鼠标滚轮事件时出错: {e}")
         
         # 阻止滚轮事件传递给滚动条
         event.accept()
@@ -909,7 +913,7 @@ class ImageWidget(QWidget):
             if event.button() == Qt.LeftButton:
                 self.reset_view()
         except Exception as e:
-            print(f"处理鼠标双击事件时出错: {e}")
+            error(f"处理鼠标双击事件时出错: {e}")
     
     def resizeEvent(self, event):
         """
@@ -943,7 +947,7 @@ class ImageWidget(QWidget):
             self._context_menu.set_items(items)
             self._context_menu.popup(event.globalPos())
         except Exception as e:
-            print(f"显示右键菜单时出错: {e}")
+            error(f"显示右键菜单时出错: {e}")
 
     def _on_context_menu_clicked(self, data):
         """
@@ -972,7 +976,7 @@ class ImageWidget(QWidget):
             color_value += f"坐标: ({self.pixel_info['x']}, {self.pixel_info['y']})"
             clipboard.setText(color_value)
         except Exception as e:
-            print(f"复制色度值时出错: {e}")
+            error(f"复制色度值时出错: {e}")
     
     def copy_file_path(self):
         """
@@ -983,7 +987,7 @@ class ImageWidget(QWidget):
                 clipboard = QApplication.clipboard()
                 clipboard.setText(self.current_file_path)
         except Exception as e:
-            print(f"复制文件路径时出错: {e}")
+            error(f"复制文件路径时出错: {e}")
     
     def copy_file_name(self):
         """
@@ -994,7 +998,7 @@ class ImageWidget(QWidget):
                 clipboard = QApplication.clipboard()
                 clipboard.setText(os.path.basename(self.current_file_path))
         except Exception as e:
-            print(f"复制文件名时出错: {e}")
+            error(f"复制文件名时出错: {e}")
     
     def copy_file(self):
         """
@@ -1010,7 +1014,7 @@ class ImageWidget(QWidget):
                 mime_data.setUrls([url])
                 clipboard.setMimeData(mime_data)
         except Exception as e:
-            print(f"复制文件时出错: {e}")
+            error(f"复制文件时出错: {e}")
     
     def is_valid_pixel_position(self, pos):
         """
@@ -1036,7 +1040,7 @@ class ImageWidget(QWidget):
             
             return image_rect.contains(pos)
         except Exception as e:
-            print(f"检查像素位置时出错: {e}")
+            error(f"检查像素位置时出错: {e}")
             return False
     
     def update_pixel_info(self, pos):
@@ -1085,7 +1089,7 @@ class ImageWidget(QWidget):
                     # 发送信号
                     self.pixel_info_changed.emit(self.pixel_info)
         except Exception as e:
-            print(f"更新像素信息时出错: {e}")
+            error(f"更新像素信息时出错: {e}")
     
     def reset_view(self):
         """
@@ -1097,7 +1101,7 @@ class ImageWidget(QWidget):
             self.update_image()
             self.update()
         except Exception as e:
-            print(f"重置视图时出错: {e}")
+            error(f"重置视图时出错: {e}")
     
     def get_pixel_info(self):
         """
@@ -1189,7 +1193,7 @@ class PhotoViewer(QWidget):
                     # 图片加载失败
                     QMessageBox.warning(self, "错误", "无法加载图片文件")
         except Exception as e:
-            print(f"打开文件时出错: {e}")
+            error(f"打开文件时出错: {e}")
             QMessageBox.warning(self, "错误", f"打开文件时出错: {str(e)}")
     
     def reset_view(self):
@@ -1199,7 +1203,7 @@ class PhotoViewer(QWidget):
         try:
             self.image_widget.reset_view()
         except Exception as e:
-            print(f"重置视图时出错: {e}")
+            error(f"重置视图时出错: {e}")
     
     def load_image_from_path(self, image_path):
         """
@@ -1218,7 +1222,7 @@ class PhotoViewer(QWidget):
                 return True
             return False
         except Exception as e:
-            print(f"从路径加载图片时出错: {e}")
+            error(f"从路径加载图片时出错: {e}")
             return False
     
     def set_file(self, file_path):

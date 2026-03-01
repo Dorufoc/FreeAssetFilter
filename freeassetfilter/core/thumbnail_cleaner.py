@@ -11,6 +11,9 @@ import time
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 __all__ = ['ThumbnailCleaner']
 
 class ThumbnailCleaner:

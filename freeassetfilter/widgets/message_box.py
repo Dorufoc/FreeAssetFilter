@@ -20,6 +20,7 @@ from .list_widgets import CustomSelectList
 from .input_widgets import CustomInputBox
 # 导入自定义进度条组件
 from .progress_widgets import D_ProgressBar
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class CustomWindow(QWidget):

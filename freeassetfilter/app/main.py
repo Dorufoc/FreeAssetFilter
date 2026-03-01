@@ -25,10 +25,36 @@ import time
 import traceback
 import faulthandler
 
-# 启用faulthandler，捕获C++层崩溃
-# 注意：在windowed模式（无控制台）下，sys.stderr可能为None，需要检查
-if sys.stderr is not None:
-    faulthandler.enable()
+# 添加父目录到Python路径，确保包能被正确导入
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+# 导入日志模块（必须在其他导入之前，确保日志功能可用）
+from freeassetfilter.utils.app_logger import (
+    get_logger, info, debug, warning, error, critical,
+    log_exception, log_print
+)
+
+# 初始化日志系统
+logger = get_logger()
+
+# 启用faulthandler，捕获C++层崩溃并写入日志文件
+# 这样即使发生段错误/访问冲突等C++级别错误，也能记录到日志中
+_fault_handler_file = None
+try:
+    log_file_path = logger.get_log_file_path()
+    # 以追加模式打开日志文件，faulthandler将崩溃信息写入此文件
+    _fault_handler_file = open(log_file_path, 'a', encoding='utf-8')
+    faulthandler.enable(file=_fault_handler_file)
+    info(f"faulthandler已启用，C++层崩溃信息将写入日志: {log_file_path}")
+except Exception as e:
+    warning(f"启用faulthandler到日志文件失败: {e}")
+    # 如果文件方式失败，尝试启用到stderr（如果可用）
+    if sys.stderr is not None:
+        try:
+            faulthandler.enable()
+            info("faulthandler已启用，崩溃信息将输出到stderr")
+        except Exception as e2:
+            warning(f"启用faulthandler到stderr也失败: {e2}")
 
 # 定义异常处理函数
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -45,12 +71,8 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
     
-    print("\n=== 检测到未捕获的异常 ===")
-    print(f"异常类型: {exc_type.__name__}")
-    print(f"异常值: {exc_value}")
-    print("异常堆栈:")
-    traceback.print_tb(exc_traceback)
-    print("==========================\n")
+    # 使用日志模块记录异常
+    log_exception(exc_type, exc_value, exc_traceback)
 
 # 将系统异常钩子绑定到自定义处理函数
 sys.excepthook = handle_exception
@@ -58,9 +80,6 @@ sys.excepthook = handle_exception
 # 忽略sipPyTypeDict相关的弃用警告
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="PySide6")
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyTypeDict.*")
-
-# 添加父目录到Python路径，确保包能被正确导入
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 try:
     import pillow_avif
@@ -93,16 +112,16 @@ from freeassetfilter.core.svg_renderer import SvgRenderer
 # 预热 C++ LUT 预览模块
 try:
     from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
-    print("[预热] 开始预热 LUT 预览 C++ 模块...")
+    info("[预热] 开始预热 LUT 预览 C++ 模块...")
     lut_cpp_warmup()
     
     # 预加载 LUT 生成器（包含参考图像）
     from freeassetfilter.core.lut_preview_generator import get_preview_generator
-    print("[预热] 预加载 LUT 生成器...")
+    info("[预热] 预加载 LUT 生成器...")
     get_preview_generator()
-    print("[预热] LUT 预览 C++ 模块预热完成")
+    info("[预热] LUT 预览 C++ 模块预热完成")
 except Exception as e:
-    print(f"[预热] LUT 预览 C++ 模块预热失败: {e}")
+    error(f"[预热] LUT 预览 C++ 模块预热失败: {e}")
 
 
 class FreeAssetFilterApp(QMainWindow):
@@ -240,9 +259,9 @@ class FreeAssetFilterApp(QMainWindow):
         if os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
-                #print(f"已删除临时文件夹: {temp_dir}")
+                #debug(f"已删除临时文件夹: {temp_dir}")
             except Exception as e:
-                print(f"删除临时文件夹失败: {e}")
+                error(f"删除临时文件夹失败: {e}")
                 pass
         
         # 调用父类的closeEvent
@@ -1003,9 +1022,11 @@ class FreeAssetFilterApp(QMainWindow):
             is_selected (bool): 是否被选中
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
+        
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [handle_file_selection_changed] {msg}")
+            logger_debug(f"[{timestamp}] [handle_file_selection_changed] {msg}")
         
         file_path = os.path.normpath(file_info['path'])
         debug(f"文件选择状态变化: 路径={file_path}, 选中={is_selected}")
@@ -1030,9 +1051,11 @@ class FreeAssetFilterApp(QMainWindow):
             file_info (dict): 文件信息
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
+        
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [handle_remove_from_selector] {msg}")
+            logger_debug(f"[{timestamp}] [handle_remove_from_selector] {msg}")
         
         file_path = os.path.normpath(file_info['path'])
         file_dir = os.path.normpath(os.path.dirname(file_path))
@@ -1108,7 +1131,7 @@ class FreeAssetFilterApp(QMainWindow):
             file_info (dict): 文件信息
         """
         file_path = file_info.get('path', '')
-        print(f"[Main] handle_preview_started called with path: {file_path}")
+        debug(f"[Main] handle_preview_started called with path: {file_path}")
         if not file_path:
             return
         
@@ -1118,7 +1141,7 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 更新文件存储池中的卡片预览态
         if hasattr(self, 'file_staging_pool') and self.file_staging_pool:
-            print(f"[Main] Calling file_staging_pool.set_previewing_file: {file_path}")
+            debug(f"[Main] Calling file_staging_pool.set_previewing_file: {file_path}")
             self.file_staging_pool.set_previewing_file(file_path)
     
     def handle_preview_cleared(self):
@@ -1230,14 +1253,14 @@ def main():
     """
     主程序入口函数
     """
-    print("=== FreeAssetFilter 主程序 ===")
+    info("=== FreeAssetFilter 主程序 ===")
     
     # 获取通过文件关联传递进来的文件路径（Inno Setup通过命令行参数传递）
     # sys.argv[0] 是程序本身的路径
     # sys.argv[1] 是被打开的文件路径（如果有）
     associated_file_path = sys.argv[1] if len(sys.argv) > 1 else None
     if associated_file_path:
-        print(f"[文件关联] 接收到关联文件: {associated_file_path}")
+        info(f"[文件关联] 接收到关联文件: {associated_file_path}")
     
     # 修改sys.argv[0]以确保Windows任务栏显示正确图标
     sys.argv[0] = os.path.abspath(__file__)
@@ -1509,7 +1532,7 @@ def main():
         except Exception as e:
             # 发生错误时，使用原有方式记录时间（不保存）
             settings_manager.set_setting("app.last_exit_time", exit_time)
-            print(f"保存退出时间失败: {e}")
+            error(f"保存退出时间失败: {e}")
             pass
     
     # 连接应用程序退出信号

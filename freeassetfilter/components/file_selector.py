@@ -24,6 +24,9 @@ from datetime import datetime
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QDialog, QApplication,
     QPushButton, QLabel, QComboBox, QLineEdit, QScrollArea,
@@ -250,7 +253,7 @@ class CustomFileSelector(QWidget):
                         if last_path == "All" or os.path.exists(last_path):
                             self.current_path = last_path
         except Exception as e:
-            print(f"加载上次路径失败: {e}")
+            warning(f"加载上次路径失败: {e}")
             # 如果加载失败，确保默认显示"All"
             self.current_path = "All"
     
@@ -262,7 +265,7 @@ class CustomFileSelector(QWidget):
             with open(self.save_path_file, 'w') as f:
                 json.dump({"last_path": self.current_path}, f)
         except Exception as e:
-            print(f"保存路径失败: {e}")
+            warning(f"保存路径失败: {e}")
     
     def init_ui(self):
         """
@@ -669,7 +672,7 @@ class CustomFileSelector(QWidget):
                 self._refresh_staging_pool_card(file_data["path"])
 
         def on_error_occurred(file_path, error):
-            print(f"生成缩略图失败: {file_path}, 错误: {error}")
+            warning(f"生成缩略图失败: {file_path}, 错误: {error}")
 
         def on_finished(success_count, total_count):
             progress_msg.close()
@@ -715,7 +718,7 @@ class CustomFileSelector(QWidget):
                     return parent.file_staging_pool
                 parent = parent.parent()
         except Exception as e:
-            print(f"获取文件存储池失败: {e}")
+            error(f"获取文件存储池失败: {e}")
         return None
 
     def _refresh_staging_pool_thumbnails(self, staging_pool):
@@ -734,7 +737,7 @@ class CustomFileSelector(QWidget):
                 for i, (card, file_info) in enumerate(staging_pool.cards):
                     card.refresh_thumbnail()
         except Exception as e:
-            print(f"刷新存储池卡片失败: {e}")
+            error(f"刷新存储池卡片失败: {e}")
 
     def _refresh_staging_pool_card(self, file_path):
         """刷新存储池中指定文件的卡片缩略图"""
@@ -748,7 +751,7 @@ class CustomFileSelector(QWidget):
                     card.refresh_thumbnail()
                     break
         except Exception as e:
-            print(f"刷新存储池单个卡片缩略图失败: {e}")
+            error(f"刷新存储池单个卡片缩略图失败: {e}")
         
     def _clear_thumbnail_cache(self):
         """
@@ -850,7 +853,7 @@ class CustomFileSelector(QWidget):
                         not_exist_msg.buttonClicked.connect(on_not_exist_ok_clicked)
                         not_exist_msg.exec()
             except Exception as e:
-                print(f"清理缩略图缓存失败: {e}")
+                warning(f"清理缩略图缓存失败: {e}")
                 # 清理失败错误提示
                 error_msg = CustomMessageBox(self)
                 error_msg.set_title("错误")
@@ -905,7 +908,7 @@ class CustomFileSelector(QWidget):
                         try:
                             img = Image.open(file_path)
                         except Exception as img_error:
-                            print(f"无法生成图片缩略图: {file_path}, 错误: {img_error}")
+                            warning(f"无法生成图片缩略图: {file_path}, 错误: {img_error}")
                             return False
                     elif suffix in psd_formats:
                         # 处理PSD文件
@@ -915,10 +918,10 @@ class CustomFileSelector(QWidget):
                             # 合成所有图层
                             img = psd.composite()
                         except ImportError:
-                            print(f"无法生成PSD缩略图: {file_path}, 缺少psd-tools库")
+                            warning(f"无法生成PSD缩略图: {file_path}, 缺少psd-tools库")
                             return False
                         except Exception as psd_error:
-                            print(f"无法生成PSD缩略图: {file_path}, 错误: {psd_error}")
+                            warning(f"无法生成PSD缩略图: {file_path}, 错误: {psd_error}")
                             return False
                     else:
                         img = Image.open(file_path)
@@ -988,7 +991,7 @@ class CustomFileSelector(QWidget):
                     #print(f"已生成图片缩略图 (PIL保持比例): {file_path}")
                     return True
                 except Exception as pil_e:
-                    print(f"无法生成缩略图: {file_path}, PIL处理失败: {pil_e}")
+                    warning(f"无法生成缩略图: {file_path}, PIL处理失败: {pil_e}")
                     return False
             # 处理所有视频文件格式
             else:
@@ -1128,12 +1131,12 @@ class CustomFileSelector(QWidget):
                                     success = True
                                     return True
                                 except Exception as e:
-                                    print(f"✗ 处理视频时出错: {file_path}, 错误: {e}")
+                                    error(f"✗ 处理视频时出错: {file_path}, 错误: {e}")
                                 break
                         
                         if not success:
                             # 如果所有尝试都失败，尝试使用相对位置
-                            print(f"所有固定帧位置尝试失败，尝试使用相对位置")
+                            warning(f"所有固定帧位置尝试失败，尝试使用相对位置")
                             # 尝试从视频中间位置读取（使用不同方法）
                             cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)  # 设置到视频中间位置
                             ret, frame = cap.read()
@@ -1205,11 +1208,11 @@ class CustomFileSelector(QWidget):
                                     #print(f"✓ 已生成视频缩略图: {file_path}, 使用中间位置相对帧")
                                     return True
                                 except Exception as e:
-                                    print(f"✗ 使用PIL处理视频帧失败: {e}")
+                                    error(f"✗ 使用PIL处理视频帧失败: {e}")
                             else:
-                                print(f"✗ 无法读取视频任何有效帧")
+                                error(f"✗ 无法读取视频任何有效帧")
                     except Exception as e:
-                        print(f"✗ 处理视频时出错: {file_path}, 错误: {e}")
+                        error(f"✗ 处理视频时出错: {file_path}, 错误: {e}")
                         # 尝试使用相对位置作为最后的 fallback
                         try:
                             cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)  # 设置到视频中间位置
@@ -1257,22 +1260,22 @@ class CustomFileSelector(QWidget):
                                     #print(f"✓ 已生成视频缩略图: {file_path}, 使用相对位置帧")
                                     return True
                                 except Exception as pil_e:
-                                    print(f"✗ 使用PIL处理视频帧失败: {pil_e}")
+                                    error(f"✗ 使用PIL处理视频帧失败: {pil_e}")
                             else:
-                                print(f"✗ 无法读取视频任何有效帧")
+                                error(f"✗ 无法读取视频任何有效帧")
                         except Exception as fallback_e:
-                            print(f"✗ Fallback尝试也失败: {fallback_e}")
+                            error(f"✗ Fallback尝试也失败: {fallback_e}")
                     finally:
                         # 确保释放资源
                         cap.release()
                 else:
-                    print(f"✗ 无法打开视频文件: {file_path}")
+                    error(f"✗ 无法打开视频文件: {file_path}")
         except ImportError:
             # 如果没有安装OpenCV，跳过缩略图生成
-            print("OpenCV is not installed")
+            warning("OpenCV is not installed")
         except Exception as e:
             # 处理其他可能的错误
-            print(f"生成缩略图失败: {file_path}, 错误: {e}")
+            error(f"生成缩略图失败: {file_path}, 错误: {e}")
         return False
     
     def go_to_parent(self):
@@ -1315,9 +1318,9 @@ class CustomFileSelector(QWidget):
                     if isinstance(favorites_data, list):
                         return favorites_data
                     else:
-                        print(f"收藏夹数据格式错误，预期列表类型，实际为 {type(favorites_data).__name__}")
+                        warning(f"收藏夹数据格式错误，预期列表类型，实际为 {type(favorites_data).__name__}")
         except Exception as e:
-            print(f"加载收藏夹失败: {e}")
+            warning(f"加载收藏夹失败: {e}")
         return []
     
     def _save_favorites(self):
@@ -1328,7 +1331,7 @@ class CustomFileSelector(QWidget):
             with open(self.favorites_file, 'w', encoding='utf-8') as f:
                 json.dump(self.favorites, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"保存收藏夹失败: {e}")
+            warning(f"保存收藏夹失败: {e}")
     
     def _show_favorites_dialog(self):
         """
@@ -1829,7 +1832,7 @@ class CustomFileSelector(QWidget):
                 # 关闭枚举句柄
                 mpr.WNetCloseEnum(hEnum)
             except Exception as e:
-                print(f"获取网络映射驱动器失败: {e}")
+                warning(f"获取网络映射驱动器失败: {e}")
                 # 使用net use命令作为备选方案
                 try:
                     import subprocess
@@ -1851,7 +1854,7 @@ class CustomFileSelector(QWidget):
                                 if remote_name and remote_name not in network_locations:
                                     network_locations.append(remote_name)
                 except Exception as e:
-                    print(f"使用net use命令获取网络位置失败: {e}")
+                    warning(f"使用net use命令获取网络位置失败: {e}")
         else:
             # Linux/macOS系统：根目录
             local_drives = ['/']
@@ -2417,7 +2420,7 @@ class CustomFileSelector(QWidget):
                     
                     files.append(file_dict)
             except Exception as e:
-                print(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
+                error(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
                 from freeassetfilter.widgets.D_widgets import CustomMessageBox
                 error_msg = CustomMessageBox(self)
                 error_msg.set_title("错误")
@@ -2770,9 +2773,10 @@ class CustomFileSelector(QWidget):
         创建单个文件卡片（使用FileBlockCard）
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector._create_file_card] {msg}")
+            logger_debug(f"[{timestamp}] [CustomFileSelector._create_file_card] {msg}")
         
         file_path = file_info["path"]
         file_dir = os.path.normpath(os.path.dirname(file_path))
@@ -2851,9 +2855,10 @@ class CustomFileSelector(QWidget):
             drop_target (str): 放置目标类型 ('staging_pool', 'previewer', 'none')
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector._on_card_drag_ended] {msg}")
+            logger_debug(f"[{timestamp}] [CustomFileSelector._on_card_drag_ended] {msg}")
         
         file_path = file_info.get('path', '')
         file_path_norm = os.path.normpath(file_path)
@@ -3092,7 +3097,7 @@ class CustomFileSelector(QWidget):
                 # 绘制文件类型图标
                 painter.drawPixmap(x, y, file_type_pixmap)
             except Exception as e:
-                print(f"叠加文件类型图标失败: {e}")
+                warning(f"叠加文件类型图标失败: {e}")
             finally:
                 painter.end()
             
@@ -3195,7 +3200,7 @@ class CustomFileSelector(QWidget):
                     svg_widget.setStyleSheet('background: transparent; border: none;')
                     return svg_widget
                 except Exception as svg_e:
-                    print(f"使用QSvgWidget渲染SVG图标失败: {svg_e}")
+                    warning(f"使用QSvgWidget渲染SVG图标失败: {svg_e}")
                     # 如果QSvgWidget渲染失败，回退到使用SvgRenderer生成高质量位图
                     base_pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, 120, self.dpi_scale)
                     
@@ -3384,9 +3389,10 @@ class CustomFileSelector(QWidget):
         打开文件
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector] {msg}")
+            logger_debug(f"[{timestamp}] [CustomFileSelector] {msg}")
         
         file_path = card.file_info["path"]
         #debug(f"打开文件: {file_path}, 是否为目录: {card.file_info['is_dir']}")
@@ -3408,9 +3414,10 @@ class CustomFileSelector(QWidget):
             file_path: 文件或文件夹路径
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector] {msg}")
+            logger_debug(f"[{timestamp}] [CustomFileSelector] {msg}")
         
         is_dir = os.path.isdir(file_path)
         #debug(f"打开文件: {file_path}, 是否为目录: {is_dir}")
@@ -3538,9 +3545,10 @@ class CustomFileSelector(QWidget):
         """
         # 生成带时间戳的debug信息
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector.dropEvent] {msg}")
+            logger_debug(f"[{timestamp}] [CustomFileSelector.dropEvent] {msg}")
         
         #debug("=== DROP EVENT START ===")
         
@@ -3725,9 +3733,10 @@ class CustomFileSelector(QWidget):
         """
         # 生成带时间戳的debug信息
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector._handle_dropped_file] {msg}")
+            logger_debug(f"[{timestamp}] [CustomFileSelector._handle_dropped_file] {msg}")
         
         #debug(f"开始处理拖拽的文件: {file_path}")
         
@@ -3784,9 +3793,10 @@ class CustomFileSelector(QWidget):
         更新文件选择状态，确保UI显示正确的选中状态
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileSelector._update_file_selection_state] {msg}")
+            logger_debug(f"[{timestamp}] [CustomFileSelector._update_file_selection_state] {msg}")
         
         #debug(f"开始更新选中状态，卡片数量: {self.files_layout.count()}, selected_files: {self.selected_files}")
         for i in range(self.files_layout.count()):

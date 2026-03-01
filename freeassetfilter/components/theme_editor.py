@@ -12,6 +12,7 @@ from PySide6.QtGui import QFont
 from freeassetfilter.widgets.theme_card import ThemeCard
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 class ThemeEditor(QScrollArea):
     """
@@ -583,9 +584,10 @@ class ThemeEditor(QScrollArea):
         应用选中的主题颜色
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [ThemeEditor.on_apply_clicked] {msg}")
+            logger_debug(f"[{timestamp}] [ThemeEditor.on_apply_clicked] {msg}")
         
         debug("开始应用选中的主题颜色")
         

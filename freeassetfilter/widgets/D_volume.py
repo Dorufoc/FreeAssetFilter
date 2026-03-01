@@ -16,6 +16,7 @@ from PySide6.QtGui import QFont
 
 from .D_hover_menu import D_HoverMenu
 from .progress_widgets import D_ProgressBar
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class D_Volume(QWidget):

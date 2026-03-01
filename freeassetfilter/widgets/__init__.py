@@ -3,6 +3,8 @@
 FreeAssetFilter Widgets Module
 """
 
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 # 导入自定义按钮组件
 from .button_widgets import CustomButton
 # 导入自定义输入框组件

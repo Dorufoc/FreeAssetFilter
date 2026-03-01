@@ -21,6 +21,9 @@ import os
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QGroupBox, QGridLayout, QSizePolicy, QPushButton, QMessageBox, QApplication, QSplitter
@@ -130,7 +133,7 @@ class UnifiedPreviewer(QWidget):
             
         except Exception as e:
             import traceback
-            print(f"[ERROR] 停止预览组件失败: {str(e)}")
+            error(f"[ERROR] 停止预览组件失败: {str(e)}")
             traceback.print_exc()
     
     def init_ui(self):
@@ -257,9 +260,10 @@ class UnifiedPreviewer(QWidget):
         """
         # 生成带时间戳的debug信息
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
+            logger_debug(f"[{timestamp}] [UnifiedPreviewer] {msg}")
         
         debug(f"接收到file_selected信号，文件信息: {file_info}")
         
@@ -288,8 +292,9 @@ class UnifiedPreviewer(QWidget):
         """
         def debug(msg):
             import datetime
+            from freeassetfilter.utils.app_logger import debug as logger_debug
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [UnifiedPreviewer] {msg}")
+            logger_debug(f"[{timestamp}] [UnifiedPreviewer] {msg}")
         
         debug("开始处理文件预览")
         
@@ -420,7 +425,7 @@ class UnifiedPreviewer(QWidget):
                 self._preview_thread = self.PreviewLoaderThread(file_path, preview_type, self)
             except Exception as e:
                 import traceback
-                print(f"[ERROR] 创建 PreviewLoaderThread 失败: {e}")
+                error(f"[ERROR] 创建 PreviewLoaderThread 失败: {e}")
                 traceback.print_exc()
                 self.is_loading_preview = False
                 self._on_file_read_finished()
@@ -438,7 +443,7 @@ class UnifiedPreviewer(QWidget):
                 self._preview_thread.start()
             except Exception as e:
                 import traceback
-                print(f"[ERROR] 启动 PreviewLoaderThread 失败: {e}")
+                error(f"[ERROR] 启动 PreviewLoaderThread 失败: {e}")
                 traceback.print_exc()
                 self.is_loading_preview = False
                 self._on_file_read_finished()
@@ -579,7 +584,7 @@ class UnifiedPreviewer(QWidget):
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             msg_box.exec()
         except Exception as e:
-            print(f"复制文件到剪切板失败: {e}")
+            error(f"复制文件到剪切板失败: {e}")
 
     def _clear_preview(self, emit_signal=True):
         """
@@ -621,9 +626,9 @@ class UnifiedPreviewer(QWidget):
                     # 检查是否有分离窗口
                     if hasattr(self.current_preview_widget, '_detached_window') and self.current_preview_widget._detached_window:
                         is_detached_video_player = True
-                        print(f"[UnifiedPreviewer] 视频播放器已分离到独立窗口，跳过清理")
+                        info(f"[UnifiedPreviewer] 视频播放器已分离到独立窗口，跳过清理")
             except Exception as e:
-                print(f"检查VideoPlayer分离状态时出错: {e}")
+                error(f"检查VideoPlayer分离状态时出错: {e}")
             
             # 如果已经分离，就跳过清理
             if not is_detached_video_player:
@@ -635,7 +640,7 @@ class UnifiedPreviewer(QWidget):
                         if hasattr(self.current_preview_widget, 'cleanup'):
                             self.current_preview_widget.cleanup()
                 except Exception as e:
-                    print(f"清理TextPreviewWidget组件时出错: {e}")
+                    error(f"清理TextPreviewWidget组件时出错: {e}")
                 
                 # 对于字体预览器，需要特别处理字体资源释放
                 try:
@@ -645,14 +650,14 @@ class UnifiedPreviewer(QWidget):
                         if hasattr(self.current_preview_widget, 'cleanup'):
                             self.current_preview_widget.cleanup()
                 except Exception as e:
-                    print(f"清理FontPreviewWidget组件时出错: {e}")
+                    error(f"清理FontPreviewWidget组件时出错: {e}")
                 
                 # 停止播放
                 if hasattr(self.current_preview_widget, 'stop'):
                     try:
                         self.current_preview_widget.stop()
                     except Exception as e:
-                        print(f"停止预览组件时出错: {e}")
+                        error(f"停止预览组件时出错: {e}")
                 
                 # 对于VideoPlayer组件，确保完全停止所有播放器核心
                 # 这是关键步骤：必须确保MPV完全销毁后才能创建新的播放器，否则会导致访问冲突
@@ -667,7 +672,7 @@ class UnifiedPreviewer(QWidget):
                                 # 使用同步模式确保资源完全释放
                                 video_player_widget.cleanup(async_mode=False)
                             except Exception as e:
-                                print(f"调用VideoPlayer.cleanup()时出错: {e}")
+                                error(f"调用VideoPlayer.cleanup()时出错: {e}")
                         
                         # 处理事件，确保清理操作完成
                         # 使用 ExcludeUserInputEvents 标志排除用户输入事件，避免在处理过程中
@@ -679,7 +684,7 @@ class UnifiedPreviewer(QWidget):
                         from PySide6.QtCore import QThread
                         QThread.msleep(100)  # 等待100ms让MPV完全释放
                 except Exception as e:
-                    print(f"清理VideoPlayer组件时出错: {e}")
+                    error(f"清理VideoPlayer组件时出错: {e}")
 
                 # 注意：不要调用 self.current_preview_widget.disconnect()
                 # 因为这会断开所有信号连接，包括 QWebEngineView 等内部组件的信号
@@ -708,7 +713,7 @@ class UnifiedPreviewer(QWidget):
                 if hasattr(self.current_preview_widget, '_detached_window') and self.current_preview_widget._detached_window:
                     is_detached_video_player = True
         except Exception as e:
-            print(f"检查VideoPlayer分离状态时出错: {e}")
+            error(f"检查VideoPlayer分离状态时出错: {e}")
         
         # 只有当播放器未分离时才清理布局
         if not is_detached_video_player:
@@ -721,15 +726,15 @@ class UnifiedPreviewer(QWidget):
                         widget.deleteLater()
         
         # 重置临时PDF文件路径，但不删除缓存文件
-        print("=== 进入_clear_preview方法 ===")
-        print(f"hasattr(temp_pdf_path): {hasattr(self, 'temp_pdf_path')}")
+        debug("=== 进入_clear_preview方法 ===")
+        debug(f"hasattr(temp_pdf_path): {hasattr(self, 'temp_pdf_path')}")
         if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path:
-            print(f"temp_pdf_path值: {self.temp_pdf_path}")
-            print(f"temp_pdf_path存在: {os.path.exists(self.temp_pdf_path) if self.temp_pdf_path else False}")
+            debug(f"temp_pdf_path值: {self.temp_pdf_path}")
+            debug(f"temp_pdf_path存在: {os.path.exists(self.temp_pdf_path) if self.temp_pdf_path else False}")
             # 只重置路径，不删除缓存文件，以便下次预览时可以复用
             self.temp_pdf_path = None
-            print("已重置temp_pdf_path为None")
-        print("=== 退出_clear_preview方法 ===")
+            debug("已重置temp_pdf_path为None")
+        debug("=== 退出_clear_preview方法 ===")
         
         # 只有当播放器未分离时才重置当前预览组件和类型
         if not is_detached_video_player:
@@ -761,9 +766,9 @@ class UnifiedPreviewer(QWidget):
                 if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path:
                     try:
                         # 只重置路径，不删除缓存文件，以便下次预览时可以复用
-                        print(f"重置临时PDF路径: {self.temp_pdf_path}")
+                        debug(f"重置临时PDF路径: {self.temp_pdf_path}")
                     except Exception as e:
-                        print(f"处理临时PDF文件失败: {e}")
+                        error(f"处理临时PDF文件失败: {e}")
                     finally:
                         self.temp_pdf_path = None
                 # 对于文档类型，需要重新转换
@@ -793,7 +798,7 @@ class UnifiedPreviewer(QWidget):
                                         self.current_preview_widget.play()
                         except Exception as e:
                             # 忽略任何错误，避免崩溃
-                            print(f"[UnifiedPreviewer] 确保播放状态时出错: {e}")
+                            debug(f"[UnifiedPreviewer] 确保播放状态时出错: {e}")
                     # 延迟300毫秒，确保MPV有足够时间完成文件加载
                     QTimer.singleShot(300, ensure_playing)
             elif preview_type == "image":
@@ -828,7 +833,7 @@ class UnifiedPreviewer(QWidget):
                 self._show_font_preview(file_path)
                 return
         except Exception as e:
-            print(f"更新预览组件时出错: {e}")
+            error(f"更新预览组件时出错: {e}")
             # 如果更新失败，清除当前组件，重新创建
             # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
             self._clear_preview(emit_signal=False)
@@ -963,10 +968,10 @@ class UnifiedPreviewer(QWidget):
             video_player.load_media(file_path, is_audio=False)
             video_player.play()
             
-            print(f"[DEBUG] 视频预览组件已创建并开始播放: {file_path}")
+            debug(f"[DEBUG] 视频预览组件已创建并开始播放: {file_path}")
         except Exception as e:
             import traceback
-            print(f"[ERROR] 视频预览失败: {str(e)}")
+            error(f"[ERROR] 视频预览失败: {str(e)}")
             traceback.print_exc()
             error_message = f"视频预览失败: {str(e)}"
             self._show_error_with_copy_button(error_message)
@@ -1060,11 +1065,11 @@ class UnifiedPreviewer(QWidget):
             return thumbnail_path
         except ImportError:
             # 如果没有安装opencv，返回None
-            print("OpenCV is not installed")
+            warning("OpenCV is not installed")
             return None
         except Exception as e:
             # 处理其他可能的错误
-            print(f"生成视频缩略图失败: {file_path}, 错误: {e}")
+            error(f"生成视频缩略图失败: {file_path}, 错误: {e}")
             return None
     
     def _show_audio_preview(self, file_path):
@@ -1076,9 +1081,10 @@ class UnifiedPreviewer(QWidget):
             file_path (str): 音频文件路径
         """
         import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [_show_audio_preview] {msg}")
+            logger_debug(f"[{timestamp}] [_show_audio_preview] {msg}")
         
         debug(f"开始加载音频: {file_path}")
         try:
@@ -1239,7 +1245,7 @@ class UnifiedPreviewer(QWidget):
         """
         PDF渲染完成，关闭进度条弹窗
         """
-        print("[DEBUG] PDF渲染完成，关闭进度条弹窗")
+        debug("[DEBUG] PDF渲染完成，关闭进度条弹窗")
         self._on_file_read_finished()
     
     def _copy_to_clipboard(self, text):
@@ -1593,7 +1599,7 @@ class UnifiedPreviewer(QWidget):
             # 确保temp文件夹存在
             if not os.path.exists(temp_dir):
                 os.makedirs(temp_dir)
-                print(f"创建了临时文件夹: {temp_dir}")
+                info(f"创建了临时文件夹: {temp_dir}")
             
             file_name = os.path.basename(file_path)
             base_name = os.path.splitext(file_name)[0]
@@ -1601,15 +1607,15 @@ class UnifiedPreviewer(QWidget):
             # 使用稳定的临时文件名，不包含时间戳，便于缓存管理
             temp_pdf_name = f"{base_name}_temp.pdf"
             self.temp_pdf_path = os.path.join(temp_dir, temp_pdf_name)
-            print(f"临时PDF路径: {self.temp_pdf_path}")
+            debug(f"临时PDF路径: {self.temp_pdf_path}")
             
             # 检查是否已存在PDF缓存文件
             if os.path.exists(self.temp_pdf_path):
-                print(f"找到已存在的PDF缓存文件，直接使用: {self.temp_pdf_path}")
+                info(f"找到已存在的PDF缓存文件，直接使用: {self.temp_pdf_path}")
                 # 直接使用已存在的PDF文件
             else:
                 # 缓存不存在，需要转换文档为PDF
-                print(f"缓存不存在，正在将文档转换为PDF: {file_path} -> {self.temp_pdf_path}")
+                info(f"缓存不存在，正在将文档转换为PDF: {file_path} -> {self.temp_pdf_path}")
                 
                 # 找到便携版LibreOffice的路径
                 # __file__ = freeassetfilter/components/unified_previewer.py
@@ -1662,7 +1668,7 @@ class UnifiedPreviewer(QWidget):
                     file_path
                 ]
                 
-                print(f"执行命令: {' '.join(cmd)}")
+                debug(f"执行命令: {' '.join(cmd)}")
                 
                 # 设置超时时间为300秒（5分钟），处理大文件
                 try:
@@ -1670,10 +1676,10 @@ class UnifiedPreviewer(QWidget):
                     
                     # 输出LibreOffice的执行结果，便于调试
                     if result.stdout:
-                        print(f"LibreOffice输出: {result.stdout}")
+                        debug(f"LibreOffice输出: {result.stdout}")
                     if result.stderr:
-                        print(f"LibreOffice错误: {result.stderr}")
-                    print(f"LibreOffice返回码: {result.returncode}")
+                        warning(f"LibreOffice错误: {result.stderr}")
+                    debug(f"LibreOffice返回码: {result.returncode}")
                     
                     if result.returncode != 0:
                         error_msg = f"文档转换失败: {result.stderr}" if result.stderr else f"文档转换失败，返回码: {result.returncode}"
@@ -1695,7 +1701,7 @@ class UnifiedPreviewer(QWidget):
                 default_pdf_path = os.path.join(temp_dir, f"{base_name}.pdf")
                 
                 if os.path.exists(default_pdf_path):
-                    print(f"找到默认生成的PDF文件: {default_pdf_path}")
+                    info(f"找到默认生成的PDF文件: {default_pdf_path}")
                     # 如果生成的文件名不是我们想要的临时文件名，重命名它
                     if default_pdf_path != self.temp_pdf_path:
                         try:
@@ -1704,16 +1710,16 @@ class UnifiedPreviewer(QWidget):
                                 os.remove(self.temp_pdf_path)
                             # 重命名为临时文件名
                             os.rename(default_pdf_path, self.temp_pdf_path)
-                            print(f"将PDF重命名为: {self.temp_pdf_path}")
+                            info(f"将PDF重命名为: {self.temp_pdf_path}")
                         except Exception as e:
-                            print(f"重命名PDF失败: {e}")
+                            warning(f"重命名PDF失败: {e}")
                             # 如果重命名失败，直接使用生成的PDF路径
                             self.temp_pdf_path = default_pdf_path
                 elif os.path.exists(self.temp_pdf_path):
-                    print(f"PDF文件已生成: {self.temp_pdf_path}")
+                    info(f"PDF文件已生成: {self.temp_pdf_path}")
                 else:
                     # 如果直接查找指定路径的PDF文件失败，尝试搜索所有生成的PDF文件
-                    print("直接查找指定路径的PDF文件失败，尝试搜索所有生成的PDF文件")
+                    warning("直接查找指定路径的PDF文件失败，尝试搜索所有生成的PDF文件")
                     import glob
                     import time
                     
@@ -1723,7 +1729,7 @@ class UnifiedPreviewer(QWidget):
                     if generated_pdfs:
                         # 输出所有找到的PDF文件，便于调试
                         for pdf_path in generated_pdfs:
-                            print(f"找到PDF文件: {pdf_path}")
+                            debug(f"找到PDF文件: {pdf_path}")
                         
                         # 尝试找到最可能是我们需要的PDF文件
                         # 1. 优先匹配基础文件名的PDF
@@ -1732,11 +1738,11 @@ class UnifiedPreviewer(QWidget):
                             # 按修改时间排序，选择最新的
                             base_matches.sort(key=os.path.getmtime, reverse=True)
                             found_pdf = base_matches[0]
-                            print(f"找到与基础文件名匹配的最新PDF: {found_pdf}")
+                            info(f"找到与基础文件名匹配的最新PDF: {found_pdf}")
                         else:
                             # 2. 如果没有基础文件名匹配，使用最新生成的PDF
                             found_pdf = max(generated_pdfs, key=os.path.getmtime)
-                            print(f"使用最新生成的PDF: {found_pdf}")
+                            info(f"使用最新生成的PDF: {found_pdf}")
                         
                         try:
                             # 将找到的PDF文件重命名为我们想要的临时文件名
@@ -1746,9 +1752,9 @@ class UnifiedPreviewer(QWidget):
                                     os.remove(self.temp_pdf_path)
                                 # 重命名为临时文件名
                                 os.rename(found_pdf, self.temp_pdf_path)
-                                print(f"将PDF重命名为: {self.temp_pdf_path}")
+                                info(f"将PDF重命名为: {self.temp_pdf_path}")
                         except Exception as e:
-                            print(f"重命名PDF失败: {e}")
+                            warning(f"重命名PDF失败: {e}")
                             # 如果重命名失败，直接使用找到的PDF路径
                             self.temp_pdf_path = found_pdf
                     else:
@@ -1757,9 +1763,9 @@ class UnifiedPreviewer(QWidget):
                         self._show_error_with_copy_button(error_msg)
                         return
                 
-                print(f"文档转换成功: {self.temp_pdf_path}")
+                info(f"文档转换成功: {self.temp_pdf_path}")
                 
-                print(f"文档转换成功: {self.temp_pdf_path}")
+                info(f"文档转换成功: {self.temp_pdf_path}")
             
             # 使用现有的PDF预览方法显示转换后的PDF
             # 注意：这里不再立即关闭进度条弹窗，而是等待PDF渲染完成后关闭
@@ -1828,7 +1834,7 @@ class UnifiedPreviewer(QWidget):
             self._current_settings_window = None
         except Exception as e:
             import traceback
-            print(f"[ERROR] 打开设置窗口失败: {str(e)}")
+            error(f"[ERROR] 打开设置窗口失败: {str(e)}")
             traceback.print_exc()
             self._current_settings_window = None
     
@@ -1896,7 +1902,7 @@ class UnifiedPreviewer(QWidget):
                 if hasattr(staging_pool, 'reload_all_cards'):
                     staging_pool.reload_all_cards()
         except Exception as e:
-            print(f"[ERROR] 刷新文件选择器和存储池失败: {e}")
+            error(f"[ERROR] 刷新文件选择器和存储池失败: {e}")
     
     def _update_timeline_button_visibility(self):
         """
@@ -1922,7 +1928,7 @@ class UnifiedPreviewer(QWidget):
                 if hasattr(file_selector, '_update_timeline_button_visibility'):
                     file_selector._update_timeline_button_visibility()
         except Exception as e:
-            print(f"[ERROR] 更新时间线按钮可见性失败: {e}")
+            error(f"[ERROR] 更新时间线按钮可见性失败: {e}")
 
     def _refresh_settings_window(self):
         """刷新设置窗口样式"""

@@ -21,14 +21,6 @@ import uuid
 from pathlib import Path
 from typing import Optional, List, Callable
 
-def _debug_time():
-    """获取带毫秒的时间戳字符串"""
-    return time.strftime("%H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
-
-def _debug_log(msg):
-    """打印调试信息"""
-    print(f"[LUT导入 {_debug_time()}] {msg}")
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QFileDialog, QLineEdit, QSizePolicy, QApplication
@@ -45,6 +37,7 @@ from freeassetfilter.utils.lut_utils import (
     remove_lut_from_settings, get_lut_storage_dir, get_lut_preview_dir
 )
 from freeassetfilter.core.lut_preview_generator import generate_lut_preview, create_default_reference_image
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class LutManagerDialog(CustomMessageBox):
@@ -249,7 +242,7 @@ class LutManagerDialog(CustomMessageBox):
                     pixmap = QPixmap.fromImage(image)
                     card._set_icon_pixmap(pixmap, scaled_icon_size)
             except Exception as e:
-                print(f"设置LUT预览图失败: {e}")
+                warning(f"设置LUT预览图失败: {e}")
         
         # 连接卡片信号（参考收藏夹实现）
         card.clicked.connect(lambda path, lut=lut_info: self._on_lut_card_clicked(lut))
@@ -483,16 +476,15 @@ class LutManagerDialog(CustomMessageBox):
         # 更新进度：生成预览图
         progress_bar.setValue(3)
         QApplication.processEvents()
-        
+
         # 生成LUT预览图
-        _debug_log("开始生成 LUT 预览图")
+        debug("开始生成 LUT 预览图")
         try:
             from freeassetfilter.core.lut_preview_generator import generate_lut_preview
             generate_lut_preview(result, lut_id)
-            _debug_log("LUT 预览图生成完成")
+            debug("LUT 预览图生成完成")
         except Exception as e:
-            _debug_log(f"生成LUT预览图失败: {e}")
-            print(f"生成LUT预览图失败: {e}")
+            warning(f"生成LUT预览图失败: {e}")
         
         # 创建LUT信息
         display_name = get_lut_display_name(file_path)

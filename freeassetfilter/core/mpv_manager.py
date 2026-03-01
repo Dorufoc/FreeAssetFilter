@@ -51,6 +51,9 @@ from freeassetfilter.core.mpv_player_core import (
     MPVPlayerCore, MpvEndFileReason, MpvErrorCode
 )
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class MPVOperationType(Enum):
     """MPV操作类型枚举"""
@@ -186,7 +189,7 @@ class MPVManager(QObject):
 
         # 获取状态
         state = manager.get_state()
-        print(f"当前位置: {state.position}")
+        debug(f"当前位置: {state.position}")
 
         # 关闭MPV
         manager.close()
@@ -786,37 +789,37 @@ class MPVManager(QObject):
             bool: 是否成功
         """
         if self._mpv_core is None:
-            print(f"[LUT] MPV未初始化")
+            warning(f"[LUT] MPV未初始化")
             return False
 
         try:
             import os
             abs_path = os.path.abspath(lut_file_path)
-            print(f"[LUT] 加载LUT文件: {abs_path}")
-            print(f"[LUT] 文件存在: {os.path.exists(abs_path)}")
+            debug(f"[LUT] 加载LUT文件: {abs_path}")
+            debug(f"[LUT] 文件存在: {os.path.exists(abs_path)}")
 
             abs_path2 = abs_path.replace("\\", "/")
-            
-            print(f"[LUT] 尝试使用 --lut 选项")
+
+            debug(f"[LUT] 尝试使用 --lut 选项")
             result = self._mpv_core.set_lut(abs_path2)
-            print(f"[LUT] --lut 方式结果: {result}")
-            
+            debug(f"[LUT] --lut 方式结果: {result}")
+
             if not result:
-                print(f"[LUT] 尝试方式1 (vf add lavfi-lut3d)")
+                debug(f"[LUT] 尝试方式1 (vf add lavfi-lut3d)")
                 filter_arg = f"lavfi-lut3d=file='{abs_path2}'" if ' ' in abs_path2 else f"lavfi-lut3d=file={abs_path2}"
                 result = self._mpv_core.set_vf_filter(filter_arg)
-                print(f"[LUT] 方式1 结果: {result}")
-            
+                debug(f"[LUT] 方式1 结果: {result}")
+
             if not result:
-                print(f"[LUT] 尝试方式2 (load glsl-shaders)")
+                debug(f"[LUT] 尝试方式2 (load glsl-shaders)")
                 result = self._mpv_core.load_glsl_shader(abs_path2)
-                print(f"[LUT] 方式2 结果: {result}")
-            
+                debug(f"[LUT] 方式2 结果: {result}")
+
             if not result:
-                print(f"[LUT] 尝试方式3 (set glsl-shaders)")
+                debug(f"[LUT] 尝试方式3 (set glsl-shaders)")
                 shader_list = f'["{abs_path2}"]'
                 result = self._mpv_core.set_glsl_shaders(shader_list)
-                print(f"[LUT] 方式3 结果: {result}")
+                debug(f"[LUT] 方式3 结果: {result}")
 
             if result:
                 with self._state_lock:
@@ -826,11 +829,11 @@ class MPVManager(QObject):
                 self.lutLoaded.emit(lut_file_path)
                 return True
             else:
-                print(f"[LUT] 所有方式都失败")
+                warning(f"[LUT] 所有方式都失败")
                 return False
 
         except Exception as e:
-            print(f"加载LUT失败: {e}")
+            error(f"加载LUT失败: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -847,15 +850,15 @@ class MPVManager(QObject):
 
         try:
             result = self._mpv_core.clear_lut()
-            print(f"[LUT] 清除lut结果: {result}")
-            
+            debug(f"[LUT] 清除lut结果: {result}")
+
             if not result:
                 result = self._mpv_core.clear_glsl_shaders()
-                print(f"[LUT] 清除glsl着色器结果: {result}")
-            
+                debug(f"[LUT] 清除glsl着色器结果: {result}")
+
             if not result:
                 result = self._mpv_core.set_vf_filter("")
-                print(f"[LUT] 清除vf滤镜结果: {result}")
+                debug(f"[LUT] 清除vf滤镜结果: {result}")
 
             if result:
                 with self._state_lock:
@@ -868,7 +871,7 @@ class MPVManager(QObject):
                 return False
 
         except Exception as e:
-            print(f"卸载LUT失败: {e}")
+            error(f"卸载LUT失败: {e}")
             return False
 
     # ==================== 信号处理回调 ====================

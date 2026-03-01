@@ -19,6 +19,7 @@ from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
 
 

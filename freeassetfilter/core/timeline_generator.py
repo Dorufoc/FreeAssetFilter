@@ -24,6 +24,9 @@ from itertools import groupby
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtCore import (
     Qt, QDateTime, QThread, Signal
 )
@@ -150,60 +153,60 @@ class FolderScanner(QThread):
         main_folder_name = os.path.basename(self.path)
         
         # 增加详细日志
-        print(f"=== 开始扫描文件夹: {self.path} ===")
-        print(f"文件夹存在: {os.path.exists(self.path)}")
-        print(f"文件夹可访问: {os.access(self.path, os.R_OK)}")
-        
+        debug(f"=== 开始扫描文件夹: {self.path} ===")
+        debug(f"文件夹存在: {os.path.exists(self.path)}")
+        debug(f"文件夹可访问: {os.access(self.path, os.R_OK)}")
+
         # 1. 首先扫描所有视频文件，收集信息
         try:
             for root, dirs, files in os.walk(self.path):
-                print(f"\n  正在扫描目录: {root}")
-                print(f"  子目录数量: {len(dirs)}")
-                print(f"  文件数量: {len(files)}")
-                print(f"  文件列表: {files}")
-                
+                debug(f"\n  正在扫描目录: {root}")
+                debug(f"  子目录数量: {len(dirs)}")
+                debug(f"  文件数量: {len(files)}")
+                debug(f"  文件列表: {files}")
+
                 # 确定当前子文件夹名称
                 if root == self.path:
                     subfolder_name = main_folder_name  # 直接在主文件夹下的视频
                 else:
                     subfolder_name = os.path.basename(root)
-                
+
                 # 记录子文件夹名称
                 subfolder_set.add(subfolder_name)
-                
+
                 for file in files:
-                    print(f"\n    检查文件: {file}")
-                    
+                    debug(f"\n    检查文件: {file}")
+
                     # 检查文件扩展名（不区分大小写）
                     file_lower = file.lower()
                     if file_lower.endswith(('.mp4', '.avi', '.mov', '.wmv', '.mkv', '.flv', '.webm', '.mpg', '.mpeg', '.mxf')):
-                        print(f"    匹配视频文件: {file}")
+                        debug(f"    匹配视频文件: {file}")
                         file_path = os.path.join(root, file)
-                        print(f"    文件路径: {file_path}")
-                        print(f"    文件存在: {os.path.exists(file_path)}")
-                        print(f"    文件可访问: {os.access(file_path, os.R_OK)}")
-                        
+                        debug(f"    文件路径: {file_path}")
+                        debug(f"    文件存在: {os.path.exists(file_path)}")
+                        debug(f"    文件可访问: {os.access(file_path, os.R_OK)}")
+
                         try:
                             # 获取文件元数据
                             stat = os.stat(file_path)
                             mod_time = int(stat.st_mtime)
-                            
+
                             # 收集视频文件信息
                             video_files.append((file, file_path, subfolder_name, mod_time))
                         except Exception as e:
-                            print(f"    获取文件信息出错 {file_path}: {e}")
+                            error(f"    获取文件信息出错 {file_path}: {e}")
                             import traceback
                             traceback.print_exc()
                     else:
-                        print(f"    不是视频文件（扩展名不匹配）")
+                        debug(f"    不是视频文件（扩展名不匹配）")
         except Exception as e:
-            print(f"扫描过程中出错: {e}")
+            error(f"扫描过程中出错: {e}")
             import traceback
             traceback.print_exc()
-            
+
         video_count = len(video_files)
-        print(f"\n=== 扫描完成，开始并发处理视频文件 ===")
-        print(f"找到的视频文件数量: {video_count}")
+        debug(f"\n=== 扫描完成，开始并发处理视频文件 ===")
+        debug(f"找到的视频文件数量: {video_count}")
         
         # 2. 使用多线程并发处理视频时长计算
         if video_count > 0:
@@ -227,18 +230,18 @@ class FolderScanner(QThread):
                             results.append(event)
                     except Exception as e:
                         file_name, file_path, *_ = video_info
-                        print(f"处理视频文件 {file_name} 时出错: {e}")
+                        error(f"处理视频文件 {file_name} 时出错: {e}")
                         import traceback
                         traceback.print_exc()
-                    
+
                     # 更新进度
                     processed_count += 1
                     self.progress.emit(processed_count, video_count)
-        
-        print(f"\n=== 所有视频文件处理完成 ===")
-        print(f"成功处理的视频文件数量: {len(results)}")
-        print(f"子文件夹数量: {len(subfolder_set)}")
-        print(f"子文件夹列表: {list(subfolder_set)}")
+
+        debug(f"\n=== 所有视频文件处理完成 ===")
+        debug(f"成功处理的视频文件数量: {len(results)}")
+        debug(f"子文件夹数量: {len(subfolder_set)}")
+        debug(f"子文件夹列表: {list(subfolder_set)}")
         
         # 生成CSV文件
         csv_path = self._generate_csv(results, main_folder_name)
@@ -274,8 +277,8 @@ class FolderScanner(QThread):
                         'file_path': video_path
                     }
                     writer.writerow(row)
-        
-        print(f"CSV文件已生成: {csv_path}")
+
+        info(f"CSV文件已生成: {csv_path}")
         return csv_path
     
     def _process_single_video(self, video_info):
@@ -307,15 +310,15 @@ class FolderScanner(QThread):
                 videos=[file_path]
             )
             
-            print(f"    成功创建视频事件: {file_name}")
-            print(f"    事件设备: {subfolder_name}")
-            print(f"    事件开始时间: {start_time.toString()}")
-            print(f"    事件结束时间: {end_time.toString()}")
-            print(f"    视频时长: {duration:.2f} 秒")
-            
+            debug(f"    成功创建视频事件: {file_name}")
+            debug(f"    事件设备: {subfolder_name}")
+            debug(f"    事件开始时间: {start_time.toString()}")
+            debug(f"    事件结束时间: {end_time.toString()}")
+            debug(f"    视频时长: {duration:.2f} 秒")
+
             return event
         except Exception as e:
-            print(f"    处理文件 {file_name} 时出错: {e}")
+            error(f"    处理文件 {file_name} 时出错: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -350,8 +353,8 @@ class FolderScanner(QThread):
         
         with open(json_path, 'w', encoding='utf-8') as jsonfile:
             json.dump(json_data, jsonfile, ensure_ascii=False, indent=2)
-        
-        print(f"JSON记录已生成: {json_path}")
+
+        info(f"JSON记录已生成: {json_path}")
         return json_path
 
 
@@ -449,14 +452,14 @@ class CSVParser(QThread):
                         event = TimelineEvent(name, device, start_time, end_time, videos)
                         results.append(event)
                     except Exception as e:
-                        print(f"Error parsing row {row}: {e}")
+                        error(f"Error parsing row {row}: {e}")
                         continue
                     finally:
                         # 更新进度
                         processed_count += 1
                         self.progress.emit(processed_count, line_count)
         except Exception as e:
-            print(f"Error reading CSV file: {e}")
+            error(f"Error reading CSV file: {e}")
         
         self.finished.emit(results)
     

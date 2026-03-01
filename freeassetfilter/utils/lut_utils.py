@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 @dataclass
 class LUTInfo:
@@ -111,9 +114,9 @@ class CubeLUTParser:
                 return False
             
             return True
-            
+
         except Exception as e:
-            print(f"解析LUT文件失败: {e}")
+            error(f"解析LUT文件失败: {e}")
             return False
     
     def _is_data_line(self, line: str) -> bool:
@@ -360,7 +363,7 @@ def remove_lut_file(file_path: str) -> bool:
             os.remove(file_path)
         return True
     except Exception as e:
-        print(f"删除LUT文件失败: {e}")
+        error(f"删除LUT文件失败: {e}")
         return False
 
 
@@ -413,7 +416,7 @@ def load_lut_from_settings(settings_manager) -> List[LUTInfo]:
             )
             lut_list.append(lut_info)
         except Exception as e:
-            print(f"加载LUT信息失败: {e}")
+            error(f"加载LUT信息失败: {e}")
             continue
     
     return lut_list

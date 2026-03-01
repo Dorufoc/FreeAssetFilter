@@ -13,6 +13,7 @@ from PySide6.QtGui import QFont
 from .button_widgets import CustomButton
 from .D_volume import D_Volume
 from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
 
 

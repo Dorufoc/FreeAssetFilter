@@ -26,6 +26,9 @@ import threading
 
 from .settings_manager import SettingsManager
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class SvgRenderer:
     _cached_colors = {}
@@ -51,7 +54,7 @@ class SvgRenderer:
             }
             SvgRenderer._color_cache_valid = True
         except Exception as e:
-            print(f"获取颜色设置失败: {e}")
+            error(f"获取颜色设置失败: {e}")
             SvgRenderer._cached_colors = {
                 "accent_color": "#007AFF",
                 "base_color": "#f1f3f5",
@@ -172,7 +175,7 @@ class SvgRenderer:
 
             return processed_svg
         except Exception as e:
-            print(f"替换SVG颜色失败: {e}")
+            error(f"替换SVG颜色失败: {e}")
             # 如果替换失败，返回原始SVG内容
             return svg_content
     
@@ -280,7 +283,7 @@ class SvgRenderer:
             
             return container
         except Exception as e:
-            print(f"使用QSvgWidget加载SVG图标失败: {e}")
+            error(f"使用QSvgWidget加载SVG图标失败: {e}")
             # 如果QSvgWidget失败，回退到使用超分辨率渲染的位图
             pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale)
             
@@ -359,7 +362,7 @@ class SvgRenderer:
             
             return label
         except Exception as renderer_e:
-            print(f"使用QSvgRenderer加载SVG图标失败: {renderer_e}")
+            error(f"使用QSvgRenderer加载SVG图标失败: {renderer_e}")
             # 如果加载失败，创建一个默认的透明图标
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
@@ -408,7 +411,7 @@ class SvgRenderer:
             # 线程安全检查：确保在主线程中执行
             # QPainter 只能在主线程中使用，如果在非主线程调用会导致崩溃
             if QThread.currentThread() != QApplication.instance().thread():
-                print(f"[SvgRenderer] 警告: 在非主线程中调用render_svg_to_pixmap，返回空图标")
+                warning(f"[SvgRenderer] 警告: 在非主线程中调用render_svg_to_pixmap，返回空图标")
                 pixmap = QPixmap(scaled_width, scaled_height)
                 pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 pixmap.fill(Qt.transparent)
@@ -476,9 +479,8 @@ class SvgRenderer:
                 # 如果缩放失败，返回原始渲染结果
                 return pixmap
         except Exception as e:
-            print(f"渲染SVG到QPixmap失败: {icon_path}, 错误: {e}")
-        
-        # 如果所有方法都失败，返回透明像素图
+            error(f"渲染SVG到QPixmap失败: {icon_path}, 错误: {e}")
+            # 如果渲染失败，返回透明像素图
         pixmap = QPixmap(scaled_width, scaled_height)
         pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         pixmap.fill(Qt.transparent)
@@ -584,8 +586,8 @@ class SvgRenderer:
             
             return container
         except Exception as e:
-            print(f"渲染未知文件图标失败: {e}")
-            # 如果渲染失败，回退到使用位图渲染
+            error(f"渲染未知文件图标失败: {e}")
+            # 如果渲染失败，返回透明像素图
             
             # 首先渲染SVG底板
             base_pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale)
@@ -769,9 +771,8 @@ class SvgRenderer:
             if not final_pixmap.isNull():
                 return final_pixmap
         except Exception as e:
-            print(f"渲染SVG字符串失败, 错误: {e}")
-        
-        # 如果所有方法都失败，返回透明像素图
+            error(f"渲染SVG字符串失败, 错误: {e}")
+            # 如果渲染失败，返回透明像素图
         pixmap = QPixmap(icon_size, icon_size)
         pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         pixmap.fill(Qt.transparent)

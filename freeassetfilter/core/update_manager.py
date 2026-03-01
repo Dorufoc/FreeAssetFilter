@@ -27,6 +27,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 # GitHub项目配置
 GITHUB_USER = "Dorufoc"
 GITHUB_REPO = "FreeAssetFilter"
@@ -389,9 +392,9 @@ if __name__ == "__main__":
     success = run_update()
     
     if success:
-        print("\n更新成功！")
-        print("请重新启动程序以应用更新。")
+        info("\n更新成功！")
+        info("请重新启动程序以应用更新。")
     else:
-        print("\n更新失败，请查看update.log获取详细信息。")
+        error("\n更新失败，请查看update.log获取详细信息。")
     
     input("\n按Enter键退出...")

@@ -22,11 +22,15 @@ import re
 from datetime import datetime, timedelta
 import chardet
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QPushButton, QVBoxLayout, 
-    QWidget, QLabel, QGroupBox, QTextEdit, 
+    QApplication, QMainWindow, QPushButton, QVBoxLayout,
+    QWidget, QLabel, QGroupBox, QTextEdit,
     QScrollArea, QHBoxLayout, QMessageBox, QSizePolicy,
     QDialog, QDialogButtonBox, QComboBox, QCheckBox
 )
+
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 # 导入自定义输入框组件
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller

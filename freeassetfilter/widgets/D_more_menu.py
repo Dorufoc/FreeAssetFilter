@@ -18,6 +18,7 @@ from PySide6.QtCore import Qt, QPoint, Signal, QSize, QTimer, QEvent, QRect
 from PySide6.QtGui import QFont, QFontMetrics, QColor, QPainter, QBrush, QPen
 
 from .D_hover_menu import D_HoverMenu
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class D_MoreMenuItem(QPushButton):

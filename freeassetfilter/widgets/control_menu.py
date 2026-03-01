@@ -18,6 +18,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from PySide6.QtCore import Qt, QRect, QSize, QPoint
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFontMetrics
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class CustomControlMenu(QWidget):

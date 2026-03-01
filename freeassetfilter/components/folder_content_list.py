@@ -22,6 +22,9 @@ from datetime import datetime
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QPushButton, QSplitter, QFrame, QSizePolicy,

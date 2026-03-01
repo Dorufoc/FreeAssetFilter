@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QColor, QPen, QBrush, QPainter, QFont
 
 from freeassetfilter.widgets.color_slider import ColorSliderWidget
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class ThemeCard(QWidget):

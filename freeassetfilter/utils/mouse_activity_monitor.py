@@ -39,6 +39,9 @@ import ctypes
 from ctypes import wintypes
 from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class MouseActivityMonitor(QObject):
     """
@@ -176,7 +179,7 @@ class MouseActivityMonitor(QObject):
             self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_func, None, 0)
             if not self._mouse_hook:
                 error_code = ctypes.get_last_error()
-                print(f"[MouseActivityMonitor] 安装鼠标钩子失败，错误码: {error_code}")
+                error(f"[MouseActivityMonitor] 安装鼠标钩子失败，错误码: {error_code}")
                 return False
 
             self._mouse_proc_func = mouse_proc_func
@@ -186,7 +189,7 @@ class MouseActivityMonitor(QObject):
             return True
 
         except Exception as e:
-            print(f"[MouseActivityMonitor] 启动监控失败: {e}")
+            error(f"[MouseActivityMonitor] 启动监控失败: {e}")
             return False
 
     def stop(self):
@@ -202,7 +205,7 @@ class MouseActivityMonitor(QObject):
             try:
                 ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
             except Exception as e:
-                print(f"[MouseActivityMonitor] 卸载鼠标钩子失败: {e}")
+                error(f"[MouseActivityMonitor] 卸载鼠标钩子失败: {e}")
 
         self._mouse_hook = None
         self._mouse_proc_func = None
@@ -228,7 +231,7 @@ class MouseActivityMonitor(QObject):
             try:
                 self._activity_callback()
             except Exception as e:
-                print(f"[MouseActivityMonitor] 回调函数执行失败: {e}")
+                error(f"[MouseActivityMonitor] 回调函数执行失败: {e}")
 
         if self._is_monitoring:
             self._hide_timer.stop()
@@ -243,7 +246,7 @@ class MouseActivityMonitor(QObject):
             try:
                 self._timeout_callback()
             except Exception as e:
-                print(f"[MouseActivityMonitor] 超时回调函数执行失败: {e}")
+                error(f"[MouseActivityMonitor] 超时回调函数执行失败: {e}")
 
     def __del__(self):
         """析构函数，确保清理资源"""

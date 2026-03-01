@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QLinearGradient
 from PySide6.QtWidgets import QApplication
 
 from freeassetfilter.widgets.progress_widgets import CustomValueBar
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class ColorSliderWidget(QWidget):

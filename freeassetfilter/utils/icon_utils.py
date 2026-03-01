@@ -19,8 +19,11 @@ import os
 import struct
 import ctypes
 from ctypes import windll, byref, create_unicode_buffer, sizeof
-from ctypes.wintypes import (DWORD, MAX_PATH, HANDLE, UINT, 
+from ctypes.wintypes import (DWORD, MAX_PATH, HANDLE, UINT,
                            LPCWSTR, LPWSTR, BOOL, HICON)
+
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 # 定义Windows API常量
 SHGFI_ICON = 0x000000100
@@ -267,7 +270,7 @@ def get_all_icons_from_exe(file_path):
                             # 如果无法获取尺寸信息，释放图标
                             DestroyIcon(hicon)
             except Exception as e:
-                print(f"SHDefExtractIcon提取图标失败: {e}")
+                error(f"SHDefExtractIcon提取图标失败: {e}")
             
             # 如果SHDefExtractIcon失败或返回空，使用ExtractIconEx作为备用
             if not icons:
@@ -328,9 +331,9 @@ def get_all_icons_from_exe(file_path):
                             
                             # 如果无法获取尺寸信息，释放图标
                             DestroyIcon(small_icons[0])
-    
+
     except Exception as e:
-        print(f"提取所有图标时出错: {e}")
+        error(f"提取所有图标时出错: {e}")
     
     return icons
 

@@ -33,6 +33,7 @@ sys.path.insert(
 )
 from freeassetfilter.core.svg_renderer import SvgRenderer  # noqa: E402 模块级别的导入不在文件顶部（需要先添加路径）
 from freeassetfilter.utils.file_icon_helper import get_icon_path  # noqa: E402
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class CustomFileHorizontalCard(QWidget):
@@ -600,7 +601,7 @@ class CustomFileHorizontalCard(QWidget):
                 self.info_label.show()
 
         except Exception as e:
-            print(f"加载文件信息失败: {e}")
+            warning(f"加载文件信息失败: {e}")
 
     def _calculate_text_max_width(self):
         """
@@ -762,7 +763,7 @@ class CustomFileHorizontalCard(QWidget):
             else:
                 self._set_default_icon()
         except Exception as e:
-            print(f"设置文件图标失败: {e}")
+            warning(f"设置文件图标失败: {e}")
 
     def _get_file_icon_path(self, suffix, is_dir=False):
         """获取文件图标路径，支持图标样式切换"""
@@ -1165,11 +1166,6 @@ class CustomFileHorizontalCard(QWidget):
 
     def mousePressEvent(self, event):
         """处理鼠标按下事件"""
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileHorizontalCard.mousePressEvent] {msg}")
-
         debug(f"鼠标按下事件触发，按钮: {event.button()}")
 
         if event.button() == Qt.LeftButton:
@@ -1202,11 +1198,6 @@ class CustomFileHorizontalCard(QWidget):
 
     def mouseReleaseEvent(self, event):
         """处理鼠标释放事件"""
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileHorizontalCard.mouseReleaseEvent] {msg}")
-
         debug(f"鼠标释放事件触发，按钮: {event.button()}, 左键: {Qt.LeftButton}")
 
         if event.button() == Qt.LeftButton:
@@ -1459,25 +1450,15 @@ class CustomFileHorizontalCard(QWidget):
         处理长按事件
         当用户长按卡片时触发，开始拖拽操作
         """
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileHorizontalCard._on_long_press] {msg}")
-
         debug(f"长按事件触发")
         self._is_long_pressing = True
         self._start_drag()
-    
+
     def _start_drag(self):
         """
         开始拖拽操作
         创建浮动卡片并设置原始卡片为半透明
         """
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileHorizontalCard._start_drag] {msg}")
-
         debug(f"开始拖拽，_file_info: {self._file_info is not None}")
 
         self._is_dragging = True
@@ -1713,11 +1694,6 @@ class CustomFileHorizontalCard(QWidget):
         Args:
             global_pos: 鼠标释放时的全局位置
         """
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [CustomFileHorizontalCard._end_drag] {msg}")
-
         debug(f"结束拖拽，位置: ({global_pos.x()}, {global_pos.y()})")
 
         # 恢复原始卡片样式
@@ -1951,7 +1927,7 @@ class CustomFileHorizontalCard(QWidget):
             self._create_default_icon_for_drag(parent_container, icon_size)
 
         except Exception as e:
-            print(f"复制图标到拖拽卡片失败: {e}")
+            warning(f"复制图标到拖拽卡片失败: {e}")
             # 创建默认图标 - 使用与原始卡片相同的图标大小 (40 * dpi_scale)
             self._create_default_icon_for_drag(parent_container, int(40 * self.dpi_scale))
 
@@ -2048,4 +2024,4 @@ class CustomFileHorizontalCard(QWidget):
             parent_container.layout().addWidget(icon_label)
 
         except Exception as e:
-            print(f"创建默认图标失败: {e}")
+            warning(f"创建默认图标失败: {e}")

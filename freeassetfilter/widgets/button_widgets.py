@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
 
 
@@ -1092,7 +1093,7 @@ class CustomButton(QPushButton):
             else:
                 self._icon_pixmap = None
         except Exception as e:
-            print(f"渲染SVG图标失败: {e}")
+            warning(f"渲染SVG图标失败: {e}")
             self._icon_pixmap = None
     
     def resizeEvent(self, event):
@@ -1175,17 +1176,17 @@ class CustomButton(QPushButton):
                     
                     # 将QRect转换为QRectF，因为QSvgRenderer.render方法期望第二个参数是QRectF类型
                     icon_rectf = QRectF(icon_rect)
-                    
+
                     # 直接渲染SVG到按钮上
                     svg_renderer.render(painter, icon_rectf)
                 except Exception as e:
-                    print(f"直接渲染SVG图标失败: {e}")
+                    warning(f"直接渲染SVG图标失败: {e}")
                     # 如果直接渲染失败，回退到使用位图
                     if self._icon_pixmap:
                         # 计算图标绘制位置（居中）
                         icon_rect = self._icon_pixmap.rect()
                         icon_rect.moveCenter(painter.window().center())
-                        
+
                         # 绘制图标
                         painter.drawPixmap(icon_rect, self._icon_pixmap)
         else:

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QImage
 from PySide6.QtWidgets import QGraphicsDropShadowEffect
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class PSDProgressDialog(QDialog):

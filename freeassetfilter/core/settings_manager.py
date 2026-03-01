@@ -11,6 +11,9 @@ import copy
 import threading
 from functools import lru_cache
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class SettingsManager:
     """
@@ -131,7 +134,7 @@ class SettingsManager:
                     self.save_settings()
                     return default_settings
         except Exception as e:
-            print(f"加载设置失败: {e}")
+            error(f"加载设置失败: {e}")
             default_settings = self._create_default_settings_copy()
             self.settings = default_settings
             self.save_settings()
@@ -206,12 +209,12 @@ class SettingsManager:
     
     def save_settings(self):
         import datetime
-        def debug(msg):
+        def _debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [SettingsManager.save_settings] {msg}")
+            debug(f"[{timestamp}] [SettingsManager.save_settings] {msg}")
 
         with self._settings_lock:
-            debug("开始保存设置")
+            _debug("开始保存设置")
             debug(f"设置文件路径: {self._settings_file}")
 
             if "appearance" in self.settings and "colors" in self.settings["appearance"]:
@@ -223,18 +226,18 @@ class SettingsManager:
                 self.settings["appearance"]["colors"] = filtered_colors
 
             if "appearance" in self.settings and "colors" in self.settings["appearance"]:
-                debug("当前主题颜色设置:")
+                _debug("当前主题颜色设置:")
                 for color_key, color_value in self.settings["appearance"]["colors"].items():
-                    debug(f"  {color_key}: {color_value}")
+                    _debug(f"  {color_key}: {color_value}")
 
             try:
                 with open(self._settings_file, "w", encoding="utf-8") as f:
                     json.dump(self.settings, f, ensure_ascii=False, indent=4)
-                debug(f"设置保存成功: {self._settings_file}")
-                print(f"设置已保存到: {self._settings_file}")
+                _debug(f"设置保存成功: {self._settings_file}")
+                info(f"设置已保存到: {self._settings_file}")
             except Exception as e:
-                debug(f"设置保存失败: {e}")
-                print(f"保存设置失败: {e}")
+                _debug(f"设置保存失败: {e}")
+                error(f"保存设置失败: {e}")
     
     def get_setting(self, key_path, default=None, use_file_for_colors=False):
         """
@@ -281,13 +284,13 @@ class SettingsManager:
                       设置为True时立即写入JSON，否则只在内存中更新
         """
         import datetime
-        def debug(msg):
+        def _debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [SettingsManager.set_setting] {msg}")
+            debug(f"[{timestamp}] [SettingsManager.set_setting] {msg}")
 
         with self._settings_lock:
             if "appearance.colors" in key_path:
-                debug(f"设置键路径: {key_path} = {value}")
+                _debug(f"设置键路径: {key_path} = {value}")
 
             keys = key_path.split(".")
             settings = self.settings
@@ -300,7 +303,7 @@ class SettingsManager:
             settings[keys[-1]] = value
 
             if "appearance.colors" in key_path:
-                debug(f"设置完成: {key_path} = {value}")
+                _debug(f"设置完成: {key_path} = {value}")
 
             # 只有显式要求时才自动保存
             if auto_save:
@@ -374,7 +377,7 @@ class SettingsManager:
                     # 文件不存在时返回默认值
                     return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
             except Exception as e:
-                print(f"从文件读取颜色失败: {e}")
+                error(f"从文件读取颜色失败: {e}")
                 return default
 
     def get_all_colors_from_file(self):
@@ -393,5 +396,5 @@ class SettingsManager:
                 else:
                     return self.default_settings["appearance"]["colors"].copy()
             except Exception as e:
-                print(f"从文件读取所有颜色失败: {e}")
+                error(f"从文件读取所有颜色失败: {e}")
                 return self.default_settings["appearance"]["colors"].copy()

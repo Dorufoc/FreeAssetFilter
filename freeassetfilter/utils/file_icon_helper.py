@@ -18,6 +18,9 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import os
 from freeassetfilter.core.settings_manager import SettingsManager
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 # 支持样式切换的图标名称列表
 STYLEABLE_ICONS = [
     "表格",

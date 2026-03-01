@@ -15,6 +15,7 @@ from .button_widgets import CustomButton
 from .smooth_scroller import D_ScrollBar
 from .smooth_scroller import SmoothScroller
 from .scrolling_text import ScrollingText
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
 
 

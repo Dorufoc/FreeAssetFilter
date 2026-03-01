@@ -37,6 +37,9 @@ import ctypes
 from ctypes import wintypes
 from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class GlobalMouseMonitor(QObject):
     """
@@ -147,7 +150,7 @@ class GlobalMouseMonitor(QObject):
             self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_func, None, 0)
             if not self._mouse_hook:
                 error_code = ctypes.get_last_error()
-                print(f"[GlobalMouseMonitor] 安装鼠标钩子失败，错误码: {error_code}")
+                error(f"[GlobalMouseMonitor] 安装鼠标钩子失败，错误码: {error_code}")
                 return False
 
             self._mouse_proc_func = mouse_proc_func
@@ -157,7 +160,7 @@ class GlobalMouseMonitor(QObject):
             return True
 
         except Exception as e:
-            print(f"[GlobalMouseMonitor] 启动监控失败: {e}")
+            error(f"[GlobalMouseMonitor] 启动监控失败: {e}")
             return False
 
     def stop(self):
@@ -173,7 +176,7 @@ class GlobalMouseMonitor(QObject):
             try:
                 ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
             except Exception as e:
-                print(f"[GlobalMouseMonitor] 卸载鼠标钩子失败: {e}")
+                error(f"[GlobalMouseMonitor] 卸载鼠标钩子失败: {e}")
 
         self._mouse_hook = None
         self._mouse_proc_func = None

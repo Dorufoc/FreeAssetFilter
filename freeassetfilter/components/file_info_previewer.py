@@ -29,6 +29,9 @@ import hashlib
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox,
     QSizePolicy, QFormLayout, QApplication, QTextEdit
@@ -1411,7 +1414,7 @@ class FileInfoPreviewer(QObject):
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"保存缓存失败: {e}")
+            error(f"保存缓存失败: {e}")
 
     def _format_size(self, size: int) -> str:
         """格式化文件大小"""

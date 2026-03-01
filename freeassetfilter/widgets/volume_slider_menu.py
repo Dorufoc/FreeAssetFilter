@@ -14,6 +14,7 @@ from .control_menu import CustomControlMenu
 from .progress_widgets import D_ProgressBar
 from .button_widgets import CustomButton
 from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
 
 

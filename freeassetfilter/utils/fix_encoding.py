@@ -7,6 +7,9 @@
 import os
 import re
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 # 正确的协议信息模板
 CORRECT_LICENSE = '''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -81,18 +84,18 @@ def fix_file(file_path):
         # 写入修复后的内容
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
-        
-        print(f"✓ 修复成功: {file_path}")
+
+        info(f"✓ 修复成功: {file_path}")
         return True
     except Exception as e:
-        print(f"✗ 修复失败: {file_path} - {e}")
+        error(f"✗ 修复失败: {file_path} - {e}")
         return False
 
 # 递归修复所有Python文件
 def fix_all_files(directory):
     success_count = 0
     error_count = 0
-    
+
     for root, dirs, files in os.walk(directory):
         for file in files:
             if file.endswith('.py'):
@@ -101,10 +104,10 @@ def fix_all_files(directory):
                     success_count += 1
                 else:
                     error_count += 1
-    
-    print(f"\n修复完成！")
-    print(f"成功修复: {success_count} 个文件")
-    print(f"修复失败: {error_count} 个文件")
+
+    info(f"\n修复完成！")
+    info(f"成功修复: {success_count} 个文件")
+    error(f"修复失败: {error_count} 个文件")
 
 if __name__ == "__main__":
     project_dir = os.path.dirname(os.path.abspath(__file__))

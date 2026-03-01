@@ -15,6 +15,7 @@ from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 from .D_more_menu import D_MoreMenu
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class CustomInputBox(QWidget):

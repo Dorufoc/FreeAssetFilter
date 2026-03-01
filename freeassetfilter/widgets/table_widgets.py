@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class CustomTimelineTable(QTableWidget):

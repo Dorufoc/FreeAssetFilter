@@ -73,6 +73,9 @@ try:
 except ImportError:
     PYGMENTS_AVAILABLE = False
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class TokenType(Enum):
     """Token 类型枚举"""
@@ -359,12 +362,12 @@ class TextMateGrammarLoader:
         """
         path = Path(file_path)
         if not path.exists():
-            print(f"[TextMateGrammarLoader] 文件不存在: {file_path}")
+            warning(f"[TextMateGrammarLoader] 文件不存在: {file_path}")
             return None
-        
+
         try:
             suffix = path.suffix.lower()
-            
+
             if suffix == '.sublime-syntax':
                 return self._load_sublime_syntax(file_path)
             elif suffix == '.tmlanguage':
@@ -374,11 +377,11 @@ class TextMateGrammarLoader:
             elif suffix == '.plist':
                 return self._load_plist(file_path)
             else:
-                print(f"[TextMateGrammarLoader] 不支持的文件格式: {suffix}")
+                warning(f"[TextMateGrammarLoader] 不支持的文件格式: {suffix}")
                 return None
-                
+
         except Exception as e:
-            print(f"[TextMateGrammarLoader] 加载失败 {file_path}: {e}")
+            error(f"[TextMateGrammarLoader] 加载失败 {file_path}: {e}")
             return None
     
     def _load_sublime_syntax(self, file_path: str) -> Optional[TextMateGrammar]:
@@ -393,7 +396,7 @@ class TextMateGrammarLoader:
         try:
             import yaml
         except ImportError:
-            print("[TextMateGrammarLoader] 需要 PyYAML 库来加载 .sublime-syntax 文件")
+            warning("[TextMateGrammarLoader] 需要 PyYAML 库来加载 .sublime-syntax 文件")
             return None
         
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -490,21 +493,21 @@ class TextMateGrammarLoader:
         """
         folder = Path(folder_path)
         if not folder.exists() or not folder.is_dir():
-            print(f"[TextMateGrammarLoader] 文件夹不存在: {folder_path}")
+            warning(f"[TextMateGrammarLoader] 文件夹不存在: {folder_path}")
             return {}
-        
+
         grammars = {}
-        
+
         # 支持的扩展名
         extensions = ['.sublime-syntax', '.tmlanguage', '.json', '.plist']
-        
+
         for ext in extensions:
             for file_path in folder.glob(f'*{ext}'):
                 grammar = self.load_file(str(file_path))
                 if grammar and grammar.name:
                     grammars[grammar.name.lower()] = grammar
-        
-        print(f"[TextMateGrammarLoader] 从 {folder_path} 加载了 {len(grammars)} 个语法定义")
+
+        info(f"[TextMateGrammarLoader] 从 {folder_path} 加载了 {len(grammars)} 个语法定义")
         return grammars
     
     def load_vscode_extension(self, extension_path: str) -> Dict[str, TextMateGrammar]:
@@ -668,12 +671,12 @@ class TextMateThemeLoader:
         """
         path = Path(file_path)
         if not path.exists():
-            print(f"[TextMateThemeLoader] 文件不存在: {file_path}")
+            warning(f"[TextMateThemeLoader] 文件不存在: {file_path}")
             return None
-        
+
         try:
             suffix = path.suffix.lower()
-            
+
             if suffix == '.tmtheme':
                 return self._load_tm_theme(file_path)
             elif suffix == '.json':
@@ -681,11 +684,11 @@ class TextMateThemeLoader:
             elif suffix == '.plist':
                 return self._load_plist(file_path)
             else:
-                print(f"[TextMateThemeLoader] 不支持的文件格式: {suffix}")
+                warning(f"[TextMateThemeLoader] 不支持的文件格式: {suffix}")
                 return None
-                
+
         except Exception as e:
-            print(f"[TextMateThemeLoader] 加载失败 {file_path}: {e}")
+            error(f"[TextMateThemeLoader] 加载失败 {file_path}: {e}")
             return None
     
     def _load_tm_theme(self, file_path: str) -> Optional[TextMateTheme]:
@@ -770,21 +773,21 @@ class TextMateThemeLoader:
         """
         folder = Path(folder_path)
         if not folder.exists() or not folder.is_dir():
-            print(f"[TextMateThemeLoader] 文件夹不存在: {folder_path}")
+            warning(f"[TextMateThemeLoader] 文件夹不存在: {folder_path}")
             return {}
-        
+
         themes = {}
-        
+
         # 支持的扩展名
         extensions = ['.tmtheme', '.json', '.plist']
-        
+
         for ext in extensions:
             for file_path in folder.glob(f'*{ext}'):
                 theme = self.load_file(str(file_path))
                 if theme and theme.name:
                     themes[theme.name.lower()] = theme
-        
-        print(f"[TextMateThemeLoader] 从 {folder_path} 加载了 {len(themes)} 个主题")
+
+        info(f"[TextMateThemeLoader] 从 {folder_path} 加载了 {len(themes)} 个主题")
         return themes
     
     def to_color_scheme(self, theme: TextMateTheme, scheme_name: str) -> ColorScheme:
@@ -950,7 +953,7 @@ class SyntectHighlighter:
         try:
             self.syntax_set = load_default_syntax()
         except Exception as e:
-            print(f"[SyntectHighlighter] 加载默认语法失败: {e}")
+            error(f"[SyntectHighlighter] 加载默认语法失败: {e}")
             self.syntax_set = None
     
     def _init_default_theme(self):
@@ -982,29 +985,29 @@ class SyntectHighlighter:
         """
         if not SYNTECT_AVAILABLE:
             return
-        
+
         try:
             self.syntax_set = load_syntax_folder(folder_path)
         except Exception as e:
-            print(f"[SyntectHighlighter] 加载语法失败: {e}")
-    
+            error(f"[SyntectHighlighter] 加载语法失败: {e}")
+
     def load_theme_from_folder(self, folder_path: str) -> Dict[str, any]:
         """从文件夹加载主题
-        
+
         参数：
             folder_path: 包含 .tmTheme 文件的文件夹路径
-            
+
         返回：
             主题名称到主题对象的映射
         """
         if not SYNTECT_AVAILABLE:
             return {}
-        
+
         try:
             themes = load_theme_folder(folder_path)
             return {name: theme for name, theme in themes.items()}
         except Exception as e:
-            print(f"[SyntectHighlighter] 加载主题失败: {e}")
+            error(f"[SyntectHighlighter] 加载主题失败: {e}")
             return {}
     
     def load_textmate_grammar(self, file_path: str) -> Optional[TextMateGrammar]:
@@ -1087,9 +1090,9 @@ class SyntectHighlighter:
         """
         if scheme_name is None:
             scheme_name = theme.name.lower().replace(' ', '_')
-        
+
         self.color_scheme = self.theme_loader.to_color_scheme(theme, scheme_name)
-        print(f"[SyntectHighlighter] 已应用主题: {theme.name}")
+        info(f"[SyntectHighlighter] 已应用主题: {theme.name}")
     
     def get_textmate_grammar_info(self, grammar_name: str) -> Optional[Dict[str, Any]]:
         """获取 TextMate 语法信息
@@ -1185,7 +1188,7 @@ class SyntectHighlighter:
             
             return tokens
         except Exception as e:
-            print(f"[SyntectHighlighter] 高亮失败: {e}")
+            error(f"[SyntectHighlighter] 高亮失败: {e}")
             return [Token(line, TokenType.DEFAULT, 0, len(line))]
     
     def _map_syntect_style_to_token_type(self, style) -> TokenType:
@@ -1458,7 +1461,7 @@ class SyntaxHighlighter:
             if syntect_highlighter.is_available():
                 self._engine = syntect_highlighter
             elif PYGMENTS_AVAILABLE:
-                print("[SyntaxHighlighter] Syntect需要主题文件，切换到Pygments引擎")
+                warning("[SyntaxHighlighter] Syntect需要主题文件，切换到Pygments引擎")
                 self._engine = PygmentsHighlighter(self.color_scheme)
         elif engine == 'pygments' and PYGMENTS_AVAILABLE:
             self._engine = PygmentsHighlighter(self.color_scheme)
@@ -1470,13 +1473,13 @@ class SyntaxHighlighter:
                 if syntect_highlighter.is_available():
                     self._engine = syntect_highlighter
                 elif PYGMENTS_AVAILABLE:
-                    print("[SyntaxHighlighter] Syntect需要主题文件，切换到Pygments引擎")
+                    warning("[SyntaxHighlighter] Syntect需要主题文件，切换到Pygments引擎")
                     self._engine = PygmentsHighlighter(self.color_scheme)
             if self._engine is None and PYGMENTS_AVAILABLE:
                 self._engine = PygmentsHighlighter(self.color_scheme)
-        
+
         if self._engine is None:
-            print("[SyntaxHighlighter] 警告: 没有可用的语法高亮引擎")
+            warning("[SyntaxHighlighter] 警告: 没有可用的语法高亮引擎")
         
         # 加载 TextMate 语法文件
         self._load_textmate_syntaxes(syntax_dir)
@@ -1492,7 +1495,7 @@ class SyntaxHighlighter:
         
         syntax_path = Path(syntax_dir)
         if not syntax_path.exists():
-            print(f"[SyntaxHighlighter] 语法目录不存在: {syntax_dir}")
+            warning(f"[SyntaxHighlighter] 语法目录不存在: {syntax_dir}")
             return
         
         # 加载所有语法文件
@@ -1613,8 +1616,8 @@ class SyntaxHighlighter:
             # 映射作用域名
             if grammar.scope_name:
                 self._language_to_scope[language] = grammar.scope_name
-        
-        print(f"[SyntaxHighlighter] 已加载 {len(grammars)} 个语法定义，"
+
+        info(f"[SyntaxHighlighter] 已加载 {len(grammars)} 个语法定义，"
               f"支持 {len(self._ext_to_language)} 种文件扩展名")
     
     def _normalize_language_name(self, name: str) -> str:
@@ -1701,12 +1704,12 @@ class SyntaxHighlighter:
             每行的 Token 列表
         """
         language = self.get_language_by_extension(filename)
-        
+
         if language:
-            print(f"[SyntaxHighlighter] 检测到语言: {language} ({filename})")
+            debug(f"[SyntaxHighlighter] 检测到语言: {language} ({filename})")
             return self.highlight_text(text, language)
         else:
-            print(f"[SyntaxHighlighter] 无法识别文件类型: {filename}")
+            debug(f"[SyntaxHighlighter] 无法识别文件类型: {filename}")
             # 使用默认高亮（无语法高亮）
             lines = text.split('\n')
             return [[Token(line, TokenType.DEFAULT, 0, len(line))] for line in lines]
@@ -1900,29 +1903,29 @@ LanguagePatterns = None  # 旧版兼容
 
 if __name__ == '__main__':
     # 简单测试
-    print("=" * 60)
-    print("语法高亮模块测试")
-    print("=" * 60)
-    
-    print(f"\nSyntect 可用: {SYNTECT_AVAILABLE}")
-    print(f"Pygments 可用: {PYGMENTS_AVAILABLE}")
-    
+    info("=" * 60)
+    info("语法高亮模块测试")
+    info("=" * 60)
+
+    info(f"\nSyntect 可用: {SYNTECT_AVAILABLE}")
+    info(f"Pygments 可用: {PYGMENTS_AVAILABLE}")
+
     # 创建高亮器
     highlighter = create_highlighter('github_dark')
-    
+
     # 测试代码
     test_code = '''def hello_world():
     """这是一个测试函数"""
     message = "Hello, World!"
     print(message)
     return 42'''
-    
-    print("\n测试代码:")
-    print(test_code)
-    print("\n高亮结果:")
-    
+
+    info("\n测试代码:")
+    info(test_code)
+    info("\n高亮结果:")
+
     tokens_list = highlighter.highlight_text(test_code, 'python')
     for i, tokens in enumerate(tokens_list):
-        print(f"\n第 {i+1} 行:")
+        info(f"\n第 {i+1} 行:")
         for token in tokens:
-            print(f"  [{token.token_type.name}] '{token.text}'")
+            info(f"  [{token.token_type.name}] '{token.text}'")

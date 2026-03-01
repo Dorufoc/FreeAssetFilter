@@ -27,6 +27,7 @@ from PySide6.QtSvgWidgets import QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
+from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class FileBlockCard(QWidget):
@@ -300,7 +301,7 @@ class FileBlockCard(QWidget):
             else:
                 self._set_default_icon()
         except Exception as e:
-            print(f"更新文件图标失败: {e}")
+            warning(f"更新文件图标失败: {e}")
             self._set_default_icon()
     
     def _set_icon_pixmap(self, pixmap, size):
@@ -817,15 +818,10 @@ class FileBlockCard(QWidget):
     def set_selected(self, selected):
         """
         设置卡片选中状态
-        
+
         Args:
             selected (bool): 是否选中
         """
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            print(f"[{timestamp}] [FileBlockCard.set_selected] {msg}")
-        
         # debug(f"设置选中状态: {selected}, 当前状态: {self._is_selected}, 文件: {self.file_info['path']}")
         if self._is_selected != selected:
             self._is_selected = selected
@@ -1193,7 +1189,7 @@ class FileBlockCard(QWidget):
                         svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                         svg_widget.show()
         except Exception as e:
-            print(f"拖拽卡片图标渲染失败: {e}")
+            warning(f"拖拽卡片图标渲染失败: {e}")
         
         layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 

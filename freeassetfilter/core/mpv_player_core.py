@@ -27,6 +27,9 @@ from enum import IntEnum
 
 from PySide6.QtCore import QObject, Signal, QThread, Qt, QTimer
 
+# 导入日志模块
+from freeassetfilter.utils.app_logger import info, debug, warning, error
+
 
 class MpvErrorCode(IntEnum):
     """MPV错误码枚举"""
@@ -456,8 +459,8 @@ class MPVPlayerCore(QObject):
                             self._handle_mpv_event(mpv_handle, event)
                     except Exception as e:
                         if not self._stop_event.is_set():
-                            print(f"[MPVWorker] 事件处理错误: {e}")
-                    
+                            error(f"[MPVWorker] 事件处理错误: {e}")
+
                     try:
                         command = self._command_queue.get(block=False)
                         self._process_command(mpv_handle, command)
@@ -465,8 +468,8 @@ class MPVPlayerCore(QObject):
                         pass
                     except Exception as e:
                         if not self._stop_event.is_set():
-                            print(f"[MPVWorker] 命令处理错误: {e}")
-                    
+                            error(f"[MPVWorker] 命令处理错误: {e}")
+
                     try:
                         current_time = time.time()
                         if current_time - last_position_update >= position_update_interval:
@@ -474,16 +477,16 @@ class MPVPlayerCore(QObject):
                             last_position_update = current_time
                     except Exception as e:
                         if not self._stop_event.is_set():
-                            print(f"[MPVWorker] 位置更新错误: {e}")
-                        
+                            error(f"[MPVWorker] 位置更新错误: {e}")
+
                 except Exception as e:
                     if not self._stop_event.is_set():
-                        print(f"[MPVWorker] 主循环错误: {e}")
+                        error(f"[MPVWorker] 主循环错误: {e}")
                         import traceback
                         traceback.print_exc()
-            
+
         except Exception as e:
-            print(f"[MPVWorker] 致命错误: {e}")
+            error(f"[MPVWorker] 致命错误: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -699,7 +702,7 @@ class MPVPlayerCore(QObject):
             # 将信号放入队列，由主线程处理
             self._signal_queue.put(('positionChanged', self._position, self._duration))
         except Exception as e:
-            print(f"[MPVWorker] 更新位置状态时出错: {e}")
+            error(f"[MPVWorker] 更新位置状态时出错: {e}")
     
     def _process_command(self, mpv_handle: c_void_p, command: dict):
         """处理命令（在工作线程中执行）"""
@@ -765,16 +768,16 @@ class MPVPlayerCore(QObject):
                 self._stop_event.set()
                 result = True
         except Exception as e:
-            print(f"[MPVWorker] 执行命令 {cmd_type} 时出错: {e}")
+            error(f"[MPVWorker] 执行命令 {cmd_type} 时出错: {e}")
             result = None
-        
+
         if 'result_id' in command:
             try:
                 # 使用简单的元组，避免复杂对象
                 result_tuple = (command['result_id'], result)
                 self._result_queue.put(result_tuple)
             except Exception as e:
-                print(f"[MPVWorker] 放入结果队列时出错: {e}")
+                error(f"[MPVWorker] 放入结果队列时出错: {e}")
     
     def _load_file_internal(self, mpv_handle: c_void_p, file_path: str, **kwargs) -> bool:
         """内部加载文件实现"""
@@ -897,28 +900,28 @@ class MPVPlayerCore(QObject):
                 cmd_args = [b"vf", b"add", filter_string.encode('utf-8'), None]
                 cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
                 result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-                print(f"[LUT] vf add命令结果: {result}")
-                
+                debug(f"[LUT] vf add命令结果: {result}")
+
                 # 尝试强制视频重新配置以应用滤镜
                 if result >= 0:
                     try:
                         reconfig_args = [b"video-reconfig", None]
                         reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                         reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
-                        print(f"[LUT] video-reconfig结果: {reconfig_result}")
+                        debug(f"[LUT] video-reconfig结果: {reconfig_result}")
                     except Exception as e2:
-                        print(f"[LUT] video-reconfig失败: {e2}")
-                
+                        debug(f"[LUT] video-reconfig失败: {e2}")
+
                 return result >= 0
             else:
                 # 清除滤镜
                 clear_cmd = [b"vf", b"cl", None]
                 clear_array = (c_char_p * len(clear_cmd))(*clear_cmd)
                 result = self._dll_loader.dll.mpv_command(mpv_handle, clear_array)
-                print(f"[LUT] 清除vf结果: {result}")
+                debug(f"[LUT] 清除vf结果: {result}")
                 return result >= 0
         except Exception as e:
-            print(f"[LUT] 设置vf滤镜失败: {e}")
+            error(f"[LUT] 设置vf滤镜失败: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -930,21 +933,21 @@ class MPVPlayerCore(QObject):
             cmd_args = [b"load", b"glsl-shaders", shader_path.encode('utf-8'), None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-            print(f"[LUT] load glsl-shaders命令结果: {result}")
-            
+            debug(f"[LUT] load glsl-shaders命令结果: {result}")
+
             # 尝试强制视频重新配置
             if result >= 0:
                 try:
                     reconfig_args = [b"video-reconfig", None]
                     reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                     reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
-                    print(f"[LUT] video-reconfig结果: {reconfig_result}")
+                    debug(f"[LUT] video-reconfig结果: {reconfig_result}")
                 except Exception as e2:
-                    print(f"[LUT] video-reconfig失败: {e2}")
-            
+                    debug(f"[LUT] video-reconfig失败: {e2}")
+
             return result >= 0
         except Exception as e:
-            print(f"[LUT] 加载GLSL着色器失败: {e}")
+            error(f"[LUT] 加载GLSL着色器失败: {e}")
             return False
     
     def _set_glsl_shaders_internal(self, mpv_handle: c_void_p, shader_list: str, **kwargs) -> bool:
@@ -954,29 +957,29 @@ class MPVPlayerCore(QObject):
             cmd_args = [b"set", b"glsl-shaders", shader_list.encode('utf-8'), None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-            print(f"[LUT] set glsl-shaders命令结果: {result}")
-            
+            debug(f"[LUT] set glsl-shaders命令结果: {result}")
+
             if result < 0:
                 # 尝试使用set_property_string
                 result2 = self._dll_loader.dll.mpv_set_property_string(
                     mpv_handle, b"glsl-shaders", shader_list.encode('utf-8')
                 )
-                print(f"[LUT] set_property_string glsl-shaders结果: {result2}")
+                debug(f"[LUT] set_property_string glsl-shaders结果: {result2}")
                 result = result2
-            
+
             # 尝试强制视频重新配置
             if result >= 0:
                 try:
                     reconfig_args = [b"video-reconfig", None]
                     reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                     reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
-                    print(f"[LUT] video-reconfig结果: {reconfig_result}")
+                    debug(f"[LUT] video-reconfig结果: {reconfig_result}")
                 except Exception as e2:
-                    print(f"[LUT] video-reconfig失败: {e2}")
-            
+                    debug(f"[LUT] video-reconfig失败: {e2}")
+
             return result >= 0
         except Exception as e:
-            print(f"[LUT] 设置GLSL着色器失败: {e}")
+            error(f"[LUT] 设置GLSL着色器失败: {e}")
             return False
     
     def _clear_glsl_shaders_internal(self, mpv_handle: c_void_p, **kwargs) -> bool:
@@ -986,12 +989,12 @@ class MPVPlayerCore(QObject):
             cmd_args = [b"glsl-shaders", b"clr", None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-            print(f"[LUT] glsl-shaders clr命令结果: {result}")
+            debug(f"[LUT] glsl-shaders clr命令结果: {result}")
             return result >= 0
         except Exception as e:
-            print(f"[LUT] 清除GLSL着色器失败: {e}")
+            error(f"[LUT] 清除GLSL着色器失败: {e}")
             return False
-    
+
     def _set_lut_internal(self, mpv_handle: c_void_p, lut_path: str, **kwargs) -> bool:
         """内部设置LUT实现（使用--lut选项）"""
         try:
@@ -1001,14 +1004,14 @@ class MPVPlayerCore(QObject):
                 b"lut",
                 abs_path.encode('utf-8')
             )
-            print(f"[LUT] set lut={abs_path} 结果: {result}")
+            debug(f"[LUT] set lut={abs_path} 结果: {result}")
             return result >= 0
         except Exception as e:
-            print(f"[LUT] 设置LUT失败: {e}")
+            error(f"[LUT] 设置LUT失败: {e}")
             import traceback
             traceback.print_exc()
             return False
-    
+
     def _clear_lut_internal(self, mpv_handle: c_void_p, **kwargs) -> bool:
         """内部清除LUT实现"""
         try:
@@ -1017,10 +1020,10 @@ class MPVPlayerCore(QObject):
                 b"lut",
                 b""
             )
-            print(f"[LUT] 清除lut结果: {result}")
+            debug(f"[LUT] 清除lut结果: {result}")
             return result >= 0
         except Exception as e:
-            print(f"[LUT] 清除LUT失败: {e}")
+            error(f"[LUT] 清除LUT失败: {e}")
             return False
     
     def _set_window_id_internal(self, mpv_handle: c_void_p, window_id: int, **kwargs) -> bool:
@@ -1171,10 +1174,10 @@ class MPVPlayerCore(QObject):
                 except queue.Empty:
                     break
                 except Exception as e:
-                    print(f"[MPVPlayerCore] 处理信号时出错: {e}")
+                    error(f"[MPVPlayerCore] 处理信号时出错: {e}")
                     break
         except Exception as e:
-            print(f"[MPVPlayerCore] 处理信号队列时出错: {e}")
+            error(f"[MPVPlayerCore] 处理信号队列时出错: {e}")
     
     def load_file(self, file_path: str) -> bool:
         """
@@ -1614,7 +1617,7 @@ class MPVPlayerCore(QObject):
                 pass
                 
         except Exception as e:
-            print(f"[MPVPlayerCore] 预清理时出错: {e}")
+            error(f"[MPVPlayerCore] 预清理时出错: {e}")
     
     def close(self, async_mode=False, timeout=1.0):
         """
@@ -1661,7 +1664,7 @@ class MPVPlayerCore(QObject):
             
             # 如果还在运行，记录警告但继续（不阻塞）
             if self._worker_thread.is_alive():
-                print(f"[MPVPlayerCore] 警告：工作线程未在 {timeout}s 内结束，强制继续")
+                warning(f"[MPVPlayerCore] 警告：工作线程未在 {timeout}s 内结束，强制继续")
         
         self._worker_thread = None
         
@@ -1681,8 +1684,8 @@ class MPVPlayerCore(QObject):
             self._initialized = False
             self._is_playing = False
             self._is_paused = False
-        
-        print("[MPVPlayerCore] 异步清理完成")
+
+        info("[MPVPlayerCore] 异步清理完成")
     
     def is_closing(self):
         """检查是否正在关闭"""
