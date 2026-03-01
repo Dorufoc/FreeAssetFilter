@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.path_utils import get_app_data_path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
@@ -91,10 +92,8 @@ class FileStagingPool(QWidget):
         app = QApplication.instance()
         self.settings_manager = getattr(app, 'settings_manager', None)
         
-        # 备份文件路径
-        self.backup_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'staging_pool_backup.json')
-        # 确保数据目录存在
-        os.makedirs(os.path.dirname(self.backup_file), exist_ok=True)
+        # 备份文件路径 - 使用get_app_data_path确保打包后路径正确
+        self.backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
         
         # 初始化UI
         self.init_ui()

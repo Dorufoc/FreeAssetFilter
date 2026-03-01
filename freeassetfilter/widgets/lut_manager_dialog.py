@@ -377,10 +377,10 @@ class LutManagerDialog(CustomMessageBox):
     
     def _add_new_lut(self):
         """添加新LUT（带进度条）"""
-        _debug_log("开始添加 LUT")
+        debug("开始添加 LUT")
         
         # 打开文件选择对话框
-        _debug_log("打开文件选择对话框")
+        debug("打开文件选择对话框")
         _t_start = time.perf_counter()
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -389,22 +389,22 @@ class LutManagerDialog(CustomMessageBox):
             "LUT Files (*.cube);;All Files (*)"
         )
         _t_end = time.perf_counter()
-        _debug_log(f"getOpenFileName 返回，耗时: {(_t_end-_t_start)*1000:.1f}ms")
+        debug(f"getOpenFileName 返回，耗时: {(_t_end-_t_start)*1000:.1f}ms")
         
         if not file_path:
-            _debug_log("用户取消选择文件")
+            debug("用户取消选择文件")
             return
         
-        _debug_log(f"用户选择了文件: {file_path}")
+        debug(f"用户选择了文件: {file_path}")
         
         # 验证LUT文件
-        _debug_log("开始验证 LUT 文件")
+        debug("开始验证 LUT 文件")
         _t0 = time.perf_counter()
         is_valid, error_msg = validate_lut_file(file_path)
         _t1 = time.perf_counter()
-        _debug_log(f"LUT 文件验证完成，耗时: {(_t1-_t0)*1000:.1f}ms")
+        debug(f"LUT 文件验证完成，耗时: {(_t1-_t0)*1000:.1f}ms")
         if not is_valid:
-            _debug_log(f"LUT 文件验证失败: {error_msg}")
+            debug(f"LUT 文件验证失败: {error_msg}")
             # 显示错误信息
             error_dialog = CustomMessageBox(self)
             error_dialog.set_title("错误")
@@ -413,10 +413,10 @@ class LutManagerDialog(CustomMessageBox):
             error_dialog.exec()
             return
         
-        _debug_log("LUT 文件验证通过")
+        debug("LUT 文件验证通过")
         
         # 创建进度弹窗
-        _debug_log("创建进度弹窗")
+        debug("创建进度弹窗")
         from freeassetfilter.widgets.progress_widgets import D_ProgressBar
         progress_dialog = CustomMessageBox(self)
         progress_dialog.set_title("导入LUT")
@@ -439,18 +439,18 @@ class LutManagerDialog(CustomMessageBox):
         
         # 生成LUT ID
         lut_id = str(uuid.uuid4())
-        _debug_log(f"生成 LUT ID: {lut_id}")
+        debug(f"生成 LUT ID: {lut_id}")
         
         # 更新进度：复制文件
         progress_bar.setValue(1)
         QApplication.processEvents()
         
         # 复制LUT文件到应用目录
-        _debug_log("开始复制 LUT 文件")
+        debug("开始复制 LUT 文件")
         success, result = copy_lut_file(file_path, lut_id)
         if not success:
             progress_dialog.close()
-            _debug_log(f"复制 LUT 文件失败: {result}")
+            debug(f"复制 LUT 文件失败: {result}")
             # 显示错误信息
             error_dialog = CustomMessageBox(self)
             error_dialog.set_title("错误")
@@ -459,19 +459,19 @@ class LutManagerDialog(CustomMessageBox):
             error_dialog.exec()
             return
         
-        _debug_log(f"LUT 文件已复制到: {result}")
+        debug(f"LUT 文件已复制到: {result}")
         
         # 更新进度：解析LUT
         progress_bar.setValue(2)
         QApplication.processEvents()
         
         # 获取LUT信息
-        _debug_log("开始解析 LUT 信息")
+        debug("开始解析 LUT 信息")
         from freeassetfilter.utils.lut_utils import CubeLUTParser
         parser = CubeLUTParser(result)
         parser.parse()
         info = parser.get_info()
-        _debug_log(f"LUT 解析完成: size={info.get('size')}, is_3d={info.get('is_3d')}")
+        debug(f"LUT 解析完成: size={info.get('size')}, is_3d={info.get('is_3d')}")
         
         # 更新进度：生成预览图
         progress_bar.setValue(3)

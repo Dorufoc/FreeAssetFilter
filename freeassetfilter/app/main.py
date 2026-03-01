@@ -1164,10 +1164,11 @@ class FreeAssetFilterApp(QMainWindow):
         注意：只恢复文件存储池，文件选择器的状态由其他模块处理
         """
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
+        from freeassetfilter.utils.path_utils import get_app_data_path
         import os
         import json
 
-        backup_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'staging_pool_backup.json')
+        backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
 
         if os.path.exists(backup_file):
             with open(backup_file, 'r', encoding='utf-8') as f:
