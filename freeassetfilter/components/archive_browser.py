@@ -559,8 +559,8 @@ class ArchiveBrowser(QWidget):
             elif self.archive_type == '7z' and py7zr:
                 with py7zr.SevenZipFile(self.archive_path, mode='r') as zf:
                     self.is_encrypted = zf.needs_password()
-        except Exception as e:
-            error(f"检测加密状态失败: {e}")
+        except (zipfile.BadZipFile, tarfile.TarError, OSError, IOError) as e:
+            warning(f"检测加密状态失败: {e}")
         
         self.encryption_label.setText(f"加密状态: {'已加密' if self.is_encrypted else '未加密'}")
     
@@ -580,7 +580,7 @@ class ArchiveBrowser(QWidget):
         # 获取当前路径下的文件和文件夹
         try:
             self.archive_content = self._get_files()
-        except Exception as e:
+        except (zipfile.BadZipFile, tarfile.TarError, OSError, IOError, RuntimeError) as e:
             QMessageBox.critical(self, "错误", f"读取压缩包失败: {e}")
             return
         
@@ -637,36 +637,33 @@ class ArchiveBrowser(QWidget):
             list: 文件和文件夹列表
         """
         files = []
-        
-        try:
-            if self.archive_type == 'zip':
-                files = self._get_zip_files()
-            elif self.archive_type == 'rar':
-                if rarfile:
-                    files = self._get_rar_files()
-                else:
-                    # 如果rarfile库不可用，显示错误信息
-                    raise Exception("需要rarfile库来处理RAR文件。请使用pip install rarfile安装。")
-            elif self.archive_type == 'tar':
-                files = self._get_tar_files()
-            elif self.archive_type == '7z':
-                if py7zr:
-                    files = self._get_7z_files()
-                else:
-                    # 如果py7zr库不可用，显示错误信息
-                    raise Exception("需要py7zr库来处理7z文件。请使用pip install py7zr安装。")
-            elif self.archive_type == 'iso':
-                if pycdlib:
-                    files = self._get_iso_files()
-                else:
-                    # 如果pycdlib库不可用，显示错误信息
-                    raise Exception("需要pycdlib库来处理ISO文件。请使用pip install pycdlib安装。")
+
+        if self.archive_type == 'zip':
+            files = self._get_zip_files()
+        elif self.archive_type == 'rar':
+            if rarfile:
+                files = self._get_rar_files()
             else:
-                # 未知压缩包类型
-                raise Exception(f"不支持的压缩包类型: {self.archive_type}")
-        except Exception as e:
-            raise e
-        
+                # 如果rarfile库不可用，显示错误信息
+                raise RuntimeError("需要rarfile库来处理RAR文件。请使用pip install rarfile安装。")
+        elif self.archive_type == 'tar':
+            files = self._get_tar_files()
+        elif self.archive_type == '7z':
+            if py7zr:
+                files = self._get_7z_files()
+            else:
+                # 如果py7zr库不可用，显示错误信息
+                raise RuntimeError("需要py7zr库来处理7z文件。请使用pip install py7zr安装。")
+        elif self.archive_type == 'iso':
+            if pycdlib:
+                files = self._get_iso_files()
+            else:
+                # 如果pycdlib库不可用，显示错误信息
+                raise RuntimeError("需要pycdlib库来处理ISO文件。请使用pip install pycdlib安装。")
+        else:
+            # 未知压缩包类型
+            raise ValueError(f"不支持的压缩包类型: {self.archive_type}")
+
         return files
     
     def _get_zip_files(self):
@@ -700,8 +697,9 @@ class ArchiveBrowser(QWidget):
                     else:
                         # 没有找到匹配项，直接使用filename_str
                         file_path = filename_str
-                except Exception as e:
-                    # 处理异常，直接使用orig_filename
+                except (UnicodeEncodeError, UnicodeDecodeError) as e:
+                    # 编码错误时，直接使用orig_filename
+                    debug(f"ZIP文件名编码处理失败: {e}, 使用原始文件名")
                     if isinstance(info.orig_filename, str):
                         file_path = info.orig_filename
                     else:
@@ -878,9 +876,9 @@ class ArchiveBrowser(QWidget):
                                 timestamp = time.time()
                         
                         modified_time = datetime.fromtimestamp(timestamp).isoformat()
-                    except Exception as e:
+                    except (ValueError, TypeError, OSError, OverflowError) as e:
                         # 转换失败，使用空字符串
-                        debug(f"[DEBUG] 转换RAR文件修改时间失败: {e}, 文件: {rel_path}")
+                        debug(f"转换RAR文件修改时间失败: {e}, 文件: {rel_path}")
                         modified_time = ""
                     
                     files.append({

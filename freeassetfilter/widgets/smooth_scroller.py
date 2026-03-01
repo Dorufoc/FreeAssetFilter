@@ -82,8 +82,8 @@ class D_ScrollBar(QScrollBar):
         if self._scroll_area and self._scroll_area != scroll_area:
             try:
                 self.rangeChanged.disconnect(self._on_range_changed)
-            except:
-                pass
+            except (TypeError, RuntimeError) as e:
+                debug(f"断开rangeChanged信号连接时出错: {e}")
         
         self._scroll_area = scroll_area
         if scroll_area:
@@ -97,8 +97,8 @@ class D_ScrollBar(QScrollBar):
             # 断开信号连接
             try:
                 self.rangeChanged.disconnect(self._on_range_changed)
-            except:
-                pass
+            except (TypeError, RuntimeError) as e:
+                debug(f"断开rangeChanged信号连接时出错: {e}")
     
     def _on_range_changed(self, min_val=0, max_val=0):
         """滚动范围变化时触发宽度检查"""
@@ -402,10 +402,10 @@ class D_ScrollBar(QScrollBar):
                 scroller.stop()
             # 取消所有手势抓取
             try:
-                QScroller.ungrabGesture(self._scroller_target, QScroller.LeftMouseButtonGesture)
-                QScroller.ungrabGesture(self._scroller_target, QScroller.TouchGesture)
+                QScroller.ungrabGesture(self._scroller_target)
                 self._scroller_was_active = True
-            except:
+            except RuntimeError as e:
+                debug(f"取消手势抓取时出错: {e}")
                 self._scroller_was_active = False
 
     def _restore_scroller_gesture(self):
@@ -418,8 +418,8 @@ class D_ScrollBar(QScrollBar):
                 # 恢复所有手势
                 QScroller.grabGesture(self._scroller_target, QScroller.TouchGesture)
                 QScroller.grabGesture(self._scroller_target, QScroller.LeftMouseButtonGesture)
-            except:
-                pass
+            except RuntimeError as e:
+                debug(f"恢复手势抓取时出错: {e}")
         self._scroller_was_active = False
 
     def mousePressEvent(self, event):

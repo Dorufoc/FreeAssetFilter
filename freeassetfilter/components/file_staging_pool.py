@@ -1041,7 +1041,7 @@ class FileStagingPool(QWidget):
             with open(self.backup_file, 'w', encoding='utf-8') as f:
                 json.dump(backup_data, f, ensure_ascii=False, indent=2)
             debug(f"[DEBUG] 保存备份成功，路径: {self.backup_file}, 项目数: {len(self.items)}, 最后路径: {last_path}")
-        except Exception as e:
+        except (IOError, OSError) as e:
             warning(f"保存文件列表备份失败: {e}")
     
     def show_import_export_dialog(self):
@@ -1175,17 +1175,19 @@ class FileStagingPool(QWidget):
                 
                 # 关闭对话框
                 dialog.accept()
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                warning(f"JSON解码错误: {e}")
                 warning_msg = CustomMessageBox(self)
                 warning_msg.set_title("导入失败")
                 warning_msg.set_text("JSON文件格式不正确")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
                 warning_msg.exec()
-            except Exception as e:
+            except (IOError, OSError) as e:
+                warning(f"导入数据时文件操作失败: {e}")
                 warning_msg = CustomMessageBox(self)
                 warning_msg.set_title("导入失败")
-                warning_msg.set_text(f"导入过程中发生错误: {str(e)}")
+                warning_msg.set_text(f"文件读取失败: {str(e)}")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
                 warning_msg.exec()
@@ -1210,7 +1212,7 @@ class FileStagingPool(QWidget):
                 for chunk in iter(lambda: f.read(4096), b""):
                     hash_md5.update(chunk)
             return hash_md5.hexdigest()
-        except Exception as e:
+        except (IOError, OSError, PermissionError) as e:
             warning(f"计算MD5失败: {e}")
             return None
     
@@ -1609,10 +1611,11 @@ class FileStagingPool(QWidget):
                 
                 # 关闭对话框
                 dialog.accept()
-            except Exception as e:
+            except (IOError, OSError, PermissionError) as e:
+                warning(f"导出数据失败: {e}")
                 warning_msg = CustomMessageBox(self)
                 warning_msg.set_title("导出失败")
-                warning_msg.set_text(f"导出过程中发生错误: {str(e)}")
+                warning_msg.set_text(f"文件写入失败: {str(e)}")
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
                 warning_msg.exec()
@@ -1743,8 +1746,8 @@ class FileStagingPool(QWidget):
             }
             
             return file_info
-        except Exception as e:
-            error(f"获取文件/文件夹信息失败: {e}")
+        except (OSError, PermissionError, FileNotFoundError) as e:
+            warning(f"获取文件/文件夹信息失败: {e}")
             return None
     
     def _add_folder_contents(self, folder_path):
@@ -1761,8 +1764,8 @@ class FileStagingPool(QWidget):
                     file_info = self._get_file_info(file_path)
                     if file_info:
                         self.add_file(file_info)
-        except Exception as e:
-            error(f"添加文件夹内容失败: {e}")
+        except (OSError, PermissionError) as e:
+            warning(f"添加文件夹内容失败: {e}")
         self.items.clear()
         self.cards.clear()
         # 更新统计信息
@@ -1787,7 +1790,9 @@ class FileStagingPool(QWidget):
             if os.path.exists(self.backup_file):
                 with open(self.backup_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-        except Exception as e:
+        except json.JSONDecodeError as e:
+            warning(f"备份文件JSON格式错误: {e}")
+        except (IOError, OSError) as e:
             warning(f"加载文件列表备份失败: {e}")
         return []
     
@@ -1816,8 +1821,8 @@ class FileStagingPool(QWidget):
                 total_bytes = statvfs.f_frsize * statvfs.f_blocks
                 free_bytes = statvfs.f_frsize * statvfs.f_bavail
                 return total_bytes, free_bytes
-        except Exception as e:
-            warning(f"获取目录空间失败: {str(e)}")
+        except (OSError, PermissionError, FileNotFoundError) as e:
+            warning(f"获取目录空间失败: {e}")
             return None, None
     
     def _calculate_folder_size(self, folder_path):
@@ -1949,9 +1954,9 @@ class FileStagingPool(QWidget):
                                 return thumb_path
                         except ImportError:
                             warning("OpenCV is not installed")
-                        except Exception as e:
-                            warning(f"生成缩略图失败: {file_path}, 错误: {e}")
-                except Exception as e:
+                        except (IOError, OSError) as e:
+                            warning(f"生成视频缩略图失败: {file_path}, 错误: {e}")
+                except (IOError, OSError) as e:
                     warning(f"生成缩略图失败: {file_path}, 错误: {e}")
                 return False
 
@@ -1991,8 +1996,8 @@ class FileStagingPool(QWidget):
                         total_size += file_size
                     elif os.path.isdir(file_info["path"]):
                         calculating_folders.append(file_info["path"])
-                except Exception as e:
-                    warning(f"计算文件大小失败: {str(e)}")
+                except (OSError, PermissionError, FileNotFoundError) as e:
+                    warning(f"计算文件大小失败: {e}")
         
         # 等待正在计算中的文件夹
         max_wait_time = 30
@@ -2021,8 +2026,8 @@ class FileStagingPool(QWidget):
                                     file_path = os.path.join(root, file)
                                     folder_size += os.path.getsize(file_path)
                             total_size += folder_size
-                    except Exception as e:
-                        warning(f"同步计算文件夹大小时失败: {str(e)}")
+                    except (OSError, PermissionError, FileNotFoundError) as e:
+                        warning(f"同步计算文件夹大小时失败: {e}")
             
             calculating_folders = still_calculating
         
@@ -2061,9 +2066,10 @@ class FileStagingPool(QWidget):
                         # 复制文件
                         shutil.copy2(source_path, target_path)
                     success_count += 1
-                except Exception as e:
+                except (IOError, OSError, PermissionError, shutil.Error) as e:
                     error_count += 1
-                    errors.append(f"{file_info['display_name']}: {str(e)}")
+                    errors.append(f"{file_info['display_name']}: {e}")
+                    warning(f"复制文件失败: {source_path} -> {target_path}, 错误: {e}")
                 
                 # 发送进度更新信号（使用 QMetaObject.invokeMethod 确保在主线程执行）
                 progress = i + 1
@@ -2182,14 +2188,16 @@ class FolderSizeCalculator(QThread):
                     except (OSError, PermissionError, FileNotFoundError):
                         # 忽略无法访问的文件
                         pass
-                    except Exception:
+                    except Exception as e:
                         # 捕获所有其他异常，确保线程不会崩溃
+                        debug(f"计算文件大小时发生错误: {e}")
                         pass
         except (OSError, PermissionError, FileNotFoundError):
             # 文件夹无法访问
             pass
-        except Exception:
+        except Exception as e:
             # 捕获所有其他异常
+            debug(f"遍历文件夹时发生错误: {e}")
             pass
         
         # 发送计算结果（通过信号，线程安全）

@@ -167,23 +167,25 @@ class CustomFileSelector(QWidget):
         # 添加防抖定时器，用于减少刷新频率（在init_ui之前初始化，避免_clear_files_layout访问时出错）
         self.resize_timer = QTimer(self)
         self.resize_timer.setSingleShot(True)
-        self.resize_timer.setInterval(150)  # 150毫秒延迟，平衡响应速度和刷新频率
-        self.resize_timer.timeout.connect(self.refresh_files)  # 定时器超时后刷新
+        self.resize_timer.setInterval(300)  # 300毫秒延迟（从150ms增加到300ms），减少频繁刷新
+        self.resize_timer.timeout.connect(self._on_resize_timeout)  # 定时器超时后处理resize
         
         # 添加定期检查卡片布局的定时器
         self.layout_check_timer = QTimer(self)
-        self.layout_check_timer.setInterval(5000)  # 每5000ms检查一次
+        self.layout_check_timer.setInterval(10000)  # 每10000ms检查一次（从5秒延长到10秒）
         self.layout_check_timer.timeout.connect(self._check_card_layout)
+        self._layout_dirty = False  # 标记布局是否需要更新
         
         # 懒加载相关属性
         self._pending_files = []  # 待加载的文件列表
         self._loaded_count = 0  # 已加载的卡片数量
-        self._batch_size = 20  # 每批加载的卡片数量
+        self._batch_size = 10  # 每批加载的卡片数量（从20减少到10，减少UI阻塞）
         self._is_loading = False  # 是否正在加载
         self._all_files_count = 0  # 文件总数
+        self._pending_width_update = False  # 标记是否有待执行的宽度更新
         self._lazy_load_timer = QTimer(self)  # 分批加载定时器
         self._lazy_load_timer.setSingleShot(True)
-        self._lazy_load_timer.setInterval(16)  # 每16ms加载一批（约60fps）
+        self._lazy_load_timer.setInterval(33)  # 每33ms加载一批（约30fps，减少CPU占用）
         self._lazy_load_timer.timeout.connect(self._load_next_batch)
         
         # 首次显示标志位，用于避免初始化时卡片重叠
@@ -795,27 +797,28 @@ class CustomFileSelector(QWidget):
                             if os.path.isfile(file_path):
                                 try:
                                     os.remove(file_path)
-                                except Exception:
+                                except (OSError, IOError) as e:
+                                    debug(f"[DEBUG] 删除缩略图文件失败 {file_path}: {e}")
                                     continue
 
                         if self and hasattr(self, 'refresh_files'):
                             try:
                                 self.refresh_files()
-                            except Exception:
-                                pass
+                            except RuntimeError as e:
+                                debug(f"[DEBUG] 刷新文件列表失败: {e}")
 
                         staging_pool = None
                         if self and hasattr(self, '_get_staging_pool'):
                             try:
                                 staging_pool = self._get_staging_pool()
-                            except Exception:
-                                pass
+                            except RuntimeError as e:
+                                debug(f"[DEBUG] 获取暂存池失败: {e}")
 
                         if staging_pool and hasattr(staging_pool, 'cards'):
                             try:
                                 self._refresh_staging_pool_thumbnails(staging_pool)
-                            except Exception:
-                                pass
+                            except RuntimeError as e:
+                                debug(f"[DEBUG] 刷新暂存池缩略图失败: {e}")
 
                         if self and hasattr(self, 'isVisible') and self.isVisible():
                             success_msg = CustomMessageBox(self)
@@ -866,6 +869,91 @@ class CustomFileSelector(QWidget):
                 error_msg.buttonClicked.connect(on_error_ok_clicked)
                 error_msg.exec()
     
+    def _load_image_optimized(self, file_path, suffix, raw_formats, psd_formats):
+        """
+        优化的图像加载方法
+        - 对大图像使用延迟加载策略
+        - 及时释放中间对象
+        """
+        from PIL import Image
+        
+        try:
+            if suffix in raw_formats:
+                import rawpy
+                with rawpy.imread(file_path) as raw:
+                    rgb = raw.postprocess()
+                img = Image.fromarray(rgb)
+            elif suffix in [".avif", ".heic"]:
+                try:
+                    import pillow_avif
+                except ImportError:
+                    pass
+                try:
+                    import pillow_heif
+                    pillow_heif.register_heif_opener()
+                except ImportError:
+                    pass
+                img = Image.open(file_path)
+            elif suffix in psd_formats:
+                from psd_tools import PSDImage
+                psd = PSDImage.open(file_path)
+                img = psd.composite()
+            elif suffix == ".svg":
+                # 使用 SvgRenderer 渲染 SVG 文件为 Pillow Image
+                from freeassetfilter.core.svg_renderer import SvgRenderer
+                from PySide6.QtGui import QImage
+                
+                # 使用 SvgRenderer 将 SVG 渲染为 QPixmap，禁用颜色替换以保持原始色彩
+                pixmap = SvgRenderer.render_svg_to_pixmap(file_path, icon_size=256, replace_colors=False)
+                
+                if pixmap.isNull():
+                    warning(f"SVG 渲染失败: {file_path}")
+                    return None, False
+                
+                # 将 QPixmap 转换为 QImage
+                qimage = pixmap.toImage()
+                
+                # 将 QImage 转换为 Pillow Image
+                # QImage 格式是 Format_ARGB32，需要转换为 RGBA
+                width = qimage.width()
+                height = qimage.height()
+                
+                # 获取图像数据 - 使用更兼容的方式
+                # 将 QImage 转换为 RGBA 格式
+                if qimage.format() != QImage.Format_RGBA8888:
+                    qimage = qimage.convertToFormat(QImage.Format_RGBA8888)
+                
+                # 使用 constBits() 获取数据指针，并使用 bytes() 转换
+                ptr = qimage.constBits()
+                # 根据 PySide6 版本，constBits 可能返回不同的类型
+                if hasattr(ptr, 'tobytes'):
+                    # 较新版本的 PySide6
+                    img_data = ptr.tobytes()
+                elif hasattr(ptr, 'asstring'):
+                    # 旧版本的 PySide6
+                    img_data = ptr.asstring()
+                else:
+                    # 直接尝试 bytes 转换
+                    img_data = bytes(ptr)
+                
+                # 创建 Pillow Image
+                img = Image.frombytes("RGBA", (width, height), img_data)
+                
+                return img, True
+            else:
+                # 对于普通图像，尝试获取图像尺寸信息
+                # 如果图像很大，使用延迟加载
+                img = Image.open(file_path)
+            
+            return img, True
+            
+        except ImportError as e:
+            warning(f"缺少必要的库: {e}")
+            return None, False
+        except Exception as e:
+            warning(f"无法加载图像: {file_path}, 错误: {e}")
+            return None, False
+    
     def _create_thumbnail(self, file_path):
         """
         为单个文件创建缩略图
@@ -887,93 +975,19 @@ class CustomFileSelector(QWidget):
                 try:
                     from PIL import Image, ImageDraw
                     
-                    if suffix in raw_formats:
-                        import rawpy
-                        import numpy as np
-
-                        with rawpy.imread(file_path) as raw:
-                            rgb = raw.postprocess()
-
-                        img = Image.fromarray(rgb)
-                    elif suffix in [".avif", ".heic"]:
-                        try:
-                            import pillow_avif
-                        except ImportError:
-                            pass
-                        try:
-                            import pillow_heif
-                            pillow_heif.register_heif_opener()
-                        except ImportError:
-                            pass
-                        try:
-                            img = Image.open(file_path)
-                        except Exception as img_error:
-                            warning(f"无法生成图片缩略图: {file_path}, 错误: {img_error}")
-                            return False
-                    elif suffix in psd_formats:
-                        # 处理PSD文件
-                        try:
-                            from psd_tools import PSDImage
-                            psd = PSDImage.open(file_path)
-                            # 合成所有图层
-                            img = psd.composite()
-                        except ImportError:
-                            warning(f"无法生成PSD缩略图: {file_path}, 缺少psd-tools库")
-                            return False
-                        except Exception as psd_error:
-                            warning(f"无法生成PSD缩略图: {file_path}, 错误: {psd_error}")
-                            return False
-                    else:
-                        img = Image.open(file_path)
+                    # 使用优化后的图像处理方法
+                    img, success = self._load_image_optimized(file_path, suffix, raw_formats, psd_formats)
+                    if not success or img is None:
+                        return False
                     
-                    # 转换为RGBA模式，支持透明背景
-                    img = img.convert("RGBA")
-                    
-                    # 计算原始宽高比
-                    original_width, original_height = img.size
-                    aspect_ratio = original_width / original_height
-                    
-                    # 计算新尺寸，保持原始比例
-                    # 考虑DPI缩放因子，生成更高分辨率的缩略图
+                    # 使用 thumbnail 方法直接生成缩略图，内存效率更高
                     base_size = 128
-                    dpi_scaled_size = base_size * self.dpi_scale
+                    dpi_scaled_size = int(base_size * self.dpi_scale)
                     
-                    if aspect_ratio > 1:
-                        # 宽图，以宽度为基准
-                        new_width = int(dpi_scaled_size)
-                        new_height = int(new_width / aspect_ratio)
-                    else:
-                        # 高图或正方形，以高度为基准
-                        new_height = int(dpi_scaled_size)
-                        new_width = int(new_height * aspect_ratio)
+                    # thumbnail 方法会就地修改图像，保持宽高比
+                    img.thumbnail((dpi_scaled_size, dpi_scaled_size), Image.Resampling.LANCZOS)
                     
-                    # 获取图像的像素数量，用于判断是否需要进行大文件优化
-                    total_pixels = original_width * original_height
-                    
-                    # 对于超大图像（超过1000万像素），先进行适度下采样，避免内存占用过高
-                    # 同时确保下采样后的尺寸不小于目标尺寸的2倍，以保证最终缩放质量
-                    if total_pixels > 10000000:
-                        # 计算下采样比例，确保下采样后的尺寸至少是目标尺寸的2倍
-                        min_downsample_width = max(new_width * 2, 1024)  # 至少1024像素宽度
-                        min_downsample_height = max(new_height * 2, 1024)
-                        
-                        downsample_ratio = min(original_width / min_downsample_width, original_height / min_downsample_height)
-                        if downsample_ratio > 1:
-                            # 进行下采样
-                            downsampled_width = int(original_width / downsample_ratio)
-                            downsampled_height = int(original_height / downsample_ratio)
-                            
-                            # 使用高质量插值进行下采样
-                            downsampled_img = img.resize((downsampled_width, downsampled_height), Image.Resampling.LANCZOS)
-                            
-                            # 然后从下采样后的图像缩放到最终尺寸
-                            resized_img = downsampled_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                        else:
-                            # 下采样比例小于等于1，直接使用原图缩放到目标尺寸
-                            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                    else:
-                        # 对于普通大小的图像，直接使用原图缩放到目标尺寸，避免中间步骤的质量损失
-                        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    new_width, new_height = img.size
                     
                     # 创建一个透明背景，尺寸考虑DPI缩放因子
                     base_background_size = 128
@@ -981,302 +995,252 @@ class CustomFileSelector(QWidget):
                     thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
                     
                     # 将调整大小后的图片居中绘制到透明背景上
-                    draw = ImageDraw.Draw(thumbnail)
                     x_offset = (dpi_scaled_background_size - new_width) // 2
                     y_offset = (dpi_scaled_background_size - new_height) // 2
-                    thumbnail.paste(resized_img, (x_offset, y_offset), resized_img)
+                    
+                    # 处理不同模式的图像
+                    if img.mode == 'RGBA':
+                        thumbnail.paste(img, (x_offset, y_offset), img)
+                    elif img.mode == 'P':
+                        # 调色板模式，转换为RGBA
+                        img = img.convert('RGBA')
+                        thumbnail.paste(img, (x_offset, y_offset), img)
+                    else:
+                        # 其他模式（如RGB、L等），直接粘贴
+                        img = img.convert('RGBA')
+                        thumbnail.paste(img, (x_offset, y_offset))
+                    
+                    # 及时释放原始图像内存
+                    img.close()
                     
                     # 保存缩略图为PNG格式
                     thumbnail.save(thumbnail_path, format='PNG', quality=85)
-                    #print(f"已生成图片缩略图 (PIL保持比例): {file_path}")
+                    
+                    # 释放缩略图内存
+                    thumbnail.close()
+                    
                     return True
                 except Exception as pil_e:
                     warning(f"无法生成缩略图: {file_path}, PIL处理失败: {pil_e}")
                     return False
             # 处理所有视频文件格式
             else:
-                #print(f"开始生成视频缩略图: {file_path}")
-                cap = cv2.VideoCapture(file_path)
-                if cap.isOpened():
-                    try:
-                        # 获取视频总帧数
-                        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        #print(f"视频总帧数: {total_frames}")
-                        
-                        # 定义尝试的帧位置列表
-                        frame_positions = []
-                        
-                        # 计算有效的帧位置，确保不使用第0帧
-                        min_valid_frame = 1  # 最小有效帧（不使用第0帧）
-                        max_valid_frame = max(min_valid_frame, total_frames - 1) if total_frames > 1 else min_valid_frame
-                        
-                        # 如果能获取到有效帧数，添加多个帧位置，优先使用中间帧
-                        if total_frames > 10:
-                            # 优先使用中间帧
-                            middle_frame = total_frames // 2
-                            frame_positions.append(middle_frame)  # 中间帧
-                            
-                            # 添加其他优质帧位置
-                            frame_positions.append(middle_frame - 10)  # 中间帧前10帧
-                            frame_positions.append(middle_frame + 10)  # 中间帧后10帧
-                            frame_positions.append(total_frames // 3)  # 1/3处
-                            frame_positions.append(total_frames // 4)  # 1/4处
-                            frame_positions.append(total_frames // 5 * 4)  # 4/5处
-                        elif total_frames > 5:
-                            # 帧数较少时，尝试多个位置
-                            frame_positions.append(total_frames // 2)  # 中间帧
-                            frame_positions.append(total_frames // 3)  # 1/3处
-                            frame_positions.append(total_frames - 1)  # 最后一帧
-                        
-                        # 添加安全的fallback帧位置，不使用第0帧
-                        frame_positions.append(1)   # 第1帧
-                        frame_positions.append(5)   # 第5帧
-                        frame_positions.append(10)  # 第10帧
-                        
-                        # 过滤无效帧位置，确保只尝试有效的帧
-                        valid_frame_positions = []
-                        for pos in frame_positions:
-                            # 确保帧位置在有效范围内
-                            if pos >= min_valid_frame and pos <= max_valid_frame:
-                                valid_frame_positions.append(pos)
-                        
-                        # 去重
-                        valid_frame_positions = list(set(valid_frame_positions))
-                        
-                        # 优先使用中间帧，将中间帧放在列表开头
-                        if total_frames > 10:
-                            middle_frame = total_frames // 2
-                            if middle_frame in valid_frame_positions:
-                                # 移除中间帧并将其放在列表开头
-                                valid_frame_positions.remove(middle_frame)
-                                valid_frame_positions.insert(0, middle_frame)
-                        
-                        #print(f"尝试的有效帧位置: {valid_frame_positions}")
-                        
-                        # 尝试从不同位置读取帧
-                        success = False
-                        for frame_pos in valid_frame_positions:
-                            # 设置帧位置
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
-                            
-                            # 读取帧
-                            ret, frame = cap.read()
-                            if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
-                                try:
-                                    # 计算原始宽高比
-                                    original_height, original_width = frame.shape[:2]
-                                    aspect_ratio = original_width / original_height
-                                    
-                                    # 计算新尺寸，保持原始比例，考虑DPI缩放因子
-                                    base_size = 128
-                                    dpi_scaled_size = int(base_size * self.dpi_scale)
-                                    
-                                    if aspect_ratio > 1:
-                                        # 宽图，以宽度为基准
-                                        new_width = dpi_scaled_size
-                                        new_height = int(new_width / aspect_ratio)
-                                    else:
-                                        # 高图或正方形，以高度为基准
-                                        new_height = dpi_scaled_size
-                                        new_width = int(new_height * aspect_ratio)
-                                    
-                                    # 获取帧的像素数量，用于判断是否需要进行大文件优化
-                                    total_pixels = original_width * original_height
-                                    
-                                    # 对于超大视频帧（超过1000万像素），先进行适度下采样，避免内存占用过高
-                                    # 同时确保下采样后的尺寸不小于目标尺寸的2倍，以保证最终缩放质量
-                                    if total_pixels > 10000000:
-                                        # 计算下采样比例，确保下采样后的尺寸至少是目标尺寸的2倍
-                                        min_downsample_width = max(new_width * 2, 1024)  # 至少1024像素宽度
-                                        min_downsample_height = max(new_height * 2, 1024)
-                                        
-                                        downsample_ratio = min(original_width / min_downsample_width, original_height / min_downsample_height)
-                                        if downsample_ratio > 1:
-                                            # 进行下采样
-                                            downsampled_width = int(original_width / downsample_ratio)
-                                            downsampled_height = int(original_height / downsample_ratio)
-                                            
-                                            # 使用高质量插值进行下采样
-                                            downsampled_frame = cv2.resize(frame, (downsampled_width, downsampled_height), interpolation=cv2.INTER_LANCZOS4)
-                                            
-                                            # 然后从下采样后的帧缩放到最终尺寸
-                                            resized_frame = cv2.resize(downsampled_frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-                                        else:
-                                            # 下采样比例小于等于1，直接从原始帧缩放到目标尺寸
-                                            resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-                                    else:
-                                        # 对于普通大小的视频帧，直接从原始帧缩放到目标尺寸，避免中间步骤的质量损失
-                                        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-                                    
-                                    # 使用PIL处理，避免cv2.zeros错误
-                                    from PIL import Image, ImageDraw
-                                    
-                                    # 将OpenCV图像转换为PIL图像
-                                    # OpenCV图像是BGR格式，需要转换为RGB格式
-                                    frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
-                                    
-                                    # 创建一个透明背景，尺寸考虑DPI缩放因子
-                                    dpi_scaled_background_size = int(128 * self.dpi_scale)
-                                    thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
-                                    
-                                    # 将调整大小后的帧居中绘制到透明背景上
-                                    x_offset = (dpi_scaled_background_size - new_width) // 2
-                                    y_offset = (dpi_scaled_background_size - new_height) // 2
-                                    thumbnail.paste(frame_pil, (x_offset, y_offset))
-                                    
-                                    # 保存缩略图
-                                    thumbnail.save(thumbnail_path, format='PNG', quality=85)
-                                    #print(f"✓ 使用PIL保存缩略图成功")
-                                    #print(f"✓ 已生成视频缩略图: {file_path}, 使用第 {frame_pos} 帧，保持原始比例")
-                                    success = True
-                                    return True
-                                except Exception as e:
-                                    error(f"✗ 处理视频时出错: {file_path}, 错误: {e}")
-                                break
-                        
-                        if not success:
-                            # 如果所有尝试都失败，尝试使用相对位置
-                            warning(f"所有固定帧位置尝试失败，尝试使用相对位置")
-                            # 尝试从视频中间位置读取（使用不同方法）
-                            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)  # 设置到视频中间位置
-                            ret, frame = cap.read()
-                            if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
-                                try:
-                                    # 计算原始宽高比
-                                    original_height, original_width = frame.shape[:2]
-                                    aspect_ratio = original_width / original_height
-                                    
-                                    # 计算新尺寸，保持原始比例，考虑DPI缩放因子
-                                    base_size = 128
-                                    dpi_scaled_size = int(base_size * self.dpi_scale)
-                                    
-                                    if aspect_ratio > 1:
-                                        # 宽图，以宽度为基准
-                                        new_width = dpi_scaled_size
-                                        new_height = int(new_width / aspect_ratio)
-                                    else:
-                                        # 高图或正方形，以高度为基准
-                                        new_height = dpi_scaled_size
-                                        new_width = int(new_height * aspect_ratio)
-                                    
-                                    # 获取帧的像素数量，用于判断是否需要进行大文件优化
-                                    total_pixels = original_width * original_height
-                                    
-                                    # 对于超大视频帧（超过1000万像素），先进行适度下采样，避免内存占用过高
-                                    # 同时确保下采样后的尺寸不小于目标尺寸的2倍，以保证最终缩放质量
-                                    if total_pixels > 10000000:
-                                        # 计算下采样比例，确保下采样后的尺寸至少是目标尺寸的2倍
-                                        min_downsample_width = max(new_width * 2, 1024)  # 至少1024像素宽度
-                                        min_downsample_height = max(new_height * 2, 1024)
-                                        
-                                        downsample_ratio = min(original_width / min_downsample_width, original_height / min_downsample_height)
-                                        if downsample_ratio > 1:
-                                            # 进行下采样
-                                            downsampled_width = int(original_width / downsample_ratio)
-                                            downsampled_height = int(original_height / downsample_ratio)
-                                            
-                                            # 使用高质量插值进行下采样
-                                            downsampled_frame = cv2.resize(frame, (downsampled_width, downsampled_height), interpolation=cv2.INTER_LANCZOS4)
-                                            
-                                            # 然后从下采样后的帧缩放到最终尺寸
-                                            resized_frame = cv2.resize(downsampled_frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-                                        else:
-                                            # 下采样比例小于等于1，直接从原始帧缩放到目标尺寸
-                                            resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-                                    else:
-                                        # 对于普通大小的视频帧，直接从原始帧缩放到目标尺寸，避免中间步骤的质量损失
-                                        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-                                    
-                                    # 使用PIL处理，避免cv2.zeros错误
-                                    from PIL import Image, ImageDraw
-                                    
-                                    # 将OpenCV图像转换为PIL图像
-                                    # OpenCV图像是BGR格式，需要转换为RGB格式
-                                    frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
-                                    
-                                    # 创建一个透明背景，尺寸考虑DPI缩放因子
-                                    dpi_scaled_background_size = int(128 * self.dpi_scale)
-                                    thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
-                                    
-                                    # 将调整大小后的帧居中绘制到透明背景上
-                                    x_offset = (dpi_scaled_background_size - new_width) // 2
-                                    y_offset = (dpi_scaled_background_size - new_height) // 2
-                                    thumbnail.paste(frame_pil, (x_offset, y_offset))
-                                    
-                                    # 保存缩略图
-                                    thumbnail.save(thumbnail_path, format='PNG', quality=85)
-                                    #print(f"✓ 已生成视频缩略图: {file_path}, 使用中间位置相对帧")
-                                    return True
-                                except Exception as e:
-                                    error(f"✗ 使用PIL处理视频帧失败: {e}")
-                            else:
-                                error(f"✗ 无法读取视频任何有效帧")
-                    except Exception as e:
-                        error(f"✗ 处理视频时出错: {file_path}, 错误: {e}")
-                        # 尝试使用相对位置作为最后的 fallback
-                        try:
-                            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)  # 设置到视频中间位置
-                            ret, frame = cap.read()
-                            if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
-                                # 计算原始宽高比
-                                original_height, original_width = frame.shape[:2]
-                                aspect_ratio = original_width / original_height
-                                
-                                # 计算新尺寸，保持原始比例，考虑DPI缩放因子
-                                base_size = 128
-                                dpi_scaled_size = int(base_size * self.dpi_scale)
-                                
-                                if aspect_ratio > 1:
-                                    # 宽图，以宽度为基准
-                                    new_width = dpi_scaled_size
-                                    new_height = int(new_width / aspect_ratio)
-                                else:
-                                    # 高图或正方形，以高度为基准
-                                    new_height = dpi_scaled_size
-                                    new_width = int(new_height * aspect_ratio)
-                                
-                                # 调整大小，保持原始比例，使用高质量插值算法
-                                resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-                                
-                                # 使用PIL处理
-                                try:
-                                    from PIL import Image, ImageDraw
-                                    
-                                    # 将OpenCV图像转换为PIL图像
-                                    # OpenCV图像是BGR格式，需要转换为RGB格式
-                                    frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
-                                    
-                                    # 创建一个透明背景，尺寸考虑DPI缩放因子
-                                    dpi_scaled_background_size = int(128 * self.dpi_scale)
-                                    thumbnail_pil = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
-                                    
-                                    # 将调整大小后的帧居中绘制到透明背景上
-                                    x_offset = (dpi_scaled_background_size - new_width) // 2
-                                    y_offset = (dpi_scaled_background_size - new_height) // 2
-                                    thumbnail_pil.paste(frame_pil, (x_offset, y_offset))
-                                    
-                                    # 保存缩略图
-                                    thumbnail_pil.save(thumbnail_path, format='PNG', quality=85)
-                                    #print(f"✓ 已生成视频缩略图: {file_path}, 使用相对位置帧")
-                                    return True
-                                except Exception as pil_e:
-                                    error(f"✗ 使用PIL处理视频帧失败: {pil_e}")
-                            else:
-                                error(f"✗ 无法读取视频任何有效帧")
-                        except Exception as fallback_e:
-                            error(f"✗ Fallback尝试也失败: {fallback_e}")
-                    finally:
-                        # 确保释放资源
-                        cap.release()
+                return self._create_video_thumbnail_optimized(file_path, thumbnail_path)
+        except Exception as e:
+            error(f"生成缩略图失败: {file_path}, 错误: {e}")
+            return False
+    
+    def _create_video_thumbnail_optimized(self, file_path, thumbnail_path):
+        """
+        优化的视频缩略图生成方法
+        - 提取重复的帧处理逻辑
+        - 限制尝试次数，避免重复读取
+        - 使用关键帧定位提高性能
+        - 增强容错性，多种策略尝试读取帧
+        """
+        try:
+            import cv2
+            from PIL import Image
+            
+            cap = cv2.VideoCapture(file_path)
+            if not cap.isOpened():
+                error(f"✗ 无法打开视频文件: {file_path}")
+                return False
+            
+            try:
+                # 获取视频信息
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                
+                # 策略1: 优先读取第240帧（跳过可能损坏的开头）
+                if total_frames > 240:
+                    frame = self._read_frame_at_position(cap, 240)
+                    if frame is not None:
+                        return self._process_and_save_video_frame(frame, thumbnail_path)
+                
+                # 策略2: 读取前50%相对位置
+                cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.shape[0] > 0:
+                    return self._process_and_save_video_frame(frame, thumbnail_path)
+                
+                # 策略3: 从中间位置50%读取
+                cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.shape[0] > 0:
+                    return self._process_and_save_video_frame(frame, thumbnail_path)
+                
+                # 策略4: 读取第2帧
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 2)
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.shape[0] > 0:
+                    return self._process_and_save_video_frame(frame, thumbnail_path)
+                
+                # 策略5: 最后尝试读取第1帧
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 1)
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.shape[0] > 0:
+                    return self._process_and_save_video_frame(frame, thumbnail_path)
+                
+                # 策略6: 备用方案 - 尝试其他相对位置
+                for ratio in [0.03, 0.1, 0.7, 0.9]:
+                    cap.set(cv2.CAP_PROP_POS_AVI_RATIO, ratio)
+                    ret, frame = cap.read()
+                    if ret and frame is not None and frame.shape[0] > 0:
+                        return self._process_and_save_video_frame(frame, thumbnail_path)
+                
+                warning(f"无法读取视频任何有效帧: {file_path}")
+                return False
+                
+            finally:
+                cap.release()
+                
+        except ImportError:
+            warning("OpenCV is not installed")
+            return False
+        except Exception as e:
+            error(f"生成视频缩略图失败: {file_path}, 错误: {e}")
+            return False
+    
+    def _calculate_optimal_frame_positions(self, total_frames, fps):
+        """
+        计算最佳的帧位置列表
+        优先返回中间附近的位置，避免重复尝试相近的帧
+        """
+        positions = []
+        
+        if total_frames <= 0:
+            return positions
+        
+        min_valid_frame = 1
+        max_valid_frame = max(min_valid_frame, total_frames - 1)
+        
+        # 优先使用中间帧
+        middle = total_frames // 2
+        positions.append(max(min_valid_frame, min(middle, max_valid_frame)))
+        
+        # 如果视频足够长，添加1/3和2/3位置
+        if total_frames > 30:
+            positions.append(max(min_valid_frame, min(total_frames // 3, max_valid_frame)))
+            positions.append(max(min_valid_frame, min(total_frames * 2 // 3, max_valid_frame)))
+        
+        # 过滤和去重
+        valid_positions = []
+        seen = set()
+        for pos in positions:
+            if min_valid_frame <= pos <= max_valid_frame and pos not in seen:
+                valid_positions.append(pos)
+                seen.add(pos)
+        
+        return valid_positions
+    
+    def _read_frame_at_position(self, cap, frame_pos):
+        """
+        在指定位置读取帧
+        使用关键帧定位优化性能
+        """
+        try:
+            # 设置帧位置
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+
+            # 读取帧
+            ret, frame = cap.read()
+            if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
+                return frame
+            return None
+        except (cv2.error, AttributeError):
+            return None
+    
+    def _process_and_save_video_frame(self, frame, thumbnail_path):
+        """
+        处理视频帧并保存为缩略图
+        提取重复的图像处理逻辑
+        """
+        try:
+            import cv2
+            from PIL import Image
+            
+            # 计算原始宽高比
+            original_height, original_width = frame.shape[:2]
+            aspect_ratio = original_width / original_height
+            
+            # 计算新尺寸，保持原始比例，考虑DPI缩放因子
+            base_size = 128
+            dpi_scaled_size = int(base_size * self.dpi_scale)
+            
+            if aspect_ratio > 1:
+                new_width = dpi_scaled_size
+                new_height = int(new_width / aspect_ratio)
+            else:
+                new_height = dpi_scaled_size
+                new_width = int(new_height * aspect_ratio)
+            
+            # 获取帧的像素数量
+            total_pixels = original_width * original_height
+            
+            # 对于超大视频帧，先进行适度下采样
+            if total_pixels > 10000000:
+                min_downsample_width = max(new_width * 2, 1024)
+                min_downsample_height = max(new_height * 2, 1024)
+                
+                downsample_ratio = min(
+                    original_width / min_downsample_width,
+                    original_height / min_downsample_height
+                )
+                
+                if downsample_ratio > 1:
+                    downsampled_width = int(original_width / downsample_ratio)
+                    downsampled_height = int(original_height / downsample_ratio)
+                    downsampled_frame = cv2.resize(
+                        frame,
+                        (downsampled_width, downsampled_height),
+                        interpolation=cv2.INTER_LANCZOS4
+                    )
+                    resized_frame = cv2.resize(
+                        downsampled_frame,
+                        (new_width, new_height),
+                        interpolation=cv2.INTER_LANCZOS4
+                    )
                 else:
-                    error(f"✗ 无法打开视频文件: {file_path}")
+                    resized_frame = cv2.resize(
+                        frame,
+                        (new_width, new_height),
+                        interpolation=cv2.INTER_LANCZOS4
+                    )
+            else:
+                resized_frame = cv2.resize(
+                    frame,
+                    (new_width, new_height),
+                    interpolation=cv2.INTER_LANCZOS4
+                )
+            
+            # 转换为PIL图像
+            frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
+            
+            # 创建透明背景
+            dpi_scaled_background_size = int(128 * self.dpi_scale)
+            thumbnail = Image.new(
+                "RGBA",
+                (dpi_scaled_background_size, dpi_scaled_background_size),
+                (0, 0, 0, 0)
+            )
+            
+            # 居中绘制
+            x_offset = (dpi_scaled_background_size - new_width) // 2
+            y_offset = (dpi_scaled_background_size - new_height) // 2
+            thumbnail.paste(frame_pil, (x_offset, y_offset))
+            
+            # 保存缩略图
+            thumbnail.save(thumbnail_path, format='PNG', quality=85)
+            return True
+
         except ImportError:
             # 如果没有安装OpenCV，跳过缩略图生成
             warning("OpenCV is not installed")
-        except Exception as e:
-            # 处理其他可能的错误
-            error(f"生成缩略图失败: {file_path}, 错误: {e}")
-        return False
+            return False
+        except (cv2.error, IOError, OSError) as e:
+            error(f"✗ 处理视频帧失败: {e}")
+            return False
     
     def go_to_parent(self):
         """
@@ -2181,6 +2145,10 @@ class CustomFileSelector(QWidget):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
             #print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
+            # 所有卡片加载完成后执行宽度更新
+            if self._pending_width_update:
+                self._update_all_cards_width()
+                self._pending_width_update = False
             # 所有卡片加载完成后检查预览状态
             self._check_and_apply_preview_state()
             # 所有卡片加载完成后调用回调函数
@@ -2206,6 +2174,10 @@ class CustomFileSelector(QWidget):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
             #print(f"[DEBUG] 懒加载完成，共加载 {self._loaded_count} 个卡片")
+            # 所有卡片加载完成后执行宽度更新
+            if self._pending_width_update:
+                self._update_all_cards_width()
+                self._pending_width_update = False
             # 所有卡片加载完成后检查预览状态
             self._check_and_apply_preview_state()
             # 所有卡片加载完成后调用回调函数
@@ -2267,12 +2239,14 @@ class CustomFileSelector(QWidget):
     def _clear_files_layout(self):
         """
         彻底清空文件布局，确保所有旧卡片被删除
+        优化版本：分批处理删除，避免内存峰值，强制垃圾回收
         """
         self.resize_timer.stop()
         self._lazy_load_timer.stop()
         self._pending_files = []
         self._loaded_count = 0
         self._is_loading = False
+        self._pending_width_update = False
 
         if hasattr(self, '_last_max_cols'):
             del self._last_max_cols
@@ -2282,6 +2256,13 @@ class CustomFileSelector(QWidget):
 
         if hasattr(self, '_last_container_width'):
             del self._last_container_width
+        
+        # 清除固定的列数和宽度，以便下次加载时重新计算
+        if hasattr(self, '_fixed_max_cols'):
+            del self._fixed_max_cols
+        
+        if hasattr(self, '_fixed_card_width'):
+            del self._fixed_card_width
 
         # 先收集所有需要删除的widget，避免在迭代过程中修改布局
         widgets_to_delete = []
@@ -2306,8 +2287,11 @@ class CustomFileSelector(QWidget):
             except RuntimeError:
                 break
 
-        # 删除所有widget
-        for widget in widgets_to_delete:
+        # 分批删除widget，避免一次性堆积太多deleteLater事件
+        MAX_WIDGETS_PER_BATCH = 100
+        total_widgets = len(widgets_to_delete)
+        
+        for i, widget in enumerate(widgets_to_delete):
             try:
                 # 先隐藏widget
                 widget.setVisible(False)
@@ -2320,9 +2304,19 @@ class CustomFileSelector(QWidget):
                 widget.setParent(None)
                 # 使用deleteLater延迟删除
                 widget.deleteLater()
+                
+                # 每处理一批，让事件循环处理一次，避免UI卡顿
+                if i > 0 and i % MAX_WIDGETS_PER_BATCH == 0:
+                    QApplication.processEvents()
+                    
             except RuntimeError:
                 # widget已被删除，忽略错误
                 pass
+        
+        # 强制垃圾回收，释放内存
+        if total_widgets > MAX_WIDGETS_PER_BATCH:
+            import gc
+            gc.collect()
 
         self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
     
@@ -2353,72 +2347,97 @@ class CustomFileSelector(QWidget):
     def _get_files(self):
         """
         获取当前目录下的文件列表
+        优化版本：使用 os.scandir() 替代 os.listdir() + QFileInfo，减少磁盘 I/O
         """
         files = []
         
         # 处理"All"视图
         if self.current_path == "All":
             if sys.platform == 'win32':
-                # Windows系统：遍历A-Z，检查存在的盘符
-                for drive in range(65, 91):  # A-Z
-                    drive_letter = chr(drive) + ':/'
-                    if os.path.exists(drive_letter):
-                        drive_name = chr(drive) + ':'
-                        drive_path = drive_letter
-                        file_info = QFileInfo(drive_path)
-                        
-                        # 构建磁盘驱动器信息字典
-                        file_dict = {
-                            "name": drive_name,
-                            "path": drive_path,
-                            "is_dir": True,
-                            "size": 0,  # 磁盘大小暂不获取
-                            "modified": file_info.lastModified().toString(Qt.ISODate),
-                            "created": file_info.birthTime().toString(Qt.ISODate),
-                            "suffix": ""
-                        }
-                        
-                        files.append(file_dict)
+                # Windows系统：使用 GetLogicalDrives 获取可用盘符，更高效
+                try:
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    drives_bitmask = kernel32.GetLogicalDrives()
+                    for drive in range(26):  # A-Z
+                        if drives_bitmask & (1 << drive):
+                            drive_name = chr(65 + drive) + ':'
+                            drive_path = drive_name + '\\'
+                            
+                            # 使用 os.scandir 获取驱动器信息，避免 QFileInfo 阻塞
+                            try:
+                                stat = os.stat(drive_path)
+                                modified = QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate)
+                                created = QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate)
+                            except OSError as e:
+                                debug(f"[DEBUG] 获取驱动器 {drive_path} 信息失败: {e}")
+                                modified = ""
+                                created = ""
+                            
+                            file_dict = {
+                                "name": drive_name,
+                                "path": drive_path,
+                                "is_dir": True,
+                                "size": 0,
+                                "modified": modified,
+                                "created": created,
+                                "suffix": ""
+                            }
+                            files.append(file_dict)
+                except Exception as e:
+                    error(f"[ERROR] 获取驱动器列表失败: {e}")
             else:
                 # Linux/macOS系统：显示根目录
                 root_path = "/"
-                file_info = QFileInfo(root_path)
+                try:
+                    stat = os.stat(root_path)
+                    modified = QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate)
+                    created = QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate)
+                except OSError as e:
+                    debug(f"[DEBUG] 获取根目录 {root_path} 信息失败: {e}")
+                    modified = ""
+                    created = ""
+                
                 file_dict = {
                     "name": root_path,
                     "path": root_path,
                     "is_dir": True,
                     "size": 0,
-                    "modified": file_info.lastModified().toString(Qt.ISODate),
-                    "created": file_info.birthTime().toString(Qt.ISODate),
+                    "modified": modified,
+                    "created": created,
                     "suffix": ""
                 }
                 files.append(file_dict)
         else:
-            # 正常目录视图
+            # 正常目录视图 - 使用 os.scandir() 替代 os.listdir() + QFileInfo
             try:
-                # 获取当前目录下的所有文件和文件夹
-                entries = os.listdir(self.current_path)
-                
-                for entry in entries:
-                    entry_path = os.path.join(self.current_path, entry)
-                    file_info = QFileInfo(entry_path)
-                    
-                    # 跳过隐藏文件
-                    if entry.startswith(".") or file_info.isHidden():
-                        continue
-                    
-                    # 构建文件信息字典
-                    file_dict = {
-                        "name": entry,
-                        "path": entry_path,
-                        "is_dir": file_info.isDir(),
-                        "size": file_info.size(),
-                        "modified": file_info.lastModified().toString(Qt.ISODate),
-                        "created": file_info.birthTime().toString(Qt.ISODate),
-                        "suffix": file_info.suffix().lower()
-                    }
-                    
-                    files.append(file_dict)
+                # os.scandir() 返回的 DirEntry 对象已经缓存了文件元数据，性能更好
+                with os.scandir(self.current_path) as entries:
+                    for entry in entries:
+                        # 跳过隐藏文件
+                        if entry.name.startswith("."):
+                            continue
+                        
+                        try:
+                            # 使用 DirEntry 的 stat() 方法获取文件信息（缓存的，不触发额外系统调用）
+                            stat = entry.stat(follow_symlinks=False)
+                            
+                            # 构建文件信息字典
+                            file_dict = {
+                                "name": entry.name,
+                                "path": entry.path,
+                                "is_dir": entry.is_dir(follow_symlinks=False),
+                                "size": stat.st_size,
+                                "modified": QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate),
+                                "created": QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate),
+                                "suffix": os.path.splitext(entry.name)[1].lower().lstrip('.')
+                            }
+                            
+                            files.append(file_dict)
+                        except (OSError, PermissionError):
+                            # 跳过无法访问的文件
+                            continue
+                            
             except Exception as e:
                 error(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
                 from freeassetfilter.widgets.D_widgets import CustomMessageBox
@@ -2552,18 +2571,26 @@ class CustomFileSelector(QWidget):
     def _create_file_cards_batch(self, files):
         """
         批量创建文件卡片（用于懒加载）
+        优化版本：预先计算并固定卡片宽度，避免加载过程中的抖动
         
         Args:
             files: 文件列表
         """
-        max_cols = getattr(self, '_fixed_max_cols', self._calculate_max_columns())
+        # 首次加载时固定列数和卡片宽度，避免后续抖动
+        if not hasattr(self, '_fixed_max_cols') or not hasattr(self, '_fixed_card_width'):
+            self._fixed_max_cols = self._calculate_max_columns()
+            self._fixed_card_width = self._calculate_card_width()
+        
+        max_cols = self._fixed_max_cols
+        card_width = self._fixed_card_width
         
         current_count = self.files_layout.count()
         row = current_count // max_cols
         col = current_count % max_cols
         
         for file in files:
-            card = self._create_file_card(file)
+            # 创建卡片时直接传入固定宽度，避免后续调整
+            card = self._create_file_card_with_width(file, card_width)
             self.files_layout.addWidget(card, row, col)
             
             self.hover_tooltip.set_target_widget(card)
@@ -2574,7 +2601,8 @@ class CustomFileSelector(QWidget):
                 row += 1
         
         self._last_max_cols = max_cols
-        self._update_all_cards_width()
+        # 不标记宽度更新，因为卡片已经使用固定宽度创建
+        self._pending_width_update = False
     
     def _calculate_card_width(self):
         """
@@ -2640,9 +2668,20 @@ class CustomFileSelector(QWidget):
             self.files_layout.addWidget(card, row, col)
             #print(f"[DEBUG] 卡片 {i} 移动到 ({row}, {col})")
     
+    def _on_resize_timeout(self):
+        """
+        Resize 超时处理
+        优化版本：只更新布局而不完全刷新文件列表
+        """
+        # 设置布局脏标记，触发布局更新
+        self._layout_dirty = True
+        # 立即检查布局
+        self._check_card_layout()
+    
     def _update_all_cards_width(self):
         """更新所有卡片的动态宽度，并重新排列卡片"""
-        #print(f"[DEBUG] _update_all_cards_width 被调用")
+        # 设置布局脏标记
+        self._layout_dirty = True
         
         scroll_area = None
         parent_widget = self.files_container.parent()
@@ -2690,8 +2729,12 @@ class CustomFileSelector(QWidget):
     def _check_card_layout(self):
         """
         定期检查卡片布局状态，确保卡片宽度和数量符合当前显示区域
-        如果布局不正确，则自动调整
+        优化版本：添加脏标记检查，避免不必要的布局更新
         """
+        # 如果布局没有变化，跳过检查
+        if not self._layout_dirty:
+            return
+        
         if not self.files_container.width() > 0:
             return
 
@@ -2731,12 +2774,10 @@ class CustomFileSelector(QWidget):
             self._last_container_width = container_width
         
         if needs_rearrange:
-            #print(f"[DEBUG] 定期检查: 检测到列数变化，重新排列卡片")
             self._rearrange_cards(max_cols)
             self._last_max_cols = max_cols
         
         if needs_update:
-            #print(f"[DEBUG] 定期检查: 检测到卡片宽度变化，更新卡片宽度")
             for i in range(self.files_layout.count()):
                 item = self.files_layout.itemAt(i)
                 if item is not None:
@@ -2745,6 +2786,9 @@ class CustomFileSelector(QWidget):
                         if hasattr(widget, 'set_flexible_width'):
                             widget.set_flexible_width(card_width)
             self._last_card_width = card_width
+        
+        # 重置脏标记
+        self._layout_dirty = False
         
         if not needs_rearrange and not needs_update:
             current_card_width = self._calculate_card_width()
@@ -2808,6 +2852,72 @@ class CustomFileSelector(QWidget):
         #debug(f"文件选中状态: {is_selected}")
         if is_selected:
             #debug(f"设置卡片为选中状态")
+            card.set_selected(True)
+        
+        # 检查文件是否处于预览状态
+        if self.previewing_file_path and file_path_norm == self.previewing_file_path:
+            card.set_previewing(True)
+        
+        if file_info["is_dir"]:
+            card.clicked.connect(lambda f, p=file_path: self._on_folder_clicked(p))
+        else:
+            card.clicked.connect(lambda f: self.file_selected.emit(f))
+        card.right_clicked.connect(lambda f: self._on_card_right_clicked(f, file_path))
+        card.double_clicked.connect(lambda f: self._on_card_double_clicked(f, file_path))
+        card.selection_changed.connect(lambda f, s: self._on_card_selection_changed(f, s, file_path))
+        
+        # 连接拖拽信号
+        card.drag_started.connect(lambda f: self._on_card_drag_started(f))
+        card.drag_ended.connect(lambda f, t: self._on_card_drag_ended(f, t))
+        
+        self.hover_tooltip.set_target_widget(card)
+        
+        return card
+    
+    def _create_file_card_with_width(self, file_info, card_width):
+        """
+        创建单个文件卡片，并预先设置固定宽度
+        优化版本：避免加载过程中的宽度抖动
+        
+        Args:
+            file_info: 文件信息字典
+            card_width: 预设的卡片宽度
+        """
+        import datetime
+        from freeassetfilter.utils.app_logger import debug as logger_debug
+        def debug(msg):
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            logger_debug(f"[{timestamp}] [CustomFileSelector._create_file_card_with_width] {msg}")
+        
+        file_path = file_info["path"]
+        file_dir = os.path.normpath(os.path.dirname(file_path))
+        
+        file_dict = {
+            "name": file_info["name"],
+            "path": file_info["path"],
+            "is_dir": file_info["is_dir"],
+            "size": file_info["size"],
+            "created": file_info["created"],
+            "suffix": file_info.get("suffix", "")
+        }
+        
+        card = FileBlockCard(file_dict, dpi_scale=self.dpi_scale, parent=self)
+        card.setObjectName("FileBlockCard")
+        
+        # 预先设置固定宽度，避免后续调整导致的抖动
+        if card_width and card_width > 0:
+            card.set_flexible_width(card_width)
+        
+        file_path_norm = os.path.normpath(file_path)
+        
+        # 检查文件是否在任何目录的选中列表中
+        is_selected = False
+        for dir_path, file_set in self.selected_files.items():
+            if file_path_norm in file_set:
+                is_selected = True
+                break
+        
+        if is_selected:
             card.set_selected(True)
         
         # 检查文件是否处于预览状态
@@ -2956,7 +3066,7 @@ class CustomFileSelector(QWidget):
             self.path_edit.setText(file_info["path"])
             self.go_to_path()
         else:
-            self._open_file(file_path)
+            self._open_file_by_path(file_path)
     
     def _set_file_icon(self, file_info):
         """
@@ -2981,7 +3091,7 @@ class CustomFileSelector(QWidget):
                 try:
                     # 使用自定义的图标工具获取最高分辨率图标
                     from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
-                    
+
                     # 获取最高分辨率图标
                     hicon = get_highest_resolution_icon(file_path, desired_size=256)
                     if hicon:
@@ -2989,12 +3099,12 @@ class CustomFileSelector(QWidget):
                         # 注意：传入base_icon_size作为逻辑像素大小，使pixmap填满label
                         pixmap = hicon_to_pixmap(hicon, base_icon_size, None, self.devicePixelRatio())
                         DestroyIcon(hicon)  # 释放图标资源
-                        
+
                         if pixmap and not pixmap.isNull():
                             label.setPixmap(pixmap)
                             return label
-                except Exception as e:
-                    pass
+                except (ImportError, OSError, AttributeError) as e:
+                    debug(f"[DEBUG] 获取文件图标失败 {file_path}: {e}")
                 
                 # 备用方案：使用QFileIconProvider来获取文件图标
                 from PySide6.QtWidgets import QFileIconProvider

@@ -201,9 +201,9 @@ class ModernSettingsWindow(QDialog):
                 ctypes.sizeof(dark_mode_value)
             )
 
-        except Exception:
+        except (OSError, AttributeError) as e:
             # 如果设置失败（非Windows系统或DWM API不可用），静默忽略
-            pass
+            debug(f"设置窗口标题栏主题失败: {e}")
 
     def _create_navigation_widget(self):
         """
@@ -1102,8 +1102,8 @@ class ModernSettingsWindow(QDialog):
                     # 不再立即刷新样式和使SVG缓存失效，只在保存时应用
                     # SvgRenderer._invalidate_color_cache()
                     # self._update_theme_display()
-                except:
-                    pass
+                except ValueError as e:
+                    debug(f"无效的颜色值 '{hex_color}': {e}")
         
         self.custom_color_input.input_submitted.connect(on_custom_color_applied)
         self.custom_color_input.setVisible(initial_theme == "自定义")
@@ -1856,8 +1856,8 @@ class ModernSettingsWindow(QDialog):
         if app and hasattr(app, 'unified_previewer'):
             try:
                 app.unified_previewer.stop_preview()
-            except Exception:
-                pass
+            except (RuntimeError, AttributeError) as e:
+                debug(f"停止预览失败: {e}")
 
         # 主题或颜色变更时，使SVG缓存失效并应用主题
         if theme_changed or colors_changed:

@@ -590,13 +590,14 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
         try:
             # 使用FAF高亮器解析当前行
             tokens = self.faf_highlighter.tokenize(text, self.language)
-            
+
             # 应用高亮格式
             for token in tokens:
                 fmt = self.faf_highlighter.get_qtextformat(token.token_type)
                 self.setFormat(token.start_pos, len(token.text), fmt)
-        except Exception:
+        except (ValueError, KeyError, AttributeError) as e:
             # 解析失败时不应用高亮
+            debug(f"[DEBUG] 语法高亮解析失败: {e}")
             pass
     
     def get_background_color(self):
@@ -622,7 +623,8 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
             self.color_scheme = self.faf_highlighter.color_scheme
             # 重新高亮整个文档
             self.rehighlight()
-        except Exception:
+        except (ImportError, RuntimeError) as e:
+            debug(f"[DEBUG] 更新主题配色方案失败: {e}")
             pass
 
 class ZoomDisabledTextEdit(QTextEdit):
@@ -1019,7 +1021,8 @@ class TextPreviewWidget(QWidget):
             g = int(hex_color[3:5], 16)
             b = int(hex_color[5:7], 16)
             return f'rgba({r}, {g}, {b}, {alpha})'
-        except Exception:
+        except (ValueError, IndexError) as e:
+            debug(f"[DEBUG] 颜色转换失败: {e}")
             return hex_color
     
 
@@ -1364,16 +1367,17 @@ class TextPreviewWidget(QWidget):
                 palette = self.text_edit.palette()
                 palette.setColor(QPalette.Base, bg_color)
                 palette.setColor(QPalette.Text, fg_color)
-                
+
                 if accent_color and accent_color.startswith('#') and len(accent_color) == 7:
                     r = int(accent_color[1:3], 16)
                     g = int(accent_color[3:5], 16)
                     b = int(accent_color[5:7], 16)
                     selection_color = QColor(r, g, b, int(255 * 0.5))
                     palette.setColor(QPalette.Highlight, selection_color)
-                
+
                 self.text_edit.setPalette(palette)
-            except Exception:
+            except (AttributeError, RuntimeError) as e:
+                debug(f"[DEBUG] 更新代码高亮器主题失败: {e}")
                 pass
         
         # 更新行号区域主题
@@ -1413,12 +1417,12 @@ class TextPreviewWidget(QWidget):
         try:
             bg_color = self.current_highlighter.get_background_color()
             fg_color = self.current_highlighter.get_foreground_color()
-            
+
             # 设置文本编辑器的背景色和前景色
             palette = self.text_edit.palette()
             palette.setColor(QPalette.Base, bg_color)
             palette.setColor(QPalette.Text, fg_color)
-            
+
             # 重新应用选中样式
             app = QApplication.instance()
             if hasattr(app, 'settings_manager'):
@@ -1429,9 +1433,10 @@ class TextPreviewWidget(QWidget):
                     b = int(accent_color[5:7], 16)
                     selection_color = QColor(r, g, b, int(255 * 0.5))
                     palette.setColor(QPalette.Highlight, selection_color)
-            
+
             self.text_edit.setPalette(palette)
-        except Exception:
+        except (AttributeError, RuntimeError) as e:
+            debug(f"[DEBUG] 应用配色方案失败: {e}")
             pass
     
     def _reset_display_state(self):
@@ -1719,6 +1724,11 @@ class TextPreviewWidget(QWidget):
                 }
             )
             html = md.convert(content)
+        except (ImportError, ValueError, RuntimeError) as e:
+            warning(f"[WARNING] Markdown渲染失败: {e}")
+            self.text_edit.setPlainText(content)
+            self.is_markdown = False
+            return
 
             current_font = self.text_edit.font()
             font_family = current_font.family()
@@ -1813,10 +1823,6 @@ class TextPreviewWidget(QWidget):
                 
             self.text_edit.setHtml(html)
             self.is_markdown = True
-            
-        except Exception as e:
-            self.text_edit.setPlainText(content)
-            self.is_markdown = False
     
     def _render_plain_text(self, content, file_type):
         """渲染纯文本/代码"""

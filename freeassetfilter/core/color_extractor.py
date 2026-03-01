@@ -324,7 +324,8 @@ def extract_cover_from_audio(file_path: str) -> Optional[bytes]:
                 try:
                     Image.open(io.BytesIO(picture_data))
                     return picture_data
-                except:
+                except Exception as e:
+                    debug(f"[ColorExtractor] OGG图片数据解析失败: {e}")
                     pass
         
         # MP4/M4A文件
@@ -373,7 +374,8 @@ def generate_colors_from_accent(accent_hex: str = "#B036EE") -> List[QColor]:
         accent_color = QColor(accent_hex)
         if not accent_color.isValid():
             accent_color = QColor("#B036EE")
-    except:
+    except Exception as e:
+        debug(f"[ColorExtractor] 解析强调色失败 '{accent_hex}': {e}")
         accent_color = QColor("#B036EE")
     
     h, s, v, a = accent_color.getHsv()

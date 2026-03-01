@@ -288,8 +288,10 @@ class FolderContentList(QWidget):
 
                 item.setIcon(icon)
                 self.content_list.addItem(item)
-        except Exception as e:
-            pass
+        except PermissionError as e:
+            debug(f"加载文件夹内容时权限不足: {self.current_path}, 错误: {e}")
+        except OSError as e:
+            warning(f"加载文件夹内容时发生系统错误: {self.current_path}, 错误: {e}")
     
 
     

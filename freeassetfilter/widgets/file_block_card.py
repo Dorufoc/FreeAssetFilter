@@ -101,8 +101,8 @@ class FileBlockCard(QWidget):
                 border_color = self._anim_border_color.name()
             
             self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
-        except Exception:
-            pass
+        except Exception as e:
+            debug(f"应用动画样式失败: {e}")
     
     def __init__(self, file_info, dpi_scale=1.0, parent=None):
         """
@@ -180,7 +180,8 @@ class FileBlockCard(QWidget):
             self.normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
             self.accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
             self.secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-        except Exception:
+        except Exception as e:
+            debug(f"初始化颜色配置失败，使用默认颜色: {e}")
             self.base_color = "#212121"
             self.auxiliary_color = "#3D3D3D"
             self.normal_color = "#717171"
@@ -223,21 +224,25 @@ class FileBlockCard(QWidget):
         try:
             if not is_dir and suffix in ["lnk", "exe", "url"]:
                 scaled_icon_size = int(38 * self.dpi_scale)
-                
+
                 try:
                     from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
-                    hicon = get_highest_resolution_icon(file_path, desired_size=256)
+                    from PySide6.QtGui import QGuiApplication
+                    dpr = QGuiApplication.primaryScreen().devicePixelRatio()
+                    # 获取最高分辨率的图标（不限制尺寸）
+                    hicon = get_highest_resolution_icon(file_path)
                     if hicon:
-                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None)
+                        # 保持原始分辨率，让Qt处理缩放显示
+                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None, dpr, keep_original_size=True)
                         DestroyIcon(hicon)
                         if pixmap and not pixmap.isNull():
                             self._set_icon_pixmap(pixmap, scaled_icon_size)
                             return
-                except Exception:
-                    pass
+                except Exception as e:
+                    debug(f"提取Windows图标失败: {e}")
             
             thumbnail_path = self._get_thumbnail_path(file_path)
-            is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf']
+            is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'svg', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
             
             if (is_photo or is_video) and os.path.exists(thumbnail_path):
@@ -398,7 +403,8 @@ class FileBlockCard(QWidget):
             try:
                 dt = QDateTime.fromString(created, Qt.ISODate)
                 self.time_label.setText(dt.toString("yyyy-MM-dd"))
-            except Exception:
+            except (ValueError, TypeError) as e:
+                debug(f"解析日期时间失败: {e}, 原始值: {created}")
                 self.time_label.setText(created[:10] if len(created) >= 10 else created)
         else:
             self.time_label.setText("")
@@ -430,7 +436,8 @@ class FileBlockCard(QWidget):
         try:
             settings_manager = SettingsManager()
             return settings_manager.get_setting("file_selector.touch_optimization", True)
-        except Exception:
+        except Exception as e:
+            debug(f"获取触控优化设置失败: {e}")
             return True
 
     def _is_mouse_buttons_swapped(self):
@@ -443,7 +450,8 @@ class FileBlockCard(QWidget):
         try:
             settings_manager = SettingsManager()
             return settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
-        except Exception:
+        except Exception as e:
+            debug(f"获取鼠标按钮交换设置失败: {e}")
             return False
 
     def _is_previewer_loading(self):
@@ -460,8 +468,8 @@ class FileBlockCard(QWidget):
                 previewer = main_window.unified_previewer
                 if previewer and hasattr(previewer, 'is_loading_preview'):
                     return previewer.is_loading_preview
-        except Exception:
-            pass
+        except Exception as e:
+            debug(f"检查预览器加载状态失败: {e}")
         return False
 
     def eventFilter(self, obj, event):
@@ -1143,15 +1151,17 @@ class FileBlockCard(QWidget):
             if not is_dir and suffix in ["lnk", "exe", "url"]:
                 try:
                     from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
-                    hicon = get_highest_resolution_icon(file_path, desired_size=256)
+                    from PySide6.QtGui import QGuiApplication
+                    dpr = QGuiApplication.primaryScreen().devicePixelRatio()
+                    hicon = get_highest_resolution_icon(file_path)
                     if hicon:
-                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None)
+                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None, dpr, keep_original_size=True)
                         DestroyIcon(hicon)
                         if pixmap and not pixmap.isNull():
                             icon_label.setPixmap(pixmap)
                             icon_loaded = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    debug(f"拖拽卡片提取Windows图标失败: {e}")
             
             # 2. 对于图片/视频，使用缩略图
             if not icon_loaded:
@@ -1245,7 +1255,8 @@ class FileBlockCard(QWidget):
             try:
                 dt = QDateTime.fromString(created, Qt.ISODate)
                 time_label.setText(dt.toString("yyyy-MM-dd"))
-            except Exception:
+            except (ValueError, TypeError) as e:
+                debug(f"拖拽卡片解析日期时间失败: {e}, 原始值: {created}")
                 time_label.setText(created[:10] if len(created) >= 10 else created)
         else:
             time_label.setText("")

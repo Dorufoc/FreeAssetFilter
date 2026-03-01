@@ -444,7 +444,14 @@ class PDFPreviewer(QWidget):
             # 立即渲染第一页
             QTimer.singleShot(0, self._render_visible_pages)
             
+        except (fitz.FileDataError, fitz.EmptyFileError) as e:
+            warning(f"[WARNING] PDF文件格式错误: {e}")
+            self._show_error(f"PDF文件格式错误: {str(e)}")
+        except (RuntimeError, ValueError) as e:
+            warning(f"[WARNING] 加载PDF失败: {e}")
+            self._show_error(f"加载PDF失败: {str(e)}")
         except Exception as e:
+            error(f"[ERROR] 加载PDF时发生未知错误: {e}")
             self._show_error(f"加载PDF失败: {str(e)}")
     
     def _close_document(self):
@@ -639,8 +646,12 @@ class PDFPreviewer(QWidget):
             if page_num == 0 and len(self.page_pixmaps) == 1:
                 self.pdf_render_finished.emit()
                 
+        except (fitz.RuntimeError, fitz.ValueError) as e:
+            warning(f"[WARNING] 渲染页面 {page_num} 失败 (PDF错误): {e}")
+        except (RuntimeError, ValueError) as e:
+            warning(f"[WARNING] 渲染页面 {page_num} 失败: {e}")
         except Exception as e:
-            error(f"[ERROR] 渲染页面 {page_num} 失败: {e}")
+            error(f"[ERROR] 渲染页面 {page_num} 时发生未知错误: {e}")
     
     def _cleanup_cache(self):
         """

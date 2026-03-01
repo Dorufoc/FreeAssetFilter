@@ -56,8 +56,8 @@ class SvgRenderer:
                     "normal_color": settings_manager.get_setting("appearance.colors.normal_color", "#CECECE")
                 }
                 SvgRenderer._color_cache_valid = True
-            except Exception as e:
-                error(f"获取颜色设置失败: {e}")
+            except (OSError, ValueError, TypeError) as e:
+                warning(f"获取颜色设置失败: {e}")
                 SvgRenderer._cached_colors = {
                     "accent_color": "#007AFF",
                     "base_color": "#f1f3f5",
@@ -177,8 +177,8 @@ class SvgRenderer:
             processed_svg = re.sub(r'(stroke:\s*)#cecece', f'stroke: {normal_color}', processed_svg, flags=re.IGNORECASE)
 
             return processed_svg
-        except Exception as e:
-            error(f"替换SVG颜色失败: {e}")
+        except (OSError, ValueError) as e:
+            warning(f"替换SVG颜色失败: {e}")
             # 如果替换失败，返回原始SVG内容
             return svg_content
     
@@ -285,8 +285,8 @@ class SvgRenderer:
             layout.addWidget(svg_widget, 0, Qt.AlignCenter)
             
             return container
-        except Exception as e:
-            error(f"使用QSvgWidget加载SVG图标失败: {e}")
+        except (OSError, ValueError, TypeError) as e:
+            warning(f"使用QSvgWidget加载SVG图标失败: {e}")
             # 如果QSvgWidget失败，回退到使用超分辨率渲染的位图
             pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale)
             
@@ -364,8 +364,8 @@ class SvgRenderer:
                 label.setPixmap(pixmap)
             
             return label
-        except Exception as renderer_e:
-            error(f"使用QSvgRenderer加载SVG图标失败: {renderer_e}")
+        except (OSError, ValueError) as renderer_e:
+            warning(f"使用QSvgRenderer加载SVG图标失败: {renderer_e}")
             # 如果加载失败，创建一个默认的透明图标
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
@@ -377,7 +377,7 @@ class SvgRenderer:
             return label
     
     @staticmethod
-    def render_svg_to_pixmap(icon_path, icon_size=24, dpi_scale=1.0, icon_width=None, icon_height=None):
+    def render_svg_to_pixmap(icon_path, icon_size=24, dpi_scale=1.0, icon_width=None, icon_height=None, replace_colors=True):
         """
         将SVG文件渲染为QPixmap，支持透明背景和高质量渲染
         
@@ -389,6 +389,7 @@ class SvgRenderer:
             dpi_scale (float): DPI缩放因子，默认1.0
             icon_width (int, optional): 输出图标宽度，指定后按比例渲染
             icon_height (int, optional): 输出图标高度，指定后按比例渲染
+            replace_colors (bool): 是否启用色彩替换功能，默认True
             
         Returns:
             QPixmap: 渲染后的QPixmap对象，如果渲染失败返回透明像素图
@@ -411,23 +412,13 @@ class SvgRenderer:
             return pixmap
         
         try:
-            # 线程安全检查：确保在主线程中执行
-            # QPainter 只能在主线程中使用，如果在非主线程调用会导致崩溃
-            if QThread.currentThread() != QApplication.instance().thread():
-                warning(f"[SvgRenderer] 警告: 在非主线程中调用render_svg_to_pixmap，返回空图标")
-                pixmap = QPixmap(scaled_width, scaled_height)
-                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
-                pixmap.fill(Qt.transparent)
-                return pixmap
-            
-            # 始终使用SVG渲染，不检查PNG文件
-            
             # 读取SVG文件内容，预处理以确保兼容性
             with open(icon_path, 'r', encoding='utf-8') as f:
                 svg_content = f.read()
             
-            # 预处理SVG内容：替换颜色
-            svg_content = SvgRenderer._replace_svg_colors(svg_content)
+            # 预处理SVG内容：根据参数决定是否替换颜色
+            if replace_colors:
+                svg_content = SvgRenderer._replace_svg_colors(svg_content)
             
             # 使用QSvgRenderer创建一个足够大的pixmap（256x256），然后缩放
             # 这确保了在高DPI屏幕上的清晰度，实现超分辨率渲染
@@ -435,54 +426,99 @@ class SvgRenderer:
             
             # 使用256x256的超分辨率进行渲染，确保图标清晰
             render_size = 256
-            pixmap = QPixmap(render_size, render_size)
-            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
-            pixmap.fill(Qt.transparent)
             
-            painter = QPainter(pixmap)
-            # 设置最高质量的渲染提示
-            painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            # 检查当前是否在主线程
+            is_main_thread = QThread.currentThread() == QApplication.instance().thread()
+            
+            if is_main_thread:
+                # 在主线程中，使用 QPainter + QPixmap（最高质量）
+                pixmap = QPixmap(render_size, render_size)
+                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
+                pixmap.fill(Qt.transparent)
+                
+                painter = QPainter(pixmap)
+                # 设置最高质量的渲染提示
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-            # 获取SVG的原始尺寸，确保正确渲染
-            svg_size = svg_renderer.defaultSize()
-            
-            # 计算缩放因子，确保SVG在256x256的画布上居中显示且保持比例
-            scale_factor = min(render_size / svg_size.width(), render_size / svg_size.height())
-            
-            # 计算居中位置
-            x = (render_size - svg_size.width() * scale_factor) / 2
-            y = (render_size - svg_size.height() * scale_factor) / 2
-            
-            # 保存当前坐标系
-            painter.save()
-            
-            # 平移到居中位置并缩放
-            painter.translate(x, y)
-            painter.scale(scale_factor, scale_factor)
-            
-            # 渲染SVG到临时pixmap
-            svg_renderer.render(painter)
-            
-            # 恢复坐标系
-            painter.restore()
-            painter.end()
+                # 获取SVG的原始尺寸，确保正确渲染
+                svg_size = svg_renderer.defaultSize()
+                
+                # 计算缩放因子，确保SVG在256x256的画布上居中显示且保持比例
+                scale_factor = min(render_size / svg_size.width(), render_size / svg_size.height())
+                
+                # 计算居中位置
+                x = (render_size - svg_size.width() * scale_factor) / 2
+                y = (render_size - svg_size.height() * scale_factor) / 2
+                
+                # 保存当前坐标系
+                painter.save()
+                
+                # 平移到居中位置并缩放
+                painter.translate(x, y)
+                painter.scale(scale_factor, scale_factor)
+                
+                # 渲染SVG到临时pixmap
+                svg_renderer.render(painter)
+                
+                # 恢复坐标系
+                painter.restore()
+                painter.end()
+            else:
+                # 在后台线程中，使用 QImage（支持多线程）
+                # QImage 可以在非主线程中使用，然后转换为 QPixmap
+                image = QImage(render_size, render_size, QImage.Format_ARGB32_Premultiplied)
+                image.fill(Qt.transparent)
+                
+                painter = QPainter(image)
+                # 设置最高质量的渲染提示
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+                # 获取SVG的原始尺寸，确保正确渲染
+                svg_size = svg_renderer.defaultSize()
+                
+                # 计算缩放因子，确保SVG在256x256的画布上居中显示且保持比例
+                scale_factor = min(render_size / svg_size.width(), render_size / svg_size.height())
+                
+                # 计算居中位置
+                x = (render_size - svg_size.width() * scale_factor) / 2
+                y = (render_size - svg_size.height() * scale_factor) / 2
+                
+                # 保存当前坐标系
+                painter.save()
+                
+                # 平移到居中位置并缩放
+                painter.translate(x, y)
+                painter.scale(scale_factor, scale_factor)
+                
+                # 渲染SVG到临时image
+                svg_renderer.render(painter)
+                
+                # 恢复坐标系
+                painter.restore()
+                painter.end()
+                
+                # 将 QImage 转换为 QPixmap
+                pixmap = QPixmap.fromImage(image)
             
             # 然后缩放回目标大小，使用高质量缩放算法
             # 如果指定了宽度和高度，按指定比例缩放；否则保持1:1比例
             final_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
             # 设置设备像素比，确保在高分屏上正确渲染
-            final_pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
+            if is_main_thread:
+                final_pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             
             if not final_pixmap.isNull():
                 return final_pixmap
             else:
                 # 如果缩放失败，返回原始渲染结果
                 return pixmap
-        except Exception as e:
-            error(f"渲染SVG到QPixmap失败: {icon_path}, 错误: {e}")
+        except (OSError, ValueError, TypeError) as e:
+            warning(f"渲染SVG到QPixmap失败: {icon_path}, 错误: {e}")
             # 如果渲染失败，返回透明像素图
         pixmap = QPixmap(scaled_width, scaled_height)
         pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
@@ -588,8 +624,8 @@ class SvgRenderer:
                     text_label.setStyleSheet(f'color: black; font: {base_font_size}pt "{font.family()}"; font-weight: bold; background: transparent;')
             
             return container
-        except Exception as e:
-            error(f"渲染未知文件图标失败: {e}")
+        except (OSError, ValueError, TypeError) as e:
+            warning(f"渲染未知文件图标失败: {e}")
             # 如果渲染失败，返回透明像素图
             
             # 首先渲染SVG底板
@@ -773,8 +809,8 @@ class SvgRenderer:
             
             if not final_pixmap.isNull():
                 return final_pixmap
-        except Exception as e:
-            error(f"渲染SVG字符串失败, 错误: {e}")
+        except (ValueError, TypeError) as e:
+            warning(f"渲染SVG字符串失败, 错误: {e}")
             # 如果渲染失败，返回透明像素图
         pixmap = QPixmap(icon_size, icon_size)
         pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())

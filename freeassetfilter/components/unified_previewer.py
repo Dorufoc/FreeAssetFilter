@@ -400,24 +400,8 @@ class UnifiedPreviewer(QWidget):
             # debug("清除当前预览组件")
             self._clear_preview(emit_signal=False)
             
-            # 检查并终止现有线程（如果存在）
-            if hasattr(self, '_preview_thread') and self._preview_thread:
-                try:
-                    if self._preview_thread.isRunning():
-                        # debug("发现正在运行的后台线程，尝试取消并终止")
-                        self._preview_thread.cancel()
-                        # 等待线程终止，最多等待500毫秒，避免阻塞主线程
-                        self._preview_thread.wait(500)
-                except Exception as e:
-                    # 忽略线程操作中的异常
-                    pass
-                finally:
-                    # 安全地清理旧线程对象
-                    try:
-                        self._preview_thread.deleteLater()
-                    except Exception:
-                        pass
-                    self._preview_thread = None
+            # 清理后台线程
+            self._cleanup_preview_thread()
             
             # 创建后台加载线程
             # debug(f"创建后台加载线程，预览类型: {preview_type}, 文件路径: {file_path}")
@@ -434,6 +418,62 @@ class UnifiedPreviewer(QWidget):
             # 连接线程信号
             # debug("连接线程信号")
             self._preview_thread.preview_created.connect(self._on_preview_created)
+            self._preview_thread.preview_error.connect(self._on_preview_error)
+            self._preview_thread.preview_progress.connect(self._on_progress_updated)
+            
+            # 启动线程
+            # debug("启动后台加载线程")
+            try:
+                self._preview_thread.start()
+            except Exception as e:
+                import traceback
+                error(f"[ERROR] 启动 PreviewLoaderThread 失败: {e}")
+                traceback.print_exc()
+                self.is_loading_preview = False
+                self._on_file_read_finished()
+                return
+            
+            # 更新当前预览类型
+            # debug(f"更新当前预览类型: {preview_type}")
+            self.current_preview_type = preview_type
+        
+        # 显示"使用系统默认方式打开"按钮和"定位到所在目录"按钮
+        self.open_with_system_button.show()
+        self.copy_to_clipboard_button.show()
+        self.locate_in_selector_button.show()
+    
+    def _cleanup_preview_thread(self):
+        """
+        安全清理预览线程
+        增强版：确保线程完全终止并清理资源
+        """
+        if hasattr(self, '_preview_thread') and self._preview_thread:
+            thread = self._preview_thread
+            self._preview_thread = None  # 立即清除引用，防止重复清理
+            
+            try:
+                if thread.isRunning():
+                    thread.cancel()
+                    # 增加等待时间到1000ms，确保线程有足够时间终止
+                    if not thread.wait(1000):
+                        thread.terminate()  # 强制终止
+                        thread.wait(500)
+                
+                # 断开所有信号连接
+                try:
+                    thread.preview_created.disconnect()
+                    thread.preview_error.disconnect()
+                    thread.preview_progress.disconnect()
+                except (RuntimeError, TypeError) as e:
+                    debug(f'[UnifiedPreviewer] 断开信号连接时出错: {e}')
+                
+                # 安全删除线程对象
+                thread.deleteLater()
+            except Exception as e:
+                # 忽略清理过程中的异常
+                pass
+    
+
             self._preview_thread.preview_error.connect(self._on_preview_error)
             self._preview_thread.preview_progress.connect(self._on_progress_updated)
             
@@ -595,21 +635,7 @@ class UnifiedPreviewer(QWidget):
                                在切换预览类型时不应发出信号，避免清除新设置的预览态。
         """
         # 先停止后台线程，避免在清理过程中发生访问冲突
-        if hasattr(self, '_preview_thread') and self._preview_thread and self._preview_thread.isRunning():
-            self._preview_thread.cancel()
-            # 等待线程结束，最多等待500ms
-            self._preview_thread.wait(500)
-            # 如果线程仍在运行，强制终止
-            if self._preview_thread.isRunning():
-                self._preview_thread.terminate()
-                self._preview_thread.wait(100)
-            # 断开信号连接，防止线程完成时触发信号
-            try:
-                self._preview_thread.preview_created.disconnect(self._on_preview_created)
-                self._preview_thread.preview_error.disconnect(self._on_preview_error)
-                self._preview_thread.preview_progress.disconnect(self._on_progress_updated)
-            except:
-                pass
+        self._cleanup_preview_thread()
         
         # 先移除默认标签（如果存在），避免重复添加
         if hasattr(self, 'default_label') and self.default_label and self.default_label.parent() is self.preview_area:
@@ -932,7 +958,8 @@ class UnifiedPreviewer(QWidget):
                     return False
         except ImportError:
             return False
-        except Exception:
+        except (AttributeError, OSError, ValueError) as e:
+            debug(f'[UnifiedPreviewer] 检查GIF动画时出错: {e}')
             return False
     
     def _show_video_preview(self, file_path):
@@ -1389,8 +1416,8 @@ class UnifiedPreviewer(QWidget):
             if hasattr(self, '_preview_thread') and self._preview_thread:
                 try:
                     self._preview_thread.deleteLater()
-                except Exception:
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    debug(f'[UnifiedPreviewer] 删除预览线程时出错: {e}')
                 self._preview_thread = None
     
     def _on_preview_error(self, error_message):
@@ -1439,8 +1466,8 @@ class UnifiedPreviewer(QWidget):
             if hasattr(self, '_preview_thread') and self._preview_thread:
                 try:
                     self._preview_thread.deleteLater()
-                except Exception:
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    debug(f'[UnifiedPreviewer] 删除预览线程时出错: {e}')
                 self._preview_thread = None
 
     class PreviewLoaderThread(QThread):
@@ -1791,10 +1818,10 @@ class UnifiedPreviewer(QWidget):
                 try:
                     if hasattr(self.main_window, 'isVisible') and self.main_window.isVisible():
                         parent_widget = self.main_window
-                except (RuntimeError, AttributeError):
-                    pass
-        except Exception:
-            pass
+                except (RuntimeError, AttributeError) as e:
+                    debug(f'[UnifiedPreviewer] 检查主窗口可见性时出错: {e}')
+        except (AttributeError, TypeError) as e:
+            debug(f'[UnifiedPreviewer] 访问主窗口时出错: {e}')
         
         if parent_widget is None:
             try:

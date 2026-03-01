@@ -299,7 +299,8 @@ class MPVManager(QObject):
         while not self._operation_queue.empty():
             try:
                 self._operation_queue.get_nowait()
-            except:
+            except Exception as e:
+                self._logger.debug(f"清空操作队列时出错: {e}")
                 break
         # 清空组件注册表
         self._registered_components.clear()
@@ -569,8 +570,9 @@ class MPVManager(QObject):
             self._mpv_core.fileLoaded.disconnect(self._on_file_loaded)
             self._mpv_core.fileEnded.disconnect(self._on_file_ended)
             self._mpv_core.errorOccurred.disconnect(self._on_error_occurred)
-        except Exception as e:
-            self._logger.warning(f"断开信号连接时出错: {e}")
+        except RuntimeError as e:
+            # 信号可能未连接，这是正常情况
+            self._logger.debug(f"断开信号连接时出错: {e}")
 
         # 关闭MPV核心
         try:
@@ -1836,8 +1838,8 @@ class MPVManager(QObject):
         try:
             if self._mpv_core is not None:
                 self.close()
-        except Exception:
-            pass
+        except Exception as e:
+            self._logger.debug(f"析构时关闭MPV管理器出错: {e}")
 
 
 # 便捷函数，用于快速获取管理器实例

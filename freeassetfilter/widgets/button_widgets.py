@@ -1101,8 +1101,8 @@ class CustomButton(QPushButton):
                 self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size), self.dpi_scale)
             else:
                 self._icon_pixmap = None
-        except Exception as e:
-            warning(f"渲染SVG图标失败: {e}")
+        except (OSError, ValueError) as e:
+            debug(f"渲染SVG图标失败: {e}")
             self._icon_pixmap = None
     
     def resizeEvent(self, event):
@@ -1160,7 +1160,7 @@ class CustomButton(QPushButton):
                 try:
                     from PySide6.QtSvg import QSvgRenderer
                     from PySide6.QtCore import QRectF
-                    
+
                     # 读取SVG文件内容并进行颜色替换预处理
                     with open(self._icon_path, 'r', encoding='utf-8') as f:
                         svg_content = f.read()
@@ -1169,27 +1169,27 @@ class CustomButton(QPushButton):
                     # 强调样式（primary）按钮的SVG图标需要将#000000替换为base_color
                     force_black_to_base = (self.button_type == "primary")
                     svg_content = SvgRenderer._replace_svg_colors(svg_content, force_black_to_base=force_black_to_base)
-                    
+
                     # 使用预处理后的内容创建QSvgRenderer
                     svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
-                    
+
                     # 计算合适的图标大小，确保图标不会超出按钮范围
                     button_size = min(self.width(), self.height())
                     icon_size = button_size * 0.52
-                    
+
                     # 计算图标绘制位置（居中）
                     icon_rect = painter.window()
                     icon_rect.setWidth(int(icon_size))
                     icon_rect.setHeight(int(icon_size))
                     icon_rect.moveCenter(painter.window().center())
-                    
+
                     # 将QRect转换为QRectF，因为QSvgRenderer.render方法期望第二个参数是QRectF类型
                     icon_rectf = QRectF(icon_rect)
 
                     # 直接渲染SVG到按钮上
                     svg_renderer.render(painter, icon_rectf)
-                except Exception as e:
-                    warning(f"直接渲染SVG图标失败: {e}")
+                except (OSError, ImportError, ValueError) as e:
+                    debug(f"直接渲染SVG图标失败: {e}")
                     # 如果直接渲染失败，回退到使用位图
                     if self._icon_pixmap:
                         # 计算图标绘制位置（居中）

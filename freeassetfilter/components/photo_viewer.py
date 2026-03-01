@@ -87,9 +87,15 @@ class RawProcessor(QThread):
             # 使用 .copy() 确保数据安全，防止 numpy 数组被释放后 QImage 访问无效内存
             qimage = QImage(bgr.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
             self.processing_complete.emit(qimage, self.image_path)
+        except (ImportError, ModuleNotFoundError) as e:
+            error(f"加载RAW图片时缺少依赖库: {e}")
+            self.processing_failed.emit(f"加载RAW图片时缺少依赖库: {e}")
+        except (OSError, IOError) as e:
+            error(f"加载RAW图片时文件错误: {e}")
+            self.processing_failed.emit(f"加载RAW图片时文件错误: {e}")
         except Exception as e:
-            error(f"加载RAW图片时出错: {e}")
-            self.processing_failed.emit(f"加载RAW图片时出错: {e}")
+            error(f"加载RAW图片时未知错误: {e}")
+            self.processing_failed.emit(f"加载RAW图片时未知错误: {e}")
 
 
 class IcoProcessor(QThread):
@@ -116,8 +122,8 @@ class IcoProcessor(QThread):
                 if image and not image.isNull():
                     self.processing_complete.emit(image, self.image_path)
                     return
-            except ImportError:
-                pass  # PIL不可用，使用备用方案
+            except ImportError as e:
+                debug(f"PIL不可用，使用Windows API备用方案: {e}")
 
             # 使用Windows API加载ICO文件
             image = self._load_with_windows_api()
@@ -127,11 +133,17 @@ class IcoProcessor(QThread):
 
             raise Exception("无法从ICO文件创建图像")
 
+        except (ImportError, ModuleNotFoundError) as e:
+            error(f"加载ICO文件时缺少依赖库: {e}")
+            self.processing_failed.emit(f"加载ICO文件时缺少依赖库: {e}")
+        except (OSError, IOError) as e:
+            error(f"加载ICO文件时文件错误: {e}")
+            self.processing_failed.emit(f"加载ICO文件时文件错误: {e}")
         except Exception as e:
-            error(f"加载ICO文件时出错: {e}")
+            error(f"加载ICO文件时未知错误: {e}")
             import traceback
             traceback.print_exc()
-            self.processing_failed.emit(f"加载ICO文件时出错: {e}")
+            self.processing_failed.emit(f"加载ICO文件时未知错误: {e}")
 
     def _load_with_pil(self):
         """
@@ -347,11 +359,17 @@ class HeifAvifProcessor(QThread):
                 raise Exception("QImage创建失败")
             
             self.processing_complete.emit(qimage, self.image_path)
+        except (ImportError, ModuleNotFoundError) as e:
+            error(f"加载HEIC/AVIF图片时缺少依赖库: {e}")
+            self.processing_failed.emit(f"加载HEIC/AVIF图片时缺少依赖库: {e}")
+        except (OSError, IOError) as e:
+            error(f"加载HEIC/AVIF图片时文件错误: {e}")
+            self.processing_failed.emit(f"加载HEIC/AVIF图片时文件错误: {e}")
         except Exception as e:
-            error(f"加载HEIC/AVIF图片时出错: {e}")
+            error(f"加载HEIC/AVIF图片时未知错误: {e}")
             import traceback
             traceback.print_exc()
-            self.processing_failed.emit(f"加载HEIC/AVIF图片时出错: {e}")
+            self.processing_failed.emit(f"加载HEIC/AVIF图片时未知错误: {e}")
 
 
 class PSDProcessor(QThread):
@@ -417,7 +435,7 @@ class PSDProcessor(QThread):
 
             try:
                 composited.save(temp_path, 'PNG')
-            except Exception as e:
+            except (OSError, IOError) as e:
                 error(f"保存临时文件时出错: {e}")
                 self.processing_failed.emit(f"保存临时文件时出错: {e}")
                 return
@@ -429,11 +447,14 @@ class PSDProcessor(QThread):
             error_msg = f"缺少必要的库: {str(e)}。请安装psd-tools库: pip install psd-tools"
             error(error_msg)
             self.processing_failed.emit(error_msg)
+        except (OSError, IOError) as e:
+            error(f"加载PSD文件时文件错误: {e}")
+            self.processing_failed.emit(f"加载PSD文件时文件错误: {e}")
         except Exception as e:
-            error(f"加载PSD文件时出错: {e}")
+            error(f"加载PSD文件时未知错误: {e}")
             import traceback
             traceback.print_exc()
-            self.processing_failed.emit(f"加载PSD文件时出错: {e}")
+            self.processing_failed.emit(f"加载PSD文件时未知错误: {e}")
 
 
 class ImageWidget(QWidget):
@@ -650,8 +671,11 @@ class ImageWidget(QWidget):
                 QTimer.singleShot(100, self._delayed_fit_scale)
                 return True
             return False
+        except (OSError, IOError) as e:
+            error(f"加载图片时文件错误: {e}")
+            return False
         except Exception as e:
-            error(f"加载图片时出错: {e}")
+            error(f"加载图片时未知错误: {e}")
             return False
     
     def _delayed_fit_scale(self):
@@ -721,9 +745,18 @@ class ImageWidget(QWidget):
                 logical_width = int(original_width * self.scale_factor)
                 logical_height = int(original_height * self.scale_factor)
                 
+                # 优化：根据缩放因子选择合适的变换模式
+                # 当缩放因子接近1.0时使用SmoothTransformation，否则使用FastTransformation
+                if abs(self.scale_factor - 1.0) < 0.1:
+                    # 接近原始大小，使用高质量缩放
+                    transform_mode = Qt.SmoothTransformation
+                else:
+                    # 缩放较大，使用快速缩放以提高性能
+                    transform_mode = Qt.FastTransformation
+                
                 self.scaled_image = self.original_image.scaled(
                     logical_width, logical_height, 
-                    Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    Qt.KeepAspectRatio, transform_mode
                 )
                 
                 self.pixmap = QPixmap.fromImage(self.scaled_image)

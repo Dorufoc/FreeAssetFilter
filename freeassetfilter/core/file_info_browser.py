@@ -444,8 +444,9 @@ class FileInfoBrowser:
         """
         try:
             stat = os.stat(file_path)
-        except Exception:
+        except (OSError, IOError) as e:
             # 处理网络文件无法访问的情况
+            debug(f"获取文件状态失败: {file_path}, 错误: {e}")
             return {
                 "文件名": os.path.basename(file_path),
                 "文件路径": file_path,
@@ -489,7 +490,8 @@ class FileInfoBrowser:
                 for chunk in iter(lambda: f.read(4096), b''):
                     hasher.update(chunk)
             return hasher.hexdigest()
-        except Exception:
+        except (OSError, IOError) as e:
+            debug(f"计算文件哈希失败: {file_path}, 错误: {e}")
             return "无法计算"
     
     def _get_directory_info(self, dir_path: str) -> Dict[str, Any]:
@@ -511,7 +513,8 @@ class FileInfoBrowser:
                 "子目录数": len(dirs),
                 "文件数": len(files),
             }
-        except Exception:
+        except (OSError, IOError, PermissionError) as e:
+            debug(f"获取目录信息失败: {dir_path}, 错误: {e}")
             return {
                 "子目录数": "无法访问",
                 "文件数": "无法访问",
@@ -543,7 +546,8 @@ class FileInfoBrowser:
                         info["声道数"] = audio.info.channels
                     if hasattr(audio.info, 'sample_rate'):
                         info["采样率"] = f"{audio.info.sample_rate} Hz"
-            except Exception:
+            except (OSError, IOError, AttributeError) as e:
+                debug(f"mutagen获取音频信息失败: {file_path}, 错误: {e}")
                 pass
         
         # 如果mutagen失败，尝试使用ffprobe
@@ -558,7 +562,8 @@ class FileInfoBrowser:
                     format_info = ffprobe_data["format"]
                     info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
                     info["比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
-            except Exception:
+            except (subprocess.SubprocessError, json.JSONDecodeError, ValueError) as e:
+                debug(f"ffprobe获取音频信息失败: {file_path}, 错误: {e}")
                 info["时长"] = "无法获取"
                 info["比特率"] = "无法获取"
         
@@ -586,7 +591,8 @@ class FileInfoBrowser:
                     for key, value in audio.items():
                         try:
                             metadata[key] = str(value)
-                        except:
+                        except (UnicodeDecodeError, AttributeError, TypeError) as e:
+                            debug(f"音频元数据解码失败 ({key}): {e}")
                             pass
                     if metadata:
                         info["元数据"] = metadata
@@ -594,9 +600,10 @@ class FileInfoBrowser:
                     # 提取格式信息
                     if hasattr(audio.info, 'codec'):
                         info["编码格式"] = audio.info.codec
-            except Exception:
+            except (OSError, IOError, AttributeError) as e:
+                debug(f"mutagen获取音频高级信息失败: {file_path}, 错误: {e}")
                 pass
-        
+
         return info
     
     def _get_video_info(self, file_path: str) -> Dict[str, Any]:
@@ -622,8 +629,9 @@ class FileInfoBrowser:
                 info["分辨率"] = f"{clip.size[0]} x {clip.size[1]}"
                 info["帧率"] = f"{clip.fps:.2f} fps"  # 保留两位小数
                 return info
-        except Exception:
-            # 不显示moviepy相关的错误信息给用户
+        except (OSError, IOError, ImportError) as e:
+            # 不显示moviepy相关的错误信息给用户，仅记录调试日志
+            debug(f"moviepy获取视频信息失败: {file_path}, 错误: {e}")
             pass
         
         # 尝试使用opencv-python（如果可用）
@@ -650,8 +658,9 @@ class FileInfoBrowser:
                 cap.release()
                 return info
             cap.release()
-        except Exception:
-            # 不显示opencv相关的错误信息给用户
+        except (OSError, IOError, ImportError) as e:
+            # 不显示opencv相关的错误信息给用户，仅记录调试日志
+            debug(f"opencv获取视频信息失败: {file_path}, 错误: {e}")
             pass
         
         # 尝试简单的文件头解析（MP4格式）
@@ -663,7 +672,8 @@ class FileInfoBrowser:
                 if box_type == b'ftyp':
                     info["文件格式"] = "MP4"
                     # 可以添加更多MP4特定的解析
-        except Exception:
+        except (OSError, IOError) as e:
+            debug(f"解析MP4文件头失败: {file_path}, 错误: {e}")
             pass
         
         return info
@@ -696,15 +706,16 @@ class FileInfoBrowser:
                         char = chr((fourcc_int >> (8 * i)) & 0xFF)
                         if char.isprintable() and char != '\x00':
                             codec_chars.append(char)
-                    
+
                     if codec_chars:
                         codec_str = ''.join(codec_chars)
                         info["视频编解码器"] = codec_str
-                except Exception:
+                except (ValueError, TypeError) as e:
+                    debug(f"解析视频编解码器失败: {file_path}, 错误: {e}")
                     pass
-                
+
                 cap.release()
-        except Exception:
+        except (OSError, IOError, ImportError) as e:
             # 不显示opencv相关的错误信息给用户
             pass
         
@@ -722,7 +733,7 @@ class FileInfoBrowser:
                 from moviepy.editor import VideoFileClip
                 with VideoFileClip(file_path) as clip:
                     duration = clip.duration
-            except Exception:
+            except (OSError, IOError, ImportError):
                 # 尝试使用opencv获取时长
                 try:
                     import cv2
@@ -733,18 +744,19 @@ class FileInfoBrowser:
                         if frame_count > 0 and fps > 0:
                             duration = frame_count / fps
                         cap.release()
-                except Exception:
+                except (OSError, IOError, ImportError):
                     pass
-            
+
             if duration > 0:
                 # 获取文件大小（字节）
                 file_size = os.path.getsize(file_path)
                 # 计算码率（bps）: 码率 = 文件大小（字节） * 8 / 时长（秒）
                 bitrate = int((file_size * 8) / duration)
                 info["码率"] = self._format_bitrate(bitrate)
-        except Exception as e:
+        except (OSError, IOError, ZeroDivisionError) as e:
+            debug(f"计算视频码率失败: {file_path}, 错误: {e}")
             pass
-        
+
         # 方法2：如果ffprobe可用，尝试获取更准确的视频流码率
         try:
             # 使用ffprobe获取视频流的码率
@@ -776,9 +788,11 @@ class FileInfoBrowser:
                                     estimated_bitrate = int(width * height * fps * 24 / 1000) * 1000
                                     info["码率"] = self._format_bitrate(estimated_bitrate)
                                     break
-                            except Exception:
+                            except (ValueError, TypeError, ZeroDivisionError) as e:
+                                debug(f"估算视频码率失败: {file_path}, 错误: {e}")
                                 pass
-        except Exception:
+        except (subprocess.SubprocessError, json.JSONDecodeError) as e:
+            debug(f"ffprobe获取视频流码率失败: {file_path}, 错误: {e}")
             # 方法3：尝试获取总码率作为备选
             try:
                 result = subprocess.run(
@@ -791,10 +805,11 @@ class FileInfoBrowser:
                     bit_rate = format_info.get("bit_rate")
                     if bit_rate:
                         info["码率"] = self._format_bitrate(int(bit_rate))
-            except Exception:
+            except (subprocess.SubprocessError, json.JSONDecodeError) as e:
+                debug(f"ffprobe获取格式码率失败: {file_path}, 错误: {e}")
                 # 所有方法都失败了，保留默认值"无法获取"
                 pass
-        
+
         # 尝试使用moviepy获取一些高级信息（如果可用）
         try:
             from moviepy.editor import VideoFileClip
@@ -803,10 +818,11 @@ class FileInfoBrowser:
                 if clip.audio:
                     info["音频采样率"] = f"{clip.audio.fps} Hz"
                     info["音频通道数"] = clip.audio.nchannels
-        except Exception:
-            # 不显示moviepy相关的错误信息给用户
+        except (OSError, IOError, ImportError) as e:
+            # 不显示moviepy相关的错误信息给用户，仅记录调试日志
+            debug(f"moviepy获取视频高级信息失败: {file_path}, 错误: {e}")
             pass
-        
+
         return info
     
     def _get_image_info(self, file_path: str) -> Dict[str, Any]:
@@ -828,7 +844,8 @@ class FileInfoBrowser:
                 info["尺寸"] = f"{width} x {height}"
                 info["格式"] = img.format
                 info["模式"] = img.mode
-        except Exception:
+        except (OSError, IOError) as e:
+            debug(f"PIL获取图像信息失败: {file_path}, 错误: {e}")
             info["尺寸"] = "无法获取"
             info["格式"] = "无法获取"
             info["模式"] = "无法获取"
@@ -858,9 +875,10 @@ class FileInfoBrowser:
                             tag_name = tag.split(':')[-1]
                             exif_info[tag_name] = str(value)
                         info["EXIF信息"] = exif_info
-            except Exception:
+            except (OSError, IOError) as e:
+                debug(f"提取EXIF信息失败: {file_path}, 错误: {e}")
                 pass
-        
+
         return info
     
     def _get_text_info(self, file_path: str) -> Dict[str, Any]:
@@ -881,7 +899,8 @@ class FileInfoBrowser:
                 raw_data = f.read(1024)
                 result = chardet.detect(raw_data)
                 info["编码格式"] = result['encoding']
-        except Exception:
+        except (OSError, IOError) as e:
+            debug(f"检测文本编码失败: {file_path}, 错误: {e}")
             info["编码格式"] = "无法检测"
         
         # 统计字数
@@ -892,7 +911,8 @@ class FileInfoBrowser:
                 info["字符数（不含空格）"] = len(content.replace(' ', ''))
                 info["行数"] = content.count('\n') + 1
                 info["单词数"] = len(content.split())
-        except Exception:
+        except (OSError, IOError, UnicodeDecodeError) as e:
+            debug(f"统计文本字数失败: {file_path}, 错误: {e}")
             info["字符数"] = "无法统计"
             info["字符数（不含空格）"] = "无法统计"
             info["行数"] = "无法统计"
@@ -917,12 +937,13 @@ class FileInfoBrowser:
             try:
                 mime = magic.Magic(mime=True)
                 info["MIME类型"] = mime.from_file(file_path)
-                
+
                 magic_instance = magic.Magic()
                 info["详细类型"] = magic_instance.from_file(file_path)
-            except Exception:
+            except (OSError, IOError, ValueError) as e:
+                debug(f"magic检测文件类型失败: {file_path}, 错误: {e}")
                 pass
-        
+
         return info
     
     def _get_archive_info(self, file_path: str) -> Dict[str, Any]:
@@ -967,7 +988,8 @@ class FileInfoBrowser:
                     # py7zr不直接提供未压缩大小，所以无法计算压缩率
                     info["总大小"] = "无法获取"
                     info["压缩率"] = "无法计算"
-        except Exception:
+        except (OSError, IOError, zipfile.BadZipFile, rarfile.Error, tarfile.TarError, py7zr.exceptions.Bad7zFile) as e:
+            debug(f"获取压缩文件信息失败: {file_path}, 错误: {e}")
             info["文件数"] = "无法获取"
             info["总大小"] = "无法获取"
             info["压缩率"] = "无法计算"
@@ -1020,10 +1042,11 @@ class FileInfoBrowser:
                 info["内容列表"] = content_list[:10]  # 只显示前10个文件
                 if len(content_list) > 10:
                     info["内容列表"].append({"名称": f"... 还有 {len(content_list) - 10} 个文件", "大小": "", "修改时间": ""})
-                    
-        except Exception:
+
+        except (OSError, IOError, zipfile.BadZipFile, rarfile.Error, tarfile.TarError) as e:
+            debug(f"获取压缩文件内容列表失败: {file_path}, 错误: {e}")
             pass
-        
+
         return info
     
     def _get_pdf_info(self, file_path: str) -> Dict[str, Any]:
@@ -1050,9 +1073,10 @@ class FileInfoBrowser:
                         info["作者"] = metadata["author"]
                     if metadata.get("creator"):
                         info["创建者"] = metadata["creator"]
-        except Exception:
+        except (OSError, IOError, fitz.FileDataError) as e:
+            debug(f"获取PDF信息失败: {file_path}, 错误: {e}")
             info["页数"] = "无法获取"
-        
+
         return info
     
     def _get_pdf_advanced_info(self, file_path: str) -> Dict[str, Any]:
@@ -1080,11 +1104,12 @@ class FileInfoBrowser:
                     advanced_metadata["修改日期"] = metadata.get("modDate", "未知")
                     advanced_metadata["PDF版本"] = metadata.get("format", "未知").split("-")[-1] if metadata.get("format") else "未知"
                     info["元数据"] = advanced_metadata
-        except Exception:
+        except (OSError, IOError, fitz.FileDataError) as e:
+            debug(f"获取PDF高级信息失败: {file_path}, 错误: {e}")
             pass
-        
+
         return info
-    
+
     def _get_font_info(self, file_path: str) -> Dict[str, Any]:
         """
         获取字体文件基本信息
@@ -1118,14 +1143,16 @@ class FileInfoBrowser:
                         if record.nameID == name_id:
                             try:
                                 info[name_desc] = record.string.decode('utf-8')
-                            except:
+                            except UnicodeDecodeError:
+                                debug(f"字体名称UTF-8解码失败，尝试latin-1: {name_desc}")
                                 info[name_desc] = record.string.decode('latin-1')
                             break
-        except Exception:
+        except (OSError, IOError, ImportError) as e:
+            debug(f"获取字体信息失败: {file_path}, 错误: {e}")
             pass
-        
+
         return info
-    
+
     def _get_font_advanced_info(self, file_path: str) -> Dict[str, Any]:
         """
         获取字体文件高级信息
@@ -1157,9 +1184,10 @@ class FileInfoBrowser:
                     info["上升"] = hhea.ascent
                     info["下降"] = hhea.descent
                     info["行间距"] = hhea.lineGap
-        except Exception:
+        except (OSError, IOError, ImportError) as e:
+            debug(f"获取字体高级信息失败: {file_path}, 错误: {e}")
             pass
-        
+
         return info
     
     def _load_detailed_info(self):
@@ -1385,9 +1413,10 @@ class FileInfoBrowser:
             # 检查文件是否在缓存中
             if file_path in cache_data:
                 return cache_data[file_path]
-        except Exception:
+        except (OSError, IOError, json.JSONDecodeError) as e:
+            debug(f"读取缓存失败: {e}")
             pass
-        
+
         return None
     
     def _save_to_cache(self, file_path, info):

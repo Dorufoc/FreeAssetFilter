@@ -86,6 +86,27 @@ CoTaskMemFree = ole32.CoTaskMemFree
 CoTaskMemFree.argtypes = [ctypes.c_void_p]
 CoTaskMemFree.restype = None
 
+# IShellItemImageFactory 相关定义 - 用于获取高质量图标
+SIIGBF_RESIZETOFIT = 0x00000000
+SIIGBF_BIGGERSIZEOK = 0x00000001
+SIIGBF_MEMORYONLY = 0x00000002
+SIIGBF_ICONONLY = 0x00000004
+SIIGBF_THUMBNAILONLY = 0x00000008
+SIIGBF_INCACHEONLY = 0x00000010
+SIIGBF_CROPTOSQUARE = 0x00000020
+SIIGBF_WIDETHUMBNAILS = 0x00000040
+SIIGBF_ICONBACKGROUND = 0x00000080
+SIIGBF_SCALEUP = 0x00000100
+
+# CLSID_ShellItem
+CLSID_ShellItem = GUID(0x43826d1e, 0xe718, 0x42ee, (0xbc, 0x55, 0xa1, 0xe2, 0x61, 0xc3, 0x7b, 0xfe))
+
+# IID_IShellItem
+IID_IShellItem = GUID(0x43826d1e, 0xe718, 0x42ee, (0xbc, 0x55, 0xa1, 0xe2, 0x61, 0xc3, 0x7b, 0xfe))
+
+# IID_IShellItemImageFactory
+IID_IShellItemImageFactory = GUID(0xbcc18b79, 0xba16, 0x442f, (0x80, 0xc4, 0x8a, 0x59, 0xc5, 0x5c, 0x09, 0x7f))
+
 # 解析lnk文件的函数
 def get_lnk_target(lnk_path):
     """
@@ -156,7 +177,8 @@ def get_lnk_target(lnk_path):
                     return target_path
         
         return None
-    except Exception as e:
+    except (OSError, struct.error, ValueError) as e:
+        debug(f"解析LNK文件失败 [{lnk_path}]: {e}")
         return None
 
 # 定义ExtractIconEx函数
@@ -269,8 +291,8 @@ def get_all_icons_from_exe(file_path):
                             
                             # 如果无法获取尺寸信息，释放图标
                             DestroyIcon(hicon)
-            except Exception as e:
-                error(f"SHDefExtractIcon提取图标失败: {e}")
+            except (OSError, ctypes.WinError, AttributeError) as e:
+                warning(f"SHDefExtractIcon提取图标失败 [{file_path}]: {e}")
             
             # 如果SHDefExtractIcon失败或返回空，使用ExtractIconEx作为备用
             if not icons:
@@ -332,8 +354,8 @@ def get_all_icons_from_exe(file_path):
                             # 如果无法获取尺寸信息，释放图标
                             DestroyIcon(small_icons[0])
 
-    except Exception as e:
-        error(f"提取所有图标时出错: {e}")
+    except (OSError, ctypes.WinError) as e:
+        warning(f"提取所有图标时出错 [{file_path}]: {e}")
     
     return icons
 
@@ -341,11 +363,12 @@ def get_all_icons_from_exe(file_path):
 def get_highest_resolution_icon(file_path, desired_size=256):
     """
     获取文件的最高分辨率图标，支持exe和lnk文件
-    
+    优先使用 IShellItemImageFactory (Windows资源管理器使用的接口) 获取高质量图标
+
     参数:
         file_path: str - 文件路径
-        desired_size: int - 期望的图标大小
-    
+        desired_size: int - 期望的图标大小（仅作为参考，实际会获取最高分辨率）
+
     返回:
         HICON - 图标句柄，如果获取失败则返回None
     """
@@ -353,75 +376,241 @@ def get_highest_resolution_icon(file_path, desired_size=256):
         # 检查文件类型
         _, ext = os.path.splitext(file_path)
         ext = ext.lower()
-        
+
         # 如果是lnk文件，获取其指向的目标文件
+        target_path = None
         if ext == '.lnk':
             target_path = get_lnk_target(file_path)
             if target_path and os.path.exists(target_path):
                 file_path = target_path
                 _, ext = os.path.splitext(file_path)
                 ext = ext.lower()
-        
+
+        # 首先尝试使用 IShellItemImageFactory 获取高质量图标（大尺寸）
+        # 这是 Windows 资源管理器使用的接口，可以获取最佳质量的图标
+        # 传入较大的尺寸（512）以获取最高分辨率
+        hicon = get_icon_from_shell_item_image_factory(file_path, 512)
+        if hicon:
+            return hicon
+
         # 对于exe文件，使用get_all_icons_from_exe获取所有可用图标，然后选择最高分辨率的
         if ext == '.exe':
             # 获取所有可用图标
             all_icons = get_all_icons_from_exe(file_path)
-            
+
             if all_icons:
-                # 按分辨率排序，选择最高分辨率的图标
-                highest_res_icon = max(all_icons, key=lambda icon: icon["width"] * icon["height"])
-                
+                # 选择分辨率最高的图标
+                best_icon = max(all_icons, key=lambda icon: icon["width"] * icon["height"])
+
                 # 释放其他图标的句柄
                 for icon in all_icons:
-                    if icon["hicon"] != highest_res_icon["hicon"]:
+                    if icon["hicon"] != best_icon["hicon"]:
                         DestroyIcon(icon["hicon"])
-                
-                return highest_res_icon["hicon"]
-        
+
+                return best_icon["hicon"]
+
         # 使用SHGetFileInfo获取其他类型文件的图标
         # 创建SHFILEINFO结构
         shfi = SHFILEINFOW()
         shfi_size = sizeof(shfi)
-        
+
         # 使用SHGetFileInfo获取图标，移除SHGFI_SHELLICONSIZE以获取原始大小
         flags = SHGFI_ICON | SHGFI_USEFILEATTRIBUTES
-        
+
         result = SHGetFileInfoW(
-            file_path, 
-            FILE_ATTRIBUTE_NORMAL, 
-            byref(shfi), 
-            shfi_size, 
+            file_path,
+            FILE_ATTRIBUTE_NORMAL,
+            byref(shfi),
+            shfi_size,
             flags
         )
-        
+
         if result == 0 or shfi.hIcon is None:
             # 尝试不带SHGFI_USEFILEATTRIBUTES的方式
             flags = SHGFI_ICON
             result = SHGetFileInfoW(
-                file_path, 
-                0, 
-                byref(shfi), 
-                shfi_size, 
+                file_path,
+                0,
+                byref(shfi),
+                shfi_size,
                 flags
             )
-            
+
             if result == 0 or shfi.hIcon is None:
                 return None
-        
+
         return shfi.hIcon
-    except Exception as e:
+    except (OSError, ctypes.WinError) as e:
+        debug(f"获取高分辨率图标失败 [{file_path}]: {e}")
         return None
 
-def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
+def get_icon_from_shell_item_image_factory(file_path, size=256):
+    """
+    使用 IShellItemImageFactory 获取高质量图标
+    这是 Windows 资源管理器使用的接口，可以获取高质量、大尺寸的图标
+
+    参数:
+        file_path: str - 文件路径
+        size: int - 期望的图标大小
+
+    返回:
+        HICON - 图标句柄，如果获取失败则返回None
+    """
+    try:
+        # 定义必要的 COM 接口
+        class IShellItemImageFactoryVtbl(ctypes.Structure):
+            pass
+
+        class IShellItemImageFactory(ctypes.Structure):
+            pass
+
+        # SHCreateItemFromParsingName 函数
+        SHCreateItemFromParsingName = shell32.SHCreateItemFromParsingName
+        SHCreateItemFromParsingName.argtypes = [
+            LPCWSTR,  # pszPath
+            ctypes.c_void_p,  # pbc
+            ctypes.POINTER(GUID),  # riid
+            ctypes.POINTER(ctypes.c_void_p)  # ppv
+        ]
+        SHCreateItemFromParsingName.restype = ctypes.c_long
+
+        # 创建 ShellItem
+        shell_item_ptr = ctypes.c_void_p()
+        hr = SHCreateItemFromParsingName(
+            file_path,
+            None,
+            byref(IID_IShellItemImageFactory),
+            byref(shell_item_ptr)
+        )
+
+        if hr != 0 or not shell_item_ptr:
+            return None
+
+        try:
+            # 将指针转换为 IShellItemImageFactory 接口
+            # 使用 vtable 调用 GetImage 方法
+            # vtable 布局: QueryInterface, AddRef, Release, GetImage
+
+            # 获取 vtable 指针
+            vtable_ptr = ctypes.cast(shell_item_ptr, ctypes.POINTER(ctypes.c_void_p)).contents.value
+            if not vtable_ptr:
+                return None
+
+            # GetImage 是第4个函数 (索引3)
+            get_image_ptr = ctypes.cast(vtable_ptr + 3 * ctypes.sizeof(ctypes.c_void_p),
+                                       ctypes.POINTER(ctypes.c_void_p)).contents.value
+
+            # 定义 GetImage 函数原型
+            # HRESULT GetImage(SIZE size, SIIGBF flags, HBITMAP* phbm);
+            GetImage = ctypes.WINFUNCTYPE(
+                ctypes.c_long,  # HRESULT
+                ctypes.c_void_p,  # this
+                ctypes.c_long,  # cx
+                ctypes.c_long,  # cy
+                ctypes.c_uint,  # flags
+                ctypes.POINTER(ctypes.c_void_p)  # phbm
+            )(get_image_ptr)
+
+            # 调用 GetImage
+            hbitmap = ctypes.c_void_p()
+            hr = GetImage(
+                shell_item_ptr,
+                size,  # cx
+                size,  # cy
+                SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK | SIIGBF_SCALEUP,  # 获取图标，允许更大尺寸，允许放大
+                byref(hbitmap)
+            )
+
+            if hr != 0 or not hbitmap:
+                return None
+
+            # 将 HBITMAP 转换为 HICON
+            # 使用 CreateIconIndirect
+            class ICONINFO(ctypes.Structure):
+                _fields_ = [
+                    ("fIcon", BOOL),
+                    ("xHotspot", ctypes.c_uint),
+                    ("yHotspot", ctypes.c_uint),
+                    ("hbmMask", ctypes.c_void_p),
+                    ("hbmColor", ctypes.c_void_p)
+                ]
+
+            # 创建掩码位图（全透明）
+            CreateBitmap = windll.gdi32.CreateBitmap
+            CreateBitmap.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
+            CreateBitmap.restype = ctypes.c_void_p
+
+            # 获取原始位图信息
+            class BITMAP(ctypes.Structure):
+                _fields_ = [
+                    ("bmType", ctypes.c_long),
+                    ("bmWidth", ctypes.c_long),
+                    ("bmHeight", ctypes.c_long),
+                    ("bmWidthBytes", ctypes.c_long),
+                    ("bmPlanes", ctypes.c_ushort),
+                    ("bmBitsPixel", ctypes.c_ushort),
+                    ("bmBits", ctypes.c_void_p)
+                ]
+
+            GetObject = windll.gdi32.GetObjectW
+            GetObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            GetObject.restype = ctypes.c_int
+
+            bmp = BITMAP()
+            if GetObject(hbitmap, ctypes.sizeof(bmp), byref(bmp)) == 0:
+                windll.gdi32.DeleteObject(hbitmap)
+                return None
+
+            # 创建掩码位图
+            hbm_mask = CreateBitmap(bmp.bmWidth, bmp.bmHeight, 1, 1, None)
+
+            icon_info = ICONINFO()
+            icon_info.fIcon = True
+            icon_info.xHotspot = 0
+            icon_info.yHotspot = 0
+            icon_info.hbmMask = hbm_mask
+            icon_info.hbmColor = hbitmap
+
+            CreateIconIndirect = user32.CreateIconIndirect
+            CreateIconIndirect.argtypes = [ctypes.POINTER(ICONINFO)]
+            CreateIconIndirect.restype = HICON
+
+            hicon = CreateIconIndirect(byref(icon_info))
+
+            # 清理位图资源
+            windll.gdi32.DeleteObject(hbitmap)
+            windll.gdi32.DeleteObject(hbm_mask)
+
+            if hicon:
+                return hicon
+
+        finally:
+            # 释放 ShellItem
+            if shell_item_ptr:
+                # 调用 Release 方法 (vtable 索引2)
+                vtable_ptr = ctypes.cast(shell_item_ptr, ctypes.POINTER(ctypes.c_void_p)).contents.value
+                if vtable_ptr:
+                    release_ptr = ctypes.cast(vtable_ptr + 2 * ctypes.sizeof(ctypes.c_void_p),
+                                             ctypes.POINTER(ctypes.c_void_p)).contents.value
+                    Release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(release_ptr)
+                    Release(shell_item_ptr)
+
+    except Exception as e:
+        debug(f"IShellItemImageFactory 获取图标失败 [{file_path}]: {e}")
+
+    return None
+
+def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_size=False):
     """
     将HICON转换为QPixmap
-    
+
     参数:
         hicon: HICON - 图标句柄
         size: int - 目标大小（逻辑像素）
         qt_app: QApplication - Qt应用实例
         device_pixel_ratio: float - 设备像素比，如果不指定则使用系统主屏幕的DPI
-    
+        keep_original_size: bool - 是否保持原始分辨率（点对点渲染），默认为False
+
     返回:
         QPixmap - 如果转换成功则返回Pixmap，否则返回None
     """
@@ -430,11 +619,11 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
         from PySide6.QtCore import Qt, QPoint
         from PIL import Image, ImageFilter, ImageEnhance
         import io
-        
+
         # 获取设备像素比
         if device_pixel_ratio is None:
             device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
-        
+
         # 使用Windows API获取图标信息
         class ICONINFO(ctypes.Structure):
             _fields_ = [
@@ -444,7 +633,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
                 ("hbmMask", ctypes.c_void_p),
                 ("hbmColor", ctypes.c_void_p)
             ]
-        
+
         class BITMAP(ctypes.Structure):
             _fields_ = [
                 ("bmType", DWORD),
@@ -455,51 +644,51 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
                 ("bmBitsPixel", ctypes.c_ushort),
                 ("bmBits", ctypes.c_void_p)
             ]
-        
+
         GetIconInfo = user32.GetIconInfo
         GetIconInfo.argtypes = [HICON, ctypes.POINTER(ICONINFO)]
         GetIconInfo.restype = BOOL
-        
+
         GetObjectW = windll.gdi32.GetObjectW
         GetObjectW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
         GetObjectW.restype = ctypes.c_int
-        
+
         GetDIBits = windll.gdi32.GetDIBits
         GetDIBits.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, DWORD, DWORD, 
+            ctypes.c_void_p, ctypes.c_void_p, DWORD, DWORD,
             ctypes.c_void_p, ctypes.c_void_p, UINT
         ]
         GetDIBits.restype = DWORD
-        
+
         CreateCompatibleDC = windll.gdi32.CreateCompatibleDC
         CreateCompatibleDC.argtypes = [ctypes.c_void_p]
         CreateCompatibleDC.restype = ctypes.c_void_p
-        
+
         DeleteDC = windll.gdi32.DeleteDC
         DeleteDC.argtypes = [ctypes.c_void_p]
         DeleteDC.restype = BOOL
-        
+
         SelectObject = windll.gdi32.SelectObject
         SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         SelectObject.restype = ctypes.c_void_p
-        
+
         DeleteObject = windll.gdi32.DeleteObject
         DeleteObject.argtypes = [ctypes.c_void_p]
         DeleteObject.restype = BOOL
-        
+
         # 获取图标信息
         icon_info = ICONINFO()
         if not GetIconInfo(hicon, byref(icon_info)):
             return None
-        
+
         try:
             # 获取彩色位图信息
             bmp = BITMAP()
             if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) == 0:
                 return None
-            
+
             width, height = bmp.bmWidth, bmp.bmHeight
-            
+
             # 为DIB创建BITMAPINFOHEADER
             class BITMAPINFOHEADER(ctypes.Structure):
                 _fields_ = [
@@ -515,7 +704,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
                     ("biClrUsed", DWORD),
                     ("biClrImportant", DWORD)
                 ]
-            
+
             bmi_header = BITMAPINFOHEADER()
             bmi_header.biSize = sizeof(bmi_header)
             bmi_header.biWidth = width
@@ -523,82 +712,90 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
             bmi_header.biPlanes = 1
             bmi_header.biBitCount = 32  # 32位ARGB
             bmi_header.biCompression = 0  # BI_RGB
-            
+
             # 分配内存存储像素数据
             buffer_size = width * height * 4
             buffer = (ctypes.c_ubyte * buffer_size)()
-            
+
             # 获取设备上下文
             dc = CreateCompatibleDC(None)
             if not dc:
                 return None
-            
+
             try:
                 # 获取像素数据
                 bits_copied = GetDIBits(
-                    dc, icon_info.hbmColor, 0, height, 
+                    dc, icon_info.hbmColor, 0, height,
                     byref(buffer), byref(bmi_header), 0
                 )
-                
+
                 if bits_copied == 0:
                     return None
-                
-                # 创建QImage
+
+                # 创建QImage - 使用原始位图数据，保持原始分辨率
                 qimage = QImage(buffer, width, height, width * 4, QImage.Format_ARGB32)
-                
+
+                # 如果要求保持原始大小（点对点渲染），直接返回原始尺寸的pixmap
+                if keep_original_size:
+                    # 深拷贝QImage数据，因为buffer是临时的
+                    qimage_copy = qimage.copy()
+                    pixmap = QPixmap.fromImage(qimage_copy)
+                    # 设置设备像素比为1.0，保持1:1像素映射
+                    pixmap.setDevicePixelRatio(1.0)
+                    return pixmap
+
                 # 如果图像已经是目标大小，直接返回
                 if width == size and height == size:
-                    pixmap = QPixmap.fromImage(qimage)
-                    from PySide6.QtGui import QGuiApplication
-                    pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
+                    pixmap = QPixmap.fromImage(qimage.copy())
+                    pixmap.setDevicePixelRatio(device_pixel_ratio)
                     return pixmap
-                
+
                 # 使用PIL进行高质量缩放和处理
                 # 将QImage转换为PIL Image
-                buffer = io.BytesIO()
-                qimage.save(buffer, format="PNG")
-                buffer.seek(0)
-                pil_image = Image.open(buffer).convert("RGBA")
-                
+                from PySide6.QtCore import QBuffer
+                qt_buffer = QBuffer()
+                qt_buffer.open(QBuffer.OpenModeFlag.WriteOnly)
+                qimage.save(qt_buffer, "PNG")
+                qt_buffer.seek(0)
+                pil_image = Image.open(io.BytesIO(qt_buffer.data())).convert("RGBA")
+
                 # 计算缩放比例
                 scale_factor = min(size / width, size / height)
                 new_width = int(width * scale_factor)
                 new_height = int(height * scale_factor)
-                
+
                 # 使用LANCZOS算法进行高质量缩放
                 pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                
+
                 # 应用锐化效果，根据缩放比例调整锐化程度
                 if scale_factor < 1.0:  # 缩小图像时需要锐化
                     # 根据缩放比例调整锐化程度，缩放比例越小，锐化越强
                     sharpen_amount = 1.0 + (1.0 - scale_factor) * 0.5
                     sharpener = ImageEnhance.Sharpness(pil_image)
                     pil_image = sharpener.enhance(sharpen_amount)
-                    
+
                     # 应用轻微的边缘增强
                     pil_image = pil_image.filter(ImageFilter.UnsharpMask(radius=1, percent=100, threshold=2))
-                
+
                 # 创建透明背景的新图像
                 new_pil_image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-                
+
                 # 计算居中位置
                 x_offset = (size - new_width) // 2
                 y_offset = (size - new_height) // 2
-                
+
                 # 将缩放后的图像粘贴到新图像中央
                 new_pil_image.paste(pil_image, (x_offset, y_offset), pil_image)
-                
+
                 # 将PIL Image转换回QImage
-                buffer = io.BytesIO()
-                new_pil_image.save(buffer, format="PNG")
-                buffer.seek(0)
-                processed_qimage = QImage.fromData(buffer.getvalue(), "PNG")
-                
+                temp_buffer = io.BytesIO()
+                new_pil_image.save(temp_buffer, format="PNG")
+                processed_qimage = QImage.fromData(temp_buffer.getvalue(), "PNG")
+
                 # 转换为QPixmap
                 pixmap = QPixmap.fromImage(processed_qimage)
-                from PySide6.QtGui import QGuiApplication
-                pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
-                
+                pixmap.setDevicePixelRatio(device_pixel_ratio)
+
                 return pixmap
             finally:
                 DeleteDC(dc)
@@ -608,10 +805,11 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
                 DeleteObject(icon_info.hbmMask)
             if icon_info.hbmColor:
                 DeleteObject(icon_info.hbmColor)
-        
+
         return None
-    except Exception as e:
+    except (ImportError, OSError, IOError) as e:
         # 如果PIL处理失败，回退到Qt的处理方式
+        debug(f"PIL图标处理失败，回退到Qt方式: {e}")
         try:
             from PySide6.QtGui import QPixmap, QImage, QPainter
             from PySide6.QtCore import Qt
@@ -696,7 +894,8 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None):
                     DeleteObject(icon_info.hbmMask)
                 if icon_info.hbmColor:
                     DeleteObject(icon_info.hbmColor)
-        except Exception as fallback_e:
+        except (OSError, ctypes.WinError) as fallback_e:
+            debug(f"Qt回退图标处理也失败: {fallback_e}")
             return None
 
 # 模块导出

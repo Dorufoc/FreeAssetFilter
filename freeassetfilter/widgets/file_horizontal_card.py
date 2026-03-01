@@ -667,16 +667,18 @@ class CustomFileHorizontalCard(QWidget):
 
                 try:
                     from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
-                    hicon = get_highest_resolution_icon(file_path, desired_size=256)
+                    from PySide6.QtGui import QGuiApplication
+                    dpr = QGuiApplication.primaryScreen().devicePixelRatio()
+                    hicon = get_highest_resolution_icon(file_path)
                     if hicon:
-                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None)
+                        pixmap = hicon_to_pixmap(hicon, scaled_icon_size, None, dpr, keep_original_size=True)
                         DestroyIcon(hicon)
 
                         if pixmap and not pixmap.isNull():
                             self._set_icon_pixmap(pixmap, scaled_icon_size)
                             return
-                except Exception:
-                    pass
+                except Exception as e:
+                    debug(f"获取高分辨率图标失败: {e}")
 
                 from PySide6.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
@@ -1442,7 +1444,8 @@ class CustomFileHorizontalCard(QWidget):
             if staging_setting is not None:
                 return staging_setting
             return settings_manager.get_setting("file_selector.touch_optimization", True)
-        except Exception:
+        except Exception as e:
+            debug(f"检查触控操作优化设置失败: {e}")
             return True
     
     def _on_long_press(self):
@@ -1532,25 +1535,28 @@ class CustomFileHorizontalCard(QWidget):
             from freeassetfilter.core.settings_manager import SettingsManager
             settings_manager = SettingsManager()
             return settings_manager.get_setting("appearance.colors.base_color", "#212121")
-        except Exception:
+        except Exception as e:
+            debug(f"获取基础颜色失败: {e}")
             return "#212121"
-    
+
     def _get_auxiliary_color(self):
         """获取辅助颜色"""
         try:
             from freeassetfilter.core.settings_manager import SettingsManager
             settings_manager = SettingsManager()
             return settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
-        except Exception:
+        except Exception as e:
+            debug(f"获取辅助颜色失败: {e}")
             return "#3D3D3D"
-    
+
     def _get_secondary_color(self):
         """获取次要颜色（文字颜色）"""
         try:
             from freeassetfilter.core.settings_manager import SettingsManager
             settings_manager = SettingsManager()
             return settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-        except Exception:
+        except Exception as e:
+            debug(f"获取次要颜色失败: {e}")
             return "#FFFFFF"
     
     def _create_drag_card(self):
@@ -1973,9 +1979,11 @@ class CustomFileHorizontalCard(QWidget):
                 if not is_dir and suffix in ["lnk", "exe", "url"]:
                     try:
                         from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
-                        hicon = get_highest_resolution_icon(self._file_path, desired_size=256)
+                        from PySide6.QtGui import QGuiApplication
+                        dpr = QGuiApplication.primaryScreen().devicePixelRatio()
+                        hicon = get_highest_resolution_icon(self._file_path)
                         if hicon:
-                            pixmap = hicon_to_pixmap(hicon, icon_size, None)
+                            pixmap = hicon_to_pixmap(hicon, icon_size, None, dpr, keep_original_size=True)
                             DestroyIcon(hicon)
                             if pixmap and not pixmap.isNull():
                                 icon_label = QLabel(parent_container)
@@ -1985,8 +1993,8 @@ class CustomFileHorizontalCard(QWidget):
                                 icon_label.setPixmap(pixmap)
                                 parent_container.layout().addWidget(icon_label)
                                 return
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        debug(f"获取系统图标失败: {e}")
 
                 # 使用 SVG 图标
                 icon_path = self._get_file_icon_path(suffix, is_dir)

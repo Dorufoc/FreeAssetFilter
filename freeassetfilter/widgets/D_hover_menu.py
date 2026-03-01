@@ -811,5 +811,5 @@ class D_HoverMenu(QWidget):
         try:
             if hasattr(self, '_mouse_activity_monitor') and self._mouse_activity_monitor:
                 self._mouse_activity_monitor.stop()
-        except:
-            pass
+        except Exception as e:
+            debug(f"D_HoverMenu 析构时停止监控失败: {e}")

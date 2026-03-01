@@ -383,7 +383,7 @@ class ComponentLauncher(QMainWindow):
                     msg_box.set_text(f"无法启动组件: {component_name}")
                     msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                     msg_box.exec()
-            except Exception as e:
+            except (FileNotFoundError, PermissionError, OSError) as e:
                 # 解析错误信息
                 error_info = self._parse_error(str(e))
                 if error_info:
@@ -416,7 +416,8 @@ class ComponentLauncher(QMainWindow):
                 for line in output.strip().split('\n'):
                     if line.strip():
                         self._log(f"[{component_name}] {line.strip()}")
-        except Exception as e:
+        except (UnicodeDecodeError, AttributeError, TypeError) as e:
+            debug(f"日志读取错误: {str(e)}")
             self._log(f"[日志读取错误] {str(e)}")
     
     def _process_finished(self, exit_code, exit_status, component_name, button):
@@ -490,7 +491,8 @@ class ComponentLauncher(QMainWindow):
             msg_box.set_text(f"日志已成功保存到:\n{log_path}")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             msg_box.exec()
-        except Exception as e:
+        except (IOError, PermissionError, OSError) as e:
+            warning(f"保存组件日志失败: {str(e)}")
             self._log(f"保存日志失败: {str(e)}", component=component_name, level="ERROR")
             from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
@@ -527,7 +529,8 @@ class ComponentLauncher(QMainWindow):
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             msg_box.exec()
             self._log("已复制最近一次启动的日志", level="INFO")
-        except Exception as e:
+        except (AttributeError, IndexError, TypeError) as e:
+            warning(f"复制日志失败: {str(e)}")
             self._log(f"复制日志失败: {str(e)}", level="ERROR")
             from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
@@ -581,8 +584,9 @@ class ComponentLauncher(QMainWindow):
             
             with open(self.current_log_file, "a", encoding="utf-8") as f:
                 f.write(message + "\n")
-        except Exception as e:
+        except (IOError, PermissionError, OSError) as e:
             # 日志保存失败，不影响主程序运行
+            debug(f"保存日志到文件失败: {str(e)}")
             pass
     
     def _save_logs(self):
@@ -652,8 +656,9 @@ class ComponentLauncher(QMainWindow):
                 # 如果文件超过7天，删除
                 if create_time < seven_days_ago:
                     os.remove(log_path)
-        except Exception as e:
+        except (OSError, FileNotFoundError, PermissionError) as e:
             # 清理日志失败，不影响主程序运行
+            debug(f"清理旧日志失败: {str(e)}")
             pass
     
     def _read_process_output(self, process, component_name):
@@ -682,7 +687,8 @@ class ComponentLauncher(QMainWindow):
                         else:
                             # 普通日志
                             self._log(line.strip(), component=component_name)
-        except Exception as e:
+        except (UnicodeDecodeError, AttributeError, TypeError) as e:
+            debug(f"日志读取错误: {str(e)}")
             self._log(f"日志读取错误: {str(e)}", level="ERROR")
     
     def closeEvent(self, event):

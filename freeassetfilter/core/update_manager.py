@@ -73,8 +73,14 @@ def get_local_version():
         else:
             logger.warning("无法从main.py中提取版本号，使用默认版本0.0.0")
             return "0.0.0"
-    except Exception as e:
-        logger.error(f"获取本地版本失败: {e}")
+    except FileNotFoundError as e:
+        logger.error(f"主程序文件不存在: {e}")
+        return "0.0.0"
+    except PermissionError as e:
+        logger.error(f"读取主程序文件权限不足: {e}")
+        return "0.0.0"
+    except OSError as e:
+        logger.error(f"读取本地版本时发生系统错误: {e}")
         return "0.0.0"
 
 
@@ -107,8 +113,8 @@ def get_latest_version():
     except requests.exceptions.RequestException as e:
         logger.error(f"请求GitHub API失败: {e}")
         return None, None
-    except Exception as e:
-        logger.error(f"获取最新版本失败: {e}")
+    except (KeyError, ValueError) as e:
+        logger.error(f"解析GitHub API响应失败: {e}")
         return None, None
 
 
@@ -140,8 +146,8 @@ def version_compare(version1, version2):
             elif v1[i] < v2[i]:
                 return -1
         return 0
-    except Exception as e:
-        logger.error(f"版本比较失败: {e}")
+    except ValueError as e:
+        logger.error(f"版本号格式错误，无法比较: {e}")
         return 0
 
 
@@ -208,8 +214,8 @@ def download_file(url, save_path):
     except requests.exceptions.RequestException as e:
         logger.error(f"文件下载失败: {e}")
         return False
-    except Exception as e:
-        logger.error(f"文件下载过程中发生错误: {e}")
+    except OSError as e:
+        logger.error(f"文件写入失败: {e}")
         return False
 
 
@@ -280,10 +286,13 @@ def update_files(source_dir, target_dir):
                 # 复制新文件
                 shutil.copy2(source_file, target_file)
                 logger.info(f"已更新文件: {target_file}")
-        
+
         return True
-    except Exception as e:
-        logger.error(f"更新文件失败: {e}")
+    except PermissionError as e:
+        logger.error(f"更新文件时权限不足: {e}")
+        return False
+    except OSError as e:
+        logger.error(f"更新文件时发生系统错误: {e}")
         return False
 
 
@@ -301,8 +310,10 @@ def clean_backup_files(target_dir):
                     backup_file = os.path.join(root, file)
                     os.remove(backup_file)
                     logger.info(f"已清理备份文件: {backup_file}")
-    except Exception as e:
-        logger.error(f"清理备份文件失败: {e}")
+    except PermissionError as e:
+        logger.warning(f"清理备份文件时权限不足: {e}")
+    except OSError as e:
+        logger.warning(f"清理备份文件时发生系统错误: {e}")
 
 
 def run_update():
@@ -369,15 +380,21 @@ def run_update():
             logger.info("更新完成！")
             logger.info(f"当前版本已更新至: {latest_version}")
             logger.info("="*60)
-            
+
             return True
-        except Exception as e:
-            logger.error(f"更新过程中发生错误: {e}")
+        except zipfile.BadZipFile as e:
+            logger.error(f"下载的压缩包损坏: {e}")
             # 清理临时文件
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
             return False
-    except Exception as e:
+        except OSError as e:
+            logger.error(f"更新过程中发生系统错误: {e}")
+            # 清理临时文件
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            return False
+    except OSError as e:
         logger.error(f"更新流程启动失败: {e}")
         return False
 

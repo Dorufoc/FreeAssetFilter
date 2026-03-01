@@ -341,10 +341,11 @@ def copy_lut_file(source_path: str, lut_id: Optional[str] = None) -> Tuple[bool,
         
         # 复制文件
         shutil.copy2(source_path, target_path)
-        
+
         return True, target_path
-        
-    except Exception as e:
+
+    except (OSError, shutil.Error) as e:
+        error(f"复制LUT文件失败: {e}")
         return False, f"复制文件失败: {str(e)}"
 
 
@@ -362,7 +363,7 @@ def remove_lut_file(file_path: str) -> bool:
         if os.path.exists(file_path):
             os.remove(file_path)
         return True
-    except Exception as e:
+    except OSError as e:
         error(f"删除LUT文件失败: {e}")
         return False
 
@@ -385,9 +386,10 @@ def get_lut_display_name(file_path: str) -> str:
         parts = file_name.split('_', 1)
         if len(parts) > 1 and len(parts[0]) == 36:  # UUID长度为36
             return parts[1]
-        
+
         return file_name
-    except:
+    except Exception as e:
+        warning(f"获取LUT显示名称失败: {e}")
         return "Unknown LUT"
 
 
@@ -415,7 +417,7 @@ def load_lut_from_settings(settings_manager) -> List[LUTInfo]:
                 is_3d=lut_data.get('is_3d', True)
             )
             lut_list.append(lut_info)
-        except Exception as e:
+        except (KeyError, TypeError, AttributeError) as e:
             error(f"加载LUT信息失败: {e}")
             continue
     

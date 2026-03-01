@@ -199,12 +199,14 @@ class HoverTooltip(QWidget):
 
     def _on_animation_finished(self):
         """动画结束处理"""
-        if self._opacity_value <= 0.01:
-            super().hide()
-            self._opacity_value = 1.0
-        else:
+        try:
+            if self._opacity_value <= 0.01:
+                super().hide()
+                self._opacity_value = 1.0
+            self._is_animating = False
+        except RuntimeError:
+            # 对象可能已被销毁，忽略错误
             pass
-        self._is_animating = False
 
     def _fade_in(self):
         """淡入显示（透明度0→1，缩放0.5→1）"""
@@ -212,22 +214,44 @@ class HoverTooltip(QWidget):
             return
 
         self._is_animating = True
-        self._fade_animation.stop()
-        self._scale_animation.stop()
+        
+        # 使用try-except防止动画对象已被销毁时抛出异常
+        try:
+            # 检查动画对象是否仍然有效
+            if not hasattr(self, '_fade_animation') or not hasattr(self, '_scale_animation'):
+                raise RuntimeError("Animation objects do not exist")
+            
+            # 尝试访问动画对象以验证它们是否仍然有效
+            _ = self._fade_animation.duration()
+            _ = self._scale_animation.duration()
+            
+            self._fade_animation.stop()
+            self._scale_animation.stop()
 
-        self._opacity_value = 0.0
-        self._scale_value = 0.5
-        self.setWindowOpacity(0.0)
+            self._opacity_value = 0.0
+            self._scale_value = 0.5
+            self.setWindowOpacity(0.0)
 
-        super().show()
+            super().show()
 
-        self._fade_animation.setStartValue(0.0)
-        self._fade_animation.setEndValue(1.0)
-        self._fade_animation.start()
+            self._fade_animation.setStartValue(0.0)
+            self._fade_animation.setEndValue(1.0)
+            self._fade_animation.start()
 
-        self._scale_animation.setStartValue(0.5)
-        self._scale_animation.setEndValue(1.0)
-        self._scale_animation.start()
+            self._scale_animation.setStartValue(0.5)
+            self._scale_animation.setEndValue(1.0)
+            self._scale_animation.start()
+        except RuntimeError as e:
+            # 动画对象已被销毁，直接显示（无动画）
+            debug(f"HoverTooltip fade in animation error: {e}")
+            self._is_animating = False
+            self._opacity_value = 1.0
+            self._scale_value = 1.0
+            try:
+                self.setWindowOpacity(1.0)
+                super().show()
+            except RuntimeError:
+                pass
 
     def _fade_out(self):
         """淡出隐藏（透明度1→0，缩放1→0.5）"""
@@ -238,6 +262,14 @@ class HoverTooltip(QWidget):
         
         # 使用try-except防止动画对象已被销毁时抛出异常
         try:
+            # 检查动画对象是否仍然有效
+            if not hasattr(self, '_fade_animation') or not hasattr(self, '_scale_animation'):
+                raise RuntimeError("Animation objects do not exist")
+            
+            # 尝试访问动画对象以验证它们是否仍然有效
+            _ = self._fade_animation.duration()
+            _ = self._scale_animation.duration()
+            
             self._fade_animation.stop()
             self._scale_animation.stop()
 
@@ -248,11 +280,15 @@ class HoverTooltip(QWidget):
             self._scale_animation.setStartValue(self._get_scale())
             self._scale_animation.setEndValue(0.5)
             self._scale_animation.start()
-        except RuntimeError:
+        except RuntimeError as e:
             # 动画对象已被销毁，直接隐藏
+            debug(f"HoverTooltip fade out animation error: {e}")
             self._is_animating = False
-            super().hide()
-    
+            try:
+                super().hide()
+            except RuntimeError:
+                pass
+
     def set_target_widget(self, widget):
         """设置要监听的目标控件"""
         # 检查控件是否已经在列表中（通过比较弱引用的目标）
@@ -260,7 +296,8 @@ class HoverTooltip(QWidget):
             try:
                 if ref() == widget:
                     return  # 已经存在，不需要重复添加
-            except RuntimeError:
+            except RuntimeError as e:
+                debug(f"HoverTooltip widget reference error: {e}")
                 continue
 
         # 添加弱引用
@@ -280,24 +317,33 @@ class HoverTooltip(QWidget):
         # 停止定时器
         try:
             self.timer.stop()
-        except RuntimeError:
-            pass
-        
+        except RuntimeError as e:
+            debug(f"HoverTooltip timer stop error: {e}")
+
         # 停止全局鼠标监控
         self._stop_mouse_monitor()
         
-        # 隐藏tooltip，使用try-except防止对象已被销毁
+        # 停止动画（如果正在进行）
         try:
-            self._fade_out()
+            if hasattr(self, '_fade_animation') and hasattr(self, '_scale_animation'):
+                self._fade_animation.stop()
+                self._scale_animation.stop()
         except RuntimeError:
             pass
+
+        # 隐藏tooltip，使用try-except防止对象已被销毁
+        try:
+            self._is_animating = False
+            super().hide()
+        except RuntimeError as e:
+            debug(f"HoverTooltip hide error: {e}")
         
         # 清理已失效的弱引用
         try:
             self.target_widgets = [ref for ref in self.target_widgets if ref() is not None]
-        except RuntimeError:
-            pass
-    
+        except RuntimeError as e:
+            debug(f"HoverTooltip clean widget references error: {e}")
+
     def _start_mouse_monitor(self):
         """启动全局鼠标活动监控"""
         if not self._mouse_monitor_active:
@@ -332,9 +378,10 @@ class HoverTooltip(QWidget):
                 if target and (current_widget == target or target.isAncestorOf(current_widget)):
                     is_over_target = True
                     break
-            except RuntimeError:
+            except RuntimeError as e:
+                debug(f"HoverTooltip check target widget error: {e}")
                 continue
-        
+
         # 如果鼠标在目标控件上，更新位置并重启定时器
         if is_over_target:
             self.last_mouse_pos = QCursor.pos()
@@ -382,7 +429,8 @@ class HoverTooltip(QWidget):
                 if target is obj:
                     is_target = True
                     break
-            except RuntimeError:
+            except RuntimeError as e:
+                debug(f"HoverTooltip event filter check error: {e}")
                 continue
 
         if is_target:
@@ -429,7 +477,8 @@ class HoverTooltip(QWidget):
                 target = ref()
                 if target and target.isVisible():
                     visible_widgets.append(target)
-            except RuntimeError:
+            except RuntimeError as e:
+                debug(f"HoverTooltip check visible widget error: {e}")
                 continue
 
         if not visible_widgets:
@@ -448,7 +497,8 @@ class HoverTooltip(QWidget):
                 if target and (widget == target or target.isAncestorOf(widget)):
                     current_widget = target
                     break
-            except RuntimeError:
+            except RuntimeError as e:
+                debug(f"HoverTooltip find current widget error: {e}")
                 continue
 
         if not current_widget:

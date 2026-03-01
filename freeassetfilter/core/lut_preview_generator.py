@@ -88,8 +88,11 @@ class LUTPreviewGenerator:
                 if self._reference_image.mode != 'RGB':
                     self._reference_image = self._reference_image.convert('RGB')
             return True
+        except (IOError, OSError) as e:
+            error(f"加载参考图像失败 (IO/OS错误): {e}")
+            return False
         except Exception as e:
-            error(f"加载参考图像失败: {e}")
+            error(f"加载参考图像失败 (未知错误): {e}")
             return False
     
     def generate_preview(self, lut_file_path: str, 
@@ -182,8 +185,14 @@ class LUTPreviewGenerator:
             
             return pixmap
             
+        except (IOError, OSError) as e:
+            warning(f"C++ 预览生成失败 (文件IO错误): {e}，回退到Python")
+            return self._generate_preview_python(lut_file_path, output_size, cache_path)
+        except ValueError as e:
+            warning(f"C++ 预览生成失败 (数据错误): {e}，回退到Python")
+            return self._generate_preview_python(lut_file_path, output_size, cache_path)
         except Exception as e:
-            warning(f"C++ 预览生成失败，回退到Python: {e}")
+            warning(f"C++ 预览生成失败 (未知错误): {e}，回退到Python")
             return self._generate_preview_python(lut_file_path, output_size, cache_path)
     
     def _generate_preview_python(self, lut_file_path: str, 
@@ -235,8 +244,17 @@ class LUTPreviewGenerator:
             # 转换为QPixmap
             return self._pil_image_to_qpixmap(preview_image)
             
+        except (IOError, OSError) as e:
+            error(f"生成LUT预览失败 (文件IO错误): {e}")
+            return None
+        except ValueError as e:
+            error(f"生成LUT预览失败 (数据错误): {e}")
+            return None
+        except MemoryError as e:
+            error(f"生成LUT预览失败 (内存不足): {e}")
+            return None
         except Exception as e:
-            error(f"生成LUT预览失败: {e}")
+            error(f"生成LUT预览失败 (未知错误): {e}")
             return None
     
     def _pil_image_to_qpixmap(self, pil_image) -> QPixmap:
@@ -290,15 +308,23 @@ class LUTPreviewGenerator:
             if os.path.exists(cache_path):
                 try:
                     os.remove(cache_path)
+                except (IOError, OSError) as e:
+                    error(f"清除缓存失败 (IO/OS错误): {e}")
+                except PermissionError as e:
+                    error(f"清除缓存失败 (权限不足): {e}")
                 except Exception as e:
-                    error(f"清除缓存失败: {e}")
+                    error(f"清除缓存失败 (未知错误): {e}")
         else:
             # 清除所有缓存
             try:
                 for file in Path(preview_dir).glob("*_preview.png"):
                     file.unlink()
+            except (IOError, OSError) as e:
+                error(f"清除所有缓存失败 (IO/OS错误): {e}")
+            except PermissionError as e:
+                error(f"清除所有缓存失败 (权限不足): {e}")
             except Exception as e:
-                error(f"清除所有缓存失败: {e}")
+                error(f"清除所有缓存失败 (未知错误): {e}")
 
 
 # 全局预览生成器实例
@@ -395,6 +421,12 @@ def create_default_reference_image(output_path: Optional[str] = None) -> bool:
         image.save(output_path, 'PNG')
         return True
         
+    except (IOError, OSError) as e:
+        error(f"创建默认参考图像失败 (IO/OS错误): {e}")
+        return False
+    except MemoryError as e:
+        error(f"创建默认参考图像失败 (内存不足): {e}")
+        return False
     except Exception as e:
-        error(f"创建默认参考图像失败: {e}")
+        error(f"创建默认参考图像失败 (未知错误): {e}")
         return False

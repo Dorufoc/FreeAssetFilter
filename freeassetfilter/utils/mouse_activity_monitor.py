@@ -169,8 +169,8 @@ class MouseActivityMonitor(QObject):
                         if self._last_mouse_pos is None or self._last_mouse_pos != current_pos:
                             self._last_mouse_pos = current_pos
                             QTimer.singleShot(0, self._on_mouse_moved)
-                except Exception:
-                    pass
+                except Exception as e:
+                    debug(f"[MouseActivityMonitor] 鼠标钩子回调处理异常: {e}")
 
                 return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
@@ -188,7 +188,7 @@ class MouseActivityMonitor(QObject):
 
             return True
 
-        except Exception as e:
+        except (OSError, ctypes.WinError) as e:
             error(f"[MouseActivityMonitor] 启动监控失败: {e}")
             return False
 
@@ -204,7 +204,7 @@ class MouseActivityMonitor(QObject):
         if self._mouse_hook:
             try:
                 ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
-            except Exception as e:
+            except OSError as e:
                 error(f"[MouseActivityMonitor] 卸载鼠标钩子失败: {e}")
 
         self._mouse_hook = None

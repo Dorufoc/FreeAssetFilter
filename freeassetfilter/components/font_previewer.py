@@ -166,6 +166,7 @@ class FontLoadThread(QThread):
             self.finished.emit(request_id, True, font_family, font_id)
 
         except Exception as e:
+            warning(f"加载字体时发生异常: {str(e)}")
             self.error.emit(request_id, f"加载字体失败: {str(e)}")
 
 
@@ -386,7 +387,8 @@ class FontPreviewWidget(QWidget):
             try:
                 self._thread.finished.disconnect(self._on_font_loaded)
                 self._thread.error.disconnect(self._on_load_error)
-            except (TypeError, RuntimeError):
+            except (TypeError, RuntimeError) as e:
+                debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                 pass
             self._thread.abort()
             self._thread.wait()
@@ -407,7 +409,8 @@ class FontPreviewWidget(QWidget):
                 try:
                     self._thread.finished.disconnect(self._on_font_loaded)
                     self._thread.error.disconnect(self._on_load_error)
-                except (TypeError, RuntimeError):
+                except (TypeError, RuntimeError) as e:
+                    debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                     pass
                 self._thread.abort()
                 self._thread.wait()
@@ -504,7 +507,8 @@ class FontPreviewWidget(QWidget):
             try:
                 self._thread.finished.disconnect(self._on_font_loaded)
                 self._thread.error.disconnect(self._on_load_error)
-            except (TypeError, RuntimeError):
+            except (TypeError, RuntimeError) as e:
+                debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                 pass
             
             # 终止线程

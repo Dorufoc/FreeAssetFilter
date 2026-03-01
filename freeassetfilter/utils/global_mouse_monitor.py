@@ -140,8 +140,8 @@ class GlobalMouseMonitor(QObject):
                         elif wParam in (WM_MOUSEWHEEL, WM_MOUSEHWHEEL):
                             self._pending_scroll = True
 
-                except Exception:
-                    pass
+                except (AttributeError, TypeError, OSError) as e:
+                    debug(f"[GlobalMouseMonitor] 鼠标回调处理异常: {e}")
 
                 return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
@@ -159,8 +159,8 @@ class GlobalMouseMonitor(QObject):
 
             return True
 
-        except Exception as e:
-            error(f"[GlobalMouseMonitor] 启动监控失败: {e}")
+        except OSError as e:
+            error(f"[GlobalMouseMonitor] 启动监控失败 (系统错误): {e}")
             return False
 
     def stop(self):
@@ -175,7 +175,7 @@ class GlobalMouseMonitor(QObject):
         if self._mouse_hook:
             try:
                 ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
-            except Exception as e:
+            except OSError as e:
                 error(f"[GlobalMouseMonitor] 卸载鼠标钩子失败: {e}")
 
         self._mouse_hook = None

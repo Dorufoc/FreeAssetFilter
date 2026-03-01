@@ -152,8 +152,8 @@ class ColorExtractionTask(QRunnable):
             if self.callback and not self.is_cancelled():
                 self.callback(self.task_id, colors)
 
-        except Exception as e:
-            error(f"[ColorExtractionTask] 颜色提取失败: {e}")
+        except (RuntimeError, ValueError, IOError) as e:
+            warning(f"[ColorExtractionTask] 颜色提取失败: {e}")
             if self.callback and not self.is_cancelled():
                 self.callback(self.task_id, None)
     
@@ -195,7 +195,7 @@ class ColorExtractionTask(QRunnable):
 
             return colors_rgb
 
-        except Exception as e:
+        except (ImportError, AttributeError, RuntimeError, IOError) as e:
             warning(f"[ColorExtractionTask] C++ 提取异常: {e}")
             return None
     
@@ -315,7 +315,7 @@ class ColorExtractionTask(QRunnable):
             debug("[ColorExtractionTask] Python 提取完成")
             return final_colors
 
-        except Exception as e:
+        except (IOError, ValueError) as e:
             warning(f"[ColorExtractionTask] Python 提取失败: {e}")
             return None
     
@@ -780,7 +780,8 @@ class AudioBackground(QWidget):
                 colors.append(new_color)
             
             return colors
-        except Exception:
+        except (ImportError, AttributeError, ValueError) as e:
+            debug(f"[AudioBackground] 生成强调色主题失败: {e}")
             return [
                 QColor(176, 54, 238),
                 QColor(189, 74, 245),
@@ -790,11 +791,11 @@ class AudioBackground(QWidget):
             ]
     
     def _start_fluid_animation(self):
-        """启动流体动画 - 定时器间隔从16ms改为33ms（30FPS）以优化性能"""
+        """启动流体动画 - 定时器间隔从33ms改为50ms（20FPS）以优化性能"""
         if self._animation_timer is None:
             self._animation_timer = QTimer(self)
             self._animation_timer.timeout.connect(self._update_fluid_animation)
-            self._animation_timer.start(33)  # 30 FPS
+            self._animation_timer.start(50)  # 20 FPS（从30FPS降低，减少CPU占用）
     
     def _stop_fluid_animation(self):
         """停止流体动画"""
@@ -813,7 +814,18 @@ class AudioBackground(QWidget):
         """恢复流体动画"""
         self._is_paused = False
         if self._animation_timer and self._is_loaded and self._current_mode == self.MODE_FLUID:
-            self._animation_timer.start(33)
+            self._animation_timer.start(50)  # 20 FPS
+    
+    def hideEvent(self, event):
+        """窗口隐藏时暂停动画，节省资源"""
+        self.pauseAnimation()
+        super().hideEvent(event)
+    
+    def showEvent(self, event):
+        """窗口显示时恢复动画"""
+        if self._is_loaded and self._current_mode == self.MODE_FLUID:
+            self.resumeAnimation()
+        super().showEvent(event)
     
     def _update_fluid_animation(self):
         """更新流体动画"""
@@ -1010,7 +1022,7 @@ class AudioBackground(QWidget):
                 # 启动异步颜色提取
                 self._start_color_extraction(cover_data)
 
-            except Exception as e:
+            except (IOError, ValueError) as e:
                 warning(f"[AudioBackground] 加载封面失败: {e}")
                 self._cover_pixmap = None
                 # 加载默认SVG图标并使用强调色主题
@@ -1410,10 +1422,8 @@ class AudioBackground(QWidget):
                 debug_info.append(f"Lab{i}=({lab[0]:.0f},{lab[1]:.0f},{lab[2]:.0f})")
             debug(f"[AudioBackground] 从封面提取了{len(selected_colors_lab)}个颜色: {', '.join(debug_info)}")
 
-        except Exception as e:
-            error(f"[AudioBackground] 从封面提取颜色失败: {e}")
-            import traceback
-            traceback.print_exc()
+        except (ValueError, IndexError, RuntimeError) as e:
+            warning(f"[AudioBackground] 从封面提取颜色失败: {e}")
             self.useAccentTheme()
 
     def _load_default_cover(self):
@@ -1477,10 +1487,8 @@ class AudioBackground(QWidget):
 
             info(f"[AudioBackground] 已加载默认音乐图标: {svg_path}, 尺寸: {widget_width}x{widget_height}")
 
-        except Exception as e:
-            error(f"[AudioBackground] 加载默认图标失败: {e}")
-            import traceback
-            traceback.print_exc()
+        except (IOError, OSError, ValueError) as e:
+            warning(f"[AudioBackground] 加载默认图标失败: {e}")
 
     def _reload_current_cover(self):
         """
@@ -1512,7 +1520,7 @@ class AudioBackground(QWidget):
 
             debug(f"[AudioBackground] 封面已重新调整尺寸: {display_image.size}")
 
-        except Exception as e:
+        except (IOError, ValueError) as e:
             warning(f"[AudioBackground] 重新加载封面失败: {e}")
 
     def _reload_current_svg(self):
@@ -1540,7 +1548,7 @@ class AudioBackground(QWidget):
 
             debug(f"[AudioBackground] SVG图标已重新调整尺寸: {widget_width}x{widget_height}")
 
-        except Exception as e:
+        except (AttributeError, ValueError) as e:
             warning(f"[AudioBackground] 重新调整SVG尺寸失败: {e}")
 
     # ==================== 封面模糊方法 ====================
@@ -1610,8 +1618,8 @@ class AudioBackground(QWidget):
             # 存入缓存
             cache.put(self._cover_data, blurred_pixmap=self._blurred_pixmap)
 
-        except Exception as e:
-            error(f"[AudioBackground] 处理封面失败: {e}")
+        except (IOError, ValueError) as e:
+            warning(f"[AudioBackground] 处理封面失败: {e}")
             self._blurred_pixmap = None
     
     def _pil_to_pixmap(self, pil_image) -> QPixmap:

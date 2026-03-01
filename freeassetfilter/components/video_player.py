@@ -443,36 +443,36 @@ class VideoPlayer(QWidget):
         if self._mpv_manager:
             try:
                 self._mpv_manager.stateChanged.disconnect(self._on_manager_state_changed)
-            except:
-                pass
+            except (RuntimeError, TypeError) as e:
+                debug(f"[VideoPlayer] 断开 stateChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.positionChanged.disconnect(self._on_manager_position_changed)
-            except:
-                pass
+            except (RuntimeError, TypeError) as e:
+                debug(f"[VideoPlayer] 断开 positionChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.volumeChanged.disconnect(self._on_manager_volume_changed)
-            except:
-                pass
+            except (RuntimeError, TypeError) as e:
+                debug(f"[VideoPlayer] 断开 volumeChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.mutedChanged.disconnect(self._on_manager_muted_changed)
-            except:
-                pass
+            except (RuntimeError, TypeError) as e:
+                debug(f"[VideoPlayer] 断开 mutedChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.speedChanged.disconnect(self._on_manager_speed_changed)
-            except:
-                pass
+            except (RuntimeError, TypeError) as e:
+                debug(f"[VideoPlayer] 断开 speedChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.fileLoaded.disconnect(self._on_manager_file_loaded)
-            except:
-                pass
+            except (RuntimeError, TypeError) as e:
+                debug(f"[VideoPlayer] 断开 fileLoaded 信号时出错: {e}")
             try:
                 self._mpv_manager.fileEnded.disconnect(self._on_manager_file_ended)
-            except:
-                pass
+            except (RuntimeError, TypeError) as e:
+                debug(f"[VideoPlayer] 断开 fileEnded 信号时出错: {e}")
             try:
                 self._mpv_manager.errorOccurred.disconnect(self._on_manager_error)
-            except:
-                pass
+            except (RuntimeError, TypeError) as e:
+                debug(f"[VideoPlayer] 断开 errorOccurred 信号时出错: {e}")
     
     def _apply_player_settings(self):
         """
@@ -947,7 +947,7 @@ class VideoPlayer(QWidget):
             try:
                 self._detached_window.closed.disconnect(self._reattach_to_parent)
                 self._detached_window.focusChanged.disconnect(self._on_detached_window_focus_changed)
-            except Exception as e:
+            except (RuntimeError, TypeError) as e:
                 warning(f"[VideoPlayer] 断开信号连接时出错: {e}")
             
             # 先将播放器从独立窗口中移除

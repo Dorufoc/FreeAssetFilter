@@ -446,8 +446,8 @@ class MPVPlayerCore(QObject):
                 self._initialized = True
             self._initialized_event.set()
             
-            last_position_update = 0.0
-            position_update_interval = 0.1
+            # 注意：移除了位置轮询，因为 MPV 的属性观察机制已经提供了事件驱动的位置更新
+            # _update_position_state 方法保留供需要时调用，但不再定时轮询
             
             while not self._stop_event.is_set():
                 try:
@@ -470,14 +470,7 @@ class MPVPlayerCore(QObject):
                         if not self._stop_event.is_set():
                             error(f"[MPVWorker] 命令处理错误: {e}")
 
-                    try:
-                        current_time = time.time()
-                        if current_time - last_position_update >= position_update_interval:
-                            self._update_position_state(mpv_handle)
-                            last_position_update = current_time
-                    except Exception as e:
-                        if not self._stop_event.is_set():
-                            error(f"[MPVWorker] 位置更新错误: {e}")
+                    # 移除了位置轮询，完全依赖 MPV 的事件驱动属性观察
 
                 except Exception as e:
                     if not self._stop_event.is_set():
@@ -495,8 +488,8 @@ class MPVPlayerCore(QObject):
                     self._dll_loader.dll.mpv_command(mpv_handle, (c_char_p * 2)(b"quit", None))
                     time.sleep(0.1)
                     self._dll_loader.dll.mpv_terminate_destroy(mpv_handle)
-                except Exception:
-                    pass
+                except Exception as e:
+                    debug(f"[MPVWorker] 清理MPV句柄时出错: {e}")
             
             with self._state_lock:
                 self._initialized = False
@@ -1053,7 +1046,8 @@ class MPVPlayerCore(QObject):
                 return True
             
             return False
-        except Exception:
+        except Exception as e:
+            debug(f"[MPVPlayerCore] 检测纯音频文件时出错: {e}")
             return False
     
     def _get_property_double(self, mpv_handle: c_void_p, name: str) -> Optional[float]:
@@ -1640,8 +1634,8 @@ class MPVPlayerCore(QObject):
                 self._send_command(MPVCommandType.CLEAR_GLSL_SHADERS, timeout=0.3)
                 self._send_command(MPVCommandType.SET_VF_FILTER, "", timeout=0.3)
                 self._send_command(MPVCommandType.CLEAR_LUT, timeout=0.3)
-            except:
-                pass
+            except Exception as e:
+                debug(f"[MPVPlayerCore] 预清理时清除滤镜/LUT失败: {e}")
                 
         except Exception as e:
             error(f"[MPVPlayerCore] 预清理时出错: {e}")
@@ -1738,5 +1732,5 @@ class MPVPlayerCore(QObject):
         """析构函数"""
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as e:
+            debug(f"[MPVPlayerCore] 析构时关闭播放器失败: {e}")

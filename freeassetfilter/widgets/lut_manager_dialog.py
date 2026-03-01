@@ -241,8 +241,8 @@ class LutManagerDialog(CustomMessageBox):
                 if not image.isNull():
                     pixmap = QPixmap.fromImage(image)
                     card._set_icon_pixmap(pixmap, scaled_icon_size)
-            except Exception as e:
-                warning(f"设置LUT预览图失败: {e}")
+            except (OSError, IOError) as e:
+                warning(f"加载LUT预览图文件失败: {e}")
         
         # 连接卡片信号（参考收藏夹实现）
         card.clicked.connect(lambda path, lut=lut_info: self._on_lut_card_clicked(lut))
@@ -338,8 +338,8 @@ class LutManagerDialog(CustomMessageBox):
         if preview_path.exists():
             try:
                 preview_path.unlink()
-            except:
-                pass
+            except (OSError, PermissionError) as e:
+                debug(f"删除LUT预览图缓存失败: {e}")
         
         # 从设置中移除
         if self.settings_manager:
@@ -483,8 +483,12 @@ class LutManagerDialog(CustomMessageBox):
             from freeassetfilter.core.lut_preview_generator import generate_lut_preview
             generate_lut_preview(result, lut_id)
             debug("LUT 预览图生成完成")
-        except Exception as e:
-            warning(f"生成LUT预览图失败: {e}")
+        except (OSError, IOError) as e:
+            warning(f"生成LUT预览图失败 (文件IO错误): {e}")
+        except ValueError as e:
+            warning(f"生成LUT预览图失败 (数据错误): {e}")
+        except MemoryError as e:
+            warning(f"生成LUT预览图失败 (内存不足): {e}")
         
         # 创建LUT信息
         display_name = get_lut_display_name(file_path)

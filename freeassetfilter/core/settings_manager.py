@@ -133,8 +133,25 @@ class SettingsManager:
                     self.settings = default_settings
                     self.save_settings()
                     return default_settings
-        except Exception as e:
-            error(f"加载设置失败: {e}")
+        except FileNotFoundError:
+            warning(f"设置文件不存在，使用默认设置: {self._settings_file}")
+            default_settings = self._create_default_settings_copy()
+            self.settings = default_settings
+            self.save_settings()
+            return default_settings
+        except json.JSONDecodeError as e:
+            error(f"设置文件JSON格式错误: {e}")
+            default_settings = self._create_default_settings_copy()
+            self.settings = default_settings
+            self.save_settings()
+            return default_settings
+        except PermissionError as e:
+            error(f"读取设置文件权限不足: {e}")
+            default_settings = self._create_default_settings_copy()
+            self.settings = default_settings
+            return default_settings
+        except UnicodeDecodeError as e:
+            error(f"设置文件编码错误: {e}")
             default_settings = self._create_default_settings_copy()
             self.settings = default_settings
             self.save_settings()
@@ -235,9 +252,18 @@ class SettingsManager:
                     json.dump(self.settings, f, ensure_ascii=False, indent=4)
                 _debug(f"设置保存成功: {self._settings_file}")
                 info(f"设置已保存到: {self._settings_file}")
-            except Exception as e:
-                _debug(f"设置保存失败: {e}")
-                error(f"保存设置失败: {e}")
+            except PermissionError as e:
+                _debug(f"设置保存失败，权限不足: {e}")
+                error(f"保存设置失败，权限不足: {e}")
+            except FileNotFoundError as e:
+                _debug(f"设置保存失败，目录不存在: {e}")
+                error(f"保存设置失败，目录不存在: {e}")
+            except TypeError as e:
+                _debug(f"设置保存失败，数据类型错误: {e}")
+                error(f"保存设置失败，数据类型错误: {e}")
+            except IOError as e:
+                _debug(f"设置保存失败，IO错误: {e}")
+                error(f"保存设置失败，IO错误: {e}")
     
     def get_setting(self, key_path, default=None, use_file_for_colors=False):
         """
@@ -376,9 +402,21 @@ class SettingsManager:
                 else:
                     # 文件不存在时返回默认值
                     return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
-            except Exception as e:
-                error(f"从文件读取颜色失败: {e}")
+            except FileNotFoundError:
+                warning(f"设置文件不存在，使用默认颜色: {self._settings_file}")
+                return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
+            except json.JSONDecodeError as e:
+                error(f"设置文件JSON格式错误，无法读取颜色: {e}")
+                return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
+            except PermissionError as e:
+                error(f"读取设置文件权限不足: {e}")
                 return default
+            except KeyError:
+                debug(f"颜色键 '{color_key}' 不存在，使用默认值")
+                return default
+            except UnicodeDecodeError as e:
+                error(f"设置文件编码错误: {e}")
+                return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
 
     def get_all_colors_from_file(self):
         """
@@ -395,6 +433,15 @@ class SettingsManager:
                         return file_settings.get("appearance", {}).get("colors", self.default_settings["appearance"]["colors"].copy())
                 else:
                     return self.default_settings["appearance"]["colors"].copy()
-            except Exception as e:
-                error(f"从文件读取所有颜色失败: {e}")
+            except FileNotFoundError:
+                warning(f"设置文件不存在，使用默认颜色: {self._settings_file}")
+                return self.default_settings["appearance"]["colors"].copy()
+            except json.JSONDecodeError as e:
+                error(f"设置文件JSON格式错误，无法读取颜色: {e}")
+                return self.default_settings["appearance"]["colors"].copy()
+            except PermissionError as e:
+                error(f"读取设置文件权限不足: {e}")
+                return self.default_settings["appearance"]["colors"].copy()
+            except UnicodeDecodeError as e:
+                error(f"设置文件编码错误: {e}")
                 return self.default_settings["appearance"]["colors"].copy()

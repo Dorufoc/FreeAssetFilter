@@ -380,7 +380,7 @@ class TextMateGrammarLoader:
                 warning(f"[TextMateGrammarLoader] 不支持的文件格式: {suffix}")
                 return None
 
-        except Exception as e:
+        except (IOError, OSError, ValueError, KeyError) as e:
             error(f"[TextMateGrammarLoader] 加载失败 {file_path}: {e}")
             return None
     
@@ -687,7 +687,7 @@ class TextMateThemeLoader:
                 warning(f"[TextMateThemeLoader] 不支持的文件格式: {suffix}")
                 return None
 
-        except Exception as e:
+        except (IOError, OSError, ValueError, KeyError) as e:
             error(f"[TextMateThemeLoader] 加载失败 {file_path}: {e}")
             return None
     
@@ -952,7 +952,7 @@ class SyntectHighlighter:
         """初始化 Syntect 语法集合"""
         try:
             self.syntax_set = load_default_syntax()
-        except Exception as e:
+        except (ImportError, RuntimeError, OSError) as e:
             error(f"[SyntectHighlighter] 加载默认语法失败: {e}")
             self.syntax_set = None
     
@@ -988,7 +988,7 @@ class SyntectHighlighter:
 
         try:
             self.syntax_set = load_syntax_folder(folder_path)
-        except Exception as e:
+        except (IOError, OSError, ValueError) as e:
             error(f"[SyntectHighlighter] 加载语法失败: {e}")
 
     def load_theme_from_folder(self, folder_path: str) -> Dict[str, any]:
@@ -1006,7 +1006,7 @@ class SyntectHighlighter:
         try:
             themes = load_theme_folder(folder_path)
             return {name: theme for name, theme in themes.items()}
-        except Exception as e:
+        except (IOError, OSError, ValueError) as e:
             error(f"[SyntectHighlighter] 加载主题失败: {e}")
             return {}
     
@@ -1147,8 +1147,8 @@ class SyntectHighlighter:
         if self.syntax_set:
             try:
                 return list(self.syntax_set.languages)
-            except:
-                pass
+            except (AttributeError, TypeError) as e:
+                debug(f"获取支持语言列表失败: {e}")
         return list(set(EXTENSION_TO_LANGUAGE.values()))
     
     def highlight_line(self, line: str, language: str) -> List[Token]:
@@ -1187,7 +1187,7 @@ class SyntectHighlighter:
                 current_pos = end_pos
             
             return tokens
-        except Exception as e:
+        except (ValueError, TypeError, RuntimeError) as e:
             error(f"[SyntectHighlighter] 高亮失败: {e}")
             return [Token(line, TokenType.DEFAULT, 0, len(line))]
     
@@ -1230,7 +1230,8 @@ class SyntectHighlighter:
             
             try:
                 lexer = get_lexer_by_name(language)
-            except:
+            except (ImportError, ValueError) as e:
+                debug(f"获取词法分析器失败 ({language}): {e}")
                 lexer = TextLexer()
             
             _init_pygments_token_map()
@@ -1254,7 +1255,8 @@ class SyntectHighlighter:
                 current_pos = end_pos
             
             return tokens
-        except Exception as e:
+        except (ValueError, TypeError, ImportError) as e:
+            debug(f"备选高亮失败: {e}")
             return [Token(line, TokenType.DEFAULT, 0, len(line))]
     
     def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
@@ -1320,7 +1322,8 @@ class PygmentsHighlighter:
                 self._pygments_style = get_style_by_name('monokai')
             else:
                 self._pygments_style = get_style_by_name('default')
-        except:
+        except (ImportError, ValueError) as e:
+            debug(f"初始化 Pygments 样式失败: {e}")
             self._pygments_style = None
     
     def highlight_line(self, line: str, language: str) -> List[Token]:
@@ -1338,10 +1341,12 @@ class PygmentsHighlighter:
         
         try:
             lexer = get_lexer_by_name(language)
-        except:
+        except (ImportError, ValueError) as e:
+            debug(f"通过名称获取词法分析器失败 ({language}): {e}")
             try:
                 lexer = guess_lexer(line)
-            except:
+            except (ImportError, ValueError) as e:
+                debug(f"猜测词法分析器失败: {e}")
                 lexer = TextLexer()
         
         tokens = []
@@ -1862,8 +1867,8 @@ def is_dark_mode() -> bool:
             # 使用正确的设置键名 appearance.theme
             theme = app.settings_manager.get_setting("appearance.theme", "default")
             return theme == "dark"
-    except Exception:
-        pass
+    except (ImportError, AttributeError) as e:
+        debug(f"检测深色模式失败: {e}")
 
     # 默认返回False（亮色模式），与设置管理器默认值保持一致
     return False

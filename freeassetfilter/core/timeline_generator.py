@@ -51,7 +51,8 @@ def get_video_duration(file_path):
         from moviepy.editor import VideoFileClip
         with VideoFileClip(file_path) as clip:
             return clip.duration
-    except Exception:
+    except Exception as e:
+        debug(f"moviepy 获取视频时长失败 {file_path}: {e}")
         pass
     
     # 尝试使用opencv-python（如果可用）
@@ -64,7 +65,8 @@ def get_video_duration(file_path):
             if frame_count > 0 and fps > 0:
                 return frame_count / fps
             cap.release()
-    except Exception:
+    except Exception as e:
+        debug(f"OpenCV 获取视频时长失败 {file_path}: {e}")
         pass
     
     return default_duration
@@ -200,7 +202,7 @@ class FolderScanner(QThread):
 
                             # 收集视频文件信息
                             video_files.append((file, file_path, subfolder_name, mod_time))
-                        except Exception as e:
+                        except OSError as e:
                             error(f"    获取文件信息出错 {file_path}: {e}")
                             import traceback
                             traceback.print_exc()
@@ -235,6 +237,9 @@ class FolderScanner(QThread):
                         event = future.result()
                         if event:
                             results.append(event)
+                    except concurrent.futures.CancelledError as e:
+                        file_name, file_path, *_ = video_info
+                        warning(f"处理视频文件 {file_name} 被取消: {e}")
                     except Exception as e:
                         file_name, file_path, *_ = video_info
                         error(f"处理视频文件 {file_name} 时出错: {e}")
@@ -324,7 +329,7 @@ class FolderScanner(QThread):
             debug(f"    视频时长: {duration:.2f} 秒")
 
             return event
-        except Exception as e:
+        except (OSError, ValueError) as e:
             error(f"    处理文件 {file_name} 时出错: {e}")
             import traceback
             traceback.print_exc()
@@ -458,16 +463,16 @@ class CSVParser(QThread):
                         
                         event = TimelineEvent(name, device, start_time, end_time, videos)
                         results.append(event)
-                    except Exception as e:
+                    except (ValueError, KeyError) as e:
                         error(f"Error parsing row {row}: {e}")
                         continue
                     finally:
                         # 更新进度
                         processed_count += 1
                         self.progress.emit(processed_count, line_count)
-        except Exception as e:
+        except (OSError, csv.Error) as e:
             error(f"Error reading CSV file: {e}")
-        
+
         self.finished.emit(results)
     
     def parse_datetime(self, datetime_str):

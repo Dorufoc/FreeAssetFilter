@@ -83,8 +83,8 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyT
 
 try:
     import pillow_avif
-except ImportError:
-    pass
+except ImportError as e:
+    logger.debug(f"pillow_avif 模块未安装: {e}")
 
 from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 
@@ -259,10 +259,9 @@ class FreeAssetFilterApp(QMainWindow):
         if os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
-                #debug(f"已删除临时文件夹: {temp_dir}")
-            except Exception as e:
-                error(f"删除临时文件夹失败: {e}")
-                pass
+                logger.debug(f"已删除临时文件夹: {temp_dir}")
+            except (OSError, PermissionError) as e:
+                logger.warning(f"删除临时文件夹失败: {e}")
         
         # 调用父类的closeEvent
         super().closeEvent(event)
@@ -285,8 +284,9 @@ class FreeAssetFilterApp(QMainWindow):
                     else:
                         # 如果不是视频播放器，调用父类的默认处理
                         super().keyPressEvent(event)
-                except ImportError:
+                except ImportError as e:
                     # 如果无法导入VideoPlayer，调用父类的默认处理
+                    logger.debug(f"无法导入 VideoPlayer: {e}")
                     super().keyPressEvent(event)
             else:
                 # 如果没有统一预览器，调用父类的默认处理
@@ -326,9 +326,9 @@ class FreeAssetFilterApp(QMainWindow):
                 ctypes.sizeof(dark_mode_value)
             )
 
-        except Exception as e:
+        except (AttributeError, OSError, ctypes.WinError) as e:
             # 如果设置失败（非Windows系统或DWM API不可用），静默忽略
-            pass
+            logger.debug(f"设置标题栏主题失败（非Windows系统或DWM API不可用）: {e}")
 
     def focusInEvent(self, event):
         """
@@ -648,27 +648,28 @@ class FreeAssetFilterApp(QMainWindow):
                             backup_data['file_selector']['selected_files'] = {
                                 k: list(v) for k, v in selected.items()
                             }
-                except (RuntimeError, AttributeError):
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    logger.debug(f"备份文件选择器状态时出错: {e}")
             
             if old_staging_pool:
                 try:
                     if hasattr(old_staging_pool, 'items'):
                         backup_data['file_staging_pool']['items'] = list(old_staging_pool.items)
-                except (RuntimeError, AttributeError):
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    logger.debug(f"备份文件存储池状态时出错: {e}")
             
             if hasattr(self, '_splitter'):
                 try:
                     backup_data['splitter_sizes'] = list(self._splitter.sizes())
-                except (RuntimeError, AttributeError):
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    logger.debug(f"备份分割器大小时出错: {e}")
             
             with open(backup_file, 'w', encoding='utf-8') as f:
                 json.dump(backup_data, f, ensure_ascii=False, indent=2)
             
             return True
-        except Exception:
+        except (OSError, PermissionError, TypeError) as e:
+            logger.warning(f"备份UI状态失败: {e}")
             return False
     
     def _restore_ui_state(self):
@@ -706,8 +707,8 @@ class FreeAssetFilterApp(QMainWindow):
                             }
                     if hasattr(new_file_selector, '_refresh_file_list'):
                         new_file_selector._refresh_file_list()
-                except (RuntimeError, AttributeError):
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    logger.debug(f"恢复文件选择器状态时出错: {e}")
             
             if new_staging_pool:
                 try:
@@ -719,21 +720,23 @@ class FreeAssetFilterApp(QMainWindow):
                                     if isinstance(item_data, dict) and 'path' in item_data:
                                         if item_data not in new_staging_pool.items:
                                             new_staging_pool.add_file(item_data)
-                                except Exception:
+                                except (TypeError, AttributeError) as e:
+                                    logger.debug(f"添加文件到存储池时出错: {e}")
                                     continue
-                except (RuntimeError, AttributeError):
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    logger.debug(f"恢复文件存储池状态时出错: {e}")
             
             if 'splitter_sizes' in backup_data and hasattr(self, '_splitter'):
                 try:
                     old_sizes = backup_data['splitter_sizes']
                     if sum(old_sizes) > 0:
                         self._splitter.setSizes(old_sizes)
-                except (RuntimeError, AttributeError):
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    logger.debug(f"恢复分割器大小时出错: {e}")
             
             return True
-        except Exception:
+        except (OSError, PermissionError, json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"恢复UI状态失败: {e}")
             return False
     
     def _rebuild_main_layout(self):
@@ -768,27 +771,27 @@ class FreeAssetFilterApp(QMainWindow):
         if old_staging_pool and hasattr(old_staging_pool, '_all_items'):
             try:
                 old_preview_items = list(old_staging_pool._all_items)
-            except (RuntimeError, AttributeError):
-                pass
+            except (RuntimeError, AttributeError) as e:
+                logger.debug(f"获取旧预览项时出错: {e}")
         
         if old_file_selector and hasattr(old_file_selector, 'selected_files'):
             try:
                 old_selected_files = list(old_file_selector.selected_files)
-            except (RuntimeError, AttributeError):
-                pass
+            except (RuntimeError, AttributeError) as e:
+                logger.debug(f"获取旧选中文件时出错: {e}")
         
         old_splitter_sizes = [100, 100, 100]
         if hasattr(self, '_splitter'):
             try:
                 old_splitter_sizes = list(self._splitter.sizes())
-            except (RuntimeError, AttributeError):
-                pass
+            except (RuntimeError, AttributeError) as e:
+                logger.debug(f"获取分割器大小时出错: {e}")
         
         try:
             if old_central_widget:
                 old_central_widget.deleteLater()
-        except (RuntimeError, AttributeError):
-            pass
+        except (RuntimeError, AttributeError) as e:
+            logger.debug(f"删除旧中央部件时出错: {e}")
         
         self.central_widget = QWidget()
         self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
@@ -905,20 +908,20 @@ class FreeAssetFilterApp(QMainWindow):
                             try:
                                 self.file_staging_pool._all_items.append(item)
                                 self.file_staging_pool._update_staging_area()
-                            except (RuntimeError, AttributeError):
-                                pass
+                            except (RuntimeError, AttributeError) as e:
+                                logger.debug(f"恢复预览项时出错: {e}")
             
             if old_selected_files and hasattr(self.file_selector_a, 'selected_files'):
                 try:
                     self.file_selector_a.selected_files = list(old_selected_files)
                     self.file_selector_a._refresh_file_list()
-                except (RuntimeError, AttributeError):
-                    pass
+                except (RuntimeError, AttributeError) as e:
+                    logger.debug(f"恢复选中文件时出错: {e}")
             
             if sum(old_splitter_sizes) > 0:
                 splitter.setSizes(old_splitter_sizes)
-        except (RuntimeError, AttributeError):
-            pass
+        except (RuntimeError, AttributeError) as e:
+            logger.debug(f"恢复布局状态时出错: {e}")
         
         self._restore_ui_state()
         
@@ -948,8 +951,8 @@ class FreeAssetFilterApp(QMainWindow):
             if not success:
                 self._update_theme_in_progress = False
                 return
-        except (RuntimeError, AttributeError):
-            pass
+        except (RuntimeError, AttributeError) as e:
+            logger.warning(f"重建主布局时出错: {e}")
         finally:
             self._update_theme_in_progress = False
 
@@ -1296,10 +1299,9 @@ def main():
                 SetProcessDpiAwareness.argtypes = [ctypes.c_int]
                 PROCESS_PER_MONITOR_DPI_AWARE = 2
                 SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
-                #print("[DEBUG] 设置为每显示器DPI感知模式")
+                logger.debug("设置为每显示器DPI感知模式")
             else:
-                1==1
-                #print("[DEBUG] 设置为每显示器DPI感知v2模式")
+                logger.debug("设置为每显示器DPI感知v2模式")
         except (AttributeError, OSError) as e:
             # 如果上述API都不可用，尝试使用SetProcessDPIAware（Windows Vista及以上版本）
             try:
@@ -1307,10 +1309,9 @@ def main():
                 SetProcessDPIAware = user32.SetProcessDPIAware
                 SetProcessDPIAware.restype = ctypes.c_bool
                 SetProcessDPIAware()
-                #print("[DEBUG] 设置为系统DPI感知模式")
+                logger.debug("设置为系统DPI感知模式")
             except (AttributeError, OSError) as e2:
-                1==1
-                #print(f"[DEBUG] 设置DPI感知失败: {e2}")
+                logger.debug(f"设置DPI感知失败: {e2}")
     
     # 设置DPI相关属性 (Qt6中已默认启用高DPI支持，无需手动设置)
     # QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)  # Qt6中已弃用
@@ -1326,8 +1327,8 @@ def main():
     # cv2 的初始化涉及复杂的类型系统，必须在主线程中完成
     try:
         import cv2
-    except ImportError:
-        pass
+    except ImportError as e:
+        logger.debug(f"cv2 模块未安装: {e}")
 
     # 设置全局DPI缩放因子为系统缩放的1.4倍
     screen = QApplication.primaryScreen()
@@ -1530,11 +1531,10 @@ def main():
                 # 文件不存在时，仍然记录时间但不创建文件（遵循原有逻辑）
                 settings_manager.set_setting("app.last_exit_time", exit_time)
                 
-        except Exception as e:
+        except (OSError, PermissionError, json.JSONDecodeError, TypeError) as e:
             # 发生错误时，使用原有方式记录时间（不保存）
             settings_manager.set_setting("app.last_exit_time", exit_time)
-            error(f"保存退出时间失败: {e}")
-            pass
+            logger.warning(f"保存退出时间失败: {e}")
     
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
