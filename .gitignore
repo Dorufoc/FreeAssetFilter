@@ -62,3 +62,4 @@ test_audio_background.py
 build/
 nuitka-crash-report.xml
 FreeAssetFilter.spec
+freeassetfilter.egg-info/
