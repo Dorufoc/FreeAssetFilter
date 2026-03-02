@@ -809,6 +809,7 @@ class D_ProgressBar(QWidget):
         self._bg_gradient_colors = []
         self._progress_gradient_mode = False
         self._progress_gradient_colors = []
+        self._left_transparent_mode = False  # 左侧透明模式
 
     def _init_icons(self):
         """初始化图标（默认不使用，留空以使用圆形滑块）"""
@@ -1042,6 +1043,17 @@ class D_ProgressBar(QWidget):
         self._progress_gradient_colors = colors
         self.update()
 
+    def set_left_transparent_mode(self, enabled):
+        """
+        设置左侧透明模式
+        启用后，进度条左侧（已填充部分）将透明，只显示滑块
+
+        Args:
+            enabled (bool): 是否启用左侧透明模式
+        """
+        self._left_transparent_mode = enabled
+        self.update()
+
     def set_handle_border_color(self, color):
         """
         设置滑块边框颜色
@@ -1243,7 +1255,7 @@ class D_ProgressBar(QWidget):
         progress_ratio = (self._display_value - self._minimum) / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
         progress_width = int(bar_width * progress_ratio)
 
-        if progress_width > 0:
+        if progress_width > 0 and not self._left_transparent_mode:
             progress_rect = QRect(bar_x, bar_y, progress_width, self._bar_height)
 
             if self._progress_gradient_mode and len(self._progress_gradient_colors) >= 2:
@@ -1288,7 +1300,7 @@ class D_ProgressBar(QWidget):
         progress_ratio = (self._display_value - self._minimum) / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
         progress_height = int(bar_height * progress_ratio)
 
-        if progress_height > 0:
+        if progress_height > 0 and not self._left_transparent_mode:
             progress_rect = QRect(bar_x, bar_y + bar_height - progress_height, self._bar_height, progress_height)
 
             if self._progress_gradient_mode and len(self._progress_gradient_colors) >= 2:

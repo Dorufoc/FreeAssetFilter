@@ -28,6 +28,7 @@ from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager
 
 
 class FileBlockCard(QWidget):
@@ -262,12 +263,12 @@ class FileBlockCard(QWidget):
                     display_suffix = suffix.upper()
                     if len(display_suffix) > 5:
                         display_suffix = "FILE"
-                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale)
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale, replace_colors=False)
                 elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                     display_suffix = "." + suffix
-                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale)
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale, replace_colors=False)
                 else:
-                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, base_icon_size, self.dpi_scale)
+                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, base_icon_size, self.dpi_scale, replace_colors=False)
                 
                 if isinstance(svg_widget, QSvgWidget):
                     for child in self.icon_label.findChildren(QLabel):
@@ -310,10 +311,31 @@ class FileBlockCard(QWidget):
             self._set_default_icon()
     
     def _set_icon_pixmap(self, pixmap, size):
-        """设置图标Pixmap"""
+        """设置图标Pixmap，保持原始比例"""
         scaled_size = int(size * self.devicePixelRatio())
         if scaled_size > 0:
-            scaled_pixmap = pixmap.scaled(scaled_size, scaled_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # 获取原始图像的宽高比
+            orig_width = pixmap.width()
+            orig_height = pixmap.height()
+            
+            if orig_width > 0 and orig_height > 0:
+                aspect_ratio = orig_width / orig_height
+                
+                # 根据宽高比计算目标尺寸，确保图像在指定size的范围内保持比例
+                if aspect_ratio >= 1:
+                    # 宽度大于等于高度，以宽度为基准
+                    target_width = scaled_size
+                    target_height = int(scaled_size / aspect_ratio)
+                else:
+                    # 高度大于宽度，以高度为基准
+                    target_height = scaled_size
+                    target_width = int(scaled_size * aspect_ratio)
+            else:
+                # 如果无法获取原始尺寸，使用正方形
+                target_width = scaled_size
+                target_height = scaled_size
+            
+            scaled_pixmap = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
             self.icon_label.setPixmap(scaled_pixmap)
     
@@ -325,11 +347,8 @@ class FileBlockCard(QWidget):
     
     def _get_thumbnail_path(self, file_path):
         """获取缩略图路径"""
-        import hashlib
-        thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
-        md5_hash = hashlib.md5(file_path.encode('utf-8'))
-        file_hash = md5_hash.hexdigest()[:16]
-        return os.path.join(thumb_dir, f"{file_hash}.png")
+        thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+        return thumbnail_manager.get_thumbnail_path(file_path)
     
     def _get_icon_path(self):
         """获取文件图标路径"""
@@ -1185,12 +1204,12 @@ class FileBlockCard(QWidget):
                         display_suffix = suffix.upper()
                         if len(display_suffix) > 5:
                             display_suffix = "FILE"
-                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale)
+                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=False)
                     elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                         display_suffix = "." + suffix
-                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale)
+                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=False)
                     else:
-                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale)
+                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale, replace_colors=False)
                     
                     if svg_widget:
                         svg_widget.setParent(icon_label)

@@ -44,12 +44,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QAction
 
-# 尝试导入PIL库，用于生成缩略图
-try:
-    from PIL import Image
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
+# 导入缩略图管理器
+from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager
 
 class FileStagingPool(QWidget):
     """
@@ -365,9 +361,9 @@ class FileStagingPool(QWidget):
             self._calculate_folder_size(file_info["path"])
         else:
             # 如果是图片或视频文件，异步生成缩略图
-            suffix = file_info.get("suffix", "").lower()
-            if self._is_media_file(suffix):
-                self._generate_thumbnail_async(file_info["path"])
+            thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+            if thumbnail_manager.is_media_file(file_info["path"]):
+                self._generate_thumbnail_async(file_info["path"], card)
 
         # 更新统计信息
         self.update_stats()
@@ -1889,84 +1885,67 @@ class FileStagingPool(QWidget):
         except RuntimeError:
             pass
 
-    def _is_media_file(self, suffix):
-        """判断是否为图片或视频文件"""
-        image_formats = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'svg', 'psd', 'psb']
-        video_formats = ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
-        return suffix in image_formats or suffix in video_formats
-
     def _get_thumbnail_path(self, file_path):
-        """获取文件的缩略图路径"""
-        import hashlib
-        thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
-        os.makedirs(thumb_dir, exist_ok=True)
-        md5_hash = hashlib.md5(file_path.encode('utf-8'))
-        file_hash = md5_hash.hexdigest()[:16]
-        return os.path.join(thumb_dir, f"{file_hash}.png")
+        """获取文件的缩略图路径
+        
+        使用缩略图管理器统一管理
+        """
+        thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+        return thumbnail_manager.get_thumbnail_path(file_path)
 
-    def _generate_thumbnail_async(self, file_path):
-        """异步生成缩略图"""
+    def _generate_thumbnail_async(self, file_path, card=None):
+        """异步生成缩略图
+        
+        Args:
+            file_path (str): 文件路径
+            card (CustomFileHorizontalCard, optional): 对应的卡片对象，缩略图生成完成后会刷新该卡片
+        """
         from PySide6.QtCore import QThreadPool, QRunnable
-        import hashlib
 
-        # 获取缩略图保存路径
-        thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
-        os.makedirs(thumb_dir, exist_ok=True)
-        md5_hash = hashlib.md5(file_path.encode('utf-8'))
-        file_hash = md5_hash.hexdigest()[:16]
-        thumb_path = os.path.join(thumb_dir, f"{file_hash}.png")
+        # 获取缩略图管理器
+        thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+        thumb_path = thumbnail_manager.get_thumbnail_path(file_path)
 
         class ThumbnailGenerator(QObject, QRunnable):
             """缩略图生成器，使用信号机制替代回调函数以确保线程安全"""
-            thumbnail_ready = Signal(str)  # 缩略图生成完成信号
+            thumbnail_ready = Signal(str, object)  # 缩略图生成完成信号，传递路径和卡片对象
 
-            def __init__(self, file_path, thumb_path):
+            def __init__(self, thumbnail_manager, file_path, card):
                 super().__init__()
+                self.thumbnail_manager = thumbnail_manager
                 self.file_path = file_path
-                self.thumb_path = thumb_path
+                self.card = card
 
             def run(self):
-                result_path = self._generate_thumbnail(self.file_path, self.thumb_path)
+                result_path = self.thumbnail_manager.create_thumbnail(self.file_path)
                 if result_path:
-                    self.thumbnail_ready.emit(result_path)
+                    self.thumbnail_ready.emit(result_path, self.card)
 
-            def _generate_thumbnail(self, file_path, thumb_path):
-                try:
-                    suffix = os.path.splitext(file_path)[1].lower().lstrip('.')
-                    if suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif']:
-                        from PIL import Image
-                        img = Image.open(file_path)
-                        img.thumbnail((200, 200))
-                        img.save(thumb_path, 'PNG')
-                        return thumb_path
-                    elif suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']:
-                        try:
-                            import cv2
-                            cap = cv2.VideoCapture(file_path)
-                            ret, frame = cap.read()
-                            if ret:
-                                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                from PIL import Image
-                                img = Image.fromarray(frame)
-                                img.thumbnail((200, 200))
-                                img.save(thumb_path, 'PNG')
-                                cap.release()
-                                return thumb_path
-                        except ImportError:
-                            warning("OpenCV is not installed")
-                        except (IOError, OSError) as e:
-                            warning(f"生成视频缩略图失败: {file_path}, 错误: {e}")
-                except (IOError, OSError) as e:
-                    warning(f"生成缩略图失败: {file_path}, 错误: {e}")
-                return False
-
-        generator = ThumbnailGenerator(file_path, thumb_path)
+        generator = ThumbnailGenerator(thumbnail_manager, file_path, card)
         # 连接信号到处理槽函数（使用 QueuedConnection 确保在主线程处理）
         generator.thumbnail_ready.connect(
-            lambda path: None,  # 可以在这里添加实际的缩略图处理逻辑
+            self._on_thumbnail_ready,
             Qt.QueuedConnection
         )
         QThreadPool.globalInstance().start(generator)
+    
+    def _on_thumbnail_ready(self, thumb_path, card):
+        """缩略图生成完成的回调函数
+        
+        Args:
+            thumb_path (str): 缩略图路径
+            card (CustomFileHorizontalCard): 需要刷新的卡片对象
+        """
+        debug(f"[FileStagingPool] 缩略图生成完成: {thumb_path}")
+        if card and hasattr(card, 'refresh_thumbnail'):
+            # 在主线程中刷新卡片缩略图
+            from PySide6.QtCore import QMetaObject, Qt, Q_ARG
+            QMetaObject.invokeMethod(
+                card,
+                "refresh_thumbnail",
+                Qt.QueuedConnection
+            )
+            debug(f"[FileStagingPool] 已触发卡片缩略图刷新")
     
     def calculate_total_file_size(self, files):
         """

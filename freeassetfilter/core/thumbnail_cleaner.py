@@ -8,11 +8,11 @@ FreeAssetFilter 缩略图缓存清理模块
 import os
 import threading
 import time
-import hashlib
 from concurrent.futures import ThreadPoolExecutor
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager
 
 __all__ = ['ThumbnailCleaner']
 
@@ -41,10 +41,9 @@ class ThumbnailCleaner:
         Returns:
             str: 缩略图缓存目录的绝对路径
         """
-        # 获取项目根目录
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        # 构建缩略图缓存目录路径
-        thumbnails_dir = os.path.join(project_root, "data", "thumbnails")
+        # 使用 thumbnail_manager 获取缩略图目录
+        thumbnail_manager = get_thumbnail_manager()
+        thumbnails_dir = thumbnail_manager.get_thumbnail_dir()
         # 确保目录存在
         os.makedirs(thumbnails_dir, exist_ok=True)
         return thumbnails_dir
@@ -153,13 +152,9 @@ class ThumbnailCleaner:
         Returns:
             bool: 如果缩略图存在返回True，否则返回False
         """
-        # 计算缩略图文件名
-        md5_hash = hashlib.md5(file_path.encode('utf-8'))
-        file_hash = md5_hash.hexdigest()[:16]
-        thumbnail_path = os.path.join(self.thumbnails_dir, f"{file_hash}.png")
-        
-        return os.path.exists(thumbnail_path)
-    
+        thumbnail_manager = get_thumbnail_manager()
+        return thumbnail_manager.has_thumbnail(file_path)
+
     def get_thumbnail_path(self, file_path):
         """
         获取指定文件的缩略图路径
@@ -170,12 +165,8 @@ class ThumbnailCleaner:
         Returns:
             str: 缩略图文件路径
         """
-        # 计算缩略图文件名
-        md5_hash = hashlib.md5(file_path.encode('utf-8'))
-        file_hash = md5_hash.hexdigest()[:16]
-        thumbnail_path = os.path.join(self.thumbnails_dir, f"{file_hash}.png")
-        
-        return thumbnail_path
+        thumbnail_manager = get_thumbnail_manager()
+        return thumbnail_manager.get_thumbnail_path(file_path)
     
     def get_cache_statistics(self):
         """

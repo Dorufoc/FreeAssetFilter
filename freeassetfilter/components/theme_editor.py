@@ -36,11 +36,11 @@ class ThemeEditor(QScrollArea):
         
         self.preset_themes = [
             {"name": "活力蓝", "colors": ["#0A59F7"]},
-            {"name": "热情红", "colors": ["#FC5454"]},
-            {"name": "蜂蜜黄", "colors": ["#F0C54D"]},
-            {"name": "清新绿", "colors": ["#58D9C0"]},
-            {"name": "魅力紫", "colors": ["#B036EE"]},
-            {"name": "清雅墨", "colors": ["#383F4C"]}
+            {"name": "热情红", "colors": ["#DD5940"]},
+            {"name": "蜂蜜黄", "colors": ["#EAB348"]},
+            {"name": "清新绿", "colors": ["#78B86C"]},
+            {"name": "魅力紫", "colors": ["#9554CF"]},
+            {"name": "清雅墨", "colors": ["#5A6C8B"]}
         ]
         
         self.custom_themes = [
@@ -608,7 +608,14 @@ class ThemeEditor(QScrollArea):
                 setting_path = "appearance.colors.accent_color"
                 debug(f"设置颜色: accent_color = {accent_color} (路径: {setting_path})")
                 self.settings_manager.set_setting(setting_path, accent_color)
-                
+
+                # 保存预设主题名称
+                theme_name = self.selected_theme.get("name", "")
+                if theme_name:
+                    self.settings_manager.set_setting("appearance.preset_theme", theme_name)
+                else:
+                    self.settings_manager.set_setting("appearance.preset_theme", "")
+
                 # 保存设置到文件
                 debug("保存所有设置到配置文件")
                 self.settings_manager.save_settings()

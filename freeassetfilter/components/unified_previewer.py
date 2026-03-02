@@ -40,6 +40,7 @@ from freeassetfilter.components.folder_content_list import FolderContentList
 from freeassetfilter.components.archive_browser import ArchiveBrowser
 from freeassetfilter.widgets.D_widgets import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
+from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager
 
 
 class UnifiedPreviewer(QWidget):
@@ -1040,55 +1041,54 @@ class UnifiedPreviewer(QWidget):
     def _get_video_thumbnail(self, file_path):
         """
         获取视频缩略图路径
-        
+
         Args:
             file_path (str): 视频文件路径
-        
+
         Returns:
             str: 缩略图路径，如果无法生成则返回None
         """
+        cap = None
         try:
-            # 尝试使用opencv生成缩略图
-            import cv2
-            
-            # 生成缩略图文件路径
-            thumb_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'thumbnails')
-            os.makedirs(thumb_dir, exist_ok=True)
-            file_hash = hash(file_path)
-            thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
-            
+            # 使用 thumbnail_manager 获取缩略图路径
+            thumbnail_manager = get_thumbnail_manager()
+            thumbnail_path = thumbnail_manager.get_thumbnail_path(file_path)
+
             # 如果缩略图已存在，直接返回
             if os.path.exists(thumbnail_path):
                 return thumbnail_path
-            
+
+            # 尝试使用opencv生成缩略图
+            import cv2
+
             # 尝试打开视频文件
             cap = cv2.VideoCapture(file_path)
-            if cap.isOpened():
-                # 获取视频总帧数
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                if total_frames > 0:
-                    # 跳转到视频中间位置
-                    middle_frame = total_frames // 2
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame)
-                    
-                    # 读取中间帧
+            if not cap.isOpened():
+                warning(f"无法打开视频文件: {file_path}")
+                return None
+
+            # 获取视频总帧数
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if total_frames > 0:
+                # 跳转到视频中间位置
+                middle_frame = total_frames // 2
+                cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame)
+
+                # 读取中间帧
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    # 调整大小为128x128
+                    thumbnail = cv2.resize(frame, (128, 128), interpolation=cv2.INTER_AREA)
+                    # 保存缩略图
+                    cv2.imwrite(thumbnail_path, thumbnail)
+                else:
+                    # 如果无法读取中间帧，尝试读取第一帧
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     ret, frame = cap.read()
-                    if ret:
-                        # 调整大小为128x128
+                    if ret and frame is not None:
                         thumbnail = cv2.resize(frame, (128, 128), interpolation=cv2.INTER_AREA)
-                        # 保存缩略图
                         cv2.imwrite(thumbnail_path, thumbnail)
-                    else:
-                        # 如果无法读取中间帧，尝试读取第一帧
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        ret, frame = cap.read()
-                        if ret:
-                            thumbnail = cv2.resize(frame, (128, 128), interpolation=cv2.INTER_AREA)
-                            cv2.imwrite(thumbnail_path, thumbnail)
-                
-                # 释放资源
-                cap.release()
-            
+
             return thumbnail_path
         except ImportError:
             # 如果没有安装opencv，返回None
@@ -1098,6 +1098,10 @@ class UnifiedPreviewer(QWidget):
             # 处理其他可能的错误
             error(f"生成视频缩略图失败: {file_path}, 错误: {e}")
             return None
+        finally:
+            # 确保资源被释放
+            if cap is not None:
+                cap.release()
     
     def _show_audio_preview(self, file_path):
         """

@@ -183,14 +183,15 @@ class SvgRenderer:
             return svg_content
     
     @staticmethod
-    def render_svg_to_widget(icon_path, icon_size=120, dpi_scale=1.0):
+    def render_svg_to_widget(icon_path, icon_size=120, dpi_scale=1.0, replace_colors=True):
         """
         将SVG文件渲染为QSvgWidget，这是最可靠的方式
         
         Args:
             icon_path (str): SVG文件路径
-            icon_size (int): 输出图标大小，默认120x120
+            icon_size (int): 输出图标大小，默认120x120（当SVG不是1:1比例时，按原始比例缩放）
             dpi_scale (float): DPI缩放因子，默认1.0
+            replace_colors (bool): 是否启用颜色替换功能，默认True
             
         Returns:
             QWidget: 渲染后的QSvgWidget或QLabel对象，确保控件本身完全不可见
@@ -214,8 +215,9 @@ class SvgRenderer:
             with open(icon_path, 'r', encoding='utf-8') as f:
                 svg_content = f.read()
             
-            # 预处理SVG内容：替换颜色
-            svg_content = SvgRenderer._replace_svg_colors(svg_content)
+            # 预处理SVG内容：根据参数决定是否替换颜色
+            if replace_colors:
+                svg_content = SvgRenderer._replace_svg_colors(svg_content)
             
             # 预处理SVG内容：将rgba颜色转换为十六进制格式
             import re
@@ -267,12 +269,33 @@ class SvgRenderer:
             # 替换CSS rgba格式为十六进制格式
             svg_content = re.sub(r'rgba\(([^\)]+)\)', rgba_to_hex, svg_content)
             
+            # 创建临时渲染器获取SVG原始尺寸
+            temp_renderer = QSvgRenderer(svg_content.encode('utf-8'))
+            svg_default_size = temp_renderer.defaultSize()
+            
+            # 计算保持原始比例的尺寸
+            if svg_default_size.width() > 0 and svg_default_size.height() > 0:
+                svg_aspect_ratio = svg_default_size.width() / svg_default_size.height()
+                if svg_aspect_ratio >= 1:
+                    # 宽度大于等于高度，以宽度为基准
+                    render_width = scaled_icon_size
+                    render_height = int(scaled_icon_size / svg_aspect_ratio)
+                else:
+                    # 高度大于宽度，以高度为基准
+                    render_height = scaled_icon_size
+                    render_width = int(scaled_icon_size * svg_aspect_ratio)
+            else:
+                # 如果无法获取原始尺寸，使用正方形
+                render_width = scaled_icon_size
+                render_height = scaled_icon_size
+            
             svg_widget = QSvgWidget()
             svg_widget.load(svg_content.encode('utf-8'))
             svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
             svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
             
-            svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+            # 使用保持比例的尺寸，而不是强制正方形
+            svg_widget.setFixedSize(render_width, render_height)
             
             container = QWidget()
             container.setFixedSize(scaled_icon_size, scaled_icon_size)
@@ -288,7 +311,7 @@ class SvgRenderer:
         except (OSError, ValueError, TypeError) as e:
             warning(f"使用QSvgWidget加载SVG图标失败: {e}")
             # 如果QSvgWidget失败，回退到使用超分辨率渲染的位图
-            pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale)
+            pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale, replace_colors=replace_colors)
             
             # 将pixmap显示在完全透明的QLabel中
             label = QLabel()
@@ -385,7 +408,7 @@ class SvgRenderer:
         
         Args:
             icon_path (str): SVG文件路径
-            icon_size (int): 输出图标大小，默认24x24（当未指定width和height时使用）
+            icon_size (int): 输出图标大小，默认24x24（当未指定width和height时使用，会根据SVG原始比例自动调整）
             dpi_scale (float): DPI缩放因子，默认1.0
             icon_width (int, optional): 输出图标宽度，指定后按比例渲染
             icon_height (int, optional): 输出图标高度，指定后按比例渲染
@@ -394,18 +417,15 @@ class SvgRenderer:
         Returns:
             QPixmap: 渲染后的QPixmap对象，如果渲染失败返回透明像素图
         """
-        # 使用逻辑像素大小，不再应用DPI缩放因子
-        if icon_width is not None and icon_height is not None:
-            # 如果同时指定了宽度和高度，按照指定尺寸渲染
-            scaled_width = icon_width
-            scaled_height = icon_height
-        else:
-            # 否则使用1:1比例
-            scaled_width = icon_size
-            scaled_height = icon_size
-        
         if not icon_path or not os.path.exists(icon_path):
             # 如果路径无效，返回透明像素图
+            # 使用逻辑像素大小
+            if icon_width is not None and icon_height is not None:
+                scaled_width = icon_width
+                scaled_height = icon_height
+            else:
+                scaled_width = icon_size
+                scaled_height = icon_size
             pixmap = QPixmap(scaled_width, scaled_height)
             pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
@@ -423,6 +443,30 @@ class SvgRenderer:
             # 使用QSvgRenderer创建一个足够大的pixmap（256x256），然后缩放
             # 这确保了在高DPI屏幕上的清晰度，实现超分辨率渲染
             svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
+            
+            # 获取SVG的原始尺寸
+            svg_size = svg_renderer.defaultSize()
+            
+            # 计算目标尺寸，保持SVG原始宽高比
+            if icon_width is not None and icon_height is not None:
+                # 如果同时指定了宽度和高度，按照指定尺寸渲染
+                target_width = icon_width
+                target_height = icon_height
+            elif svg_size.width() > 0 and svg_size.height() > 0:
+                # 根据SVG原始比例计算目标尺寸
+                svg_aspect_ratio = svg_size.width() / svg_size.height()
+                if svg_aspect_ratio >= 1:
+                    # 宽度大于等于高度，以宽度为基准
+                    target_width = icon_size
+                    target_height = int(icon_size / svg_aspect_ratio)
+                else:
+                    # 高度大于宽度，以高度为基准
+                    target_height = icon_size
+                    target_width = int(icon_size * svg_aspect_ratio)
+            else:
+                # 如果无法获取原始尺寸，使用正方形
+                target_width = icon_size
+                target_height = icon_size
             
             # 使用256x256的超分辨率进行渲染，确保图标清晰
             render_size = 256
@@ -442,9 +486,6 @@ class SvgRenderer:
                 painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
                 painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-                # 获取SVG的原始尺寸，确保正确渲染
-                svg_size = svg_renderer.defaultSize()
-                
                 # 计算缩放因子，确保SVG在256x256的画布上居中显示且保持比例
                 scale_factor = min(render_size / svg_size.width(), render_size / svg_size.height())
                 
@@ -477,9 +518,6 @@ class SvgRenderer:
                 painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
                 painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-                # 获取SVG的原始尺寸，确保正确渲染
-                svg_size = svg_renderer.defaultSize()
-                
                 # 计算缩放因子，确保SVG在256x256的画布上居中显示且保持比例
                 scale_factor = min(render_size / svg_size.width(), render_size / svg_size.height())
                 
@@ -505,8 +543,8 @@ class SvgRenderer:
                 pixmap = QPixmap.fromImage(image)
             
             # 然后缩放回目标大小，使用高质量缩放算法
-            # 如果指定了宽度和高度，按指定比例缩放；否则保持1:1比例
-            final_pixmap = pixmap.scaled(scaled_width, scaled_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # 根据计算出的目标尺寸进行缩放，保持原始宽高比
+            final_pixmap = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
             # 设置设备像素比，确保在高分屏上正确渲染
             if is_main_thread:
@@ -520,13 +558,20 @@ class SvgRenderer:
         except (OSError, ValueError, TypeError) as e:
             warning(f"渲染SVG到QPixmap失败: {icon_path}, 错误: {e}")
             # 如果渲染失败，返回透明像素图
-        pixmap = QPixmap(scaled_width, scaled_height)
+        # 使用逻辑像素大小
+        if icon_width is not None and icon_height is not None:
+            target_width = icon_width
+            target_height = icon_height
+        else:
+            target_width = icon_size
+            target_height = icon_size
+        pixmap = QPixmap(target_width, target_height)
         pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         pixmap.fill(Qt.transparent)
         return pixmap
     
     @staticmethod
-    def render_unknown_file_icon(icon_path, text, icon_size=120, dpi_scale=1.0):
+    def render_unknown_file_icon(icon_path, text, icon_size=120, dpi_scale=1.0, replace_colors=True):
         """
         渲染带有文字的未知文件类型图标
         将SVG底板与文字组合渲染为一个QPixmap或QSvgWidget
@@ -534,8 +579,9 @@ class SvgRenderer:
         Args:
             icon_path (str): SVG底板文件路径
             text (str): 要显示的文字（文件后缀名）
-            icon_size (int): 输出图标大小，默认120x120
+            icon_size (int): 输出图标大小，默认120x120（当SVG不是1:1比例时，按原始比例缩放）
             dpi_scale (float): DPI缩放因子，默认1.0
+            replace_colors (bool): 是否启用颜色替换功能，默认True
             
         Returns:
             QWidget: 渲染后的Widget对象，确保控件本身完全透明
@@ -562,18 +608,43 @@ class SvgRenderer:
             container.setStyleSheet('background: transparent; border: none;')
             container.setAttribute(Qt.WA_TranslucentBackground, True)
 
-            # 读取SVG文件内容并进行颜色替换预处理
+            # 读取SVG文件内容并根据参数决定是否进行颜色替换预处理
             with open(icon_path, 'r', encoding='utf-8') as f:
                 svg_content = f.read()
-            svg_content = SvgRenderer._replace_svg_colors(svg_content)
+            if replace_colors:
+                svg_content = SvgRenderer._replace_svg_colors(svg_content)
+
+            # 创建临时渲染器获取SVG原始尺寸
+            temp_renderer = QSvgRenderer(svg_content.encode('utf-8'))
+            svg_default_size = temp_renderer.defaultSize()
+            
+            # 计算保持原始比例的尺寸
+            if svg_default_size.width() > 0 and svg_default_size.height() > 0:
+                svg_aspect_ratio = svg_default_size.width() / svg_default_size.height()
+                if svg_aspect_ratio >= 1:
+                    # 宽度大于等于高度，以宽度为基准
+                    render_width = scaled_icon_size
+                    render_height = int(scaled_icon_size / svg_aspect_ratio)
+                else:
+                    # 高度大于宽度，以高度为基准
+                    render_height = scaled_icon_size
+                    render_width = int(scaled_icon_size * svg_aspect_ratio)
+            else:
+                # 如果无法获取原始尺寸，使用正方形
+                render_width = scaled_icon_size
+                render_height = scaled_icon_size
 
             # 使用QSvgWidget渲染SVG底板
             svg_widget = QSvgWidget(container)
             svg_widget.load(svg_content.encode('utf-8'))
-            svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
+            # 使用保持比例的尺寸，并居中显示
+            svg_widget.setFixedSize(render_width, render_height)
             svg_widget.setStyleSheet('background: transparent; border: none;')
             svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
-            svg_widget.move(0, 0)
+            # 居中放置
+            x = (scaled_icon_size - render_width) // 2
+            y = (scaled_icon_size - render_height) // 2
+            svg_widget.move(x, y)
             
             # 如果有文字，创建文字标签
             if text:

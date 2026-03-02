@@ -58,6 +58,7 @@ class SettingsManager:
             "appearance": {
                 "theme": "default",
                 "icon_style": 0,
+                "preset_theme": "活力蓝",
                 "colors": {
                     "accent_color": "#0A59F7",
                     "secondary_color": "#333333",
@@ -113,6 +114,12 @@ class SettingsManager:
             "video": {
                 "lut_files": [],
                 "active_lut_id": None
+            },
+            "photo_viewer": {
+                "style": {
+                    "bg_color_key": "base_color",
+                    "remember_bg_color": True
+                }
             }
         }
         self.settings = self.load_settings()
@@ -163,6 +170,7 @@ class SettingsManager:
             "appearance": {
                 "theme": self.default_settings["appearance"]["theme"],
                 "icon_style": self.default_settings["appearance"]["icon_style"],
+                "preset_theme": self.default_settings["appearance"].get("preset_theme", ""),
                 "colors": self.default_settings["appearance"]["colors"].copy()
             },
             "file_selector": self.default_settings["file_selector"].copy(),
@@ -241,6 +249,13 @@ class SettingsManager:
                     if color_key in self.settings["appearance"]["colors"]:
                         filtered_colors[color_key] = self.settings["appearance"]["colors"][color_key]
                 self.settings["appearance"]["colors"] = filtered_colors
+
+            if "appearance" in self.settings:
+                preset_theme = self.settings["appearance"].get("preset_theme", "")
+                if preset_theme:
+                    self.settings["appearance"]["preset_theme"] = preset_theme
+                else:
+                    self.settings["appearance"].pop("preset_theme", None)
 
             if "appearance" in self.settings and "colors" in self.settings["appearance"]:
                 _debug("当前主题颜色设置:")
@@ -343,6 +358,7 @@ class SettingsManager:
             "appearance": {
                 "theme": default["appearance"]["theme"],
                 "icon_style": default["appearance"]["icon_style"],
+                "preset_theme": default["appearance"].get("preset_theme", ""),
                 "colors": default["appearance"]["colors"].copy()
             },
             "file_selector": default["file_selector"].copy(),
@@ -359,6 +375,8 @@ class SettingsManager:
                         merged[key]["theme"] = value["theme"]
                     if "icon_style" in value:
                         merged[key]["icon_style"] = value["icon_style"]
+                    if "preset_theme" in value:
+                        merged[key]["preset_theme"] = value["preset_theme"]
                     if "colors" in value:
                         for color_key in base_color_keys:
                             if color_key in value["colors"]:

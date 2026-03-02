@@ -294,17 +294,24 @@ class HoverTooltip(QWidget):
         # 检查控件是否已经在列表中（通过比较弱引用的目标）
         for ref in self.target_widgets:
             try:
-                if ref() == widget:
+                existing_widget = ref()
+                if existing_widget is None:
+                    continue
+                # 检查控件是否仍然有效
+                try:
+                    _ = existing_widget.objectName()
+                except RuntimeError:
+                    continue
+                if existing_widget is widget:
                     return  # 已经存在，不需要重复添加
-            except RuntimeError as e:
-                debug(f"HoverTooltip widget reference error: {e}")
+            except RuntimeError:
                 continue
 
         # 添加弱引用
         ref = weakref.ref(widget)
         self.target_widgets.append(ref)
         widget.installEventFilter(self)
-        
+
         # 监听控件销毁信号，确保控件被移除时tooltip能正确隐藏
         widget.destroyed.connect(self._on_target_widget_destroyed)
     
@@ -340,9 +347,23 @@ class HoverTooltip(QWidget):
         
         # 清理已失效的弱引用
         try:
-            self.target_widgets = [ref for ref in self.target_widgets if ref() is not None]
-        except RuntimeError as e:
-            debug(f"HoverTooltip clean widget references error: {e}")
+            valid_refs = []
+            for ref in self.target_widgets:
+                try:
+                    target = ref()
+                    if target is None:
+                        continue
+                    # 验证控件是否仍然有效
+                    try:
+                        _ = target.objectName()
+                        valid_refs.append(ref)
+                    except RuntimeError:
+                        pass
+                except RuntimeError:
+                    pass
+            self.target_widgets = valid_refs
+        except RuntimeError:
+            pass
 
     def _start_mouse_monitor(self):
         """启动全局鼠标活动监控"""
@@ -375,11 +396,25 @@ class HoverTooltip(QWidget):
         for ref in self.target_widgets:
             try:
                 target = ref()
-                if target and (current_widget == target or target.isAncestorOf(current_widget)):
+                if target is None:
+                    continue
+                # 先检查target是否仍然有效（通过访问一个安全属性）
+                try:
+                    _ = target.objectName()
+                except RuntimeError:
+                    # 控件已被删除
+                    continue
+                # 同样检查current_widget是否有效
+                if current_widget:
+                    try:
+                        _ = current_widget.objectName()
+                    except RuntimeError:
+                        current_widget = None
+                if current_widget == target or (current_widget and target.isAncestorOf(current_widget)):
                     is_over_target = True
                     break
-            except RuntimeError as e:
-                debug(f"HoverTooltip check target widget error: {e}")
+            except RuntimeError:
+                # 控件已被删除，跳过
                 continue
 
         # 如果鼠标在目标控件上，更新位置并重启定时器
@@ -426,11 +461,17 @@ class HoverTooltip(QWidget):
         for ref in self.target_widgets:
             try:
                 target = ref()
+                if target is None:
+                    continue
+                # 先检查target是否仍然有效
+                try:
+                    _ = target.objectName()
+                except RuntimeError:
+                    continue
                 if target is obj:
                     is_target = True
                     break
-            except RuntimeError as e:
-                debug(f"HoverTooltip event filter check error: {e}")
+            except RuntimeError:
                 continue
 
         if is_target:
@@ -468,17 +509,37 @@ class HoverTooltip(QWidget):
     def show_tooltip(self):
         """显示悬浮提示框"""
         # 清理已失效的弱引用
-        self.target_widgets = [ref for ref in self.target_widgets if ref() is not None]
+        valid_refs = []
+        for ref in self.target_widgets:
+            try:
+                target = ref()
+                if target is None:
+                    continue
+                # 验证控件是否仍然有效
+                try:
+                    _ = target.objectName()
+                    valid_refs.append(ref)
+                except RuntimeError:
+                    pass
+            except RuntimeError:
+                pass
+        self.target_widgets = valid_refs
 
         # 检查是否有可见的目标控件
         visible_widgets = []
         for ref in self.target_widgets:
             try:
                 target = ref()
-                if target and target.isVisible():
+                if target is None:
+                    continue
+                # 先检查target是否仍然有效
+                try:
+                    _ = target.objectName()
+                except RuntimeError:
+                    continue
+                if target.isVisible():
                     visible_widgets.append(target)
-            except RuntimeError as e:
-                debug(f"HoverTooltip check visible widget error: {e}")
+            except RuntimeError:
                 continue
 
         if not visible_widgets:
@@ -494,11 +555,23 @@ class HoverTooltip(QWidget):
         for ref in self.target_widgets:
             try:
                 target = ref()
-                if target and (widget == target or target.isAncestorOf(widget)):
+                if target is None:
+                    continue
+                # 先检查target是否仍然有效
+                try:
+                    _ = target.objectName()
+                except RuntimeError:
+                    continue
+                # 检查widget是否有效
+                if widget:
+                    try:
+                        _ = widget.objectName()
+                    except RuntimeError:
+                        widget = None
+                if widget == target or (widget and target.isAncestorOf(widget)):
                     current_widget = target
                     break
-            except RuntimeError as e:
-                debug(f"HoverTooltip find current widget error: {e}")
+            except RuntimeError:
                 continue
 
         if not current_widget:
@@ -540,9 +613,23 @@ class HoverTooltip(QWidget):
     
     def get_text_at_position(self, widget=None):
         """获取鼠标位置的文本内容"""
+        try:
+            return self._get_text_at_position_internal(widget)
+        except RuntimeError:
+            # 控件可能在获取过程中被删除，返回空字符串
+            return ""
+
+    def _get_text_at_position_internal(self, widget=None):
+        """获取鼠标位置的文本内容（内部实现）"""
         # 首先直接获取鼠标位置的控件，无论是否被布局覆盖
         direct_widget = QApplication.widgetAt(self.last_mouse_pos)
         if direct_widget:
+            # 验证控件是否仍然有效
+            try:
+                _ = direct_widget.objectName()
+            except RuntimeError:
+                return ""
+
             # 导入CustomButton类
             from .button_widgets import CustomButton
 
@@ -610,15 +697,15 @@ class HoverTooltip(QWidget):
                 else:
                     import os
                     file_name = os.path.basename(file_path)
-                
+
                 # 获取文件信息
                 import os
                 from PySide6.QtCore import QFileInfo
                 file_info = QFileInfo(file_path)
-                
+
                 # 判断是文件夹还是文件
                 is_dir = file_info.isDir()
-                
+
                 # 格式化文件大小
                 if is_dir:
                     size_str = "文件夹"
@@ -632,16 +719,16 @@ class HoverTooltip(QWidget):
                         size_str = f"{file_size / (1024 * 1024):.2f} MB"
                     else:
                         size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
-                
+
                 # 文件类型
                 if is_dir:
                     file_type = "文件夹"
                 else:
                     file_type = f".{file_info.suffix()}"
-                
+
                 # 路径
                 abs_path = file_info.absoluteFilePath()
-                
+
                 # 日期格式化
                 if file_info.exists():
                     if is_dir:
@@ -653,7 +740,7 @@ class HoverTooltip(QWidget):
                 else:
                     created_time = "文件不存在"
                     modified_time = "文件不存在"
-                
+
                 # 构建悬浮信息文本（与FileBlockCard格式一致）
                 tooltip_text = f"名称: {file_name}\n"
                 tooltip_text += f"路径: {abs_path}\n"
@@ -661,9 +748,9 @@ class HoverTooltip(QWidget):
                 tooltip_text += f"大小: {size_str}\n"
                 tooltip_text += f"修改时间: {modified_time}\n"
                 tooltip_text += f"创建时间: {created_time}"
-                
+
                 return tooltip_text
-            
+
             # 特殊处理文件选择器中的文件卡片（QWidget#FileBlockCard）
             if direct_widget.objectName() == "FileBlockCard" or (hasattr(direct_widget.parent(), "objectName") and direct_widget.parent().objectName() == "FileBlockCard"):
                 card = direct_widget if direct_widget.objectName() == "FileBlockCard" else direct_widget.parent()
@@ -674,7 +761,7 @@ class HoverTooltip(QWidget):
                     file_size = file_info["size"]
                     is_dir = file_info["is_dir"]
                     file_type = "文件夹" if is_dir else f".{file_info['suffix']}"
-                    
+
                     # 格式化文件大小
                     if is_dir:
                         size_str = "文件夹"
@@ -687,11 +774,11 @@ class HoverTooltip(QWidget):
                             size_str = f"{file_size / (1024 * 1024):.2f} MB"
                         else:
                             size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
-                    
+
                     # 使用QFileInfo获取更准确的文件信息，特别是日期
                     from PySide6.QtCore import QFileInfo, QDateTime
                     qfile_info = QFileInfo(file_path)
-                    
+
                     # 日期格式化
                     if qfile_info.exists():
                         if is_dir:
@@ -703,7 +790,7 @@ class HoverTooltip(QWidget):
                     else:
                         created_time = "文件不存在"
                         modified_time = "文件不存在"
-                    
+
                     # 构建悬浮信息文本（与CustomFileHorizontalCard格式一致）
                     tooltip_text = f"名称: {file_name}\n"
                     tooltip_text += f"路径: {file_path}\n"
@@ -711,25 +798,25 @@ class HoverTooltip(QWidget):
                     tooltip_text += f"大小: {size_str}\n"
                     tooltip_text += f"修改时间: {modified_time}\n"
                     tooltip_text += f"创建时间: {created_time}"
-                    
+
                     return tooltip_text
-            
+
             # 检查直接控件是否有文本
             if hasattr(direct_widget, "text") and direct_widget.text():
                 return direct_widget.text()
-        
+
         # 如果没有指定控件，使用直接获取的控件
         if not widget:
             widget = direct_widget
             if not widget:
                 return ""
-        
+
         # 递归查找有文本的子控件
         def find_text_in_children(w):
             # 检查当前控件是否有文本
             if hasattr(w, "text") and w.text():
                 return w.text()
-            
+
             # 特殊处理文件选择器中的文件卡片（QWidget#FileCard）
             if hasattr(w, "objectName") and w.objectName() == "FileCard":
                 if hasattr(w, "file_info"):
@@ -737,17 +824,17 @@ class HoverTooltip(QWidget):
                     file_name = file_info["name"]
                     file_path = file_info["path"]
                     return f"{file_name}\n{file_path}"
-            
+
             # 检查是否有itemAt方法（如QListWidget、QTreeWidget等）
             if hasattr(w, "itemAt"):
                 pos = w.mapFromGlobal(self.last_mouse_pos)
                 item = w.itemAt(pos)
                 if item and hasattr(item, "text"):
                     return item.text()
-            
+
             # 递归检查所有子控件和布局
             from PySide6.QtWidgets import QWidget, QLayout
-            
+
             # 检查所有直接子控件
             for child in w.children():
                 if isinstance(child, QWidget):
@@ -756,7 +843,7 @@ class HoverTooltip(QWidget):
                         child_rect = child.rect()
                         child_global_pos = child.mapToGlobal(QPoint(0, 0))
                         mouse_in_child = QRect(child_global_pos, child_rect.size()).contains(self.last_mouse_pos)
-                        
+
                         if mouse_in_child:
                             text = find_text_in_children(child)
                             if text:
@@ -773,7 +860,7 @@ class HoverTooltip(QWidget):
                                     layout_widget_rect = layout_widget.rect()
                                     layout_widget_global_pos = layout_widget.mapToGlobal(QPoint(0, 0))
                                     mouse_in_layout_widget = QRect(layout_widget_global_pos, layout_widget_rect.size()).contains(self.last_mouse_pos)
-                                    
+
                                     if mouse_in_layout_widget:
                                         # 递归查找布局控件的文本
                                         text = find_text_in_children(layout_widget)
@@ -784,18 +871,18 @@ class HoverTooltip(QWidget):
                                 text = find_text_in_children(layout_item.layout())
                                 if text:
                                     return text
-            
+
             return ""
-        
+
         # 检查目标控件是否有文本
         if hasattr(widget, "text") and widget.text():
             return widget.text()
-        
+
         # 递归检查子控件
         text = find_text_in_children(widget)
         if text:
             return text
-        
+
         # 如果没有找到文本，尝试检查直接控件的父控件
         if direct_widget:
             parent = direct_widget.parent()

@@ -28,33 +28,35 @@ class ColorWheelPicker(QWidget):
     特点：
     - DPI缩放支持
     - 透明背景
-    - 仅负责色相选择，不处理饱和度和亮度
     - 可交互选择颜色
     - 支持信号机制
+    - 支持显示最终颜色（包含饱和度和亮度）
     """
-    
+
     hueChanged = Signal(int)
     huePreviewChanged = Signal(int)
     hueSelected = Signal(int)
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+
         self._hue = 0
-        
+        self._saturation = 255
+        self._lightness = 128
+
         self._is_pressed = False
         self._handle_radius = int(5 * self.dpi_scale)
         self._wheel_margin = int(4 * self.dpi_scale)
         self._wheel_width = int(12 * self.dpi_scale)
-        
+
         self._setup_size()
-        
+
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background-color: transparent;")
-        
+
         self._is_hovered = False
         self.setAttribute(Qt.WA_Hover, True)
     
@@ -87,11 +89,35 @@ class ColorWheelPicker(QWidget):
     def get_hue(self):
         """
         获取当前色相
-        
+
         Returns:
             int: 当前色相值
         """
         return self._hue
+
+    def set_saturation(self, saturation):
+        """
+        设置饱和度
+
+        Args:
+            saturation (int): 饱和度值 (0-255)
+        """
+        new_saturation = max(0, min(255, saturation))
+        if self._saturation != new_saturation:
+            self._saturation = new_saturation
+            self.update()
+
+    def set_lightness(self, lightness):
+        """
+        设置亮度
+
+        Args:
+            lightness (int): 亮度值 (0-255)
+        """
+        new_lightness = max(0, min(255, lightness))
+        if self._lightness != new_lightness:
+            self._lightness = new_lightness
+            self.update()
     
     def enterEvent(self, event):
         """鼠标进入事件"""
@@ -158,30 +184,31 @@ class ColorWheelPicker(QWidget):
         """绘制色相环"""
         outer_radius = radius
         inner_radius = radius - self._wheel_width
-        
+
         hue_gradient = QConicalGradient(center_x, center_y, -90)
         for i in range(0, 360, 30):
             hue_gradient.setColorAt(i / 360.0, QColor.fromHsl(i, 255, 128))
         hue_gradient.setColorAt(1.0, QColor.fromHsl(0, 255, 128))
-        
+
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(hue_gradient))
         painter.drawEllipse(QPoint(int(center_x), int(center_y)), int(outer_radius), int(outer_radius))
-        
+
         app = QApplication.instance()
         bg_color = QColor(255, 255, 255)
         if hasattr(app, 'settings_manager'):
             settings_manager = app.settings_manager
             base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
             bg_color = QColor(base_color_str)
-        
+
+        # 使用最终的完整颜色（包含色相、饱和度和亮度）
         hue_for_color = self._hue % 360
         if hue_for_color < 0:
             hue_for_color += 360
-        current_color = QColor.fromHsl(hue_for_color, 255, 128)
-        
+        current_color = QColor.fromHsl(hue_for_color, self._saturation, self._lightness)
+
         border_width = int(3 * self.dpi_scale)
-        
+
         painter.setPen(QPen(bg_color, border_width))
         painter.setBrush(QBrush(current_color))
         painter.drawEllipse(QPoint(int(center_x), int(center_y)), int(inner_radius), int(inner_radius))
@@ -289,24 +316,20 @@ class ColorWheelPickerWidget(QWidget):
     完整的颜色选择器组件
     包含色相选择、饱和度调节、亮度调节和颜色预览
     """
-    
+
     colorChanged = Signal(QColor)
     colorSelected = Signal(QColor)
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+
         self._hue = 0
         self._saturation = 255
         self._lightness = 128
-        
-        self._initial_hue = self._hue
-        self._initial_saturation = self._saturation
-        self._initial_lightness = self._lightness
-        
+
         self._init_ui()
         self._connect_signals()
     
@@ -324,16 +347,7 @@ class ColorWheelPickerWidget(QWidget):
         wheel_layout.addWidget(self._color_wheel)
         
         layout.addLayout(wheel_layout)
-        
-        preview_layout = QVBoxLayout()
-        preview_layout.setAlignment(Qt.AlignCenter)
-        preview_layout.setSpacing(int(8 * self.dpi_scale))
-        
-        self._color_preview = ColorPreview()
-        preview_layout.addWidget(self._color_preview)
-        
-        layout.addLayout(preview_layout)
-        
+
         right_layout = QVBoxLayout()
         right_layout.setSpacing(int(6 * self.dpi_scale))
         
@@ -342,11 +356,13 @@ class ColorWheelPickerWidget(QWidget):
         
         saturation_label = QLabel("饱和度")
         saturation_label.setAlignment(Qt.AlignLeft)
+        self._apply_secondary_color_to_label(saturation_label)
         saturation_layout.addWidget(saturation_label)
         
         self._saturation_bar = D_ProgressBar(orientation=D_ProgressBar.Horizontal)
         self._saturation_bar.setRange(0, 255)
         self._saturation_bar.setValue(255)
+        self._saturation_bar.set_left_transparent_mode(True)
         saturation_layout.addWidget(self._saturation_bar)
         
         right_layout.addLayout(saturation_layout)
@@ -356,38 +372,35 @@ class ColorWheelPickerWidget(QWidget):
         
         lightness_label = QLabel("亮度")
         lightness_label.setAlignment(Qt.AlignLeft)
+        self._apply_secondary_color_to_label(lightness_label)
         lightness_layout.addWidget(lightness_label)
         
         self._lightness_bar = D_ProgressBar(orientation=D_ProgressBar.Horizontal)
         self._lightness_bar.setRange(0, 255)
         self._lightness_bar.setValue(128)
+        self._lightness_bar.set_left_transparent_mode(True)
         lightness_layout.addWidget(self._lightness_bar)
         
         right_layout.addLayout(lightness_layout)
         
-        bottom_row_layout = QHBoxLayout()
-        bottom_row_layout.setSpacing(int(8 * self.dpi_scale))
-        
+        # 颜色值显示标签
         self._color_label = QLabel("#000000")
         self._color_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        bottom_row_layout.addWidget(self._color_label)
-        
-        bottom_row_layout.addStretch()
-        
-        self._cancel_button = QPushButton("取消")
-        self._cancel_button.setMinimumWidth(int(60 * self.dpi_scale))
-        bottom_row_layout.addWidget(self._cancel_button)
-        
-        self._apply_button = QPushButton("应用")
-        self._apply_button.setMinimumWidth(int(60 * self.dpi_scale))
-        bottom_row_layout.addWidget(self._apply_button)
-        
-        right_layout.addLayout(bottom_row_layout)
+        self._apply_secondary_color_to_label(self._color_label)
+        right_layout.addWidget(self._color_label)
         
         layout.addLayout(right_layout)
         
         self._update_gradient_colors()
-    
+
+    def _apply_secondary_color_to_label(self, label):
+        """应用 secondary color 到标签"""
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+            secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            label.setStyleSheet(f"color: {secondary_color};")
+
     def _connect_signals(self):
         """连接信号"""
         self._color_wheel.hueChanged.connect(self._on_hue_changed)
@@ -395,9 +408,6 @@ class ColorWheelPickerWidget(QWidget):
         self._color_wheel.hueSelected.connect(self._on_hue_selected)
         self._saturation_bar.valueChanged.connect(self._on_saturation_changed)
         self._lightness_bar.valueChanged.connect(self._on_lightness_changed)
-        
-        self._cancel_button.clicked.connect(self._on_cancel_clicked)
-        self._apply_button.clicked.connect(self._on_apply_clicked)
     
     def _on_hue_preview_changed(self, hue):
         """色相预览变化处理 - 拖动过程中仅更新UI预览，不发送colorChanged信号"""
@@ -423,12 +433,16 @@ class ColorWheelPickerWidget(QWidget):
     def _on_saturation_changed(self, value):
         """饱和度变化处理"""
         self._saturation = value
+        self._color_wheel.set_saturation(value)
+        self._update_gradient_colors()
         self._update_color_preview()
         self.colorChanged.emit(self.get_color())
-    
+
     def _on_lightness_changed(self, value):
         """亮度变化处理"""
         self._lightness = value
+        self._color_wheel.set_lightness(value)
+        self._update_gradient_colors()
         self._update_color_preview()
         self.colorChanged.emit(self.get_color())
     
@@ -437,28 +451,32 @@ class ColorWheelPickerWidget(QWidget):
         hue_for_color = self._hue % 360
         if hue_for_color < 0:
             hue_for_color += 360
-        current_hue_color = QColor.fromHsl(hue_for_color, 255, 128)
-        gray_color = QColor.fromHsl(hue_for_color, 0, 128)
-        transparent_color = QColor(0, 0, 0, 0)
-        
+
+        # 饱和度滑条的渐变：从灰色（当前亮度）到纯色（当前亮度）
+        # 同时受到色相和亮度的影响
+        saturation_start = QColor.fromHsl(hue_for_color, 0, self._lightness)
+        saturation_end = QColor.fromHsl(hue_for_color, 255, self._lightness)
+
         self._saturation_bar.set_gradient_mode(True)
-        self._saturation_bar.set_bg_gradient_colors([transparent_color, current_hue_color])
-        
-        black_color = QColor(0, 0, 0)
-        white_color = QColor(255, 255, 255)
+        self._saturation_bar.set_bg_gradient_colors([saturation_start, saturation_end])
+
+        # 亮度滑条的渐变：从黑色到纯色（当前饱和度）到白色
+        # 同时受到色相和饱和度的影响
+        lightness_start = QColor.fromHsl(hue_for_color, self._saturation, 0)
+        lightness_middle = QColor.fromHsl(hue_for_color, self._saturation, 128)
+        lightness_end = QColor.fromHsl(hue_for_color, self._saturation, 255)
+
         self._lightness_bar.set_gradient_mode(True)
-        self._lightness_bar.set_bg_gradient_colors([transparent_color, current_hue_color, white_color])
+        self._lightness_bar.set_bg_gradient_colors([lightness_start, lightness_middle, lightness_end])
     
     def _update_color_preview(self):
         """更新颜色预览"""
-        color = self.get_color()
-        self._color_preview.set_color(color)
         self._color_label.setText(self.get_hex())
     
     def set_color(self, color):
         """
         设置当前颜色
-        
+
         Args:
             color (QColor): 要设置的颜色
         """
@@ -471,40 +489,15 @@ class ColorWheelPickerWidget(QWidget):
             self._hue = h
             self._saturation = s
             self._lightness = l
-            
-            self._initial_hue = h
-            self._initial_saturation = s
-            self._initial_lightness = l
-            
+
             self._color_wheel.set_hue(h)
+            self._color_wheel.set_saturation(s)
+            self._color_wheel.set_lightness(l)
             self._saturation_bar.setValue(s)
             self._lightness_bar.setValue(l)
-            
+
             self._update_gradient_colors()
             self._update_color_preview()
-            self.colorChanged.emit(self.get_color())
-    
-    def _on_cancel_clicked(self):
-        """取消按钮点击处理 - 恢复到初始颜色"""
-        self._hue = self._initial_hue
-        self._saturation = self._initial_saturation
-        self._lightness = self._initial_lightness
-        
-        self._color_wheel.set_hue(self._initial_hue)
-        self._saturation_bar.setValue(self._initial_saturation)
-        self._lightness_bar.setValue(self._initial_lightness)
-        
-        self._update_gradient_colors()
-        self._update_color_preview()
-        self.colorChanged.emit(self.get_color())
-    
-    def _on_apply_clicked(self):
-        """应用按钮点击处理 - 确认当前选择并更新初始值"""
-        self._initial_hue = self._hue
-        self._initial_saturation = self._saturation
-        self._initial_lightness = self._lightness
-        
-        self.colorSelected.emit(self.get_color())
     
     def get_color(self):
         """
@@ -552,7 +545,7 @@ class ColorWheelPickerWidget(QWidget):
         Returns:
             str: 十六进制颜色字符串，例如 "#RRGGBB"
         """
-        return self.get_color().name()
+        return self.get_color().name().upper()
     
     def set_hue(self, hue):
         """

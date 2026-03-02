@@ -34,6 +34,7 @@ sys.path.insert(
 from freeassetfilter.core.svg_renderer import SvgRenderer  # noqa: E402 模块级别的导入不在文件顶部（需要先添加路径）
 from freeassetfilter.utils.file_icon_helper import get_icon_path  # noqa: E402
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager  # noqa: E402
 
 
 class CustomFileHorizontalCard(QWidget):
@@ -639,7 +640,7 @@ class CustomFileHorizontalCard(QWidget):
                 # 使用get_icon_path获取支持样式切换的图标路径
                 unknown_icon_path = get_icon_path("未知底板", icon_dir)
                 if os.path.exists(unknown_icon_path):
-                    svg_widget = SvgRenderer.render_unknown_file_icon(unknown_icon_path, "?", scaled_icon_size, self.dpi_scale)
+                    svg_widget = SvgRenderer.render_unknown_file_icon(unknown_icon_path, "?", scaled_icon_size, self.dpi_scale, replace_colors=False)
                     if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
                         # 先从布局中移除旧的 icon_display
                         self.card_container.layout().removeWidget(self.icon_display)
@@ -697,17 +698,12 @@ class CustomFileHorizontalCard(QWidget):
                     self._set_icon_pixmap(high_res_pixmap, scaled_icon_size)
                     return
 
-            import hashlib
-            thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
-            md5_hash = hashlib.md5(self._file_path.encode('utf-8'))
-            file_hash = md5_hash.hexdigest()[:16]
-            thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
+            # 使用 thumbnail_manager 获取缩略图路径
+            thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+            thumbnail_path = thumbnail_manager.get_thumbnail_path(self._file_path)
 
-            is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']
+            is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb', 'svg']
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
-
-            #print(f"[DEBUG] _set_file_icon: file={self._file_path}, suffix={suffix}, is_photo={is_photo}, is_video={is_video}")
-            #print(f"[DEBUG] thumbnail_path={thumbnail_path}, exists={os.path.exists(thumbnail_path)}")
 
             use_thumbnail = False
             if (is_photo or is_video) and os.path.exists(thumbnail_path):
@@ -741,9 +737,9 @@ class CustomFileHorizontalCard(QWidget):
                         if len(display_suffix) > 5:
                             display_suffix = "FILE"
 
-                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale)
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=False)
                 else:
-                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale)
+                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale, replace_colors=False)
                 
                 if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
                     # 先从布局中移除旧的 icon_display
@@ -801,18 +797,42 @@ class CustomFileHorizontalCard(QWidget):
         return get_icon_path(icon_name, icon_dir)
 
     def _set_icon_pixmap(self, pixmap, size):
-        """设置图标Pixmap"""
+        """设置图标Pixmap，保持原始比例"""
         logical_size = int(size)
         physical_size = int(size * self.devicePixelRatio())
         if logical_size > 0 and physical_size > 0:
             if not isinstance(self.icon_display, QLabel):
                 self._create_icon_label()
             
-            self.icon_display.setFixedSize(logical_size, logical_size)
+            # 获取原始图像的宽高比
+            orig_width = pixmap.width()
+            orig_height = pixmap.height()
+            
+            if orig_width > 0 and orig_height > 0:
+                aspect_ratio = orig_width / orig_height
+                
+                # 根据宽高比计算目标尺寸，确保图像在指定size的范围内保持比例
+                if aspect_ratio >= 1:
+                    # 宽度大于等于高度，以宽度为基准
+                    target_width = physical_size
+                    target_height = int(physical_size / aspect_ratio)
+                else:
+                    # 高度大于宽度，以高度为基准
+                    target_height = physical_size
+                    target_width = int(physical_size * aspect_ratio)
+            else:
+                # 如果无法获取原始尺寸，使用正方形
+                target_width = physical_size
+                target_height = physical_size
+            
+            # 设置标签大小为计算出的目标尺寸（逻辑像素）
+            display_width = int(target_width / self.devicePixelRatio())
+            display_height = int(target_height / self.devicePixelRatio())
+            self.icon_display.setFixedSize(display_width, display_height)
             
             self.icon_display.clear()
             
-            scaled_pixmap = pixmap.scaled(physical_size, physical_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled_pixmap = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
             self.icon_display.setPixmap(scaled_pixmap)
 
@@ -1867,9 +1887,9 @@ class CustomFileHorizontalCard(QWidget):
                                 display_suffix = suffix.upper()
                                 if len(display_suffix) > 5:
                                     display_suffix = "FILE"
-                            svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale)
+                            svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
                         else:
-                            svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale)
+                            svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=False)
 
                         if svg_widget:
                             svg_widget.setParent(parent_container)
@@ -1917,9 +1937,9 @@ class CustomFileHorizontalCard(QWidget):
                                     display_suffix = suffix.upper()
                                     if len(display_suffix) > 5:
                                         display_suffix = "FILE"
-                                svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale)
+                                svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
                             else:
-                                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale)
+                                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=False)
 
                             if svg_widget:
                                 svg_widget.setParent(parent_container)
@@ -1953,13 +1973,10 @@ class CustomFileHorizontalCard(QWidget):
                 is_dir = file_info.isDir()
 
                 # 检查是否有缩略图（图片/视频）
-                import hashlib
-                thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
-                md5_hash = hashlib.md5(self._file_path.encode('utf-8'))
-                file_hash = md5_hash.hexdigest()[:16]
-                thumbnail_path = os.path.join(thumb_dir, f"{file_hash}.png")
+                thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+                thumbnail_path = thumbnail_manager.get_thumbnail_path(self._file_path)
 
-                is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']
+                is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb', 'svg']
                 is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
 
                 if (is_photo or is_video) and os.path.exists(thumbnail_path):
@@ -2012,9 +2029,9 @@ class CustomFileHorizontalCard(QWidget):
                             display_suffix = suffix.upper()
                             if len(display_suffix) > 5:
                                 display_suffix = "FILE"
-                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale)
+                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
                     else:
-                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale)
+                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=False)
 
                     if svg_widget:
                         svg_widget.setParent(parent_container)

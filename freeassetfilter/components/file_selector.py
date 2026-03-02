@@ -55,6 +55,7 @@ from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.components.auto_timeline import AutoTimeline
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
+from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, is_media_file
 
 
 class ThumbnailGeneratorThread(QThread):
@@ -67,9 +68,9 @@ class ThumbnailGeneratorThread(QThread):
     finished = Signal(int, int)  # 成功数、总數
     error_occurred = Signal(str, Exception)  # 文件路径、错误
 
-    def __init__(self, file_selector, files_to_generate):
+    def __init__(self, thumbnail_manager, files_to_generate):
         super().__init__()
-        self.file_selector = file_selector
+        self.thumbnail_manager = thumbnail_manager
         self.files_to_generate = files_to_generate
         self._is_cancelled = False
 
@@ -82,7 +83,7 @@ class ThumbnailGeneratorThread(QThread):
                 break
 
             try:
-                result = self.file_selector._create_thumbnail(file_data["path"])
+                result = self.thumbnail_manager.create_thumbnail(file_data["path"])
                 if result:
                     success_count += 1
                     self.thumbnail_created.emit(file_data)
@@ -579,18 +580,16 @@ class CustomFileSelector(QWidget):
         同时也为文件存储池中的照片和视频生成缩略图
         使用后台线程处理，避免阻塞UI
         """
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb"]
-        video_formats = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"]
+        # 获取缩略图管理器
+        thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
 
         files_to_generate = []
 
         files = self._get_files()
         for file in files:
             if not file["is_dir"]:
-                suffix = file["suffix"].lower()
-                if suffix in image_formats or suffix in video_formats:
-                    thumbnail_path = self._get_thumbnail_path(file["path"])
-                    if not os.path.exists(thumbnail_path):
+                if thumbnail_manager.is_media_file(file["path"]):
+                    if not thumbnail_manager.has_thumbnail(file["path"]):
                         files_to_generate.append({
                             "path": file["path"],
                             "name": file["name"],
@@ -606,13 +605,8 @@ class CustomFileSelector(QWidget):
                     if not file_path:
                         continue
 
-                    suffix = item.get("suffix", "").lower()
-                    if not suffix:
-                        suffix = os.path.splitext(file_path)[1].lower()
-
-                    if suffix in image_formats or suffix in video_formats:
-                        thumbnail_path = self._get_thumbnail_path(file_path)
-                        if not os.path.exists(thumbnail_path):
+                    if thumbnail_manager.is_media_file(file_path):
+                        if not thumbnail_manager.has_thumbnail(file_path):
                             staging_pool_files.append({
                                 "path": file_path,
                                 "name": item.get("name", os.path.basename(file_path)),
@@ -661,7 +655,7 @@ class CustomFileSelector(QWidget):
 
         progress_msg.show()
 
-        self._thumbnail_thread = ThumbnailGeneratorThread(self, files_to_generate)
+        self._thumbnail_thread = ThumbnailGeneratorThread(thumbnail_manager, files_to_generate)
 
         def on_progress_updated(current, total, file_data):
             progress_bar.setValue(current, use_animation=False)
@@ -759,7 +753,6 @@ class CustomFileSelector(QWidget):
         """
         清理缩略图缓存，删除所有本地存储的缩略图文件，并刷新页面显示
         """
-        import shutil
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
 
         if not self or not hasattr(self, 'isVisible') or not self.isVisible():
@@ -785,76 +778,53 @@ class CustomFileSelector(QWidget):
                 return
 
             try:
-                thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
+                # 使用缩略图管理器清理缓存
+                thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+                file_count = thumbnail_manager.clear_all_thumbnails()
 
-                if os.path.exists(thumb_dir):
-                    import glob
-                    thumbnail_files = glob.glob(os.path.join(thumb_dir, "*.png"))
-                    file_count = len(thumbnail_files)
+                if file_count > 0:
+                    if self and hasattr(self, 'refresh_files'):
+                        try:
+                            self.refresh_files()
+                        except RuntimeError as e:
+                            debug(f"[DEBUG] 刷新文件列表失败: {e}")
 
-                    if file_count > 0:
-                        for file_path in thumbnail_files:
-                            if os.path.isfile(file_path):
-                                try:
-                                    os.remove(file_path)
-                                except (OSError, IOError) as e:
-                                    debug(f"[DEBUG] 删除缩略图文件失败 {file_path}: {e}")
-                                    continue
+                    staging_pool = None
+                    if self and hasattr(self, '_get_staging_pool'):
+                        try:
+                            staging_pool = self._get_staging_pool()
+                        except RuntimeError as e:
+                            debug(f"[DEBUG] 获取暂存池失败: {e}")
 
-                        if self and hasattr(self, 'refresh_files'):
-                            try:
-                                self.refresh_files()
-                            except RuntimeError as e:
-                                debug(f"[DEBUG] 刷新文件列表失败: {e}")
+                    if staging_pool and hasattr(staging_pool, 'cards'):
+                        try:
+                            self._refresh_staging_pool_thumbnails(staging_pool)
+                        except RuntimeError as e:
+                            debug(f"[DEBUG] 刷新暂存池缩略图失败: {e}")
 
-                        staging_pool = None
-                        if self and hasattr(self, '_get_staging_pool'):
-                            try:
-                                staging_pool = self._get_staging_pool()
-                            except RuntimeError as e:
-                                debug(f"[DEBUG] 获取暂存池失败: {e}")
+                    if self and hasattr(self, 'isVisible') and self.isVisible():
+                        success_msg = CustomMessageBox(self)
+                        success_msg.set_title("清理成功")
+                        success_msg.set_text(f"已成功清理 {file_count} 个缩略图缓存文件。")
+                        success_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
 
-                        if staging_pool and hasattr(staging_pool, 'cards'):
-                            try:
-                                self._refresh_staging_pool_thumbnails(staging_pool)
-                            except RuntimeError as e:
-                                debug(f"[DEBUG] 刷新暂存池缩略图失败: {e}")
+                        def on_success_ok_clicked():
+                            success_msg.close()
 
-                        if self and hasattr(self, 'isVisible') and self.isVisible():
-                            success_msg = CustomMessageBox(self)
-                            success_msg.set_title("清理成功")
-                            success_msg.set_text(f"已成功清理 {file_count} 个缩略图缓存文件。")
-                            success_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-
-                            def on_success_ok_clicked():
-                                success_msg.close()
-
-                            success_msg.buttonClicked.connect(on_success_ok_clicked)
-                            success_msg.exec()
-                    else:
-                        if self and hasattr(self, 'isVisible') and self.isVisible():
-                            empty_msg = CustomMessageBox(self)
-                            empty_msg.set_title("提示")
-                            empty_msg.set_text("缩略图缓存目录为空，无需清理。")
-                            empty_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-
-                            def on_empty_ok_clicked():
-                                empty_msg.close()
-
-                            empty_msg.buttonClicked.connect(on_empty_ok_clicked)
-                            empty_msg.exec()
+                        success_msg.buttonClicked.connect(on_success_ok_clicked)
+                        success_msg.exec()
                 else:
                     if self and hasattr(self, 'isVisible') and self.isVisible():
-                        not_exist_msg = CustomMessageBox(self)
-                        not_exist_msg.set_title("提示")
-                        not_exist_msg.set_text("缩略图缓存目录不存在，无需清理。")
-                        not_exist_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                        empty_msg = CustomMessageBox(self)
+                        empty_msg.set_title("提示")
+                        empty_msg.set_text("缩略图缓存目录为空，无需清理。")
+                        empty_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
 
-                        def on_not_exist_ok_clicked():
-                            not_exist_msg.close()
+                        def on_empty_ok_clicked():
+                            empty_msg.close()
 
-                        not_exist_msg.buttonClicked.connect(on_not_exist_ok_clicked)
-                        not_exist_msg.exec()
+                        empty_msg.buttonClicked.connect(on_empty_ok_clicked)
+                        empty_msg.exec()
             except Exception as e:
                 warning(f"清理缩略图缓存失败: {e}")
                 # 清理失败错误提示
@@ -868,379 +838,6 @@ class CustomFileSelector(QWidget):
                 
                 error_msg.buttonClicked.connect(on_error_ok_clicked)
                 error_msg.exec()
-    
-    def _load_image_optimized(self, file_path, suffix, raw_formats, psd_formats):
-        """
-        优化的图像加载方法
-        - 对大图像使用延迟加载策略
-        - 及时释放中间对象
-        """
-        from PIL import Image
-        
-        try:
-            if suffix in raw_formats:
-                import rawpy
-                with rawpy.imread(file_path) as raw:
-                    rgb = raw.postprocess()
-                img = Image.fromarray(rgb)
-            elif suffix in [".avif", ".heic"]:
-                try:
-                    import pillow_avif
-                except ImportError:
-                    pass
-                try:
-                    import pillow_heif
-                    pillow_heif.register_heif_opener()
-                except ImportError:
-                    pass
-                img = Image.open(file_path)
-            elif suffix in psd_formats:
-                from psd_tools import PSDImage
-                psd = PSDImage.open(file_path)
-                img = psd.composite()
-            elif suffix == ".svg":
-                # 使用 SvgRenderer 渲染 SVG 文件为 Pillow Image
-                from freeassetfilter.core.svg_renderer import SvgRenderer
-                from PySide6.QtGui import QImage
-                
-                # 使用 SvgRenderer 将 SVG 渲染为 QPixmap，禁用颜色替换以保持原始色彩
-                pixmap = SvgRenderer.render_svg_to_pixmap(file_path, icon_size=256, replace_colors=False)
-                
-                if pixmap.isNull():
-                    warning(f"SVG 渲染失败: {file_path}")
-                    return None, False
-                
-                # 将 QPixmap 转换为 QImage
-                qimage = pixmap.toImage()
-                
-                # 将 QImage 转换为 Pillow Image
-                # QImage 格式是 Format_ARGB32，需要转换为 RGBA
-                width = qimage.width()
-                height = qimage.height()
-                
-                # 获取图像数据 - 使用更兼容的方式
-                # 将 QImage 转换为 RGBA 格式
-                if qimage.format() != QImage.Format_RGBA8888:
-                    qimage = qimage.convertToFormat(QImage.Format_RGBA8888)
-                
-                # 使用 constBits() 获取数据指针，并使用 bytes() 转换
-                ptr = qimage.constBits()
-                # 根据 PySide6 版本，constBits 可能返回不同的类型
-                if hasattr(ptr, 'tobytes'):
-                    # 较新版本的 PySide6
-                    img_data = ptr.tobytes()
-                elif hasattr(ptr, 'asstring'):
-                    # 旧版本的 PySide6
-                    img_data = ptr.asstring()
-                else:
-                    # 直接尝试 bytes 转换
-                    img_data = bytes(ptr)
-                
-                # 创建 Pillow Image
-                img = Image.frombytes("RGBA", (width, height), img_data)
-                
-                return img, True
-            else:
-                # 对于普通图像，尝试获取图像尺寸信息
-                # 如果图像很大，使用延迟加载
-                img = Image.open(file_path)
-            
-            return img, True
-            
-        except ImportError as e:
-            warning(f"缺少必要的库: {e}")
-            return None, False
-        except Exception as e:
-            warning(f"无法加载图像: {file_path}, 错误: {e}")
-            return None, False
-    
-    def _create_thumbnail(self, file_path):
-        """
-        为单个文件创建缩略图
-        """
-        try:
-            import cv2
-            
-            suffix = os.path.splitext(file_path)[1].lower()
-            thumbnail_path = self._get_thumbnail_path(file_path)
-            
-            image_formats = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".svg", ".avif", ".heic"]
-            # 支持的raw格式
-            raw_formats = [".cr2", ".cr3", ".nef", ".arw", ".dng", ".orf"]
-            # 支持的PSD格式
-            psd_formats = [".psd", ".psb"]
-
-            if suffix in image_formats or suffix in raw_formats or suffix in psd_formats:
-                # 处理图片文件
-                try:
-                    from PIL import Image, ImageDraw
-                    
-                    # 使用优化后的图像处理方法
-                    img, success = self._load_image_optimized(file_path, suffix, raw_formats, psd_formats)
-                    if not success or img is None:
-                        return False
-                    
-                    # 使用 thumbnail 方法直接生成缩略图，内存效率更高
-                    base_size = 128
-                    dpi_scaled_size = int(base_size * self.dpi_scale)
-                    
-                    # thumbnail 方法会就地修改图像，保持宽高比
-                    img.thumbnail((dpi_scaled_size, dpi_scaled_size), Image.Resampling.LANCZOS)
-                    
-                    new_width, new_height = img.size
-                    
-                    # 创建一个透明背景，尺寸考虑DPI缩放因子
-                    base_background_size = 128
-                    dpi_scaled_background_size = int(base_background_size * self.dpi_scale)
-                    thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
-                    
-                    # 将调整大小后的图片居中绘制到透明背景上
-                    x_offset = (dpi_scaled_background_size - new_width) // 2
-                    y_offset = (dpi_scaled_background_size - new_height) // 2
-                    
-                    # 处理不同模式的图像
-                    if img.mode == 'RGBA':
-                        thumbnail.paste(img, (x_offset, y_offset), img)
-                    elif img.mode == 'P':
-                        # 调色板模式，转换为RGBA
-                        img = img.convert('RGBA')
-                        thumbnail.paste(img, (x_offset, y_offset), img)
-                    else:
-                        # 其他模式（如RGB、L等），直接粘贴
-                        img = img.convert('RGBA')
-                        thumbnail.paste(img, (x_offset, y_offset))
-                    
-                    # 及时释放原始图像内存
-                    img.close()
-                    
-                    # 保存缩略图为PNG格式
-                    thumbnail.save(thumbnail_path, format='PNG', quality=85)
-                    
-                    # 释放缩略图内存
-                    thumbnail.close()
-                    
-                    return True
-                except Exception as pil_e:
-                    warning(f"无法生成缩略图: {file_path}, PIL处理失败: {pil_e}")
-                    return False
-            # 处理所有视频文件格式
-            else:
-                return self._create_video_thumbnail_optimized(file_path, thumbnail_path)
-        except Exception as e:
-            error(f"生成缩略图失败: {file_path}, 错误: {e}")
-            return False
-    
-    def _create_video_thumbnail_optimized(self, file_path, thumbnail_path):
-        """
-        优化的视频缩略图生成方法
-        - 提取重复的帧处理逻辑
-        - 限制尝试次数，避免重复读取
-        - 使用关键帧定位提高性能
-        - 增强容错性，多种策略尝试读取帧
-        """
-        try:
-            import cv2
-            from PIL import Image
-            
-            cap = cv2.VideoCapture(file_path)
-            if not cap.isOpened():
-                error(f"✗ 无法打开视频文件: {file_path}")
-                return False
-            
-            try:
-                # 获取视频信息
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                
-                # 策略1: 优先读取第240帧（跳过可能损坏的开头）
-                if total_frames > 240:
-                    frame = self._read_frame_at_position(cap, 240)
-                    if frame is not None:
-                        return self._process_and_save_video_frame(frame, thumbnail_path)
-                
-                # 策略2: 读取前50%相对位置
-                cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)
-                ret, frame = cap.read()
-                if ret and frame is not None and frame.shape[0] > 0:
-                    return self._process_and_save_video_frame(frame, thumbnail_path)
-                
-                # 策略3: 从中间位置50%读取
-                cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)
-                ret, frame = cap.read()
-                if ret and frame is not None and frame.shape[0] > 0:
-                    return self._process_and_save_video_frame(frame, thumbnail_path)
-                
-                # 策略4: 读取第2帧
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 2)
-                ret, frame = cap.read()
-                if ret and frame is not None and frame.shape[0] > 0:
-                    return self._process_and_save_video_frame(frame, thumbnail_path)
-                
-                # 策略5: 最后尝试读取第1帧
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 1)
-                ret, frame = cap.read()
-                if ret and frame is not None and frame.shape[0] > 0:
-                    return self._process_and_save_video_frame(frame, thumbnail_path)
-                
-                # 策略6: 备用方案 - 尝试其他相对位置
-                for ratio in [0.03, 0.1, 0.7, 0.9]:
-                    cap.set(cv2.CAP_PROP_POS_AVI_RATIO, ratio)
-                    ret, frame = cap.read()
-                    if ret and frame is not None and frame.shape[0] > 0:
-                        return self._process_and_save_video_frame(frame, thumbnail_path)
-                
-                warning(f"无法读取视频任何有效帧: {file_path}")
-                return False
-                
-            finally:
-                cap.release()
-                
-        except ImportError:
-            warning("OpenCV is not installed")
-            return False
-        except Exception as e:
-            error(f"生成视频缩略图失败: {file_path}, 错误: {e}")
-            return False
-    
-    def _calculate_optimal_frame_positions(self, total_frames, fps):
-        """
-        计算最佳的帧位置列表
-        优先返回中间附近的位置，避免重复尝试相近的帧
-        """
-        positions = []
-        
-        if total_frames <= 0:
-            return positions
-        
-        min_valid_frame = 1
-        max_valid_frame = max(min_valid_frame, total_frames - 1)
-        
-        # 优先使用中间帧
-        middle = total_frames // 2
-        positions.append(max(min_valid_frame, min(middle, max_valid_frame)))
-        
-        # 如果视频足够长，添加1/3和2/3位置
-        if total_frames > 30:
-            positions.append(max(min_valid_frame, min(total_frames // 3, max_valid_frame)))
-            positions.append(max(min_valid_frame, min(total_frames * 2 // 3, max_valid_frame)))
-        
-        # 过滤和去重
-        valid_positions = []
-        seen = set()
-        for pos in positions:
-            if min_valid_frame <= pos <= max_valid_frame and pos not in seen:
-                valid_positions.append(pos)
-                seen.add(pos)
-        
-        return valid_positions
-    
-    def _read_frame_at_position(self, cap, frame_pos):
-        """
-        在指定位置读取帧
-        使用关键帧定位优化性能
-        """
-        try:
-            # 设置帧位置
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
-
-            # 读取帧
-            ret, frame = cap.read()
-            if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
-                return frame
-            return None
-        except (cv2.error, AttributeError):
-            return None
-    
-    def _process_and_save_video_frame(self, frame, thumbnail_path):
-        """
-        处理视频帧并保存为缩略图
-        提取重复的图像处理逻辑
-        """
-        try:
-            import cv2
-            from PIL import Image
-            
-            # 计算原始宽高比
-            original_height, original_width = frame.shape[:2]
-            aspect_ratio = original_width / original_height
-            
-            # 计算新尺寸，保持原始比例，考虑DPI缩放因子
-            base_size = 128
-            dpi_scaled_size = int(base_size * self.dpi_scale)
-            
-            if aspect_ratio > 1:
-                new_width = dpi_scaled_size
-                new_height = int(new_width / aspect_ratio)
-            else:
-                new_height = dpi_scaled_size
-                new_width = int(new_height * aspect_ratio)
-            
-            # 获取帧的像素数量
-            total_pixels = original_width * original_height
-            
-            # 对于超大视频帧，先进行适度下采样
-            if total_pixels > 10000000:
-                min_downsample_width = max(new_width * 2, 1024)
-                min_downsample_height = max(new_height * 2, 1024)
-                
-                downsample_ratio = min(
-                    original_width / min_downsample_width,
-                    original_height / min_downsample_height
-                )
-                
-                if downsample_ratio > 1:
-                    downsampled_width = int(original_width / downsample_ratio)
-                    downsampled_height = int(original_height / downsample_ratio)
-                    downsampled_frame = cv2.resize(
-                        frame,
-                        (downsampled_width, downsampled_height),
-                        interpolation=cv2.INTER_LANCZOS4
-                    )
-                    resized_frame = cv2.resize(
-                        downsampled_frame,
-                        (new_width, new_height),
-                        interpolation=cv2.INTER_LANCZOS4
-                    )
-                else:
-                    resized_frame = cv2.resize(
-                        frame,
-                        (new_width, new_height),
-                        interpolation=cv2.INTER_LANCZOS4
-                    )
-            else:
-                resized_frame = cv2.resize(
-                    frame,
-                    (new_width, new_height),
-                    interpolation=cv2.INTER_LANCZOS4
-                )
-            
-            # 转换为PIL图像
-            frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
-            
-            # 创建透明背景
-            dpi_scaled_background_size = int(128 * self.dpi_scale)
-            thumbnail = Image.new(
-                "RGBA",
-                (dpi_scaled_background_size, dpi_scaled_background_size),
-                (0, 0, 0, 0)
-            )
-            
-            # 居中绘制
-            x_offset = (dpi_scaled_background_size - new_width) // 2
-            y_offset = (dpi_scaled_background_size - new_height) // 2
-            thumbnail.paste(frame_pil, (x_offset, y_offset))
-            
-            # 保存缩略图
-            thumbnail.save(thumbnail_path, format='PNG', quality=85)
-            return True
-
-        except ImportError:
-            # 如果没有安装OpenCV，跳过缩略图生成
-            warning("OpenCV is not installed")
-            return False
-        except (cv2.error, IOError, OSError) as e:
-            error(f"✗ 处理视频帧失败: {e}")
-            return False
     
     def go_to_parent(self):
         """
@@ -2132,7 +1729,13 @@ class CustomFileSelector(QWidget):
         self._lazy_load_timer.start()
         
         # 不再立即调用回调，改为在所有文件加载完成后调用
-    
+
+    def _refresh_file_list(self):
+        """
+        刷新文件列表（refresh_files 的别名，用于兼容旧代码）
+        """
+        self.refresh_files()
+
     def _load_next_batch(self):
         """分批加载下一批卡片"""
         # 如果不在加载状态，说明路径已切换或刷新被中断，直接返回
@@ -3364,19 +2967,10 @@ class CustomFileSelector(QWidget):
     def _get_thumbnail_path(self, file_path):
         """
         获取文件的缩略图路径
+        使用缩略图管理器统一管理
         """
-        # 缩略图存储在临时目录
-        thumb_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "thumbnails")
-        os.makedirs(thumb_dir, exist_ok=True)
-        
-        # 使用更稳定的哈希算法，确保在不同进程中生成相同的哈希值
-        import hashlib
-        
-        # 计算文件路径的MD5哈希值，并使用前16位作为文件名
-        md5_hash = hashlib.md5(file_path.encode('utf-8'))
-        file_hash = md5_hash.hexdigest()[:16]  # 使用前16位十六进制字符串
-        
-        return os.path.join(thumb_dir, f"{file_hash}.png")
+        thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+        return thumbnail_manager.get_thumbnail_path(file_path)
     
     def _format_size(self, size):
         """

@@ -500,6 +500,85 @@ class ImageWidget(QWidget):
             'r': 0, 'g': 0, 'b': 0,
             'hex': '#000000'
         }
+        
+        # 背景色设置 - 使用设置管理器中的颜色键名
+        self._bg_color_keys = ["secondary_color", "normal_color", "base_color"]
+        self._bg_color_names = ["深色", "正常", "浅色"]
+        self._current_bg_color_key = "base_color"  # 默认使用base_color
+        self._load_bg_color_setting()
+    
+    def _load_bg_color_setting(self):
+        """
+        从设置管理器加载背景色设置
+        """
+        try:
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                # 获取保存的背景色键名，默认为base_color
+                saved_key = app.settings_manager.get_setting("photo_viewer.style.bg_color_key", "base_color")
+                if saved_key in self._bg_color_keys:
+                    self._current_bg_color_key = saved_key
+        except Exception as e:
+            error(f"加载背景色设置时出错: {e}")
+    
+    def _save_bg_color_setting(self):
+        """
+        保存背景色设置到设置管理器
+        """
+        try:
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                app.settings_manager.set_setting("photo_viewer.style.bg_color_key", self._current_bg_color_key)
+                app.settings_manager.save_settings()
+        except Exception as e:
+            error(f"保存背景色设置时出错: {e}")
+    
+    def _get_current_bg_color(self):
+        """
+        获取当前设置的背景色
+        
+        Returns:
+            str: 十六进制颜色值
+        """
+        try:
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                # 检查是否记忆背景色
+                remember_bg_color = app.settings_manager.get_setting("photo_viewer.style.remember_bg_color", True)
+                
+                if remember_bg_color:
+                    # 使用保存的颜色键名获取颜色
+                    color_key = self._current_bg_color_key
+                else:
+                    # 不记忆，强制使用 base_color
+                    color_key = "base_color"
+                
+                default_colors = {
+                    "secondary_color": "#333333",
+                    "normal_color": "#e0e0e0",
+                    "base_color": "#FFFFFF"
+                }
+                return app.settings_manager.get_setting(
+                    f"appearance.colors.{color_key}", 
+                    default_colors.get(color_key, "#212121")
+                )
+        except Exception as e:
+            error(f"获取背景色时出错: {e}")
+        return "#212121"  # 默认深色背景
+    
+    def _switch_bg_color(self):
+        """
+        切换到下一个背景色
+        """
+        try:
+            # 切换到下一个颜色键名
+            current_index = self._bg_color_keys.index(self._current_bg_color_key)
+            next_index = (current_index + 1) % len(self._bg_color_keys)
+            self._current_bg_color_key = self._bg_color_keys[next_index]
+            self._save_bg_color_setting()
+            self.update()  # 触发重绘
+        except Exception as e:
+            error(f"切换背景色时出错: {e}")
     
     def _on_ico_processing_complete(self, qimage, image_path):
         """
@@ -775,10 +854,8 @@ class ImageWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         
-        app = QApplication.instance()
-        base_color = "#212121"
-        if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        # 使用当前设置的背景色
+        base_color = self._get_current_bg_color()
         
         if base_color.startswith('#'):
             r = int(base_color[1:3], 16)
@@ -967,14 +1044,11 @@ class ImageWidget(QWidget):
                 self._context_menu.itemClicked.connect(self._on_context_menu_clicked)
 
             # 构建菜单项
-            items = [{"text": "复制色度值", "data": "copy_color"}]
-
-            if self.current_file_path:
-                items.extend([
-                    {"text": "复制文件路径", "data": "copy_path"},
-                    {"text": "复制文件名", "data": "copy_name"},
-                    {"text": "复制文件", "data": "copy_file"},
-                ])
+            items = [
+                {"text": "复制色度值", "data": "copy_color"},
+                {"text": "缩放到适合大小", "data": "fit_to_size"},
+                {"text": "切换背景色", "data": "switch_bg_color"}
+            ]
 
             self._context_menu.set_items(items)
             self._context_menu.popup(event.globalPos())
@@ -988,8 +1062,12 @@ class ImageWidget(QWidget):
         Args:
             data: 菜单项数据
         """
-        if data == "copy_color":
+        if data == "fit_to_size":
+            self.reset_view()
+        elif data == "copy_color":
             self.copy_color_value()
+        elif data == "switch_bg_color":
+            self._switch_bg_color()
         elif data == "copy_path":
             self.copy_file_path()
         elif data == "copy_name":
