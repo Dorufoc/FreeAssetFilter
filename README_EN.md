@@ -326,7 +326,7 @@ FreeAssetFilter
 ├── GUI Framework: PySide6 (Qt6) - Cross-platform GUI
 ├── Image Processing: Pillow + OpenCV + rawpy - Image decoding and processing
 ├── Video Playback: MPV (libmpv) - High-performance video playback
-├── Document Parsing: PyMuPDF + python-docx - Document rendering
+├── Document Parsing: python-docx - Document rendering
 ├── Audio Processing: mutagen - Metadata reading
 ├── Archives: rarfile + py7zr - Archive file handling
 ├── Scientific Computing: NumPy + SciPy + scikit-image - Image algorithms
@@ -616,7 +616,6 @@ Thanks to the following open-source projects for their contributions:
 
 #### Document Processing
 
-- [PyMuPDF](https://github.com/pymupdf/PyMuPDF) - PDF processing library
 - [Pygments](https://pygments.org/) - Code syntax highlighting
 - [Markdown](https://python-markdown.github.io/) - Markdown parsing
 

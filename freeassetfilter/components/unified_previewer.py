@@ -473,33 +473,7 @@ class UnifiedPreviewer(QWidget):
             except Exception as e:
                 # 忽略清理过程中的异常
                 pass
-    
 
-            self._preview_thread.preview_error.connect(self._on_preview_error)
-            self._preview_thread.preview_progress.connect(self._on_progress_updated)
-            
-            # 启动线程
-            # debug("启动后台加载线程")
-            try:
-                self._preview_thread.start()
-            except Exception as e:
-                import traceback
-                error(f"[ERROR] 启动 PreviewLoaderThread 失败: {e}")
-                traceback.print_exc()
-                self.is_loading_preview = False
-                self._on_file_read_finished()
-                return
-            
-            # 更新当前预览类型
-            # debug(f"更新当前预览类型: {preview_type}")
-            self.current_preview_type = preview_type
-        
-        # 显示"使用系统默认方式打开"按钮和"定位到所在目录"按钮
-        self.open_with_system_button.show()
-        self.copy_to_clipboard_button.show()
-        self.locate_in_selector_button.show()
-        self.clear_preview_button.show()
-        
     def _open_file_with_system(self):
         """
         使用系统默认方式打开当前预览的文件

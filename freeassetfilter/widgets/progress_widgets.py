@@ -852,8 +852,18 @@ class D_ProgressBar(QWidget):
             painter.end()
 
             return pixmap
-        except Exception as e:
-            warning(f"创建 colored pixmap 失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"创建 colored pixmap 失败 - 文件操作错误: {e}")
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.transparent)
+            return pixmap
+        except (ValueError, TypeError) as e:
+            error(f"创建 colored pixmap 失败 - 数据转换错误: {e}")
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.transparent)
+            return pixmap
+        except RuntimeError as e:
+            error(f"创建 colored pixmap 失败 - Qt运行时错误: {e}")
             pixmap = QPixmap(size, size)
             pixmap.fill(Qt.transparent)
             return pixmap

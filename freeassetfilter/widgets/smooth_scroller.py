@@ -27,13 +27,13 @@ class D_ScrollBar(QScrollBar):
     
     scroll_finished = Signal()
     
-    def __init__(self, parent=None, orientation=Qt.Vertical):
+    def __init__(self, orientation=Qt.Vertical, parent=None):
         """
         初始化动画滚动条
 
         Args:
-            parent: 父控件
             orientation: 滚动条方向，Qt.Vertical 或 Qt.Horizontal
+            parent: 父控件
         """
         super().__init__(orientation, parent)
 

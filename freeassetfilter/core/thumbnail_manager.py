@@ -369,7 +369,8 @@ class ThumbnailManager:
             if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
                 return frame
             return None
-        except Exception:
+        except Exception as e:
+            debug(f"读取视频帧失败 (位置: {frame_pos}): {e}")
             return None
     
     def _process_and_save_video_frame(self, frame, thumbnail_path: str) -> Optional[str]:
@@ -649,14 +650,15 @@ class ThumbnailManager:
         """
         try:
             import glob
-            
+
             if not os.path.exists(self._thumb_dir):
                 return 0
-            
+
             thumbnail_files = glob.glob(os.path.join(self._thumb_dir, "*.png"))
             return len(thumbnail_files)
-            
-        except Exception:
+
+        except Exception as e:
+            debug(f"获取缩略图数量失败: {e}")
             return 0
 
 

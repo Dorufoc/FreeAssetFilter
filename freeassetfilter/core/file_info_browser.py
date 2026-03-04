@@ -68,12 +68,6 @@ except ImportError:
     Image = None
     TAGS = None
 
-# 用于处理PDF文件
-try:
-    import fitz
-except ImportError:
-    fitz = None
-
 # 用于处理文本编码
 try:
     import chardet
@@ -1060,54 +1054,22 @@ class FileInfoBrowser:
             Dict[str, Any]: PDF信息字典
         """
         info = {}
-        
-        # 尝试使用PyMuPDF获取PDF信息
-        try:
-            with fitz.open(file_path) as doc:
-                info["页数"] = doc.page_count
-                metadata = doc.metadata
-                if metadata:
-                    if metadata.get("title"):
-                        info["标题"] = metadata["title"]
-                    if metadata.get("author"):
-                        info["作者"] = metadata["author"]
-                    if metadata.get("creator"):
-                        info["创建者"] = metadata["creator"]
-        except (OSError, IOError, fitz.FileDataError) as e:
-            debug(f"获取PDF信息失败: {file_path}, 错误: {e}")
-            info["页数"] = "无法获取"
-
+        # PDF信息获取功能暂未实现
+        info["页数"] = "无法获取"
         return info
-    
+
     def _get_pdf_advanced_info(self, file_path: str) -> Dict[str, Any]:
         """
         获取PDF文件高级信息
-        
+
         Args:
             file_path (str): PDF文件路径
-        
+
         Returns:
             Dict[str, Any]: PDF高级信息字典
         """
         info = {}
-        
-        # 尝试使用PyMuPDF获取详细PDF信息
-        try:
-            with fitz.open(file_path) as doc:
-                metadata = doc.metadata
-                if metadata:
-                    advanced_metadata = {}
-                    advanced_metadata["主题"] = metadata.get("subject", "未知")
-                    advanced_metadata["关键字"] = metadata.get("keywords", "未知")
-                    advanced_metadata["生产者"] = metadata.get("producer", "未知")
-                    advanced_metadata["创建日期"] = metadata.get("creationDate", "未知")
-                    advanced_metadata["修改日期"] = metadata.get("modDate", "未知")
-                    advanced_metadata["PDF版本"] = metadata.get("format", "未知").split("-")[-1] if metadata.get("format") else "未知"
-                    info["元数据"] = advanced_metadata
-        except (OSError, IOError, fitz.FileDataError) as e:
-            debug(f"获取PDF高级信息失败: {file_path}, 错误: {e}")
-            pass
-
+        # PDF高级信息获取功能暂未实现
         return info
 
     def _get_font_info(self, file_path: str) -> Dict[str, Any]:

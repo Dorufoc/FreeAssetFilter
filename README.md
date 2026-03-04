@@ -326,7 +326,7 @@ FreeAssetFilter
 ├── GUI 框架: PySide6 (Qt6) - 跨平台图形界面
 ├── 图像处理: Pillow + OpenCV + rawpy - 图像解码与处理
 ├── 视频播放: MPV (libmpv) - 高性能视频播放
-├── 文档解析: PyMuPDF + python-docx - 文档渲染
+├── 文档解析: python-docx - 文档渲染
 ├── 音频处理: mutagen - 元数据读取
 ├── 压缩包: rarfile + py7zr - 归档文件处理
 ├── 科学计算: NumPy + SciPy + scikit-image - 图像算法
@@ -616,7 +616,6 @@ GNU Affero General Public License for more details.
 
 #### 文档处理
 
-- [PyMuPDF](https://github.com/pymupdf/PyMuPDF) - PDF 处理库
 - [Pygments](https://pygments.org/) - 代码语法高亮
 - [Markdown](https://python-markdown.github.io/) - Markdown 解析
 

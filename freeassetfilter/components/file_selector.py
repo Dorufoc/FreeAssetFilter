@@ -2885,8 +2885,8 @@ class CustomFileSelector(QWidget):
                 else:
                     suffix_text = file_info["suffix"].upper()
                     
-                    # 限制未知文件后缀名长度，最多5个字符
-                    if len(suffix_text) > 6:
+                    # 限制未知文件后缀名长度，大于等于5个字符的统一显示FILE
+                    if len(suffix_text) >= 5:
                         suffix_text = "FILE"
             
             # 对于未知文件类型和压缩文件类型，使用统一的SVG渲染器处理

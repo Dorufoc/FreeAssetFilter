@@ -321,8 +321,12 @@ class ArchiveBrowser(QWidget):
         self.files_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.files_list.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
 
-        # 应用平滑滚动到 QListWidget 的视口，启用触摸滚动（同时支持鼠标拖动和触摸）
-        SmoothScroller.apply(self.files_list, enable_mouse_drag=True)
+        # 应用平滑滚动到 QListWidget 的视口，启用触摸滚动（禁用鼠标拖动，仅使用滚轮/滚动条）
+        SmoothScroller.apply(self.files_list, enable_mouse_drag=False)
+
+        # 禁用 QListWidget 自身的触摸事件处理，完全由 SmoothScroller 控制滚动
+        self.files_list.setAttribute(Qt.WA_AcceptTouchEvents, False)
+        self.files_list.viewport().setAttribute(Qt.WA_AcceptTouchEvents, False)
         
         # 从app对象获取全局默认字体大小（Qt已自动处理DPI缩放，无需再乘dpi_scale）
         # 使用全局字体，让Qt6自动处理DPI缩放

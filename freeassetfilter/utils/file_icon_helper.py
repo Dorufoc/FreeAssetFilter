@@ -64,8 +64,14 @@ def get_icon_path(icon_name, icon_dir=None):
     try:
         settings_manager = SettingsManager()
         icon_style = settings_manager.get_setting("appearance.icon_style", 0)
-    except Exception as e:
-        warning(f"获取图标样式设置失败: {e}，使用默认样式")
+    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+        warning(f"获取图标样式设置失败 - 文件操作错误: {e}，使用默认样式")
+        icon_style = 0
+    except (ValueError, TypeError) as e:
+        warning(f"获取图标样式设置失败 - 数据转换错误: {e}，使用默认样式")
+        icon_style = 0
+    except RuntimeError as e:
+        warning(f"获取图标样式设置失败 - Qt运行时错误: {e}，使用默认样式")
         icon_style = 0
     
     # 确保样式值有效

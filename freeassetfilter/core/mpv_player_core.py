@@ -165,8 +165,7 @@ class MPVCommandType(IntEnum):
     GET_VOLUME = 14
     GET_SPEED = 15
     GET_VIDEO_SIZE = 16
-    IS_AUDIO_ONLY = 17
-    SET_VF_FILTER = 18
+    SET_VF_FILTER = 17
     LOAD_GLSL_SHADER = 19
     SET_GLSL_SHADERS = 20
     CLEAR_GLSL_SHADERS = 21
@@ -224,7 +223,8 @@ class MPVDLLLoader:
             
             return False
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
+            error(f"[MPVDLLLoader] 加载DLL失败: {e}")
             self._dll = None
             self._initialized = True
             return False
@@ -359,7 +359,7 @@ class MPVPlayerCore(QObject):
         volumeChanged: 音量变化信号 (volume: int)
         speedChanged: 播放速度变化信号 (speed: float)
         mutedChanged: 静音状态变化信号 (muted: bool)
-        fileLoaded: 文件加载完成信号 (file_path: str, is_audio: bool)
+        fileLoaded: 文件加载完成信号 (file_path: str)
         fileEnded: 文件播放结束信号 (reason: int)
         errorOccurred: 错误发生信号 (error_code: int, error_message: str)
         seekFinished: 跳转完成信号
@@ -457,7 +457,7 @@ class MPVPlayerCore(QObject):
                         if event_ptr:
                             event = event_ptr.contents
                             self._handle_mpv_event(mpv_handle, event)
-                    except Exception as e:
+                    except (RuntimeError, AttributeError, OSError) as e:
                         if not self._stop_event.is_set():
                             error(f"[MPVWorker] 事件处理错误: {e}")
 
@@ -466,19 +466,19 @@ class MPVPlayerCore(QObject):
                         self._process_command(mpv_handle, command)
                     except queue.Empty:
                         pass
-                    except Exception as e:
+                    except (RuntimeError, AttributeError, TypeError) as e:
                         if not self._stop_event.is_set():
                             error(f"[MPVWorker] 命令处理错误: {e}")
 
                     # 移除了位置轮询，完全依赖 MPV 的事件驱动属性观察
 
-                except Exception as e:
+                except (RuntimeError, AttributeError, OSError) as e:
                     if not self._stop_event.is_set():
                         error(f"[MPVWorker] 主循环错误: {e}")
                         import traceback
                         traceback.print_exc()
 
-        except Exception as e:
+        except (RuntimeError, OSError) as e:
             error(f"[MPVWorker] 致命错误: {e}")
             import traceback
             traceback.print_exc()
@@ -488,7 +488,7 @@ class MPVPlayerCore(QObject):
                     self._dll_loader.dll.mpv_command(mpv_handle, (c_char_p * 2)(b"quit", None))
                     time.sleep(0.1)
                     self._dll_loader.dll.mpv_terminate_destroy(mpv_handle)
-                except Exception as e:
+                except (RuntimeError, AttributeError, OSError) as e:
                     debug(f"[MPVWorker] 清理MPV句柄时出错: {e}")
             
             with self._state_lock:
@@ -630,16 +630,12 @@ class MPVPlayerCore(QObject):
     
     def _handle_file_loaded_event(self, mpv_handle: c_void_p):
         """处理文件加载完成事件"""
-        is_audio = self._is_audio_only_internal(mpv_handle)
-        if is_audio:
-            self._set_window_size_internal(mpv_handle, 0, 0)
-        
         duration = self._get_property_double(mpv_handle, "duration")
         if duration is not None and duration > 0:
             with self._state_lock:
                 self._duration = duration
             self._signal_queue.put(('durationChanged', self._duration))
-        
+
         # 获取当前的播放状态（MPV加载文件后会自动开始播放）
         # 使用 FLAG 类型获取 pause 属性
         is_paused = False
@@ -649,14 +645,14 @@ class MPVPlayerCore(QObject):
         )
         if result >= 0:
             is_paused = bool(c_value.value)
-        
+
         with self._state_lock:
             self._is_paused = is_paused
             self._is_playing = not is_paused
-        
+
         # 将信号放入队列，由主线程处理
         self._signal_queue.put(('stateChanged', self._is_playing))
-        self._signal_queue.put(('fileLoaded', self._current_file, is_audio))
+        self._signal_queue.put(('fileLoaded', self._current_file))
     
     def _handle_end_file_event(self, mpv_handle: c_void_p, event: MpvEvent):
         """处理文件播放结束事件"""
@@ -693,7 +689,7 @@ class MPVPlayerCore(QObject):
             
             # 将信号放入队列，由主线程处理
             self._signal_queue.put(('positionChanged', self._position, self._duration))
-        except Exception as e:
+        except (RuntimeError, AttributeError, OSError) as e:
             error(f"[MPVWorker] 更新位置状态时出错: {e}")
     
     def _process_command(self, mpv_handle: c_void_p, command: dict):
@@ -742,8 +738,6 @@ class MPVPlayerCore(QObject):
                 w = self._get_property_double(mpv_handle, "video-params/w") or 0
                 h = self._get_property_double(mpv_handle, "video-params/h") or 0
                 result = (int(w), int(h))
-            elif cmd_type == MPVCommandType.IS_AUDIO_ONLY:
-                result = self._is_audio_only_internal(mpv_handle)
             elif cmd_type == MPVCommandType.SET_VF_FILTER:
                 result = self._set_vf_filter_internal(mpv_handle, *args, **kwargs)
             elif cmd_type == MPVCommandType.LOAD_GLSL_SHADER:
@@ -759,7 +753,7 @@ class MPVPlayerCore(QObject):
             elif cmd_type == MPVCommandType.CLOSE:
                 self._stop_event.set()
                 result = True
-        except Exception as e:
+        except (RuntimeError, AttributeError, TypeError) as e:
             error(f"[MPVWorker] 执行命令 {cmd_type} 时出错: {e}")
             result = None
 
@@ -768,7 +762,7 @@ class MPVPlayerCore(QObject):
                 # 使用简单的元组，避免复杂对象
                 result_tuple = (command['result_id'], result)
                 self._result_queue.put(result_tuple)
-            except Exception as e:
+            except (RuntimeError, AttributeError, TypeError) as e:
                 error(f"[MPVWorker] 放入结果队列时出错: {e}")
     
     def _load_file_internal(self, mpv_handle: c_void_p, file_path: str, **kwargs) -> bool:
@@ -901,7 +895,7 @@ class MPVPlayerCore(QObject):
                         reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                         reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
                         debug(f"[LUT] video-reconfig结果: {reconfig_result}")
-                    except Exception as e2:
+                    except (RuntimeError, AttributeError, OSError) as e2:
                         debug(f"[LUT] video-reconfig失败: {e2}")
 
                 return result >= 0
@@ -912,7 +906,7 @@ class MPVPlayerCore(QObject):
                 result = self._dll_loader.dll.mpv_command(mpv_handle, clear_array)
                 debug(f"[LUT] 清除vf结果: {result}")
                 return result >= 0
-        except Exception as e:
+        except (RuntimeError, AttributeError, OSError) as e:
             error(f"[LUT] 设置vf滤镜失败: {e}")
             import traceback
             traceback.print_exc()
@@ -934,11 +928,11 @@ class MPVPlayerCore(QObject):
                     reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                     reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
                     debug(f"[LUT] video-reconfig结果: {reconfig_result}")
-                except Exception as e2:
+                except (RuntimeError, AttributeError, OSError) as e2:
                     debug(f"[LUT] video-reconfig失败: {e2}")
 
             return result >= 0
-        except Exception as e:
+        except (RuntimeError, AttributeError, OSError) as e:
             error(f"[LUT] 加载GLSL着色器失败: {e}")
             return False
     
@@ -966,11 +960,11 @@ class MPVPlayerCore(QObject):
                     reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                     reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
                     debug(f"[LUT] video-reconfig结果: {reconfig_result}")
-                except Exception as e2:
+                except (RuntimeError, AttributeError, OSError) as e2:
                     debug(f"[LUT] video-reconfig失败: {e2}")
 
             return result >= 0
-        except Exception as e:
+        except (RuntimeError, AttributeError, OSError) as e:
             error(f"[LUT] 设置GLSL着色器失败: {e}")
             return False
     
@@ -983,7 +977,7 @@ class MPVPlayerCore(QObject):
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
             debug(f"[LUT] glsl-shaders clr命令结果: {result}")
             return result >= 0
-        except Exception as e:
+        except (RuntimeError, AttributeError, OSError) as e:
             error(f"[LUT] 清除GLSL着色器失败: {e}")
             return False
 
@@ -998,7 +992,7 @@ class MPVPlayerCore(QObject):
             )
             debug(f"[LUT] set lut={abs_path} 结果: {result}")
             return result >= 0
-        except Exception as e:
+        except (RuntimeError, AttributeError, OSError) as e:
             error(f"[LUT] 设置LUT失败: {e}")
             import traceback
             traceback.print_exc()
@@ -1014,7 +1008,7 @@ class MPVPlayerCore(QObject):
             )
             debug(f"[LUT] 清除lut结果: {result}")
             return result >= 0
-        except Exception as e:
+        except (RuntimeError, AttributeError, OSError) as e:
             error(f"[LUT] 清除LUT失败: {e}")
             return False
     
@@ -1031,24 +1025,6 @@ class MPVPlayerCore(QObject):
         return self._dll_loader.dll.mpv_set_property_string(
             mpv_handle, b"geometry", f"{width}x{height}".encode('utf-8')
         ) >= 0
-    
-    def _is_audio_only_internal(self, mpv_handle: c_void_p) -> bool:
-        """内部检测纯音频文件实现"""
-        try:
-            video_width = self._get_property_double(mpv_handle, "video-params/w") or 0
-            video_height = self._get_property_double(mpv_handle, "video-params/h") or 0
-            
-            if video_width == 0 or video_height == 0:
-                return True
-            
-            video_codec = self._get_property_string(mpv_handle, "video-codec")
-            if not video_codec:
-                return True
-            
-            return False
-        except Exception as e:
-            debug(f"[MPVPlayerCore] 检测纯音频文件时出错: {e}")
-            return False
     
     def _get_property_double(self, mpv_handle: c_void_p, name: str) -> Optional[float]:
         """获取双精度属性"""
@@ -1184,8 +1160,8 @@ class MPVPlayerCore(QObject):
                         _, width, height = signal_data
                         self.videoSizeChanged.emit(width, height)
                     elif signal_name == 'fileLoaded':
-                        _, file_path, is_audio = signal_data
-                        self.fileLoaded.emit(file_path, is_audio)
+                        _, file_path = signal_data
+                        self.fileLoaded.emit(file_path)
                     elif signal_name == 'fileEnded':
                         _, reason = signal_data
                         self.fileEnded.emit(reason)
@@ -1194,10 +1170,10 @@ class MPVPlayerCore(QObject):
                         self.errorOccurred.emit(error_code, error_msg)
                 except queue.Empty:
                     break
-                except Exception as e:
+                except (RuntimeError, TypeError) as e:
                     error(f"[MPVPlayerCore] 处理信号时出错: {e}")
                     break
-        except Exception as e:
+        except (RuntimeError, TypeError) as e:
             error(f"[MPVPlayerCore] 处理信号队列时出错: {e}")
     
     def load_file(self, file_path: str) -> bool:
@@ -1582,17 +1558,7 @@ class MPVPlayerCore(QObject):
         """
         result = self._send_command(MPVCommandType.GET_VIDEO_SIZE, timeout=1.0)
         return result if result is not None else (0, 0)
-    
-    def is_audio_only(self) -> bool:
-        """
-        检测当前文件是否为纯音频文件
-        
-        Returns:
-            bool: 如果是纯音频文件返回True，否则返回False
-        """
-        result = self._send_command(MPVCommandType.IS_AUDIO_ONLY, timeout=1.0)
-        return result if result is not None else False
-    
+
     def take_screenshot(self, file_path: str, include_subtitles: bool = True) -> bool:
         """
         截取当前帧
@@ -1634,10 +1600,10 @@ class MPVPlayerCore(QObject):
                 self._send_command(MPVCommandType.CLEAR_GLSL_SHADERS, timeout=0.3)
                 self._send_command(MPVCommandType.SET_VF_FILTER, "", timeout=0.3)
                 self._send_command(MPVCommandType.CLEAR_LUT, timeout=0.3)
-            except Exception as e:
+            except (RuntimeError, TypeError) as e:
                 debug(f"[MPVPlayerCore] 预清理时清除滤镜/LUT失败: {e}")
                 
-        except Exception as e:
+        except (RuntimeError, TypeError) as e:
             error(f"[MPVPlayerCore] 预清理时出错: {e}")
     
     def close(self, async_mode=False, timeout=1.0):
@@ -1732,5 +1698,5 @@ class MPVPlayerCore(QObject):
         """析构函数"""
         try:
             self.close()
-        except Exception as e:
+        except (RuntimeError, AttributeError) as e:
             debug(f"[MPVPlayerCore] 析构时关闭播放器失败: {e}")

@@ -46,15 +46,28 @@ try:
     _fault_handler_file = open(log_file_path, 'a', encoding='utf-8')
     faulthandler.enable(file=_fault_handler_file)
     info(f"faulthandler已启用，C++层崩溃信息将写入日志: {log_file_path}")
-except Exception as e:
-    warning(f"启用faulthandler到日志文件失败: {e}")
+except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+    warning(f"启用faulthandler到日志文件失败 - 文件操作错误: {e}")
     # 如果文件方式失败，尝试启用到stderr（如果可用）
     if sys.stderr is not None:
         try:
             faulthandler.enable()
             info("faulthandler已启用，崩溃信息将输出到stderr")
-        except Exception as e2:
-            warning(f"启用faulthandler到stderr也失败: {e2}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e2:
+            warning(f"启用faulthandler到stderr也失败 - 文件操作错误: {e2}")
+        except (ValueError, TypeError) as e2:
+            warning(f"启用faulthandler到stderr也失败 - 数据转换错误: {e2}")
+except (ValueError, TypeError) as e:
+    warning(f"启用faulthandler到日志文件失败 - 数据转换错误: {e}")
+    # 如果文件方式失败，尝试启用到stderr（如果可用）
+    if sys.stderr is not None:
+        try:
+            faulthandler.enable()
+            info("faulthandler已启用，崩溃信息将输出到stderr")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e2:
+            warning(f"启用faulthandler到stderr也失败 - 文件操作错误: {e2}")
+        except (ValueError, TypeError) as e2:
+            warning(f"启用faulthandler到stderr也失败 - 数据转换错误: {e2}")
 
 # 定义异常处理函数
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -114,14 +127,18 @@ try:
     from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
     info("[预热] 开始预热 LUT 预览 C++ 模块...")
     lut_cpp_warmup()
-    
+
     # 预加载 LUT 生成器（包含参考图像）
     from freeassetfilter.core.lut_preview_generator import get_preview_generator
     info("[预热] 预加载 LUT 生成器...")
     get_preview_generator()
     info("[预热] LUT 预览 C++ 模块预热完成")
-except Exception as e:
-    error(f"[预热] LUT 预览 C++ 模块预热失败: {e}")
+except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+    error(f"[预热] LUT 预览 C++ 模块预热失败 - 文件操作错误: {e}")
+except (ValueError, TypeError) as e:
+    error(f"[预热] LUT 预览 C++ 模块预热失败 - 数据转换错误: {e}")
+except (ImportError, ModuleNotFoundError) as e:
+    error(f"[预热] LUT 预览 C++ 模块预热失败 - 模块导入错误: {e}")
 
 
 class FreeAssetFilterApp(QMainWindow):

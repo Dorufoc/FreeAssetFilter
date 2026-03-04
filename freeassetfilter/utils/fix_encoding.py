@@ -87,8 +87,11 @@ def fix_file(file_path):
 
         info(f"✓ 修复成功: {file_path}")
         return True
-    except Exception as e:
-        error(f"✗ 修复失败: {file_path} - {e}")
+    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+        error(f"✗ 修复失败 - 文件操作错误: {file_path} - {e}")
+        return False
+    except (ValueError, TypeError) as e:
+        error(f"✗ 修复失败 - 数据转换错误: {file_path} - {e}")
         return False
 
 # 递归修复所有Python文件

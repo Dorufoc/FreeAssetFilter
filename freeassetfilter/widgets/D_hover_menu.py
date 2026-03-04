@@ -811,5 +811,9 @@ class D_HoverMenu(QWidget):
         try:
             if hasattr(self, '_mouse_activity_monitor') and self._mouse_activity_monitor:
                 self._mouse_activity_monitor.stop()
-        except Exception as e:
-            debug(f"D_HoverMenu 析构时停止监控失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"D_HoverMenu 析构时停止监控失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            debug(f"D_HoverMenu 析构时停止监控失败 - 数据转换错误: {e}")
+        except RuntimeError as e:
+            debug(f"D_HoverMenu 析构时停止监控失败 - Qt运行时错误: {e}")

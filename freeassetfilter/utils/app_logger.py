@@ -109,9 +109,12 @@ class AppLogger:
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(self.formatter)
             self.logger.addHandler(file_handler)
-        except Exception as e:
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             # 如果文件日志创建失败，使用备用方案
-            print(f"[警告] 创建日志文件失败: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+            print(f"[警告] 创建日志文件失败 - 文件操作错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+        except (ValueError, TypeError) as e:
+            # 如果文件日志创建失败，使用备用方案
+            print(f"[警告] 创建日志文件失败 - 数据转换错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
     
     def _add_console_handler(self):
         """添加控制台日志处理器（仅在控制台可用时）"""
@@ -138,10 +141,12 @@ class AppLogger:
             for old_file in log_files[self.max_log_files:]:
                 try:
                     os.remove(os.path.join(self.log_dir, old_file))
-                except Exception as e:
-                    print(f"[警告] 删除旧日志文件失败: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
-        except Exception as e:
-            print(f"[警告] 清理旧日志文件失败: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+                except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+                    print(f"[警告] 删除旧日志文件失败 - 文件操作错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            print(f"[警告] 清理旧日志文件失败 - 文件操作错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+        except (ValueError, TypeError) as e:
+            print(f"[警告] 清理旧日志文件失败 - 数据转换错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
     
     def debug(self, msg):
         """输出调试日志"""
@@ -203,7 +208,10 @@ def log_print(msg, level='info'):
     if sys.stdout is not None:
         try:
             print(msg)
-        except Exception as e:
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            # 控制台输出失败，静默处理（已在日志中记录）
+            pass
+        except (ValueError, TypeError) as e:
             # 控制台输出失败，静默处理（已在日志中记录）
             pass
     
@@ -249,7 +257,10 @@ def log_exception(exc_type, exc_value, exc_traceback):
     if sys.stderr is not None:
         try:
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        except Exception as e:
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            # 控制台异常输出失败，静默处理（已在日志中记录）
+            pass
+        except (ValueError, TypeError) as e:
             # 控制台异常输出失败，静默处理（已在日志中记录）
             pass
 

@@ -601,8 +601,10 @@ class CustomFileHorizontalCard(QWidget):
                 # 显示文件信息标签
                 self.info_label.show()
 
-        except Exception as e:
-            warning(f"加载文件信息失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"加载文件信息失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            error(f"加载文件信息失败 - 数据转换错误: {e}")
 
     def _calculate_text_max_width(self):
         """
@@ -678,8 +680,12 @@ class CustomFileHorizontalCard(QWidget):
                         if pixmap and not pixmap.isNull():
                             self._set_icon_pixmap(pixmap, scaled_icon_size)
                             return
-                except Exception as e:
-                    debug(f"获取高分辨率图标失败: {e}")
+                except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+                    debug(f"获取高分辨率图标失败 - 文件操作错误: {e}")
+                except (ValueError, TypeError) as e:
+                    debug(f"获取高分辨率图标失败 - 数据转换错误: {e}")
+                except RuntimeError as e:
+                    debug(f"获取高分辨率图标失败 - Qt运行时错误: {e}")
 
                 from PySide6.QtWidgets import QFileIconProvider
                 icon_provider = QFileIconProvider()
@@ -734,7 +740,7 @@ class CustomFileHorizontalCard(QWidget):
                         display_suffix = "." + file_info.suffix()
                     else:
                         display_suffix = file_info.suffix().upper()
-                        if len(display_suffix) > 5:
+                        if len(display_suffix) >= 5:
                             display_suffix = "FILE"
 
                     svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=False)
@@ -760,8 +766,12 @@ class CustomFileHorizontalCard(QWidget):
                     self._set_default_icon()
             else:
                 self._set_default_icon()
-        except Exception as e:
-            warning(f"设置文件图标失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"设置文件图标失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            error(f"设置文件图标失败 - 数据转换错误: {e}")
+        except RuntimeError as e:
+            error(f"设置文件图标失败 - Qt运行时错误: {e}")
 
     def _get_file_icon_path(self, suffix, is_dir=False):
         """获取文件图标路径，支持图标样式切换"""
@@ -1464,8 +1474,14 @@ class CustomFileHorizontalCard(QWidget):
             if staging_setting is not None:
                 return staging_setting
             return settings_manager.get_setting("file_selector.touch_optimization", True)
-        except Exception as e:
-            debug(f"检查触控操作优化设置失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"检查触控操作优化设置失败 - 文件操作错误: {e}")
+            return True
+        except (ValueError, TypeError) as e:
+            debug(f"检查触控操作优化设置失败 - 数据转换错误: {e}")
+            return True
+        except RuntimeError as e:
+            debug(f"检查触控操作优化设置失败 - Qt运行时错误: {e}")
             return True
     
     def _on_long_press(self):
@@ -1555,8 +1571,14 @@ class CustomFileHorizontalCard(QWidget):
             from freeassetfilter.core.settings_manager import SettingsManager
             settings_manager = SettingsManager()
             return settings_manager.get_setting("appearance.colors.base_color", "#212121")
-        except Exception as e:
-            debug(f"获取基础颜色失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"获取基础颜色失败 - 文件操作错误: {e}")
+            return "#212121"
+        except (ValueError, TypeError) as e:
+            debug(f"获取基础颜色失败 - 数据转换错误: {e}")
+            return "#212121"
+        except RuntimeError as e:
+            debug(f"获取基础颜色失败 - Qt运行时错误: {e}")
             return "#212121"
 
     def _get_auxiliary_color(self):
@@ -1565,8 +1587,14 @@ class CustomFileHorizontalCard(QWidget):
             from freeassetfilter.core.settings_manager import SettingsManager
             settings_manager = SettingsManager()
             return settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
-        except Exception as e:
-            debug(f"获取辅助颜色失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"获取辅助颜色失败 - 文件操作错误: {e}")
+            return "#3D3D3D"
+        except (ValueError, TypeError) as e:
+            debug(f"获取辅助颜色失败 - 数据转换错误: {e}")
+            return "#3D3D3D"
+        except RuntimeError as e:
+            debug(f"获取辅助颜色失败 - Qt运行时错误: {e}")
             return "#3D3D3D"
 
     def _get_secondary_color(self):
@@ -1575,8 +1603,14 @@ class CustomFileHorizontalCard(QWidget):
             from freeassetfilter.core.settings_manager import SettingsManager
             settings_manager = SettingsManager()
             return settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-        except Exception as e:
-            debug(f"获取次要颜色失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"获取次要颜色失败 - 文件操作错误: {e}")
+            return "#FFFFFF"
+        except (ValueError, TypeError) as e:
+            debug(f"获取次要颜色失败 - 数据转换错误: {e}")
+            return "#FFFFFF"
+        except RuntimeError as e:
+            debug(f"获取次要颜色失败 - Qt运行时错误: {e}")
             return "#FFFFFF"
     
     def _create_drag_card(self):
@@ -1885,7 +1919,7 @@ class CustomFileHorizontalCard(QWidget):
                                 display_suffix = "." + suffix
                             else:
                                 display_suffix = suffix.upper()
-                                if len(display_suffix) > 5:
+                                if len(display_suffix) >= 5:
                                     display_suffix = "FILE"
                             svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
                         else:
@@ -1935,7 +1969,7 @@ class CustomFileHorizontalCard(QWidget):
                                     display_suffix = "." + suffix
                                 else:
                                     display_suffix = suffix.upper()
-                                    if len(display_suffix) > 5:
+                                    if len(display_suffix) >= 5:
                                         display_suffix = "FILE"
                                 svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
                             else:
@@ -1952,8 +1986,16 @@ class CustomFileHorizontalCard(QWidget):
             # 如果以上都失败，使用默认的文件图标
             self._create_default_icon_for_drag(parent_container, icon_size)
 
-        except Exception as e:
-            warning(f"复制图标到拖拽卡片失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"复制图标到拖拽卡片失败 - 文件操作错误: {e}")
+            # 创建默认图标 - 使用与原始卡片相同的图标大小 (40 * dpi_scale)
+            self._create_default_icon_for_drag(parent_container, int(40 * self.dpi_scale))
+        except (ValueError, TypeError) as e:
+            error(f"复制图标到拖拽卡片失败 - 数据转换错误: {e}")
+            # 创建默认图标 - 使用与原始卡片相同的图标大小 (40 * dpi_scale)
+            self._create_default_icon_for_drag(parent_container, int(40 * self.dpi_scale))
+        except RuntimeError as e:
+            error(f"复制图标到拖拽卡片失败 - Qt运行时错误: {e}")
             # 创建默认图标 - 使用与原始卡片相同的图标大小 (40 * dpi_scale)
             self._create_default_icon_for_drag(parent_container, int(40 * self.dpi_scale))
 
@@ -2010,8 +2052,12 @@ class CustomFileHorizontalCard(QWidget):
                                 icon_label.setPixmap(pixmap)
                                 parent_container.layout().addWidget(icon_label)
                                 return
-                    except Exception as e:
-                        debug(f"获取系统图标失败: {e}")
+                    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+                        debug(f"获取系统图标失败 - 文件操作错误: {e}")
+                    except (ValueError, TypeError) as e:
+                        debug(f"获取系统图标失败 - 数据转换错误: {e}")
+                    except RuntimeError as e:
+                        debug(f"获取系统图标失败 - Qt运行时错误: {e}")
 
                 # 使用 SVG 图标
                 icon_path = self._get_file_icon_path(suffix, is_dir)
@@ -2023,13 +2069,13 @@ class CustomFileHorizontalCard(QWidget):
                     is_archive_icon = "压缩文件" in icon_basename
 
                     if is_unknown_icon or is_archive_icon:
-                        if is_archive_icon:
-                            display_suffix = "." + suffix
-                        else:
-                            display_suffix = suffix.upper()
-                            if len(display_suffix) > 5:
-                                display_suffix = "FILE"
-                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
+                            if is_archive_icon:
+                                display_suffix = "." + suffix
+                            else:
+                                display_suffix = suffix.upper()
+                                if len(display_suffix) >= 5:
+                                    display_suffix = "FILE"
+                            svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
                     else:
                         svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=False)
 
@@ -2048,5 +2094,9 @@ class CustomFileHorizontalCard(QWidget):
             icon_label.setStyleSheet("background: transparent; border: none;")
             parent_container.layout().addWidget(icon_label)
 
-        except Exception as e:
-            warning(f"创建默认图标失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"创建默认图标失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            error(f"创建默认图标失败 - 数据转换错误: {e}")
+        except RuntimeError as e:
+            error(f"创建默认图标失败 - Qt运行时错误: {e}")

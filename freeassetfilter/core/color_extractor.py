@@ -69,7 +69,8 @@ def _prepare_image_data_for_cpp(cover_data: bytes) -> bytes:
         # 打包数据：宽度(4字节) + 高度(4字节) + 像素数据
         header = struct.pack('ii', width, height)
         return header + pixels
-    except Exception as e:
+    except (OSError, IOError, ValueError) as e:
+        error(f"[ColorExtractor] 图像数据准备失败: {e}")
         raise ValueError(f"图像解码失败: {e}")
 
 
@@ -120,8 +121,8 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
 
             return result
 
-        except Exception as e:
-            warning(f"[ColorExtractor] C++ 提取失败: {e}，降级到 Python 实现")
+        except (OSError, IOError, ValueError, TypeError) as e:
+            error(f"[ColorExtractor] C++ 提取失败: {e}，降级到 Python 实现")
     
     # 降级到 Python 实现
     return _extract_cover_colors_python(cover_data, num_colors, min_distance)
@@ -134,7 +135,7 @@ def _extract_cover_colors_python(cover_data: bytes, num_colors: int = 5,
     """
     try:
         image = Image.open(io.BytesIO(cover_data))
-    except Exception as e:
+    except (OSError, IOError) as e:
         error(f"[ColorExtractor] 打开封面图像失败: {e}")
         return []
     
@@ -174,7 +175,7 @@ def _extract_cover_colors_python(cover_data: bytes, num_colors: int = 5,
 
         return result
 
-    except Exception as e:
+    except (OSError, IOError, ValueError, TypeError) as e:
         error(f"[ColorExtractor] 处理封面图像失败: {e}")
         return []
 
@@ -196,7 +197,13 @@ def extract_cover_colors_from_path(image_path: str, num_colors: int = 5,
         with open(image_path, 'rb') as f:
             cover_data = f.read()
         return extract_cover_colors(cover_data, num_colors, min_distance)
-    except Exception as e:
+    except FileNotFoundError as e:
+        error(f"[ColorExtractor] 封面文件不存在: {e}")
+        return []
+    except PermissionError as e:
+        error(f"[ColorExtractor] 无权限读取封面文件: {e}")
+        return []
+    except (OSError, IOError) as e:
         error(f"[ColorExtractor] 从文件读取封面失败: {e}")
         return []
 
@@ -324,7 +331,7 @@ def extract_cover_from_audio(file_path: str) -> Optional[bytes]:
                 try:
                     Image.open(io.BytesIO(picture_data))
                     return picture_data
-                except Exception as e:
+                except (OSError, IOError) as e:
                     debug(f"[ColorExtractor] OGG图片数据解析失败: {e}")
                     pass
         
@@ -352,8 +359,8 @@ def extract_cover_from_audio(file_path: str) -> Optional[bytes]:
                         return data
         
         return None
-        
-    except Exception as e:
+
+    except (OSError, IOError, ValueError, TypeError) as e:
         error(f"[ColorExtractor] 提取封面失败: {e}")
         return None
 
@@ -374,8 +381,8 @@ def generate_colors_from_accent(accent_hex: str = "#B036EE") -> List[QColor]:
         accent_color = QColor(accent_hex)
         if not accent_color.isValid():
             accent_color = QColor("#B036EE")
-    except Exception as e:
-        debug(f"[ColorExtractor] 解析强调色失败 '{accent_hex}': {e}")
+    except (ValueError, TypeError) as e:
+        error(f"[ColorExtractor] 解析强调色失败 '{accent_hex}': {e}")
         accent_color = QColor("#B036EE")
     
     h, s, v, a = accent_color.getHsv()
@@ -427,7 +434,7 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
         if file_size > 100 * 1024 * 1024:  # 100MB
             warning(f"[ColorExtractor] 音频文件过大，跳过封面提取: {file_size / 1024 / 1024:.1f}MB")
             return generate_colors_from_accent(accent_hex)
-    except Exception as e:
+    except (OSError, IOError) as e:
         error(f"[ColorExtractor] 检查文件大小失败: {e}")
     
     try:
@@ -465,7 +472,7 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
         else:
             debug(f"[ColorExtractor] 音频文件无封面: {os.path.basename(file_path)}")
 
-    except Exception as e:
+    except (OSError, IOError, ValueError, TypeError) as e:
         error(f"[ColorExtractor] 提取主题色时发生异常: {e}")
 
     # 降级：基于强调色生成

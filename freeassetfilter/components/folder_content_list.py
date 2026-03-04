@@ -140,8 +140,12 @@ class FolderContentList(QWidget):
         # 启用 QListWidget 的像素级滚动模式以实现平滑滚动
         self.content_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
 
-        # 应用平滑滚动到 QListWidget 的视口，启用触摸滚动（同时支持鼠标拖动和触摸）
-        SmoothScroller.apply(self.content_list, enable_mouse_drag=True)
+        # 应用平滑滚动到 QListWidget 的视口，启用触摸滚动（禁用鼠标拖动，仅使用滚轮/滚动条）
+        SmoothScroller.apply(self.content_list, enable_mouse_drag=False)
+
+        # 禁用 QListWidget 自身的触摸事件处理，完全由 SmoothScroller 控制滚动
+        self.content_list.setAttribute(Qt.WA_AcceptTouchEvents, False)
+        self.content_list.viewport().setAttribute(Qt.WA_AcceptTouchEvents, False)
 
         # 使用全局字体，让Qt6自动处理DPI缩放
         self.content_list.setFont(self.global_font)

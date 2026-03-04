@@ -701,15 +701,14 @@ class VideoPlayer(QWidget):
         except Exception as e:
             warning(f"[VideoPlayer] 初始化进度显示失败: {e}")
 
-    def _on_manager_file_loaded(self, file_path: str, is_audio: bool):
+    def _on_manager_file_loaded(self, file_path: str):
         """
         MPV管理器文件加载完成处理
 
         Args:
             file_path: 加载的文件路径
-            is_audio: 是否为音频文件
         """
-        info(f"[VideoPlayer] 文件加载完成: {file_path}, 是否音频: {is_audio}")
+        info(f"[VideoPlayer] 文件加载完成: {file_path}")
 
         # 不直接设置播放状态，让 stateChanged 信号来处理，确保状态同步
         # self._control_bar.set_playing(True)

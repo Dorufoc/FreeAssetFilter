@@ -102,8 +102,10 @@ class FileBlockCard(QWidget):
                 border_color = self._anim_border_color.name()
             
             self.setStyleSheet(f"background-color: {bg_color}; border: {scaled_border_width}px solid {border_color}; border-radius: {scaled_border_radius}px;")
-        except Exception as e:
-            debug(f"应用动画样式失败: {e}")
+        except (ValueError, TypeError) as e:
+            debug(f"应用动画样式失败 - 数据转换错误: {e}")
+        except RuntimeError as e:
+            debug(f"应用动画样式失败 - Qt运行时错误: {e}")
     
     def __init__(self, file_info, dpi_scale=1.0, parent=None):
         """
@@ -181,8 +183,12 @@ class FileBlockCard(QWidget):
             self.normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
             self.accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
             self.secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-        except Exception as e:
-            debug(f"初始化颜色配置失败，使用默认颜色: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"初始化颜色配置失败 - 文件操作错误，使用默认颜色: {e}")
+        except (ValueError, TypeError) as e:
+            debug(f"初始化颜色配置失败 - 数据转换错误，使用默认颜色: {e}")
+        except RuntimeError as e:
+            debug(f"初始化颜色配置失败 - Qt运行时错误，使用默认颜色: {e}")
             self.base_color = "#212121"
             self.auxiliary_color = "#3D3D3D"
             self.normal_color = "#717171"
@@ -239,8 +245,12 @@ class FileBlockCard(QWidget):
                         if pixmap and not pixmap.isNull():
                             self._set_icon_pixmap(pixmap, scaled_icon_size)
                             return
-                except Exception as e:
-                    debug(f"提取Windows图标失败: {e}")
+                except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+                    debug(f"提取Windows图标失败 - 文件操作错误: {e}")
+                except (ValueError, TypeError) as e:
+                    debug(f"提取Windows图标失败 - 数据转换错误: {e}")
+                except RuntimeError as e:
+                    debug(f"提取Windows图标失败 - Qt运行时错误: {e}")
             
             thumbnail_path = self._get_thumbnail_path(file_path)
             is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'svg', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']
@@ -261,7 +271,7 @@ class FileBlockCard(QWidget):
                 svg_widget = None
                 if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
                     display_suffix = suffix.upper()
-                    if len(display_suffix) > 5:
+                    if len(display_suffix) >= 5:
                         display_suffix = "FILE"
                     svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale, replace_colors=False)
                 elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
@@ -306,8 +316,14 @@ class FileBlockCard(QWidget):
                     self._set_default_icon()
             else:
                 self._set_default_icon()
-        except Exception as e:
-            warning(f"更新文件图标失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"更新文件图标失败 - 文件操作错误: {e}")
+            self._set_default_icon()
+        except (ValueError, TypeError) as e:
+            error(f"更新文件图标失败 - 数据转换错误: {e}")
+            self._set_default_icon()
+        except RuntimeError as e:
+            error(f"更新文件图标失败 - Qt运行时错误: {e}")
             self._set_default_icon()
     
     def _set_icon_pixmap(self, pixmap, size):
@@ -423,7 +439,7 @@ class FileBlockCard(QWidget):
                 dt = QDateTime.fromString(created, Qt.ISODate)
                 self.time_label.setText(dt.toString("yyyy-MM-dd"))
             except (ValueError, TypeError) as e:
-                debug(f"解析日期时间失败: {e}, 原始值: {created}")
+                debug(f"解析日期时间失败 - 数据转换错误: {e}, 原始值: {created}")
                 self.time_label.setText(created[:10] if len(created) >= 10 else created)
         else:
             self.time_label.setText("")
@@ -455,8 +471,14 @@ class FileBlockCard(QWidget):
         try:
             settings_manager = SettingsManager()
             return settings_manager.get_setting("file_selector.touch_optimization", True)
-        except Exception as e:
-            debug(f"获取触控优化设置失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"获取触控优化设置失败 - 文件操作错误: {e}")
+            return True
+        except (ValueError, TypeError) as e:
+            debug(f"获取触控优化设置失败 - 数据转换错误: {e}")
+            return True
+        except RuntimeError as e:
+            debug(f"获取触控优化设置失败 - Qt运行时错误: {e}")
             return True
 
     def _is_mouse_buttons_swapped(self):
@@ -469,8 +491,14 @@ class FileBlockCard(QWidget):
         try:
             settings_manager = SettingsManager()
             return settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
-        except Exception as e:
-            debug(f"获取鼠标按钮交换设置失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"获取鼠标按钮交换设置失败 - 文件操作错误: {e}")
+            return False
+        except (ValueError, TypeError) as e:
+            debug(f"获取鼠标按钮交换设置失败 - 数据转换错误: {e}")
+            return False
+        except RuntimeError as e:
+            debug(f"获取鼠标按钮交换设置失败 - Qt运行时错误: {e}")
             return False
 
     def _is_previewer_loading(self):
@@ -487,8 +515,12 @@ class FileBlockCard(QWidget):
                 previewer = main_window.unified_previewer
                 if previewer and hasattr(previewer, 'is_loading_preview'):
                     return previewer.is_loading_preview
-        except Exception as e:
-            debug(f"检查预览器加载状态失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"检查预览器加载状态失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            debug(f"检查预览器加载状态失败 - 数据转换错误: {e}")
+        except RuntimeError as e:
+            debug(f"检查预览器加载状态失败 - Qt运行时错误: {e}")
         return False
 
     def eventFilter(self, obj, event):
@@ -1179,8 +1211,12 @@ class FileBlockCard(QWidget):
                         if pixmap and not pixmap.isNull():
                             icon_label.setPixmap(pixmap)
                             icon_loaded = True
-                except Exception as e:
-                    debug(f"拖拽卡片提取Windows图标失败: {e}")
+                except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+                    debug(f"拖拽卡片提取Windows图标失败 - 文件操作错误: {e}")
+                except (ValueError, TypeError) as e:
+                    debug(f"拖拽卡片提取Windows图标失败 - 数据转换错误: {e}")
+                except RuntimeError as e:
+                    debug(f"拖拽卡片提取Windows图标失败 - Qt运行时错误: {e}")
             
             # 2. 对于图片/视频，使用缩略图
             if not icon_loaded:
@@ -1202,7 +1238,7 @@ class FileBlockCard(QWidget):
                     svg_widget = None
                     if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
                         display_suffix = suffix.upper()
-                        if len(display_suffix) > 5:
+                        if len(display_suffix) >= 5:
                             display_suffix = "FILE"
                         svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=False)
                     elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
@@ -1217,8 +1253,12 @@ class FileBlockCard(QWidget):
                         svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
                         svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
                         svg_widget.show()
-        except Exception as e:
-            warning(f"拖拽卡片图标渲染失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"拖拽卡片图标渲染失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            error(f"拖拽卡片图标渲染失败 - 数据转换错误: {e}")
+        except RuntimeError as e:
+            error(f"拖拽卡片图标渲染失败 - Qt运行时错误: {e}")
         
         layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 
@@ -1275,7 +1315,7 @@ class FileBlockCard(QWidget):
                 dt = QDateTime.fromString(created, Qt.ISODate)
                 time_label.setText(dt.toString("yyyy-MM-dd"))
             except (ValueError, TypeError) as e:
-                debug(f"拖拽卡片解析日期时间失败: {e}, 原始值: {created}")
+                debug(f"拖拽卡片解析日期时间失败 - 数据转换错误: {e}, 原始值: {created}")
                 time_label.setText(created[:10] if len(created) >= 10 else created)
         else:
             time_label.setText("")

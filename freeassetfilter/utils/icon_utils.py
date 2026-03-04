@@ -595,8 +595,12 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
                     Release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(release_ptr)
                     Release(shell_item_ptr)
 
-    except Exception as e:
-        debug(f"IShellItemImageFactory 获取图标失败 [{file_path}]: {e}")
+    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+        debug(f"IShellItemImageFactory 获取图标失败 - 文件操作错误 [{file_path}]: {e}")
+    except (ValueError, TypeError) as e:
+        debug(f"IShellItemImageFactory 获取图标失败 - 数据转换错误 [{file_path}]: {e}")
+    except RuntimeError as e:
+        debug(f"IShellItemImageFactory 获取图标失败 - Qt运行时错误 [{file_path}]: {e}")
 
     return None
 

@@ -115,8 +115,11 @@ class CubeLUTParser:
             
             return True
 
-        except Exception as e:
-            error(f"解析LUT文件失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"解析LUT文件失败 - 文件操作错误: {e}")
+            return False
+        except (ValueError, TypeError) as e:
+            error(f"解析LUT文件失败 - 数据转换错误: {e}")
             return False
     
     def _is_data_line(self, line: str) -> bool:
@@ -388,8 +391,11 @@ def get_lut_display_name(file_path: str) -> str:
             return parts[1]
 
         return file_name
-    except Exception as e:
-        warning(f"获取LUT显示名称失败: {e}")
+    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+        warning(f"获取LUT显示名称失败 - 文件操作错误: {e}")
+        return "Unknown LUT"
+    except (ValueError, TypeError) as e:
+        warning(f"获取LUT显示名称失败 - 数据转换错误: {e}")
         return "Unknown LUT"
 
 

@@ -13,11 +13,12 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 PDF预览器组件
 提供PDF文件预览、页面导航和缩放功能
+使用 QPdfDocument 渲染页面到 QImage，然后使用自定义控件显示所有页面
+全流程适配高DPI缩放
 """
 
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
@@ -25,144 +26,150 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QSizePolicy, QSpacerItem, QApplication, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QRect, QRectF, QPoint
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont, QRegion, QPainterPath
-from PySide6.QtWidgets import QScroller
+from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QSize
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QFont
+from PySide6.QtPdf import QPdfDocument
 
 # 导入自定义控件
 from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller, D_ScrollBar
 
-# 尝试导入PyMuPDF
-fitz = None
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    warning("[WARNING] PyMuPDF未安装，PDF预览功能将不可用")
-
 
 class PDFPageWidget(QWidget):
     """
-    PDF页面显示控件
-    负责单个PDF页面的渲染和显示
+    单页PDF显示控件
+    类似于 QML 的 PdfPageView，显示单页PDF内容
+    支持高DPI显示
     """
-
+    
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        # 获取DPI缩放因子
+        
+        # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-
-        # 初始化属性
-        self.page_pixmap = None
-        self.page_number = -1
-        self.is_rendered = False
-
-        # 设置固定大小策略
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        # 设置最小大小与视频播放器组件相同 (200, 200)，应用DPI缩放
-        self.setMinimumSize(int(200 * self.dpi_scale), int(200 * self.dpi_scale))
         
-        # 设置样式
-        self.setStyleSheet("background-color: transparent;")
+        # 获取设备像素比
+        self.device_pixel_ratio = self.devicePixelRatioF() if hasattr(self, 'devicePixelRatioF') else 1.0
+        
+        # 获取主题颜色
+        self.base_color = "#F5F5F5"
+        self.normal_color = "#CCCCCC"  # 默认边框颜色
+        if hasattr(app, 'settings_manager'):
+            self.base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#F5F5F5")
+            self.normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#CCCCCC")
+        
+        # 页面数据
+        self.page_pixmap = None
+        self.page_number = 0
+        self.original_size = QSize()  # 原始渲染尺寸（物理像素）
+        self.current_zoom = 1.0  # 当前显示缩放比例（相对于原始渲染尺寸）
+        
+        # 初始化UI
+        self._init_ui()
     
-    def set_pixmap(self, pixmap: QPixmap, logical_size: tuple = None):
-        """
-        设置页面位图
+    def _init_ui(self):
+        """初始化UI"""
+        # 创建主布局，添加边距以显示边框
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(1, 1, 1, 1)  # 为边框留出空间
+        self.layout.setSpacing(0)
+        
+        # 创建内部容器用于显示图片，这个容器有边框
+        self.frame = QFrame(self)
+        self.frame.setFrameShape(QFrame.StyledPanel)
+        self.frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: white;
+                border: 1px solid {self.normal_color};
+                border-radius: 4px;
+            }}
+        """)
+        
+        # 创建frame的内部布局
+        frame_layout = QVBoxLayout(self.frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(0)
+        
+        # 创建图片显示标签
+        self.image_label = QLabel(self.frame)
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("background-color: transparent;")
+        frame_layout.addWidget(self.image_label)
+        
+        # 将frame添加到主布局
+        self.layout.addWidget(self.frame)
+        
+        # 设置主窗口背景色
+        self.setStyleSheet(f"background-color: {self.base_color};")
+    
+    def set_page_pixmap(self, pixmap: QPixmap, page_number: int):
+        """设置页面图片
         
         Args:
-            pixmap: 页面位图
-            logical_size: 逻辑尺寸元组 (width, height)，如果为None则使用pixmap.size()
+            pixmap: 页面图片（已经考虑了devicePixelRatio的高DPI图片）
+            page_number: 页码
         """
         self.page_pixmap = pixmap
-        self.is_rendered = True
-        
+        self.page_number = page_number
         if pixmap:
-            if logical_size:
-                # 使用传入的逻辑尺寸
-                self.setFixedSize(logical_size[0], logical_size[1])
-            else:
-                # 获取设备像素比
-                from PySide6.QtGui import QGuiApplication
-                device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
-                # 设置控件大小为逻辑像素大小（物理像素 / 设备像素比）
-                logical_size = pixmap.size() / device_pixel_ratio
-                self.setFixedSize(logical_size.toSize())
-        self.update()
+            # 保存原始尺寸（逻辑像素）
+            self.original_size = QSize(
+                int(pixmap.width() / pixmap.devicePixelRatio()),
+                int(pixmap.height() / pixmap.devicePixelRatio())
+            )
+            self._update_display()
     
-    def paintEvent(self, event):
-        """
-        绘制事件
-        根据控件大小缩放绘制位图，确保图片始终填充整个容器
-        """
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        
-        # 绘制背景色（使用base_color）
-        base_color = "#F5F5F5"
-        if self.parent() and hasattr(self.parent(), 'base_color'):
-            base_color = self.parent().base_color
-        painter.fillRect(self.rect(), QColor(base_color))
-        
-        # 绘制页面位图
-        if self.page_pixmap and not self.page_pixmap.isNull():
-            # 获取控件当前大小
-            widget_rect = self.rect()
-            # 获取位图大小（考虑设备像素比）
-            pixmap_size = self.page_pixmap.size()
-            
-            # 计算缩放后的目标矩形，保持宽高比并填充整个控件
-            target_rect = self._calculate_scaled_rect(widget_rect, pixmap_size)
-            
-            # 缩放绘制位图
-            painter.drawPixmap(target_rect, self.page_pixmap, self.page_pixmap.rect())
-        else:
-            # 未渲染时显示占位符
-            painter.setPen(QColor("#CCCCCC"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "加载中...")
-        
-        painter.end()
-    
-    def _calculate_scaled_rect(self, widget_rect, pixmap_size):
-        """
-        计算缩放后的目标矩形，使位图填充整个控件并保持宽高比
+    def set_zoom(self, zoom_factor: float):
+        """设置缩放比例
         
         Args:
-            widget_rect: 控件矩形
-            pixmap_size: 位图大小
-            
-        Returns:
-            QRect: 缩放后的目标矩形
+            zoom_factor: 缩放比例（1.0 = 原始尺寸）
         """
-        widget_width = widget_rect.width()
-        widget_height = widget_rect.height()
-        pixmap_width = pixmap_size.width()
-        pixmap_height = pixmap_size.height()
-        
-        # 计算缩放比例，使位图填充整个控件
-        scale_x = widget_width / pixmap_width if pixmap_width > 0 else 1.0
-        scale_y = widget_height / pixmap_height if pixmap_height > 0 else 1.0
-        
-        # 使用统一的缩放比例，保持宽高比
-        scale = min(scale_x, scale_y)
-        
-        # 计算缩放后的尺寸
-        scaled_width = int(pixmap_width * scale)
-        scaled_height = int(pixmap_height * scale)
-        
-        # 居中显示
-        x = (widget_width - scaled_width) // 2
-        y = (widget_height - scaled_height) // 2
-        
-        return QRect(x, y, scaled_width, scaled_height)
+        self.current_zoom = zoom_factor
+        self._update_display()
+    
+    def _update_display(self):
+        """更新显示"""
+        if self.page_pixmap:
+            # 计算显示尺寸（逻辑像素）
+            display_width = int(self.original_size.width() * self.current_zoom)
+            display_height = int(self.original_size.height() * self.current_zoom)
+            
+            # 缩放图片到显示尺寸
+            # 保持devicePixelRatio，确保高DPI显示清晰
+            scaled_pixmap = self.page_pixmap.scaled(
+                int(display_width * self.page_pixmap.devicePixelRatio()),
+                int(display_height * self.page_pixmap.devicePixelRatio()),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            
+            # 设置devicePixelRatio，让Qt正确处理高DPI显示
+            scaled_pixmap.setDevicePixelRatio(self.page_pixmap.devicePixelRatio())
+            
+            self.image_label.setPixmap(scaled_pixmap)
+            
+            # 设置标签的固定大小为逻辑像素尺寸
+            self.image_label.setFixedSize(display_width, display_height)
+    
+    def sizeHint(self):
+        """返回建议大小"""
+        if self.page_pixmap:
+            return QSize(
+                int(self.original_size.width() * self.current_zoom),
+                int(self.original_size.height() * self.current_zoom)
+            )
+        return super().sizeHint()
 
 
 class PDFPreviewer(QWidget):
     """
     PDF预览器主组件
     提供PDF文件的完整预览功能，包括页面导航、缩放控制等
+    使用 QPdfDocument 渲染页面到 QImage，然后使用自定义控件从上到下显示所有页面
+    全流程适配高DPI缩放
     
     信号:
         pdf_render_finished: PDF渲染完成时发出
@@ -179,9 +186,12 @@ class PDFPreviewer(QWidget):
         self.global_font = getattr(app, 'global_font', QFont())
         self.default_font_size = getattr(app, 'default_font_size', 10)
         
+        # 获取设备像素比（在窗口显示后会更准确）
+        self.device_pixel_ratio = self.devicePixelRatioF() if hasattr(self, 'devicePixelRatioF') else 1.0
+        
         # 获取主题颜色
-        self.secondary_color = "#333333"  # 默认secondary颜色
-        self.base_color = "#F5F5F5"  # 默认base颜色
+        self.secondary_color = "#333333"
+        self.base_color = "#F5F5F5"
         if hasattr(app, 'settings_manager'):
             self.secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
             self.base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#F5F5F5")
@@ -199,41 +209,35 @@ class PDFPreviewer(QWidget):
         self.total_pages = 0
         self.current_page = 0
         
-        # 缩放控制
-        self.zoom_min = 40  # 最小缩放百分比
-        self.zoom_max = 400  # 最大缩放百分比
-        self.zoom_default = 100  # 默认缩放百分比
-        self.current_zoom = self.zoom_default
-        
-        # 页面尺寸缓存
-        self.page_sizes = []  # 存储每页的原始尺寸 (width, height)
-        self.page_widgets = []  # 页面控件列表
-        self.page_pixmaps = {}  # 页面位图缓存 {page_num: QPixmap}
-        
-        # 渲染控制
-        self.render_executor = None  # 线程池
-        self.max_cache_pages = 5  # 最大缓存页面数
-        self.is_loading = False
-        
-        # 可见区域检测定时器
-        self.visibility_timer = QTimer(self)
-        self.visibility_timer.setInterval(100)  # 100ms检测一次
-        self.visibility_timer.timeout.connect(self._render_visible_pages)
+        # 页面渲染设置
+        self.page_widgets = []  # 存储所有页面控件
+        self.page_pixmaps = []  # 存储所有页面的原始pixmap
+        self.render_options = None
 
-        # 鼠标中键拖动相关属性
-        self._is_middle_button_dragging = False  # 是否正在中键拖动
-        self._middle_button_drag_global_start_pos = None  # 拖动起始位置（全局坐标）
-        self._middle_button_drag_start_scroll_x = 0  # 拖动起始水平滚动值
-        self._middle_button_drag_start_scroll_y = 0  # 拖动起始垂直滚动值
-        self.setCursor(Qt.ArrowCursor)  # 设置默认光标
+        # 渲染DPI设置
+        # 基础DPI为72（PDF标准），根据设备DPI和设备像素比计算实际渲染DPI
+        self.base_render_dpi = 72
+
+        # 缩放控制
+        self.zoom_min = 50  # 最小50%（相对于适合显示的大小）
+        self.zoom_max = 400  # 最大400%（相对于适合显示的大小）
+        self.zoom_default = 100  # 默认100%（相对于适合显示的大小）
+        self.current_zoom = self.zoom_default  # 当前显示的缩放百分比（相对于适合显示的大小）
+        self.fit_to_width_zoom = 1.0  # 适合页面宽度的实际缩放因子
+        self._user_zoom = None  # 用户手动设置的缩放值（None表示使用自适应缩放）
+
+        # 鼠标中键拖动滚动
+        self._middle_button_pressed = False
+        self._last_mouse_pos = None
+
+        # Ctrl键控制滚动/缩放
+        self._ctrl_pressed = False
 
         # 初始化UI
         self._init_ui()
     
     def _init_ui(self):
-        """
-        初始化用户界面
-        """
+        """初始化用户界面"""
         # 主布局
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(int(5 * self.dpi_scale))
@@ -245,36 +249,33 @@ class PDFPreviewer(QWidget):
 
         # 创建内容预览区
         self._create_content_area()
-        main_layout.addWidget(self.scroll_area, 1)
+        main_layout.addWidget(self.scroll_container, 1)
 
         # 设置字体
         self.setFont(self.global_font)
     
     def _create_control_bar(self):
-        """
-        创建控制栏
-        """
+        """创建控制栏"""
         self.control_bar = QWidget()
-        # 控制栏根据内容自适应宽度，不扩展
         self.control_bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         
         control_layout = QHBoxLayout(self.control_bar)
         control_layout.setSpacing(5)
         control_layout.setContentsMargins(6, 4, 2, 6)
         
-        # 上一页按钮 - 使用arrow_left.svg图标，普通样式
+        # 上一页按钮
         self.prev_button = CustomButton(
             self.arrow_left_icon,
             parent=self.control_bar,
             button_type="normal",
             display_mode="icon",
-            height=20,  # 未缩放的高度，内部会自动应用dpi_scale
+            height=20,
             tooltip_text="上一页"
         )
         self.prev_button.clicked.connect(self._go_to_prev_page)
         control_layout.addWidget(self.prev_button)
         
-        # 页码标签 - 使用全局字体，让Qt6自动处理DPI缩放
+        # 页码标签
         self.page_label = QLabel("0/0")
         self.page_label.setAlignment(Qt.AlignCenter)
         self.page_label.setFont(self.global_font)
@@ -285,13 +286,13 @@ class PDFPreviewer(QWidget):
         """)
         control_layout.addWidget(self.page_label)
         
-        # 下一页按钮 - 使用arrow_right.svg图标，普通样式
+        # 下一页按钮
         self.next_button = CustomButton(
             self.arrow_right_icon,
             parent=self.control_bar,
             button_type="normal",
             display_mode="icon",
-            height=20,  # 未缩放的高度，内部会自动应用dpi_scale
+            height=20,
             tooltip_text="下一页"
         )
         self.next_button.clicked.connect(self._go_to_next_page)
@@ -302,7 +303,7 @@ class PDFPreviewer(QWidget):
             QSpacerItem(5, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
         )
 
-        # 缩放标签 - 使用settings.json中的secondary_color，与文本预览器保持一致
+        # 缩放标签
         self.zoom_label = QLabel("100%")
         self.zoom_label.setStyleSheet(f"color: {self.secondary_color};")
         control_layout.addWidget(self.zoom_label)
@@ -315,76 +316,78 @@ class PDFPreviewer(QWidget):
         )
         self.zoom_slider.setFixedWidth(int(150 * self.dpi_scale))
         self.zoom_slider.setRange(self.zoom_min, self.zoom_max)
-        self.zoom_slider.setValue(self.zoom_default)
+        # 先连接信号，再设置值，但使用 blockSignals 避免触发初始信号
         self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(self.zoom_default)
+        self.zoom_slider.blockSignals(False)
         control_layout.addWidget(self.zoom_slider)
     
     def _create_content_area(self):
-        """
-        创建内容预览区
-        """
+        """创建内容预览区 - 使用滚动区域显示所有页面"""
+        # 创建外层容器，用于添加3px内边距
+        self.scroll_container = QWidget(self)
+        self.scroll_container.setStyleSheet(f"background-color: {self.base_color};")
+        scroll_container_layout = QVBoxLayout(self.scroll_container)
+        scroll_container_layout.setContentsMargins(6, 6, 6, 6)  # 6px内边距
+        scroll_container_layout.setSpacing(0)
+
         # 创建滚动区域
-        self.scroll_area = QScrollArea()
+        self.scroll_area = QScrollArea(self.scroll_container)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll_area.setFrameShape(QFrame.NoFrame)
 
-        # 应用平滑滚动
-        SmoothScroller.apply_to_scroll_area(self.scroll_area)
-
-        # 设置自定义滚动条
-        self.scroll_area.setVerticalScrollBar(D_ScrollBar(orientation=Qt.Vertical))
-        self.scroll_area.setHorizontalScrollBar(D_ScrollBar(orientation=Qt.Horizontal))
-
-        # 应用主题颜色到滚动条
-        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
-        self.scroll_area.horizontalScrollBar().apply_theme_from_settings()
-
-        # 连接滚动事件，实时更新当前页码
-        self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
-
-        # 创建内容容器（无圆角，背景色使用base_color）
-        self.content_widget = QWidget()
-        self.content_widget.setStyleSheet(f"background-color: {self.base_color};")
-        self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setSpacing(int(10 * self.dpi_scale))
-        self.content_layout.setContentsMargins(
-            int(20 * self.dpi_scale),
-            0,  # 顶部边距设为0，避免第一页上方出现空白间隙
-            int(20 * self.dpi_scale),
-            int(20 * self.dpi_scale)
-        )
-        self.content_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-
-        self.scroll_area.setWidget(self.content_widget)
-
-        # 安装事件过滤器以捕获双击事件（重置缩放）和滚轮事件（Ctrl+滚轮缩放）
-        self.content_widget.installEventFilter(self)
-        self.scroll_area.installEventFilter(self)
-        self.scroll_area.viewport().installEventFilter(self)
-
-        # 设置滚动区域圆角样式（参考file_selector.py的实现）
-        # 添加padding为滚动条提供边距，背景色使用base_color
+        # 设置整个滚动区域的背景色（包括视口和滚动条区域）
         self.scroll_area.setStyleSheet(f"""
             QScrollArea {{
-                border: 1px solid {self.base_color};
-                border-radius: 6px;
                 background-color: {self.base_color};
-                padding: 6px;
+                border: none;
             }}
             QScrollArea > QWidget > QWidget {{
                 background-color: {self.base_color};
             }}
         """)
+
+        # 启用鼠标跟踪以接收鼠标移动事件
+        self.scroll_area.viewport().setMouseTracking(True)
+
+        # 应用丝滑滚动
+        SmoothScroller.apply(self.scroll_area, enable_mouse_drag=False)
+
+        # 设置自定义滚动条
+        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
+        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
+        self.scroll_area.setHorizontalScrollBar(D_ScrollBar(self.scroll_area, Qt.Horizontal))
+        self.scroll_area.horizontalScrollBar().apply_theme_from_settings()
+
+        # 为滚动区域的 viewport 安装事件过滤器，用于处理鼠标中键拖动
+        self.scroll_area.viewport().installEventFilter(self)
+
+        # 创建内容容器
+        self.content_container = QWidget()
+        self.content_container.setStyleSheet(f"background-color: {self.base_color};")
+        self.content_layout = QVBoxLayout(self.content_container)
+        self.content_layout.setSpacing(int(10 * self.dpi_scale))
+        self.content_layout.setContentsMargins(
+            int(10 * self.dpi_scale),
+            int(10 * self.dpi_scale),
+            int(10 * self.dpi_scale),
+            int(10 * self.dpi_scale)
+        )
+        self.content_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+
+        # 设置内容容器到滚动区域
+        self.scroll_area.setWidget(self.content_container)
+
+        # 将滚动区域添加到外层容器
+        scroll_container_layout.addWidget(self.scroll_area)
+
+        # 创建 PDF 文档对象
+        self.pdf_document = QPdfDocument(self)
     
     def set_file(self, file_info):
-        """
-        设置要预览的文件（统一预览器接口）
-        
-        Args:
-            file_info: 文件信息字典，包含path键
-        """
+        """设置要预览的文件（统一预览器接口）"""
         if isinstance(file_info, dict):
             file_path = file_info.get("path", "")
         else:
@@ -393,453 +396,304 @@ class PDFPreviewer(QWidget):
         self.load_file_from_path(file_path)
     
     def load_file_from_path(self, file_path: str):
-        """
-        从文件路径加载PDF
-        
-        Args:
-            file_path: PDF文件路径
-        """
+        """从文件路径加载PDF"""
         if not file_path or not os.path.exists(file_path):
             self._show_error("文件不存在")
-            return
-        
-        if not fitz:
-            self._show_error("PyMuPDF未安装，无法预览PDF文件")
             return
         
         # 关闭之前的文档
         self._close_document()
         
         try:
-            # 打开PDF文档
-            self.pdf_document = fitz.open(file_path)
+            # 使用 QtPDF 加载文档
             self.file_path = file_path
-            self.total_pages = len(self.pdf_document)
+            self.pdf_document.load(file_path)
+            
+            # 获取总页数
+            self.total_pages = self.pdf_document.pageCount()
             self.current_page = 0
             
-            # 获取每页的尺寸
-            self.page_sizes = []
-            for page_num in range(self.total_pages):
-                page = self.pdf_document.load_page(page_num)
-                rect = page.rect
-                self.page_sizes.append((rect.width, rect.height))
+            # 清空现有页面
+            self._clear_pages()
             
-            # 创建页面控件
-            self._create_page_widgets()
-
-            # 计算页码标签的最大宽度（基于最大页码文本）
-            self._update_page_label_width()
-
+            # 渲染所有页面
+            self._render_all_pages()
+            
             # 更新UI
             self._update_page_label()
             self._update_button_states()
-
-            # 重置滚动条到顶部
-            self.scroll_area.verticalScrollBar().setValue(0)
-            self.scroll_area.horizontalScrollBar().setValue(0)
-
-            # 启动可见区域检测
-            self.visibility_timer.start()
-
-            # 立即渲染第一页
-            QTimer.singleShot(0, self._render_visible_pages)
             
-        except (fitz.FileDataError, fitz.EmptyFileError) as e:
-            warning(f"[WARNING] PDF文件格式错误: {e}")
-            self._show_error(f"PDF文件格式错误: {str(e)}")
-        except (RuntimeError, ValueError) as e:
-            warning(f"[WARNING] 加载PDF失败: {e}")
-            self._show_error(f"加载PDF失败: {str(e)}")
+            # 延迟计算适合页面宽度的缩放比例
+            QTimer.singleShot(10, self._calculate_fit_to_width_zoom)
+            
+            # 发出渲染完成信号
+            self.pdf_render_finished.emit()
+            
         except Exception as e:
-            error(f"[ERROR] 加载PDF时发生未知错误: {e}")
+            error(f"[ERROR] 加载PDF失败: {e}")
             self._show_error(f"加载PDF失败: {str(e)}")
     
-    def _close_document(self):
-        """
-        关闭当前PDF文档并清理资源
-        """
-        # 停止定时器
-        self.visibility_timer.stop()
+    def _clear_pages(self):
+        """清空所有页面控件"""
+        # 清除布局中的所有控件
+        while self.content_layout.count():
+            item = self.content_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         
-        # 关闭线程池
-        if self.render_executor:
-            self.render_executor.shutdown(wait=False)
-            self.render_executor = None
-        
-        # 清理页面控件
-        self._clear_page_widgets()
-        
-        # 清理缓存
+        self.page_widgets.clear()
         self.page_pixmaps.clear()
+    
+    def _get_device_pixel_ratio(self) -> float:
+        """获取设备像素比"""
+        # 优先使用当前窗口的设备像素比
+        if self.window():
+            return self.window().devicePixelRatioF() if hasattr(self.window(), 'devicePixelRatioF') else 1.0
+        # 否则使用应用程序的设备像素比
+        app = QApplication.instance()
+        if app:
+            return app.devicePixelRatio() if hasattr(app, 'devicePixelRatio') else 1.0
+        return 1.0
+    
+    def _get_render_dpi(self) -> float:
+        """计算渲染DPI
         
-        # 关闭文档
+        根据设备DPI和设备像素比计算实际渲染DPI
+        确保在高DPI显示器上渲染清晰
+        """
+        # 获取设备像素比
+        dpr = self._get_device_pixel_ratio()
+        
+        # 获取屏幕DPI
+        logical_dpi = self.logicalDpiX() if self.logicalDpiX() > 0 else 96
+        physical_dpi = self.physicalDpiX() if self.physicalDpiX() > 0 else 96
+        
+        # 基础渲染DPI：使用逻辑DPI（通常是96）乘以设备像素比
+        # 这样可以确保在高DPI显示器上渲染的图像有足够的分辨率
+        render_dpi = logical_dpi * dpr
+        
+        # 为了获得更好的质量，额外增加一些分辨率（1.5倍超采样）
+        render_dpi = render_dpi * 1.5
+        
+        # 限制最大渲染DPI以避免内存问题（最大400 DPI）
+        render_dpi = min(render_dpi, 400)
+        
+        return render_dpi
+    
+    def _render_all_pages(self):
+        """渲染所有PDF页面"""
+        if self.total_pages == 0:
+            return
+        
+        # 获取渲染DPI
+        render_dpi = self._get_render_dpi()
+        
+        # 获取设备像素比
+        dpr = self._get_device_pixel_ratio()
+        
+        for page_num in range(self.total_pages):
+            # 获取页面尺寸（点，1/72英寸）
+            page_size = self.pdf_document.pagePointSize(page_num)
+            if not page_size:
+                continue
+            
+            # 计算渲染尺寸（物理像素）
+            # PDF使用72 DPI作为基础，需要转换到目标渲染DPI
+            page_width_pt = page_size.width()
+            page_height_pt = page_size.height()
+            
+            # 计算物理像素尺寸
+            render_width_px = int(page_width_pt * render_dpi / 72.0)
+            render_height_px = int(page_height_pt * render_dpi / 72.0)
+            
+            # 渲染页面到 QImage
+            image = self.pdf_document.render(page_num, QSize(render_width_px, render_height_px))
+            
+            if image.isNull():
+                warning(f"[PDFPreviewer] 页面 {page_num + 1} 渲染失败")
+                continue
+            
+            # 设置图像的设备像素比
+            # 这样Qt会正确处理高DPI显示
+            image.setDevicePixelRatio(dpr)
+            
+            # 转换为 QPixmap
+            pixmap = QPixmap.fromImage(image)
+            
+            # 设置pixmap的设备像素比
+            pixmap.setDevicePixelRatio(dpr)
+            
+            self.page_pixmaps.append(pixmap)
+            
+            # 创建页面控件
+            page_widget = PDFPageWidget(self.content_container)
+            page_widget.set_page_pixmap(pixmap, page_num)
+            
+            self.page_widgets.append(page_widget)
+            self.content_layout.addWidget(page_widget)
+    
+    def _calculate_fit_to_width_zoom(self, force=False):
+        """计算适合页面显示的缩放因子，并将其设为100%基准
+        无论用户是否手动设置了缩放比例，基准100%都会随视口大小实时变化
+
+        Args:
+            force: 是否强制重新计算
+        """
+        if self.total_pages == 0 or len(self.page_widgets) == 0:
+            return
+
+        # 记录用户之前设置的缩放比例（如果有）
+        previous_user_zoom = self._user_zoom
+        if previous_user_zoom is None:
+            previous_user_zoom = 100  # 默认100%
+
+        try:
+            # 获取第一页的尺寸（逻辑像素）
+            first_page_widget = self.page_widgets[0]
+            original_size = first_page_widget.original_size
+            
+            if original_size.isEmpty():
+                return
+
+            # 获取视口尺寸（逻辑像素）
+            viewport_width = self.scroll_area.viewport().width()
+            viewport_height = self.scroll_area.viewport().height()
+
+            # 如果视口尺寸无效，延迟再次尝试
+            if viewport_width < 50 or viewport_height < 50:
+                QTimer.singleShot(50, lambda: self._calculate_fit_to_width_zoom(force))
+                return
+
+            # 考虑边距
+            margins = int(40 * self.dpi_scale)  # 左右边距总和
+            available_width = max(viewport_width - margins, 100)
+            available_height = max(viewport_height - margins, 100)
+
+            page_width = original_size.width()
+            page_height = original_size.height()
+
+            # 计算适合宽度和适合高度的缩放比例
+            fit_width_zoom = available_width / page_width
+            fit_height_zoom = available_height / page_height
+
+            # 选择较小的缩放比例，确保页面完整显示在区域内
+            if page_width > page_height:
+                # 横向页面，优先适合高度
+                fit_zoom_factor = min(fit_width_zoom, fit_height_zoom)
+            else:
+                # 纵向页面，优先适合宽度
+                fit_zoom_factor = fit_width_zoom
+
+            # 保存适合显示的缩放因子
+            self.fit_to_width_zoom = fit_zoom_factor
+
+            # 计算实际缩放因子 = 基准缩放因子 * (用户设置百分比 / 100)
+            actual_zoom_factor = self.fit_to_width_zoom * (previous_user_zoom / 100.0)
+
+            # 应用缩放到所有页面
+            self._apply_zoom_to_all_pages(actual_zoom_factor)
+
+            # 更新滑块和标签（不触发valueChanged信号）
+            self.zoom_slider.blockSignals(True)
+            self.zoom_slider.setValue(previous_user_zoom)
+            self.zoom_slider.blockSignals(False)
+            self.zoom_label.setText(f"{previous_user_zoom}%")
+
+            # 保持用户设置的缩放值（用于后续resize时保持比例）
+            self._user_zoom = previous_user_zoom if previous_user_zoom != 100 else None
+            self.current_zoom = previous_user_zoom
+
+        except Exception as e:
+            warning(f"[PDFPreviewer] 计算适合显示缩放失败: {e}")
+            import traceback
+            traceback.print_exc()
+            # 使用默认100%（缩放因子1.0）
+            self.fit_to_width_zoom = 1.0
+            self.current_zoom = 100
+            self._apply_zoom_to_all_pages(1.0)
+    
+    def _apply_zoom_to_all_pages(self, zoom_factor: float):
+        """应用缩放到所有页面"""
+        for page_widget in self.page_widgets:
+            page_widget.set_zoom(zoom_factor)
+    
+    def _close_document(self):
+        """关闭当前PDF文档并清理资源"""
         if self.pdf_document:
             self.pdf_document.close()
-            self.pdf_document = None
         
+        self._clear_pages()
         self.file_path = None
         self.total_pages = 0
         self.current_page = 0
-        self.page_sizes = []
-    
-    def _clear_page_widgets(self):
-        """
-        清除所有页面控件
-        """
-        # 移除所有页面控件
-        while self.page_widgets:
-            widget = self.page_widgets.pop()
-            self.content_layout.removeWidget(widget)
-            widget.deleteLater()
-    
-    def _create_page_widgets(self):
-        """
-        创建页面控件
-        """
-        self._clear_page_widgets()
-        
-        for page_num in range(self.total_pages):
-            page_widget = PDFPageWidget()
-            page_widget.page_number = page_num
-            
-            # 设置初始大小
-            if page_num < len(self.page_sizes):
-                orig_width, orig_height = self.page_sizes[page_num]
-                width, height = self._calculate_page_size(orig_width, orig_height)
-                page_widget.setFixedSize(width, height)
-            
-            self.page_widgets.append(page_widget)
-            self.content_layout.addWidget(page_widget, 0, Qt.AlignHCenter)
-    
-    def _calculate_page_size(self, orig_width: float, orig_height: float) -> tuple:
-        """
-        计算页面显示尺寸（逻辑像素）
-        100%缩放时，页面宽度刚好适应显示区域宽度（不触发横向滚动）
-        
-        Args:
-            orig_width: 原始宽度（PDF页面原始尺寸）
-            orig_height: 原始高度（PDF页面原始尺寸）
-            
-        Returns:
-            (logical_width, logical_height) 逻辑显示尺寸
-        """
-        # 获取设备像素比
-        from PySide6.QtGui import QGuiApplication
-        device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
-        
-        # 获取滚动区域可视宽度（减去滚动条宽度和边距）
-        # 使用物理像素计算，然后转换为逻辑像素
-        scrollbar_width = int(20 * device_pixel_ratio)  # 滚动条宽度预留（物理像素）
-        margin_width = int(40 * device_pixel_ratio)  # 左右边距（物理像素）
-        viewport_physical_width = self.scroll_area.viewport().width() * device_pixel_ratio
-        available_physical_width = viewport_physical_width - scrollbar_width - margin_width
-        
-        # 确保可用宽度为正数
-        available_physical_width = max(available_physical_width, int(100 * device_pixel_ratio))
-        
-        # 计算100%缩放时的基准比例（物理像素 / 原始尺寸）
-        base_scale_physical = available_physical_width / orig_width if orig_width > 0 else 1.0
-        
-        # 应用当前缩放比例，得到物理像素尺寸
-        physical_width = orig_width * base_scale_physical * (self.current_zoom / 100.0)
-        physical_height = orig_height * base_scale_physical * (self.current_zoom / 100.0)
-        
-        # 转换为逻辑像素（控件使用的大小）
-        logical_width = int(physical_width / device_pixel_ratio)
-        logical_height = int(physical_height / device_pixel_ratio)
-        
-        return (logical_width, logical_height)
-    
-    def _render_visible_pages(self):
-        """
-        渲染当前可见区域的页面
-        """
-        if not self.pdf_document or not self.page_widgets:
-            return
-
-        # 获取滚动区域的可视区域
-        viewport = self.scroll_area.viewport()
-        viewport_rect = viewport.rect()
-
-        # 计算可见的页面范围
-        first_visible = -1
-        last_visible = -1
-
-        for i, widget in enumerate(self.page_widgets):
-            # 获取控件在视口中的位置（统一使用viewport坐标系）
-            widget_pos = widget.mapTo(viewport, QPoint(0, 0))
-            widget_rect = QRect(widget_pos, widget.size())
-
-            # 检查是否与可视区域相交
-            if widget_rect.intersects(viewport_rect):
-                if first_visible == -1:
-                    first_visible = i
-                last_visible = i
-
-        if first_visible == -1:
-            return
-
-        # 渲染可见页面及其相邻页面（预加载）
-        start_page = max(0, first_visible - 1)
-        end_page = min(last_visible + 2, self.total_pages)
-        for page_num in range(start_page, end_page):
-            if page_num not in self.page_pixmaps:
-                self._render_page(page_num)
-
-        # 清理过期缓存
-        self._cleanup_cache()
-    
-    def _render_page(self, page_num: int):
-        """
-        渲染指定页面，使用高DPI优化处理
-        
-        Args:
-            page_num: 页码（从0开始）
-        """
-        if not self.pdf_document or page_num < 0 or page_num >= self.total_pages:
-            return
-        
-        try:
-            # 加载页面
-            page = self.pdf_document.load_page(page_num)
-            
-            # 获取设备像素比
-            from PySide6.QtGui import QGuiApplication
-            device_pixel_ratio = QGuiApplication.primaryScreen().devicePixelRatio()
-            
-            # 计算逻辑尺寸（控件大小）
-            orig_width, orig_height = self.page_sizes[page_num]
-            logical_width, logical_height = self._calculate_page_size(orig_width, orig_height)
-            
-            # 计算物理像素尺寸（位图实际大小）
-            physical_width = int(logical_width * device_pixel_ratio)
-            physical_height = int(logical_height * device_pixel_ratio)
-            
-            # 计算渲染矩阵（物理像素 / 原始尺寸）
-            render_scale_x = physical_width / orig_width if orig_width > 0 else 1.0
-            render_scale_y = physical_height / orig_height if orig_height > 0 else 1.0
-            mat = fitz.Matrix(render_scale_x, render_scale_y)
-            
-            # 渲染页面为位图
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            
-            # 转换为QImage
-            img_data = pix.samples
-            img = QImage(
-                img_data,
-                pix.width,
-                pix.height,
-                pix.stride,
-                QImage.Format_RGB888
-            )
-            
-            # 转换为QPixmap并设置设备像素比
-            pixmap = QPixmap.fromImage(img)
-            pixmap.setDevicePixelRatio(device_pixel_ratio)
-            
-            # 缓存并显示（传入logical_width/height作为逻辑尺寸，确保容器大小和位图一致）
-            self.page_pixmaps[page_num] = pixmap
-            if page_num < len(self.page_widgets):
-                self.page_widgets[page_num].set_pixmap(pixmap, (logical_width, logical_height))
-            
-            # 如果是第一页渲染完成，发出信号
-            if page_num == 0 and len(self.page_pixmaps) == 1:
-                self.pdf_render_finished.emit()
-                
-        except (fitz.RuntimeError, fitz.ValueError) as e:
-            warning(f"[WARNING] 渲染页面 {page_num} 失败 (PDF错误): {e}")
-        except (RuntimeError, ValueError) as e:
-            warning(f"[WARNING] 渲染页面 {page_num} 失败: {e}")
-        except Exception as e:
-            error(f"[ERROR] 渲染页面 {page_num} 时发生未知错误: {e}")
-    
-    def _cleanup_cache(self):
-        """
-        清理过期的页面缓存
-        """
-        if len(self.page_pixmaps) <= self.max_cache_pages:
-            return
-
-        # 获取当前可见的页面
-        viewport = self.scroll_area.viewport()
-        viewport_rect = viewport.rect()
-        visible_pages = set()
-
-        for i, widget in enumerate(self.page_widgets):
-            # 统一使用viewport坐标系
-            widget_pos = widget.mapTo(viewport, QPoint(0, 0))
-            widget_rect = QRect(widget_pos, widget.size())
-            if widget_rect.intersects(viewport_rect):
-                visible_pages.add(i)
-
-        # 保留可见页面及其相邻页面
-        pages_to_keep = set()
-        for page in visible_pages:
-            pages_to_keep.add(page)
-            pages_to_keep.add(page - 1)
-            pages_to_keep.add(page + 1)
-
-        # 清理不在保留列表中的缓存
-        pages_to_remove = []
-        for page_num in self.page_pixmaps:
-            if page_num not in pages_to_keep:
-                pages_to_remove.append(page_num)
-
-        for page_num in pages_to_remove:
-            del self.page_pixmaps[page_num]
     
     def _go_to_prev_page(self):
-        """
-        跳转到上一页
-        """
+        """跳转到上一页"""
         if self.current_page > 0:
             self._go_to_page(self.current_page - 1)
     
     def _go_to_next_page(self):
-        """
-        跳转到下一页
-        """
+        """跳转到下一页"""
         if self.current_page < self.total_pages - 1:
             self._go_to_page(self.current_page + 1)
     
     def _go_to_page(self, page_num: int):
-        """
-        跳转到指定页面
-        
-        Args:
-            page_num: 目标页码（从0开始）
-        """
+        """跳转到指定页面"""
         if page_num < 0 or page_num >= self.total_pages:
             return
-        
+
         self.current_page = page_num
-        
-        # 滚动到目标页面
+
+        # 滚动到指定页面顶部
         if page_num < len(self.page_widgets):
-            widget = self.page_widgets[page_num]
-            self.scroll_area.ensureWidgetVisible(widget, 0, int(20 * self.dpi_scale))
-        
+            page_widget = self.page_widgets[page_num]
+            # 计算页面在内容容器中的位置
+            # 使用 mapTo 获取相对于 content_container 的位置
+            widget_pos = page_widget.mapTo(self.content_container, QPoint(0, 0))
+            # 获取垂直滚动条并设置值，使页面顶部对齐视口顶部
+            # 考虑内容容器的上边距
+            target_y = widget_pos.y()
+            v_scrollbar = self.scroll_area.verticalScrollBar()
+            v_scrollbar.setValue(target_y)
+
         # 更新UI
         self._update_page_label()
         self._update_button_states()
-        
-        # 渲染新页面
-        self._render_visible_pages()
     
     def _on_zoom_changed(self, value: int):
-        """
-        缩放值变化处理
+        """缩放值变化处理
         
-        Args:
-            value: 新的缩放值
+        value: 用户设置的缩放百分比（相对于适合显示的大小，100% = 适合显示）
         """
         self.current_zoom = value
+        self._user_zoom = value  # 记录用户手动设置的缩放值
         self.zoom_label.setText(f"{value}%")
         
-        # 重新计算所有页面大小
-        self._update_page_sizes()
+        # 计算实际缩放因子 = 适合显示的缩放因子 * (用户设置百分比 / 100)
+        actual_zoom_factor = self.fit_to_width_zoom * (value / 100.0)
         
-        # 清除缓存，强制重新渲染
-        self.page_pixmaps.clear()
-        
-        # 重新渲染可见页面
-        self._render_visible_pages()
+        # 应用缩放到所有页面
+        self._apply_zoom_to_all_pages(actual_zoom_factor)
     
-    def _on_scroll_changed(self):
-        """
-        滚动位置变化处理，检测当前可见页面并更新页码标签
-        """
-        if not self.pdf_document or not self.page_widgets:
-            return
-
-        # 获取当前可见的页面（在视口中心位置的页面）
-        viewport = self.scroll_area.viewport()
-        viewport_rect = viewport.rect()
-        viewport_center_y = viewport_rect.height() / 2
-
-        # 找到在视口中心位置的页面
-        current_visible_page = 0
-        min_distance = float('inf')
-
-        for i, widget in enumerate(self.page_widgets):
-            # 获取控件在视口中的位置（统一坐标系）
-            widget_pos = widget.mapTo(viewport, QPoint(0, 0))
-            widget_rect = QRect(widget_pos, widget.size())
-
-            # 计算页面中心到视口中心的距离
-            widget_center_y = widget_rect.top() + widget_rect.height() / 2
-            distance = abs(widget_center_y - viewport_center_y)
-
-            # 如果页面与视口相交，且距离中心最近
-            if widget_rect.intersects(viewport_rect) and distance < min_distance:
-                min_distance = distance
-                current_visible_page = i
-
-        # 如果当前页码发生变化，更新UI
-        if current_visible_page != self.current_page:
-            self.current_page = current_visible_page
-            self._update_page_label()
-            self._update_button_states()
-    
-    def _update_page_sizes(self):
-        """
-        更新所有页面控件的大小
-        """
-        for i, widget in enumerate(self.page_widgets):
-            if i < len(self.page_sizes):
-                orig_width, orig_height = self.page_sizes[i]
-                width, height = self._calculate_page_size(orig_width, orig_height)
-                widget.setFixedSize(width, height)
-
-    def _update_page_label_width(self):
-        """
-        根据最大页码文本长度预计算页码标签的宽度，避免数字变化时布局抖动
-        """
-        if self.total_pages <= 0:
-            return
-
-        # 构建最大长度的页码文本（例如：999/999）
-        max_page_num_str = str(self.total_pages)
-        max_text = f"{max_page_num_str}/{max_page_num_str}"
-
-        # 使用QFontMetrics计算文本宽度
-        from PySide6.QtGui import QFontMetrics
-        font = self.page_label.font()
-        font_metrics = QFontMetrics(font)
-        text_width = font_metrics.horizontalAdvance(max_text)
-
-        # 添加一些边距（左右各10像素），不再乘以dpi_scale因为font_metrics已经考虑了DPI
-        min_width = int(text_width + 20)
-        self.page_label.setMinimumWidth(min_width)
-
     def _update_page_label(self):
-        """
-        更新页码标签
-        """
+        """更新页码标签"""
         if self.total_pages > 0:
             self.page_label.setText(f"{self.current_page + 1}/{self.total_pages}")
         else:
             self.page_label.setText("0/0")
     
     def _update_button_states(self):
-        """
-        更新按钮状态
-        """
+        """更新按钮状态"""
         self.prev_button.setEnabled(self.current_page > 0)
         self.next_button.setEnabled(self.current_page < self.total_pages - 1)
     
     def _show_error(self, message: str):
-        """
-        显示错误信息
-        
-        Args:
-            message: 错误消息
-        """
-        self._clear_page_widgets()
+        """显示错误信息"""
+        # 清除现有页面
+        self._clear_pages()
         
         error_label = QLabel(message)
         error_label.setAlignment(Qt.AlignCenter)
-        # 使用全局字体，让Qt6自动处理DPI缩放
         error_font = QFont(self.global_font)
         error_font.setPointSize(int(self.global_font.pointSize() * 1.2))
         error_label.setFont(error_font)
@@ -848,17 +702,18 @@ class PDFPreviewer(QWidget):
                 color: #FF4444;
             }
         """)
+        
         self.content_layout.addWidget(error_label)
         
         # 发出渲染完成信号（虽然出错了，但需要通知统一预览器关闭进度条）
         self.pdf_render_finished.emit()
     
     def wheelEvent(self, event):
-        """
-        鼠标滚轮事件处理
-        支持Ctrl+滚轮缩放，普通滚轮翻页
-        """
-        if event.modifiers() == Qt.ControlModifier:
+        """鼠标滚轮事件处理 - 支持Ctrl+滚轮缩放，Ctrl按下时禁用滚动"""
+        # 检查Ctrl键是否按下（使用事件修饰符或追踪的状态）
+        ctrl_pressed = (event.modifiers() == Qt.ControlModifier) or self._ctrl_pressed
+
+        if ctrl_pressed:
             # Ctrl+滚轮缩放
             delta = event.angleDelta().y()
             if delta > 0:
@@ -872,140 +727,113 @@ class PDFPreviewer(QWidget):
             super().wheelEvent(event)
     
     def resizeEvent(self, event):
-        """
-        窗口大小变化事件
-        """
+        """窗口大小变化事件处理 - 重新计算适合宽度的缩放"""
         super().resizeEvent(event)
-        
-        # 延迟更新页面大小，避免频繁重绘
-        QTimer.singleShot(100, self._delayed_resize)
-    
-    def _delayed_resize(self):
-        """
-        延迟处理大小变化
-        """
-        if self.pdf_document:
-            self._update_page_sizes()
-            self.page_pixmaps.clear()
-            self._render_visible_pages()
+
+        # 如果已加载PDF，始终重新计算基准缩放（不受用户缩放设置影响）
+        if self.pdf_document and self.total_pages > 0:
+            # 取消之前的延迟调用（如果有）
+            if hasattr(self, '_resize_timer'):
+                self._resize_timer.stop()
+            else:
+                self._resize_timer = QTimer(self)
+                self._resize_timer.setSingleShot(True)
+                self._resize_timer.timeout.connect(lambda: self._calculate_fit_to_width_zoom(force=True))
+
+            # 使用延迟，等待布局完成
+            self._resize_timer.start(100)
     
     def eventFilter(self, obj, event):
-        """
-        事件过滤器，处理预览区域的鼠标事件
-        - 双击左键：重置缩放到100%
-        - Ctrl+滚轮：缩放控制（阻止默认滚动行为）
-        - 鼠标中键按下：开始拖动模式
-        - 鼠标中键释放：结束拖动模式
-        - 鼠标移动：在拖动模式下滚动内容
+        """事件过滤器 - 处理鼠标中键拖动滚动、双击重置缩放、Ctrl键状态和滚轮事件"""
+        if obj == self.scroll_area.viewport():
+            # 处理滚轮事件（在SmoothScroller之前拦截）
+            if event.type() == event.Type.Wheel:
+                # 检查Ctrl键是否按下
+                ctrl_pressed = (event.modifiers() == Qt.ControlModifier) or self._ctrl_pressed
 
-        Args:
-            obj: 事件源对象
-            event: 事件对象
-
-        Returns:
-            bool: 是否已处理事件
-        """
-        # 处理 content_widget 的双击事件
-        if obj == self.content_widget:
-            if event.type() == event.MouseButtonDblClick:
-                if event.button() == Qt.LeftButton:
-                    self.zoom_slider.setValue(self.zoom_default)
-                    return True
-
-        # 处理 scroll_area、viewport 和 content_widget 的滚轮事件
-        if obj in (self.scroll_area, self.scroll_area.viewport(), self.content_widget):
-            if event.type() == event.Wheel:
-                # 当按下Ctrl时，阻止默认滚动行为，只进行缩放
-                if event.modifiers() == Qt.ControlModifier:
+                if ctrl_pressed:
+                    # Ctrl+滚轮缩放，阻止滚动
                     delta = event.angleDelta().y()
                     if delta > 0:
                         new_zoom = min(self.current_zoom + 10, self.zoom_max)
                     else:
                         new_zoom = max(self.current_zoom - 10, self.zoom_min)
                     self.zoom_slider.setValue(new_zoom)
-                    return True
+                    event.accept()
+                    return True  # 阻止事件继续传播
+                # 如果没有按Ctrl，让事件继续传播给SmoothScroller处理滚动
 
-        # 处理鼠标中键按下事件 - 开始拖动
-        if obj in (self.scroll_area, self.scroll_area.viewport(), self.content_widget):
-            if event.type() == event.MouseButtonPress:
+            elif event.type() == event.Type.MouseButtonPress:
                 if event.button() == Qt.MiddleButton:
-                    # 使用全局坐标避免坐标系转换问题
-                    self._start_middle_button_drag(event.globalPos())
+                    # 中键按下，开始拖动
+                    self._middle_button_pressed = True
+                    self._last_mouse_pos = event.pos()
+                    # 改变光标为手型，提示用户可以拖动
+                    self.scroll_area.viewport().setCursor(Qt.ClosedHandCursor)
                     return True
 
-        # 处理鼠标移动事件 - 执行拖动
-        if obj in (self.scroll_area, self.scroll_area.viewport(), self.content_widget):
-            if event.type() == event.MouseMove:
-                if self._is_middle_button_dragging:
-                    # 使用全局坐标避免坐标系转换问题
-                    self._do_middle_button_drag(event.globalPos())
+            elif event.type() == event.Type.MouseMove:
+                if self._middle_button_pressed and self._last_mouse_pos:
+                    # 计算鼠标移动距离
+                    delta = event.pos() - self._last_mouse_pos
+                    self._last_mouse_pos = event.pos()
+
+                    # 获取当前滚动条位置
+                    h_scrollbar = self.scroll_area.horizontalScrollBar()
+                    v_scrollbar = self.scroll_area.verticalScrollBar()
+
+                    # 反向滚动（拖动方向与滚动方向相反）
+                    h_scrollbar.setValue(h_scrollbar.value() - delta.x())
+                    v_scrollbar.setValue(v_scrollbar.value() - delta.y())
+
                     return True
 
-        # 处理鼠标中键释放事件 - 结束拖动
-        if obj in (self.scroll_area, self.scroll_area.viewport(), self.content_widget):
-            if event.type() == event.MouseButtonRelease:
-                if event.button() == Qt.MiddleButton:
-                    self._end_middle_button_drag()
+            elif event.type() == event.Type.MouseButtonRelease:
+                if event.button() == Qt.MiddleButton and self._middle_button_pressed:
+                    # 中键释放，结束拖动
+                    self._middle_button_pressed = False
+                    self._last_mouse_pos = None
+                    # 恢复默认光标
+                    self.scroll_area.viewport().unsetCursor()
+                    return True
+
+            elif event.type() == event.Type.MouseButtonDblClick:
+                if event.button() == Qt.LeftButton:
+                    # 左键双击，重置缩放到100%
+                    self._reset_zoom_to_100()
                     return True
 
         return super().eventFilter(obj, event)
 
-    def _start_middle_button_drag(self, global_pos):
-        """
-        开始鼠标中键拖动
+    def keyPressEvent(self, event):
+        """键盘按下事件 - 检测Ctrl键"""
+        if event.key() == Qt.Key_Control:
+            self._ctrl_pressed = True
+        super().keyPressEvent(event)
 
-        Args:
-            global_pos: 鼠标按下位置（全局坐标）
-        """
-        self._is_middle_button_dragging = True
-        self._middle_button_drag_global_start_pos = global_pos
-        # 记录当前滚动位置
-        self._middle_button_drag_start_scroll_x = self.scroll_area.horizontalScrollBar().value()
-        self._middle_button_drag_start_scroll_y = self.scroll_area.verticalScrollBar().value()
-        # 更改光标为手型（表示可以拖动）
-        self.scroll_area.viewport().setCursor(Qt.ClosedHandCursor)
-        # 禁用平滑滚动（QScroller）以避免动画冲突
-        viewport = self.scroll_area.viewport()
-        QScroller.ungrabGesture(viewport)
+    def keyReleaseEvent(self, event):
+        """键盘释放事件 - 检测Ctrl键释放"""
+        if event.key() == Qt.Key_Control:
+            self._ctrl_pressed = False
+        super().keyReleaseEvent(event)
 
-    def _do_middle_button_drag(self, global_pos):
-        """
-        执行鼠标中键拖动滚动
-        使用全局坐标计算偏移，避免坐标系转换导致的闪烁问题
+    def _reset_zoom_to_100(self):
+        """重置缩放到100%"""
+        # 清除用户设置的缩放值，使用默认100%
+        self._user_zoom = None
+        self.current_zoom = 100
 
-        Args:
-            global_pos: 当前鼠标位置（全局坐标）
-        """
-        if not self._is_middle_button_dragging or self._middle_button_drag_global_start_pos is None:
-            return
+        # 更新滑块和标签
+        self.zoom_slider.blockSignals(True)
+        self.zoom_slider.setValue(100)
+        self.zoom_slider.blockSignals(False)
+        self.zoom_label.setText("100%")
 
-        # 计算鼠标移动距离（相对于初始位置，使用全局坐标）
-        delta_x = global_pos.x() - self._middle_button_drag_global_start_pos.x()
-        delta_y = global_pos.y() - self._middle_button_drag_global_start_pos.y()
-
-        # 反向滚动（拖动方向与滚动方向相反）
-        new_scroll_x = self._middle_button_drag_start_scroll_x - delta_x
-        new_scroll_y = self._middle_button_drag_start_scroll_y - delta_y
-
-        # 应用滚动
-        self.scroll_area.horizontalScrollBar().setValue(new_scroll_x)
-        self.scroll_area.verticalScrollBar().setValue(new_scroll_y)
-
-    def _end_middle_button_drag(self):
-        """
-        结束鼠标中键拖动
-        """
-        self._is_middle_button_dragging = False
-        self._middle_button_drag_global_start_pos = None
-        # 恢复默认光标
-        self.scroll_area.viewport().setCursor(Qt.ArrowCursor)
-        # 重新启用平滑滚动（QScroller）
-        viewport = self.scroll_area.viewport()
-        QScroller.grabGesture(viewport, QScroller.TouchGesture)
+        # 重新计算适合宽度的缩放并应用
+        if self.pdf_document and self.total_pages > 0:
+            self._calculate_fit_to_width_zoom(force=True)
 
     def closeEvent(self, event):
-        """
-        关闭事件处理
-        """
+        """关闭事件处理"""
         self._close_document()
         super().closeEvent(event)

@@ -66,12 +66,13 @@ class ThumbnailCleaner:
                         # 获取文件的创建时间（或修改时间，如果创建时间不可用）
                         ctime = os.path.getctime(file_path)
                         thumbnail_files.append((file_path, ctime))
-                    except Exception:
+                    except (OSError, IOError) as e:
                         # 忽略无法访问的文件
+                        debug(f"获取文件时间失败 {file_path}: {e}")
                         continue
-        except Exception:
+        except (OSError, IOError) as e:
             # 忽略目录访问错误
-            pass
+            debug(f"访问缩略图目录失败 {self.thumbnails_dir}: {e}")
         
         return thumbnail_files
     
@@ -86,9 +87,9 @@ class ThumbnailCleaner:
             if os.path.exists(file_path):
                 os.remove(file_path)
                 return True
-        except Exception:
+        except (OSError, IOError) as e:
             # 忽略删除错误
-            pass
+            debug(f"删除文件失败 {file_path}: {e}")
         return False
     
     def clean_thumbnails(self, cleanup_period_days=None):

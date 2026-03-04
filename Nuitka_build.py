@@ -172,8 +172,8 @@ def check_msvc() -> bool:
             if result.stdout.strip():
                 print_success(f"MSVC编译器已找到: {result.stdout.strip()}")
                 msvc_found = True
-        except:
-            pass
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            print(f"调试: 从PATH查找MSVC编译器失败: {e}")
     
     if not msvc_found:
         print_warning("未找到MSVC编译器，但Nuitka可能会自动下载或使用其他编译器")
@@ -566,8 +566,8 @@ def analyze_output_size():
                 size = f.stat().st_size
                 rel_path = f.relative_to(output_dir)
                 files.append((str(rel_path), size))
-            except:
-                pass
+            except (OSError, IOError) as e:
+                print(f"警告: 获取文件信息失败 {f}: {e}")
     
     # 按大小降序排序
     files.sort(key=lambda x: x[1], reverse=True)
@@ -662,9 +662,9 @@ def check_upx() -> bool:
         if result.stdout.strip():
             print_success(f"UPX已找到: {result.stdout.strip()}")
             return True
-    except:
-        pass
-    
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+        print(f"调试: 从PATH查找UPX失败: {e}")
+
     print_warning("未找到UPX，跳过压缩步骤")
     print_info(r"如需使用UPX压缩，请下载并安装UPX到 C:\upx\ 或添加到PATH")
     return False

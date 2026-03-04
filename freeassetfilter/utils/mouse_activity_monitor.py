@@ -169,8 +169,12 @@ class MouseActivityMonitor(QObject):
                         if self._last_mouse_pos is None or self._last_mouse_pos != current_pos:
                             self._last_mouse_pos = current_pos
                             QTimer.singleShot(0, self._on_mouse_moved)
-                except Exception as e:
-                    debug(f"[MouseActivityMonitor] 鼠标钩子回调处理异常: {e}")
+                except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+                    debug(f"[MouseActivityMonitor] 鼠标钩子回调处理异常 - 文件操作错误: {e}")
+                except (ValueError, TypeError) as e:
+                    debug(f"[MouseActivityMonitor] 鼠标钩子回调处理异常 - 数据转换错误: {e}")
+                except RuntimeError as e:
+                    debug(f"[MouseActivityMonitor] 鼠标钩子回调处理异常 - Qt运行时错误: {e}")
 
                 return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
@@ -188,8 +192,11 @@ class MouseActivityMonitor(QObject):
 
             return True
 
-        except (OSError, ctypes.WinError) as e:
-            error(f"[MouseActivityMonitor] 启动监控失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"[MouseActivityMonitor] 启动监控失败 - 文件操作错误: {e}")
+            return False
+        except (ValueError, TypeError) as e:
+            error(f"[MouseActivityMonitor] 启动监控失败 - 数据转换错误: {e}")
             return False
 
     def stop(self):
@@ -204,8 +211,10 @@ class MouseActivityMonitor(QObject):
         if self._mouse_hook:
             try:
                 ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
-            except OSError as e:
-                error(f"[MouseActivityMonitor] 卸载鼠标钩子失败: {e}")
+            except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+                error(f"[MouseActivityMonitor] 卸载鼠标钩子失败 - 文件操作错误: {e}")
+            except (ValueError, TypeError) as e:
+                error(f"[MouseActivityMonitor] 卸载鼠标钩子失败 - 数据转换错误: {e}")
 
         self._mouse_hook = None
         self._mouse_proc_func = None

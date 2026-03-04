@@ -1201,6 +1201,3 @@ class CustomButton(QPushButton):
         else:
             # 文字模式，调用父类绘制文字
             super().paintEvent(event)
-
-
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar

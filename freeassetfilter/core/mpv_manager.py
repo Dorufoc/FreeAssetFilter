@@ -201,7 +201,7 @@ class MPVManager(QObject):
     volumeChanged = Signal(int)  # 音量变化信号
     mutedChanged = Signal(bool)  # 静音状态变化信号
     speedChanged = Signal(float)  # 播放速度变化信号
-    fileLoaded = Signal(str, bool)  # 文件加载完成信号（路径，是否为音频）
+    fileLoaded = Signal(str)  # 文件加载完成信号（路径）
     fileEnded = Signal(int)  # 文件播放结束信号（结束原因）
     errorOccurred = Signal(int, str)  # 错误发生信号（错误码，错误信息）
     lutLoaded = Signal(str)  # LUT加载完成信号（LUT路径）
@@ -299,8 +299,8 @@ class MPVManager(QObject):
         while not self._operation_queue.empty():
             try:
                 self._operation_queue.get_nowait()
-            except Exception as e:
-                self._logger.debug(f"清空操作队列时出错: {e}")
+            except Empty:
+                debug("清空操作队列: 队列为空")
                 break
         # 清空组件注册表
         self._registered_components.clear()
@@ -342,8 +342,8 @@ class MPVManager(QObject):
             except Empty:
                 # 队列为空，继续循环
                 continue
-            except Exception as e:
-                self._logger.error(f"处理操作时出错: {e}")
+            except RuntimeError as e:
+                error(f"处理操作时运行时错误: {e}")
                 traceback.print_exc()
                 # 设置Future异常，避免调用方永久阻塞
                 if operation and operation.future and not operation.future.done():
@@ -441,11 +441,8 @@ class MPVManager(QObject):
                 else:
                     raise ValueError(f"未知操作类型: {operation_type}")
 
-        except Exception as e:
-            self._logger.error(
-                f"执行操作 {operation_type.value} 失败: {e}",
-                component_id=operation.component_id
-            )
+        except RuntimeError as e:
+            error(f"执行操作 {operation_type.value} 运行时错误: {e}")
             traceback.print_exc()
 
             # 设置错误状态
@@ -577,8 +574,8 @@ class MPVManager(QObject):
         # 关闭MPV核心
         try:
             self._mpv_core.close()
-        except Exception as e:
-            self._logger.error(f"关闭MPV核心时出错: {e}")
+        except RuntimeError as e:
+            error(f"关闭MPV核心时运行时错误: {e}")
 
         self._mpv_core = None
 
@@ -840,7 +837,7 @@ class MPVManager(QObject):
                 warning(f"[LUT] 所有方式都失败")
                 return False
 
-        except Exception as e:
+        except (OSError, ValueError, TypeError) as e:
             error(f"加载LUT失败: {e}")
             import traceback
             traceback.print_exc()
@@ -878,8 +875,8 @@ class MPVManager(QObject):
             else:
                 return False
 
-        except Exception as e:
-            error(f"卸载LUT失败: {e}")
+        except RuntimeError as e:
+            error(f"卸载LUT运行时错误: {e}")
             return False
 
     # ==================== 信号处理回调 ====================
@@ -931,13 +928,13 @@ class MPVManager(QObject):
             self._current_state.last_update = time.time()
         self.mutedChanged.emit(muted)
 
-    def _on_file_loaded(self, file_path: str, is_audio: bool):
+    def _on_file_loaded(self, file_path: str):
         """文件加载完成回调"""
         with self._state_lock:
             self._current_state.current_file = file_path
             self._current_state.last_update = time.time()
 
-        self.fileLoaded.emit(file_path, is_audio)
+        self.fileLoaded.emit(file_path)
 
     def _on_file_ended(self, reason: int):
         """文件播放结束回调"""
@@ -1000,8 +997,8 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             self._logger.error("初始化操作超时")
             return False
-        except Exception as e:
-            self._logger.error(f"initialize 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"initialize 运行时错误: {e}")
             return False
 
     def close(self, async_mode: bool = True, timeout: float = 2.0) -> bool:
@@ -1047,8 +1044,8 @@ class MPVManager(QObject):
             try:
                 result = self._do_sync_close(timeout)
                 return result
-            except Exception as e:
-                self._logger.error(f"关闭MPV管理器时出错: {e}")
+            except RuntimeError as e:
+                error(f"关闭MPV管理器运行时错误: {e}")
                 self._do_force_cleanup()
                 return False
     
@@ -1066,11 +1063,11 @@ class MPVManager(QObject):
             self._is_shutting_down = False
             self._cleanup_event.set()  # 标记清理完成
             return result
-        except Exception as e:
-            self._logger.error(f"同步关闭时出错: {e}")
+        except RuntimeError as e:
+            error(f"同步关闭运行时错误: {e}")
             self._do_force_cleanup()
             raise
-    
+
     def _do_async_close(self, timeout: float = 3.0):
         """异步关闭 - 在后台执行"""
         try:
@@ -1088,8 +1085,8 @@ class MPVManager(QObject):
             self._cleanup_resources()
 
             self._logger.info("异步关闭MPV管理器完成")
-        except Exception as e:
-            self._logger.error(f"异步关闭时出错: {e}")
+        except RuntimeError as e:
+            error(f"异步关闭运行时错误: {e}")
         finally:
             self._is_shutting_down = False
             self._cleanup_event.set()  # 标记清理完成
@@ -1100,8 +1097,8 @@ class MPVManager(QObject):
         try:
             self._stop_operation_thread(1.0)
             self._cleanup_resources()
-        except Exception as e:
-            self._logger.error(f"强制清理时出错: {e}")
+        except RuntimeError as e:
+            error(f"强制清理运行时错误: {e}")
         finally:
             self._is_shutting_down = False
             self._cleanup_event.set()
@@ -1172,8 +1169,8 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             self._logger.error(f"加载文件操作超时: {file_path}")
             return False
-        except Exception as e:
-            self._logger.error(f"load_file 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"load_file 运行时错误: {e}")
             return False
 
     def play(self, component_id: str = "unknown") -> bool:
@@ -1196,8 +1193,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"play 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"play 运行时错误: {e}")
             return False
 
     def pause(self, component_id: str = "unknown") -> bool:
@@ -1220,8 +1217,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"pause 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"pause 运行时错误: {e}")
             return False
 
     def stop(self, component_id: str = "unknown") -> bool:
@@ -1244,8 +1241,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"stop 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"stop 运行时错误: {e}")
             return False
 
     def seek(
@@ -1274,8 +1271,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"seek 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"seek 运行时错误: {e}")
             return False
 
     def set_position(
@@ -1304,8 +1301,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"set_position 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"set_position 运行时错误: {e}")
             return False
 
     def set_volume(
@@ -1334,8 +1331,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"set_volume 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"set_volume 运行时错误: {e}")
             return False
 
     def set_speed(
@@ -1364,8 +1361,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"set_speed 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"set_speed 运行时错误: {e}")
             return False
 
     def set_muted(
@@ -1394,8 +1391,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"set_muted 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"set_muted 运行时错误: {e}")
             return False
 
     def set_loop(
@@ -1424,8 +1421,8 @@ class MPVManager(QObject):
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"set_loop 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"set_loop 运行时错误: {e}")
             return False
 
     def set_window_id(
@@ -1454,8 +1451,8 @@ class MPVManager(QObject):
             return future.result(timeout=10.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"set_window_id 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"set_window_id 运行时错误: {e}")
             return False
 
     def get_position(self) -> float:
@@ -1474,8 +1471,8 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 0.0
-        except Exception as e:
-            self._logger.error(f"get_position 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"get_position 运行时错误: {e}")
             return 0.0
 
     def get_duration(self) -> float:
@@ -1494,8 +1491,8 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 0.0
-        except Exception as e:
-            self._logger.error(f"get_duration 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"get_duration 运行时错误: {e}")
             return 0.0
 
     def get_volume(self) -> int:
@@ -1514,8 +1511,8 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 100
-        except Exception as e:
-            self._logger.error(f"get_volume 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"get_volume 运行时错误: {e}")
             return 100
 
     def get_speed(self) -> float:
@@ -1534,8 +1531,8 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 1.0
-        except Exception as e:
-            self._logger.error(f"get_speed 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"get_speed 运行时错误: {e}")
             return 1.0
 
     def is_playing(self) -> bool:
@@ -1554,8 +1551,8 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"is_playing 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"is_playing 运行时错误: {e}")
             return False
 
     def is_paused(self) -> bool:
@@ -1574,8 +1571,8 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"is_paused 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"is_paused 运行时错误: {e}")
             return False
 
     def is_muted(self) -> bool:
@@ -1594,8 +1591,8 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return False
-        except Exception as e:
-            self._logger.error(f"is_muted 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"is_muted 运行时错误: {e}")
             return False
 
     def get_video_size(self) -> Tuple[int, int]:
@@ -1614,8 +1611,8 @@ class MPVManager(QObject):
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return (0, 0)
-        except Exception as e:
-            self._logger.error(f"get_video_size 操作异常: {e}")
+        except RuntimeError as e:
+            error(f"get_video_size 运行时错误: {e}")
             return (0, 0)
 
     def load_lut(self, lut_file_path: str, component_id: str = "unknown", timeout: float = 5.0) -> bool:
@@ -1642,8 +1639,8 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             self._logger.error(f"加载LUT操作超时: {lut_file_path}")
             return False
-        except Exception as e:
-            self._logger.error(f"load_lut 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"load_lut 运行时错误: {e}")
             return False
 
     def unload_lut(self, component_id: str = "unknown", timeout: float = 5.0) -> bool:
@@ -1668,8 +1665,8 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             self._logger.error("卸载LUT操作超时")
             return False
-        except Exception as e:
-            self._logger.error(f"unload_lut 操作异常: {e}", component_id=component_id)
+        except RuntimeError as e:
+            error(f"unload_lut 运行时错误: {e}")
             return False
 
     def get_current_lut(self) -> str:
@@ -1838,8 +1835,8 @@ class MPVManager(QObject):
         try:
             if self._mpv_core is not None:
                 self.close()
-        except Exception as e:
-            self._logger.debug(f"析构时关闭MPV管理器出错: {e}")
+        except RuntimeError as e:
+            debug(f"析构时关闭MPV管理器运行时错误: {e}")
 
 
 # 便捷函数，用于快速获取管理器实例
