@@ -780,6 +780,7 @@ class FileStagingPool(QWidget):
     def export_selected_files(self):
         """
         导出所有文件到指定目录
+        显示导出模式选择弹窗，支持直接导出和分类导出
         """
         # 检查是否有文件可以导出
         if not self.items:
@@ -804,6 +805,29 @@ class FileStagingPool(QWidget):
             warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             warning_msg.buttonClicked.connect(warning_msg.close)
             warning_msg.exec()
+            return
+        
+        # 显示导出模式选择弹窗
+        export_mode_msg = CustomMessageBox(self)
+        export_mode_msg.set_title("选择导出方式")
+        export_mode_msg.set_text("请选择导出模式：\n\n直接导出：所有文件平铺导出到目标目录\n分类导出：按照原始目录结构分类存储")
+        export_mode_msg.set_buttons(
+            ["直接导出", "分类导出", "取消"],
+            Qt.Vertical,
+            ["primary", "primary", "normal"]
+        )
+        
+        export_mode = -1  # 0: 直接导出, 1: 分类导出, 2: 取消
+        
+        def on_export_mode_clicked(button_index):
+            nonlocal export_mode
+            export_mode = button_index
+            export_mode_msg.close()
+        
+        export_mode_msg.buttonClicked.connect(on_export_mode_clicked)
+        export_mode_msg.exec()
+        
+        if export_mode == 2 or export_mode == -1:  # 取消或关闭弹窗
             return
         
         # 获取所有文件信息
@@ -907,8 +931,11 @@ class FileStagingPool(QWidget):
         # 连接进度更新信号到新的进度条
         self.update_progress.connect(self.on_update_export_progress)
         
-        # 开始复制文件
-        self.copy_files(all_files, target_dir)
+        # 根据导出模式执行相应的复制操作
+        if export_mode == 0:  # 直接导出
+            self.copy_files(all_files, target_dir)
+        else:  # 分类导出
+            self.copy_files_categorized(all_files, target_dir)
         
         # 显示提示窗口
         progress_msg_box.exec()
@@ -931,14 +958,6 @@ class FileStagingPool(QWidget):
         """
         if hasattr(self, 'current_export_progress_bar'):
             self.current_export_progress_bar.setValue(value)
-
-    def _emit_update_progress(self, progress):
-        """发射进度更新信号（供 QMetaObject.invokeMethod 调用）"""
-        self.update_progress.emit(progress)
-
-    def _emit_export_finished(self, success_count, error_count, errors):
-        """发射导出完成信号（供 QMetaObject.invokeMethod 调用）"""
-        self.export_finished.emit(success_count, error_count, errors)
 
     def on_export_finished(self, success_count, error_count, errors):
         """
@@ -2017,7 +2036,7 @@ class FileStagingPool(QWidget):
     
     def copy_files(self, files, target_dir):
         """
-        复制文件到目标目录
+        复制文件到目标目录（直接导出模式）
         
         Args:
             files (list): 文件信息列表
@@ -2050,29 +2069,141 @@ class FileStagingPool(QWidget):
                     errors.append(f"{file_info['display_name']}: {e}")
                     warning(f"复制文件失败: {source_path} -> {target_path}, 错误: {e}")
                 
-                # 发送进度更新信号（使用 QMetaObject.invokeMethod 确保在主线程执行）
+                # 发送进度更新信号（线程安全）
                 progress = i + 1
-                QMetaObject.invokeMethod(
-                    self,
-                    "_emit_update_progress",
-                    Qt.QueuedConnection,
-                    Q_ARG(int, progress)
-                )
+                self.update_progress.emit(progress)
             
-            # 发送导出完成信号（使用 QMetaObject.invokeMethod 确保在主线程执行）
-            QMetaObject.invokeMethod(
-                self,
-                "_emit_export_finished",
-                Qt.QueuedConnection,
-                Q_ARG(int, success_count),
-                Q_ARG(int, error_count),
-                Q_ARG(list, errors)
-            )
+            # 发送导出完成信号（线程安全）
+            self.export_finished.emit(success_count, error_count, errors)
         
         # 启动复制线程
         thread = threading.Thread(target=copy_thread)
         thread.daemon = True  # 设置为守护线程，防止程序退出时线程还在运行
         thread.start()
+    
+    def copy_files_categorized(self, files, target_dir):
+        """
+        复制文件到目标目录（分类导出模式）
+        按照文件原始所在目录创建同名文件夹进行分类存储
+        
+        Args:
+            files (list): 文件信息列表
+            target_dir (str): 目标目录路径
+        """
+        import shutil
+        import threading
+        
+        def copy_thread():
+            """复制文件的线程函数"""
+            success_count = 0
+            error_count = 0
+            errors = []
+            
+            for i, file_info in enumerate(files):
+                source_path = file_info["path"]
+                
+                # 获取原始文件所在的目录名
+                source_dir = os.path.dirname(source_path)
+                category_name = os.path.basename(source_dir)
+                
+                # 如果无法获取目录名（例如在根目录），使用默认名称
+                if not category_name:
+                    category_name = "未分类"
+                
+                # 创建分类文件夹路径
+                category_dir = os.path.join(target_dir, category_name)
+                
+                # 确保分类文件夹存在
+                try:
+                    os.makedirs(category_dir, exist_ok=True)
+                except (IOError, OSError, PermissionError) as e:
+                    error_count += 1
+                    errors.append(f"{file_info['display_name']}: 无法创建分类文件夹 - {e}")
+                    warning(f"创建分类文件夹失败: {category_dir}, 错误: {e}")
+                    # 发送进度更新信号
+                    progress = i + 1
+                    self.update_progress.emit(progress)
+                    continue
+                
+                # 生成目标文件路径，处理同名文件冲突
+                target_path = self._get_unique_target_path(category_dir, file_info["display_name"])
+                
+                try:
+                    if file_info["is_dir"]:
+                        # 复制目录
+                        shutil.copytree(source_path, target_path)
+                    else:
+                        # 复制文件
+                        shutil.copy2(source_path, target_path)
+                    success_count += 1
+                except (IOError, OSError, PermissionError, shutil.Error) as e:
+                    error_count += 1
+                    errors.append(f"{file_info['display_name']}: {e}")
+                    warning(f"复制文件失败: {source_path} -> {target_path}, 错误: {e}")
+                
+                # 发送进度更新信号（线程安全）
+                progress = i + 1
+                self.update_progress.emit(progress)
+            
+            # 发送导出完成信号（线程安全）
+            self.export_finished.emit(success_count, error_count, errors)
+        
+        # 启动复制线程
+        thread = threading.Thread(target=copy_thread)
+        thread.daemon = True  # 设置为守护线程，防止程序退出时线程还在运行
+        thread.start()
+    
+    def _get_unique_target_path(self, target_dir, file_name):
+        """
+        获取唯一的的目标文件路径，处理同名文件冲突
+        
+        Args:
+            target_dir (str): 目标目录路径
+            file_name (str): 文件名
+            
+        Returns:
+            str: 唯一的文件路径
+        """
+        target_path = os.path.join(target_dir, file_name)
+        
+        # 如果文件不存在，直接返回
+        if not os.path.exists(target_path):
+            return target_path
+        
+        # 分离文件名主体和后缀名
+        if "." in file_name:
+            name_parts = file_name.rsplit(".", 1)
+            name_base = name_parts[0]
+            name_ext = name_parts[1]
+        else:
+            name_base = file_name
+            name_ext = ""
+        
+        # 查找唯一的文件名
+        counter = 1
+        while True:
+            if name_ext:
+                new_name = f"{name_base}_{counter}.{name_ext}"
+            else:
+                new_name = f"{name_base}_{counter}"
+            
+            target_path = os.path.join(target_dir, new_name)
+            if not os.path.exists(target_path):
+                return target_path
+            
+            counter += 1
+            # 防止无限循环
+            if counter > 9999:
+                break
+        
+        # 如果无法找到唯一名称，使用时间戳
+        import time
+        timestamp = int(time.time())
+        if name_ext:
+            new_name = f"{name_base}_{timestamp}.{name_ext}"
+        else:
+            new_name = f"{name_base}_{timestamp}"
+        return os.path.join(target_dir, new_name)
     
     def set_previewing_file(self, file_path):
         """
