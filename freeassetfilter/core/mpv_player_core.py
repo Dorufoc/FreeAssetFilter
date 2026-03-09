@@ -698,7 +698,11 @@ class MPVPlayerCore(QObject):
         args = command.get('args', ())
         kwargs = command.get('kwargs', {})
         result = None
-        
+
+        # 检查 mpv_handle 是否有效（除了 CLOSE 命令）
+        if cmd_type != MPVCommandType.CLOSE and not mpv_handle:
+            return
+
         try:
             if cmd_type == MPVCommandType.INITIALIZE:
                 result = True
@@ -767,6 +771,8 @@ class MPVPlayerCore(QObject):
     
     def _load_file_internal(self, mpv_handle: c_void_p, file_path: str, **kwargs) -> bool:
         """内部加载文件实现"""
+        if not mpv_handle:
+            return False
         if not os.path.exists(file_path):
             self._emit_error(MpvErrorCode.LOADING_FAILED, f"文件不存在: {file_path}")
             return False
@@ -786,6 +792,8 @@ class MPVPlayerCore(QObject):
     
     def _play_internal(self, mpv_handle: c_void_p) -> bool:
         """内部播放实现"""
+        if not mpv_handle:
+            return False
         c_value = ctypes.c_int(0)
         result = self._dll_loader.dll.mpv_set_property(
             mpv_handle, b"pause", MpvFormat.FLAG, byref(c_value)
@@ -799,6 +807,8 @@ class MPVPlayerCore(QObject):
     
     def _pause_internal(self, mpv_handle: c_void_p) -> bool:
         """内部暂停实现"""
+        if not mpv_handle:
+            return False
         c_value = ctypes.c_int(1)
         result = self._dll_loader.dll.mpv_set_property(
             mpv_handle, b"pause", MpvFormat.FLAG, byref(c_value)
@@ -812,6 +822,8 @@ class MPVPlayerCore(QObject):
     
     def _stop_internal(self, mpv_handle: c_void_p) -> bool:
         """内部停止实现"""
+        if not mpv_handle:
+            return False
         cmd_args = [b"stop", None]
         cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
         result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
@@ -826,12 +838,16 @@ class MPVPlayerCore(QObject):
     
     def _seek_internal(self, mpv_handle: c_void_p, position: float, **kwargs) -> bool:
         """内部跳转实现"""
+        if not mpv_handle:
+            return False
         cmd_args = [b"seek", str(position).encode('utf-8'), b"absolute", None]
         cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
         return self._dll_loader.dll.mpv_command(mpv_handle, cmd_array) >= 0
     
     def _set_volume_internal(self, mpv_handle: c_void_p, volume: int, **kwargs) -> bool:
         """内部设置音量实现"""
+        if not mpv_handle:
+            return False
         volume = max(0, min(100, volume))
         c_value = c_double(float(volume))
         result = self._dll_loader.dll.mpv_set_property(
@@ -845,6 +861,8 @@ class MPVPlayerCore(QObject):
     
     def _set_speed_internal(self, mpv_handle: c_void_p, speed: float, **kwargs) -> bool:
         """内部设置速度实现"""
+        if not mpv_handle:
+            return False
         speed = max(0.1, min(10.0, speed))
         c_value = c_double(speed)
         result = self._dll_loader.dll.mpv_set_property(
@@ -858,6 +876,8 @@ class MPVPlayerCore(QObject):
     
     def _set_muted_internal(self, mpv_handle: c_void_p, muted: bool, **kwargs) -> bool:
         """内部设置静音实现"""
+        if not mpv_handle:
+            return False
         c_value = ctypes.c_int(1 if muted else 0)
         result = self._dll_loader.dll.mpv_set_property(
             mpv_handle, b"mute", MpvFormat.FLAG, byref(c_value)
@@ -870,6 +890,8 @@ class MPVPlayerCore(QObject):
     
     def _set_loop_internal(self, mpv_handle: c_void_p, loop_mode: str, **kwargs) -> bool:
         """内部设置循环模式实现"""
+        if not mpv_handle:
+            return False
         result = self._dll_loader.dll.mpv_set_property_string(
             mpv_handle, b"loop-file", loop_mode.encode('utf-8')
         )
@@ -880,6 +902,8 @@ class MPVPlayerCore(QObject):
     
     def _set_vf_filter_internal(self, mpv_handle: c_void_p, filter_string: str, **kwargs) -> bool:
         """内部设置视频滤镜实现"""
+        if not mpv_handle:
+            return False
         try:
             if filter_string:
                 # 使用vf add命令添加滤镜
@@ -914,6 +938,8 @@ class MPVPlayerCore(QObject):
     
     def _load_glsl_shader_internal(self, mpv_handle: c_void_p, shader_path: str, **kwargs) -> bool:
         """内部加载GLSL着色器实现（方式2）"""
+        if not mpv_handle:
+            return False
         try:
             # 使用load glsl-shaders命令
             cmd_args = [b"load", b"glsl-shaders", shader_path.encode('utf-8'), None]
@@ -938,6 +964,8 @@ class MPVPlayerCore(QObject):
     
     def _set_glsl_shaders_internal(self, mpv_handle: c_void_p, shader_list: str, **kwargs) -> bool:
         """内部设置GLSL着色器列表实现（方式3）"""
+        if not mpv_handle:
+            return False
         try:
             # 使用set glsl-shaders命令
             cmd_args = [b"set", b"glsl-shaders", shader_list.encode('utf-8'), None]
@@ -970,6 +998,8 @@ class MPVPlayerCore(QObject):
     
     def _clear_glsl_shaders_internal(self, mpv_handle: c_void_p, **kwargs) -> bool:
         """内部清除GLSL着色器实现"""
+        if not mpv_handle:
+            return False
         try:
             # 使用glsl-shaders clr命令清除着色器
             cmd_args = [b"glsl-shaders", b"clr", None]
@@ -983,6 +1013,8 @@ class MPVPlayerCore(QObject):
 
     def _set_lut_internal(self, mpv_handle: c_void_p, lut_path: str, **kwargs) -> bool:
         """内部设置LUT实现（使用--lut选项）"""
+        if not mpv_handle:
+            return False
         try:
             abs_path = os.path.abspath(lut_path).replace("\\", "/")
             result = self._dll_loader.dll.mpv_set_option_string(
@@ -1000,6 +1032,8 @@ class MPVPlayerCore(QObject):
 
     def _clear_lut_internal(self, mpv_handle: c_void_p, **kwargs) -> bool:
         """内部清除LUT实现"""
+        if not mpv_handle:
+            return False
         try:
             result = self._dll_loader.dll.mpv_set_option_string(
                 mpv_handle,
@@ -1014,6 +1048,8 @@ class MPVPlayerCore(QObject):
     
     def _set_window_id_internal(self, mpv_handle: c_void_p, window_id: int, **kwargs) -> bool:
         """内部设置窗口ID实现"""
+        if not mpv_handle:
+            return False
         with self._state_lock:
             self._window_id = window_id
         return self._dll_loader.dll.mpv_set_property_string(
@@ -1022,12 +1058,16 @@ class MPVPlayerCore(QObject):
     
     def _set_window_size_internal(self, mpv_handle: c_void_p, width: int, height: int, **kwargs) -> bool:
         """内部设置窗口大小实现"""
+        if not mpv_handle:
+            return False
         return self._dll_loader.dll.mpv_set_property_string(
             mpv_handle, b"geometry", f"{width}x{height}".encode('utf-8')
         ) >= 0
     
     def _get_property_double(self, mpv_handle: c_void_p, name: str) -> Optional[float]:
         """获取双精度属性"""
+        if not mpv_handle:
+            return None
         c_value = c_double(0.0)
         result = self._dll_loader.dll.mpv_get_property(
             mpv_handle, name.encode('utf-8'), MpvFormat.DOUBLE, byref(c_value)

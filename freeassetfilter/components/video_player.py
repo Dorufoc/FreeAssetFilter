@@ -563,7 +563,7 @@ class VideoPlayer(QWidget):
     
     def _on_progress_changed(self, value: int):
         """进度条值变化处理"""
-        if self._user_interacting and self._mpv_manager:
+        if self._user_interacting and self._mpv_manager and self._mpv_manager.is_initialized():
             duration = self._mpv_manager.get_duration() or 0
             if duration > 0:
                 position = (value / 1000.0) * duration
