@@ -18,8 +18,11 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import os
 import hashlib
-from typing import Optional, Tuple, Callable
+import threading
+import time
+from typing import Optional, Tuple, Callable, Dict, Set
 from pathlib import Path
+from dataclasses import dataclass
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
@@ -42,6 +45,51 @@ except ImportError:
     warning("OpenCV库未安装，视频缩略图功能将不可用")
 
 
+@dataclass
+class FrameCacheEntry:
+    """帧缓存条目"""
+    frame: any  # numpy array
+    timestamp: float
+    position: int
+
+
+@dataclass
+class VideoFrameCache:
+    """视频帧缓存管理器"""
+    max_entries: int = 5
+    cache: Dict[int, FrameCacheEntry] = None
+    last_accessed: float = 0
+    
+    def __post_init__(self):
+        if self.cache is None:
+            self.cache = {}
+        self.last_accessed = time.time()
+    
+    def get(self, position: int) -> Optional:
+        """获取缓存的帧"""
+        self.last_accessed = time.time()
+        if position in self.cache:
+            return self.cache[position].frame
+        return None
+    
+    def put(self, position: int, frame):
+        """缓存帧"""
+        self.last_accessed = time.time()
+        # 如果缓存已满，移除最旧的条目
+        if len(self.cache) >= self.max_entries:
+            oldest_pos = min(self.cache.keys(), key=lambda k: self.cache[k].timestamp)
+            del self.cache[oldest_pos]
+        self.cache[position] = FrameCacheEntry(
+            frame=frame,
+            timestamp=time.time(),
+            position=position
+        )
+    
+    def clear(self):
+        """清空缓存"""
+        self.cache.clear()
+
+
 class ThumbnailManager:
     """
     缩略图管理器
@@ -62,6 +110,12 @@ class ThumbnailManager:
     
     # 缩略图质量
     QUALITY = 85
+    
+    # 视频帧读取最大重试次数
+    MAX_FRAME_READ_RETRIES = 3
+    
+    # 视频帧缓存过期时间（秒）
+    FRAME_CACHE_EXPIRY = 60
     
     _instance = None
     _initialized = False
@@ -90,6 +144,17 @@ class ThumbnailManager:
         # 缩略图缓存目录
         self._thumb_dir = os.path.join(get_app_data_path(), 'thumbnails')
         os.makedirs(self._thumb_dir, exist_ok=True)
+        
+        # 视频帧缓存：文件路径 -> VideoFrameCache
+        self._frame_caches: Dict[str, VideoFrameCache] = {}
+        self._frame_cache_lock = threading.Lock()
+        
+        # 正在处理的视频文件集合（用于请求去重）
+        self._processing_videos: Set[str] = set()
+        self._processing_lock = threading.Lock()
+        
+        # 并发控制信号量
+        self._video_semaphore = threading.Semaphore(3)
         
         debug(f"[ThumbnailManager] 初始化完成，缩略图目录: {self._thumb_dir}")
     
@@ -279,9 +344,95 @@ class ThumbnailManager:
             warning(f"[ThumbnailManager] 生成图片缩略图失败: {file_path}, 错误: {e}")
             return None
     
+    def _get_or_create_frame_cache(self, file_path: str) -> VideoFrameCache:
+        """获取或创建视频帧缓存"""
+        with self._frame_cache_lock:
+            # 清理过期缓存
+            current_time = time.time()
+            expired_keys = [
+                k for k, v in self._frame_caches.items()
+                if current_time - v.last_accessed > self.FRAME_CACHE_EXPIRY
+            ]
+            for k in expired_keys:
+                del self._frame_caches[k]
+            
+            # 获取或创建缓存
+            if file_path not in self._frame_caches:
+                self._frame_caches[file_path] = VideoFrameCache()
+            return self._frame_caches[file_path]
+    
+    def _try_acquire_video_lock(self, file_path: str) -> bool:
+        """尝试获取视频处理锁（请求去重）"""
+        with self._processing_lock:
+            if file_path in self._processing_videos:
+                return False
+            self._processing_videos.add(file_path)
+            return True
+    
+    def _release_video_lock(self, file_path: str):
+        """释放视频处理锁"""
+        with self._processing_lock:
+            self._processing_videos.discard(file_path)
+    
+    def _read_frame_with_retry(self, cap, position: int, use_keyframe: bool = True, max_retries: int = None) -> Optional:
+        """
+        带重试机制的帧读取
+        
+        Args:
+            cap: OpenCV视频捕获对象
+            position: 帧位置（帧索引或0-1之间的比例）
+            use_keyframe: 是否优先使用关键帧定位
+            max_retries: 最大重试次数，默认使用类配置
+            
+        Returns:
+            Optional: 视频帧，失败返回None
+        """
+        if max_retries is None:
+            max_retries = self.MAX_FRAME_READ_RETRIES
+        
+        for attempt in range(max_retries):
+            try:
+                # 根据类型设置位置
+                if isinstance(position, float) and 0 <= position <= 1:
+                    # 比例位置
+                    cap.set(cv2.CAP_PROP_POS_AVI_RATIO, position)
+                else:
+                    # 帧索引位置
+                    if use_keyframe and attempt == 0:
+                        # 首次尝试：使用关键帧定位（更快）
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, int(position))
+                        # 读取关键帧
+                        ret, frame = cap.read()
+                        if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
+                            return frame
+                        # 关键帧读取失败，继续尝试
+                        continue
+                    else:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, int(position))
+                
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
+                    return frame
+                    
+            except Exception as e:
+                debug(f"读取视频帧失败 (位置: {position}, 尝试: {attempt + 1}): {e}")
+            
+            # 短暂延迟后重试
+            if attempt < max_retries - 1:
+                time.sleep(0.01 * (attempt + 1))
+        
+        return None
+    
     def _create_video_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """
-        为视频文件创建缩略图
+        为视频文件创建缩略图（优化版本）
+        
+        优化点：
+        1. 帧缓存机制 - 避免重复解码相同位置
+        2. 关键帧优先定位 - 提高定位速度
+        3. 限制重试次数 - 避免无限循环
+        4. 并发控制 - 限制同时处理的视频数量
+        5. 请求去重 - 避免同时处理同一个视频
         
         Args:
             file_path: 视频文件路径
@@ -298,6 +449,20 @@ class ThumbnailManager:
             warning("[ThumbnailManager] PIL库未安装，无法生成视频缩略图")
             return None
         
+        # 请求去重：检查是否已有相同视频正在处理
+        if not self._try_acquire_video_lock(file_path):
+            debug(f"[ThumbnailManager] 视频正在处理中，跳过重复请求: {file_path}")
+            return None
+        
+        try:
+            # 并发控制
+            with self._video_semaphore:
+                return self._create_video_thumbnail_internal(file_path, thumbnail_path)
+        finally:
+            self._release_video_lock(file_path)
+    
+    def _create_video_thumbnail_internal(self, file_path: str, thumbnail_path: str) -> Optional[str]:
+        """内部视频缩略图生成逻辑"""
         cap = None
         try:
             cap = cv2.VideoCapture(file_path)
@@ -307,36 +472,56 @@ class ThumbnailManager:
             
             # 获取视频信息
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            
+            # 获取帧缓存
+            frame_cache = self._get_or_create_frame_cache(file_path)
             
             frame = None
+            cached_positions = []
+            
+            # 定义读取策略（按优先级排序）
+            strategies = []
             
             # 策略1: 优先读取第240帧（跳过可能损坏的开头）
             if total_frames > 240:
-                frame = self._read_frame_at_position(cap, 240)
+                strategies.append(('frame', 240))
             
             # 策略2: 读取50%相对位置
-            if frame is None and total_frames > 0:
-                cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0.5)
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    frame = None
+            if total_frames > 0:
+                strategies.append(('ratio', 0.5))
             
             # 策略3: 读取第2帧
-            if frame is None:
-                frame = self._read_frame_at_position(cap, 2)
+            strategies.append(('frame', 2))
             
             # 策略4: 读取第1帧
-            if frame is None:
-                frame = self._read_frame_at_position(cap, 1)
+            strategies.append(('frame', 1))
             
             # 策略5: 尝试其他相对位置
-            if frame is None:
-                for ratio in [0.03, 0.1, 0.7, 0.9]:
-                    cap.set(cv2.CAP_PROP_POS_AVI_RATIO, ratio)
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        break
-                    frame = None
+            for ratio in [0.03, 0.1, 0.7, 0.9]:
+                strategies.append(('ratio', ratio))
+            
+            # 执行策略
+            for strategy_type, position in strategies:
+                # 检查缓存
+                cache_key = int(position * 1000) if strategy_type == 'ratio' else position
+                cached_frame = frame_cache.get(cache_key)
+                if cached_frame is not None:
+                    frame = cached_frame
+                    cached_positions.append(cache_key)
+                    debug(f"[ThumbnailManager] 使用缓存帧 (位置: {position})")
+                    break
+                
+                # 读取新帧
+                if strategy_type == 'ratio':
+                    frame = self._read_frame_with_retry(cap, position, use_keyframe=False)
+                else:
+                    frame = self._read_frame_with_retry(cap, position, use_keyframe=True)
+                
+                if frame is not None:
+                    # 缓存成功读取的帧
+                    frame_cache.put(cache_key, frame)
+                    break
             
             if frame is None:
                 warning(f"[ThumbnailManager] 无法从视频中读取有效帧: {file_path}")
@@ -351,27 +536,6 @@ class ThumbnailManager:
         finally:
             if cap is not None:
                 cap.release()
-    
-    def _read_frame_at_position(self, cap, frame_pos: int) -> Optional:
-        """
-        在指定位置读取视频帧
-        
-        Args:
-            cap: OpenCV视频捕获对象
-            frame_pos: 帧位置
-            
-        Returns:
-            Optional: 视频帧，失败返回None
-        """
-        try:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
-            ret, frame = cap.read()
-            if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
-                return frame
-            return None
-        except Exception as e:
-            debug(f"读取视频帧失败 (位置: {frame_pos}): {e}")
-            return None
     
     def _process_and_save_video_frame(self, frame, thumbnail_path: str) -> Optional[str]:
         """

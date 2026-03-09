@@ -128,7 +128,7 @@ class CustomFileHorizontalCard(QWidget):
         card_style += "}"
         self.card_container.setStyleSheet(card_style)
 
-    def __init__(self, file_path=None, parent=None, enable_multiselect=True, display_name=None, single_line_mode=False):
+    def __init__(self, file_path=None, parent=None, enable_multiselect=True, display_name=None, single_line_mode=False, enable_delete_button=True):
         super().__init__(parent)
 
         # 获取应用实例和DPI缩放因子
@@ -153,6 +153,7 @@ class CustomFileHorizontalCard(QWidget):
         self._single_line_mode = single_line_mode  # 是否使用单行文本格式
         self._path_exists = True  # 路径是否存在，用于收藏夹中标记已删除的路径
         self._custom_info_text = None  # 自定义第二行文本，如果设置则优先显示
+        self._enable_delete_button = enable_delete_button  # 是否显示删除按钮
 
         # 鼠标悬停标志，用于跟踪鼠标是否在卡片区域内
         self._is_mouse_over = False
@@ -296,27 +297,30 @@ class CustomFileHorizontalCard(QWidget):
             button_type="primary",
             display_mode="text"
         )
-        self.button2 = CustomButton(
-            "删除",
-            parent=self.overlay_widget,
-            button_type="warning",
-            display_mode="text"
-        )
         
         # 确保按钮不会超出显示区域
         self.button1.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.button2.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         
         # 在按钮左侧添加伸展因子，确保按钮始终靠右显示，不会超出显示区域
         overlay_layout.addStretch(1)
         
-        # 添加按钮到覆盖层布局
+        # 添加重命名按钮到覆盖层布局
         overlay_layout.addWidget(self.button1)
-        overlay_layout.addWidget(self.button2)
         
-        # 连接按钮信号
+        # 连接重命名按钮信号
         self.button1.clicked.connect(lambda: self.renameRequested.emit(self._file_path))
-        self.button2.clicked.connect(lambda: self.deleteRequested.emit(self._file_path))
+        
+        # 根据参数决定是否创建删除按钮
+        if self._enable_delete_button:
+            self.button2 = CustomButton(
+                "删除",
+                parent=self.overlay_widget,
+                button_type="warning",
+                display_mode="text"
+            )
+            self.button2.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            overlay_layout.addWidget(self.button2)
+            self.button2.clicked.connect(lambda: self.deleteRequested.emit(self._file_path))
         
         # 添加卡片容器到主布局
         main_layout.addWidget(self.card_container)

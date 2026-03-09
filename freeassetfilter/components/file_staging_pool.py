@@ -934,11 +934,26 @@ class FileStagingPool(QWidget):
         # 根据导出模式执行相应的复制操作
         if export_mode == 0:  # 直接导出
             self.copy_files(all_files, target_dir)
+            # 显示提示窗口
+            progress_msg_box.exec()
         else:  # 分类导出
-            self.copy_files_categorized(all_files, target_dir)
-        
-        # 显示提示窗口
-        progress_msg_box.exec()
+            # 显示分类导出确认弹窗
+            def on_categorized_confirm(folder_name_mapping):
+                # 用户确认后执行分类导出
+                self.copy_files_categorized(all_files, target_dir, folder_name_mapping)
+                # 显示进度窗口
+                progress_msg_box.exec()
+            
+            def on_categorized_cancel():
+                # 用户取消，重新显示导出方式选择弹窗
+                self.export_selected_files()
+            
+            self._show_categorized_export_dialog(
+                all_files,
+                target_dir,
+                on_categorized_confirm,
+                on_categorized_cancel
+            )
     
     def on_update_progress(self, value):
         """
@@ -2080,8 +2095,198 @@ class FileStagingPool(QWidget):
         thread = threading.Thread(target=copy_thread)
         thread.daemon = True  # 设置为守护线程，防止程序退出时线程还在运行
         thread.start()
+
+    def _show_categorized_export_dialog(self, files, target_dir, on_confirm_callback, on_cancel_callback):
+        """
+        显示分类导出确认弹窗
+        展示将要创建的文件夹列表，允许用户重命名文件夹
+        
+        Args:
+            files (list): 文件信息列表
+            target_dir (str): 目标目录路径
+            on_confirm_callback (callable): 确认导出时的回调函数，参数为 folder_name_mapping
+            on_cancel_callback (callable): 取消时的回调函数
+        """
+        from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
+        from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+        
+        app = QApplication.instance()
+        default_font_size = getattr(app, 'default_font_size', 9)
+        scaled_font_size = int(default_font_size * self.dpi_scale)
+        
+        base_color = "#FFFFFF"
+        auxiliary_color = "#E6E6E6"
+        normal_color = "#808080"
+        secondary_color = "#333333"
+        accent_color = "#1890ff"
+        
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#E6E6E6")
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+        
+        dialog = CustomMessageBox(self)
+        dialog.set_title("分类导出确认")
+        dialog.set_text("以下文件夹将被创建，您可以重命名文件夹：")
+        
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
+        scroll_area.verticalScrollBar().apply_theme_from_settings()
+        
+        SmoothScroller.apply_to_scroll_area(scroll_area)
+        
+        scrollbar_style = f"""
+            QScrollArea {{
+                border: 1px solid {normal_color};
+                border-radius: 8px;
+                background-color: {base_color};
+                padding: 3px;
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: {base_color};
+            }}
+        """
+        scroll_area.setStyleSheet(scrollbar_style)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        scroll_area.setMinimumWidth(int(400 * self.dpi_scale))
+        scroll_area.setMaximumHeight(int(300 * self.dpi_scale))
+        
+        # 创建列表内容容器
+        list_content = QWidget()
+        list_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        list_content_layout = QVBoxLayout(list_content)
+        list_content_layout.setContentsMargins(0, 0, 0, 0)
+        list_content_layout.setSpacing(int(4 * self.dpi_scale))
+        
+        # 收集文件夹信息（按原始目录分组）
+        folder_groups = {}
+        for file_info in files:
+            source_dir = os.path.dirname(file_info["path"])
+            category_name = os.path.basename(source_dir)
+            if not category_name:
+                category_name = "未分类"
+            
+            if category_name not in folder_groups:
+                folder_groups[category_name] = {
+                    'original_path': source_dir,
+                    'files': []
+                }
+            folder_groups[category_name]['files'].append(file_info)
+        
+        # 存储文件夹卡片和映射信息
+        folder_cards = []
+        folder_name_mapping = {name: name for name in folder_groups.keys()}
+        
+        # 创建文件夹卡片
+        for folder_name, folder_data in folder_groups.items():
+            card = CustomFileHorizontalCard(
+                file_path=folder_data['original_path'],
+                parent=list_content,
+                enable_multiselect=False,
+                display_name=folder_name,
+                single_line_mode=False,
+                enable_delete_button=False  # 不显示删除按钮
+            )
+            # 设置自定义信息文本（显示原始路径）
+            card.set_custom_info_text(folder_data['original_path'])
+            
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            list_content_layout.addWidget(card)
+            
+            folder_cards.append({
+                'card': card,
+                'original_name': folder_name,
+                'current_name': folder_name
+            })
+            
+            # 连接重命名信号
+            def create_rename_handler(card_info):
+                def on_rename_requested(path):
+                    self._on_folder_rename(card_info, folder_name_mapping, dialog)
+                return on_rename_requested
+            
+            card.renameRequested.connect(create_rename_handler(folder_cards[-1]))
+        
+        list_content.setLayout(list_content_layout)
+        scroll_area.setWidget(list_content)
+        dialog.list_layout.addWidget(scroll_area)
+        dialog.list_widget.show()
+        
+        # 设置按钮
+        dialog.set_buttons(["确定导出", "取消"], Qt.Horizontal, ["primary", "normal"])
+        
+        def on_button_clicked(button_index):
+            if button_index == 0:  # 确定导出
+                dialog.close()
+                on_confirm_callback(folder_name_mapping)
+            elif button_index == 1:  # 取消
+                dialog.close()
+                on_cancel_callback()
+        
+        dialog.buttonClicked.connect(on_button_clicked)
+        dialog.exec()
+
+    def _on_folder_rename(self, folder_card_info, folder_name_mapping, parent_dialog):
+        """
+        处理文件夹重命名
+        
+        Args:
+            folder_card_info (dict): 文件夹卡片信息
+            folder_name_mapping (dict): 文件夹名称映射
+            parent_dialog (CustomMessageBox): 父对话框
+        """
+        from freeassetfilter.widgets.D_widgets import CustomInputBox
+        
+        original_name = folder_card_info['original_name']
+        current_name = folder_card_info['current_name']
+        
+        input_dialog = CustomMessageBox(self)
+        input_dialog.set_title("重命名文件夹")
+        input_dialog.set_text(f"请输入新的文件夹名称：")
+        input_dialog.set_input(text=current_name)
+        input_dialog.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
+        
+        result = None
+        def on_button_clicked(button_index):
+            nonlocal result
+            result = button_index
+            input_dialog.close()
+        
+        input_dialog.buttonClicked.connect(on_button_clicked)
+        input_dialog.exec()
+        
+        if result == 0:
+            new_name = input_dialog.get_input()
+            if new_name.strip() and new_name.strip() != current_name:
+                # 检查名称是否已存在
+                if new_name.strip() in folder_name_mapping.values() and new_name.strip() != current_name:
+                    # 名称已存在，显示错误提示
+                    error_msg = CustomMessageBox(self)
+                    error_msg.set_title("错误")
+                    error_msg.set_text(f"文件夹名称 '{new_name.strip()}' 已存在！")
+                    error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+                    error_msg.buttonClicked.connect(error_msg.close)
+                    error_msg.exec()
+                    return
+                
+                # 更新映射
+                folder_name_mapping[original_name] = new_name.strip()
+                folder_card_info['current_name'] = new_name.strip()
+                
+                # 更新卡片显示
+                folder_card_info['card'].set_file_path(
+                    folder_card_info['card'].file_path,
+                    display_name=new_name.strip()
+                )
     
-    def copy_files_categorized(self, files, target_dir):
+    def copy_files_categorized(self, files, target_dir, folder_name_mapping=None):
         """
         复制文件到目标目录（分类导出模式）
         按照文件原始所在目录创建同名文件夹进行分类存储
@@ -2089,6 +2294,7 @@ class FileStagingPool(QWidget):
         Args:
             files (list): 文件信息列表
             target_dir (str): 目标目录路径
+            folder_name_mapping (dict, optional): 文件夹名称映射，键为原始文件夹名，值为自定义文件夹名
         """
         import shutil
         import threading
@@ -2104,11 +2310,17 @@ class FileStagingPool(QWidget):
                 
                 # 获取原始文件所在的目录名
                 source_dir = os.path.dirname(source_path)
-                category_name = os.path.basename(source_dir)
+                original_category_name = os.path.basename(source_dir)
                 
                 # 如果无法获取目录名（例如在根目录），使用默认名称
-                if not category_name:
-                    category_name = "未分类"
+                if not original_category_name:
+                    original_category_name = "未分类"
+                
+                # 使用自定义文件夹名称（如果存在映射）
+                if folder_name_mapping and original_category_name in folder_name_mapping:
+                    category_name = folder_name_mapping[original_category_name]
+                else:
+                    category_name = original_category_name
                 
                 # 创建分类文件夹路径
                 category_dir = os.path.join(target_dir, category_name)

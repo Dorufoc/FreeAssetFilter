@@ -1082,14 +1082,14 @@ class MPVPlayerCore(QObject):
             # 检查是否正在关闭
             if self._stop_event.is_set():
                 return None
-            
+
             try:
-                rid, result = self._result_queue.get(block=True, timeout=0.01)
+                rid, result = self._result_queue.get(block=True, timeout=0.05)
                 if rid == result_id:
                     return result
             except queue.Empty:
                 continue
-        
+
         return None
     
     def initialize(self) -> bool:
@@ -1126,7 +1126,7 @@ class MPVPlayerCore(QObject):
         """启动信号处理定时器"""
         self._signal_timer = QTimer(self)
         self._signal_timer.timeout.connect(self._process_signal_queue)
-        self._signal_timer.start(50)  # 每50ms处理一次信号队列
+        self._signal_timer.start(100)  # 每100ms处理一次信号队列（从50ms优化为100ms，降低CPU占用）
     
     def _process_signal_queue(self):
         """处理信号队列（在主线程中执行）"""
