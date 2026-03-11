@@ -6,9 +6,9 @@ FreeAssetFilter PyInstaller 打包脚本
 使用PyInstaller将FreeAssetFilter打包为Windows可执行程序
 
 使用方法:
-    python Pyinstall_build.py
-    python Pyinstall_build.py --clean  # 清理后重新打包
-    python Pyinstall_build.py --skip-build  # 仅执行清理和验证
+    python Pyinstall_build.py              # 默认清理后重新打包
+    python Pyinstall_build.py --no-clean   # 禁用清理，保留之前的构建输出
+    python Pyinstall_build.py --skip-build # 仅执行清理和验证
 
 环境要求:
     - Python 3.9+
@@ -834,7 +834,7 @@ def clean_build():
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="FreeAssetFilter PyInstaller打包脚本")
-    parser.add_argument("--clean", action="store_true", help="清理后重新打包")
+    parser.add_argument("--no-clean", action="store_true", help="禁用清理，保留之前的构建输出")
     parser.add_argument("--skip-build", action="store_true", help="仅执行清理和验证，不打包")
     parser.add_argument("--no-clean-qt", action="store_true", help="不清理Qt6 DLL")
     parser.add_argument("--no-upx", action="store_true", help="不使用UPX压缩")
@@ -856,8 +856,8 @@ def main():
             print_success(f"压缩了 {upx_compressed} 个文件，节省 {upx_saved / 1024 / 1024:.2f} MB")
         return 0
     
-    # 清理
-    if args.clean:
+    # 清理（默认启用，除非指定 --no-clean）
+    if not args.no_clean:
         clean_build()
     
     if args.skip_build:
