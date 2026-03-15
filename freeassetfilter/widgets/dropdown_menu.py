@@ -61,6 +61,7 @@ class CustomDropdownMenu(QWidget):
         self._position = position  # 菜单位置："top" 或 "bottom"
         self._external_target_button = None  # 外部设置的目标按钮
         self._use_internal_button = use_internal_button  # 是否使用内部按钮
+        self._original_leave_event = None  # 保存原始的leaveEvent方法
         
         # 初始化UI
         self.init_ui()
@@ -501,6 +502,8 @@ class CustomDropdownMenu(QWidget):
             self.dropdown_menu.mousePressEvent = self._on_menu_click
             # 连接按钮的leaveEvent（仅在目标按钮是内部按钮时）
             if self.main_button and target_button is self.main_button:
+                # 保存原始的leaveEvent方法
+                self._original_leave_event = self.main_button.leaveEvent
                 self.main_button.leaveEvent = self._on_button_leave
             # 启动定时器，3秒后检查是否需要关闭菜单
             from PySide6.QtCore import QTimer
@@ -514,16 +517,21 @@ class CustomDropdownMenu(QWidget):
             self.dropdown_menu.close()
             self._menu_visible = False
             if self._external_target_button is None and self.main_button:
-                self.main_button.leaveEvent = None
+                # 恢复原始的leaveEvent方法
+                if self._original_leave_event is not None:
+                    self.main_button.leaveEvent = self._original_leave_event
+                self._original_leave_event = None
             
     def _on_menu_close(self, event):
         """
         菜单关闭事件处理
         """
         self._menu_visible = False
-        # 断开按钮的leaveEvent（仅在存在内部按钮时）
+        # 恢复按钮的leaveEvent（仅在存在内部按钮时）
         if self.main_button:
-            self.main_button.leaveEvent = None
+            if self._original_leave_event is not None:
+                self.main_button.leaveEvent = self._original_leave_event
+            self._original_leave_event = None
         # 调用原始的closeEvent
         super(CustomControlMenu, self.dropdown_menu).closeEvent(event)
         

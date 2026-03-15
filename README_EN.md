@@ -621,10 +621,7 @@ Thanks to the following open-source projects for their contributions:
 
 #### Archive Processing
 
-- [rarfile](https://github.com/markokr/rarfile) - RAR file extraction
-- [py7zr](https://github.com/miurahr/py7zr) - 7Z file extraction
-- [pycdlib](https://github.com/clalancette/pycdlib) - ISO file processing
-- [pycryptodomex](https://www.pycryptodome.org/) - Cryptographic algorithm library
+- [7-Zip](https://www.7-zip.org/) - 7z format open source implementation and LZMA/LZMA2 algorithms
 
 #### Scientific Computing
 

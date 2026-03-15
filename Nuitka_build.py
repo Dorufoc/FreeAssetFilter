@@ -367,8 +367,9 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
         f"--output-dir={output_dir}",
         "--windows-console-mode=disable",  # Windows GUI应用程序，不显示控制台
         "--show-progress",  # 显示编译进度
-        "--jobs=4",  # 并行编译
-        "--lto=yes",  # 启用链接时优化
+        "--jobs=2",  # 减少并行编译任务数以降低内存使用
+        "--lto=no",  # 禁用链接时优化以减少内存使用
+        "--low-memory",  # 低内存模式
     ]
     
     # 添加图标参数

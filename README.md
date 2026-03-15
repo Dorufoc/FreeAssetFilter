@@ -621,10 +621,7 @@ GNU Affero General Public License for more details.
 
 #### 压缩包处理
 
-- [rarfile](https://github.com/markokr/rarfile) - RAR 文件解压
-- [py7zr](https://github.com/miurahr/py7zr) - 7Z 文件解压
-- [pycdlib](https://github.com/clalancette/pycdlib) - ISO 文件处理
-- [pycryptodomex](https://www.pycryptodome.org/) - 加密算法库
+- [7-Zip](https://www.7-zip.org/) - 7z 格式开源实现与 LZMA/LZMA2 算法
 
 #### 科学计算
 

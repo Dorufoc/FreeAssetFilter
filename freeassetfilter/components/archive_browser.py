@@ -48,24 +48,8 @@ from PySide6.QtGui import QFont, QIcon
 # 导入os模块用于路径处理
 import os
 
-# 导入压缩包处理库
-import zipfile
-import tarfile
-
-try:
-    import rarfile
-except ImportError:
-    rarfile = None
-
-try:
-    import py7zr
-except ImportError:
-    py7zr = None
-
-try:
-    import pycdlib
-except ImportError:
-    pycdlib = None
+# 导入 7z 核心模块
+from freeassetfilter.core.py7z_core import get_7z_core
 
 
 class ArchiveBrowser(QWidget):
@@ -95,20 +79,23 @@ class ArchiveBrowser(QWidget):
         self.is_encrypted = False  # 压缩包是否加密
         self.archive_type = None  # 压缩包类型
         self.archive_content = []  # 压缩包内容列表
-        
+
+        # 初始化 7z 核心模块
+        self._7z_core = get_7z_core()
+
         # 初始化文件图标提供者
         self.icon_provider = QFileIconProvider()
-        
+
         # 初始化编码相关属性
-        self.manual_encoding = "gbk"  # 默认使用GBK编码
+        self.manual_encoding = "utf-8"  # 默认使用UTF-8编码（7z默认输出UTF-8）
         self.supported_encodings = [
-            "utf-8", "gbk", "gb2312", "iso-8859-1", 
+            "utf-8", "gbk", "gb2312", "iso-8859-1",
             "ascii", "utf-16", "utf-16le", "utf-16be"
         ]  # 支持的编码列表
-        
+
         # 初始化悬浮提示工具
         self.hover_tooltip = HoverTooltip(self)
-        
+
         # 初始化UI
         self.init_ui()
     
@@ -208,9 +195,9 @@ class ArchiveBrowser(QWidget):
         encoding_items = []
         for enc in self.supported_encodings:
             encoding_items.append({"text": enc.upper(), "data": enc})
-        # 设置默认选择为GBK
+        # 设置默认选择为UTF-8（7z默认输出UTF-8）
         self.encoding_combo.set_items(encoding_items)
-        self.encoding_combo.set_current_item({"text": "GBK", "data": "gbk"})
+        self.encoding_combo.set_current_item({"text": "UTF-8", "data": "utf-8"})
         # 连接选择变化信号
         self.encoding_combo.itemClicked.connect(self._on_encoding_changed)
         path_layout.addWidget(self.encoding_combo)
@@ -310,8 +297,8 @@ class ArchiveBrowser(QWidget):
 
         # 创建文件列表
         self.files_list = QListWidget()
-        self.files_list.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.files_list.itemClicked.connect(self.on_item_clicked)
+        # 双击事件通过重载 mouseDoubleClickEvent 处理，以区分鼠标按键
 
         # 为 QListWidget 设置自定义丝滑滚动条
         self.files_list.setVerticalScrollBar(D_ScrollBar(self.files_list, Qt.Vertical))
@@ -375,6 +362,9 @@ class ArchiveBrowser(QWidget):
 
         # 连接鼠标点击事件，用于检测点击空白区域
         self.files_list.mousePressEvent = self._on_list_mouse_press
+
+        # 连接鼠标双击事件，只响应左键双击
+        self.files_list.mouseDoubleClickEvent = self._on_list_mouse_double_click
 
         # 设置 QListWidget 的样式（添加圆角背景，并在样式表中设置字体大小）
         self.files_list.setStyleSheet(f"""
@@ -506,10 +496,10 @@ class ArchiveBrowser(QWidget):
             self._detect_archive_type()
             self._detect_encryption()
             self.current_path = ""
-            # 重置编码为默认值GBK
-            self.manual_encoding = "gbk"
+            # 重置编码为默认值UTF-8（7z默认输出UTF-8）
+            self.manual_encoding = "utf-8"
             # 更新编码选择下拉框
-            self.encoding_combo.set_current_item({"text": "GBK", "data": "gbk"})
+            self.encoding_combo.set_current_item({"text": "UTF-8", "data": "utf-8"})
             self.refresh()
         else:
             QMessageBox.warning(self, "警告", "无效的压缩包路径")
@@ -526,46 +516,31 @@ class ArchiveBrowser(QWidget):
     def _detect_archive_type(self):
         """
         检测压缩包类型
+        使用 7z 核心模块获取类型
         """
-        ext = os.path.splitext(self.archive_path)[1].lower()
-        
-        if ext in ['.zip']:
-            self.archive_type = 'zip'
-        elif ext in ['.rar']:
-            self.archive_type = 'rar'
-        elif ext in ['.tar', '.gz', '.tgz', '.bz2', '.xz']:
-            self.archive_type = 'tar'
-        elif ext in ['.7z']:
-            self.archive_type = '7z'
-        elif ext in ['.iso']:
-            self.archive_type = 'iso'
+        if self.archive_path and self._7z_core:
+            self.archive_type = self._7z_core.get_archive_type(self.archive_path)
         else:
             self.archive_type = 'unknown'
-        
+
         self.type_label.setText(f"压缩包类型: {self.archive_type.upper()}")
     
     def _detect_encryption(self):
         """
         检测压缩包是否加密
+        使用 7z 核心模块检测
         """
         self.is_encrypted = False
-        
+
         try:
-            if self.archive_type == 'zip':
-                with zipfile.ZipFile(self.archive_path, 'r') as zf:
-                    for info in zf.infolist():
-                        if info.flag_bits & 0x1:  # 检查加密标志
-                            self.is_encrypted = True
-                            break
-            elif self.archive_type == 'rar' and rarfile:
-                with rarfile.RarFile(self.archive_path, 'r') as rf:
-                    self.is_encrypted = rf.needs_password()
-            elif self.archive_type == '7z' and py7zr:
-                with py7zr.SevenZipFile(self.archive_path, mode='r') as zf:
-                    self.is_encrypted = zf.needs_password()
-        except (zipfile.BadZipFile, tarfile.TarError, OSError, IOError) as e:
+            if self.archive_path and self._7z_core:
+                self.is_encrypted = self._7z_core.is_encrypted(
+                    self.archive_path,
+                    encoding=self.manual_encoding
+                )
+        except Exception as e:
             warning(f"检测加密状态失败: {e}")
-        
+
         self.encryption_label.setText(f"加密状态: {'已加密' if self.is_encrypted else '未加密'}")
     
     def refresh(self):
@@ -574,28 +549,26 @@ class ArchiveBrowser(QWidget):
         """
         if not self.archive_path:
             return
-        
+
         # 更新路径显示
         self.path_edit.set_text(f"{os.path.basename(self.archive_path)}{'/' + self.current_path if self.current_path else ''}")
-        
+
         # 清空文件列表
         self.files_list.clear()
-        
+
         # 获取当前路径下的文件和文件夹
         try:
             self.archive_content = self._get_files()
-        except (zipfile.BadZipFile, tarfile.TarError, OSError, IOError, RuntimeError) as e:
+        except (OSError, IOError, RuntimeError) as e:
             QMessageBox.critical(self, "错误", f"读取压缩包失败: {e}")
             return
-        
-        # 添加返回上一级项（如果不是根目录）
-        if self.current_path:
-            back_item = QListWidgetItem()
-            back_item.setText("..")
-            back_item.setData(Qt.UserRole, {"name": "..", "path": "..", "is_dir": True})
-            # 应用全局字体
-            back_item.setFont(self.scaled_font)
-            self.files_list.addItem(back_item)
+
+        # 检测是否有编码解码错误（文件名中包含替换字符）
+        has_encoding_error = False
+        for file in self.archive_content:
+            if '\ufffd' in file.get("name", ""):
+                has_encoding_error = True
+                break
 
         # 添加文件和文件夹项
         for file in self.archive_content:
@@ -623,631 +596,76 @@ class ArchiveBrowser(QWidget):
                 item.setIcon(file_icon)
 
             self.files_list.addItem(item)
-        
+
+        # 如果有编码错误，在列表顶部添加提示项
+        if has_encoding_error:
+            self._add_encoding_error_item()
+
         # 更新返回按钮状态（注释掉，使按钮始终保持启用状态）
         # self.back_btn.setEnabled(bool(self.current_path))
-        
+
         # 更新文件计数
         #self.file_count_label.setText(f"文件数量: {len(self.archive_content)}")
-        
+
         # 发送路径变化信号
         self.path_changed.emit(self.current_path)
+
+    def _add_encoding_error_item(self):
+        """
+        添加编码错误提示项到文件列表顶部
+        """
+        # 创建提示项
+        warning_item = QListWidgetItem()
+        warning_item.setText("⚠️ 编码错误：当前编码无法解析部分文件名，请尝试切换编码")
+        warning_item.setFlags(warning_item.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEnabled)  # 禁用选择和交互
+
+        # 获取当前主题颜色
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+
+        current_colors = settings_manager.get_setting("appearance.colors", {
+            "secondary_color": "#FFFFFF",
+            "base_color": "#212121",
+            "auxiliary_color": "#3D3D3D",
+            "normal_color": "#717171",
+            "accent_color": "#B036EE"
+        })
+
+        # 使用橙色/红色作为警告色
+        warning_color = "#FF9800"  # 橙色
+
+        # 设置提示项样式
+        warning_item.setBackground(Qt.transparent)
+        warning_item.setForeground(Qt.red)
+
+        # 插入到列表顶部
+        self.files_list.insertItem(0, warning_item)
     
     def _get_files(self):
         """
         获取当前路径下的文件和文件夹
-        
+        使用 7z 核心模块统一处理所有压缩格式
+
         Returns:
             list: 文件和文件夹列表
         """
-        files = []
+        if not self.archive_path or not self._7z_core:
+            return []
 
-        if self.archive_type == 'zip':
-            files = self._get_zip_files()
-        elif self.archive_type == 'rar':
-            if rarfile:
-                files = self._get_rar_files()
-            else:
-                # 如果rarfile库不可用，显示错误信息
-                raise RuntimeError("需要rarfile库来处理RAR文件。请使用pip install rarfile安装。")
-        elif self.archive_type == 'tar':
-            files = self._get_tar_files()
-        elif self.archive_type == '7z':
-            if py7zr:
-                files = self._get_7z_files()
-            else:
-                # 如果py7zr库不可用，显示错误信息
-                raise RuntimeError("需要py7zr库来处理7z文件。请使用pip install py7zr安装。")
-        elif self.archive_type == 'iso':
-            if pycdlib:
-                files = self._get_iso_files()
-            else:
-                # 如果pycdlib库不可用，显示错误信息
-                raise RuntimeError("需要pycdlib库来处理ISO文件。请使用pip install pycdlib安装。")
-        else:
-            # 未知压缩包类型
-            raise ValueError(f"不支持的压缩包类型: {self.archive_type}")
-
-        return files
-    
-    def _get_zip_files(self):
-        """
-        获取ZIP文件中的文件列表
-        """
-        files = []
-        dirs = set()
-        
-        with zipfile.ZipFile(self.archive_path, 'r') as zf:
-            for info in zf.infolist():
-                # 处理ZIP文件的特殊情况，获取原始bytes文件名
-                # 注意：Python 3.6+中，zipfile会尝试自动解码文件名，但可能不准确
-                # 使用filename属性获取系统默认编码解码的结果
-                # 使用orig_filename获取原始编码的字符串
-                # 对于ZIP文件，我们需要手动处理编码
-                try:
-                    # 尝试直接访问filename属性（Python 3.6+）
-                    filename_str = info.filename
-                    # 对于ZIP文件，我们需要获取原始bytes进行正确编码检测
-                    # 使用namelist()获取的是已经解码的字符串，所以我们需要特殊处理
-                    # 遍历namelist，找到匹配的项
-                    for name in zf.namelist():
-                        if name == filename_str:
-                            # 找到匹配项，尝试获取原始bytes
-                            # 注意：zipfile内部使用CP437编码解码文件名，所以我们需要重新编码
-                            # 然后使用我们的编码检测逻辑
-                            filename_bytes = name.encode('cp437')
-                            file_path = self._decode_filename(filename_bytes)
-                            break
-                    else:
-                        # 没有找到匹配项，直接使用filename_str
-                        file_path = filename_str
-                except (UnicodeEncodeError, UnicodeDecodeError) as e:
-                    # 编码错误时，直接使用orig_filename
-                    debug(f"ZIP文件名编码处理失败: {e}, 使用原始文件名")
-                    if isinstance(info.orig_filename, str):
-                        file_path = info.orig_filename
-                    else:
-                        file_path = self._decode_filename(info.orig_filename)
-                
-                # 跳过隐藏文件
-                if os.path.basename(file_path).startswith('.'):
-                    continue
-                
-                # 如果是目录，添加到目录集合
-                if file_path.endswith('/'):
-                    dirs.add(file_path)
-                    continue
-                
-                # 检查文件是否在当前路径下
-                if self.current_path:
-                    if not file_path.startswith(self.current_path + '/'):
-                        continue
-                    # 获取相对路径
-                    rel_path = file_path[len(self.current_path) + 1:]
-                else:
-                    rel_path = file_path
-                
-                # 检查是否是当前路径下的直接子项
-                if '/' in rel_path:
-                    # 是子目录下的文件，只添加目录
-                    sub_dir = rel_path.split('/')[0]
-                    if sub_dir:  # 确保子目录名不为空
-                        dirs.add(sub_dir)
-                else:
-                    # 是当前目录下的文件
-                    files.append({
-                        "name": rel_path,
-                        "path": file_path,
-                        "is_dir": False,
-                        "size": info.file_size,
-                        "modified": datetime(*info.date_time).isoformat(),
-                        "suffix": os.path.splitext(rel_path)[1].lower()[1:] if '.' in rel_path else ''
-                    })
-        
-        # 添加目录到文件列表
-        for dir_name in sorted(dirs):
-            if self.current_path:
-                if not dir_name.startswith(self.current_path + '/'):
-                    continue
-                rel_dir = dir_name[len(self.current_path) + 1:].rstrip('/')
-                if '/' in rel_dir:
-                    # 只添加直接子目录
-                    rel_dir = rel_dir.split('/')[0]
-                    if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
-                        files.append({
-                            "name": rel_dir,
-                            "path": f"{self.current_path}/{rel_dir}",
-                            "is_dir": True,
-                            "size": 0,
-                            "modified": "",
-                            "suffix": ""
-                        })
-                else:
-                    files.append({
-                        "name": rel_dir,
-                        "path": dir_name.rstrip('/'),
-                        "is_dir": True,
-                        "size": 0,
-                        "modified": "",
-                        "suffix": ""
-                    })
-            else:
-                if '/' in dir_name:
-                    # 只添加根目录下的直接子目录
-                    rel_dir = dir_name.split('/')[0]
-                    if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
-                        files.append({
-                            "name": rel_dir,
-                            "path": rel_dir,
-                            "is_dir": True,
-                            "size": 0,
-                            "modified": "",
-                            "suffix": ""
-                        })
-                else:
-                    files.append({
-                        "name": dir_name.rstrip('/'),
-                        "path": dir_name.rstrip('/'),
-                        "is_dir": True,
-                        "size": 0,
-                        "modified": "",
-                        "suffix": ""
-                    })
-        
-        # 去重并排序
-        unique_files = {}
-        for file in files:
-            unique_files[file["name"]] = file
-        
-        return sorted(unique_files.values(), key=lambda x: (not x["is_dir"], x["name"].lower()))
-    
-    def _get_rar_files(self):
-        """
-        获取RAR文件中的文件列表
-        """
-        files = []
-        dirs = set()
-        
-        with rarfile.RarFile(self.archive_path, 'r') as rf:
-            for info in rf.infolist():
-                # 获取原始文件名
-                file_path = info.filename
-                
-                # 如果是bytes类型，直接解码；否则直接使用字符串
-                if isinstance(file_path, bytes):
-                    decoded_path = self._decode_filename(file_path)
-                else:
-                    # 已经是字符串，直接使用
-                    decoded_path = file_path
-                
-                # 跳过隐藏文件
-                if os.path.basename(decoded_path).startswith('.'):
-                    continue
-                
-                # 检查是否是目录（使用多种方式确保准确性）
-                is_dir = info.isdir() or decoded_path.endswith('/') or decoded_path.endswith('\\')
-                
-                if is_dir:
-                    # 确保目录路径格式统一
-                    dir_path = decoded_path.rstrip('/\\')
-                    dirs.add(dir_path)
-                    continue
-                
-                # 更新file_path为解码后的路径
-                file_path = decoded_path
-                
-                # 检查文件是否在当前路径下
-                if self.current_path:
-                    if not file_path.startswith(self.current_path + '/'):
-                        continue
-                    # 获取相对路径
-                    rel_path = file_path[len(self.current_path) + 1:]
-                else:
-                    rel_path = file_path
-                
-                # 检查是否是当前路径下的直接子项
-                if '/' in rel_path or '\\' in rel_path:
-                    # 是子目录下的文件，只添加目录
-                    # 处理不同的路径分隔符
-                    sub_dir = rel_path.split('/')[0] if '/' in rel_path else rel_path.split('\\')[0]
-                    if sub_dir:  # 确保子目录名不为空
-                        # 构建完整的目录路径
-                        full_sub_dir = sub_dir if not self.current_path else f"{self.current_path}/{sub_dir}"
-                        dirs.add(full_sub_dir)
-                else:
-                    # 是当前目录下的文件
-                    # 使用正确的属性名称获取文件大小和修改时间
-                    file_size = getattr(info, 'size', 0)
-                    file_mtime = getattr(info, 'mtime', 0)
-                    
-                    # 处理修改时间，确保是整数时间戳
-                    try:
-                        # 尝试将修改时间转换为整数时间戳
-                        if isinstance(file_mtime, (int, float)):
-                            # 已经是时间戳格式
-                            timestamp = file_mtime
-                        else:
-                            # 尝试从datetime对象或其他格式转换
-                            import time
-                            # 检查是否有timestamp方法
-                            if hasattr(file_mtime, 'timestamp'):
-                                timestamp = file_mtime.timestamp()
-                            # 检查是否有struct_time属性
-                            elif hasattr(file_mtime, 'timetuple'):
-                                timestamp = time.mktime(file_mtime.timetuple())
-                            else:
-                                # 无法转换，使用当前时间
-                                timestamp = time.time()
-                        
-                        modified_time = datetime.fromtimestamp(timestamp).isoformat()
-                    except (ValueError, TypeError, OSError, OverflowError) as e:
-                        # 转换失败，使用空字符串
-                        debug(f"转换RAR文件修改时间失败: {e}, 文件: {rel_path}")
-                        modified_time = ""
-                    
-                    files.append({
-                        "name": rel_path,
-                        "path": file_path,
-                        "is_dir": False,
-                        "size": file_size,
-                        "modified": modified_time,
-                        "suffix": os.path.splitext(rel_path)[1].lower()[1:] if '.' in rel_path else ''
-                    })
-        
-        # 添加目录到文件列表
-        for dir_name in sorted(dirs):
-            if self.current_path:
-                if not dir_name.startswith(self.current_path + '/'):
-                    continue
-                # 获取相对目录路径
-                rel_dir = dir_name[len(self.current_path) + 1:]
-                # 检查是否是直接子目录
-                if '/' in rel_dir or '\\' in rel_dir:
-                    # 只添加直接子目录
-                    # 处理不同的路径分隔符
-                    rel_dir = rel_dir.split('/')[0] if '/' in rel_dir else rel_dir.split('\\')[0]
-                    # 确保该目录尚未添加
-                    if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
-                        files.append({
-                            "name": rel_dir,
-                            "path": f"{self.current_path}/{rel_dir}",
-                            "is_dir": True,
-                            "size": 0,
-                            "modified": "",
-                            "suffix": ""
-                        })
-                else:
-                    # 直接子目录，直接添加
-                    files.append({
-                        "name": rel_dir,
-                        "path": dir_name,
-                        "is_dir": True,
-                        "size": 0,
-                        "modified": "",
-                        "suffix": ""
-                    })
-            else:
-                # 根目录下的目录
-                if '/' in dir_name or '\\' in dir_name:
-                    # 只添加直接子目录
-                    # 处理不同的路径分隔符
-                    rel_dir = dir_name.split('/')[0] if '/' in dir_name else dir_name.split('\\')[0]
-                    # 确保该目录尚未添加
-                    if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
-                        files.append({
-                            "name": rel_dir,
-                            "path": rel_dir,
-                            "is_dir": True,
-                            "size": 0,
-                            "modified": "",
-                            "suffix": ""
-                        })
-                else:
-                    # 直接子目录，直接添加
-                    files.append({
-                        "name": dir_name,
-                        "path": dir_name,
-                        "is_dir": True,
-                        "size": 0,
-                        "modified": "",
-                        "suffix": ""
-                    })
-        
-        # 去重并排序
-        unique_files = {}
-        for file in files:
-            unique_files[file["name"]] = file
-        
-        return sorted(unique_files.values(), key=lambda x: (not x["is_dir"], x["name"].lower()))
-    
-    def _get_tar_files(self):
-        """
-        获取TAR文件中的文件列表
-        """
-        files = []
-        dirs = set()
-        
-        with tarfile.open(self.archive_path, 'r') as tf:
-            for info in tf.getmembers():
-                # 获取原始文件名
-                file_path = info.name
-                
-                # 如果是bytes类型，直接解码；否则直接使用字符串
-                if isinstance(file_path, bytes):
-                    decoded_path = self._decode_filename(file_path)
-                else:
-                    # 已经是字符串，直接使用
-                    decoded_path = file_path
-                
-                # 跳过隐藏文件
-                if os.path.basename(decoded_path).startswith('.'):
-                    continue
-                
-                # 如果是目录，添加到目录集合
-                if info.isdir():
-                    dirs.add(decoded_path)
-                    continue
-                
-                # 更新file_path为解码后的路径
-                file_path = decoded_path
-                
-                # 检查文件是否在当前路径下
-                if self.current_path:
-                    if not file_path.startswith(self.current_path + '/'):
-                        continue
-                    # 获取相对路径
-                    rel_path = file_path[len(self.current_path) + 1:]
-                else:
-                    rel_path = file_path
-                
-                # 检查是否是当前路径下的直接子项
-                if '/' in rel_path:
-                    # 是子目录下的文件，只添加目录
-                    sub_dir = rel_path.split('/')[0]
-                    if sub_dir:  # 确保子目录名不为空
-                        dirs.add(sub_dir)
-                else:
-                    # 是当前目录下的文件
-                    files.append({
-                        "name": rel_path,
-                        "path": file_path,
-                        "is_dir": False,
-                        "size": info.size,
-                        "modified": datetime.fromtimestamp(info.mtime).isoformat(),
-                        "suffix": os.path.splitext(rel_path)[1].lower()[1:] if '.' in rel_path else ''
-                    })
-        
-        # 添加目录到文件列表
-        for dir_name in sorted(dirs):
-            if self.current_path:
-                if not dir_name.startswith(self.current_path + '/'):
-                    continue
-                rel_dir = dir_name[len(self.current_path) + 1:]
-                if '/' in rel_dir:
-                    # 只添加直接子目录
-                    rel_dir = rel_dir.split('/')[0]
-                    if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
-                        files.append({
-                            "name": rel_dir,
-                            "path": f"{self.current_path}/{rel_dir}",
-                            "is_dir": True,
-                            "size": 0,
-                            "modified": "",
-                            "suffix": ""
-                        })
-                else:
-                    files.append({
-                        "name": rel_dir,
-                        "path": dir_name,
-                        "is_dir": True,
-                        "size": 0,
-                        "modified": "",
-                        "suffix": ""
-                    })
-            else:
-                if '/' in dir_name:
-                    # 只添加根目录下的直接子目录
-                    rel_dir = dir_name.split('/')[0]
-                    if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
-                        files.append({
-                            "name": rel_dir,
-                            "path": rel_dir,
-                            "is_dir": True,
-                            "size": 0,
-                            "modified": "",
-                            "suffix": ""
-                        })
-                else:
-                    files.append({
-                        "name": dir_name,
-                        "path": dir_name,
-                        "is_dir": True,
-                        "size": 0,
-                        "modified": "",
-                        "suffix": ""
-                    })
-        
-        # 去重并排序
-        unique_files = {}
-        for file in files:
-            unique_files[file["name"]] = file
-        
-        return sorted(unique_files.values(), key=lambda x: (not x["is_dir"], x["name"].lower()))
-    
-    def _get_7z_files(self):
-        """
-        获取7z文件中的文件列表
-        """
-        files = []
-        dirs = set()
-        
-        with py7zr.SevenZipFile(self.archive_path, mode='r') as zf:
-            for info in zf.list():
-                # 获取原始文件名
-                file_path = info.filename
-                
-                # 如果是bytes类型，直接解码；否则直接使用字符串
-                if isinstance(file_path, bytes):
-                    decoded_path = self._decode_filename(file_path)
-                else:
-                    # 已经是字符串，直接使用
-                    decoded_path = file_path
-                
-                # 跳过隐藏文件
-                if os.path.basename(decoded_path).startswith('.'):
-                    continue
-                
-                # 如果是目录，添加到目录集合
-                if decoded_path.endswith('/'):
-                    dirs.add(decoded_path)
-                    continue
-                
-                # 更新file_path为解码后的路径
-                file_path = decoded_path
-                
-                # 检查文件是否在当前路径下
-                if self.current_path:
-                    if not file_path.startswith(self.current_path + '/'):
-                        continue
-                    # 获取相对路径
-                    rel_path = file_path[len(self.current_path) + 1:]
-                else:
-                    rel_path = file_path
-                
-                # 检查是否是当前路径下的直接子项
-                if '/' in rel_path:
-                    # 是子目录下的文件，只添加目录
-                    sub_dir = rel_path.split('/')[0]
-                    if sub_dir:  # 确保子目录名不为空
-                        dirs.add(sub_dir if not self.current_path else f"{self.current_path}/{sub_dir}")
-                else:
-                    # 是当前目录下的文件
-                    # 修复py7zr库FileInfo对象的属性访问
-                    file_size = getattr(info, 'uncompressed_size', 0)  # 使用正确的属性名
-                    file_mtime = getattr(info, 'mtime', 0)  # 使用正确的属性名
-                    files.append({
-                        "name": rel_path,
-                        "path": file_path,
-                        "is_dir": False,
-                        "size": file_size,
-                        "modified": datetime.fromtimestamp(file_mtime).isoformat() if file_mtime else "",
-                        "suffix": os.path.splitext(rel_path)[1].lower()[1:] if '.' in rel_path else ''
-                    })
-        
-        # 添加目录到文件列表
-        for dir_name in sorted(dirs):
-            if self.current_path:
-                if not dir_name.startswith(self.current_path + '/'):
-                    continue
-                rel_dir = dir_name[len(self.current_path) + 1:].rstrip('/')
-                if '/' in rel_dir:
-                    # 只添加直接子目录
-                    rel_dir = rel_dir.split('/')[0]
-                    if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
-                        files.append({
-                            "name": rel_dir,
-                            "path": f"{self.current_path}/{rel_dir}",
-                            "is_dir": True,
-                            "size": 0,
-                            "modified": "",
-                            "suffix": ""
-                        })
-                else:
-                    files.append({
-                        "name": rel_dir,
-                        "path": dir_name.rstrip('/'),
-                        "is_dir": True,
-                        "size": 0,
-                        "modified": "",
-                        "suffix": ""
-                    })
-            else:
-                if '/' in dir_name:
-                    # 只添加根目录下的直接子目录
-                    rel_dir = dir_name.split('/')[0]
-                    if rel_dir not in [f["name"] for f in files if f["is_dir"]]:
-                        files.append({
-                            "name": rel_dir,
-                            "path": rel_dir,
-                            "is_dir": True,
-                            "size": 0,
-                            "modified": "",
-                            "suffix": ""
-                        })
-                else:
-                    files.append({
-                        "name": dir_name.rstrip('/'),
-                        "path": dir_name.rstrip('/'),
-                        "is_dir": True,
-                        "size": 0,
-                        "modified": "",
-                        "suffix": ""
-                    })
-        
-        # 去重并排序
-        unique_files = {}
-        for file in files:
-            unique_files[file["name"]] = file
-        
-        return sorted(unique_files.values(), key=lambda x: (not x["is_dir"], x["name"].lower()))
-    
-    def _get_iso_files(self):
-        """
-        获取ISO文件中的文件列表
-        """
-        files = []
-        dirs = set()
-        
-        iso = pycdlib.PyCdlib()
-        iso.open(self.archive_path)
-        
-        # ISO文件系统的根目录是'/'
-        root_path = '/' if not self.current_path else f'/{self.current_path}'
-        # 标准化路径（去除尾部斜杠，除了根目录）
-        normalized_root = root_path.rstrip('/') if root_path != '/' else root_path
-        
         try:
-            # 使用 walk 方法遍历ISO文件系统
-            for dirname, dirlist, filelist in iso.walk(iso_path=root_path):
-                # 标准化当前目录路径用于比较
-                normalized_dirname = dirname.rstrip('/') if dirname != '/' else dirname
-                # 只处理当前目录下的直接子项
-                if normalized_dirname == normalized_root:
-                    # 添加目录
-                    for dir_name in dirlist:
-                        # 跳过隐藏文件
-                        if dir_name.startswith('.'):
-                            continue
-                        dirs.add(dir_name)
-                    
-                    # 添加文件
-                    for file_name in filelist:
-                        # 跳过隐藏文件
-                        if file_name.startswith('.'):
-                            continue
-                        files.append({
-                            "name": file_name,
-                            "path": file_name if not self.current_path else f"{self.current_path}/{file_name}",
-                            "is_dir": False,
-                            "size": 0,  # ISO文件系统获取大小较复杂，暂时设为0
-                            "modified": "",  # ISO文件系统获取修改时间较复杂，暂时设为空
-                            "suffix": os.path.splitext(file_name)[1].lower()[1:] if '.' in file_name else ''
-                        })
-        finally:
-            iso.close()
-        
-        # 添加目录到文件列表
-        for dir_name in sorted(dirs):
-            files.append({
-                "name": dir_name,
-                "path": dir_name if not self.current_path else f"{self.current_path}/{dir_name}",
-                "is_dir": True,
-                "size": 0,
-                "modified": "",
-                "suffix": ""
-            })
-        
-        return sorted(files, key=lambda x: (not x["is_dir"], x["name"].lower()))
+            files = self._7z_core.list_archive(
+                self.archive_path,
+                current_path=self.current_path,
+                encoding=self.manual_encoding
+            )
+            return files
+        except Exception as e:
+            error(f"获取压缩包文件列表失败: {e}")
+            raise RuntimeError(f"读取压缩包失败: {e}")
     
     def go_to_parent(self):
         """
@@ -1264,14 +682,11 @@ class ArchiveBrowser(QWidget):
         双击列表项事件处理
         """
         file_info = item.data(Qt.UserRole)
-        if file_info["is_dir"]:
-            if file_info["name"] == "..":
-                self.go_to_parent()
-            elif file_info["name"]:  # 确保文件名不为空
-                # 进入子目录
-                new_path = f"{self.current_path}/{file_info['name']}" if self.current_path else file_info['name']
-                self.current_path = new_path
-                self.refresh()
+        if file_info["is_dir"] and file_info["name"]:  # 确保文件名不为空
+            # 进入子目录
+            new_path = f"{self.current_path}/{file_info['name']}" if self.current_path else file_info['name']
+            self.current_path = new_path
+            self.refresh()
     
     def on_item_clicked(self, item):
         """
@@ -1284,10 +699,16 @@ class ArchiveBrowser(QWidget):
         """
         处理列表区域的鼠标点击事件
         当点击空白区域时取消所有选中状态
+        支持鼠标侧键返回上级目录
 
         参数：
             event: 鼠标事件对象
         """
+        # 处理鼠标侧键返回上级（XButton1 通常是鼠标上的"后退"按钮）
+        if event.button() == Qt.XButton1:
+            self.go_to_parent()
+            return
+
         # 获取点击位置对应的列表项
         item = self.files_list.itemAt(event.pos())
 
@@ -1302,6 +723,25 @@ class ArchiveBrowser(QWidget):
 
         # 调用父类的鼠标按下事件处理（保持原有的交互行为）
         QListWidget.mousePressEvent(self.files_list, event)
+
+    def _on_list_mouse_double_click(self, event):
+        """
+        处理列表区域的鼠标双击事件
+        只响应左键双击，其他按键不响应
+
+        参数：
+            event: 鼠标事件对象
+        """
+        # 只响应左键双击
+        if event.button() == Qt.LeftButton:
+            # 获取双击位置对应的列表项
+            item = self.files_list.itemAt(event.pos())
+            if item is not None:
+                # 调用双击处理
+                self.on_item_double_clicked(item)
+
+        # 调用父类的鼠标双击事件处理（保持原有的交互行为）
+        QListWidget.mouseDoubleClickEvent(self.files_list, event)
 
 
 if __name__ == "__main__":

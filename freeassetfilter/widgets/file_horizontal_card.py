@@ -802,7 +802,7 @@ class CustomFileHorizontalCard(QWidget):
             icon_name = "字体"
         elif suffix in ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a']:
             icon_name = "音乐"
-        elif suffix in ['zip', 'rar', '7z', 'tar', 'gz', 'bz2']:
+        elif suffix in ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'lzma', 'iso', 'cab', 'arj']:
             icon_name = "压缩文件"
         else:
             icon_name = "未知底板"

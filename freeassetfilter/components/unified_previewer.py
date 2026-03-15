@@ -442,6 +442,7 @@ class UnifiedPreviewer(QWidget):
         self.open_with_system_button.show()
         self.copy_to_clipboard_button.show()
         self.locate_in_selector_button.show()
+        self.clear_preview_button.show()
     
     def _cleanup_preview_thread(self):
         """
@@ -560,8 +561,11 @@ class UnifiedPreviewer(QWidget):
                 label_widget.setText("")
                 value_widget.setPlainText("-")
         
-        # 隐藏清除预览按钮
+        # 隐藏所有按钮
         self.clear_preview_button.hide()
+        self.open_with_system_button.hide()
+        self.copy_to_clipboard_button.hide()
+        self.locate_in_selector_button.hide()
         
         # 重置当前文件信息
         self.current_file_info = None
@@ -594,8 +598,8 @@ class UnifiedPreviewer(QWidget):
             # 显示提示弹窗
             from freeassetfilter.widgets.D_widgets import CustomMessageBox
             msg_box = CustomMessageBox(self)
-            msg_box.set_title("提示")
-            msg_box.set_text("文件已复制到剪切板")
+            msg_box.set_title("复制成功")
+            msg_box.set_text("文件已复制到剪切板\n现在您可以将剪切板内的文件进行分享")
             msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             msg_box.exec()
         except Exception as e:

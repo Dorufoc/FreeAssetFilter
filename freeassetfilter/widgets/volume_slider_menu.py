@@ -44,6 +44,7 @@ class VolumeSliderMenu(QWidget):
         self._volume = 100  # 默认音量100%
         self._muted = False  # 默认不静音
         self._menu_visible = False  # 菜单是否可见
+        self._original_leave_event = None  # 保存原始的leaveEvent方法
         
         # 图标属性
         self._icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
@@ -247,6 +248,7 @@ class VolumeSliderMenu(QWidget):
             # 连接点击外部区域关闭菜单信号
             self.volume_menu.mousePressEvent = self._on_menu_click
             # 连接按钮的leaveEvent
+            self._original_leave_event = self.volume_button.leaveEvent
             self.volume_button.leaveEvent = self._on_button_leave
             # 启动定时器，3秒后检查是否需要关闭菜单
             from PySide6.QtCore import QTimer
@@ -259,16 +261,20 @@ class VolumeSliderMenu(QWidget):
         if self._menu_visible:
             self.volume_menu.close()
             self._menu_visible = False
-            # 断开按钮的leaveEvent
-            self.volume_button.leaveEvent = None
+            # 恢复按钮的leaveEvent
+            if self._original_leave_event is not None:
+                self.volume_button.leaveEvent = self._original_leave_event
+            self._original_leave_event = None
             
     def _on_menu_close(self, event):
         """
         菜单关闭事件处理
         """
         self._menu_visible = False
-        # 断开按钮的leaveEvent
-        self.volume_button.leaveEvent = None
+        # 恢复按钮的leaveEvent
+        if self._original_leave_event is not None:
+            self.volume_button.leaveEvent = self._original_leave_event
+        self._original_leave_event = None
         # 调用原始的closeEvent
         super(CustomControlMenu, self.volume_menu).closeEvent(event)
         

@@ -1762,6 +1762,12 @@ class FileStagingPool(QWidget):
             file_name = os.path.basename(file_path)
             is_dir = os.path.isdir(file_path)
             
+            # 获取文件后缀（不带点号）
+            suffix = ""
+            if not is_dir:
+                ext = os.path.splitext(file_name)[1].lower()
+                suffix = ext[1:] if ext.startswith('.') else ext
+            
             file_info = {
                 "name": file_name,
                 "path": file_path,
@@ -1770,7 +1776,7 @@ class FileStagingPool(QWidget):
                 "size_calculating": True if is_dir else False,
                 "modified": datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
                 "created": datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
-                "suffix": os.path.splitext(file_name)[1].lower() if not is_dir else "",
+                "suffix": suffix,
                 "display_name": file_name,
                 "original_name": file_name
             }
