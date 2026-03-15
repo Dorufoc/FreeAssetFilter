@@ -248,62 +248,30 @@ def collect_binaries() -> List[Tuple[str, str]]:
                 binaries.append((str(dll_path), "freeassetfilter/core/cpp_lut_preview"))
         print_info(f"收集到 cpp_lut_preview DLLs")
     
-    # 4. 收集Python扩展模块(.pyd文件)
-    # cpp_color_extractor
-    if cpp_color_dir.exists():
-        for pyd_file in cpp_color_dir.glob("*.pyd"):
-            binaries.append((str(pyd_file), "freeassetfilter/core/cpp_color_extractor"))
-            print_info(f"收集到 {pyd_file.name}")
-    
-    # cpp_lut_preview
-    if cpp_lut_dir.exists():
-        for pyd_file in cpp_lut_dir.glob("*.pyd"):
-            binaries.append((str(pyd_file), "freeassetfilter/core/cpp_lut_preview"))
-            print_info(f"收集到 {pyd_file.name}")
+    # 注意：Python扩展模块(.pyd文件)通过 --include-module 在 hidden_imports 中处理
+    # 不要在这里添加 .pyd 文件，否则会与 --include-module 冲突
     
     print_success(f"共收集到 {len(binaries)} 个二进制文件")
     return binaries
 
 
 def collect_hidden_imports() -> List[str]:
-    """收集需要显式导入的隐藏模块"""
+    """收集需要显式导入的隐藏模块 - 只包含子模块和特殊模块"""
     print_header("收集隐藏导入")
     
     hidden_imports = [
         # C++扩展模块
         "freeassetfilter.core.cpp_color_extractor",
         "freeassetfilter.core.cpp_lut_preview",
-        # 重要包
-        "PIL",
+        # PIL子模块
         "PIL._imagingtk",
         "PIL._tkinter_finder",
-        "numpy",
-        "cv2",
-        "skimage",
-        "scipy",
-        "psd_tools",
-        "rawpy",
-        "pymupdf",
-        "fitz",
-        "mutagen",
-        "rarfile",
-        "py7zr",
-        "pygments",
-        "markdown",
-        "exifread",
-        "pillow_heif",
-        "aggdraw",
-        "imageio",
-        "psutil",
-        # PySide6相关
-        "PySide6",
+        # PySide6子模块
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtWidgets",
         "PySide6.QtSvg",
         "PySide6.QtNetwork",
-        "PySide6.QtWebEngineCore",
-        "PySide6.QtWebEngineWidgets",
         "PySide6.QtMultimedia",
         "PySide6.QtOpenGL",
         "shiboken6",
@@ -314,7 +282,7 @@ def collect_hidden_imports() -> List[str]:
 
 
 def collect_packages() -> List[str]:
-    """收集需要完整包含的包"""
+    """收集需要完整包含的包 - 顶级包在这里声明"""
     print_header("收集需要完整包含的包")
     
     packages = [
@@ -326,7 +294,6 @@ def collect_packages() -> List[str]:
         "scipy",
         "psd_tools",
         "rawpy",
-        "pymupdf",
         "mutagen",
         "py7zr",
         "pygments",
@@ -335,6 +302,9 @@ def collect_packages() -> List[str]:
         "pillow_heif",
         "imageio",
         "psutil",
+        "PySide6",
+        "rarfile",
+        "aggdraw",
     ]
     
     print_success(f"共收集到 {len(packages)} 个包")
@@ -359,6 +329,11 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
     else:
         print_warning(f"图标文件不存在: {icon_path}")
     
+    # 获取CPU核心数，保留2个核心给系统
+    import multiprocessing
+    cpu_count = multiprocessing.cpu_count()
+    jobs = max(1, cpu_count - 2)
+    
     cmd = [
         sys.executable,
         "-m", "nuitka",
@@ -367,9 +342,10 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
         f"--output-dir={output_dir}",
         "--windows-console-mode=disable",  # Windows GUI应用程序，不显示控制台
         "--show-progress",  # 显示编译进度
-        "--jobs=2",  # 减少并行编译任务数以降低内存使用
-        "--lto=no",  # 禁用链接时优化以减少内存使用
-        "--low-memory",  # 低内存模式
+        f"--jobs={jobs}",  # 使用更多并行任务加速编译
+        "--lto=yes",  # 启用链接时优化，提升运行时性能
+        # 移除 --low-memory 以提升编译速度
+        "--assume-yes-for-downloads",  # 自动下载需要的依赖
     ]
     
     # 添加图标参数
