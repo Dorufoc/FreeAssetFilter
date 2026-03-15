@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QFrame, QApplication
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QEvent
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QKeyEvent
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen
 
 from freeassetfilter.core.mpv_player_core import MPVPlayerCore, MpvEndFileReason
 from freeassetfilter.core.mpv_manager import MPVManager, MPVState
@@ -57,6 +57,16 @@ class DetachedVideoWindow(QWidget):
     
     closed = Signal()  # 窗口关闭信号
     focusChanged = Signal(bool)  # 窗口焦点变化信号，True表示获得焦点，False表示失去焦点
+    spacePressed = Signal()  # 空格键按下信号
+    escapePressed = Signal()  # ESC键按下信号
+    leftArrowPressed = Signal()  # 左方向键按下信号（后退）
+    rightArrowPressed = Signal()  # 右方向键按下信号（前进）
+    upArrowPressed = Signal()  # 上方向键按下信号（音量增加）
+    downArrowPressed = Signal()  # 下方向键按下信号（音量减少）
+    key1Pressed = Signal()  # 数字键1按下信号（1x倍速）
+    key2Pressed = Signal()  # 数字键2按下信号（2x倍速）
+    key3Pressed = Signal()  # 数字键3按下信号（3x倍速）
+    keyTildePressed = Signal()  # ~/`键按下信号（0.5x倍速）
     
     def __init__(self, parent=None):
         """
@@ -76,21 +86,49 @@ class DetachedVideoWindow(QWidget):
         # 设置无边框窗口
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         
+        # 设置焦点策略，确保窗口可以接收键盘事件
+        self.setFocusPolicy(Qt.StrongFocus)
+        
         self._init_ui()
         self.setWindowTitle("视频播放器 - FreeAssetFilter")
         self.showFullScreen()  # 显示为全屏窗口
+        
+        # 窗口显示后主动获取焦点
+        self.activateWindow()
+        self.setFocus()
+    
+    def showEvent(self, event):
+        """窗口显示事件"""
+        super().showEvent(event)
+        # 窗口显示时获取焦点
+        self._force_focus()
+    
+    def _force_focus(self):
+        """强制获取焦点"""
+        self.raise_()
+        self.activateWindow()
+        self.setFocus()
+        # 使用定时器延迟再次获取焦点，确保在窗口完全显示后焦点仍然在此
+        QTimer.singleShot(100, self._delayed_focus)
+    
+    def _delayed_focus(self):
+        """延迟获取焦点"""
+        if self.isVisible():
+            self.raise_()
+            self.activateWindow()
+            self.setFocus()
     
     def _init_ui(self):
         """初始化UI"""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
     
     def set_video_player(self, video_player: 'VideoPlayer'):
         """设置视频播放器"""
         self._video_player = video_player
-        if self.layout():
-            self.layout().addWidget(video_player)
+        if self._main_layout:
+            self._main_layout.addWidget(video_player)
     
     def focusInEvent(self, event):
         """窗口获得焦点事件"""
@@ -102,22 +140,47 @@ class DetachedVideoWindow(QWidget):
         super().focusOutEvent(event)
         self.focusChanged.emit(False)
     
+    def keyPressEvent(self, event):
+        """键盘按下事件处理"""
+        if event.key() == Qt.Key_Space:
+            self.spacePressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_Escape:
+            self.escapePressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_Left:
+            self.leftArrowPressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_Right:
+            self.rightArrowPressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_Up:
+            self.upArrowPressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_Down:
+            self.downArrowPressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_1:
+            self.key1Pressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_2:
+            self.key2Pressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_3:
+            self.key3Pressed.emit()
+            event.accept()
+        elif event.key() == Qt.Key_QuoteLeft:  # `键
+            self.keyTildePressed.emit()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+    
     def closeEvent(self, event):
         """窗口关闭事件"""
         self.closed.emit()
         super().closeEvent(event)
     
-    def keyPressEvent(self, event: QKeyEvent):
-        """
-        处理键盘按键事件
-        - ESC键：退出全屏并恢复到原父窗口
-        """
-        if event.key() == Qt.Key_Escape:
-            # ESC键退出分离窗口模式，恢复到原父窗口
-            if self._video_player is not None:
-                self._video_player._reattach_to_parent()
-        else:
-            super().keyPressEvent(event)
+
 
 
 class VideoPlaceholder(QWidget):
@@ -320,13 +383,29 @@ class VideoPlayer(QWidget):
         )
         self._floating_control_bar.set_auto_hide_enabled(True)  # 启用自动隐藏功能
         self._floating_control_bar.set_content(self._control_bar)
-        
-        # 设置浮动控制栏的目标为视频渲染区域
-        if hasattr(self, '_video_surface'):
+
+        # 连接浮动控制栏的键盘事件信号
+        self._floating_control_bar.keyPressed.connect(self._on_floating_control_bar_key_pressed)
+
+        # 获取屏幕尺寸并直接设置目标矩形区域
+        # 分离窗口是全屏的，使用屏幕几何信息更可靠
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geometry = screen.geometry()
+            # 设置目标矩形为整个屏幕（控制栏会显示在底部）
+            self._floating_control_bar.set_target_rect(screen_geometry)
+            debug(f"[VideoPlayer] 使用屏幕尺寸设置控制栏位置: {screen_geometry.width()}x{screen_geometry.height()}")
+        elif hasattr(self, '_video_surface'):
+            # 备用方案：使用视频渲染区域
             self._floating_control_bar.set_target_widget(self._video_surface)
         
         # 显示浮动控制栏
         self._floating_control_bar.show()
+
+        # 显示浮动控制栏后，确保焦点回到分离窗口
+        if self._detached_window:
+            self._detached_window.activateWindow()
+            self._detached_window.setFocus()
     
     def _switch_to_fixed_mode(self):
         """切换回固定控制栏模式"""
@@ -364,6 +443,8 @@ class VideoPlayer(QWidget):
         self._video_surface.setStyleSheet("background-color: transparent;")
         self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
         self._video_surface.setAttribute(Qt.WA_NativeWindow)
+        # 禁用视频表面的焦点，让父窗口处理键盘事件
+        self._video_surface.setFocusPolicy(Qt.NoFocus)
         self._video_surface.installEventFilter(self)
         video_layout.addWidget(self._video_surface)
         
@@ -425,6 +506,7 @@ class VideoPlayer(QWidget):
         self._control_bar.lutSelected.connect(self._on_lut_selected)
         self._control_bar.lutCleared.connect(self._on_lut_cleared)
         self._control_bar.detachClicked.connect(self._on_detach_clicked)
+        self._control_bar.keyPressed.connect(self._on_control_bar_key_pressed)
         
     def _connect_manager_signals(self):
         """连接MPV管理器信号"""
@@ -655,24 +737,39 @@ class VideoPlayer(QWidget):
     def _sync_progress_from_player(self):
         """
         从播放器主动同步进度和状态到控制栏
-        每500ms执行一次，确保进度条和时间标签显示准确
+        每200ms执行一次，确保进度条和时间标签显示准确
         """
         if not self._mpv_manager or self._user_interacting:
             return
 
         try:
+            # 使用节流机制，减少不必要的UI更新
+            import time
+            current_time = time.time() * 1000
+            if hasattr(self, '_last_sync_time') and (current_time - self._last_sync_time) < 100:
+                return
+            self._last_sync_time = current_time
+
             # 直接从MPVPlayerCore获取最新数据，不经过队列
             position = self._mpv_manager.get_position_direct()
             duration = self._mpv_manager.get_duration_direct()
             is_playing = self._mpv_manager.is_playing()
             is_paused = self._mpv_manager.is_paused()
 
-            # 只有当duration有效时才更新
-            if duration is not None and duration > 0 and position is not None:
-                self._control_bar.set_position(position, duration)
-            elif position is not None:
-                # 即使duration无效也更新位置
-                self._control_bar.set_position(position, duration or 0)
+            # 只有当值有变化时才更新UI
+            last_pos = getattr(self, '_last_sync_position', None)
+            last_dur = getattr(self, '_last_sync_duration', None)
+
+            if position != last_pos or duration != last_dur:
+                self._last_sync_position = position
+                self._last_sync_duration = duration
+
+                # 只有当duration有效时才更新
+                if duration is not None and duration > 0 and position is not None:
+                    self._control_bar.set_position(position, duration)
+                elif position is not None:
+                    # 即使duration无效也更新位置
+                    self._control_bar.set_position(position, duration or 0)
 
             # 同步播放状态
             self._control_bar.set_playing(is_playing and not is_paused)
@@ -796,6 +893,99 @@ class VideoPlayer(QWidget):
         else:
             self._reattach_to_parent()
     
+    def _on_control_bar_key_pressed(self, event):
+        """
+        处理控制栏传递过来的键盘事件
+        在分离窗口模式下，将键盘事件转发到分离窗口处理
+        
+        Args:
+            event: 键盘事件对象
+        """
+        # 只有在分离窗口模式下才处理
+        if not self._detached_window:
+            return
+        
+        # 根据按键类型执行相应的操作
+        key = event.key()
+        if key == Qt.Key_Space:
+            self.toggle_play_pause()
+            event.accept()
+        elif key == Qt.Key_Escape:
+            self._reattach_to_parent()
+            event.accept()
+        elif key == Qt.Key_Left:
+            self.seek_backward()
+            event.accept()
+        elif key == Qt.Key_Right:
+            self.seek_forward()
+            event.accept()
+        elif key == Qt.Key_Up:
+            self.volume_up()
+            event.accept()
+        elif key == Qt.Key_Down:
+            self.volume_down()
+            event.accept()
+        elif key == Qt.Key_0:
+            self.set_speed(1.0)
+            event.accept()
+        elif key == Qt.Key_1:
+            self.set_speed(1.0)
+            event.accept()
+        elif key == Qt.Key_2:
+            self.set_speed(2.0)
+            event.accept()
+        elif key == Qt.Key_3:
+            self.set_speed(3.0)
+            event.accept()
+        elif key == Qt.Key_QuoteLeft:  # `键
+            self.set_speed(0.5)
+            event.accept()
+
+    def _on_floating_control_bar_key_pressed(self, event):
+        """
+        处理浮动控制栏传递过来的键盘事件
+        在分离窗口模式下，将键盘事件转发到分离窗口处理
+
+        Args:
+            event: 键盘事件对象
+        """
+        # 只有在分离窗口模式下才处理
+        if not self._detached_window:
+            return
+
+        # 根据按键类型执行相应的操作
+        key = event.key()
+        if key == Qt.Key_Space:
+            self.toggle_play_pause()
+            event.accept()
+        elif key == Qt.Key_Escape:
+            self._reattach_to_parent()
+            event.accept()
+        elif key == Qt.Key_Left:
+            self.seek_backward()
+            event.accept()
+        elif key == Qt.Key_Right:
+            self.seek_forward()
+            event.accept()
+        elif key == Qt.Key_Up:
+            self.volume_up()
+            event.accept()
+        elif key == Qt.Key_Down:
+            self.volume_down()
+            event.accept()
+        elif key == Qt.Key_1:
+            self.set_speed(1.0)
+            event.accept()
+        elif key == Qt.Key_2:
+            self.set_speed(2.0)
+            event.accept()
+        elif key == Qt.Key_3:
+            self.set_speed(3.0)
+            event.accept()
+        elif key == Qt.Key_QuoteLeft:  # `键
+            self.set_speed(0.5)
+            event.accept()
+
     def _save_playback_state(self):
         """
         保存当前播放状态，用于分离窗口时恢复
@@ -881,10 +1071,11 @@ class VideoPlayer(QWidget):
         
         # 将播放器添加到独立窗口
         self.setParent(self._detached_window)
-        self._detached_window.layout().addWidget(self)
+        self._detached_window._main_layout.addWidget(self)
         
-        # 显示独立窗口
+        # 显示独立窗口并强制获取焦点
         self._detached_window.show()
+        self._detached_window._force_focus()
         
         # 更新控制栏的分离状态
         self._control_bar.set_detached(True)
@@ -893,21 +1084,58 @@ class VideoPlayer(QWidget):
         self._detached_window.closed.connect(self._reattach_to_parent)
         # 连接独立窗口的焦点变化信号
         self._detached_window.focusChanged.connect(self._on_detached_window_focus_changed)
-        
-        # 延迟执行，确保窗口完全显示后再处理
+        # 连接独立窗口的空格键信号到播放/暂停切换
+        self._detached_window.spacePressed.connect(self.toggle_play_pause)
+        # 连接独立窗口的ESC键信号到恢复窗口
+        self._detached_window.escapePressed.connect(self._reattach_to_parent)
+        # 连接独立窗口的方向键信号到前进/后退
+        self._detached_window.leftArrowPressed.connect(self.seek_backward)
+        self._detached_window.rightArrowPressed.connect(self.seek_forward)
+        # 连接独立窗口的上下键信号到音量调整
+        self._detached_window.upArrowPressed.connect(self.volume_up)
+        self._detached_window.downArrowPressed.connect(self.volume_down)
+        # 连接独立窗口的数字键信号到倍速控制（1-3键，最高3x，`键0.5x）
+        self._detached_window.key1Pressed.connect(lambda: self.set_speed(1.0))
+        self._detached_window.key2Pressed.connect(lambda: self.set_speed(2.0))
+        self._detached_window.key3Pressed.connect(lambda: self.set_speed(3.0))
+        self._detached_window.keyTildePressed.connect(lambda: self.set_speed(0.5))
+
+        # 延迟执行，确保窗口完全显示且尺寸稳定后再处理
+        # 使用更长的延迟时间（500ms）以应对低性能电脑
         def delayed_init():
             debug(f"[VideoPlayer] 延迟初始化分离窗口")
-            # 确保窗口已经显示
+            if not self._detached_window:
+                return
+                
+            # 处理所有待处理的事件，确保窗口状态最新
+            QApplication.processEvents()
+            
+            # 确保窗口已经显示并处于活跃状态
             self._detached_window.raise_()
             self._detached_window.activateWindow()
+            # 强制设置焦点到分离窗口，确保键盘事件能被接收
+            self._detached_window.setFocus()
+            
+            # 强制更新布局
+            self._detached_window.updateGeometry()
+            self.updateGeometry()
+            if hasattr(self, '_video_surface') and self._video_surface:
+                self._video_surface.updateGeometry()
+            
+            # 处理事件以确保几何信息已更新
+            QApplication.processEvents()
             
             # 切换到浮动控制栏模式
             self._switch_to_floating_mode()
             
             # 只重新连接MPV窗口到新的渲染区域
             self._reconnect_mpv_window()
+            
+            # 再次确保焦点在分离窗口上（MPV嵌入后可能会抢占焦点）
+            self._detached_window.activateWindow()
+            self._detached_window.setFocus()
         
-        QTimer.singleShot(100, delayed_init)
+        QTimer.singleShot(500, delayed_init)
         
         debug(f"[VideoPlayer] 窗口分离完成")
     
@@ -918,18 +1146,10 @@ class VideoPlayer(QWidget):
         Args:
             has_focus: 窗口是否获得焦点
         """
-        debug(f"[VideoPlayer] 分离窗口焦点变化: has_focus={has_focus}")
-        
-        # 只有在浮动模式下才处理
-        if not self._is_floating_mode or not self._floating_control_bar:
-            return
-        
-        if has_focus:
-            # 获得焦点时立即显示控制栏
-            self._floating_control_bar.show_immediately()
-        else:
-            # 失去焦点时立即隐藏控制栏
-            self._floating_control_bar.hide_immediately()
+        # 注意：不再通过焦点变化来控制控制栏的显示/隐藏
+        # 因为浮动控制栏是独立窗口，点击它会抢走焦点，导致闪烁问题
+        # 控制栏的显示/隐藏由 D_HoverMenu 自身的鼠标活动监测逻辑处理
+        pass
     
     def _reattach_to_parent(self):
         """
@@ -977,30 +1197,20 @@ class VideoPlayer(QWidget):
     
 
 
-    def keyPressEvent(self, event):
-        """
-        处理键盘按键事件
-        - 空格键：切换播放/暂停
-        - ESC键：退出分离窗口无边框全屏模式
-        """
-        if event.key() == Qt.Key_Space:
-            self.toggle_play_pause()
-        elif event.key() == Qt.Key_Escape:
-            # 如果处于分离窗口模式，按ESC键恢复到原父窗口
-            if self._detached_window is not None:
-                self._reattach_to_parent()
-            else:
-                super().keyPressEvent(event)
-        else:
-            super().keyPressEvent(event)
+
     
     def mousePressEvent(self, event):
         """
         处理鼠标点击事件
         """
         super().mousePressEvent(event)
+        # 使用节流机制，避免过于频繁地触发控制栏显示
         if self._is_floating_mode and self._floating_control_bar:
-            self._floating_control_bar.show_control_bar()
+            import time
+            current_time = time.time() * 1000
+            if not hasattr(self, '_last_mouse_press_time') or (current_time - self._last_mouse_press_time) >= 200:
+                self._last_mouse_press_time = current_time
+                self._floating_control_bar.show_control_bar()
 
     def mouseDoubleClickEvent(self, event):
         """
@@ -1021,8 +1231,14 @@ class VideoPlayer(QWidget):
         """
         if obj == self._video_surface:
             if event.type() == QEvent.MouseButtonPress:
+                # 使用节流机制，避免过于频繁地触发控制栏显示
                 if self._is_floating_mode and self._floating_control_bar:
-                    self._floating_control_bar.show_control_bar()
+                    import time
+                    current_time = time.time() * 1000
+                    if not hasattr(self, '_last_video_click_time') or (current_time - self._last_video_click_time) >= 200:
+                        self._last_video_click_time = current_time
+                        self._floating_control_bar.show_control_bar()
+
         return super().eventFilter(obj, event)
     
     def _on_mpv_state_changed(self, is_playing: bool):
@@ -1450,6 +1666,90 @@ class VideoPlayer(QWidget):
                 return self.play()
             else:
                 return self.pause()
+        return False
+    
+    def seek_forward(self, seconds: float = 5.0) -> bool:
+        """
+        向前跳转指定秒数
+
+        Args:
+            seconds: 跳转秒数，默认为5秒
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if self._mpv_manager:
+            current_position = self._mpv_manager.get_position() or 0.0
+            duration = self._mpv_manager.get_duration() or 0.0
+            new_position = min(current_position + seconds, duration)
+            return self._mpv_manager.seek(new_position, component_id=self._component_id)
+        return False
+    
+    def seek_backward(self, seconds: float = 5.0) -> bool:
+        """
+        向后跳转指定秒数
+
+        Args:
+            seconds: 跳转秒数，默认为5秒
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if self._mpv_manager:
+            current_position = self._mpv_manager.get_position() or 0.0
+            new_position = max(current_position - seconds, 0.0)
+            return self._mpv_manager.seek(new_position, component_id=self._component_id)
+        return False
+
+    def set_speed(self, speed: float) -> bool:
+        """
+        设置播放倍速
+
+        Args:
+            speed: 播放倍速，如 0.5, 1.0, 2.0 等
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if self._mpv_manager:
+            success = self._mpv_manager.set_speed(speed, component_id=self._component_id)
+            if success:
+                self._speed = speed
+                self._control_bar.set_speed(speed)
+                debug(f"[VideoPlayer] 设置播放倍速为 {speed}x")
+            return success
+        return False
+    
+    def volume_up(self, step: int = 5) -> bool:
+        """
+        增加音量
+
+        Args:
+            step: 音量步进值，默认为5
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if self._mpv_manager:
+            current_volume = self._mpv_manager.get_volume() or 0
+            new_volume = min(current_volume + step, 100)
+            return self._mpv_manager.set_volume(new_volume, component_id=self._component_id)
+        return False
+    
+    def volume_down(self, step: int = 5) -> bool:
+        """
+        减少音量
+
+        Args:
+            step: 音量步进值，默认为5
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if self._mpv_manager:
+            current_volume = self._mpv_manager.get_volume() or 0
+            new_volume = max(current_volume - step, 0)
+            return self._mpv_manager.set_volume(new_volume, component_id=self._component_id)
         return False
     
     def update_style(self):

@@ -283,34 +283,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 调用父类的closeEvent
         super().closeEvent(event)
     
-    def keyPressEvent(self, event):
-        """
-        主窗口键盘按键事件处理
-        - 空格键：控制视频播放/暂停，无论焦点在哪个组件
-        """
-        if event.key() == Qt.Key_Space:
-            # 检查是否存在统一预览器
-            if hasattr(self, 'unified_previewer'):
-                try:
-                    from freeassetfilter.components.video_player import VideoPlayer
-                    # 检查统一预览器的当前预览组件是否是视频播放器
-                    if isinstance(self.unified_previewer.current_preview_widget, VideoPlayer):
-                        video_player = self.unified_previewer.current_preview_widget
-                        # 调用视频播放器的播放/暂停方法
-                        video_player.toggle_play_pause()
-                    else:
-                        # 如果不是视频播放器，调用父类的默认处理
-                        super().keyPressEvent(event)
-                except ImportError as e:
-                    # 如果无法导入VideoPlayer，调用父类的默认处理
-                    logger.debug(f"无法导入 VideoPlayer: {e}")
-                    super().keyPressEvent(event)
-            else:
-                # 如果没有统一预览器，调用父类的默认处理
-                super().keyPressEvent(event)
-        else:
-            # 其他按键事件，交给父类处理
-            super().keyPressEvent(event)
+
     
     def _apply_title_bar_theme(self):
         """
@@ -1275,7 +1248,48 @@ def main():
     主程序入口函数
     """
     info("=== FreeAssetFilter 主程序 ===")
-    
+
+    # 单实例检测 - 使用Windows互斥锁确保只有一个程序实例运行
+    # 防止多个实例同时运行导致JSON文件存取异常
+    _mutex_handle = None
+    if sys.platform == 'win32':
+        import ctypes
+        from ctypes import wintypes
+
+        # 创建命名互斥锁
+        mutex_name = "FreeAssetFilter_SingleInstance_Mutex"
+        kernel32 = ctypes.windll.kernel32
+
+        # CreateMutexW 参数类型设置
+        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+
+        # 尝试创建互斥锁
+        _mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
+
+        if _mutex_handle:
+            # 检查错误码，ERROR_ALREADY_EXISTS = 183
+            error_code = kernel32.GetLastError()
+            if error_code == 183:  # ERROR_ALREADY_EXISTS
+                # 互斥锁已存在，说明程序已经在运行
+                warning("程序已经在运行中，禁止启动多个实例")
+                # 显示提示窗口
+                try:
+                    from PySide6.QtWidgets import QApplication as _QApplication, QMessageBox
+                    _temp_app = _QApplication(sys.argv)
+                    msg_box = QMessageBox()
+                    msg_box.setWindowTitle("FreeAssetFilter")
+                    msg_box.setIcon(QMessageBox.Information)
+                    msg_box.setText("程序已经在运行中")
+                    msg_box.setInformativeText("FreeAssetFilter 已经在运行，不能启动多个实例。")
+                    msg_box.setStandardButtons(QMessageBox.Ok)
+                    msg_box.exec()
+                except Exception:
+                    pass
+                sys.exit(0)
+            else:
+                info("单实例检测通过，程序启动")
+
     # 获取通过文件关联传递进来的文件路径（Inno Setup通过命令行参数传递）
     # sys.argv[0] 是程序本身的路径
     # sys.argv[1] 是被打开的文件路径（如果有）

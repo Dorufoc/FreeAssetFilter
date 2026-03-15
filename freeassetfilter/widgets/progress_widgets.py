@@ -927,7 +927,10 @@ class D_ProgressBar(QWidget):
                 self._animation.stop()
                 self._display_value_storage = value
                 self.update()
-                self.valueChanged.emit(value)
+                # 用户交互时减少信号发射频率，只在值变化较大时发射
+                if not hasattr(self, '_last_emitted_value') or abs(value - self._last_emitted_value) >= 5:
+                    self._last_emitted_value = value
+                    self.valueChanged.emit(value)
             else:
                 self._animation.stop()
                 self._animation.setStartValue(self._display_value)

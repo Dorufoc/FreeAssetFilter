@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QPushButton, QWidget, QSizePolicy, QApplication, QStyleOptionButton
 )
 from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize, QTimer, QPropertyAnimation, Property, QEasingCurve, QParallelAnimationGroup
-from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QKeyEvent
 from PySide6.QtWidgets import QStyle
 from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
@@ -120,11 +120,14 @@ class CustomButton(QPushButton):
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
-        
+
+        # 禁用按钮的键盘焦点和导航，避免捕获方向键和空格键
+        self.setFocusPolicy(Qt.NoFocus)
+
         # 初始化动画锁和标志
         self._anim_init_lock = threading.Lock()
         self._animations_initialized = False
-        
+
         self.update_style()
         
         # 初始化动画属性（延迟执行，避免多线程竞争导致的访问冲突）
@@ -1125,6 +1128,15 @@ class CustomButton(QPushButton):
         if self._display_mode == "icon":
             self._render_icon()
     
+    def keyPressEvent(self, event):
+        """
+        键盘按下事件处理
+        禁用按钮的键盘响应，避免捕获方向键和空格键，确保视频播放器的键盘控制正常工作
+        """
+        # 忽略所有键盘事件，不调用父类的keyPressEvent
+        # 这样按钮不会响应空格键（激活）和方向键（导航）
+        event.ignore()
+
     def paintEvent(self, event):
         """
         绘制按钮

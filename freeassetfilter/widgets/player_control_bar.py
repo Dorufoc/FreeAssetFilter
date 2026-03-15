@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QFrame, QGraphicsDropShadowEffect
 )
 from PySide6.QtGui import QEnterEvent
-from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QSize
+from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QSize, QEvent
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPixmap
 
 from .progress_widgets import D_ProgressBar
@@ -71,18 +71,22 @@ class PlayerControlBar(QWidget):
     speedChanged = Signal(float)
     lutSelected = Signal(str)
     lutCleared = Signal()
+    keyPressed = Signal(object)  # 键盘按键信号，用于传递键盘事件到父窗口
     
     def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True):
         """
         初始化播放器控制栏
-        
+
         Args:
             parent: 父控件
             show_lut_controls: 是否显示LUT相关控制按钮
             show_detach_button: 是否显示分离窗口按钮
         """
         super().__init__(parent)
-        
+
+        # 禁用焦点，确保键盘事件传递给父窗口（分离窗口）
+        self.setFocusPolicy(Qt.NoFocus)
+
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(app, 'global_font', QFont())
@@ -112,7 +116,37 @@ class PlayerControlBar(QWidget):
         self._init_ui()
         self._connect_signals()
         self._update_style()
-    
+
+        # 安装事件过滤器到所有子控件，捕获键盘事件
+        # 注意：必须在 _init_ui 之后调用，因为子控件在此时才被创建
+        self._install_event_filter_to_children()
+
+    def _install_event_filter_to_children(self):
+        """为所有子控件安装事件过滤器，捕获键盘事件"""
+        for child in self.findChildren(QWidget):
+            child.installEventFilter(self)
+            # 递归为子控件的子控件也安装事件过滤器
+            self._install_event_filter_recursive(child)
+
+    def _install_event_filter_recursive(self, parent_widget):
+        """递归为所有子控件安装事件过滤器"""
+        for child in parent_widget.findChildren(QWidget):
+            if child not in [self]:
+                child.installEventFilter(self)
+                self._install_event_filter_recursive(child)
+
+    def eventFilter(self, obj, event):
+        """
+        事件过滤器：捕获子控件的键盘事件并传递给父窗口
+        """
+        if event.type() == QEvent.KeyPress:
+            # 将键盘事件传递给父窗口处理
+            self.keyPressed.emit(event)
+            # 事件已处理，返回True阻止事件继续传递给子控件
+            # 但信号已经发射，父窗口可以处理这个事件
+            return True
+        return super().eventFilter(obj, event)
+
     def _init_ui(self):
         """初始化UI组件"""
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -373,6 +407,12 @@ class PlayerControlBar(QWidget):
     
     def _on_progress_value_changed(self, value: int):
         """进度条值变化处理"""
+        # 使用节流机制，减少信号发射频率
+        import time
+        current_time = time.time() * 1000
+        if hasattr(self, '_last_progress_emit_time') and (current_time - self._last_progress_emit_time) < 30:
+            return
+        self._last_progress_emit_time = current_time
         self.progressChanged.emit(value)
     
     def _on_user_interacting_start(self):
@@ -735,3 +775,15 @@ class PlayerControlBar(QWidget):
         # 收起音量菜单
         if hasattr(self, '_volume_control'):
             self._volume_control._hide_volume_menu()
+    
+    def keyPressEvent(self, event):
+        """
+        键盘按下事件处理
+        将键盘事件传递给父窗口处理
+        """
+        # 发射信号通知父窗口有键盘事件
+        self.keyPressed.emit(event)
+        # 不调用父类的默认处理，确保事件继续传递给父窗口
+        # 如果事件未被处理，则忽略它，让它继续传递
+        if not event.isAccepted():
+            event.ignore()

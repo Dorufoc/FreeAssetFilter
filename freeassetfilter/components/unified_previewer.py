@@ -982,28 +982,7 @@ class UnifiedPreviewer(QWidget):
     
 
     
-    def keyPressEvent(self, event):
-        """
-        处理键盘按键事件
-        - 空格键：如果当前预览组件是视频播放器，则切换播放/暂停状态
-        """
-        if event.key() == Qt.Key_Space:
-            # 检查当前预览组件是否是视频播放器
-            try:
-                from freeassetfilter.components.video_player import VideoPlayer
-                if isinstance(self.current_preview_widget, VideoPlayer):
-                    video_player = self.current_preview_widget
-                    # 调用视频播放器的播放/暂停方法
-                    video_player.toggle_play_pause()
-                else:
-                    # 如果不是视频播放器，调用父类的默认处理
-                    super().keyPressEvent(event)
-            except ImportError:
-                # 如果无法导入VideoPlayer，调用父类的默认处理
-                super().keyPressEvent(event)
-        else:
-            # 其他按键事件，交给父类处理
-            super().keyPressEvent(event)
+
     
     def focusInEvent(self, event):
         """

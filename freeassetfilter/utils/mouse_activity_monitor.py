@@ -36,6 +36,7 @@ Date: 2025
 import sys
 import os
 import ctypes
+import time
 from ctypes import wintypes
 from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
@@ -166,9 +167,14 @@ class MouseActivityMonitor(QObject):
                         user32.GetCursorPos(ctypes.byref(pt))
                         current_pos = (pt.x, pt.y)
 
+                        # 使用节流机制，减少不必要的Qt事件触发
                         if self._last_mouse_pos is None or self._last_mouse_pos != current_pos:
                             self._last_mouse_pos = current_pos
-                            QTimer.singleShot(0, self._on_mouse_moved)
+                            # 检查距离上次触发是否超过阈值（16ms ≈ 60fps）
+                            current_time = time.time() * 1000
+                            if not hasattr(self, '_last_hook_emit_time') or (current_time - self._last_hook_emit_time) >= 16:
+                                self._last_hook_emit_time = current_time
+                                QTimer.singleShot(0, self._on_mouse_moved)
                 except (OSError, IOError, PermissionError, FileNotFoundError) as e:
                     debug(f"[MouseActivityMonitor] 鼠标钩子回调处理异常 - 文件操作错误: {e}")
                 except (ValueError, TypeError) as e:
@@ -234,6 +240,16 @@ class MouseActivityMonitor(QObject):
     @Slot()
     def _on_mouse_moved(self):
         """鼠标移动时的处理"""
+        # 使用节流机制，避免过于频繁的触发
+        current_time = time.time() * 1000  # 转换为毫秒
+        if hasattr(self, '_last_emit_time') and (current_time - self._last_emit_time) < 50:
+            # 距离上次发射不到50ms，跳过本次处理但重置定时器
+            if self._is_monitoring:
+                self._hide_timer.stop()
+                self._hide_timer.start(self._timeout)
+            return
+        self._last_emit_time = current_time
+
         self.mouse_moved.emit()
 
         if self._activity_callback:
