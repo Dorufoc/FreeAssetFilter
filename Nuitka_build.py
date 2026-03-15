@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FreeAssetFilter Nuitka 编译脚本
+FreeAssetFilter Nuitka 打包脚本
 
-使用MinGW编译器将FreeAssetFilter打包为Windows可执行程序
+使用Nuitka将FreeAssetFilter编译为Windows可执行程序
 
 使用方法:
-    python build.py
-    python build.py --clean  # 清理后重新编译
-    python build.py --skip-build  # 仅执行清理和验证
+    python Nuitka_build.py              # 默认清理后重新编译打包
+    python Nuitka_build.py --no-clean   # 禁用清理，保留之前的构建输出
+    python Nuitka_build.py --skip-build # 仅执行清理和验证
 
 环境要求:
     - Python 3.9+
     - Nuitka (pip install nuitka)
-    - MinGW64 (C:\mingw64)
+    - 安装C++编译器（MSVC或MinGW64）
 """
 
 import os
@@ -29,8 +29,6 @@ from typing import List, Dict, Set, Tuple
 PROJECT_NAME = "FreeAssetFilter"
 ENTRY_POINT = "freeassetfilter/app/main.py"
 OUTPUT_DIR = "build/nuitka"
-# 使用MSVC编译器（Windows上Nuitka默认使用MSVC）
-USE_MSVC = True
 # UPX压缩选项
 USE_UPX = True
 UPX_PATH = r"C:\upx\upx.exe"  # UPX可执行文件路径
@@ -43,9 +41,6 @@ QT6_KEEP_DLLS = {
     "Qt6Svg.dll",
     "Qt6SvgWidgets.dll",
     "Qt6Network.dll",
-    "Qt6WebEngineCore.dll",
-    "Qt6WebEngineWidgets.dll",
-    "Qt6WebChannel.dll",
     "Qt6Qml.dll",
     "Qt6Quick.dll",
     "Qt6QuickWidgets.dll",
@@ -99,6 +94,11 @@ QT6_REMOVE_DLLS = {
     "Qt6UiTools.dll",
     "Qt6Concurrent.dll",
     "Qt6AxContainer.dll",
+    # WebEngine 相关（体积太大，项目不需要）
+    "Qt6WebEngineCore.dll",
+    "Qt6WebEngineWidgets.dll",
+    "Qt6WebEngineQuick.dll",
+    "Qt6WebChannel.dll",
 }
 
 # Quick3D相关DLL（通配匹配）
@@ -130,80 +130,6 @@ def print_error(text: str):
 def print_success(text: str):
     """打印成功信息"""
     print(f"[SUCCESS] {text}")
-
-
-def check_msvc() -> bool:
-    """检查MSVC编译器是否可用"""
-    print_header("检查MSVC编译器")
-    
-    # 尝试找到MSVC的cl.exe
-    msvc_paths = [
-        r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC",
-        r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC",
-        r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Tools\MSVC",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Tools\MSVC",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Tools\MSVC",
-    ]
-    
-    msvc_found = False
-    for base_path in msvc_paths:
-        if os.path.exists(base_path):
-            # 查找最新版本
-            versions = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
-            if versions:
-                versions.sort(reverse=True)
-                latest_version = versions[0]
-                cl_exe = os.path.join(base_path, latest_version, "bin", "Hostx64", "x64", "cl.exe")
-                if os.path.exists(cl_exe):
-                    print_success(f"MSVC编译器已找到: {cl_exe}")
-                    msvc_found = True
-                    break
-    
-    if not msvc_found:
-        # 尝试从环境变量中找到cl.exe
-        try:
-            result = subprocess.run(
-                ["where", "cl"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            if result.stdout.strip():
-                print_success(f"MSVC编译器已找到: {result.stdout.strip()}")
-                msvc_found = True
-        except (subprocess.SubprocessError, FileNotFoundError) as e:
-            print(f"调试: 从PATH查找MSVC编译器失败: {e}")
-    
-    if not msvc_found:
-        print_warning("未找到MSVC编译器，但Nuitka可能会自动下载或使用其他编译器")
-        # 不返回False，因为Nuitka可以自动处理
-        return True
-    
-    return True
-
-
-def setup_msvc_env():
-    """设置MSVC环境变量"""
-    print_header("设置MSVC环境")
-    
-    # 尝试运行vcvarsall.bat来设置环境
-    vcvarsall_paths = [
-        r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
-    ]
-    
-    for vcvarsall in vcvarsall_paths:
-        if os.path.exists(vcvarsall):
-            print_info(f"找到vcvarsall.bat: {vcvarsall}")
-            print_info("Nuitka会自动处理MSVC环境")
-            break
-    
-    print_success("MSVC环境设置完成")
 
 
 def check_nuitka() -> bool:
@@ -244,7 +170,7 @@ def get_project_root() -> Path:
 def collect_data_files() -> List[Tuple[str, str]]:
     """
     收集需要包含的数据文件
-    返回: [(源路径, 目标路径), ...]
+    返回: [(源路径, 目标目录), ...]
     """
     print_header("收集数据文件")
     
@@ -257,7 +183,7 @@ def collect_data_files() -> List[Tuple[str, str]]:
         for file in icons_dir.rglob("*"):
             if file.is_file():
                 rel_path = file.relative_to(project_root)
-                data_files.append((str(file), str(rel_path)))
+                data_files.append((str(file), str(rel_path.parent)))
         print_info(f"收集到 {len(list(icons_dir.rglob('*')))} 个图标文件")
     
     # 2. 收集语法高亮JSON文件
@@ -265,13 +191,13 @@ def collect_data_files() -> List[Tuple[str, str]]:
     if syntax_dir.exists():
         for file in syntax_dir.glob("*.json"):
             rel_path = file.relative_to(project_root)
-            data_files.append((str(file), str(rel_path)))
+            data_files.append((str(file), str(rel_path.parent)))
         print_info(f"收集到 {len(list(syntax_dir.glob('*.json')))} 个语法文件")
     
     # 3. 收集color_schemes.json
     color_schemes = project_root / "freeassetfilter" / "utils" / "color_schemes.json"
     if color_schemes.exists():
-        data_files.append((str(color_schemes), "freeassetfilter/utils/color_schemes.json"))
+        data_files.append((str(color_schemes), "freeassetfilter/utils"))
         print_info("收集到 color_schemes.json")
     
     # 4. 收集MPV头文件
@@ -279,27 +205,27 @@ def collect_data_files() -> List[Tuple[str, str]]:
     if mpv_include_dir.exists():
         for file in mpv_include_dir.glob("*.h"):
             rel_path = file.relative_to(project_root)
-            data_files.append((str(file), str(rel_path)))
+            data_files.append((str(file), str(rel_path.parent)))
         print_info(f"收集到 {len(list(mpv_include_dir.glob('*.h')))} 个MPV头文件")
     
     print_success(f"共收集到 {len(data_files)} 个数据文件")
     return data_files
 
 
-def collect_dll_files() -> List[Tuple[str, str]]:
+def collect_binaries() -> List[Tuple[str, str]]:
     """
-    收集需要包含的DLL文件
-    返回: [(源路径, 目标路径), ...]
+    收集需要包含的二进制文件(DLL等)
+    返回: [(源路径, 目标目录), ...]
     """
-    print_header("收集DLL文件")
+    print_header("收集二进制文件")
     
     project_root = get_project_root()
-    dll_files = []
+    binaries = []
     
     # 1. libmpv-2.dll
     libmpv_dll = project_root / "freeassetfilter" / "core" / "libmpv-2.dll"
     if libmpv_dll.exists():
-        dll_files.append((str(libmpv_dll), "freeassetfilter/core/libmpv-2.dll"))
+        binaries.append((str(libmpv_dll), "freeassetfilter/core"))
         print_info("收集到 libmpv-2.dll")
     else:
         print_warning("未找到 libmpv-2.dll")
@@ -310,7 +236,7 @@ def collect_dll_files() -> List[Tuple[str, str]]:
         for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
             dll_path = cpp_color_dir / dll_name
             if dll_path.exists():
-                dll_files.append((str(dll_path), f"freeassetfilter/core/cpp_color_extractor/{dll_name}"))
+                binaries.append((str(dll_path), "freeassetfilter/core/cpp_color_extractor"))
         print_info(f"收集到 cpp_color_extractor DLLs")
     
     # 3. cpp_lut_preview DLLs
@@ -319,87 +245,38 @@ def collect_dll_files() -> List[Tuple[str, str]]:
         for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
             dll_path = cpp_lut_dir / dll_name
             if dll_path.exists():
-                dll_files.append((str(dll_path), f"freeassetfilter/core/cpp_lut_preview/{dll_name}"))
+                binaries.append((str(dll_path), "freeassetfilter/core/cpp_lut_preview"))
         print_info(f"收集到 cpp_lut_preview DLLs")
     
-    print_success(f"共收集到 {len(dll_files)} 个DLL文件")
-    return dll_files
-
-
-def collect_pyd_files() -> List[Tuple[str, str]]:
-    """
-    收集Python扩展模块(.pyd文件)
-    返回: [(源路径, 目标路径), ...]
-    """
-    print_header("收集Python扩展模块")
-    
-    project_root = get_project_root()
-    pyd_files = []
-    
-    # 1. color_extractor_cpp
-    cpp_color_dir = project_root / "freeassetfilter" / "core" / "cpp_color_extractor"
+    # 4. 收集Python扩展模块(.pyd文件)
+    # cpp_color_extractor
     if cpp_color_dir.exists():
         for pyd_file in cpp_color_dir.glob("*.pyd"):
-            pyd_files.append((str(pyd_file), f"freeassetfilter/core/cpp_color_extractor/{pyd_file.name}"))
+            binaries.append((str(pyd_file), "freeassetfilter/core/cpp_color_extractor"))
             print_info(f"收集到 {pyd_file.name}")
     
-    # 2. lut_preview_cpp
-    cpp_lut_dir = project_root / "freeassetfilter" / "core" / "cpp_lut_preview"
+    # cpp_lut_preview
     if cpp_lut_dir.exists():
         for pyd_file in cpp_lut_dir.glob("*.pyd"):
-            pyd_files.append((str(pyd_file), f"freeassetfilter/core/cpp_lut_preview/{pyd_file.name}"))
+            binaries.append((str(pyd_file), "freeassetfilter/core/cpp_lut_preview"))
             print_info(f"收集到 {pyd_file.name}")
     
-    print_success(f"共收集到 {len(pyd_files)} 个Python扩展模块")
-    return pyd_files
+    print_success(f"共收集到 {len(binaries)} 个二进制文件")
+    return binaries
 
 
-def build_nuitka_command(data_files: List[Tuple[str, str]], 
-                         dll_files: List[Tuple[str, str]],
-                         pyd_files: List[Tuple[str, str]]) -> List[str]:
-    """构建Nuitka编译命令"""
-    print_header("构建Nuitka编译命令")
+def collect_hidden_imports() -> List[str]:
+    """收集需要显式导入的隐藏模块"""
+    print_header("收集隐藏导入")
     
-    project_root = get_project_root()
-    entry_point = project_root / ENTRY_POINT
-    output_dir = project_root / OUTPUT_DIR
-    
-    cmd = [
-        sys.executable,
-        "-m", "nuitka",
-        "--standalone",
-        "--follow-imports",
-        # 使用MSVC编译器（Windows上Nuitka默认使用MSVC，不需要额外参数）
-        f"--output-dir={output_dir}",
-        f"--output-filename={PROJECT_NAME}",
-        "--enable-plugin=pyside6",
-        "--enable-plugin=multiprocessing",
-        "--include-package=freeassetfilter",
-        # 优化选项：减小体积
-        "--lto=yes",  # 启用链接时优化
-        "--remove-output",  # 移除中间输出文件
-        "--no-pyi-file",  # 不生成.pyi文件
-        "--no-deployment-flag=self-execution",  # 不添加自执行标志
-    ]
-    
-    # 包含数据文件
-    for src, dst in data_files:
-        cmd.append(f"--include-data-files={src}={dst}")
-    
-    # 包含DLL文件
-    for src, dst in dll_files:
-        cmd.append(f"--include-data-files={src}={dst}")
-    
-    # 注意：PYD文件不需要显式包含，Nuitka会自动检测Python扩展模块
-    # 我们只需要确保模块所在的包被包含即可
-    
-    # 包含C++扩展模块所在的包
-    cmd.append("--include-package=freeassetfilter.core.cpp_color_extractor")
-    cmd.append("--include-package=freeassetfilter.core.cpp_lut_preview")
-    
-    # 包含其他重要包
-    important_packages = [
+    hidden_imports = [
+        # C++扩展模块
+        "freeassetfilter.core.cpp_color_extractor",
+        "freeassetfilter.core.cpp_lut_preview",
+        # 重要包
         "PIL",
+        "PIL._imagingtk",
+        "PIL._tkinter_finder",
         "numpy",
         "cv2",
         "skimage",
@@ -407,6 +284,7 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
         "psd_tools",
         "rawpy",
         "pymupdf",
+        "fitz",
         "mutagen",
         "rarfile",
         "py7zr",
@@ -417,9 +295,133 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
         "aggdraw",
         "imageio",
         "psutil",
+        # PySide6相关
+        "PySide6",
+        "PySide6.QtCore",
+        "PySide6.QtGui",
+        "PySide6.QtWidgets",
+        "PySide6.QtSvg",
+        "PySide6.QtNetwork",
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtMultimedia",
+        "PySide6.QtOpenGL",
+        "shiboken6",
     ]
     
-    for pkg in important_packages:
+    print_success(f"共收集到 {len(hidden_imports)} 个隐藏导入")
+    return hidden_imports
+
+
+def collect_packages() -> List[str]:
+    """收集需要完整包含的包"""
+    print_header("收集需要完整包含的包")
+    
+    packages = [
+        "freeassetfilter",
+        "PIL",
+        "numpy",
+        "cv2",
+        "skimage",
+        "scipy",
+        "psd_tools",
+        "rawpy",
+        "pymupdf",
+        "mutagen",
+        "py7zr",
+        "pygments",
+        "markdown",
+        "exifread",
+        "pillow_heif",
+        "imageio",
+        "psutil",
+    ]
+    
+    print_success(f"共收集到 {len(packages)} 个包")
+    return packages
+
+
+def build_nuitka_command(data_files: List[Tuple[str, str]], 
+                         binaries: List[Tuple[str, str]],
+                         hidden_imports: List[str],
+                         packages: List[str]) -> List[str]:
+    """构建Nuitka编译命令"""
+    print_header("构建Nuitka编译命令")
+    
+    project_root = get_project_root()
+    entry_point = project_root / ENTRY_POINT
+    output_dir = project_root / OUTPUT_DIR
+    
+    # 图标路径
+    icon_path = project_root / "freeassetfilter" / "icons" / "FAF-main.ico"
+    if icon_path.exists():
+        print_info(f"使用图标: {icon_path}")
+    else:
+        print_warning(f"图标文件不存在: {icon_path}")
+    
+    cmd = [
+        sys.executable,
+        "-m", "nuitka",
+        "--standalone",  # 创建独立可执行文件
+        "--enable-plugin=pyside6",  # 启用PySide6插件
+        f"--output-dir={output_dir}",
+        "--windows-console-mode=disable",  # Windows GUI应用程序，不显示控制台
+        "--show-progress",  # 显示编译进度
+        "--jobs=4",  # 并行编译
+        "--lto=yes",  # 启用链接时优化
+    ]
+    
+    # 添加图标参数
+    if icon_path.exists():
+        cmd.append(f"--windows-icon-from-ico={icon_path}")
+    
+    # 排除不需要的模块
+    exclude_modules = [
+        "PyInstaller",
+        "nuitka",
+        "pip",
+        "setuptools",
+        "wheel",
+        "pytest",
+        "_pytest",
+        "unittest",
+        "test",
+        "tests",
+        # 排除 Qt WebEngine（体积太大，项目不需要）
+        "PySide6.QtWebEngineCore",
+        "PySide6.QtWebEngineWidgets",
+        "PySide6.QtWebEngineQuick",
+        "PySide6.QtWebChannel",
+        # 排除 numpy/scipy 的测试和可选依赖模块
+        "numpy.f2py.tests",
+        "numpy._pytesttester",
+        "scipy._lib.array_api_compat.torch",
+        "torch",
+    ]
+    
+    for mod in exclude_modules:
+        cmd.append(f"--nofollow-import-to={mod}")
+    
+    # 添加数据文件
+    for src, dst in data_files:
+        # Nuitka使用--include-data-files=源路径=目标路径格式
+        cmd.append(f"--include-data-files={src}={dst}/{os.path.basename(src)}")
+    
+    # 添加二进制文件
+    for src, dst in binaries:
+        cmd.append(f"--include-data-files={src}={dst}/{os.path.basename(src)}")
+    
+    # 添加隐藏导入（使用--include-package或--include-module）
+    for imp in hidden_imports:
+        if '.' in imp:
+            # 对于子模块，使用--include-module
+            cmd.append(f"--include-module={imp}")
+        else:
+            # 对于顶级包，使用--include-package
+            cmd.append(f"--include-package={imp}")
+    
+    # 添加完整包（使用--include-package）
+    for pkg in packages:
         cmd.append(f"--include-package={pkg}")
     
     # 添加入口文件
@@ -434,7 +436,8 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
 def run_nuitka_build(cmd: List[str]) -> bool:
     """运行Nuitka编译"""
     print_header("开始Nuitka编译")
-    print_info("这可能需要几分钟时间，请耐心等待...")
+    print_info("这可能需要较长时间（10-30分钟），请耐心等待...")
+    print_info("编译过程中会显示进度信息")
     
     try:
         result = subprocess.run(cmd, check=True)
@@ -468,35 +471,127 @@ def should_remove_dll(dll_name: str) -> bool:
 
 def clean_qt6_dlls() -> Tuple[int, int]:
     """
-    清理不必要的Qt6 DLL文件
+    清理不必要的Qt6 DLL文件和资源
     返回: (移除的文件数, 节省的空间字节)
     """
-    print_header("清理不必要的Qt6 DLL")
+    print_header("清理不必要的Qt6 DLL和资源")
     
     project_root = get_project_root()
-    output_dir = project_root / OUTPUT_DIR / f"{PROJECT_NAME}.dist"
+    output_dir = project_root / OUTPUT_DIR
     
-    if not output_dir.exists():
+    # Nuitka输出目录结构不同，查找所有子目录
+    search_dirs = []
+    if output_dir.exists():
+        # Nuitka默认将输出放在 output_dir/main.dist/ 目录下
+        for dist_dir in output_dir.rglob("*.dist"):
+            search_dirs.append(dist_dir)
+        # 也搜索主目录
+        search_dirs.append(output_dir)
+    
+    if not search_dirs:
         print_warning(f"输出目录不存在: {output_dir}")
         return 0, 0
     
     removed_count = 0
     saved_space = 0
     
-    for dll_file in output_dir.glob("Qt6*.dll"):
-        dll_name = dll_file.name
-        
-        if should_remove_dll(dll_name):
-            file_size = dll_file.stat().st_size
+    # 1. 清理 Qt6 DLL
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        for dll_file in search_dir.glob("Qt6*.dll"):
+            dll_name = dll_file.name
+            
+            if should_remove_dll(dll_name):
+                file_size = dll_file.stat().st_size
+                try:
+                    dll_file.unlink()
+                    removed_count += 1
+                    saved_space += file_size
+                    print_info(f"移除 DLL: {dll_name} ({file_size / 1024 / 1024:.2f} MB)")
+                except Exception as e:
+                    print_warning(f"无法移除 {dll_name}: {e}")
+    
+    # 2. 清理 WebEngine 资源文件
+    webengine_patterns = [
+        "*webengine*",
+        "*WebEngine*",
+        "qtwebengine*",
+    ]
+    
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        for pattern in webengine_patterns:
+            for file_path in search_dir.rglob(pattern):
+                if file_path.is_file():
+                    file_size = file_path.stat().st_size
+                    try:
+                        file_path.unlink()
+                        removed_count += 1
+                        saved_space += file_size
+                        print_info(f"移除 WebEngine 资源: {file_path.name} ({file_size / 1024 / 1024:.2f} MB)")
+                    except Exception as e:
+                        print_warning(f"无法移除 {file_path.name}: {e}")
+    
+    # 3. 清理 QtWebEngineProcess.exe
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        for exe_file in search_dir.rglob("QtWebEngineProcess.exe"):
+            file_size = exe_file.stat().st_size
             try:
-                dll_file.unlink()
+                exe_file.unlink()
                 removed_count += 1
                 saved_space += file_size
-                print_info(f"移除: {dll_name} ({file_size / 1024 / 1024:.2f} MB)")
+                print_info(f"移除: {exe_file.name} ({file_size / 1024 / 1024:.2f} MB)")
             except Exception as e:
-                print_warning(f"无法移除 {dll_name}: {e}")
+                print_warning(f"无法移除 {exe_file.name}: {e}")
     
-    print_success(f"共移除 {removed_count} 个Qt6 DLL，节省 {saved_space / 1024 / 1024:.2f} MB")
+    # 4. 清理 PySide6/resources 目录中的 WebEngine 资源
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        pyside6_resources_dirs = list(search_dir.rglob("PySide6/resources"))
+        
+        for resources_dir in pyside6_resources_dirs:
+            if resources_dir.exists():
+                for file_path in resources_dir.glob("*webengine*"):
+                    if file_path.is_file():
+                        file_size = file_path.stat().st_size
+                        try:
+                            file_path.unlink()
+                            removed_count += 1
+                            saved_space += file_size
+                            print_info(f"移除资源: {file_path.name} ({file_size / 1024 / 1024:.2f} MB)")
+                        except Exception as e:
+                            print_warning(f"无法移除 {file_path.name}: {e}")
+    
+    # 5. 清理 translations 目录（多语言翻译文件，如不需要可节省空间）
+    translations_dirs = []
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        translations_dirs.extend(list(search_dir.rglob("translations")))
+        # 也查找 PySide6/translations
+        pyside6_dir = search_dir / "PySide6"
+        if pyside6_dir.exists():
+            pyside6_translations = pyside6_dir / "translations"
+            if pyside6_translations.exists():
+                translations_dirs.append(pyside6_translations)
+    
+    for trans_dir in translations_dirs:
+        if trans_dir.exists() and trans_dir.is_dir():
+            dir_size = sum(f.stat().st_size for f in trans_dir.rglob('*') if f.is_file())
+            try:
+                shutil.rmtree(trans_dir)
+                removed_count += 1
+                saved_space += dir_size
+                print_info(f"移除翻译目录: {trans_dir.name} ({dir_size / 1024 / 1024:.2f} MB)")
+            except Exception as e:
+                print_warning(f"无法移除翻译目录 {trans_dir}: {e}")
+    
+    print_success(f"共移除 {removed_count} 个文件/目录，节省 {saved_space / 1024 / 1024:.2f} MB")
     return removed_count, saved_space
 
 
@@ -505,46 +600,57 @@ def verify_output() -> bool:
     print_header("验证输出目录")
     
     project_root = get_project_root()
-    output_dir = project_root / OUTPUT_DIR / f"{PROJECT_NAME}.dist"
+    output_dir = project_root / OUTPUT_DIR
     
     if not output_dir.exists():
         print_error(f"输出目录不存在: {output_dir}")
         return False
     
-    # 检查关键文件
-    key_files = [
-        f"{PROJECT_NAME}.exe",
-        "python39.dll",
-    ]
+    # 查找可执行文件（Nuitka输出结构不同）
+    exe_files = list(output_dir.rglob("*.exe"))
     
-    all_exist = True
-    for file_name in key_files:
-        file_path = output_dir / file_name
-        if file_path.exists():
-            size = file_path.stat().st_size
-            print_success(f"存在: {file_name} ({size / 1024 / 1024:.2f} MB)")
-        else:
-            print_error(f"缺失: {file_name}")
-            all_exist = False
+    if not exe_files:
+        print_error("未找到可执行文件")
+        return False
     
-    # 检查资源文件
-    resources_to_check = [
-        "freeassetfilter/icons/FAF-main.ico",
-        "freeassetfilter/utils/color_schemes.json",
-    ]
+    # 找到主可执行文件
+    main_exe = None
+    for exe in exe_files:
+        if exe.name == f"{PROJECT_NAME}.exe" or exe.name == "main.exe":
+            main_exe = exe
+            break
     
-    for resource in resources_to_check:
-        resource_path = output_dir / resource
-        if resource_path.exists():
-            print_success(f"资源存在: {resource}")
-        else:
-            print_warning(f"资源缺失: {resource}")
+    if not main_exe and exe_files:
+        main_exe = exe_files[0]
+    
+    if main_exe and main_exe.exists():
+        size = main_exe.stat().st_size
+        print_success(f"存在: {main_exe.name} ({size / 1024 / 1024:.2f} MB)")
+    else:
+        print_error("未找到主可执行文件")
+        return False
+    
+    # 检查资源文件（在.dist目录中）
+    dist_dirs = list(output_dir.rglob("*.dist"))
+    if dist_dirs:
+        dist_dir = dist_dirs[0]
+        resources_to_check = [
+            "freeassetfilter/icons/FAF-main.ico",
+            "freeassetfilter/utils/color_schemes.json",
+        ]
+        
+        for resource in resources_to_check:
+            resource_path = dist_dir / resource
+            if resource_path.exists():
+                print_success(f"资源存在: {resource}")
+            else:
+                print_warning(f"资源缺失: {resource}")
     
     # 统计目录大小
     total_size = sum(f.stat().st_size for f in output_dir.rglob('*') if f.is_file())
     print_info(f"输出目录总大小: {total_size / 1024 / 1024:.2f} MB")
     
-    return all_exist
+    return True
 
 
 def analyze_output_size():
@@ -552,7 +658,7 @@ def analyze_output_size():
     print_header("分析输出目录大小")
     
     project_root = get_project_root()
-    output_dir = project_root / OUTPUT_DIR / f"{PROJECT_NAME}.dist"
+    output_dir = project_root / OUTPUT_DIR
     
     if not output_dir.exists():
         print_warning(f"输出目录不存在: {output_dir}")
@@ -607,18 +713,22 @@ def analyze_output_size():
 
 
 def generate_report(removed_dlls: int, saved_space: int):
-    """生成编译报告"""
-    print_header("编译报告")
+    """生成打包报告"""
+    print_header("打包报告")
     
     project_root = get_project_root()
-    output_dir = project_root / OUTPUT_DIR / f"{PROJECT_NAME}.dist"
+    output_dir = project_root / OUTPUT_DIR
     
     if output_dir.exists():
         total_size = sum(f.stat().st_size for f in output_dir.rglob('*') if f.is_file())
         file_count = len(list(output_dir.rglob('*')))
         
+        # 查找可执行文件
+        exe_files = list(output_dir.rglob("*.exe"))
+        exe_name = exe_files[0].name if exe_files else f"{PROJECT_NAME}.exe"
+        
         print(f"输出目录: {output_dir}")
-        print(f"可执行文件: {PROJECT_NAME}.exe")
+        print(f"可执行文件: {exe_name}")
         print(f"总文件数: {file_count}")
         print(f"总大小: {total_size / 1024 / 1024:.2f} MB")
         print(f"移除Qt6 DLL: {removed_dlls} 个")
@@ -628,12 +738,12 @@ def generate_report(removed_dlls: int, saved_space: int):
         analyze_output_size()
         
         # 保存报告到文件
-        report_path = project_root / OUTPUT_DIR / "build_report.txt"
+        report_path = output_dir / "build_report.txt"
         with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(f"FreeAssetFilter 编译报告\n")
-            f.write(f"========================\n\n")
+            f.write(f"FreeAssetFilter Nuitka 打包报告\n")
+            f.write(f"================================\n\n")
             f.write(f"输出目录: {output_dir}\n")
-            f.write(f"可执行文件: {PROJECT_NAME}.exe\n")
+            f.write(f"可执行文件: {exe_name}\n")
             f.write(f"总文件数: {file_count}\n")
             f.write(f"总大小: {total_size / 1024 / 1024:.2f} MB\n")
             f.write(f"移除Qt6 DLL: {removed_dlls} 个\n")
@@ -664,7 +774,7 @@ def check_upx() -> bool:
             return True
     except (subprocess.SubprocessError, FileNotFoundError) as e:
         print(f"调试: 从PATH查找UPX失败: {e}")
-
+    
     print_warning("未找到UPX，跳过压缩步骤")
     print_info(r"如需使用UPX压缩，请下载并安装UPX到 C:\upx\ 或添加到PATH")
     return False
@@ -675,7 +785,7 @@ def compress_with_upx():
     print_header("使用UPX压缩")
     
     project_root = get_project_root()
-    output_dir = project_root / OUTPUT_DIR / f"{PROJECT_NAME}.dist"
+    output_dir = project_root / OUTPUT_DIR
     
     if not output_dir.exists():
         print_warning(f"输出目录不存在: {output_dir}")
@@ -739,8 +849,8 @@ def compress_with_upx():
 
 
 def clean_build():
-    """清理编译输出"""
-    print_header("清理编译输出")
+    """清理打包输出"""
+    print_header("清理打包输出")
     
     project_root = get_project_root()
     output_dir = project_root / OUTPUT_DIR
@@ -762,23 +872,32 @@ def clean_build():
             print_success(f"已删除Nuitka缓存: {nuitka_cache}")
         except Exception as e:
             print_warning(f"无法删除Nuitka缓存: {e}")
+    
+    # 清理Python缓存
+    pycache_dirs = list(project_root.rglob("__pycache__"))
+    for pycache in pycache_dirs:
+        try:
+            if pycache.exists():
+                shutil.rmtree(pycache)
+        except Exception as e:
+            print_warning(f"无法删除缓存 {pycache}: {e}")
+    print_success("已清理Python缓存")
 
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description="FreeAssetFilter Nuitka编译脚本")
-    parser.add_argument("--clean", action="store_true", help="清理后重新编译")
+    parser = argparse.ArgumentParser(description="FreeAssetFilter Nuitka打包脚本")
+    parser.add_argument("--no-clean", action="store_true", help="禁用清理，保留之前的构建输出")
     parser.add_argument("--skip-build", action="store_true", help="仅执行清理和验证，不编译")
     parser.add_argument("--no-clean-qt", action="store_true", help="不清理Qt6 DLL")
     parser.add_argument("--no-upx", action="store_true", help="不使用UPX压缩")
     parser.add_argument("--upx-only", action="store_true", help="仅执行UPX压缩（用于已编译的程序）")
     args = parser.parse_args()
     
-    print_header("FreeAssetFilter Nuitka编译脚本")
+    print_header("FreeAssetFilter Nuitka打包脚本")
     print(f"项目: {PROJECT_NAME}")
     print(f"入口: {ENTRY_POINT}")
     print(f"输出: {OUTPUT_DIR}")
-    print(f"编译器: MSVC")
     print(f"UPX压缩: {'禁用' if args.no_upx else '启用'}")
     
     # 仅执行UPX压缩
@@ -790,8 +909,8 @@ def main():
             print_success(f"压缩了 {upx_compressed} 个文件，节省 {upx_saved / 1024 / 1024:.2f} MB")
         return 0
     
-    # 清理
-    if args.clean:
+    # 清理（默认启用，除非指定 --no-clean）
+    if not args.no_clean:
         clean_build()
     
     if args.skip_build:
@@ -807,19 +926,14 @@ def main():
     if not check_nuitka():
         return 1
     
-    if not check_msvc():
-        return 1
-    
-    # 设置MSVC环境
-    setup_msvc_env()
-    
     # 收集文件
     data_files = collect_data_files()
-    dll_files = collect_dll_files()
-    pyd_files = collect_pyd_files()
+    binaries = collect_binaries()
+    hidden_imports = collect_hidden_imports()
+    packages = collect_packages()
     
     # 构建编译命令
-    cmd = build_nuitka_command(data_files, dll_files, pyd_files)
+    cmd = build_nuitka_command(data_files, binaries, hidden_imports, packages)
     
     # 运行编译
     if not run_nuitka_build(cmd):
@@ -845,8 +959,11 @@ def main():
     # 生成报告
     generate_report(removed_dlls, saved_space)
     
-    print_header("编译完成")
-    print_success(f"可执行文件位于: {OUTPUT_DIR}/{PROJECT_NAME}.dist/{PROJECT_NAME}.exe")
+    print_header("打包完成")
+    output_dir = get_project_root() / OUTPUT_DIR
+    exe_files = list(output_dir.rglob("*.exe"))
+    if exe_files:
+        print_success(f"可执行文件位于: {exe_files[0]}")
     if upx_saved > 0:
         print_success(f"UPX压缩节省: {upx_saved / 1024 / 1024:.2f} MB")
     

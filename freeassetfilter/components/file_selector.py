@@ -859,12 +859,14 @@ class CustomFileSelector(QWidget):
         # 如果是磁盘根目录，返回到All页面
         if is_root_dir:
             self.current_path = "All"
+            self.save_current_path()
             self.refresh_files()
         else:
             # 否则，执行原有的返回上级目录逻辑
             parent_dir = os.path.dirname(self.current_path)
             if parent_dir and parent_dir != self.current_path:
                 self.current_path = parent_dir
+                self.save_current_path()
                 self.refresh_files()
     
     def _load_favorites(self):
@@ -1026,6 +1028,7 @@ class CustomFileSelector(QWidget):
         """
         if os.path.exists(favorite['path']):
             self.current_path = favorite['path']
+            self.save_current_path()
             self.refresh_files()
             dialog.close()
     
@@ -1468,6 +1471,7 @@ class CustomFileSelector(QWidget):
         if drive == "All":
             # 设置一个特殊的路径标识，表示当前处于"All"视图
             self.current_path = "All"
+            self.save_current_path()
             self.refresh_files()
             return
         
@@ -1486,6 +1490,7 @@ class CustomFileSelector(QWidget):
         # 确保路径存在且是绝对路径
         if os.path.exists(drive_path) and os.path.isabs(drive_path):
             self.current_path = drive_path
+            self.save_current_path()
             self.refresh_files()
     
     def go_forward(self):
@@ -1529,9 +1534,11 @@ class CustomFileSelector(QWidget):
         path = self.path_edit.text().strip()
         if not path or path.lower() == "all":
             self.current_path = "All"
+            self.save_current_path()
             self.refresh_files()
         elif os.path.exists(path):
             self.current_path = path
+            self.save_current_path()
             self.refresh_files()
         else:
             from freeassetfilter.widgets.D_widgets import CustomMessageBox

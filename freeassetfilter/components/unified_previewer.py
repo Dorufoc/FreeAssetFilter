@@ -803,11 +803,36 @@ class UnifiedPreviewer(QWidget):
                     # 延迟300毫秒，确保MPV有足够时间完成文件加载
                     QTimer.singleShot(300, ensure_playing)
             elif preview_type == "image":
-                # 图片预览组件
-                if hasattr(self.current_preview_widget, 'load_image_from_path'):
-                    self.current_preview_widget.load_image_from_path(file_path)
-                elif hasattr(self.current_preview_widget, 'set_image'):
-                    self.current_preview_widget.set_image(file_path)
+                # 图片预览组件 - 需要区分静态图片和动态图片
+                file_ext = os.path.splitext(file_path)[1].lower()
+                is_animated = False
+                
+                if file_ext == '.gif':
+                    is_animated = True
+                elif file_ext == '.webp':
+                    is_animated = self._is_animated_image(file_path)
+                
+                # 检查当前组件类型是否匹配
+                from freeassetfilter.components.photo_viewer import GifViewer, PhotoViewer
+                current_is_gifviewer = isinstance(self.current_preview_widget, GifViewer)
+                current_is_photoviewer = isinstance(self.current_preview_widget, PhotoViewer)
+                
+                if is_animated and not current_is_gifviewer:
+                    # 需要切换到 GifViewer
+                    self._clear_preview(emit_signal=False)
+                    self._show_image_preview(file_path)
+                    return
+                elif not is_animated and not current_is_photoviewer:
+                    # 需要切换到 PhotoViewer
+                    self._clear_preview(emit_signal=False)
+                    self._show_image_preview(file_path)
+                    return
+                else:
+                    # 组件类型匹配，直接更新
+                    if hasattr(self.current_preview_widget, 'load_image_from_path'):
+                        self.current_preview_widget.load_image_from_path(file_path)
+                    elif hasattr(self.current_preview_widget, 'set_image'):
+                        self.current_preview_widget.set_image(file_path)
             elif preview_type == "pdf":
                 # PDF预览组件
                 if hasattr(self.current_preview_widget, 'set_file'):

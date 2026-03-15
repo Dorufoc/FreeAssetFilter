@@ -32,6 +32,7 @@ from PySide6.QtGui import (
     QImage, QPixmap, QPainter, QPen, QColor, QCursor,
     QFont, QIcon
 )
+from PySide6.QtGui import QMovie
 from PySide6.QtCore import (
     Qt, QPoint, QRect, QSize, QTimer, Signal, QMimeData, QUrl,
     QThread
@@ -1346,6 +1347,545 @@ class PhotoViewer(QWidget):
             bool: 是否成功加载图片
         """
         return self.load_image_from_path(file_path)
+
+
+class GifWidget(QWidget):
+    """
+    GIF显示部件，支持缩放、平移等功能
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        
+        self.movie = None
+        self.current_pixmap = None
+        self.original_size = QSize()
+        self.scale_factor = 1.0
+        self.min_scale = 0.1
+        self.max_scale = 10.0
+        self.is_panning = False
+        self.last_mouse_pos = QPoint()
+        self.pan_offset = QPoint()
+        self.mouse_pos = QPoint()
+        self.current_file_path = ""
+        
+        # 像素信息
+        self.pixel_info = {
+            'x': 0, 'y': 0,
+            'r': 0, 'g': 0, 'b': 0,
+            'hex': '#000000'
+        }
+        
+        self._bg_color_keys = ["secondary_color", "normal_color", "base_color"]
+        self._current_bg_color_key = "base_color"
+        self._load_bg_color_setting()
+    
+    def _load_bg_color_setting(self):
+        try:
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                saved_key = app.settings_manager.get_setting("photo_viewer.style.bg_color_key", "base_color")
+                if saved_key in self._bg_color_keys:
+                    self._current_bg_color_key = saved_key
+        except Exception as e:
+            error(f"加载背景色设置时出错: {e}")
+    
+    def _get_current_bg_color(self):
+        try:
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                remember_bg_color = app.settings_manager.get_setting("photo_viewer.style.remember_bg_color", True)
+                
+                if remember_bg_color:
+                    color_key = self._current_bg_color_key
+                else:
+                    color_key = "base_color"
+                
+                default_colors = {
+                    "secondary_color": "#333333",
+                    "normal_color": "#e0e0e0",
+                    "base_color": "#FFFFFF"
+                }
+                return app.settings_manager.get_setting(
+                    f"appearance.colors.{color_key}", 
+                    default_colors.get(color_key, "#212121")
+                )
+        except Exception as e:
+            error(f"获取背景色时出错: {e}")
+        return "#212121"
+    
+    def set_movie(self, movie):
+        self.movie = movie
+        if self.movie:
+            self.movie.frameChanged.connect(self.on_frame_changed)
+            self.pan_offset = QPoint()
+            # 等待第一帧加载完成后再获取尺寸
+            self.movie.frameChanged.connect(self._on_first_frame_loaded)
+    
+    def _on_first_frame_loaded(self, frame_number):
+        """第一帧加载完成后获取尺寸并更新"""
+        if frame_number == 0 and self.movie:
+            self.original_size = self.movie.currentPixmap().size()
+            self.current_pixmap = self.movie.currentPixmap()
+            self.calculate_fit_scale()
+            self.update()
+            # 断开一次性连接
+            try:
+                self.movie.frameChanged.disconnect(self._on_first_frame_loaded)
+            except:
+                pass
+    
+    def on_frame_changed(self):
+        if self.movie:
+            self.current_pixmap = self.movie.currentPixmap()
+            self.update()
+    
+    def _delayed_fit_scale(self):
+        try:
+            self.calculate_fit_scale()
+            self.update()
+        except Exception as e:
+            error(f"延迟自适应缩放时出错: {e}")
+    
+    def calculate_fit_scale(self):
+        try:
+            if self.original_size.isValid():
+                viewport_size = self._get_viewport_size()
+                
+                if viewport_size.width() <= 0 or viewport_size.height() <= 0:
+                    return
+                
+                available_logical_width = viewport_size.width()
+                available_logical_height = viewport_size.height()
+                
+                image_width = self.original_size.width()
+                image_height = self.original_size.height()
+                
+                if image_width > 0 and image_height > 0:
+                    width_ratio = available_logical_width / image_width
+                    height_ratio = available_logical_height / image_height
+                    
+                    self.scale_factor = min(width_ratio, height_ratio)
+                    
+                    self.scale_factor = max(self.scale_factor, self.min_scale)
+        except Exception as e:
+            error(f"计算自适应缩放时出错: {e}")
+            self.scale_factor = 1.0
+    
+    def _get_viewport_size(self):
+        if hasattr(self.parent(), 'viewport') and self.parent().viewport():
+            return self.parent().viewport().size()
+        elif hasattr(self.parent(), 'parent') and self.parent().parent():
+            parent = self.parent().parent()
+            if hasattr(parent, 'viewport') and parent.viewport():
+                return parent.viewport().size()
+        return self.size()
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        
+        base_color = self._get_current_bg_color()
+        
+        if base_color.startswith('#'):
+            r = int(base_color[1:3], 16)
+            g = int(base_color[3:5], 16)
+            b = int(base_color[5:7], 16)
+            painter.fillRect(self.rect(), QColor(r, g, b))
+        else:
+            painter.fillRect(self.rect(), QColor(40, 40, 40))
+        
+        if self.current_pixmap and self.original_size.isValid():
+            try:
+                scaled_width = int(self.original_size.width() * self.scale_factor)
+                scaled_height = int(self.original_size.height() * self.scale_factor)
+                
+                rect = self.rect()
+                image_left = rect.center().x() - scaled_width // 2 + self.pan_offset.x()
+                image_top = rect.center().y() - scaled_height // 2 + self.pan_offset.y()
+                image_rect = QRect(image_left, image_top, scaled_width, scaled_height)
+                
+                scaled_pixmap = self.current_pixmap.scaled(
+                    scaled_width, scaled_height,
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                painter.drawPixmap(image_rect, scaled_pixmap)
+                
+                # 绘制当前鼠标位置的十字线
+                if self.is_valid_pixel_position(self.mouse_pos):
+                    pen = QPen(QColor(255, 255, 255), 1, Qt.DotLine)
+                    pen.setWidth(1)
+                    painter.setPen(pen)
+                    
+                    # 十字线
+                    painter.drawLine(
+                        image_rect.left(), self.mouse_pos.y(),
+                        image_rect.right(), self.mouse_pos.y()
+                    )
+                    painter.drawLine(
+                        self.mouse_pos.x(), image_rect.top(),
+                        self.mouse_pos.x(), image_rect.bottom()
+                    )
+            except Exception as e:
+                error(f"绘制GIF时出错: {e}")
+        painter.end()
+    
+    def is_valid_pixel_position(self, pos):
+        """检查给定位置是否在有效像素范围内"""
+        try:
+            if not self.current_pixmap or not self.original_size.isValid():
+                return False
+            
+            scaled_width = int(self.original_size.width() * self.scale_factor)
+            scaled_height = int(self.original_size.height() * self.scale_factor)
+            
+            rect = self.rect()
+            image_left = rect.center().x() - scaled_width // 2 + self.pan_offset.x()
+            image_top = rect.center().y() - scaled_height // 2 + self.pan_offset.y()
+            
+            image_rect = QRect(image_left, image_top, scaled_width, scaled_height)
+            
+            return image_rect.contains(pos)
+        except Exception as e:
+            error(f"检查像素位置时出错: {e}")
+            return False
+    
+    def update_pixel_info(self, pos):
+        """更新鼠标位置的像素信息"""
+        try:
+            if self.current_pixmap and self.original_size.isValid() and self.is_valid_pixel_position(pos):
+                scaled_width = int(self.original_size.width() * self.scale_factor)
+                scaled_height = int(self.original_size.height() * self.scale_factor)
+                
+                rect = self.rect()
+                image_left = rect.center().x() - scaled_width // 2 + self.pan_offset.x()
+                image_top = rect.center().y() - scaled_height // 2 + self.pan_offset.y()
+                
+                image_rect = QRect(image_left, image_top, scaled_width, scaled_height)
+                
+                # 计算鼠标在缩放后图片中的位置
+                mouse_in_image = pos - image_rect.topLeft()
+                
+                # 转换为原始图片坐标
+                mouse_in_original_x = mouse_in_image.x() / self.scale_factor
+                mouse_in_original_y = mouse_in_image.y() / self.scale_factor
+                
+                # 获取像素颜色
+                x = int(mouse_in_original_x)
+                y = int(mouse_in_original_y)
+                
+                if 0 <= x < self.original_size.width() and 0 <= y < self.original_size.height():
+                    # 从当前pixmap获取颜色
+                    color = self.current_pixmap.toImage().pixelColor(x, y)
+                    
+                    # 更新像素信息
+                    self.pixel_info = {
+                        'x': x,
+                        'y': y,
+                        'r': color.red(),
+                        'g': color.green(),
+                        'b': color.blue(),
+                        'hex': color.name()
+                    }
+        except Exception as e:
+            error(f"更新像素信息时出错: {e}")
+    
+    def mousePressEvent(self, event):
+        try:
+            if event.button() == Qt.LeftButton:
+                self.is_panning = True
+                self.last_mouse_pos = event.pos()
+                self.setCursor(QCursor(Qt.ClosedHandCursor))
+        except Exception as e:
+            error(f"处理鼠标按下事件时出错: {e}")
+    
+    def mouseReleaseEvent(self, event):
+        try:
+            if event.button() == Qt.LeftButton:
+                self.is_panning = False
+                self.setCursor(QCursor(Qt.ArrowCursor))
+        except Exception as e:
+            error(f"处理鼠标释放事件时出错: {e}")
+    
+    def mouseMoveEvent(self, event):
+        try:
+            self.mouse_pos = event.pos()
+            
+            if self.is_panning:
+                delta = event.pos() - self.last_mouse_pos
+                self.pan_offset += delta
+                self.last_mouse_pos = event.pos()
+            
+            # 更新像素信息
+            if self.is_valid_pixel_position(self.mouse_pos):
+                self.update_pixel_info(self.mouse_pos)
+            
+            self.update()
+        except Exception as e:
+            error(f"处理鼠标移动事件时出错: {e}")
+    
+    def wheelEvent(self, event):
+        try:
+            if self.current_pixmap and self.original_size.isValid():
+                wheel_pos = event.position().toPoint()
+                
+                scaled_width = int(self.original_size.width() * self.scale_factor)
+                scaled_height = int(self.original_size.height() * self.scale_factor)
+                
+                rect = self.rect()
+                image_left = rect.center().x() - scaled_width // 2 + self.pan_offset.x()
+                image_top = rect.center().y() - scaled_height // 2 + self.pan_offset.y()
+                image_rect = QRect(image_left, image_top, scaled_width, scaled_height)
+                
+                if image_rect.contains(wheel_pos):
+                    mouse_in_image = wheel_pos - image_rect.topLeft()
+                    mouse_in_original_x = mouse_in_image.x() / scaled_width * self.original_size.width()
+                    mouse_in_original_y = mouse_in_image.y() / scaled_height * self.original_size.height()
+                else:
+                    mouse_in_original_x = self.original_size.width() // 2
+                    mouse_in_original_y = self.original_size.height() // 2
+                    
+                delta = 1.1 if event.angleDelta().y() > 0 else 0.9
+                new_scale = self.scale_factor * delta
+                
+                if self.min_scale <= new_scale <= self.max_scale:
+                    self.scale_factor = new_scale
+                    
+                    new_scaled_width = int(self.original_size.width() * self.scale_factor)
+                    new_scaled_height = int(self.original_size.height() * self.scale_factor)
+                    
+                    new_image_left = rect.center().x() - new_scaled_width // 2 + self.pan_offset.x()
+                    new_image_top = rect.center().y() - new_scaled_height // 2 + self.pan_offset.y()
+                    new_image_rect = QRect(new_image_left, new_image_top, new_scaled_width, new_scaled_height)
+                    
+                    new_mouse_in_image_x = mouse_in_original_x / self.original_size.width() * new_scaled_width
+                    new_mouse_in_image_y = mouse_in_original_y / self.original_size.height() * new_scaled_height
+                    new_mouse_in_image = QPoint(int(new_mouse_in_image_x), int(new_mouse_in_image_y))
+                    
+                    self.pan_offset += (wheel_pos - new_image_rect.topLeft()) - new_mouse_in_image
+                    
+                    self.update()
+        except Exception as e:
+            error(f"处理鼠标滚轮事件时出错: {e}")
+        
+        event.accept()
+    
+    def mouseDoubleClickEvent(self, event):
+        try:
+            if event.button() == Qt.LeftButton:
+                self.reset_view()
+        except Exception as e:
+            error(f"处理鼠标双击事件时出错: {e}")
+    
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.original_size.isValid():
+            self.calculate_fit_scale()
+            self.update()
+    
+    def reset_view(self):
+        try:
+            self.pan_offset = QPoint()
+            self.calculate_fit_scale()
+            self.update()
+        except Exception as e:
+            error(f"重置视图时出错: {e}")
+    
+    def copy_color_value(self):
+        """复制当前像素的色度值"""
+        try:
+            clipboard = QApplication.clipboard()
+            color_value = f"RGB({self.pixel_info['r']}, {self.pixel_info['g']}, {self.pixel_info['b']})\n"
+            color_value += f"HEX: {self.pixel_info['hex']}\n"
+            color_value += f"坐标: ({self.pixel_info['x']}, {self.pixel_info['y']})"
+            clipboard.setText(color_value)
+        except Exception as e:
+            error(f"复制色度值时出错: {e}")
+    
+    def contextMenuEvent(self, event):
+        """右键菜单事件"""
+        try:
+            from freeassetfilter.widgets.D_more_menu import D_MoreMenu
+            from PySide6.QtCore import QEventLoop, QTimer
+            
+            # 暂停GIF播放
+            was_playing = False
+            if self.movie and self.movie.state() == QMovie.Running:
+                self.movie.setPaused(True)
+                was_playing = True
+            
+            if not hasattr(self, '_context_menu'):
+                self._context_menu = D_MoreMenu(parent=None)
+                self._context_menu.itemClicked.connect(self._on_context_menu_clicked)
+            
+            # 构建菜单项
+            items = [
+                {"text": "复制色度值", "data": "copy_color"},
+                {"text": "缩放到适合大小", "data": "fit_to_size"},
+                {"text": "切换背景色", "data": "switch_bg_color"}
+            ]
+            
+            self._context_menu.set_items(items)
+            
+            # 使用事件循环等待菜单关闭
+            loop = QEventLoop()
+            self._context_menu.itemClicked.connect(loop.quit)
+            self._context_menu.destroyed.connect(loop.quit)
+            
+            # 使用定时器检查菜单是否仍然可见（处理点击外部区域的情况）
+            check_timer = QTimer()
+            check_timer.timeout.connect(lambda: self._check_menu_closed(loop, check_timer))
+            check_timer.start(100)  # 每100ms检查一次
+            
+            self._context_menu.popup(event.globalPos())
+            loop.exec()
+            
+            check_timer.stop()
+            
+            # 菜单关闭后恢复播放
+            if was_playing and self.movie:
+                self.movie.setPaused(False)
+        except Exception as e:
+            error(f"显示右键菜单时出错: {e}")
+    
+    def _check_menu_closed(self, loop, timer):
+        """检查菜单是否已关闭"""
+        try:
+            if hasattr(self, '_context_menu') and self._context_menu:
+                if not self._context_menu.isVisible():
+                    loop.quit()
+            else:
+                loop.quit()
+        except:
+            loop.quit()
+    
+    def _on_context_menu_clicked(self, data):
+        """右键菜单项点击事件处理"""
+        if data == "copy_color":
+            self.copy_color_value()
+        elif data == "fit_to_size":
+            self.reset_view()
+        elif data == "switch_bg_color":
+            self._switch_bg_color()
+    
+    def _switch_bg_color(self):
+        """切换到下一个背景色"""
+        try:
+            current_index = self._bg_color_keys.index(self._current_bg_color_key)
+            next_index = (current_index + 1) % len(self._bg_color_keys)
+            self._current_bg_color_key = self._bg_color_keys[next_index]
+            self._save_bg_color_setting()
+            self.update()
+        except Exception as e:
+            error(f"切换背景色时出错: {e}")
+    
+    def _save_bg_color_setting(self):
+        """保存背景色设置"""
+        try:
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                app.settings_manager.set_setting("photo_viewer.style.bg_color_key", self._current_bg_color_key)
+        except Exception as e:
+            error(f"保存背景色设置时出错: {e}")
+
+
+class GifViewer(QWidget):
+    """
+    GIF查看器组件
+    提供GIF查看、播放暂停、缩放、平移等功能
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QFont
+        app = QApplication.instance()
+        
+        self.global_font = getattr(app, 'global_font', QFont())
+        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        self.setFont(self.global_font)
+        
+        self.gif_widget = None
+        self.scroll_area = None
+        self.movie = None
+        
+        self.setWindowTitle("GIF查看器")
+        
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        scaled_min_width = int(100 * self.dpi_scale)
+        scaled_min_height = int(100 * self.dpi_scale)
+        self.setMinimumSize(scaled_min_width, scaled_min_height)
+        
+        self.init_ui()
+    
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        app = QApplication.instance()
+        base_color = "#212121"
+        if hasattr(app, 'settings_manager'):
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        self.setStyleSheet(f"background-color: {base_color};")
+        
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet(f"background-color: {base_color};")
+        
+        self.gif_widget = GifWidget()
+        self.scroll_area.setWidget(self.gif_widget)
+        
+        from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
+        
+        main_layout.addWidget(self.scroll_area, 1)
+    
+    def load_gif(self, file_path):
+        try:
+            if not os.path.exists(file_path):
+                return False
+            
+            if self.movie:
+                self.movie.stop()
+                self.movie.deleteLater()
+            
+            self.movie = QMovie(file_path)
+            
+            if not self.movie.isValid():
+                error(f"无效的GIF文件: {file_path}")
+                return False
+            
+            self.gif_widget.current_file_path = file_path
+            self.gif_widget.set_movie(self.movie)
+
+            self.movie.start()
+
+            self.setWindowTitle(f"GIF查看器 - {os.path.basename(file_path)}")
+            return True
+        except Exception as e:
+            error(f"加载GIF文件时出错: {e}")
+            return False
+    
+    def reset_view(self):
+        try:
+            self.gif_widget.reset_view()
+        except Exception as e:
+            error(f"重置视图时出错: {e}")
+    
+    def set_file(self, file_path):
+        return self.load_gif(file_path)
+    
+    def load_image_from_path(self, file_path):
+        return self.load_gif(file_path)
 
 
 # 命令行参数支持
