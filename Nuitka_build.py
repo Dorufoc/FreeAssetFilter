@@ -32,6 +32,8 @@ OUTPUT_DIR = "build/nuitka"
 # UPX压缩选项
 USE_UPX = True
 UPX_PATH = r"C:\upx\upx.exe"  # UPX可执行文件路径
+# 编译模式: "standalone" (多文件,启动快) 或 "onefile" (单文件,体积小但启动慢)
+BUILD_MODE = "standalone"
 
 # Qt6 DLL白名单（必须保留）
 QT6_KEEP_DLLS = {
@@ -266,6 +268,27 @@ def collect_hidden_imports() -> List[str]:
         # PIL子模块
         "PIL._imagingtk",
         "PIL._tkinter_finder",
+        # numpy核心子模块 - numpy 2.x 兼容
+        "numpy._core",
+        "numpy._core._multiarray_umath",
+        "numpy.linalg",
+        "numpy.random",
+        "numpy.random._bounded_integers",
+        "numpy.random._common",
+        "numpy.random._generator",
+        "numpy.random._mt19937",
+        "numpy.random._pcg64",
+        "numpy.random._philox",
+        "numpy.random._sfc64",
+        "numpy.random.bit_generator",
+        "numpy.random.mtrand",
+        "numpy.fft",
+        "numpy.ma",
+        "numpy.matrixlib",
+        "numpy.polynomial",
+        "numpy.lib",
+        "numpy.dtypes",
+        "numpy.exceptions",
         # PySide6子模块
         "PySide6.QtCore",
         "PySide6.QtGui",
@@ -290,21 +313,23 @@ def collect_packages() -> List[str]:
         "PIL",
         "numpy",
         "cv2",
-        "skimage",
-        "scipy",
-        "psd_tools",
-        "rawpy",
-        "mutagen",
-        "py7zr",
-        "pygments",
-        "markdown",
-        "exifread",
-        "pillow_heif",
-        "imageio",
-        "psutil",
-        "PySide6",
-        "rarfile",
-        "aggdraw",
+        # 以下包在代码中实际使用
+        "psd_tools",      # PSD文件支持
+        "rawpy",          # RAW照片支持
+        "mutagen",        # 音频元数据
+        "py7zr",          # 7z压缩文件
+        "pygments",       # 代码语法高亮
+        "markdown",       # Markdown预览
+        "exifread",       # EXIF信息读取
+        "pillow_heif",    # HEIF图片支持
+        "PySide6",        # GUI框架
+        "rarfile",        # RAR压缩文件
+        # 以下包在代码中未使用，已移除:
+        # "psutil",       # 代码中未实际导入使用
+        # "skimage",      # 未使用
+        # "scipy",        # 未使用
+        # "imageio",      # 未使用
+        # "aggdraw",      # 未使用
     ]
     
     print_success(f"共收集到 {len(packages)} 个包")
@@ -334,46 +359,184 @@ def build_nuitka_command(data_files: List[Tuple[str, str]],
     cpu_count = multiprocessing.cpu_count()
     jobs = max(1, cpu_count - 2)
     
+    # 根据编译模式选择参数
+    mode_flag = "--onefile" if BUILD_MODE == "onefile" else "--standalone"
+    
     cmd = [
         sys.executable,
         "-m", "nuitka",
-        "--standalone",  # 创建独立可执行文件
-        "--enable-plugin=pyside6",  # 启用PySide6插件
+        mode_flag,  # 编译模式: standalone 或 onefile
+        "--enable-plugin=pyside6",  # 启用PySide6插件，处理Qt资源
+        # "--enable-plugin=numpy",  # numpy插件已弃用，不再启用
         f"--output-dir={output_dir}",
         "--windows-console-mode=disable",  # Windows GUI应用程序，不显示控制台
         "--show-progress",  # 显示编译进度
         f"--jobs={jobs}",  # 使用更多并行任务加速编译
-        "--lto=yes",  # 启用链接时优化，提升运行时性能
-        # 移除 --low-memory 以提升编译速度
+        "--lto=no",  # 禁用LTO以避免兼容性问题
         "--assume-yes-for-downloads",  # 自动下载需要的依赖
+        "--include-package=numpy",  # 完整包含numpy
+        # Qt插件配置 - 只包含必要的插件
+        "--include-qt-plugins=platforms,imageformats,iconengines,styles",
+        # 禁用部署标志以避免兼容性问题
+        "--no-deployment-flag=excluded-module-usage",
+        "--no-deployment-flag=self-execution",
+        # 体积优化选项
+        "--remove-output",  # 编译完成后移除中间文件
+        "--no-pyi-file",  # 不生成 .pyi 类型提示文件
     ]
     
     # 添加图标参数
     if icon_path.exists():
         cmd.append(f"--windows-icon-from-ico={icon_path}")
     
-    # 排除不需要的模块
+    # 排除不需要的模块 - 大幅减小体积
     exclude_modules = [
+        # 打包工具自身
         "PyInstaller",
         "nuitka",
         "pip",
         "setuptools",
         "wheel",
+        # 测试相关
         "pytest",
         "_pytest",
         "unittest",
         "test",
         "tests",
+        "testing",
         # 排除 Qt WebEngine（体积太大，项目不需要）
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets",
         "PySide6.QtWebEngineQuick",
         "PySide6.QtWebChannel",
-        # 排除 numpy/scipy 的测试和可选依赖模块
-        "numpy.f2py.tests",
-        "numpy._pytesttester",
-        "scipy._lib.array_api_compat.torch",
+        # 排除其他不需要的 Qt 模块
+        "PySide6.Qt3DAnimation",
+        "PySide6.Qt3DCore",
+        "PySide6.Qt3DExtras",
+        "PySide6.Qt3DInput",
+        "PySide6.Qt3DLogic",
+        "PySide6.Qt3DRender",
+        "PySide6.QtBluetooth",
+        "PySide6.QtCharts",
+        "PySide6.QtDataVisualization",
+        "PySide6.QtDesigner",
+        "PySide6.QtHelp",
+        "PySide6.QtLocation",
+        "PySide6.QtNfc",
+        "PySide6.QtPositioning",
+        "PySide6.QtPrintSupport",
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.QtQuick3D",
+        "PySide6.QtQuickWidgets",
+        "PySide6.QtRemoteObjects",
+        "PySide6.QtSensors",
+        "PySide6.QtSerialBus",
+        "PySide6.QtSerialPort",
+        "PySide6.QtSql",
+        "PySide6.QtStateMachine",
+        "PySide6.QtTest",
+        "PySide6.QtTextToSpeech",
+        "PySide6.QtWebSockets",
+        "PySide6.QtXml",
+        # 注意：numpy 相关模块不再排除，因为我们完整包含 numpy
+        # "numpy.f2py",
+        # "numpy.f2py.tests",
+        # "numpy._pytesttester",
+        # 排除 PIL 的测试和可选功能
+        "PIL.ImageQt",
+        "PIL.ImageTk",
+        "PIL._tkinter_finder",
+        # 排除 cv2 的测试和多余模块
+        "cv2.gapi",
+        "cv2.mat_wrapper",
+        "cv2.misc",
+        "cv2.utils",
+        "cv2.tests",
+        # 排除其他大型依赖
         "torch",
+        "tensorflow",
+        "matplotlib",
+        "pandas",
+        "jupyter",
+        "IPython",
+        "notebook",
+        # 排除文档和示例
+        "docutils",
+        "sphinx",
+        # 排除调试工具
+        "pdb",
+        "bdb",
+        "cProfile",
+        "profile",
+        "pstats",
+        "trace",
+        "tracemalloc",
+        # 排除开发工具
+        "mypy",
+        "pylint",
+        "flake8",
+        "black",
+        "isort",
+        "autopep8",
+        "yapf",
+        # 排除网络相关（如果不需要）
+        "requests",
+        "urllib3",
+        "http.client",
+        "ftplib",
+        "telnetlib",
+        "smtplib",
+        "poplib",
+        "imaplib",
+        "nntplib",
+        "http.server",
+        "xmlrpc",
+        "xmlrpc.client",
+        "xmlrpc.server",
+        # 排除 GUI 相关（使用 PySide6，不需要 Tkinter）
+        "tkinter",
+        "Tkinter",
+        "_tkinter",
+        "tcl",
+        "idlelib",
+        # 排除数据库相关
+        "sqlite3",
+        "dbm",
+        "gdbm",
+        # 排除多媒体处理（项目使用 mpv）
+        "wave",
+        "chunk",
+        "audioop",
+        "ossaudiodev",
+        "sunau",
+        "aifc",
+        # 排除加密相关（如果不需要）
+        "crypt",
+        "pwd",
+        "grp",
+        "spwd",
+        # 排除其他标准库模块
+        "turtle",
+        "cmd",
+        "code",
+        "codeop",
+        "pty",
+        "tty",
+        "pipes",
+        "xdrlib",
+        "uu",
+        "quopri",
+        "binhex",
+        "binascii",
+        "netrc",
+        # "plistlib",  # syntax_highlighter 需要使用
+        "mailcap",
+        "msilib",
+        "msvcrt",
+        "winreg",
+        "winsound",
+        "_winapi",
     ]
     
     for mod in exclude_modules:
@@ -869,12 +1032,19 @@ def main():
     parser.add_argument("--no-clean-qt", action="store_true", help="不清理Qt6 DLL")
     parser.add_argument("--no-upx", action="store_true", help="不使用UPX压缩")
     parser.add_argument("--upx-only", action="store_true", help="仅执行UPX压缩（用于已编译的程序）")
+    parser.add_argument("--onefile", action="store_true", help="使用单文件模式（体积小但启动慢）")
     args = parser.parse_args()
+    
+    # 根据命令行参数设置编译模式
+    global BUILD_MODE
+    if args.onefile:
+        BUILD_MODE = "onefile"
     
     print_header("FreeAssetFilter Nuitka打包脚本")
     print(f"项目: {PROJECT_NAME}")
     print(f"入口: {ENTRY_POINT}")
     print(f"输出: {OUTPUT_DIR}")
+    print(f"编译模式: {BUILD_MODE}")
     print(f"UPX压缩: {'禁用' if args.no_upx else '启用'}")
     
     # 仅执行UPX压缩
