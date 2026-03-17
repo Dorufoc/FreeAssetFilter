@@ -124,25 +124,20 @@ class CustomFileSelector(QWidget):
         # 设置组件字体
         self.setFont(self.global_font)
         
-        # 设置最小宽度，确保能容纳3列卡片并有空间放下滚动条，并应用DPI缩放（调整为原始的一半）
-        # 计算方式：3列卡片宽度 + 间距 + 左右边距 + 滚动条宽度
-        card_width = int(35 * self.dpi_scale)  # 卡片宽度（调整为原始的一半）
-        spacing = int(2.5 * self.dpi_scale)  # 卡片间距（调整为原始的一半）
-        margin = int(2.5 * self.dpi_scale)  # 单边边距（调整为原始的一半）
-        scrollbar_width = int(10 * self.dpi_scale)  # 滚动条宽度估计值（保持不变）
+        # 计算卡片基础宽度（与 FileBlockCard 保持一致）
+        card_width = self._calculate_card_base_width()
+        spacing = int(5 * self.dpi_scale)  # 卡片间距
+        margin = int(5 * self.dpi_scale)  # 单边边距
+        scrollbar_width = int(10 * self.dpi_scale)  # 滚动条宽度估计值
         
         # 3列卡片总宽度 = 3*卡片宽度 + 2*间距（因为3列只有2个间距）
         cards_total_width = 3 * card_width + 2 * spacing
         # 左右边距总和
         margins_total = 2 * margin
         # 总最小宽度 = 卡片总宽度 + 边距总和 + 滚动条宽度
-        total_min_width = cards_total_width + margins_total + scrollbar_width
+        min_three_columns_width = cards_total_width + margins_total + scrollbar_width
         
-        # 强制设置文件选择器的最小宽度，确保能显示3列卡片
-        # 3列所需宽度：3*70px + 2*5px + 2*5px + 20px = 210px + 10px + 10px + 20px = 250px
-        min_three_columns_width = int(120 * self.dpi_scale)  # 确保有足够宽度显示3列（调整为原始的一半）
-        
-        # 直接设置固定的最小宽度，不进行复杂计算
+        # 设置文件选择器的最小宽度，确保能显示3列卡片
         self.setMinimumWidth(min_three_columns_width)
         
         # 初始化配置
@@ -2104,11 +2099,52 @@ class CustomFileSelector(QWidget):
         # 直接重新生成文件列表，以适应新的宽度
         self.refresh_files()
     
+    def _calculate_card_base_width(self):
+        """
+        计算卡片的基础宽度（基于日期文本宽度）
+        
+        逻辑与 FileBlockCard._calculate_optimal_width 保持一致：
+        1. 计算日期文本（最后一行）的宽度
+        2. 加上1个英文字符的宽度作为额外空间
+        3. 加上水平边距和边框
+        4. 与原固定宽度（50 * DPI缩放）比较，确保不会过小
+        
+        Returns:
+            int: 计算后的卡片基础宽度
+        """
+        # 原固定宽度作为最小宽度基准（50 * DPI缩放）
+        base_min_width = int(50 * self.dpi_scale)
+        
+        # 获取小字体（时间标签使用的字体，0.85倍全局字体）
+        small_font = QFont(self.global_font)
+        small_font.setPointSize(int(self.global_font.pointSize() * 0.85))
+        small_font_metrics = QFontMetrics(small_font)
+        
+        # 计算日期文本的宽度（格式：yyyy-MM-dd，如 2024-03-15）
+        date_text = "2024-12-31"  # 典型日期格式，10个字符
+        date_text_width = small_font_metrics.horizontalAdvance(date_text)
+        
+        # 加上1个英文字符的宽度（使用 'W' 作为最宽字符）
+        char_width = small_font_metrics.horizontalAdvance("W")
+        
+        # 水平边距（左右）
+        horizontal_margins = int(4 * self.dpi_scale) * 2
+        
+        # 边框宽度
+        border_width = int(1 * self.dpi_scale) * 2
+        
+        # 计算实际需要的宽度：日期宽度 + 1个字符宽度 + 边距 + 边框
+        required_width = date_text_width + char_width + horizontal_margins + border_width
+        
+        # 返回最大值：确保不小于原固定宽度（50 * DPI缩放），同时能完整显示日期
+        return max(required_width, base_min_width)
+
     def _calculate_max_columns(self):
         """
         根据当前视口宽度精确计算每行卡片数量
         实时捕获窗口宽度，通过数值运算确定卡片数量
         完全基于视口宽度动态计算，没有固定限制
+        使用 _calculate_card_base_width 计算卡片基础宽度
         """
         scroll_area = None
         parent_widget = self.files_container.parent()
@@ -2121,8 +2157,8 @@ class CustomFileSelector(QWidget):
 
         viewport_width = scroll_area.viewport().width()
 
-        # 使用与 FileBlockCard 一致的最大宽度作为基准
-        card_width = int(50 * self.dpi_scale)
+        # 使用自适应计算的卡片基础宽度
+        card_width = self._calculate_card_base_width()
         spacing = int(5 * self.dpi_scale)
         actual_margin = int(5 * self.dpi_scale)
         margin = actual_margin * 2

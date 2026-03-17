@@ -199,16 +199,54 @@ class FileBlockCard(QWidget):
         # 返回最大值：确保不小于最小高度，同时能容纳大文字
         return max(required_height, min_height)
 
+    def _calculate_optimal_width(self):
+        """
+        计算卡片的最佳宽度
+        
+        逻辑：
+        1. 计算日期文本（最后一行）的宽度
+        2. 加上1个英文字符的宽度作为额外空间
+        3. 加上水平边距和边框
+        4. 与原固定宽度（50 * DPI缩放）比较，确保不会过小
+        5. 返回较大值，确保卡片既不会太小，也能完整显示日期
+        
+        Returns:
+            int: 计算后的最佳宽度
+        """
+        # 原固定宽度作为最小宽度基准（50 * DPI缩放）
+        base_min_width = int(50 * self.dpi_scale)
+        
+        # 获取小字体（时间标签使用的字体）
+        small_font = QFont(self.global_font)
+        small_font.setPointSize(int(self.global_font.pointSize() * 0.85))
+        small_font_metrics = QFontMetrics(small_font)
+        
+        # 计算日期文本的宽度（格式：yyyy-MM-dd，如 2024-03-15）
+        # 使用典型日期字符串计算最大宽度
+        date_text = "2024-12-31"  # 典型日期格式，10个字符
+        date_text_width = small_font_metrics.horizontalAdvance(date_text)
+        
+        # 加上1个英文字符的宽度（使用 'W' 作为最宽字符）
+        char_width = small_font_metrics.horizontalAdvance("W")
+        
+        # 水平边距（左右）
+        horizontal_margins = int(4 * self.dpi_scale) * 2
+        
+        # 边框宽度
+        border_width = int(1 * self.dpi_scale) * 2
+        
+        # 计算实际需要的宽度：日期宽度 + 1个字符宽度 + 边距 + 边框
+        required_width = date_text_width + char_width + horizontal_margins + border_width
+        
+        # 返回最大值：确保不小于原固定宽度（50 * DPI缩放），同时能完整显示日期
+        return max(required_width, base_min_width)
+
     def _setup_ui(self):
         """设置UI布局和控件"""
         self.setObjectName("FileBlockCard")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
-
-        scaled_min_width = int(35 * self.dpi_scale)
-        self.setMinimumWidth(scaled_min_width)
-        # 移除最大宽度限制，让卡片可以自适应填充可用空间
         
         app = QApplication.instance()
         self.default_font_size = getattr(app, 'default_font_size', 8) if app else 8
@@ -219,8 +257,11 @@ class FileBlockCard(QWidget):
         self._create_icon()
         self._create_labels()
         
-        # 计算并设置自适应高度
+        # 计算并设置自适应宽度和高度
+        optimal_width = self._calculate_optimal_width()
         optimal_height = self._calculate_optimal_height()
+        self.setMinimumWidth(optimal_width)
+        self.setMaximumWidth(optimal_width)
         self.setMinimumHeight(optimal_height)
         self.setMaximumHeight(optimal_height)
     
@@ -1067,13 +1108,10 @@ class FileBlockCard(QWidget):
     
     def sizeHint(self):
         """返回建议的大小"""
-        if self._flexible_width is not None:
-            base_width = self._flexible_width
-        else:
-            base_width = int(42 * self.dpi_scale)
-        # 使用计算后的自适应高度
+        # 使用计算后的自适应宽度和高度
+        optimal_width = self._calculate_optimal_width()
         optimal_height = self._calculate_optimal_height()
-        return QSize(base_width, optimal_height)
+        return QSize(optimal_width, optimal_height)
     
     def set_flexible_width(self, width):
         """
@@ -1083,9 +1121,10 @@ class FileBlockCard(QWidget):
             width (int): 可用宽度（像素）
         """
         self._flexible_width = width
-        min_width = int(35 * self.dpi_scale)
-        # 移除最大宽度限制，让卡片可以自适应填充可用空间
-        constrained_width = max(min_width, width)
+        # 使用计算后的自适应宽度作为最小宽度
+        optimal_width = self._calculate_optimal_width()
+        # 确保宽度不小于自适应计算的宽度
+        constrained_width = max(optimal_width, width)
         self.setFixedWidth(constrained_width)
         self.updateGeometry()
         # 宽度变化后重新更新文本显示
@@ -1181,11 +1220,11 @@ class FileBlockCard(QWidget):
         self._drag_card = QWidget(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         
         # 使用当前卡片的实际尺寸（考虑自适应宽度算法）
-        # 如果设置了灵活宽度则使用，否则使用默认尺寸
+        # 如果设置了灵活宽度则使用，否则使用自适应计算的宽度
         if self._flexible_width is not None:
             card_width = self._flexible_width
         else:
-            card_width = int(42 * self.dpi_scale)  # 默认建议宽度
+            card_width = self._calculate_optimal_width()  # 使用自适应计算的宽度
         # 使用计算后的自适应高度
         card_height = self._calculate_optimal_height()
         self._drag_card.setFixedSize(card_width, card_height)

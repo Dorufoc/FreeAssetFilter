@@ -1151,11 +1151,11 @@ class TextPreviewWidget(QWidget):
         app = QApplication.instance()
         base_color = "#FFFFFF"
         second_color = "#333333"
-        accent_color = "#0A59F7"
+        accent_color = "#007AFF"
         if hasattr(app, 'settings_manager'):
             base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
             second_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7")
+            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
         
         self.text_edit.setStyleSheet(f"""
             QTextEdit {{
@@ -1329,7 +1329,7 @@ class TextPreviewWidget(QWidget):
         bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
         base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
         secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-        accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7")
+        accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
 
         self.setStyleSheet(f"""
             background-color: {bg_color};
@@ -1426,7 +1426,7 @@ class TextPreviewWidget(QWidget):
             # 重新应用选中样式
             app = QApplication.instance()
             if hasattr(app, 'settings_manager'):
-                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7")
+                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
                 if accent_color and accent_color.startswith('#') and len(accent_color) == 7:
                     r = int(accent_color[1:3], 16)
                     g = int(accent_color[3:5], 16)

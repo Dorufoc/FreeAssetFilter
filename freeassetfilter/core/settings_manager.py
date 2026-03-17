@@ -60,7 +60,7 @@ class SettingsManager:
                 "icon_style": 0,
                 "preset_theme": "活力蓝",
                 "colors": {
-                    "accent_color": "#0A59F7",
+                    "accent_color": "#007AFF",
                     "secondary_color": "#333333",
                     "normal_color": "#e0e0e0",
                     "auxiliary_color": "#f1f3f5",

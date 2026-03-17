@@ -35,7 +35,7 @@ class ThemeEditor(QScrollArea):
         self.global_font_size = getattr(self.app, 'default_font_size', 8)
         
         self.preset_themes = [
-            {"name": "活力蓝", "colors": ["#0A59F7"]},
+            {"name": "活力蓝", "colors": ["#007AFF"]},
             {"name": "热情红", "colors": ["#DD5940"]},
             {"name": "蜂蜜黄", "colors": ["#EAB348"]},
             {"name": "清新绿", "colors": ["#78B86C"]},
@@ -179,7 +179,7 @@ class ThemeEditor(QScrollArea):
         """
         if self.settings_manager:
             return {
-                "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#0A59F7"),
+                "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
                 "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
                 "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
                 "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),
@@ -556,7 +556,7 @@ class ThemeEditor(QScrollArea):
         重置所有颜色设置为默认值
         """
         # 默认强调色设置 - 活力蓝
-        default_accent_color = "#0A59F7"
+        default_accent_color = "#007AFF"
         
         # 更新设置管理器中的颜色设置
         if self.settings_manager:
