@@ -493,6 +493,41 @@ class CustomButton(QPushButton):
         
         super().mouseReleaseEvent(event)
     
+    def _calculate_optimal_height(self):
+        """
+        计算按钮的最佳高度
+        
+        逻辑：
+        1. 计算文字实际需要的高度 + 垂直内边距
+        2. 与最小高度（原始高度 * DPI缩放）比较
+        3. 返回较大值，确保按钮既不会太小，也能自适应大文字
+        
+        注意：图标模式和文字模式使用相同的计算逻辑，都基于字体高度
+        这样可以确保两种模式的按钮高度保持一致
+        
+        Returns:
+            int: 计算后的最佳高度
+        """
+        # 计算最小高度（基于原始高度参数）
+        min_height = int(self._original_height * self.dpi_scale)
+        
+        # 无论是图标模式还是文字模式，都使用字体高度来计算
+        # 这样可以确保两种模式的按钮高度保持一致
+        font_metrics = self.fontMetrics()
+        text_height = font_metrics.height()
+        
+        # 垂直方向内边距（与样式表中的padding保持一致）
+        vertical_padding = int(4 * self.dpi_scale) * 2  # 上下内边距
+        
+        # 边框高度
+        border_width = 1.5 * 2  # 上下边框
+        
+        # 计算实际需要的高度
+        required_height = int(text_height + vertical_padding + border_width)
+        
+        # 返回最大值：确保不小于最小高度，同时能容纳大文字
+        return max(required_height, min_height)
+
     def update_style(self):
         """
         更新按钮样式
@@ -622,8 +657,9 @@ class CustomButton(QPushButton):
         if "button_border" in current_colors:
             del current_colors["button_border"]
         
-        # 使用最新的DPI缩放因子重新计算按钮高度（保持原始值，因为我们已经在初始化时减半了）
-        self._height = int(self._original_height * self.dpi_scale)
+        # 使用最新的DPI缩放因子重新计算按钮高度
+        # 使用自适应高度计算：根据文字大小和最小高度限制确定最终高度
+        self._height = self._calculate_optimal_height()
         
         # 添加阴影效果，应用最新的DPI缩放
         shadow = QGraphicsDropShadowEffect()
@@ -633,7 +669,7 @@ class CustomButton(QPushButton):
         shadow.setColor(QColor(0, 0, 0, 0))  # 使用黑色阴影更明显
         self.setGraphicsEffect(shadow)
         
-        # 设置固定高度，与CustomInputBox保持一致
+        # 设置固定高度，使用计算后的自适应高度
         self.setFixedHeight(self._height)
 
         # 应用最新的DPI缩放因子到按钮样式参数
@@ -1040,15 +1076,22 @@ class CustomButton(QPushButton):
     
     def setText(self, text):
         """
-        重写setText方法，在设置文本后自动更新最小宽度
+        重写setText方法，在设置文本后自动更新最小宽度和高度
         
         Args:
             text (str): 按钮文本
         """
         super().setText(text)
-        # 文本改变后，重新计算最小宽度
+        # 文本改变后，重新计算最小宽度和高度
         if self._display_mode == "text":
             self._update_minimum_width_for_text()
+            # 重新计算并更新高度（因为字体大小可能改变）
+            new_height = self._calculate_optimal_height()
+            if new_height != self._height:
+                self._height = new_height
+                self.setFixedHeight(self._height)
+                # 高度改变后需要更新样式（圆角半径等依赖于高度）
+                self._update_button_style()
     
     def _update_minimum_width_for_text(self):
         """

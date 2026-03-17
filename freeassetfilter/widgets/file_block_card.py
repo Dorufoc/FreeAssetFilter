@@ -151,6 +151,54 @@ class FileBlockCard(QWidget):
         self._init_animations()
         self._update_styles()
     
+    def _calculate_optimal_height(self):
+        """
+        计算卡片的最佳高度
+        
+        逻辑：
+        1. 计算所有内容实际需要的高度（图标 + 文字标签）
+        2. 加上布局间距和边距
+        3. 与最小高度（75 * DPI缩放）比较
+        4. 返回较大值，确保卡片既不会太小，也能自适应大文字
+        
+        Returns:
+            int: 计算后的最佳高度
+        """
+        # 基础最小高度
+        min_height = int(75 * self.dpi_scale)
+        
+        # 图标高度
+        icon_size = int(38 * self.dpi_scale)
+        
+        # 获取字体高度
+        font_metrics = QFontMetrics(self.global_font)
+        name_font_height = font_metrics.height()
+        
+        # 小字体高度（0.85倍）
+        small_font = QFont(self.global_font)
+        small_font.setPointSize(int(self.global_font.pointSize() * 0.85))
+        small_font_metrics = QFontMetrics(small_font)
+        small_font_height = small_font_metrics.height()
+        
+        # 三个标签的高度（文件名 + 大小 + 时间）
+        labels_height = name_font_height + (small_font_height * 2)
+        
+        # 布局间距（图标和标签之间2px，标签之间2px）
+        layout_spacing = int(2 * self.dpi_scale)
+        total_spacing = layout_spacing * 3  # 图标-文件名，文件名-大小，大小-时间
+        
+        # 布局边距（上下）
+        vertical_margins = int(4 * self.dpi_scale) * 2
+        
+        # 边框高度
+        border_width = int(1 * self.dpi_scale) * 2
+        
+        # 计算实际需要的高度
+        required_height = icon_size + labels_height + total_spacing + vertical_margins + border_width
+        
+        # 返回最大值：确保不小于最小高度，同时能容纳大文字
+        return max(required_height, min_height)
+
     def _setup_ui(self):
         """设置UI布局和控件"""
         self.setObjectName("FileBlockCard")
@@ -159,11 +207,8 @@ class FileBlockCard(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, False)
 
         scaled_min_width = int(35 * self.dpi_scale)
-        scaled_max_height = int(75 * self.dpi_scale)
         self.setMinimumWidth(scaled_min_width)
         # 移除最大宽度限制，让卡片可以自适应填充可用空间
-        self.setMaximumHeight(scaled_max_height)
-        self.setMinimumHeight(scaled_max_height)
         
         app = QApplication.instance()
         self.default_font_size = getattr(app, 'default_font_size', 8) if app else 8
@@ -173,6 +218,11 @@ class FileBlockCard(QWidget):
         self._create_layout()
         self._create_icon()
         self._create_labels()
+        
+        # 计算并设置自适应高度
+        optimal_height = self._calculate_optimal_height()
+        self.setMinimumHeight(optimal_height)
+        self.setMaximumHeight(optimal_height)
     
     def _init_colors(self):
         """初始化颜色配置"""
@@ -1021,7 +1071,9 @@ class FileBlockCard(QWidget):
             base_width = self._flexible_width
         else:
             base_width = int(42 * self.dpi_scale)
-        return QSize(base_width, int(80 * self.dpi_scale))
+        # 使用计算后的自适应高度
+        optimal_height = self._calculate_optimal_height()
+        return QSize(base_width, optimal_height)
     
     def set_flexible_width(self, width):
         """
@@ -1134,7 +1186,8 @@ class FileBlockCard(QWidget):
             card_width = self._flexible_width
         else:
             card_width = int(42 * self.dpi_scale)  # 默认建议宽度
-        card_height = int(75 * self.dpi_scale)
+        # 使用计算后的自适应高度
+        card_height = self._calculate_optimal_height()
         self._drag_card.setFixedSize(card_width, card_height)
         
         # 设置对象名以便样式表选择器匹配

@@ -331,9 +331,6 @@ class CustomFileSelector(QWidget):
         import os
         driver_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "driver.svg")
         self.drive_btn = CustomButton(driver_icon_path, button_type="normal", display_mode="icon", tooltip_text="选择盘符")
-        # 设置固定尺寸，与其他图标按钮保持一致
-        scaled_drive_btn_size = int(20 * self.dpi_scale)
-        self.drive_btn.setFixedSize(scaled_drive_btn_size, scaled_drive_btn_size)
         # 创建下拉菜单（不使用内部按钮）
         self.drive_combo = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
         # 设置外部目标按钮
@@ -415,9 +412,6 @@ class CustomFileSelector(QWidget):
         sift_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "sift.svg")
         self.filter_btn = CustomButton(sift_icon_path, button_type="normal", display_mode="icon", tooltip_text="筛选")
         self.filter_btn.clicked.connect(self.apply_filter)
-        # 强制设置固定尺寸，确保与其他图标按钮保持一致
-        scaled_btn_size = int(20 * self.dpi_scale)
-        self.filter_btn.setFixedSize(scaled_btn_size, scaled_btn_size)
         nav_layout.addWidget(self.filter_btn)
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.filter_btn)
@@ -426,8 +420,6 @@ class CustomFileSelector(QWidget):
         import os
         list_bullet_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "list_bullet.svg")
         self.sort_btn = CustomButton(list_bullet_icon_path, button_type="normal", display_mode="icon", tooltip_text="排序方式")
-        # 强制设置固定尺寸，确保与其他图标按钮保持一致
-        self.sort_btn.setFixedSize(scaled_btn_size, scaled_btn_size)
         nav_layout.addWidget(self.sort_btn)
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.sort_btn)

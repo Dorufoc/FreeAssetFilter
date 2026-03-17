@@ -149,45 +149,50 @@ class FreeAssetFilterApp(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        
+
         # 获取应用实例
         app = QApplication.instance()
-        
-        # 获取屏幕尺寸
-        screen = QApplication.primaryScreen()
-        
+
         # 使用逻辑像素设置窗口大小，Qt会自动处理DPI
         base_window_width = 650  # 基础逻辑像素（100%缩放时的大小）
-        
+
+        # 获取当前光标所在的屏幕（多显示器环境下更准确）
+        from PySide6.QtGui import QCursor
+        cursor_pos = QCursor.pos()
+        screen = QApplication.screenAt(cursor_pos)
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
         # 获取系统缩放因子并设置为1.5倍
-        screen = QApplication.primaryScreen()
         logical_dpi = screen.logicalDotsPerInch()
         physical_dpi = screen.physicalDotsPerInch()
         system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
-        
+
         # 设置默认大小为系统缩放的1.5倍
         window_width = int(base_window_width * system_scale * 1.5)
         window_height = int(window_width * (10/16))
-        
-        # 获取可用屏幕尺寸（逻辑像素）
+
+        # 获取当前屏幕的可用尺寸（逻辑像素）
+        # 使用 geometry() 而不是 availableGeometry() 避免多显示器虚拟桌面问题
+        screen_geometry = screen.geometry()
         available_geometry = screen.availableGeometry()
         available_width_logical = available_geometry.width()
         available_height_logical = available_geometry.height()
-        
-        # 确保窗口大小不超过屏幕可用尺寸（使用逻辑像素）
+
+        # 确保窗口大小不超过当前屏幕可用尺寸（使用逻辑像素）
         self.window_width = min(window_width, available_width_logical - 20)  # 留20px边距
         self.window_height = min(window_height, available_height_logical - 20)  # 留20px边距
-        
+
         self.setWindowTitle("FreeAssetFilter")
-        
+
         # 设置窗口大小
         self.resize(int(self.window_width), int(self.window_height))
-        
-        # 使用PySide6内置方法将窗口居中到可用屏幕区域
+
+        # 使用PySide6内置方法将窗口居中到当前屏幕的可用区域
         # 获取窗口的几何尺寸
         window_geometry = self.frameGeometry()
-        # 获取屏幕可用区域的中心点
-        center_point = screen.availableGeometry().center()
+        # 获取当前屏幕可用区域的中心点
+        center_point = available_geometry.center()
         # 将窗口的中心移动到屏幕可用区域的中心
         window_geometry.moveCenter(center_point)
         # 设置窗口位置（自动处理物理像素和逻辑像素的转换）
@@ -1362,7 +1367,12 @@ def main():
         logger.debug(f"cv2 模块未安装: {e}")
 
     # 设置全局DPI缩放因子为系统缩放的1.4倍
-    screen = QApplication.primaryScreen()
+    # 获取当前光标所在的屏幕（多显示器环境下更准确）
+    from PySide6.QtGui import QCursor
+    cursor_pos = QCursor.pos()
+    screen = QApplication.screenAt(cursor_pos)
+    if screen is None:
+        screen = QApplication.primaryScreen()
     logical_dpi = screen.logicalDotsPerInch()
     physical_dpi = screen.physicalDotsPerInch()
     system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
