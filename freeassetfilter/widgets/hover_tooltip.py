@@ -639,8 +639,14 @@ class HoverTooltip(QWidget):
                 if direct_widget._tooltip_text:
                     return direct_widget._tooltip_text
                 # 如果是文本模式，直接返回文本
-                elif direct_widget._display_mode == "text" and direct_widget.text():
-                    return direct_widget.text()
+                elif direct_widget._display_mode == "text":
+                    text_attr = direct_widget.text
+                    if callable(text_attr):
+                        text_value = text_attr()
+                        if text_value:
+                            return text_value
+                    elif text_attr:
+                        return text_attr
                 # 如果是图标模式，返回图标描述
                 elif direct_widget._display_mode == "icon" and direct_widget._icon_path:
                     # SVG路径到文字描述的映射字典
@@ -802,8 +808,14 @@ class HoverTooltip(QWidget):
                     return tooltip_text
 
             # 检查直接控件是否有文本
-            if hasattr(direct_widget, "text") and direct_widget.text():
-                return direct_widget.text()
+            if hasattr(direct_widget, "text"):
+                text_attr = direct_widget.text
+                if callable(text_attr):
+                    text_value = text_attr()
+                    if text_value:
+                        return text_value
+                elif text_attr:
+                    return text_attr
 
         # 如果没有指定控件，使用直接获取的控件
         if not widget:
@@ -814,8 +826,14 @@ class HoverTooltip(QWidget):
         # 递归查找有文本的子控件
         def find_text_in_children(w):
             # 检查当前控件是否有文本
-            if hasattr(w, "text") and w.text():
-                return w.text()
+            if hasattr(w, "text"):
+                text_attr = w.text
+                if callable(text_attr):
+                    text_value = text_attr()
+                    if text_value:
+                        return text_value
+                elif text_attr:
+                    return text_attr
 
             # 特殊处理文件选择器中的文件卡片（QWidget#FileCard）
             if hasattr(w, "objectName") and w.objectName() == "FileCard":
@@ -830,7 +848,11 @@ class HoverTooltip(QWidget):
                 pos = w.mapFromGlobal(self.last_mouse_pos)
                 item = w.itemAt(pos)
                 if item and hasattr(item, "text"):
-                    return item.text()
+                    text_attr = item.text
+                    if callable(text_attr):
+                        return text_attr()
+                    else:
+                        return text_attr
 
             # 递归检查所有子控件和布局
             from PySide6.QtWidgets import QWidget, QLayout
@@ -875,8 +897,14 @@ class HoverTooltip(QWidget):
             return ""
 
         # 检查目标控件是否有文本
-        if hasattr(widget, "text") and widget.text():
-            return widget.text()
+        if hasattr(widget, "text"):
+            text_attr = widget.text
+            if callable(text_attr):
+                text_value = text_attr()
+                if text_value:
+                    return text_value
+            elif text_attr:
+                return text_attr
 
         # 递归检查子控件
         text = find_text_in_children(widget)
@@ -941,8 +969,14 @@ class HoverTooltip(QWidget):
                     # 构建悬浮信息文本
                     return f"名称: {file_name}\n路径: {abs_path}\n类型: {file_type}\n大小: {size_str}\n修改时间: {modified_time}\n创建时间: {created_time}"
                 
-                if hasattr(parent, "text") and parent.text():
-                    return parent.text()
+                if hasattr(parent, "text"):
+                    text_attr = parent.text
+                    if callable(text_attr):
+                        text_value = text_attr()
+                        if text_value:
+                            return text_value
+                    elif text_attr:
+                        return text_attr
                 parent = parent.parent()
         
         return ""

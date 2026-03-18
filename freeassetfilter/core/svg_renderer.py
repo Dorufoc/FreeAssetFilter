@@ -689,7 +689,15 @@ class SvgRenderer:
                     text_height = font_metrics.height()
                 
                 # 设置文字颜色
-                if icon_path.endswith("压缩文件.svg"):
+                # 统一样式（icon_style = 2）的图标后缀为 " – 2"，使用 settings manager 中的 base_color
+                # 质感样式（icon_style = 1）的压缩文件图标后缀为 " – 1"，使用白色文字
+                is_unified_style = " – 2.svg" in icon_path
+                is_textured_archive = "压缩文件 – 1.svg" in icon_path
+                if is_unified_style:
+                    # 统一样式下使用 base_color
+                    base_color = SvgRenderer._get_base_color()
+                    text_label.setStyleSheet(f'color: {base_color}; font: {base_font_size}pt "{font.family()}"; font-weight: bold; background: transparent;')
+                elif icon_path.endswith("压缩文件.svg") or is_textured_archive:
                     text_label.setStyleSheet(f'color: white; font: {base_font_size}pt "{font.family()}"; font-weight: bold; background: transparent;')
                 else:
                     text_label.setStyleSheet(f'color: black; font: {base_font_size}pt "{font.family()}"; font-weight: bold; background: transparent;')
@@ -752,7 +760,15 @@ class SvgRenderer:
                     text_height = font_metrics.height()
                 
                 # 设置文字颜色
-                if icon_path.endswith("压缩文件.svg"):
+                # 统一样式（icon_style = 2）的图标后缀为 " – 2"，使用 settings manager 中的 base_color
+                # 质感样式（icon_style = 1）的压缩文件图标后缀为 " – 1"，使用白色文字
+                is_unified_style = " – 2.svg" in icon_path
+                is_textured_archive = "压缩文件 – 1.svg" in icon_path
+                if is_unified_style:
+                    # 统一样式下使用 base_color
+                    base_color = SvgRenderer._get_base_color()
+                    text_color = QColor(base_color)
+                elif icon_path.endswith("压缩文件.svg") or is_textured_archive:
                     text_color = QColor(255, 255, 255)
                 else:
                     text_color = QColor(0, 0, 0)

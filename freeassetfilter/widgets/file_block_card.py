@@ -364,12 +364,12 @@ class FileBlockCard(QWidget):
                     display_suffix = suffix.upper()
                     if len(display_suffix) >= 5:
                         display_suffix = "FILE"
-                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale, replace_colors=False)
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale, replace_colors=True)
                 elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                     display_suffix = "." + suffix
-                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale, replace_colors=False)
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, base_icon_size, self.dpi_scale, replace_colors=True)
                 else:
-                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, base_icon_size, self.dpi_scale, replace_colors=False)
+                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, base_icon_size, self.dpi_scale, replace_colors=True)
                 
                 if isinstance(svg_widget, QSvgWidget):
                     for child in self.icon_label.findChildren(QLabel):
@@ -1332,13 +1332,13 @@ class FileBlockCard(QWidget):
                         display_suffix = suffix.upper()
                         if len(display_suffix) >= 5:
                             display_suffix = "FILE"
-                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=False)
+                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=True)
                     elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                         display_suffix = "." + suffix
-                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=False)
+                        svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=True)
                     else:
-                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale, replace_colors=False)
-                    
+                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale, replace_colors=True)
+
                     if svg_widget:
                         svg_widget.setParent(icon_label)
                         svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)

@@ -646,7 +646,7 @@ class CustomFileHorizontalCard(QWidget):
                 # 使用get_icon_path获取支持样式切换的图标路径
                 unknown_icon_path = get_icon_path("未知底板", icon_dir)
                 if os.path.exists(unknown_icon_path):
-                    svg_widget = SvgRenderer.render_unknown_file_icon(unknown_icon_path, "?", scaled_icon_size, self.dpi_scale, replace_colors=False)
+                    svg_widget = SvgRenderer.render_unknown_file_icon(unknown_icon_path, "?", scaled_icon_size, self.dpi_scale, replace_colors=True)
                     if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
                         # 先从布局中移除旧的 icon_display
                         self.card_container.layout().removeWidget(self.icon_display)
@@ -747,9 +747,9 @@ class CustomFileHorizontalCard(QWidget):
                         if len(display_suffix) >= 5:
                             display_suffix = "FILE"
 
-                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=False)
+                    svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, scaled_icon_size, self.dpi_scale, replace_colors=True)
                 else:
-                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale, replace_colors=False)
+                    svg_widget = SvgRenderer.render_svg_to_widget(icon_path, scaled_icon_size, self.dpi_scale, replace_colors=True)
                 
                 if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
                     # 先从布局中移除旧的 icon_display
@@ -1925,9 +1925,9 @@ class CustomFileHorizontalCard(QWidget):
                                 display_suffix = suffix.upper()
                                 if len(display_suffix) >= 5:
                                     display_suffix = "FILE"
-                            svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
+                            svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=True)
                         else:
-                            svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=False)
+                            svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=True)
 
                         if svg_widget:
                             svg_widget.setParent(parent_container)
@@ -1975,9 +1975,9 @@ class CustomFileHorizontalCard(QWidget):
                                     display_suffix = suffix.upper()
                                     if len(display_suffix) >= 5:
                                         display_suffix = "FILE"
-                                svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
+                                svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=True)
                             else:
-                                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=False)
+                                svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=True)
 
                             if svg_widget:
                                 svg_widget.setParent(parent_container)
@@ -2079,9 +2079,9 @@ class CustomFileHorizontalCard(QWidget):
                                 display_suffix = suffix.upper()
                                 if len(display_suffix) >= 5:
                                     display_suffix = "FILE"
-                            svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=False)
+                            svg_widget = SvgRenderer.render_unknown_file_icon(icon_path, display_suffix, icon_size, self.dpi_scale, replace_colors=True)
                     else:
-                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=False)
+                        svg_widget = SvgRenderer.render_svg_to_widget(icon_path, icon_size, self.dpi_scale, replace_colors=True)
 
                     if svg_widget:
                         svg_widget.setParent(parent_container)
