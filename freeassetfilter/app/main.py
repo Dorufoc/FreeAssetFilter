@@ -543,7 +543,7 @@ class FreeAssetFilterApp(QMainWindow):
         status_layout.addStretch()
         
         # 状态标签
-        self.status_label = QLabel("FreeAssetFilter 1.0.0-alpha.2 | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
+        self.status_label = QLabel("FreeAssetFilter 1.0.0-alpha.3 | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         # 使用小一号的字体
         status_font = QFont(self.global_font)
