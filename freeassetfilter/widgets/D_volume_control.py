@@ -62,14 +62,11 @@ class DVolumeControl(QWidget):
         main_layout.setSpacing(0)
 
         self._volume_button = CustomButton(
-            text=self._volume_icon_path,
+            self._volume_icon_path,
             button_type="normal",
             display_mode="icon",
-            height=18
+            tooltip_text="音量控制"
         )
-
-        button_size = int(18 * self.dpi_scale)
-        self._volume_button.setFixedSize(button_size, button_size)
 
         self._update_volume_icon()
 

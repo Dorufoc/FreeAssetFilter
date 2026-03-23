@@ -931,17 +931,17 @@ class ModernSettingsWindow(QDialog):
         experimental_group.setStyleSheet(self.group_box_style)
         experimental_layout = QVBoxLayout(experimental_group)
 
-        # 播放器全屏化开关
-        self.enable_fullscreen_switch = CustomSettingItem(
-            text="播放器全屏化",
-            secondary_text="开启后播放器控制栏将显示全屏按钮（分离窗口按钮）",
+        # 全屏模式控制栏经典隐藏策略开关
+        self.fullscreen_classic_control_bar_switch = CustomSettingItem(
+            text="全屏模式控制栏经典隐藏策略",
+            secondary_text="开启后分离窗口全屏时，鼠标移动显示控制栏，不移动超时后自动隐藏",
             interaction_type=CustomSettingItem.SWITCH_TYPE,
-            initial_value=self._get_current_setting_value("player.enable_fullscreen", False)
+            initial_value=self._get_current_setting_value("player.fullscreen_classic_control_bar", True)
         )
-        self.enable_fullscreen_switch.switch_toggled.connect(
-            lambda value: self.current_settings.update({"player.enable_fullscreen": value})
+        self.fullscreen_classic_control_bar_switch.switch_toggled.connect(
+            lambda value: self.current_settings.update({"player.fullscreen_classic_control_bar": value})
         )
-        experimental_layout.addWidget(self.enable_fullscreen_switch)
+        experimental_layout.addWidget(self.fullscreen_classic_control_bar_switch)
 
         self.scroll_layout.addWidget(experimental_group)
 
@@ -1824,7 +1824,7 @@ class ModernSettingsWindow(QDialog):
             "player.use_default_speed": self.settings_manager.get_setting("player.use_default_speed", True),
             "player.default_speed": self.settings_manager.get_setting("player.default_speed", 1.0),
             "player.audio_background_style": self.settings_manager.get_setting("player.audio_background_style", "流体动画"),
-            "player.enable_fullscreen": self.settings_manager.get_setting("player.enable_fullscreen", False),
+            "player.fullscreen_classic_control_bar": self.settings_manager.get_setting("player.fullscreen_classic_control_bar", True),
             "text_preview.word_wrap": self.settings_manager.get_setting("text_preview.word_wrap", True),
             "text_preview.use_global_font": self.settings_manager.get_setting("text_preview.use_global_font", True),
             "text_preview.custom_font_family": self.settings_manager.get_setting("text_preview.custom_font_family", "Microsoft YaHei"),
@@ -2112,10 +2112,10 @@ class ModernSettingsWindow(QDialog):
             if self.fluid_gradient_theme_setting.button_group:
                 self.fluid_gradient_theme_setting.button_group[0].setText(default_theme)
 
-        # 更新播放器全屏化设置（如果有的话）
-        if hasattr(self, 'enable_fullscreen_switch') and self.enable_fullscreen_switch:
-            default_value = defaults["player"]["enable_fullscreen"]
-            self.enable_fullscreen_switch.set_switch_value(default_value)
+        # 更新全屏模式控制栏经典隐藏策略设置（如果有的话）
+        if hasattr(self, 'fullscreen_classic_control_bar_switch') and self.fullscreen_classic_control_bar_switch:
+            default_value = defaults["player"]["fullscreen_classic_control_bar"]
+            self.fullscreen_classic_control_bar_switch.set_switch_value(default_value)
 
         # 更新current_settings中的主题颜色为默认值
         default_colors = defaults["appearance"]["colors"]

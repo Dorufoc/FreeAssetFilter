@@ -36,6 +36,8 @@ class D_HoverMenu(QWidget):
     """
 
     keyPressed = Signal(object)  # 键盘按下信号，用于传递键盘事件给父窗口
+    controlBarShown = Signal()  # 控制栏显示信号
+    controlBarHidden = Signal()  # 控制栏隐藏信号
 
     Position_Top = "top"
     Position_Bottom = "bottom"
@@ -253,6 +255,26 @@ class D_HoverMenu(QWidget):
         self._fade_duration = max(50, duration)
         self._fade_animation.setDuration(self._fade_duration)
 
+    def set_mouse_move_detection(self, enabled: bool):
+        """
+        设置是否启用鼠标移动检测显示控制栏
+
+        Args:
+            enabled: True 启用鼠标移动检测（经典模式），False 禁用（单击模式）
+        """
+        from freeassetfilter.utils.app_logger import debug
+        debug(f"[D_HoverMenu] set_mouse_move_detection called: enabled={enabled}")
+        if enabled:
+            if not self._mouse_monitor_active:
+                self._mouse_activity_monitor.start()
+                self._mouse_monitor_active = True
+                debug(f"[D_HoverMenu] MouseActivityMonitor started")
+        else:
+            if self._mouse_monitor_active:
+                self._mouse_activity_monitor.stop()
+                self._mouse_monitor_active = False
+                debug(f"[D_HoverMenu] MouseActivityMonitor stopped")
+
     def _start_timeout_timer(self):
         """启动超时定时器"""
         if self._timeout_enabled and self._is_visible and not self._is_animating:
@@ -263,14 +285,34 @@ class D_HoverMenu(QWidget):
         """停止超时定时器"""
         self._timeout_timer.stop()
 
+    def reset_auto_hide_timer(self):
+        """
+        重置自动隐藏计时器（喂狗）
+        用于在非经典模式下，每次用户操作后调用以延迟隐藏
+        """
+        from freeassetfilter.utils.app_logger import debug
+        debug(f"[D_HoverMenu] reset_auto_hide_timer called: _timeout_enabled={self._timeout_enabled}, _is_visible={self._is_visible}, _mouse_monitor_active={self._mouse_monitor_active}")
+        if self._timeout_enabled and self._is_visible:
+            self._timeout_timer.stop()
+            self._timeout_timer.start(self._timeout_duration)
+            debug(f"[D_HoverMenu] Timer started with duration {self._timeout_duration}ms")
+        else:
+            debug(f"[D_HoverMenu] Timer NOT started due to condition check failed")
+
     def _on_timeout(self):
         """超时处理"""
+        from freeassetfilter.utils.app_logger import debug
+        debug(f"[D_HoverMenu] _on_timeout called: _is_visible={self._is_visible}, _is_animating={self._is_animating}")
         if self._is_visible and not self._is_animating:
+            debug(f"[D_HoverMenu] Calling _fade_out()")
             self._fade_out()
+        else:
+            debug(f"[D_HoverMenu] _fade_out() NOT called due to condition check failed")
 
     def _on_animation_finished(self):
         """动画结束处理"""
-        if self._opacity_value <= 0.01:
+        was_hidden = self._opacity_value <= 0.01
+        if was_hidden:
             super().hide()
             self._opacity_value = 1.0
             self._is_visible = False
@@ -278,6 +320,9 @@ class D_HoverMenu(QWidget):
             self._is_visible = True
             self._start_timeout_timer()
         self._is_animating = False
+        # 如果是隐藏动画完成，发射控制栏隐藏信号
+        if was_hidden:
+            self.controlBarHidden.emit()
 
     def _fade_in(self):
         """淡入显示"""
@@ -297,7 +342,10 @@ class D_HoverMenu(QWidget):
 
     def _fade_out(self):
         """淡出隐藏"""
+        from freeassetfilter.utils.app_logger import debug
+        debug(f"[D_HoverMenu] _fade_out called: _is_visible={self._is_visible}, _is_animating={self._is_animating}")
         if not self._is_visible or self._is_animating:
+            debug(f"[D_HoverMenu] _fade_out returned early")
             return
 
         self._is_animating = True
@@ -802,6 +850,9 @@ class D_HoverMenu(QWidget):
             return
 
         # 同时执行垂直位置动画和透明度淡入
+        self._is_visible = True
+        self._is_animating = True
+        self._stop_timeout_timer()
         self.animate_to_vertical_offset(0)
         # 确保窗口可见
         if not self.isVisible():
@@ -811,6 +862,14 @@ class D_HoverMenu(QWidget):
         self._fade_animation.setStartValue(self._get_opacity())
         self._fade_animation.setEndValue(1.0)
         self._fade_animation.start()
+        # 发射控制栏显示信号
+        self.controlBarShown.emit()
+        # 启动超时定时器（仅在非经典模式下，因为经典模式由 MouseActivityMonitor 处理）
+        from freeassetfilter.utils.app_logger import debug
+        debug(f"[D_HoverMenu] _show_control_bar finished: _mouse_monitor_active={self._mouse_monitor_active}, _is_visible={self._is_visible}")
+        if not self._mouse_monitor_active:
+            debug(f"[D_HoverMenu] Calling reset_auto_hide_timer()")
+            self.reset_auto_hide_timer()
 
     def show_control_bar(self):
         """
@@ -820,6 +879,8 @@ class D_HoverMenu(QWidget):
         self._show_control_bar()
         if self._mouse_monitor_active:
             self._mouse_activity_monitor.reset_timer()
+        else:
+            self.reset_auto_hide_timer()
         # 显示后确保焦点回到父窗口，不抢占键盘事件
         if self.parent():
             self.parent().activateWindow()
@@ -858,12 +919,14 @@ class D_HoverMenu(QWidget):
         Args:
             enabled: 是否启用自动隐藏
         """
+        from freeassetfilter.utils.app_logger import debug
+        debug(f"[D_HoverMenu] set_auto_hide_enabled called: enabled={enabled}, _mouse_monitor_active={self._mouse_monitor_active}")
         self._auto_hide_enabled = enabled
         if enabled:
-            if not self._mouse_monitor_active:
-                self._mouse_activity_monitor.start()
-                self._mouse_monitor_active = True
             self._show_control_bar()
+            if not self._mouse_monitor_active:
+                debug(f"[D_HoverMenu] Calling reset_auto_hide_timer from set_auto_hide_enabled")
+                self.reset_auto_hide_timer()
         else:
             if self._mouse_monitor_active:
                 self._mouse_activity_monitor.stop()

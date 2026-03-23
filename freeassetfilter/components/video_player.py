@@ -45,6 +45,7 @@ from freeassetfilter.core.mpv_player_core import MPVPlayerCore, MpvEndFileReason
 from freeassetfilter.core.mpv_manager import MPVManager, MPVState
 from freeassetfilter.widgets.player_control_bar import PlayerControlBar
 from freeassetfilter.widgets.D_hover_menu import D_HoverMenu
+from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
@@ -92,7 +93,9 @@ class DetachedVideoWindow(QWidget):
         self._init_ui()
         self.setWindowTitle("视频播放器 - FreeAssetFilter")
         self.showFullScreen()  # 显示为全屏窗口
-        
+
+        self._cursor_hidden = False
+
         # 窗口显示后主动获取焦点
         self.activateWindow()
         self.setFocus()
@@ -123,7 +126,65 @@ class DetachedVideoWindow(QWidget):
         self._main_layout = QVBoxLayout(self)
         self._main_layout.setContentsMargins(0, 0, 0, 0)
         self._main_layout.setSpacing(0)
-    
+
+        self._osd_widget = QWidget()
+        self._osd_widget.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self._osd_widget.setAttribute(Qt.WA_TranslucentBackground)
+        self._osd_widget.setAttribute(Qt.WA_ShowWithoutActivating)
+
+        osd_main_layout = QVBoxLayout(self._osd_widget)
+        osd_main_layout.setContentsMargins(0, 0, 0, 0)
+        osd_main_layout.setSpacing(8)
+
+        self._osd_label = QLabel(self._osd_widget)
+        self._osd_label.setAlignment(Qt.AlignCenter)
+        self._osd_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(0, 0, 0, 180);
+                color: white;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-size: 16px;
+            }
+        """)
+        osd_main_layout.addWidget(self._osd_label)
+
+        self._osd_progress_widget = QWidget(self._osd_widget)
+        self._osd_progress_widget.setStyleSheet("""
+            QWidget {
+                background-color: rgba(0, 0, 0, 180);
+                border-radius: 6px;
+            }
+        """)
+        self._osd_progress_widget.hide()
+
+        progress_layout = QHBoxLayout(self._osd_progress_widget)
+        progress_layout.setContentsMargins(12, 8, 12, 8)
+        progress_layout.setSpacing(12)
+
+        self._osd_time_label = QLabel(self._osd_progress_widget)
+        self._osd_time_label.setStyleSheet("color: white; font-size: 14px; background: transparent;")
+        self._osd_time_label.setMinimumWidth(60)
+        progress_layout.addWidget(self._osd_time_label)
+
+        self._osd_progress_bar = D_ProgressBar(self._osd_progress_widget, is_interactive=False)
+        self._osd_progress_bar.setRange(0, 1000)
+        self._osd_progress_bar.set_progress_color(QColor(255, 255, 255))
+        self._osd_progress_bar.set_track_color(QColor(255, 255, 255, 128))
+        progress_layout.addWidget(self._osd_progress_bar)
+
+        self._osd_duration_label = QLabel(self._osd_progress_widget)
+        self._osd_duration_label.setStyleSheet("color: white; font-size: 14px; background: transparent;")
+        self._osd_duration_label.setMinimumWidth(60)
+        self._osd_duration_label.setAlignment(Qt.AlignRight)
+        progress_layout.addWidget(self._osd_duration_label)
+
+        osd_main_layout.addWidget(self._osd_progress_widget)
+
+        self._osd_timer = QTimer(self)
+        self._osd_timer.setSingleShot(True)
+        self._osd_timer.timeout.connect(self._hide_osd)
+
     def set_video_player(self, video_player: 'VideoPlayer'):
         """设置视频播放器"""
         self._video_player = video_player
@@ -174,9 +235,125 @@ class DetachedVideoWindow(QWidget):
             event.accept()
         else:
             super().keyPressEvent(event)
-    
+
+    def set_cursor_visible(self, visible: bool):
+        """
+        设置鼠标指针可见性
+
+        Args:
+            visible: True 显示指针，False 隐藏指针
+        """
+        if visible:
+            if self._cursor_hidden:
+                self.unsetCursor()
+                self._cursor_hidden = False
+        else:
+            if not self._cursor_hidden:
+                self.setCursor(Qt.BlankCursor)
+                self._cursor_hidden = True
+
+    def show_cursor(self):
+        """显示鼠标指针"""
+        self.set_cursor_visible(True)
+
+    def hide_cursor(self):
+        """隐藏鼠标指针"""
+        self.set_cursor_visible(False)
+
+    def reset_cursor(self):
+        """重置鼠标指针为默认状态（显示）"""
+        self.set_cursor_visible(True)
+
+    def show_osd(self, message: str, duration: int = 2000):
+        """
+        显示OSD状态信息
+
+        Args:
+            message: 要显示的消息
+            duration: 显示持续时间（毫秒），默认2000ms
+        """
+        self._osd_progress_widget.hide()
+        self._osd_label.setText(message)
+        self._osd_label.show()
+        self._osd_label.adjustSize()
+
+        screen_geometry = self.geometry()
+        x = (screen_geometry.width() - self._osd_label.width()) // 2
+        y = int(30 * self.dpi_scale)
+
+        self._osd_widget.setFixedSize(self._osd_label.width(), self._osd_label.height())
+        self._osd_widget.move(x, y)
+        self._osd_widget.show()
+        self._osd_timer.start(duration)
+
+    def show_seek_osd(self, current_time: float, duration: float, direction: str, duration_ms: int = 2000):
+        """
+        显示跳转进度OSD
+
+        Args:
+            current_time: 当前播放位置（秒）
+            duration: 总时长（秒）
+            direction: 跳转方向，"forward" 或 "backward"
+            duration_ms: 显示持续时间（毫秒），默认2000ms
+        """
+        self._osd_label.hide()
+
+        current_str = self._format_time(current_time)
+        duration_str = self._format_time(duration)
+
+        self._osd_time_label.setText(current_str)
+        self._osd_duration_label.setText(duration_str)
+
+        if duration > 0:
+            progress = int((current_time / duration) * 1000)
+            self._osd_progress_bar.setValue(progress)
+        else:
+            self._osd_progress_bar.setValue(0)
+
+        direction_text = "+5s" if direction == "forward" else "-5s"
+        self._osd_time_label.setText(f"{direction_text}  {current_str}")
+
+        self._osd_progress_widget.show()
+        self._osd_progress_widget.adjustSize()
+
+        screen_geometry = self.geometry()
+        x = (screen_geometry.width() - self._osd_progress_widget.width()) // 2
+        y = int(30 * self.dpi_scale)
+
+        self._osd_widget.setFixedSize(self._osd_progress_widget.width(), self._osd_progress_widget.height())
+        self._osd_widget.move(x, y)
+        self._osd_widget.show()
+        self._osd_timer.start(duration_ms)
+
+    def _format_time(self, seconds: float) -> str:
+        """
+        格式化时间显示
+
+        Args:
+            seconds: 秒数
+
+        Returns:
+            str: 格式化的时间字符串 "HH:MM:SS" 或 "MM:SS"
+        """
+        if seconds <= 0:
+            return "00:00"
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes:02d}:{secs:02d}"
+
+    def _hide_osd(self):
+        """隐藏OSD"""
+        self._osd_widget.hide()
+        self._osd_label.show()
+        self._osd_progress_widget.hide()
+
     def closeEvent(self, event):
         """窗口关闭事件"""
+        self._hide_osd()
         self.closed.emit()
         super().closeEvent(event)
     
@@ -381,11 +558,20 @@ class VideoPlayer(QWidget):
             margin=30,  # 添加30像素的外边距
             border_radius=self._control_bar_border_radius if self._control_bar_border_radius is not None else 8  # 圆角半径
         )
-        self._floating_control_bar.set_auto_hide_enabled(True)  # 启用自动隐藏功能
         self._floating_control_bar.set_content(self._control_bar)
+
+        # 根据设置决定是否启用鼠标移动检测（经典模式），需要在启用自动隐藏之前设置
+        use_classic_mode = self._settings_manager.get_setting("player.fullscreen_classic_control_bar", True)
+        self._floating_control_bar.set_mouse_move_detection(use_classic_mode)
+
+        self._floating_control_bar.set_auto_hide_enabled(True)  # 启用自动隐藏功能
 
         # 连接浮动控制栏的键盘事件信号
         self._floating_control_bar.keyPressed.connect(self._on_floating_control_bar_key_pressed)
+
+        # 连接浮动控制栏的显示/隐藏信号到鼠标指针控制
+        self._floating_control_bar.controlBarShown.connect(self._on_control_bar_shown)
+        self._floating_control_bar.controlBarHidden.connect(self._on_control_bar_hidden)
 
         # 获取屏幕尺寸并直接设置目标矩形区域
         # 分离窗口是全屏的，使用屏幕几何信息更可靠
@@ -986,6 +1172,24 @@ class VideoPlayer(QWidget):
             self.set_speed(0.5)
             event.accept()
 
+    def _on_control_bar_shown(self):
+        """
+        浮动控制栏显示时的处理
+        显示鼠标指针
+        """
+        if self._detached_window:
+            self._detached_window.show_cursor()
+            debug(f"[VideoPlayer] 控制栏显示，显示鼠标指针")
+
+    def _on_control_bar_hidden(self):
+        """
+        浮动控制栏隐藏时的处理
+        隐藏鼠标指针
+        """
+        if self._detached_window:
+            self._detached_window.hide_cursor()
+            debug(f"[VideoPlayer] 控制栏隐藏，隐藏鼠标指针")
+
     def _save_playback_state(self):
         """
         保存当前播放状态，用于分离窗口时恢复
@@ -1231,13 +1435,21 @@ class VideoPlayer(QWidget):
         """
         if obj == self._video_surface:
             if event.type() == QEvent.MouseButtonPress:
-                # 使用节流机制，避免过于频繁地触发控制栏显示
-                if self._is_floating_mode and self._floating_control_bar:
-                    import time
-                    current_time = time.time() * 1000
-                    if not hasattr(self, '_last_video_click_time') or (current_time - self._last_video_click_time) >= 200:
-                        self._last_video_click_time = current_time
-                        self._floating_control_bar.show_control_bar()
+                if event.button() == Qt.LeftButton:
+                    if self._is_floating_mode and self._floating_control_bar:
+                        import time
+                        current_time = time.time() * 1000
+                        if not hasattr(self, '_last_video_click_time') or (current_time - self._last_video_click_time) >= 200:
+                            self._last_video_click_time = current_time
+                            self._floating_control_bar.show_control_bar()
+                            use_classic_mode = self._settings_manager.get_setting("player.fullscreen_classic_control_bar", True)
+                            if not use_classic_mode:
+                                self._floating_control_bar.reset_auto_hide_timer()
+            elif event.type() == QEvent.MouseButtonDblClick:
+                if event.button() == Qt.LeftButton:
+                    self.toggle_play_pause()
+                    event.accept()
+                    return True
 
         return super().eventFilter(obj, event)
     
@@ -1467,8 +1679,9 @@ class VideoPlayer(QWidget):
                 self._embed_mpv_window()
             result = self._mpv_manager.play(component_id=self._component_id)
             if result:
-                # 同步更新控制栏状态，避免信号延迟导致按钮状态不同步
                 self._control_bar.set_playing(True)
+                if self._detached_window:
+                    self._detached_window.show_osd("播放")
             return result
         return False
 
@@ -1482,8 +1695,9 @@ class VideoPlayer(QWidget):
         if self._mpv_manager:
             result = self._mpv_manager.pause(component_id=self._component_id)
             if result:
-                # 同步更新控制栏状态，避免信号延迟导致按钮状态不同步
                 self._control_bar.set_playing(False)
+                if self._detached_window:
+                    self._detached_window.show_osd("暂停")
             return result
         return False
     
@@ -1682,9 +1896,12 @@ class VideoPlayer(QWidget):
             current_position = self._mpv_manager.get_position() or 0.0
             duration = self._mpv_manager.get_duration() or 0.0
             new_position = min(current_position + seconds, duration)
-            return self._mpv_manager.seek(new_position, component_id=self._component_id)
+            result = self._mpv_manager.seek(new_position, component_id=self._component_id)
+            if result and self._detached_window:
+                self._detached_window.show_seek_osd(new_position, duration, "forward")
+            return result
         return False
-    
+
     def seek_backward(self, seconds: float = 5.0) -> bool:
         """
         向后跳转指定秒数
@@ -1697,8 +1914,12 @@ class VideoPlayer(QWidget):
         """
         if self._mpv_manager:
             current_position = self._mpv_manager.get_position() or 0.0
+            duration = self._mpv_manager.get_duration() or 0.0
             new_position = max(current_position - seconds, 0.0)
-            return self._mpv_manager.seek(new_position, component_id=self._component_id)
+            result = self._mpv_manager.seek(new_position, component_id=self._component_id)
+            if result and self._detached_window:
+                self._detached_window.show_seek_osd(new_position, duration, "backward")
+            return result
         return False
 
     def set_speed(self, speed: float) -> bool:
@@ -1717,6 +1938,8 @@ class VideoPlayer(QWidget):
                 self._speed = speed
                 self._control_bar.set_speed(speed)
                 debug(f"[VideoPlayer] 设置播放倍速为 {speed}x")
+                if self._detached_window:
+                    self._detached_window.show_osd(f"{speed}x")
             return success
         return False
     
@@ -1733,9 +1956,12 @@ class VideoPlayer(QWidget):
         if self._mpv_manager:
             current_volume = self._mpv_manager.get_volume() or 0
             new_volume = min(current_volume + step, 100)
-            return self._mpv_manager.set_volume(new_volume, component_id=self._component_id)
+            result = self._mpv_manager.set_volume(new_volume, component_id=self._component_id)
+            if result and self._detached_window:
+                self._detached_window.show_osd(f"音量 {new_volume}%")
+            return result
         return False
-    
+
     def volume_down(self, step: int = 5) -> bool:
         """
         减少音量
@@ -1749,7 +1975,10 @@ class VideoPlayer(QWidget):
         if self._mpv_manager:
             current_volume = self._mpv_manager.get_volume() or 0
             new_volume = max(current_volume - step, 0)
-            return self._mpv_manager.set_volume(new_volume, component_id=self._component_id)
+            result = self._mpv_manager.set_volume(new_volume, component_id=self._component_id)
+            if result and self._detached_window:
+                self._detached_window.show_osd(f"音量 {new_volume}%")
+            return result
         return False
     
     def update_style(self):
