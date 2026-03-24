@@ -531,7 +531,7 @@ We welcome all forms of contribution! Whether it's bug fixes, new features, docu
 
 - [ ] Intelligent file export categorization
 - [ ] Timeline and intelligent filtering tools
-- [ ] Stable ISO file preview
+- [X] Stable ISO file preview
 - [ ] Plugin system architecture
 
 ### Planned Features

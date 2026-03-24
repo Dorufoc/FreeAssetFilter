@@ -6,11 +6,11 @@
 
 **一款强大的多功能文件预览与管理工具，让文件浏览如丝般高效顺滑**
 
-[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square&logo=github&color=blue)](https://github.com/Dorufoc/FreeAssetFilter/releases)
-[![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://www.python.org/)
-[![PySide6](https://img.shields.io/badge/PySide6-6.4%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)  
-[![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
+[!\[GitHub Release\](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square\&logo=github\&color=blue null)](https://github.com/Dorufoc/FreeAssetFilter/releases)
+[!\[Python Version\](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square\&logo=python null)](https://www.python.org/)
+[!\[PySide6\](https://img.shields.io/badge/PySide6-6.4%2B-green?style=flat-square\&logo=qt null)](https://wiki.qt.io/Qt_for_Python)\
+[!\[License\](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square null)](LICENSE)
+[!\[Platform\](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square\&logo=windows null)](https://www.microsoft.com/windows)
 
 [English](README_EN.md) • [功能预览](#-功能预览) • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [安装指南](#-安装指南) • [使用说明](#-使用说明) • [技术架构](#-技术架构) • [开发指南](#-开发指南) • [贡献指南](#-贡献指南)
 
@@ -18,7 +18,7 @@
 
 </div>
 
----
+***
 
 ## 功能预览
 
@@ -30,17 +30,17 @@
 - **深色模式** - 支持深色/浅色主题切换，呵护您的眼睛
 - **高性能** - C++ 核心算法 + 异步加载，流畅不卡顿
 
----
+***
 
 ## 快速开始
 
 ### 环境要求
 
-| 项目               | 要求                               |
-| ------------------ | ---------------------------------- |
-| **操作系统** | Windows 10/11 (64位)               |
-| **Python**   | 3.9 或更高版本                     |
-| **内存**     | 建议 4GB 以上                      |
+| 项目         | 要求                    |
+| ---------- | --------------------- |
+| **操作系统**   | Windows 10/11 (64位)   |
+| **Python** | 3.9 或更高版本             |
+| **内存**     | 建议 4GB 以上             |
 | **显卡**     | 支持 OpenGL 的显卡（用于视频播放） |
 
 ### 一键安装
@@ -105,30 +105,30 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 </details>
 
----
+***
 
 ## 功能特性
 
 ### 文件管理
 
-| 功能                     | 描述                                 |
-| ------------------------ | ------------------------------------ |
+| 功能          | 描述                 |
+| ----------- | ------------------ |
 | **智能文件浏览器** | 卡片式布局，支持缩略图显示，直观高效 |
 | **文件临时存储池** | 快速收藏和整理选中文件，支持批量导出 |
-| **多选与拖拽**     | 支持多文件选择、长按拖拽操作         |
-| **路径导航**       | 快速跳转、历史记录、路径收藏         |
-| **智能筛选**       | 按文件类型、日期、大小快速筛选       |
+| **多选与拖拽**   | 支持多文件选择、长按拖拽操作     |
+| **路径导航**    | 快速跳转、历史记录、路径收藏     |
+| **智能筛选**    | 按文件类型、日期、大小快速筛选    |
 
 ### 文件预览
 
-| 类型             | 支持格式                                 | 特色功能               |
-| ---------------- | ---------------------------------------- | ---------------------- |
-| **图像**   | JPG, PNG, GIF, RAW, PSD, HEIC, AVIF, SVG | 便捷查看、色彩分析     |
-| **视频**   | MP4, MOV, AVI, MKV, MXF                  | MPV 内核、LUT 实时预览 |
-| **音频**   | MP3, WAV, FLAC, OGG, AAC                 | 元数据显示、高效播放   |
-| **文档**   | PDF, DOCX, XLSX, PPTX, TXT, MD           | 完整预览、代码语法高亮 |
-| **压缩包** | ZIP, RAR, 7Z, TAR                        | 无需解压即可查看内容   |
-| **字体**   | TTF, OTF, WOFF                           | 实时渲染预览           |
+| 类型      | 支持格式                                     | 特色功能            |
+| ------- | ---------------------------------------- | --------------- |
+| **图像**  | JPG, PNG, GIF, RAW, PSD, HEIC, AVIF, SVG | 便捷查看、色彩分析       |
+| **视频**  | MP4, MOV, AVI, MKV, MXF                  | MPV 内核、LUT 实时预览 |
+| **音频**  | MP3, WAV, FLAC, OGG, AAC                 | 元数据显示、高效播放      |
+| **文档**  | PDF, DOCX, XLSX, PPTX, TXT, MD           | 完整预览、代码语法高亮     |
+| **压缩包** | ZIP, RAR, 7Z, TAR                        | 无需解压即可查看内容      |
+| **字体**  | TTF, OTF, WOFF                           | 实时渲染预览          |
 
 ### 个性化设置
 
@@ -146,33 +146,33 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 ### 功能对比
 
-| 功能     | FreeAssetFilter | QuickLook   | Seer        | Explorer  |
-| -------- | --------------- | ----------- | ----------- | --------- |
-| 图像预览 | ✅ 100+ 格式    | ✅ 常见格式 | ✅ 常见格式 | ⚠️ 有限 |
-| 视频播放 | ✅ 内置播放器   | ⚠️ 需插件 | ⚠️ 需插件 | ❌        |
-| RAW 支持 | ✅ 完整支持     | ⚠️ 部分   | ⚠️ 部分   | ❌        |
-| PSD 预览 | ✅ 图层支持     | ❌          | ❌          | ❌        |
-| LUT 还原 | ✅ 实时预览     | ❌          | ❌          | ❌        |
-| 操作布局 | ✅ 三栏布局     | ❌          | ❌          | ✅        |
-| 开源免费 | ✅ AGPL-3.0     | ✅ GPL      | ❌ 付费     | ✅        |
+| 功能     | FreeAssetFilter | QuickLook | Seer   | Explorer |
+| ------ | --------------- | --------- | ------ | -------- |
+| 图像预览   | ✅ 100+ 格式       | ✅ 常见格式    | ✅ 常见格式 | ⚠️ 有限    |
+| 视频播放   | ✅ 内置播放器         | ⚠️ 需插件    | ⚠️ 需插件 | ❌        |
+| RAW 支持 | ✅ 完整支持          | ⚠️ 部分     | ⚠️ 部分  | ❌        |
+| PSD 预览 | ✅ 图层支持          | ❌         | ❌      | ❌        |
+| LUT 还原 | ✅ 实时预览          | ❌         | ❌      | ❌        |
+| 操作布局   | ✅ 三栏布局          | ❌         | ❌      | ✅        |
+| 开源免费   | ✅ AGPL-3.0      | ✅ GPL     | ❌ 付费   | ✅        |
 
----
+***
 
 ## 支持的格式
 
 ### 图像格式 (30+)
 
-| 类别               | 格式                                             |
-| ------------------ | ------------------------------------------------ |
-| **常见格式** | JPG, JPEG, PNG, GIF, BMP, WEBP, TIFF, SVG        |
-| **现代格式** | AVIF, HEIC, HEIF, JP2, JXR                       |
+| 类别         | 格式                                               |
+| ---------- | ------------------------------------------------ |
+| **常见格式**   | JPG, JPEG, PNG, GIF, BMP, WEBP, TIFF, SVG        |
+| **现代格式**   | AVIF, HEIC, HEIF, JP2, JXR                       |
 | **RAW 格式** | CR2, CR3, NEF, ARW, DNG, ORF, RAF, RW2, PEF, X3F |
-| **专业格式** | PSD, PSB, XCF, TGA, ICO, ICNS, DDS               |
+| **专业格式**   | PSD, PSB, XCF, TGA, ICO, ICNS, DDS               |
 
 ### 视频格式 (20+)
 
-| 类别               | 格式                                     |
-| ------------------ | ---------------------------------------- |
+| 类别       | 格式                                       |
+| -------- | ---------------------------------------- |
 | **常见格式** | MP4, MOV, AVI, MKV, WMV, FLV, WEBM       |
 | **专业格式** | MXF, VOB, M2TS, TS, MTS, M2T, DV, ProRes |
 | **移动设备** | 3GP, M4V, MPEG, MPG, HEVC, H.264         |
@@ -195,12 +195,12 @@ MP3, WAV, FLAC, OGG, WMA, AAC, M4A, OPUS, AIFF, APE, MKA, AC3
 
 ### 文档格式 (50+)
 
-| 类别                               | 格式                                                |
-| ---------------------------------- | --------------------------------------------------- |
-| **PDF**                      | PDF（完整预览、缩放）                               |
-| **Office（需单独安装插件）** | DOC, DOCX, XLS, XLSX, PPT, PPTX                     |
-| **文本**                     | TXT, MD, RST, RTF, CSV, JSON, XML, YAML             |
-| **代码**                     | Python, JavaScript, C++, Java, Go, Rust 等 50+ 语言 |
+| 类别                  | 格式                                               |
+| ------------------- | ------------------------------------------------ |
+| **PDF**             | PDF（完整预览、缩放）                                     |
+| **Office（需单独安装插件）** | DOC, DOCX, XLS, XLSX, PPT, PPTX                  |
+| **文本**              | TXT, MD, RST, RTF, CSV, JSON, XML, YAML          |
+| **代码**              | Python, JavaScript, C++, Java, Go, Rust 等 50+ 语言 |
 
 ### 压缩包格式 (10+)
 
@@ -210,7 +210,7 @@ ZIP, RAR, 7Z, TAR, GZ, BZ2, XZ, LZMA, ISO, CAB, ARJ
 
 TTF, OTF, WOFF, WOFF2, EOT
 
----
+***
 
 ## 安装指南
 
@@ -262,15 +262,15 @@ python -m freeassetfilter.app.main
 
 ### 系统要求详情
 
-| 组件               | 最低要求                    | 推荐配置                    |
-| ------------------ | --------------------------- | --------------------------- |
+| 组件       | 最低要求                        | 推荐配置                        |
+| -------- | --------------------------- | --------------------------- |
 | **操作系统** | Windows 10                  | Windows 11                  |
-| **处理器**   | Intel Core i3 / AMD Ryzen 3 | Intel Core i5 / AMD Ryzen 5 |
-| **内存**     | 4 GB RAM                    | 8 GB RAM                    |
-| **存储**     | 900MB 可用空间              | 1 GB 可用空间               |
-| **显卡**     | 具有视频加速的现代集成显卡  | Nvidia/AMD现代独立显卡      |
+| **处理器**  | Intel Core i3 / AMD Ryzen 3 | Intel Core i5 / AMD Ryzen 5 |
+| **内存**   | 4 GB RAM                    | 8 GB RAM                    |
+| **存储**   | 900MB 可用空间                  | 1 GB 可用空间                   |
+| **显卡**   | 具有视频加速的现代集成显卡               | Nvidia/AMD现代独立显卡            |
 
----
+***
 
 ## 使用说明
 
@@ -291,10 +291,10 @@ python -m freeassetfilter.app.main
 
 ### 基本操作
 
-| 默认操作           | 说明             |
-| ------------------ | ---------------- |
-| **左键单击** | 选中文件并预览   |
-| **右键单击** | 打开上下文菜单   |
+| 默认操作     | 说明       |
+| -------- | -------- |
+| **左键单击** | 选中文件并预览  |
+| **右键单击** | 打开上下文菜单  |
 | **长按拖拽** | 将文件拖到存储池 |
 
 ### 文件选择器
@@ -378,7 +378,7 @@ FreeAssetFilter/
 - **多线程设计**：后台处理不阻塞 UI
 - **插件化组件**：易于扩展新的文件类型支持
 
----
+***
 
 ## 开发指南
 
@@ -426,8 +426,8 @@ python setup.py build_ext --inplace
 - **文档字符串**：使用 Google Style Docstrings
 - **命名规范**：
   - 类名：PascalCase
-  - 函数/变量：snake_case
-  - 常量：UPPER_SNAKE_CASE
+  - 函数/变量：snake\_case
+  - 常量：UPPER\_SNAKE\_CASE
 
 ### 打包应用
 
@@ -462,7 +462,7 @@ class NewFormatPreviewer(QWidget):
         pass
 ```
 
-2. **注册文件类型** 在 `components/unified_previewer.py` 中注册：
+1. **注册文件类型** 在 `components/unified_previewer.py` 中注册：
 
 ```python
 self.previewers = {
@@ -471,9 +471,9 @@ self.previewers = {
 }
 ```
 
-3. **添加图标** 在 `icons/` 目录添加文件类型图标
+1. **添加图标** 在 `icons/` 目录添加文件类型图标
 
----
+***
 
 ## 贡献指南
 
@@ -510,28 +510,28 @@ self.previewers = {
 - **功能请求**：描述功能、使用场景、预期效果
 - **问题咨询**：提供详细的环境信息和操作步骤
 
----
+***
 
 ## 路线图
 
 ### 已完成功能
 
-- [X] 基础文件浏览和预览
-- [X] 图像格式支持（30+ 格式）
-- [X] 视频播放功能（基于 MPV）
-- [X] 音频播放和波形显示
-- [X] PDF 和 Office 文档预览
-- [X] 压缩包浏览
-- [X] 字体预览
-- [X] 深色/浅色主题切换
-- [X] 文件存储池功能
-- [X] 缩略图缓存系统
+- [x] 基础文件浏览和预览
+- [x] 图像格式支持（30+ 格式）
+- [x] 视频播放功能（基于 MPV）
+- [x] 音频播放和波形显示
+- [x] PDF 和 Office 文档预览
+- [x] 压缩包浏览
+- [x] 字体预览
+- [x] 深色/浅色主题切换
+- [x] 文件存储池功能
+- [x] 缩略图缓存系统
 
 ### 正在进行
 
 - [ ] 文件导出智能化分类
 - [ ] 时间线等智能化筛选分类工具
-- [ ] ISO文件稳定预览
+- [X] ISO文件稳定预览
 - [ ] 插件系统架构
 
 ### 可能会实现的功能
@@ -546,7 +546,7 @@ self.previewers = {
 
 成为开源社区最强大的文件预览和管理工具，为创意工作者提供高效的数字资产管理解决方案。
 
----
+***
 
 ## 安全说明
 
@@ -560,11 +560,11 @@ self.previewers = {
 
 如果您发现了安全漏洞，请不要在公开 Issue 中披露，请发送邮件至：
 
-dorufoc@outlook.com
+<dorufoc@outlook.com>
 
 我们会在 48 小时内回复，并尽快修复漏洞。
 
----
+***
 
 ## 许可证
 
@@ -585,7 +585,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU Affero General Public License for more details.
 ```
 
----
+***
 
 ## 致谢
 
@@ -657,7 +657,7 @@ GNU Affero General Public License for more details.
 - [mpv](https://github.com/mpv-player/mpv) - 命令行视频播放器
 - [vscode-textmate](https://github.com/microsoft/vscode-textmate) - TextMate 语法解析库
 
----
+***
 
 <div align="center">
 

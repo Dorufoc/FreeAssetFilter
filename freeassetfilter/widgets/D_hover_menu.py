@@ -277,7 +277,7 @@ class D_HoverMenu(QWidget):
 
     def _start_timeout_timer(self):
         """启动超时定时器"""
-        if self._timeout_enabled and self._is_visible and not self._is_animating:
+        if self._timeout_enabled and self._is_visible:
             self._timeout_timer.stop()
             self._timeout_timer.start(self._timeout_duration)
 
@@ -306,8 +306,9 @@ class D_HoverMenu(QWidget):
         if self._is_visible and not self._is_animating:
             debug(f"[D_HoverMenu] Calling _fade_out()")
             self._fade_out()
-        else:
-            debug(f"[D_HoverMenu] _fade_out() NOT called due to condition check failed")
+        elif self._is_visible and self._is_animating:
+            debug(f"[D_HoverMenu] Animation in progress, restarting timer")
+            self._start_timeout_timer()
 
     def _on_animation_finished(self):
         """动画结束处理"""
