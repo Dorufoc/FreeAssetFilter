@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 FreeAssetFilter v1.0.0
 master
@@ -31,7 +29,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 # 导入日志模块（必须在其他导入之前，确保日志功能可用）
 from freeassetfilter.utils.app_logger import (
     get_logger, info, debug, warning, error, critical,
-    log_exception, log_print
+    log_exception
 )
 
 # 初始化日志系统
@@ -226,12 +224,6 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 应用窗口标题栏深色模式（根据当前主题设置）
         self._apply_title_bar_theme()
-
-    def changeEvent(self, event):
-        """
-        窗口状态变化事件
-        """
-        super().changeEvent(event)
 
     def closeEvent(self, event):
         """
@@ -533,10 +525,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
         self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         # 连接到GitHub跳转函数
-        def open_github():
-            import webbrowser
-            webbrowser.open("https://github.com/Dorufoc/FreeAssetFilter")
-        self.github_button.clicked.connect(open_github)
+        self.github_button.clicked.connect(self._open_github)
         status_layout.addWidget(self.github_button)
         
         # 添加左侧占位符，将状态标签推到居中位置
@@ -562,10 +551,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
         self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         # 连接到全局设置函数
-        def open_global_settings():
-            if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, '_open_global_settings'):
-                self.unified_previewer._open_global_settings()
-        self.global_settings_button.clicked.connect(open_global_settings)
+        self.global_settings_button.clicked.connect(self._open_global_settings)
         status_layout.addWidget(self.global_settings_button)
         
         # 将水平布局添加到容器的垂直布局中
@@ -589,7 +575,17 @@ class FreeAssetFilterApp(QMainWindow):
         
         # 应用主题设置
         self.update_theme()
-    
+
+    def _open_github(self):
+        """打开GitHub项目主页"""
+        import webbrowser
+        webbrowser.open("https://github.com/Dorufoc/FreeAssetFilter")
+
+    def _open_global_settings(self):
+        """打开全局设置窗口"""
+        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, '_open_global_settings'):
+            self.unified_previewer._open_global_settings()
+
     def show_info(self, title, message):
         """
         显示信息提示
@@ -859,14 +855,11 @@ class FreeAssetFilterApp(QMainWindow):
         github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
         self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
         self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        def open_github():
-            import webbrowser
-            webbrowser.open("https://github.com/Dorufoc/FreeAssetFilter")
-        self.github_button.clicked.connect(open_github)
+        self.github_button.clicked.connect(self._open_github)
         status_layout.addWidget(self.github_button)
-        
+
         status_layout.addStretch()
-        
+
         self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         # 使用小一号的字体
@@ -875,16 +868,13 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label.setFont(status_font)
         self.status_label.setStyleSheet("color: #888888; margin-top: 0px;")
         status_layout.addWidget(self.status_label)
-        
+
         status_layout.addStretch()
-        
+
         setting_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
         self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
         self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        def open_global_settings():
-            if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, '_open_global_settings'):
-                self.unified_previewer._open_global_settings()
-        self.global_settings_button.clicked.connect(open_global_settings)
+        self.global_settings_button.clicked.connect(self._open_global_settings)
         status_layout.addWidget(self.global_settings_button)
         
         status_container_layout.addLayout(status_layout)
@@ -1236,17 +1226,6 @@ class FreeAssetFilterApp(QMainWindow):
         # 如果有未链接文件，显示处理对话框
         if unlinked_files:
             self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
-    
-    def show_info(self, title, message):
-        """
-        显示信息提示
-        
-        Args:
-            title (str): 提示标题
-            message (str): 提示消息
-        """
-        # 简单的信息显示，使用状态标签
-        self.status_label.setText(f"{title}: {message}")
 
 def main():
     """

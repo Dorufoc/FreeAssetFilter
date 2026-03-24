@@ -18,12 +18,288 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import sys
 import os
+import re
 import logging
 import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from freeassetfilter.utils.path_utils import get_app_data_path
+
+
+# ==================== 异常类型分类 ====================
+
+class SecurityException(Exception):
+    """安全相关异常基类"""
+    pass
+
+
+class ResourceException(Exception):
+    """资源相关异常基类"""
+    pass
+
+
+class FileOperationException(ResourceException):
+    """文件操作异常（文件不存在、读写失败、格式错误等）"""
+    def __init__(self, message: str = "文件操作失败", original_error: Optional[Exception] = None):
+        self.original_error = original_error
+        super().__init__(message)
+
+
+class NetworkException(ResourceException):
+    """网络相关异常（连接失败、超时、下载失败等）"""
+    def __init__(self, message: str = "网络操作失败", original_error: Optional[Exception] = None):
+        self.original_error = original_error
+        super().__init__(message)
+
+
+class MemoryException(ResourceException):
+    """内存相关异常（内存不足、分配失败等）"""
+    def __init__(self, message: str = "内存操作失败", original_error: Optional[Exception] = None):
+        self.original_error = original_error
+        super().__init__(message)
+
+
+class PermissionException(SecurityException):
+    """权限相关异常（访问被拒绝、权限不足等）"""
+    def __init__(self, message: str = "权限不足", original_error: Optional[Exception] = None):
+        self.original_error = original_error
+        super().__init__(message)
+
+
+class ConfigurationException(Exception):
+    """配置相关异常"""
+    def __init__(self, message: str = "配置错误", original_error: Optional[Exception] = None):
+        self.original_error = original_error
+        super().__init__(message)
+
+
+# ==================== 敏感信息过滤 ====================
+
+# 敏感路径模式列表
+SENSITIVE_PATH_PATTERNS = [
+    # Windows 用户目录
+    (r'[A-Za-z]:\\Users\\[^\\]+', '[USER_HOME]'),
+    (r'[A-Za-z]:\\[^\\]+\\AppData\\', '[APP_DATA]'),
+    # Windows 系统目录
+    (r'[A-Za-z]:\\Windows\\[^\\]+', '[SYSTEM]'),
+    (r'[A-Za-z]:\\Program Files[^\\]*\\[^\\]+', '[PROGRAM]'),
+    # Linux/Mac 用户目录
+    (r'/home/[^/]+', '[USER_HOME]'),
+    (r'/Users/[^/]+', '[USER_HOME]'),
+    # 绝对路径前缀
+    (r'[A-Za-z]:\\', '[DRIVE]'),
+]
+
+# 敏感信息模式（密码、密钥、令牌等）
+SENSITIVE_INFO_PATTERNS = [
+    (r'password\s*=\s*[^\s,;]+', 'password=[REDACTED]'),
+    (r'passwd\s*=\s*[^\s,;]+', 'passwd=[REDACTED]'),
+    (r'pwd\s*=\s*[^\s,;]+', 'pwd=[REDACTED]'),
+    (r'secret\s*=\s*[^\s,;]+', 'secret=[REDACTED]'),
+    (r'token\s*=\s*[^\s,;]+', 'token=[REDACTED]'),
+    (r'api[_-]?key\s*=\s*[^\s,;]+', 'api_key=[REDACTED]'),
+    (r'key\s*=\s*[^\s,;]+', 'key=[REDACTED]'),
+    (r'auth\s*=\s*[^\s,;]+', 'auth=[REDACTED]'),
+    (r'credential\s*=\s*[^\s,;]+', 'credential=[REDACTED]'),
+    (r'private[_-]?key\s*=\s*[^\s,;]+', 'private_key=[REDACTED]'),
+    (r'jwt[_-]?token\s*=\s*[^\s,;]+', 'jwt_token=[REDACTED]'),
+    (r'jwt\s*=\s*[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', 'jwt=[REDACTED]'),
+    (r'eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*', '[JWT_TOKEN_REDACTED]'),
+    (r'oauth[_-]?token\s*=\s*[^\s,;]+', 'oauth_token=[REDACTED]'),
+    (r'access[_-]?token\s*=\s*[^\s,;]+', 'access_token=[REDACTED]'),
+    (r'refresh[_-]?token\s*=\s*[^\s,;]+', 'refresh_token=[REDACTED]'),
+    (r'aws[_-]?access[_-]?key[_-]?id\s*=\s*[^\s,;]+', 'aws_access_key_id=[REDACTED]'),
+    (r'aws[_-]?secret[_-]?access[_-]?key\s*=\s*[^\s,;]+', 'aws_secret_access_key=[REDACTED]'),
+    (r'aws[_-]?key\s*=\s*[^\s,;]+', 'aws_key=[REDACTED]'),
+    (r'AKIA[A-Z0-9]{16}', '[AWS_ACCESS_KEY_REDACTED]'),
+    (r'-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----', '-----BEGIN PRIVATE KEY [REDACTED]-----'),
+    (r'-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----', '-----END PRIVATE KEY-----'),
+    (r'authorization\s*:\s*bearer\s+[^\s,;]+', 'authorization: bearer [REDACTED]'),
+    (r'bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', 'bearer [REDACTED]'),
+]
+
+
+def sanitize_path(path: str) -> str:
+    """
+    清理路径中的敏感信息
+    
+    Args:
+        path: 原始路径
+        
+    Returns:
+        str: 清理后的安全路径
+    """
+    if not path or not isinstance(path, str):
+        return path
+    
+    sanitized = path
+    for pattern, replacement in SENSITIVE_PATH_PATTERNS:
+        sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+    
+    return sanitized
+
+
+def sanitize_sensitive_info(text: str) -> str:
+    """
+    清理文本中的敏感信息（密码、密钥等）
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        str: 清理后的安全文本
+    """
+    if not text or not isinstance(text, str):
+        return text
+    
+    sanitized = text
+    for pattern_item in SENSITIVE_INFO_PATTERNS:
+        if len(pattern_item) == 3:
+            pattern, replacement, flags = pattern_item
+            sanitized = re.sub(pattern, replacement, sanitized, flags=flags)
+        else:
+            pattern, replacement = pattern_item
+            sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+    
+    return sanitized
+
+
+def get_safe_error_message(error: Exception, include_details: bool = False) -> str:
+    """
+    获取安全的错误信息（不包含敏感路径）
+    
+    Args:
+        error: 异常对象
+        include_details: 是否包含详细错误信息（默认False，只返回安全信息）
+        
+    Returns:
+        str: 安全的错误信息
+    """
+    if error is None:
+        return "发生未知错误"
+    
+    # 获取异常类型名称
+    error_type = type(error).__name__
+    
+    # 获取异常消息并清理
+    error_msg = str(error)
+    safe_msg = sanitize_path(error_msg)
+    safe_msg = sanitize_sensitive_info(safe_msg)
+    
+    # 根据异常类型返回用户友好的消息
+    user_friendly_messages = {
+        'FileNotFoundError': '文件未找到',
+        'PermissionError': '权限不足，无法访问',
+        'IsADirectoryError': '路径指向目录而非文件',
+        'NotADirectoryError': '路径不是有效的目录',
+        'OSError': '系统操作失败',
+        'IOError': '输入/输出错误',
+        'MemoryError': '内存不足',
+        'TimeoutError': '操作超时',
+        'ConnectionError': '网络连接失败',
+        'FileOperationException': '文件操作失败',
+        'NetworkException': '网络操作失败',
+        'MemoryException': '内存操作失败',
+        'PermissionException': '权限不足',
+        'ConfigurationException': '配置错误',
+    }
+    
+    base_message = user_friendly_messages.get(error_type, '操作失败')
+    
+    if include_details and safe_msg:
+        return f"{base_message}: {safe_msg}"
+    
+    return base_message
+
+
+def get_safe_error_for_ui(error: Exception) -> str:
+    """
+    获取用于UI显示的安全错误信息（最简版本，绝不包含任何敏感信息）
+    
+    Args:
+        error: 异常对象
+        
+    Returns:
+        str: 安全的错误信息，适合显示给用户
+    """
+    if error is None:
+        return "操作失败，请重试"
+    
+    # 只返回预定义的友好消息，不包含任何原始错误信息
+    error_type = type(error).__name__
+    
+    ui_messages = {
+        'FileNotFoundError': '文件未找到，请检查文件是否存在',
+        'PermissionError': '权限不足，无法访问该文件',
+        'IsADirectoryError': '选择的对象是文件夹而非文件',
+        'NotADirectoryError': '无效的路径',
+        'OSError': '系统操作失败，请检查磁盘空间或文件权限',
+        'IOError': '读取/写入失败，请检查文件是否被占用',
+        'MemoryError': '内存不足，请关闭其他程序后重试',
+        'TimeoutError': '操作超时，请检查网络连接后重试',
+        'ConnectionError': '网络连接失败，请检查网络设置',
+        'FileExistsError': '文件已存在',
+        'FileOperationException': '文件处理失败',
+        'NetworkException': '网络操作失败',
+        'MemoryException': '内存不足',
+        'PermissionException': '权限不足',
+        'ConfigurationException': '配置错误',
+        'ValueError': '参数错误',
+        'TypeError': '类型错误',
+        'KeyError': '数据缺失',
+        'IndexError': '索引越界',
+        'AttributeError': '属性错误',
+        'RuntimeError': '运行时错误',
+    }
+    
+    return ui_messages.get(error_type, '操作失败，请重试')
+
+
+def classify_exception(error: Exception) -> type:
+    """
+    根据异常类型分类异常
+    
+    Args:
+        error: 异常对象
+        
+    Returns:
+        type: 异常分类类型
+    """
+    if error is None:
+        return Exception
+    
+    error_type = type(error)
+    error_name = error_type.__name__
+    
+    # 文件相关异常
+    file_exceptions = (
+        FileNotFoundError, PermissionError, IsADirectoryError, 
+        NotADirectoryError, FileExistsError, EOFError,
+        'FileOperationException'
+    )
+    if error_type in file_exceptions or error_name in file_exceptions:
+        return FileOperationException
+    
+    # 权限相关异常
+    if error_type == PermissionError or error_name == 'PermissionException':
+        return PermissionException
+    
+    # 网络相关异常
+    network_exceptions = (
+        ConnectionError, TimeoutError, BlockingIOError, 
+        InterruptedError, 'NetworkException'
+    )
+    if error_type in network_exceptions or error_name in network_exceptions:
+        return NetworkException
+    
+    # 内存相关异常
+    memory_exceptions = (MemoryError, 'MemoryException')
+    if error_type in memory_exceptions or error_name in memory_exceptions:
+        return MemoryException
+    
+    return Exception
 
 
 class AppLogger:
@@ -239,15 +515,21 @@ def log_exception(exc_type, exc_value, exc_traceback):
     """
     logger = get_logger()
     
+    # 过滤异常值中的敏感信息
+    safe_exc_value = sanitize_path(str(exc_value))
+    safe_exc_value = sanitize_sensitive_info(safe_exc_value)
+    
     # 构建异常信息
     error_msg = f"\n=== 检测到未捕获的异常 ===\n"
     error_msg += f"异常类型: {exc_type.__name__}\n"
-    error_msg += f"异常值: {exc_value}\n"
+    error_msg += f"异常值: {safe_exc_value}\n"
     error_msg += f"异常堆栈:\n"
     
-    # 获取堆栈跟踪字符串
+    # 获取堆栈跟踪字符串并过滤敏感信息
     stack_trace = ''.join(traceback.format_tb(exc_traceback))
-    error_msg += stack_trace
+    safe_stack_trace = sanitize_path(stack_trace)
+    safe_stack_trace = sanitize_sensitive_info(safe_stack_trace)
+    error_msg += safe_stack_trace
     error_msg += "==========================\n"
     
     # 记录到日志

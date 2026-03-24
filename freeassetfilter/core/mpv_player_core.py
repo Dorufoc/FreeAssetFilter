@@ -28,7 +28,8 @@ from enum import IntEnum
 from PySide6.QtCore import QObject, Signal, QThread, Qt, QTimer
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning, error, get_safe_error_for_ui, sanitize_path
+from freeassetfilter.utils.path_utils import validate_dll_path, get_safe_dll_paths
 
 
 class MpvErrorCode(IntEnum):
@@ -212,15 +213,22 @@ class MPVDLLLoader:
             dll_paths = self._get_dll_paths()
             
             for dll_path in dll_paths:
-                if os.path.exists(dll_path):
-                    try:
-                        self._dll = ctypes.CDLL(dll_path)
-                        self._bind_functions()
-                        self._initialized = True
-                        return True
-                    except OSError as e:
-                        continue
+                # 验证DLL路径合法性，防止DLL劫持攻击
+                if not validate_dll_path(dll_path):
+                    warning(f"[MPVDLLLoader] DLL路径未通过安全验证，跳过: {dll_path}")
+                    continue
+                
+                try:
+                    self._dll = ctypes.CDLL(dll_path)
+                    self._bind_functions()
+                    self._initialized = True
+                    info(f"[MPVDLLLoader] 成功加载DLL: {dll_path}")
+                    return True
+                except OSError as e:
+                    debug(f"[MPVDLLLoader] 加载DLL失败 {dll_path}: {e}")
+                    continue
             
+            error("[MPVDLLLoader] 未能从任何安全路径加载DLL")
             return False
             
         except (OSError, RuntimeError) as e:
@@ -231,24 +239,44 @@ class MPVDLLLoader:
     
     def _get_dll_paths(self) -> List[str]:
         """
-        获取DLL可能的路径列表
+        获取DLL可能的路径列表（使用安全路径）
         
         Returns:
             List[str]: DLL路径列表
         """
-        paths = []
+        # 优先使用安全路径获取函数
+        safe_paths = []
         
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        paths.append(os.path.join(current_dir, "libmpv-2.dll"))
-        paths.append(os.path.join(current_dir, "libmpv.dll"))
+        # 1. 尝试从安全路径获取
+        safe_paths.extend(get_safe_dll_paths("libmpv-2.dll"))
+        safe_paths.extend(get_safe_dll_paths("libmpv.dll"))
         
-        if sys.platform == "win32":
-            system_paths = os.environ.get("PATH", "").split(os.pathsep)
-            for sys_path in system_paths:
-                paths.append(os.path.join(sys_path, "libmpv-2.dll"))
-                paths.append(os.path.join(sys_path, "libmpv.dll"))
+        # 2. 如果安全路径为空，回退到传统方式（但仍会经过验证）
+        if not safe_paths:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            safe_paths.append(os.path.join(current_dir, "libmpv-2.dll"))
+            safe_paths.append(os.path.join(current_dir, "libmpv.dll"))
+            
+            # 添加系统PATH路径，但只保留系统目录
+            if sys.platform == "win32":
+                system_root = os.environ.get('SystemRoot', r'C:\Windows')
+                system_paths = os.environ.get("PATH", "").split(os.pathsep)
+                for sys_path in system_paths:
+                    # 只添加Windows系统目录，防止用户目录中的恶意DLL
+                    if sys_path.lower().startswith(system_root.lower()):
+                        safe_paths.append(os.path.join(sys_path, "libmpv-2.dll"))
+                        safe_paths.append(os.path.join(sys_path, "libmpv.dll"))
         
-        return paths
+        # 去重并保持顺序
+        seen = set()
+        unique_paths = []
+        for path in safe_paths:
+            norm_path = os.path.normpath(path).lower()
+            if norm_path not in seen:
+                seen.add(norm_path)
+                unique_paths.append(path)
+        
+        return unique_paths
     
     def _bind_functions(self):
         """绑定MPV API函数"""
@@ -389,12 +417,16 @@ class MPVPlayerCore(QObject):
         
         self._dll_loader = MPVDLLLoader()
         
-        # 使用 SimpleQueue 提高线程安全性
-        self._command_queue = queue.SimpleQueue()
-        self._result_queue = queue.SimpleQueue()
-        
+        # 命令队列大小限制（最大100条），使用Queue替代SimpleQueue以支持maxsize
+        self._command_queue_maxsize = 100
+        self._command_queue = queue.Queue(maxsize=self._command_queue_maxsize)
+        self._result_queue = queue.Queue(maxsize=self._command_queue_maxsize)
+
         # 信号队列用于线程安全地发射信号
-        self._signal_queue = queue.SimpleQueue()
+        self._signal_queue = queue.Queue(maxsize=self._command_queue_maxsize)
+
+        # 命令执行超时（秒）
+        self._command_timeout = 5.0
         
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -483,21 +515,48 @@ class MPVPlayerCore(QObject):
             import traceback
             traceback.print_exc()
         finally:
-            if mpv_handle:
-                try:
-                    self._dll_loader.dll.mpv_command(mpv_handle, (c_char_p * 2)(b"quit", None))
-                    time.sleep(0.1)
-                    self._dll_loader.dll.mpv_terminate_destroy(mpv_handle)
-                except (RuntimeError, AttributeError, OSError) as e:
-                    debug(f"[MPVWorker] 清理MPV句柄时出错: {e}")
-            
+            self._cleanup_mpv_handle(mpv_handle)
+
             with self._state_lock:
                 self._initialized = False
             self._initialized_event.clear()
+
+    def _cleanup_mpv_handle(self, mpv_handle: c_void_p):
+        """安全清理MPV句柄"""
+        if not mpv_handle:
+            return
+
+        try:
+            try:
+                self._dll_loader.dll.mpv_unobserve_property(mpv_handle, 0)
+                debug("[MPVWorker] 已取消所有属性观察")
+            except (RuntimeError, AttributeError, OSError) as e:
+                debug(f"[MPVWorker] 取消属性观察失败: {e}")
+
+            try:
+                quit_args = (c_char_p * 2)(b"quit", None)
+                self._dll_loader.dll.mpv_command(mpv_handle, quit_args)
+            except (RuntimeError, AttributeError, OSError) as e:
+                debug(f"[MPVWorker] 发送quit命令失败: {e}")
+
+            time.sleep(0.05)
+
+            try:
+                self._dll_loader.dll.mpv_terminate_destroy(mpv_handle)
+                debug("[MPVWorker] MPV句柄已安全释放")
+            except (RuntimeError, AttributeError, OSError) as e:
+                debug(f"[MPVWorker] mpv_terminate_destroy失败: {e}")
+                try:
+                    self._dll_loader.dll.mpv_destroy(mpv_handle)
+                except (RuntimeError, AttributeError, OSError) as e2:
+                    debug(f"[MPVWorker] mpv_destroy也失败: {e2}")
+        except Exception as e:
+            debug(f"[MPVWorker] 清理MPV句柄时出错: {e}")
     
     def _configure_mpv(self, mpv_handle: c_void_p):
-        """配置MPV基本参数"""
+        """配置MPV基本参数（安全加固版）"""
         config = {
+            # 视频输出配置
             "vo": "gpu-next",
             "hwdec": "auto-safe",
             "keep-open": "yes",
@@ -519,21 +578,59 @@ class MPVPlayerCore(QObject):
             "panscan": "0",
             "video-align-x": "0",
             "video-align-y": "0",
-            "input-default-bindings": "no",  # 禁用默认键盘绑定，让Qt处理键盘事件
+
+            # 输入安全：禁用所有可能的安全风险输入
+            "input-default-bindings": "no",  # 禁用默认键盘绑定
             "input-vo-keyboard": "no",  # 禁用视频输出键盘输入
-            "input-ar-delay": "999999",  # 设置自动重复延迟为极大值，禁用按键重复
+            "input-ar-delay": "999999",  # 设置自动重复延迟为极大值
             "input-ar-rate": "1",  # 设置自动重复速率为最小
-            "stop-playback-on-init-failure": "no",  # 初始化失败不停止播放
-            "load-scripts": "no",  # 禁用脚本加载，防止脚本拦截输入
+
+            # 脚本和配置安全：禁用所有外部脚本和配置文件
+            "load-scripts": "no",  # 禁用脚本加载
             "load-auto-profiles": "no",  # 禁用自动配置文件
+            "load-osd-console": "no",  # 禁用OSD控制台
+            "load-stats-overlay": "no",  # 禁用统计覆盖层
+
+            # 网络和资源安全
+            "ytdl": "no",  # 禁用youtube-dl
+            "stream-lavf-o": "",  # 禁用自定义流选项
+
+            # 文件系统安全：限制文件访问
+            "watch-later-directory": "",  # 禁用稍后观看目录
+            "watch-later-options": "",  # 禁用稍后观看选项
+            "write-filename-in-watch-later-config": "no",  # 禁止在配置中写入文件名
+            "save-position-on-quit": "no",  # 退出时不保存位置
+
+            # 播放安全
+            "stop-playback-on-init-failure": "no",  # 初始化失败不停止播放
+            "force-seekable": "no",  # 不强制可跳转
+
+            # 缓存和内存限制
+            "cache": "no",  # 禁用磁盘缓存
+            "cache-on-disk": "no",  # 不在磁盘上缓存
+            "demuxer-max-bytes": "50M",  # 限制解复用器最大字节数
+            "demuxer-max-back-bytes": "25M",  # 限制回退字节数
+
+            # 字幕安全：禁用外部字幕加载
+            "sub-auto": "no",  # 不自动加载字幕
+            "sub-font-provider": "none",  # 禁用字体提供程序
+
+            # 音频安全
+            "volume-max": "100",  # 限制最大音量为100%
+            "gapless-audio": "no",  # 禁用无缝音频
         }
-        
+
         for name, value in config.items():
-            self._dll_loader.dll.mpv_set_option_string(
-                mpv_handle,
-                name.encode('utf-8'),
-                value.encode('utf-8')
-            )
+            try:
+                result = self._dll_loader.dll.mpv_set_option_string(
+                    mpv_handle,
+                    name.encode('utf-8'),
+                    value.encode('utf-8')
+                )
+                if result < 0:
+                    debug(f"[MPVPlayerCore] 设置选项 {name}={value} 失败: {result}")
+            except (RuntimeError, AttributeError, OSError) as e:
+                debug(f"[MPVPlayerCore] 设置选项 {name} 时出错: {e}")
     
     def _observe_properties(self, mpv_handle: c_void_p):
         """设置属性观察"""
@@ -568,9 +665,11 @@ class MPVPlayerCore(QObject):
         elif event_id == MpvEventId.END_FILE:
             self._handle_end_file_event(mpv_handle, event)
         elif event_id == MpvEventId.SEEK:
-            self._is_seeking = True
+            with self._state_lock:
+                self._is_seeking = True
         elif event_id == MpvEventId.PLAYBACK_RESTART:
-            self._is_seeking = False
+            with self._state_lock:
+                self._is_seeking = False
             self._signal_queue.put(('seekFinished',))
         elif event_id == MpvEventId.SHUTDOWN:
             self._stop_event.set()
@@ -657,12 +756,12 @@ class MPVPlayerCore(QObject):
     def _handle_end_file_event(self, mpv_handle: c_void_p, event: MpvEvent):
         """处理文件播放结束事件"""
         reason = MpvEndFileReason.EOF
-        error = 0
+        error_code = 0
         
         if event.data:
             end_file_event = ctypes.cast(event.data, POINTER(MpvEventEndFile)).contents
             reason = end_file_event.reason
-            error = end_file_event.error
+            error_code = end_file_event.error
         
         with self._state_lock:
             self._is_playing = False
@@ -670,8 +769,10 @@ class MPVPlayerCore(QObject):
         self._signal_queue.put(('stateChanged', False))
         
         if reason == MpvEndFileReason.ERROR:
-            error_msg = self._dll_loader.get_error_string(error)
-            self._signal_queue.put(('errorOccurred', error, error_msg))
+            # 使用安全的错误信息，不包含敏感路径
+            error_msg = self._dll_loader.get_error_string(error_code)
+            safe_error_msg = sanitize_path(error_msg)
+            self._signal_queue.put(('errorOccurred', error_code, safe_error_msg))
         
         self._signal_queue.put(('fileEnded', reason))
     
@@ -774,7 +875,9 @@ class MPVPlayerCore(QObject):
         if not mpv_handle:
             return False
         if not os.path.exists(file_path):
-            self._emit_error(MpvErrorCode.LOADING_FAILED, f"文件不存在: {file_path}")
+            # 使用安全路径显示错误信息
+            safe_path = sanitize_path(file_path)
+            self._emit_error(MpvErrorCode.LOADING_FAILED, "文件不存在")
             return False
         
         with self._state_lock:
@@ -920,7 +1023,7 @@ class MPVPlayerCore(QObject):
                         reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
                         debug(f"[LUT] video-reconfig结果: {reconfig_result}")
                     except (RuntimeError, AttributeError, OSError) as e2:
-                        debug(f"[LUT] video-reconfig失败: {e2}")
+                        debug(f"[LUT] video-reconfig失败")
 
                 return result >= 0
             else:
@@ -931,9 +1034,7 @@ class MPVPlayerCore(QObject):
                 debug(f"[LUT] 清除vf结果: {result}")
                 return result >= 0
         except (RuntimeError, AttributeError, OSError) as e:
-            error(f"[LUT] 设置vf滤镜失败: {e}")
-            import traceback
-            traceback.print_exc()
+            error(f"[LUT] 设置vf滤镜失败")
             return False
     
     def _load_glsl_shader_internal(self, mpv_handle: c_void_p, shader_path: str, **kwargs) -> bool:
@@ -945,6 +1046,8 @@ class MPVPlayerCore(QObject):
             cmd_args = [b"load", b"glsl-shaders", shader_path.encode('utf-8'), None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
+            # 使用安全路径记录日志
+            safe_path = sanitize_path(shader_path)
             debug(f"[LUT] load glsl-shaders命令结果: {result}")
 
             # 尝试强制视频重新配置
@@ -955,11 +1058,11 @@ class MPVPlayerCore(QObject):
                     reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
                     debug(f"[LUT] video-reconfig结果: {reconfig_result}")
                 except (RuntimeError, AttributeError, OSError) as e2:
-                    debug(f"[LUT] video-reconfig失败: {e2}")
+                    debug(f"[LUT] video-reconfig失败")
 
             return result >= 0
         except (RuntimeError, AttributeError, OSError) as e:
-            error(f"[LUT] 加载GLSL着色器失败: {e}")
+            error(f"[LUT] 加载GLSL着色器失败")
             return False
     
     def _set_glsl_shaders_internal(self, mpv_handle: c_void_p, shader_list: str, **kwargs) -> bool:
@@ -989,11 +1092,11 @@ class MPVPlayerCore(QObject):
                     reconfig_result = self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
                     debug(f"[LUT] video-reconfig结果: {reconfig_result}")
                 except (RuntimeError, AttributeError, OSError) as e2:
-                    debug(f"[LUT] video-reconfig失败: {e2}")
+                    debug(f"[LUT] video-reconfig失败")
 
             return result >= 0
         except (RuntimeError, AttributeError, OSError) as e:
-            error(f"[LUT] 设置GLSL着色器失败: {e}")
+            error(f"[LUT] 设置GLSL着色器失败")
             return False
     
     def _clear_glsl_shaders_internal(self, mpv_handle: c_void_p, **kwargs) -> bool:
@@ -1022,12 +1125,12 @@ class MPVPlayerCore(QObject):
                 b"lut",
                 abs_path.encode('utf-8')
             )
-            debug(f"[LUT] set lut={abs_path} 结果: {result}")
+            # 使用安全路径记录日志
+            safe_path = sanitize_path(abs_path)
+            debug(f"[LUT] set lut={safe_path} 结果: {result}")
             return result >= 0
         except (RuntimeError, AttributeError, OSError) as e:
-            error(f"[LUT] 设置LUT失败: {e}")
-            import traceback
-            traceback.print_exc()
+            error(f"[LUT] 设置LUT失败")
             return False
 
     def _clear_lut_internal(self, mpv_handle: c_void_p, **kwargs) -> bool:
@@ -1087,21 +1190,23 @@ class MPVPlayerCore(QObject):
     
     def _emit_error(self, error_code: int, error_message: str):
         """发射错误信号（通过信号队列，由主线程处理）"""
-        self._signal_queue.put(('errorOccurred', error_code, error_message))
+        # 清理错误消息中的敏感路径
+        safe_message = sanitize_path(error_message)
+        self._signal_queue.put(('errorOccurred', error_code, safe_message))
     
     def _send_command(self, cmd_type: MPVCommandType, *args, **kwargs) -> Any:
         """发送命令到工作线程并等待结果"""
         # 检查是否正在关闭或已关闭
         if self._stop_event.is_set():
             return None
-        
+
         with self._state_lock:
             if not self._initialized:
                 return None
-        
+
         if not self._worker_thread or not self._worker_thread.is_alive():
             return None
-        
+
         result_id = id(time.time())
         command = {
             'type': cmd_type,
@@ -1109,15 +1214,36 @@ class MPVPlayerCore(QObject):
             'kwargs': kwargs,
             'result_id': result_id
         }
-        
+
         try:
             self._command_queue.put(command, block=False)
         except queue.Full:
-            return None
-        
+            warning(f"[MPVPlayerCore] 命令队列已满({self._command_queue_maxsize})，丢弃最旧命令")
+            try:
+                while not self._command_queue.empty():
+                    old_cmd = self._command_queue.get(block=False)
+                    if old_cmd.get('type') == MPVCommandType.CLOSE:
+                        self._command_queue.put(old_cmd, block=False)
+                        break
+                    else:
+                        old_result_id = old_cmd.get('result_id')
+                        if old_result_id is not None:
+                            try:
+                                self._result_queue.put((old_result_id, None), block=False)
+                            except queue.Full:
+                                pass
+            except queue.Empty:
+                pass
+            try:
+                self._command_queue.put(command, block=False)
+            except queue.Full:
+                error("[MPVPlayerCore] 命令队列仍然满，放弃执行命令")
+                return None
+
+        # 使用默认5秒超时，可通过kwargs覆盖
+        timeout = kwargs.get('timeout', self._command_timeout)
         start_time = time.time()
-        timeout = kwargs.get('timeout', 5.0)
-        
+
         while time.time() - start_time < timeout:
             # 检查是否正在关闭
             if self._stop_event.is_set():
@@ -1130,6 +1256,8 @@ class MPVPlayerCore(QObject):
             except queue.Empty:
                 continue
 
+        # 超时返回None
+        warning(f"[MPVPlayerCore] 命令 {cmd_type} 执行超时({timeout}s)")
         return None
     
     def initialize(self) -> bool:
@@ -1646,73 +1774,112 @@ class MPVPlayerCore(QObject):
         except (RuntimeError, TypeError) as e:
             error(f"[MPVPlayerCore] 预清理时出错: {e}")
     
-    def close(self, async_mode=False, timeout=1.0):
+    def close(self, async_mode=False, timeout=2.0):
         """
         关闭播放器并释放资源
-        
+
         Args:
             async_mode: 是否异步关闭（True=立即返回，后台清理）
             timeout: 同步模式下的最大等待时间（秒）
         """
         with self._state_lock:
-            if not self._initialized:
+            if not self._initialized and not self._worker_thread:
                 return
-        
+
         # 首先设置停止事件，阻止新的命令发送
         self._stop_event.set()
-        
+
         # 停止信号处理定时器
         if hasattr(self, '_signal_timer') and self._signal_timer:
-            self._signal_timer.stop()
-            self._signal_timer = None
-        
-        # 预清理 - 让 MPV 进入空闲状态（现在pre_cleanup会检查_stop_event）
-        self.pre_cleanup()
-        
-        # 发送关闭命令（使用短超时，因为_stop_event已设置）
-        self._send_command(MPVCommandType.CLOSE, timeout=0.3)
-        
+            try:
+                self._signal_timer.stop()
+                self._signal_timer = None
+            except (RuntimeError, AttributeError) as e:
+                debug(f"[MPVPlayerCore] 停止信号定时器失败: {e}")
+
+        # 预清理 - 让 MPV 进入空闲状态
+        try:
+            self.pre_cleanup()
+        except Exception as e:
+            debug(f"[MPVPlayerCore] 预清理出错: {e}")
+
+        # 发送关闭命令（使用短超时）
+        try:
+            self._send_command(MPVCommandType.CLOSE, timeout=0.5)
+        except Exception as e:
+            debug(f"[MPVPlayerCore] 发送CLOSE命令失败: {e}")
+
+        # 清空命令队列，释放等待的线程
+        self._clear_command_queue()
+
         if async_mode:
             # 异步模式：启动后台线程执行清理
             cleanup_thread = threading.Thread(
                 target=self._async_cleanup,
                 args=(timeout,),
-                daemon=True
+                daemon=True,
+                name="MPVCleanupThread"
             )
             cleanup_thread.start()
         else:
-            # 同步模式：短超时等待
+            # 同步模式：等待工作线程结束
             self._sync_cleanup(timeout)
-    
-    def _sync_cleanup(self, timeout=1.0):
-        """同步清理 - 短超时等待"""
+
+    def _clear_command_queue(self):
+        """清空命令队列，防止阻塞"""
+        try:
+            while not self._command_queue.empty():
+                try:
+                    self._command_queue.get(block=False)
+                except queue.Empty:
+                    break
+        except Exception as e:
+            debug(f"[MPVPlayerCore] 清空命令队列失败: {e}")
+
+        try:
+            while not self._result_queue.empty():
+                try:
+                    self._result_queue.get(block=False)
+                except queue.Empty:
+                    break
+        except Exception as e:
+            debug(f"[MPVPlayerCore] 清空结果队列失败: {e}")
+
+    def _sync_cleanup(self, timeout=2.0):
+        """同步清理 - 等待工作线程结束"""
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=timeout)
-            
-            # 如果还在运行，记录警告但继续（不阻塞）
+
+            # 如果还在运行，记录警告
             if self._worker_thread.is_alive():
-                warning(f"[MPVPlayerCore] 警告：工作线程未在 {timeout}s 内结束，强制继续")
-        
+                warning(f"[MPVPlayerCore] 警告：工作线程未在 {timeout}s 内结束")
+                # 不强制终止，因为可能导致资源泄漏
+
         self._worker_thread = None
-        
-        with self._state_lock:
-            self._initialized = False
-            self._is_playing = False
-            self._is_paused = False
-    
-    def _async_cleanup(self, timeout=2.0):
-        """异步清理 - 在后台完成"""
-        if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=timeout)
-        
-        self._worker_thread = None
-        
+
         with self._state_lock:
             self._initialized = False
             self._is_playing = False
             self._is_paused = False
 
-        info("[MPVPlayerCore] 异步清理完成")
+        debug("[MPVPlayerCore] 同步清理完成")
+
+    def _async_cleanup(self, timeout=3.0):
+        """异步清理 - 在后台完成"""
+        try:
+            if self._worker_thread and self._worker_thread.is_alive():
+                self._worker_thread.join(timeout=timeout)
+
+            self._worker_thread = None
+
+            with self._state_lock:
+                self._initialized = False
+                self._is_playing = False
+                self._is_paused = False
+
+            info("[MPVPlayerCore] 异步清理完成")
+        except Exception as e:
+            error(f"[MPVPlayerCore] 异步清理出错: {e}")
     
     def is_closing(self):
         """检查是否正在关闭"""

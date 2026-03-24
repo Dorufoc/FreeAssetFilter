@@ -75,9 +75,12 @@ class VideoFrameCache:
     def put(self, position: int, frame):
         """缓存帧"""
         self.last_accessed = time.time()
-        # 如果缓存已满，移除最旧的条目
+        # 如果缓存已满，移除最旧的条目并显式释放帧数据
         if len(self.cache) >= self.max_entries:
             oldest_pos = min(self.cache.keys(), key=lambda k: self.cache[k].timestamp)
+            oldest_entry = self.cache[oldest_pos]
+            if oldest_entry.frame is not None:
+                oldest_entry.frame = None
             del self.cache[oldest_pos]
         self.cache[position] = FrameCacheEntry(
             frame=frame,
@@ -86,7 +89,10 @@ class VideoFrameCache:
         )
     
     def clear(self):
-        """清空缓存"""
+        """清空缓存，显式释放帧数据"""
+        for entry in self.cache.values():
+            if entry.frame is not None:
+                entry.frame = None
         self.cache.clear()
 
 
@@ -116,6 +122,13 @@ class ThumbnailManager:
     
     # 视频帧缓存过期时间（秒）
     FRAME_CACHE_EXPIRY = 60
+    
+    # 视频处理超时时间（秒）
+    VIDEO_PROCESSING_TIMEOUT = 30
+    
+    # 最大图像尺寸限制（防止内存溢出）
+    MAX_IMAGE_DIMENSION = 8192
+    MAX_IMAGE_PIXELS = MAX_IMAGE_DIMENSION * MAX_IMAGE_DIMENSION
     
     _instance = None
     _initialized = False
@@ -246,40 +259,122 @@ class ThumbnailManager:
         suffix = os.path.splitext(file_path)[1].lower()
         return suffix in self.VIDEO_FORMATS
     
+    def _check_image_size_limit(self, img: Image.Image) -> bool:
+        """
+        检查图像尺寸是否在限制范围内
+        
+        Args:
+            img: PIL Image对象
+            
+        Returns:
+            bool: 是否在限制范围内
+        """
+        width, height = img.size
+        if width > self.MAX_IMAGE_DIMENSION or height > self.MAX_IMAGE_DIMENSION:
+            warning(f"[ThumbnailManager] 图像尺寸超出限制: {width}x{height} > {self.MAX_IMAGE_DIMENSION}x{self.MAX_IMAGE_DIMENSION}")
+            return False
+        if width * height > self.MAX_IMAGE_PIXELS:
+            warning(f"[ThumbnailManager] 图像像素数超出限制: {width * height} > {self.MAX_IMAGE_PIXELS}")
+            return False
+        return True
+    
+    def _check_and_enforce_limits_before_create(self):
+        """
+        在创建新缩略图前检查并强制执行缓存限制
+        
+        检查缩略图缓存目录大小，如果超过限制则清理最旧的文件
+        """
+        try:
+            import glob
+            max_cache_size = 500 * 1024 * 1024  # 500MB
+            max_cache_files = 10000
+            
+            if not os.path.exists(self._thumb_dir):
+                return
+            
+            thumbnail_files = glob.glob(os.path.join(self._thumb_dir, "*.png"))
+            
+            if len(thumbnail_files) < max_cache_files:
+                return
+            
+            total_size = 0
+            file_info_list = []
+            
+            for file_path in thumbnail_files:
+                try:
+                    stat = os.stat(file_path)
+                    file_info_list.append((file_path, stat.st_atime, stat.st_size))
+                    total_size += stat.st_size
+                except (OSError, IOError):
+                    continue
+            
+            if total_size < max_cache_size and len(file_info_list) < max_cache_files:
+                return
+            
+            file_info_list.sort(key=lambda x: x[1])
+            
+            files_to_delete = max(1, len(file_info_list) // 10)
+            deleted_count = 0
+            
+            for file_path, _, _ in file_info_list[:files_to_delete]:
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                except (OSError, IOError) as e:
+                    debug(f"[ThumbnailManager] 删除缓存文件失败 {file_path}: {e}")
+            
+            if deleted_count > 0:
+                debug(f"[ThumbnailManager] 缓存限制检查：已清理 {deleted_count} 个旧缩略图")
+                
+        except Exception as e:
+            warning(f"[ThumbnailManager] 检查缓存限制时出错: {e}")
+    
     def create_thumbnail(self, file_path: str, force_regenerate: bool = False) -> Optional[str]:
         """
         为文件创建缩略图
-        
+
         Args:
             file_path: 文件路径
             force_regenerate: 是否强制重新生成，即使缩略图已存在
-            
+
         Returns:
             Optional[str]: 缩略图路径，生成失败返回None
         """
         if not os.path.exists(file_path):
             warning(f"[ThumbnailManager] 文件不存在: {file_path}")
             return None
-        
+
         thumbnail_path = self.get_thumbnail_path(file_path)
-        
-        # 如果缩略图已存在且不强制重新生成，直接返回
+
+        # 如果缩略图已存在且不强制重新生成，更新访问时间并返回
         if not force_regenerate and os.path.exists(thumbnail_path):
+            self._update_file_access_time(thumbnail_path)
             return thumbnail_path
-        
+
         # 检查是否为媒体文件
         if not self.is_media_file(file_path):
             return None
-        
+
+        # 在创建新缩略图前检查缓存限制
+        self._check_and_enforce_limits_before_create()
+
         # 生成缩略图
         try:
             if self.is_image_file(file_path):
-                return self._create_image_thumbnail(file_path, thumbnail_path)
+                result = self._create_image_thumbnail(file_path, thumbnail_path)
             elif self.is_video_file(file_path):
-                return self._create_video_thumbnail(file_path, thumbnail_path)
+                result = self._create_video_thumbnail(file_path, thumbnail_path)
+            else:
+                result = None
+
+            # 如果成功生成，更新访问时间
+            if result and os.path.exists(thumbnail_path):
+                self._update_file_access_time(thumbnail_path)
+
+            return result
         except Exception as e:
             error(f"[ThumbnailManager] 生成缩略图失败: {file_path}, 错误: {e}")
-        
+
         return None
     
     def _create_image_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
@@ -297,12 +392,20 @@ class ThumbnailManager:
             warning("[ThumbnailManager] PIL库未安装，无法生成图片缩略图")
             return None
         
+        img = None
+        thumbnail = None
+        img_converted = None
+        
         try:
             suffix = os.path.splitext(file_path)[1].lower()
             
             # 加载图像
             img, success = self._load_image(file_path, suffix)
             if not success or img is None:
+                return None
+            
+            # 检查图像尺寸限制
+            if not self._check_image_size_limit(img):
                 return None
             
             # 计算缩略图尺寸
@@ -324,18 +427,14 @@ class ThumbnailManager:
             if img.mode == 'RGBA':
                 thumbnail.paste(img, (x_offset, y_offset), img)
             elif img.mode == 'P':
-                img = img.convert('RGBA')
-                thumbnail.paste(img, (x_offset, y_offset), img)
+                img_converted = img.convert('RGBA')
+                thumbnail.paste(img_converted, (x_offset, y_offset), img_converted)
             else:
-                img = img.convert('RGBA')
-                thumbnail.paste(img, (x_offset, y_offset))
-            
-            # 释放原始图像内存
-            img.close()
+                img_converted = img.convert('RGBA')
+                thumbnail.paste(img_converted, (x_offset, y_offset))
             
             # 保存缩略图
             thumbnail.save(thumbnail_path, format='PNG', quality=self.QUALITY)
-            thumbnail.close()
             
             debug(f"[ThumbnailManager] 图片缩略图生成成功: {thumbnail_path}")
             return thumbnail_path
@@ -343,6 +442,23 @@ class ThumbnailManager:
         except Exception as e:
             warning(f"[ThumbnailManager] 生成图片缩略图失败: {file_path}, 错误: {e}")
             return None
+        finally:
+            # 确保所有Image对象都被关闭
+            if img_converted is not None:
+                try:
+                    img_converted.close()
+                except Exception:
+                    pass
+            if img is not None:
+                try:
+                    img.close()
+                except Exception:
+                    pass
+            if thumbnail is not None:
+                try:
+                    thumbnail.close()
+                except Exception:
+                    pass
     
     def _get_or_create_frame_cache(self, file_path: str) -> VideoFrameCache:
         """获取或创建视频帧缓存"""
@@ -462,80 +578,102 @@ class ThumbnailManager:
             self._release_video_lock(file_path)
     
     def _create_video_thumbnail_internal(self, file_path: str, thumbnail_path: str) -> Optional[str]:
-        """内部视频缩略图生成逻辑"""
-        cap = None
+        """内部视频缩略图生成逻辑（带超时控制）"""
+        import concurrent.futures
+
+        def _process_video() -> Optional[str]:
+            cap = None
+            try:
+                cap = cv2.VideoCapture(file_path)
+                if not cap.isOpened():
+                    warning(f"[ThumbnailManager] 无法打开视频文件: {file_path}")
+                    return None
+
+                # 获取视频信息
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+
+                # 获取帧缓存
+                frame_cache = self._get_or_create_frame_cache(file_path)
+
+                frame = None
+                cached_positions = []
+
+                # 定义读取策略（按优先级排序）
+                strategies = []
+
+                # 策略1: 优先读取第240帧（跳过可能损坏的开头）
+                if total_frames > 240:
+                    strategies.append(('frame', 240))
+
+                # 策略2: 读取50%相对位置
+                if total_frames > 0:
+                    strategies.append(('ratio', 0.5))
+
+                # 策略3: 读取第2帧
+                strategies.append(('frame', 2))
+
+                # 策略4: 读取第1帧
+                strategies.append(('frame', 1))
+
+                # 策略5: 尝试其他相对位置
+                for ratio in [0.03, 0.1, 0.7, 0.9]:
+                    strategies.append(('ratio', ratio))
+
+                # 执行策略
+                for strategy_type, position in strategies:
+                    # 检查缓存
+                    cache_key = int(position * 1000) if strategy_type == 'ratio' else position
+                    cached_frame = frame_cache.get(cache_key)
+                    if cached_frame is not None:
+                        frame = cached_frame
+                        cached_positions.append(cache_key)
+                        debug(f"[ThumbnailManager] 使用缓存帧 (位置: {position})")
+                        break
+
+                    # 读取新帧
+                    if strategy_type == 'ratio':
+                        frame = self._read_frame_with_retry(cap, position, use_keyframe=False)
+                    else:
+                        frame = self._read_frame_with_retry(cap, position, use_keyframe=True)
+
+                    if frame is not None:
+                        # 缓存成功读取的帧
+                        frame_cache.put(cache_key, frame)
+                        break
+
+                if frame is None:
+                    warning(f"[ThumbnailManager] 无法从视频中读取有效帧: {file_path}")
+                    return None
+
+                # 处理并保存帧
+                return self._process_and_save_video_frame(frame, thumbnail_path)
+
+            except Exception as e:
+                error(f"[ThumbnailManager] 生成视频缩略图失败: {file_path}, 错误: {e}")
+                return None
+            finally:
+                # 确保VideoCapture对象被释放
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                # 强制垃圾回收以释放内存
+                import gc
+                gc.collect()
+
+        # 使用超时控制执行视频处理
         try:
-            cap = cv2.VideoCapture(file_path)
-            if not cap.isOpened():
-                warning(f"[ThumbnailManager] 无法打开视频文件: {file_path}")
-                return None
-            
-            # 获取视频信息
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            
-            # 获取帧缓存
-            frame_cache = self._get_or_create_frame_cache(file_path)
-            
-            frame = None
-            cached_positions = []
-            
-            # 定义读取策略（按优先级排序）
-            strategies = []
-            
-            # 策略1: 优先读取第240帧（跳过可能损坏的开头）
-            if total_frames > 240:
-                strategies.append(('frame', 240))
-            
-            # 策略2: 读取50%相对位置
-            if total_frames > 0:
-                strategies.append(('ratio', 0.5))
-            
-            # 策略3: 读取第2帧
-            strategies.append(('frame', 2))
-            
-            # 策略4: 读取第1帧
-            strategies.append(('frame', 1))
-            
-            # 策略5: 尝试其他相对位置
-            for ratio in [0.03, 0.1, 0.7, 0.9]:
-                strategies.append(('ratio', ratio))
-            
-            # 执行策略
-            for strategy_type, position in strategies:
-                # 检查缓存
-                cache_key = int(position * 1000) if strategy_type == 'ratio' else position
-                cached_frame = frame_cache.get(cache_key)
-                if cached_frame is not None:
-                    frame = cached_frame
-                    cached_positions.append(cache_key)
-                    debug(f"[ThumbnailManager] 使用缓存帧 (位置: {position})")
-                    break
-                
-                # 读取新帧
-                if strategy_type == 'ratio':
-                    frame = self._read_frame_with_retry(cap, position, use_keyframe=False)
-                else:
-                    frame = self._read_frame_with_retry(cap, position, use_keyframe=True)
-                
-                if frame is not None:
-                    # 缓存成功读取的帧
-                    frame_cache.put(cache_key, frame)
-                    break
-            
-            if frame is None:
-                warning(f"[ThumbnailManager] 无法从视频中读取有效帧: {file_path}")
-                return None
-            
-            # 处理并保存帧
-            return self._process_and_save_video_frame(frame, thumbnail_path)
-            
-        except Exception as e:
-            error(f"[ThumbnailManager] 生成视频缩略图失败: {file_path}, 错误: {e}")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_process_video)
+                return future.result(timeout=self.VIDEO_PROCESSING_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            warning(f"[ThumbnailManager] 视频处理超时 ({self.VIDEO_PROCESSING_TIMEOUT}秒): {file_path}")
             return None
-        finally:
-            if cap is not None:
-                cap.release()
+        except Exception as e:
+            error(f"[ThumbnailManager] 视频处理异常: {file_path}, 错误: {e}")
+            return None
     
     def _process_and_save_video_frame(self, frame, thumbnail_path: str) -> Optional[str]:
         """
@@ -548,10 +686,25 @@ class ThumbnailManager:
         Returns:
             Optional[str]: 缩略图路径，失败返回None
         """
+        frame_pil = None
+        thumbnail = None
+        downsampled_frame = None
+        
         try:
             # 计算原始宽高比
             original_height, original_width = frame.shape[:2]
             aspect_ratio = original_width / original_height
+            
+            # 检查帧尺寸限制
+            if original_width > self.MAX_IMAGE_DIMENSION or original_height > self.MAX_IMAGE_DIMENSION:
+                warning(f"[ThumbnailManager] 视频帧尺寸超出限制: {original_width}x{original_height}")
+                return None
+            
+            # 检查像素总数限制
+            total_pixels = original_width * original_height
+            if total_pixels > self.MAX_IMAGE_PIXELS:
+                warning(f"[ThumbnailManager] 视频帧像素数超出限制: {total_pixels} > {self.MAX_IMAGE_PIXELS}")
+                return None
             
             # 计算新尺寸
             dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
@@ -564,7 +717,8 @@ class ThumbnailManager:
                 new_width = int(new_height * aspect_ratio)
             
             # 对于超大视频帧，先进行适度下采样
-            total_pixels = original_width * original_height
+            resized_frame = None
+            
             if total_pixels > 10000000:
                 min_downsample_width = max(new_width * 2, 1024)
                 min_downsample_height = max(new_height * 2, 1024)
@@ -603,6 +757,10 @@ class ThumbnailManager:
             # 转换为PIL图像
             frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
             
+            # 检查PIL图像尺寸限制
+            if not self._check_image_size_limit(frame_pil):
+                return None
+            
             # 创建透明背景
             dpi_scaled_background_size = int(self.BASE_SIZE * self.dpi_scale)
             thumbnail = Image.new(
@@ -625,28 +783,48 @@ class ThumbnailManager:
         except Exception as e:
             error(f"[ThumbnailManager] 处理视频帧失败: {e}")
             return None
+        finally:
+            # 确保所有Image对象都被关闭
+            if frame_pil is not None:
+                try:
+                    frame_pil.close()
+                except Exception:
+                    pass
+            if thumbnail is not None:
+                try:
+                    thumbnail.close()
+                except Exception:
+                    pass
+            # 清理临时变量
+            downsampled_frame = None
+            resized_frame = None
+            import gc
+            gc.collect()
     
     def _load_image(self, file_path: str, suffix: str) -> Tuple[Optional[Image.Image], bool]:
         """
-        加载图像文件
-        
+        加载图像文件（带尺寸限制和下采样）
+
         Args:
             file_path: 图像文件路径
             suffix: 文件后缀名
-            
+
         Returns:
             Tuple[Optional[Image.Image], bool]: (图像对象, 是否成功)
         """
         if not PIL_AVAILABLE:
             return None, False
-        
+
+        img = None
+        raw = None
+
         try:
             if suffix in self.RAW_FORMATS:
                 # RAW格式
                 try:
                     import rawpy
-                    with rawpy.imread(file_path) as raw:
-                        rgb = raw.postprocess()
+                    raw = rawpy.imread(file_path)
+                    rgb = raw.postprocess()
                     img = Image.fromarray(rgb)
                 except ImportError:
                     warning(f"[ThumbnailManager] rawpy库未安装，无法加载RAW文件: {file_path}")
@@ -665,6 +843,7 @@ class ThumbnailManager:
                 img = Image.open(file_path)
             elif suffix in self.PSD_FORMATS:
                 # PSD格式
+                psd = None
                 try:
                     from psd_tools import PSDImage
                     psd = PSDImage.open(file_path)
@@ -672,18 +851,80 @@ class ThumbnailManager:
                 except ImportError:
                     warning(f"[ThumbnailManager] psd-tools库未安装，无法加载PSD文件: {file_path}")
                     return None, False
+                finally:
+                    if psd is not None:
+                        try:
+                            psd.close()
+                        except Exception:
+                            pass
             elif suffix == '.svg':
                 # SVG格式
                 return self._load_svg_image(file_path)
             else:
                 # 普通图像格式
                 img = Image.open(file_path)
-            
+
+            # 检查图像尺寸并应用下采样
+            img = self._apply_image_size_limit(img, file_path)
+
             return img, True
-            
+
         except Exception as e:
             warning(f"[ThumbnailManager] 加载图像失败: {file_path}, 错误: {e}")
+            if img is not None:
+                try:
+                    img.close()
+                except Exception:
+                    pass
             return None, False
+        finally:
+            # 确保raw对象被关闭
+            if raw is not None:
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+
+    def _apply_image_size_limit(self, img: Image.Image, file_path: str) -> Image.Image:
+        """
+        应用图像尺寸限制，对超大图像进行下采样
+
+        Args:
+            img: PIL图像对象
+            file_path: 文件路径（用于日志）
+
+        Returns:
+            Image.Image: 处理后的图像
+        """
+        width, height = img.size
+        total_pixels = width * height
+
+        # 检查是否超过像素总数限制
+        if total_pixels > self.MAX_IMAGE_PIXELS:
+            scale = (self.MAX_IMAGE_PIXELS / total_pixels) ** 0.5
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            debug(f"[ThumbnailManager] 图像像素数超限 ({total_pixels})，下采样至 {new_width}x{new_height}: {file_path}")
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            width, height = new_width, new_height
+
+        # 检查是否超过尺寸限制
+        if width > self.MAX_IMAGE_DIMENSION or height > self.MAX_IMAGE_DIMENSION:
+            # 计算缩放比例
+            scale = min(
+                self.MAX_IMAGE_DIMENSION / width,
+                self.MAX_IMAGE_DIMENSION / height
+            )
+
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+
+            debug(f"[ThumbnailManager] 图像尺寸超限 ({width}x{height})，下采样至 {new_width}x{new_height}: {file_path}")
+
+            # 使用LANCZOS重采样（高质量）
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        return img
     
     def _load_svg_image(self, file_path: str) -> Tuple[Optional[Image.Image], bool]:
         """
@@ -695,6 +936,11 @@ class ThumbnailManager:
         Returns:
             Tuple[Optional[Image.Image], bool]: (图像对象, 是否成功)
         """
+        img = None
+        qimage = None
+        painter = None
+        renderer = None
+        
         try:
             from PySide6.QtSvg import QSvgRenderer
             from PySide6.QtGui import QImage, QPainter
@@ -724,6 +970,17 @@ class ThumbnailManager:
                 render_width = max(1, render_width)
                 render_height = max(1, render_height)
             
+            # 检查尺寸限制
+            if render_width > self.MAX_IMAGE_DIMENSION or render_height > self.MAX_IMAGE_DIMENSION:
+                warning(f"[ThumbnailManager] SVG渲染尺寸超出限制: {render_width}x{render_height}")
+                return None, False
+            
+            # 检查像素总数限制
+            render_pixels = render_width * render_height
+            if render_pixels > self.MAX_IMAGE_PIXELS:
+                warning(f"[ThumbnailManager] SVG渲染像素数超出限制: {render_pixels} > {self.MAX_IMAGE_PIXELS}")
+                return None, False
+            
             # 创建QImage用于渲染 - 直接使用计算好的保持比例的尺寸
             qimage = QImage(render_width, render_height, QImage.Format_ARGB32_Premultiplied)
             qimage.fill(Qt.transparent)
@@ -740,7 +997,6 @@ class ThumbnailManager:
                 painter.scale(scale_x, scale_y)
             
             renderer.render(painter)
-            painter.end()
             
             # 转换为RGBA8888格式
             if qimage.format() != QImage.Format_RGBA8888:
@@ -773,6 +1029,18 @@ class ThumbnailManager:
         except Exception as e:
             warning(f"[ThumbnailManager] 加载SVG失败: {file_path}, 错误: {e}")
             return None, False
+        finally:
+            # 清理Qt资源
+            if painter is not None:
+                try:
+                    painter.end()
+                except Exception:
+                    pass
+            qimage = None
+            renderer = None
+            # 强制垃圾回收
+            import gc
+            gc.collect()
     
     def clear_all_thumbnails(self) -> int:
         """
@@ -906,6 +1174,34 @@ def is_media_file(file_path: str) -> bool:
     return manager.is_media_file(file_path)
 
 
+def is_image_file(file_path: str) -> bool:
+    """
+    便捷函数：判断文件是否为图片文件
+    
+    Args:
+        file_path: 文件路径
+        
+    Returns:
+        bool: 是否为图片文件
+    """
+    manager = get_thumbnail_manager()
+    return manager.is_image_file(file_path)
+
+
+def is_video_file(file_path: str) -> bool:
+    """
+    便捷函数：判断文件是否为视频文件
+    
+    Args:
+        file_path: 文件路径
+        
+    Returns:
+        bool: 是否为视频文件
+    """
+    manager = get_thumbnail_manager()
+    return manager.is_video_file(file_path)
+
+
 def clear_all_thumbnails() -> int:
     """
     便捷函数：清理所有缩略图缓存
@@ -925,5 +1221,7 @@ __all__ = [
     'get_thumbnail_path',
     'has_thumbnail',
     'is_media_file',
+    'is_image_file',
+    'is_video_file',
     'clear_all_thumbnails',
 ]

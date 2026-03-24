@@ -51,6 +51,43 @@ IGNORE_FILES = [
 # 版本号正则表达式
 VERSION_PATTERN = r"v?([0-9]+(?:\.[0-9]+)*)"
 
+# 下载文件大小限制（100MB）
+MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024
+# 最小文件大小（1KB，防止空文件或错误响应）
+MIN_DOWNLOAD_SIZE = 1024
+
+
+def safe_extract(zip_ref, extract_dir):
+    """
+    安全解压zip文件，防止Zip Slip路径遍历漏洞
+    
+    Args:
+        zip_ref: zipfile.ZipFile对象
+        extract_dir: 解压目标目录
+        
+    Returns:
+        bool: 解压是否成功
+        
+    Raises:
+        ValueError: 当检测到恶意路径时抛出
+    """
+    for member in zip_ref.namelist():
+        member_path = os.path.join(extract_dir, member)
+        abs_member_path = os.path.abspath(member_path)
+        abs_extract_dir = os.path.abspath(extract_dir)
+        
+        if not abs_member_path.startswith(abs_extract_dir + os.sep) and abs_member_path != abs_extract_dir:
+            logger.error(f"检测到Zip Slip攻击尝试: {member}")
+            raise ValueError(f"检测到恶意路径: {member}")
+        
+        if member.startswith('/') or '..' in member.split('/'):
+            logger.error(f"检测到可疑路径: {member}")
+            raise ValueError(f"拒绝解压可疑路径: {member}")
+    
+    zip_ref.extractall(extract_dir)
+    logger.info(f"安全解压完成: {extract_dir}")
+    return True
+
 
 def get_local_version():
     """
@@ -191,6 +228,18 @@ def download_file(url, save_path):
             response.raise_for_status()
             
             total_size = int(response.headers.get('content-length', 0))
+            
+            if total_size > MAX_DOWNLOAD_SIZE:
+                logger.error(f"文件大小超过限制: {total_size} bytes (最大: {MAX_DOWNLOAD_SIZE} bytes)")
+                return False
+            
+            if total_size > 0 and total_size < MIN_DOWNLOAD_SIZE:
+                logger.error(f"文件大小异常偏小: {total_size} bytes (最小: {MIN_DOWNLOAD_SIZE} bytes)")
+                return False
+            
+            if total_size > 0:
+                logger.info(f"文件大小: {total_size} bytes ({total_size / 1024 / 1024:.2f} MB)")
+            
             downloaded_size = 0
             
             with open(save_path, 'wb') as f:
@@ -199,7 +248,10 @@ def download_file(url, save_path):
                         f.write(chunk)
                         downloaded_size += len(chunk)
                         
-                        # 打印下载进度
+                        if downloaded_size > MAX_DOWNLOAD_SIZE:
+                            logger.error(f"下载文件大小超过限制: {downloaded_size} bytes")
+                            return False
+                        
                         if total_size > 0:
                             progress = (downloaded_size / total_size) * 100
                             sys.stdout.write(f"\r下载进度: {progress:.1f}% ({downloaded_size}/{total_size} bytes)")
@@ -329,7 +381,6 @@ def run_update():
     logger.info("="*60)
     
     try:
-        # 1. 检查是否有更新
         update_available, local_version, latest_version, download_url = check_update_available()
         
         if not update_available:
@@ -338,26 +389,24 @@ def run_update():
         
         logger.info(f"发现新版本: {latest_version}，当前版本: {local_version}")
         
-        # 2. 创建临时目录
-        temp_dir = tempfile.mkdtemp()
-        logger.info(f"创建临时目录: {temp_dir}")
-        
-        try:
-            # 3. 下载最新代码
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logger.info(f"创建临时目录: {temp_dir}")
+            
             zip_file = os.path.join(temp_dir, f"{GITHUB_REPO}-main.zip")
             if not download_file(download_url, zip_file):
                 logger.error("下载最新代码失败")
                 return False
             
-            # 4. 解压zip文件
             extract_dir = os.path.join(temp_dir, "extract")
             os.makedirs(extract_dir, exist_ok=True)
             
-            with zipfile.ZipFile(zip_file, "r") as zip_ref:
-                zip_ref.extractall(extract_dir)
-            logger.info(f"解压文件成功到: {extract_dir}")
+            try:
+                with zipfile.ZipFile(zip_file, "r") as zip_ref:
+                    safe_extract(zip_ref, extract_dir)
+            except ValueError as e:
+                logger.error(f"解压文件时检测到安全问题: {e}")
+                return False
             
-            # 5. 找到解压后的主目录（GitHub zip会包含repo名称和分支名）
             extracted_folders = os.listdir(extract_dir)
             if not extracted_folders:
                 logger.error("解压后的目录为空")
@@ -366,15 +415,10 @@ def run_update():
             source_dir = os.path.join(extract_dir, extracted_folders[0])
             logger.info(f"找到源代码目录: {source_dir}")
             
-            # 6. 更新文件
             target_dir = os.path.dirname(__file__)
             if not update_files(source_dir, target_dir):
                 logger.error("更新文件失败")
                 return False
-            
-            # 7. 清理临时文件
-            shutil.rmtree(temp_dir)
-            logger.info(f"已清理临时目录: {temp_dir}")
             
             logger.info("="*60)
             logger.info("更新完成！")
@@ -382,20 +426,11 @@ def run_update():
             logger.info("="*60)
 
             return True
-        except zipfile.BadZipFile as e:
-            logger.error(f"下载的压缩包损坏: {e}")
-            # 清理临时文件
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-            return False
-        except OSError as e:
-            logger.error(f"更新过程中发生系统错误: {e}")
-            # 清理临时文件
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-            return False
+    except zipfile.BadZipFile as e:
+        logger.error(f"下载的压缩包损坏: {e}")
+        return False
     except OSError as e:
-        logger.error(f"更新流程启动失败: {e}")
+        logger.error(f"更新过程中发生系统错误: {e}")
         return False
 
 

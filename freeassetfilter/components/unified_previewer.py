@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
 
 # 导入自定义按钮
 from freeassetfilter.widgets.D_widgets import CustomButton
-from PySide6.QtCore import Qt
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtGui import QFont
 

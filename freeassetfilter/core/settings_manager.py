@@ -15,6 +15,90 @@ from functools import lru_cache
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
+class JSONDepthExceededError(Exception):
+    """JSON解析深度超出限制错误"""
+    pass
+
+
+class JSONSizeExceededError(Exception):
+    """JSON文件大小超出限制错误"""
+    pass
+
+
+def _check_json_depth(obj, current_depth=0, max_depth=50):
+    """
+    递归检查JSON对象的嵌套深度
+
+    Args:
+        obj: 要检查的对象
+        current_depth: 当前深度
+        max_depth: 最大允许深度
+
+    Raises:
+        JSONDepthExceededError: 如果深度超过限制
+    """
+    if current_depth > max_depth:
+        raise JSONDepthExceededError(f"JSON嵌套深度超过最大限制 ({max_depth}层)")
+
+    if isinstance(obj, dict):
+        for value in obj.values():
+            _check_json_depth(value, current_depth + 1, max_depth)
+    elif isinstance(obj, list):
+        for item in obj:
+            _check_json_depth(item, current_depth + 1, max_depth)
+
+
+def safe_json_loads(json_str, max_depth=50):
+    """
+    安全地解析JSON字符串，带有深度限制
+
+    Args:
+        json_str: JSON字符串
+        max_depth: 最大允许深度
+
+    Returns:
+        解析后的Python对象
+
+    Raises:
+        JSONDepthExceededError: 如果深度超过限制
+        json.JSONDecodeError: 如果JSON格式错误
+    """
+    data = json.loads(json_str)
+    _check_json_depth(data, current_depth=0, max_depth=max_depth)
+    return data
+
+
+def safe_json_load(file_path, max_depth=50, max_size_bytes=10*1024*1024):
+    """
+    安全地从文件加载JSON，带有深度和大小限制
+
+    Args:
+        file_path: JSON文件路径
+        max_depth: 最大允许深度
+        max_size_bytes: 最大允许文件大小（字节）
+
+    Returns:
+        解析后的Python对象
+
+    Raises:
+        JSONSizeExceededError: 如果文件大小超过限制
+        JSONDepthExceededError: 如果深度超过限制
+        json.JSONDecodeError: 如果JSON格式错误
+    """
+    # 检查文件大小
+    file_size = os.path.getsize(file_path)
+    if file_size > max_size_bytes:
+        raise JSONSizeExceededError(
+            f"JSON文件大小 ({file_size} 字节) 超过最大限制 ({max_size_bytes} 字节, {max_size_bytes//1024//1024}MB)"
+        )
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        data = json.loads(content)
+        _check_json_depth(data, current_depth=0, max_depth=max_depth)
+        return data
+
+
 class SettingsManager:
     """
     设置管理类
@@ -23,6 +107,11 @@ class SettingsManager:
     _instance = None
     _lock = threading.Lock()
     _initialized = False
+
+    # JSON解析安全限制
+    MAX_JSON_DEPTH = 50          # 最大JSON解析深度
+    MAX_JSON_SIZE_MB = 10        # 最大JSON文件大小（MB）
+    MAX_JSON_SIZE_BYTES = MAX_JSON_SIZE_MB * 1024 * 1024  # 转换为字节
 
     def __new__(cls, settings_file=None):
         with cls._lock:
@@ -128,13 +217,17 @@ class SettingsManager:
         try:
             with self._settings_lock:
                 if os.path.exists(self._settings_file):
-                    with open(self._settings_file, "r", encoding="utf-8") as f:
-                        loaded_settings = json.load(f)
-                        merged_settings = self._merge_settings(self.default_settings, loaded_settings)
-                        self.settings = merged_settings
-                        if merged_settings != loaded_settings:
-                            self.save_settings()
-                        return merged_settings
+                    # 使用安全的JSON加载，带有深度和大小限制
+                    loaded_settings = safe_json_load(
+                        self._settings_file,
+                        max_depth=self.MAX_JSON_DEPTH,
+                        max_size_bytes=self.MAX_JSON_SIZE_BYTES
+                    )
+                    merged_settings = self._merge_settings(self.default_settings, loaded_settings)
+                    self.settings = merged_settings
+                    if merged_settings != loaded_settings:
+                        self.save_settings()
+                    return merged_settings
                 else:
                     default_settings = self._create_default_settings_copy()
                     self.settings = default_settings
@@ -145,6 +238,16 @@ class SettingsManager:
             default_settings = self._create_default_settings_copy()
             self.settings = default_settings
             self.save_settings()
+            return default_settings
+        except JSONSizeExceededError as e:
+            error(f"设置文件大小超出安全限制: {e}")
+            default_settings = self._create_default_settings_copy()
+            self.settings = default_settings
+            return default_settings
+        except JSONDepthExceededError as e:
+            error(f"设置文件嵌套深度超出安全限制: {e}")
+            default_settings = self._create_default_settings_copy()
+            self.settings = default_settings
             return default_settings
         except json.JSONDecodeError as e:
             error(f"设置文件JSON格式错误: {e}")
@@ -413,15 +516,22 @@ class SettingsManager:
         with self._settings_lock:
             try:
                 if os.path.exists(self._settings_file):
-                    with open(self._settings_file, "r", encoding="utf-8") as f:
-                        file_settings = json.load(f)
-                        colors = file_settings.get("appearance", {}).get("colors", {})
-                        return colors.get(color_key, default)
+                    # 使用安全的JSON加载
+                    file_settings = safe_json_load(
+                        self._settings_file,
+                        max_depth=self.MAX_JSON_DEPTH,
+                        max_size_bytes=self.MAX_JSON_SIZE_BYTES
+                    )
+                    colors = file_settings.get("appearance", {}).get("colors", {})
+                    return colors.get(color_key, default)
                 else:
                     # 文件不存在时返回默认值
                     return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
             except FileNotFoundError:
                 warning(f"设置文件不存在，使用默认颜色: {self._settings_file}")
+                return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
+            except (JSONSizeExceededError, JSONDepthExceededError) as e:
+                error(f"设置文件超出安全限制，无法读取颜色: {e}")
                 return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
             except json.JSONDecodeError as e:
                 error(f"设置文件JSON格式错误，无法读取颜色: {e}")
@@ -446,13 +556,20 @@ class SettingsManager:
         with self._settings_lock:
             try:
                 if os.path.exists(self._settings_file):
-                    with open(self._settings_file, "r", encoding="utf-8") as f:
-                        file_settings = json.load(f)
-                        return file_settings.get("appearance", {}).get("colors", self.default_settings["appearance"]["colors"].copy())
+                    # 使用安全的JSON加载
+                    file_settings = safe_json_load(
+                        self._settings_file,
+                        max_depth=self.MAX_JSON_DEPTH,
+                        max_size_bytes=self.MAX_JSON_SIZE_BYTES
+                    )
+                    return file_settings.get("appearance", {}).get("colors", self.default_settings["appearance"]["colors"].copy())
                 else:
                     return self.default_settings["appearance"]["colors"].copy()
             except FileNotFoundError:
                 warning(f"设置文件不存在，使用默认颜色: {self._settings_file}")
+                return self.default_settings["appearance"]["colors"].copy()
+            except (JSONSizeExceededError, JSONDepthExceededError) as e:
+                error(f"设置文件超出安全限制，无法读取颜色: {e}")
                 return self.default_settings["appearance"]["colors"].copy()
             except json.JSONDecodeError as e:
                 error(f"设置文件JSON格式错误，无法读取颜色: {e}")
