@@ -11,10 +11,15 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 
-use opencv::core::{AlgorithmHint, Mat, Size};
+use opencv::core::{AlgorithmHint, Mat, Size, Vector};
 use opencv::imgproc;
 use opencv::prelude::*;
-use opencv::videoio::{self, VideoCapture, CAP_PROP_FRAME_COUNT, CAP_PROP_POS_FRAMES};
+use opencv::videoio::{
+    self, VideoCapture, CAP_FFMPEG, CAP_INTEL_MFX, CAP_MSMF, CAP_PROP_FRAME_COUNT,
+    CAP_PROP_HW_ACCELERATION, CAP_PROP_HW_ACCELERATION_USE_OPENCL, CAP_PROP_HW_DEVICE,
+    CAP_PROP_N_THREADS, CAP_PROP_POS_FRAMES, VIDEO_ACCELERATION_ANY,
+    VIDEO_ACCELERATION_D3D11, VIDEO_ACCELERATION_MFX,
+};
 
 const DEFAULT_MAX_MEMORY_BYTES: usize = 200 * 1024 * 1024;
 const DEFAULT_K: usize = 2;
@@ -336,12 +341,68 @@ fn compose_rgba_canvas_from_bgr_frame(frame: &Mat, target_w: u32, target_h: u32)
     Ok((canvas.into_raw(), target_w, target_h))
 }
 
-fn decode_video_with_opencv(path: &str, width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), i32> {
-    let mut cap = VideoCapture::from_file(path, videoio::CAP_ANY).map_err(|_| STATUS_DECODE_FAILED)?;
-    let opened = cap.is_opened().map_err(|_| STATUS_DECODE_FAILED)?;
-    if !opened {
-        return Err(STATUS_DECODE_FAILED);
+fn make_hw_capture_params(accel_type: i32, device_index: i32, enable_opencl: bool) -> Vector<i32> {
+    let mut params = Vector::<i32>::new();
+    params.push(CAP_PROP_HW_ACCELERATION);
+    params.push(accel_type);
+    params.push(CAP_PROP_HW_DEVICE);
+    params.push(device_index);
+    params.push(CAP_PROP_HW_ACCELERATION_USE_OPENCL);
+    params.push(if enable_opencl { 1 } else { 0 });
+    // FFmpeg 后端可额外显式允许其内部线程策略
+    params.push(CAP_PROP_N_THREADS);
+    params.push(0);
+    params
+}
+
+fn try_open_with_backend(path: &str, backend: i32, accel_type: i32, enable_opencl: bool) -> Option<VideoCapture> {
+    let params = make_hw_capture_params(accel_type, 0, enable_opencl);
+    if let Ok(cap) = VideoCapture::from_file_with_params(path, backend, &params) {
+        if cap.is_opened().ok().unwrap_or(false) {
+            return Some(cap);
+        }
     }
+    None
+}
+
+fn open_video_capture(path: &str) -> Result<VideoCapture, i32> {
+    // Windows 上优先尝试更明确的 GPU 路径：
+    // 1. MSMF + D3D11
+    if let Some(cap) = try_open_with_backend(path, CAP_MSMF, VIDEO_ACCELERATION_D3D11, true) {
+        return Ok(cap);
+    }
+
+    // 2. FFmpeg + D3D11
+    if let Some(cap) = try_open_with_backend(path, CAP_FFMPEG, VIDEO_ACCELERATION_D3D11, true) {
+        return Ok(cap);
+    }
+
+    // 3. Intel MFX / oneVPL
+    if let Some(cap) = try_open_with_backend(path, CAP_INTEL_MFX, VIDEO_ACCELERATION_MFX, false) {
+        return Ok(cap);
+    }
+
+    // 4. 任意后端 + ANY
+    if let Some(cap) = try_open_with_backend(path, videoio::CAP_ANY, VIDEO_ACCELERATION_ANY, true) {
+        return Ok(cap);
+    }
+
+    // 5. FFmpeg + ANY
+    if let Some(cap) = try_open_with_backend(path, CAP_FFMPEG, VIDEO_ACCELERATION_ANY, true) {
+        return Ok(cap);
+    }
+
+    // 6. 最终回退到普通打开（软件解码）
+    let cap = VideoCapture::from_file(path, videoio::CAP_ANY).map_err(|_| STATUS_DECODE_FAILED)?;
+    if cap.is_opened().map_err(|_| STATUS_DECODE_FAILED)? {
+        Ok(cap)
+    } else {
+        Err(STATUS_DECODE_FAILED)
+    }
+}
+
+fn decode_video_with_opencv(path: &str, width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), i32> {
+    let mut cap = open_video_capture(path)?;
 
     let total_frames = cap
         .get(CAP_PROP_FRAME_COUNT)

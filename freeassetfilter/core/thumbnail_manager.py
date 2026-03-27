@@ -20,6 +20,8 @@ import os
 import hashlib
 import threading
 import time
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Optional, Tuple, Callable, Dict, Set, List
 from pathlib import Path
 from dataclasses import dataclass
@@ -453,15 +455,13 @@ class ThumbnailManager:
         cancel_check: Optional[Callable[[], bool]] = None
     ) -> Tuple[int, int]:
         """
-        批量创建缩略图（支持 Rust 原生批量并发 + 逐项进度回调）
+        批量创建缩略图（异步多队列调度版）
 
-        Args:
-            files_to_generate: 文件信息列表（至少包含 path 字段）
-            progress_callback: 进度回调 (current, total, file_data, success)
-            cancel_check: 取消检查函数，返回 True 时尽快停止
-
-        Returns:
-            Tuple[int, int]: (成功数量, 已处理数量)
+        调度目标：
+        1. 进度按“实际完成出队”更新，而不是按提交顺序更新；
+        2. 不同任务类型走不同队列（原生图片 / Python图片 / 视频）；
+        3. 根据各队列积压量、活动数、平均耗时动态补位，尽量兼顾吞吐与 UI 可感知进度；
+        4. 支持取消，取消后返回已完成数量。
         """
         total_count = len(files_to_generate)
         if total_count == 0:
@@ -469,10 +469,58 @@ class ThumbnailManager:
 
         success_count = 0
         processed_count = 0
-        dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
 
-        rust_candidates = []
-        python_candidates = []
+        queue_limits = {
+            "native_image": max(2, min(6, (os.cpu_count() or 4))),
+            "native_video": max(1, min(3, max(1, (os.cpu_count() or 4) // 2))),
+            "python_image": max(1, min(2, (os.cpu_count() or 4) // 2 or 1)),
+        }
+        queue_order = ["native_video", "python_image", "native_image"]
+
+        task_queues = {
+            "native_image": deque(),
+            "native_video": deque(),
+            "python_image": deque(),
+        }
+        queue_active_counts = {name: 0 for name in task_queues}
+        queue_avg_duration = {
+            "native_image": 0.15,
+            "native_video": 1.5,
+            "python_image": 0.35,
+        }
+
+        def _run_task(queue_name: str, item: Dict) -> Tuple[str, Dict, bool, Optional[str], float]:
+            start_time = time.perf_counter()
+            file_path = item["file_path"]
+            thumbnail_path = item["thumbnail_path"]
+            legacy_thumbnail_path = item["legacy_thumbnail_path"]
+
+            result_path = None
+            success = False
+
+            try:
+                if queue_name == "native_image":
+                    result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+                    if result_path is None:
+                        result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+                elif queue_name == "native_video":
+                    # 视频缩略图优先走 Rust 原生链路。
+                    # Rust 侧已在 lib.rs 中通过 decode_video_with_opencv() 支持视频解码与缩略图生成。
+                    # 这里使用“单项原生任务”而不是 batch 接口，确保进度可按实际完成逐项回调到 UI。
+                    result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+                    if result_path is None:
+                        result_path = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
+                elif queue_name == "python_image":
+                    result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+
+                success = bool(result_path and os.path.exists(result_path))
+                if success:
+                    self._update_file_access_time(result_path)
+            except Exception:
+                success = False
+
+            duration = time.perf_counter() - start_time
+            return queue_name, item, success, result_path, duration
 
         for file_data in files_to_generate:
             if cancel_check and cancel_check():
@@ -488,7 +536,6 @@ class ThumbnailManager:
             thumbnail_path = self.get_thumbnail_path(file_path)
             legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
 
-            # 已存在缓存，直接记为成功
             if os.path.exists(thumbnail_path) or os.path.exists(legacy_thumbnail_path):
                 existing = thumbnail_path if os.path.exists(thumbnail_path) else legacy_thumbnail_path
                 self._update_file_access_time(existing)
@@ -499,6 +546,7 @@ class ThumbnailManager:
                 continue
 
             suffix = os.path.splitext(file_path)[1].lower()
+            is_video_file = suffix in self.VIDEO_FORMATS
             use_python_dedicated = (
                 suffix in self.RAW_FORMATS
                 or suffix in self.PSD_FORMATS
@@ -512,80 +560,125 @@ class ThumbnailManager:
                 "legacy_thumbnail_path": legacy_thumbnail_path,
             }
 
-            if self._rust_bridge.available and not use_python_dedicated:
-                rust_candidates.append(item)
+            if is_video_file:
+                if self._rust_bridge.available:
+                    task_queues["native_video"].append(item)
+                else:
+                    task_queues["python_image"].append(item)
+            elif self._rust_bridge.available and not use_python_dedicated:
+                task_queues["native_image"].append(item)
             else:
-                python_candidates.append(item)
+                task_queues["python_image"].append(item)
 
-        # Rust 批量路径：一次传入多个文件路径，由原生层并发处理
-        batch_size = 64
-        for start in range(0, len(rust_candidates), batch_size):
-            if cancel_check and cancel_check():
-                break
+        def _has_pending_tasks() -> bool:
+            return any(task_queues[name] for name in task_queues)
 
-            chunk = rust_candidates[start:start + batch_size]
-            chunk_paths = [it["file_path"] for it in chunk]
-            batch_jpg = self._rust_bridge.generate_jpg_batch(chunk_paths, dpi_scaled_size, dpi_scaled_size)
+        def _select_queue_for_dispatch() -> Optional[str]:
+            candidate_name = None
+            candidate_score = None
 
-            for idx, item in enumerate(chunk):
+            for name in queue_order:
+                if not task_queues[name]:
+                    continue
+                if queue_active_counts[name] >= queue_limits[name]:
+                    continue
+
+                backlog = len(task_queues[name])
+                active = queue_active_counts[name]
+                avg_duration = max(queue_avg_duration[name], 0.05)
+
+                # 优先积压高、当前活动少、平均耗时长的队列，
+                # 让重任务能更早启动，同时避免单类任务独占所有槽位。
+                score = (backlog / (active + 1)) * (1.0 + min(avg_duration, 5.0))
+
+                if candidate_score is None or score > candidate_score:
+                    candidate_name = name
+                    candidate_score = score
+
+            return candidate_name
+
+        max_workers = sum(queue_limits.values())
+        future_to_queue = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="thumb_batch") as executor:
+            while True:
                 if cancel_check and cancel_check():
                     break
 
-                file_data = item["file_data"]
-                file_path = item["file_path"]
-                thumbnail_path = item["thumbnail_path"]
-                legacy_thumbnail_path = item["legacy_thumbnail_path"]
+                dispatched = False
+                while True:
+                    queue_name = _select_queue_for_dispatch()
+                    if not queue_name:
+                        break
 
-                result_path = None
-                try:
-                    jpg_bytes = batch_jpg[idx] if idx < len(batch_jpg) else None
-                    if jpg_bytes:
-                        with open(thumbnail_path, "wb") as f:
-                            f.write(jpg_bytes)
-                        result_path = thumbnail_path
-                    else:
-                        # 批量失败项回退到单项路径
-                        result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
-                        if result_path is None and self.is_image_file(file_path):
-                            result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+                    item = task_queues[queue_name].popleft()
+                    future = executor.submit(_run_task, queue_name, item)
+                    future_to_queue[future] = queue_name
+                    queue_active_counts[queue_name] += 1
+                    dispatched = True
 
-                    success = bool(result_path and os.path.exists(result_path))
+                if not future_to_queue:
+                    if not _has_pending_tasks():
+                        break
+                    if not dispatched:
+                        time.sleep(0.01)
+                    continue
+
+                done, _ = wait(list(future_to_queue.keys()), timeout=0.1, return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
+
+                for future in done:
+                    queue_name = future_to_queue.pop(future, None)
+                    if queue_name is not None and queue_active_counts[queue_name] > 0:
+                        queue_active_counts[queue_name] -= 1
+
+                    try:
+                        result_queue_name, item, success, result_path, duration = future.result()
+                        prev_avg = queue_avg_duration[result_queue_name]
+                        queue_avg_duration[result_queue_name] = prev_avg * 0.7 + duration * 0.3
+                        file_data = item["file_data"]
+                    except Exception:
+                        result_queue_name = queue_name or "python_image"
+                        file_data = {"path": "", "name": ""}
+                        success = False
+                        duration = queue_avg_duration[result_queue_name]
+
                     if success:
-                        self._update_file_access_time(result_path)
                         success_count += 1
-                except Exception:
-                    success = False
 
-                processed_count += 1
-                if progress_callback:
-                    progress_callback(processed_count, total_count, file_data, success)
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(processed_count, total_count, file_data, success)
 
-        # Python 专用链路（RAW/PSD/SVG/视频等）
-        for item in python_candidates:
-            if cancel_check and cancel_check():
-                break
+            # 如果已经取消，不再继续给等待中的排队任务补位；
+            # 但已提交的任务允许自然完成并计入已处理进度，使 UI 能反映“真实已完成数”。
+            while future_to_queue:
+                done, _ = wait(list(future_to_queue.keys()), timeout=0.1, return_when=FIRST_COMPLETED)
+                if not done:
+                    continue
 
-            file_data = item["file_data"]
-            file_path = item["file_path"]
-            legacy_thumbnail_path = item["legacy_thumbnail_path"]
+                for future in done:
+                    queue_name = future_to_queue.pop(future, None)
+                    if queue_name is not None and queue_active_counts[queue_name] > 0:
+                        queue_active_counts[queue_name] -= 1
 
-            result_path = None
-            try:
-                if self.is_image_file(file_path):
-                    result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
-                elif self.is_video_file(file_path):
-                    result_path = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
+                    try:
+                        result_queue_name, item, success, result_path, duration = future.result()
+                        prev_avg = queue_avg_duration[result_queue_name]
+                        queue_avg_duration[result_queue_name] = prev_avg * 0.7 + duration * 0.3
+                        file_data = item["file_data"]
+                    except Exception:
+                        result_queue_name = queue_name or "python_image"
+                        file_data = {"path": "", "name": ""}
+                        success = False
 
-                success = bool(result_path and os.path.exists(result_path))
-                if success:
-                    self._update_file_access_time(result_path)
-                    success_count += 1
-            except Exception:
-                success = False
+                    if success:
+                        success_count += 1
 
-            processed_count += 1
-            if progress_callback:
-                progress_callback(processed_count, total_count, file_data, success)
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(processed_count, total_count, file_data, success)
 
         return success_count, processed_count
     
