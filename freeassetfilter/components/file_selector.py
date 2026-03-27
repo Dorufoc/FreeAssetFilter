@@ -151,6 +151,7 @@ class CustomFileSelector(QWidget):
         # 初始化配置
         self.current_path = "All"  # 默认路径为"All"
         self.selected_files = {}  # 存储每个目录下的选中文件 {directory: {file_path1, file_path2}}]
+        self._selected_file_paths = set()  # 扁平化选中集合（规范化路径），用于 O(1) 选中判断
         self.previewing_file_path = None  # 当前处于预览态的文件路径
         self.filter_pattern = "*"  # 默认显示所有文件
         self.sort_by = "name"  # 默认按名称排序
@@ -201,8 +202,8 @@ class CustomFileSelector(QWidget):
         # 初始化UI
         self.init_ui()
         
-        # 启动定期检查卡片布局的定时器
-        self.layout_check_timer.start()
+        # 采用事件驱动布局更新，避免定时巡检带来的周期性唤醒开销
+        # self.layout_check_timer.start()
         
         # 启用拖拽功能
         self.setAcceptDrops(True)
@@ -1848,7 +1849,7 @@ class CustomFileSelector(QWidget):
     def _clear_files_layout(self):
         """
         彻底清空文件布局，确保所有旧卡片被删除
-        优化版本：分批处理删除，避免内存峰值，强制垃圾回收
+        优化版本：减少主线程阻塞，避免批处理中频繁 processEvents/disconnect
         """
         self.resize_timer.stop()
         self._lazy_load_timer.stop()
@@ -1873,59 +1874,18 @@ class CustomFileSelector(QWidget):
         if hasattr(self, '_fixed_card_width'):
             del self._fixed_card_width
 
-        # 先收集所有需要删除的widget，避免在迭代过程中修改布局
-        widgets_to_delete = []
-        for i in range(self.files_layout.count()):
-            try:
-                item = self.files_layout.itemAt(i)
-                if item is not None:
-                    widget = item.widget()
-                    if widget is not None:
-                        widgets_to_delete.append(widget)
-            except RuntimeError:
-                # 布局已被修改，忽略错误
-                pass
-
-        # 从布局中移除所有item
         while self.files_layout.count() > 0:
             try:
                 item = self.files_layout.takeAt(0)
-                if item is not None:
-                    # takeAt已经移除了item，不需要再调用removeItem
-                    del item
+                if item is None:
+                    continue
+                widget = item.widget()
+                if widget is not None:
+                    widget.setParent(None)
+                    widget.deleteLater()
+                del item
             except RuntimeError:
                 break
-
-        # 分批删除widget，避免一次性堆积太多deleteLater事件
-        MAX_WIDGETS_PER_BATCH = 100
-        total_widgets = len(widgets_to_delete)
-        
-        for i, widget in enumerate(widgets_to_delete):
-            try:
-                # 先隐藏widget
-                widget.setVisible(False)
-                # 安全地断开信号连接
-                try:
-                    widget.disconnect()
-                except (RuntimeError, TypeError):
-                    pass
-                # 从父widget中移除
-                widget.setParent(None)
-                # 使用deleteLater延迟删除
-                widget.deleteLater()
-                
-                # 每处理一批，让事件循环处理一次，避免UI卡顿
-                if i > 0 and i % MAX_WIDGETS_PER_BATCH == 0:
-                    QApplication.processEvents()
-                    
-            except RuntimeError:
-                # widget已被删除，忽略错误
-                pass
-        
-        # 强制垃圾回收，释放内存
-        if total_widgets > MAX_WIDGETS_PER_BATCH:
-            import gc
-            gc.collect()
 
         self.files_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
     
@@ -2388,7 +2348,9 @@ class CustomFileSelector(QWidget):
         if not self.files_container.width() > 0:
             return
 
-        container_width = self.files_container.width()
+        # 使用视口宽度作为布局计算基准，避免容器宽度抖动导致误判
+        scroll_area = getattr(self, 'files_scroll_area', None)
+        container_width = scroll_area.viewport().width() if scroll_area else self.files_container.width()
         max_cols = self._calculate_max_columns()
 
         if max_cols <= 0:
@@ -2493,12 +2455,8 @@ class CustomFileSelector(QWidget):
         
         file_path_norm = os.path.normpath(file_path)
         file_dir_check = os.path.normpath(os.path.dirname(file_path))
-        # 检查文件是否在任何目录的选中列表中
-        is_selected = False
-        for dir_path, file_set in self.selected_files.items():
-            if file_path_norm in file_set:
-                is_selected = True
-                break
+        # 检查文件是否在选中集合中（O(1)）
+        is_selected = file_path_norm in self._selected_file_paths
         #debug(f"文件选中状态: {is_selected}")
         if is_selected:
             #debug(f"设置卡片为选中状态")
@@ -2560,12 +2518,8 @@ class CustomFileSelector(QWidget):
         
         file_path_norm = os.path.normpath(file_path)
         
-        # 检查文件是否在任何目录的选中列表中
-        is_selected = False
-        for dir_path, file_set in self.selected_files.items():
-            if file_path_norm in file_set:
-                is_selected = True
-                break
+        # 检查文件是否在选中集合中（O(1)）
+        is_selected = file_path_norm in self._selected_file_paths
         
         if is_selected:
             card.set_selected(True)
@@ -2636,6 +2590,7 @@ class CustomFileSelector(QWidget):
             
             if file_path_norm not in self.selected_files[file_dir_norm]:
                 self.selected_files[file_dir_norm].add(file_path_norm)
+                self._selected_file_paths.add(file_path_norm)
                 # 更新卡片UI状态
                 self._update_file_selection_state()
                 # 发出选择变化信号，将文件添加到存储池
@@ -2696,6 +2651,7 @@ class CustomFileSelector(QWidget):
             # 检查文件是否已经被选中，如果是则不重复发出信号
             if file_path_norm not in self.selected_files[file_dir_norm]:
                 self.selected_files[file_dir_norm].add(file_path_norm)
+                self._selected_file_paths.add(file_path_norm)
                 #debug(f"添加文件到选中集合，发出选择变化信号")
                 self.file_selection_changed.emit(file_info, is_selected)
             else:
@@ -2704,6 +2660,7 @@ class CustomFileSelector(QWidget):
         else:
             if file_dir_norm in self.selected_files and file_path_norm in self.selected_files[file_dir_norm]:
                 self.selected_files[file_dir_norm].discard(file_path_norm)
+                self._selected_file_paths.discard(file_path_norm)
                 #debug(f"从选中集合移除文件，发出选择变化信号")
                 self.file_selection_changed.emit(file_info, is_selected)
             else:
@@ -3124,8 +3081,8 @@ class CustomFileSelector(QWidget):
         
         # 检查文件是否已经被选中（在暂存池中）
         file_path = card.file_info["path"]
-        file_dir = os.path.dirname(file_path)
-        is_selected = file_dir in self.selected_files and file_path in self.selected_files[file_dir]
+        file_path_norm = os.path.normpath(file_path)
+        is_selected = file_path_norm in self._selected_file_paths
         
         # 如果文件已被选中（在暂存池中），添加"从暂存池移除"选项
         if is_selected:
@@ -3241,11 +3198,13 @@ class CustomFileSelector(QWidget):
         """
         file_info = card.file_info
         file_path = file_info["path"]
-        file_dir = os.path.dirname(file_path)
+        file_path_norm = os.path.normpath(file_path)
+        file_dir = os.path.normpath(os.path.dirname(file_path))
         
         # 更新文件选择器中的选中状态
         if file_dir in self.selected_files:
-            self.selected_files[file_dir].discard(file_path)
+            self.selected_files[file_dir].discard(file_path_norm)
+            self._selected_file_paths.discard(file_path_norm)
             
             # 如果目录下没有选中的文件了，删除该目录的键
             if not self.selected_files[file_dir]:
@@ -3355,12 +3314,13 @@ class CustomFileSelector(QWidget):
                         else:
                             debug(f"目录已存在，当前selected_files[{file_dir}]: {self.selected_files[file_dir]}")
                         
-                        file_already_selected = dropped_file_path in self.selected_files[file_dir]
+                        file_already_selected = dropped_file_path in self._selected_file_paths
                         debug(f"文件是否已选中: {file_already_selected}")
                         
                         if not file_already_selected:
                             debug(f"添加文件到选中列表")
                             self.selected_files[file_dir].add(dropped_file_path)
+                            self._selected_file_paths.add(dropped_file_path)
                             debug(f"添加后的selected_files[{file_dir}]: {self.selected_files[file_dir]}")
                             debug(f"完整的selected_files: {self.selected_files}")
                             
@@ -3418,7 +3378,7 @@ class CustomFileSelector(QWidget):
                 if os.path.isfile(file_path):
                     # 单个文件：自动导航至该文件所在的目录路径，并在文件选择器中高亮选中该文件
                     debug(f"文件类型: 文件")
-                    file_dir = os.path.dirname(file_path)
+                    file_dir = os.path.normpath(os.path.dirname(file_path))
                     debug(f"文件所在目录: {file_dir}")
                     
                     self.current_path = file_dir
@@ -3518,12 +3478,14 @@ class CustomFileSelector(QWidget):
             debug(f"更新文件选择器内部的选中状态")
             if file_dir not in self.selected_files:
                 self.selected_files[file_dir] = set()
+            file_path_norm = os.path.normpath(file_path)
             # 检查文件是否已经被选中，如果是则跳过
-            if file_path in self.selected_files[file_dir]:
+            if file_path_norm in self._selected_file_paths:
                 debug(f"文件 {file_path} 已经被选中，跳过处理")
                 return
             # 添加到选中文件列表
-            self.selected_files[file_dir].add(file_path)
+            self.selected_files[file_dir].add(file_path_norm)
+            self._selected_file_paths.add(file_path_norm)
             
             # 2. 发出文件选择状态变化信号，将文件添加到存储池
             debug(f"发出file_selection_changed信号，将文件添加到存储池")
@@ -3561,15 +3523,8 @@ class CustomFileSelector(QWidget):
                 file_path_norm = os.path.normpath(file_path)
                 # 获取文件所在的目录（规范化路径，确保与selected_files中的键匹配）
                 file_dir = os.path.normpath(os.path.dirname(file_path))
-                # 检查文件是否在任何目录的选中列表中
-                is_selected = False
-                # 遍历所有目录的选中文件集，检查文件路径是否在其中
-                for dir_path, file_set in self.selected_files.items():
-                    #debug(f"  检查目录: {dir_path}, 文件集大小: {len(file_set)}")
-                    if file_path_norm in file_set:
-                        is_selected = True
-                        #debug(f"  找到匹配! 文件在选中集合中")
-                        break
+                # 检查文件是否在扁平选中集合中（O(1)）
+                is_selected = file_path_norm in self._selected_file_paths
                 #debug(f"卡片 {i}: 文件={file_path_norm}, 目录={file_dir}, 选中={is_selected}")
                 current_widget_selected = widget.is_selected()
                 if current_widget_selected != is_selected:

@@ -150,6 +150,7 @@ class FileBlockCard(QWidget):
         self._setup_signals()
         self._init_animations()
         self._update_styles()
+        self._init_interaction_settings_cache()
     
     def _calculate_optimal_height(self):
         """
@@ -268,7 +269,11 @@ class FileBlockCard(QWidget):
     def _init_colors(self):
         """初始化颜色配置"""
         try:
-            settings_manager = SettingsManager()
+            app = QApplication.instance()
+            settings_manager = getattr(app, "settings_manager", None) if app else None
+            if settings_manager is None:
+                settings_manager = SettingsManager()
+
             self.base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
             self.auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
             self.normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
@@ -276,8 +281,18 @@ class FileBlockCard(QWidget):
             self.secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             debug(f"初始化颜色配置失败 - 文件操作错误，使用默认颜色: {e}")
+            self.base_color = "#212121"
+            self.auxiliary_color = "#3D3D3D"
+            self.normal_color = "#717171"
+            self.accent_color = "#B036EE"
+            self.secondary_color = "#FFFFFF"
         except (ValueError, TypeError) as e:
             debug(f"初始化颜色配置失败 - 数据转换错误，使用默认颜色: {e}")
+            self.base_color = "#212121"
+            self.auxiliary_color = "#3D3D3D"
+            self.normal_color = "#717171"
+            self.accent_color = "#B036EE"
+            self.secondary_color = "#FFFFFF"
         except RuntimeError as e:
             debug(f"初始化颜色配置失败 - Qt运行时错误，使用默认颜色: {e}")
             self.base_color = "#212121"
@@ -556,45 +571,42 @@ class FileBlockCard(QWidget):
         """设置事件过滤器"""
         self.installEventFilter(self)
     
+    def _init_interaction_settings_cache(self):
+        """
+        初始化交互设置缓存，避免在高频鼠标事件中反复读取配置文件
+        """
+        self._touch_optimization_enabled = True
+        self._mouse_buttons_swapped = False
+        try:
+            app = QApplication.instance()
+            settings_manager = getattr(app, "settings_manager", None) if app else None
+            if settings_manager is None:
+                settings_manager = SettingsManager()
+
+            self._touch_optimization_enabled = bool(
+                settings_manager.get_setting("file_selector.touch_optimization", True)
+            )
+            self._mouse_buttons_swapped = bool(
+                settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+            )
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            debug(f"初始化交互设置缓存失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            debug(f"初始化交互设置缓存失败 - 数据转换错误: {e}")
+        except RuntimeError as e:
+            debug(f"初始化交互设置缓存失败 - Qt运行时错误: {e}")
+
     def _is_touch_optimization_enabled(self):
         """
-        检查触控操作优化是否启用
-
-        Returns:
-            bool: 触控操作优化是否启用
+        检查触控操作优化是否启用（使用缓存）
         """
-        try:
-            settings_manager = SettingsManager()
-            return settings_manager.get_setting("file_selector.touch_optimization", True)
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            debug(f"获取触控优化设置失败 - 文件操作错误: {e}")
-            return True
-        except (ValueError, TypeError) as e:
-            debug(f"获取触控优化设置失败 - 数据转换错误: {e}")
-            return True
-        except RuntimeError as e:
-            debug(f"获取触控优化设置失败 - Qt运行时错误: {e}")
-            return True
+        return getattr(self, "_touch_optimization_enabled", True)
 
     def _is_mouse_buttons_swapped(self):
         """
-        检查鼠标按钮是否交换
-
-        Returns:
-            bool: 鼠标按钮是否交换
+        检查鼠标按钮是否交换（使用缓存）
         """
-        try:
-            settings_manager = SettingsManager()
-            return settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            debug(f"获取鼠标按钮交换设置失败 - 文件操作错误: {e}")
-            return False
-        except (ValueError, TypeError) as e:
-            debug(f"获取鼠标按钮交换设置失败 - 数据转换错误: {e}")
-            return False
-        except RuntimeError as e:
-            debug(f"获取鼠标按钮交换设置失败 - Qt运行时错误: {e}")
-            return False
+        return getattr(self, "_mouse_buttons_swapped", False)
 
     def _is_previewer_loading(self):
         """
