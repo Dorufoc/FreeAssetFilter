@@ -28,7 +28,7 @@ from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.utils.app_logger import info, debug, warning, error
-from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager
+from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path, get_thumbnail_manager
 
 
 class FileBlockCard(QWidget):
@@ -453,7 +453,11 @@ class FileBlockCard(QWidget):
         self.icon_label.setPixmap(pixmap)
     
     def _get_thumbnail_path(self, file_path):
-        """获取缩略图路径"""
+        """获取当前实际可用的缩略图路径，优先 WebP，回退 PNG。"""
+        thumbnail_path = get_existing_thumbnail_path(file_path)
+        if thumbnail_path:
+            return thumbnail_path
+
         thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
         return thumbnail_manager.get_thumbnail_path(file_path)
     

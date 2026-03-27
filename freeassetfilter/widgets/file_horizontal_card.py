@@ -34,7 +34,7 @@ sys.path.insert(
 from freeassetfilter.core.svg_renderer import SvgRenderer  # noqa: E402 模块级别的导入不在文件顶部（需要先添加路径）
 from freeassetfilter.utils.file_icon_helper import get_icon_path  # noqa: E402
 from freeassetfilter.utils.app_logger import info, debug, warning, error
-from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager  # noqa: E402
+from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path, get_thumbnail_manager  # noqa: E402
 
 
 class CustomFileHorizontalCard(QWidget):
@@ -709,8 +709,10 @@ class CustomFileHorizontalCard(QWidget):
                     return
 
             # 使用 thumbnail_manager 获取缩略图路径
-            thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
-            thumbnail_path = thumbnail_manager.get_thumbnail_path(self._file_path)
+            thumbnail_path = get_existing_thumbnail_path(self._file_path)
+            if not thumbnail_path:
+                thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+                thumbnail_path = thumbnail_manager.get_thumbnail_path(self._file_path)
 
             is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb', 'svg']
             is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
@@ -2019,8 +2021,10 @@ class CustomFileHorizontalCard(QWidget):
                 is_dir = file_info.isDir()
 
                 # 检查是否有缩略图（图片/视频）
-                thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
-                thumbnail_path = thumbnail_manager.get_thumbnail_path(self._file_path)
+                thumbnail_path = get_existing_thumbnail_path(self._file_path)
+                if not thumbnail_path:
+                    thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+                    thumbnail_path = thumbnail_manager.get_thumbnail_path(self._file_path)
 
                 is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb', 'svg']
                 is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']

@@ -55,7 +55,7 @@ from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.components.auto_timeline import AutoTimeline
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
-from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, is_media_file
+from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path, is_media_file
 
 
 class ThumbnailGeneratorThread(QThread):
@@ -75,25 +75,33 @@ class ThumbnailGeneratorThread(QThread):
         self._is_cancelled = False
 
     def run(self):
-        success_count = 0
         total_count = len(self.files_to_generate)
 
-        for index, file_data in enumerate(self.files_to_generate):
-            if self._is_cancelled:
-                break
+        if total_count <= 0:
+            self.finished.emit(0, 0)
+            return
 
-            try:
-                result = self.thumbnail_manager.create_thumbnail(file_data["path"])
-                if result:
-                    success_count += 1
-                    self.thumbnail_created.emit(file_data)
+        def _on_progress(current, total, file_data, success):
+            # 批量模式下逐项回调，确保进度条与实际完成项一致
+            if success:
+                self.thumbnail_created.emit(file_data)
+            self.progress_updated.emit(current, total, file_data)
 
-                self.progress_updated.emit(index + 1, total_count, file_data)
-            except Exception as e:
-                self.error_occurred.emit(file_data["path"], e)
-                self.progress_updated.emit(index + 1, total_count, file_data)
+        def _cancel_check():
+            return self._is_cancelled
 
-        self.finished.emit(success_count, total_count)
+        try:
+            success_count, processed_count = self.thumbnail_manager.create_thumbnails_batch(
+                self.files_to_generate,
+                progress_callback=_on_progress,
+                cancel_check=_cancel_check
+            )
+            # 取消时返回已处理数，非取消时返回总数
+            final_total = processed_count if self._is_cancelled else total_count
+            self.finished.emit(success_count, final_total)
+        except Exception as e:
+            self.error_occurred.emit("batch_generate", e)
+            self.finished.emit(0, 0)
 
     def cancel(self):
         self._is_cancelled = True
@@ -658,6 +666,10 @@ class CustomFileSelector(QWidget):
             warning(f"生成缩略图失败: {file_path}, 错误: {error}")
 
         def on_finished(success_count, total_count):
+            # 用户取消后不再弹完成提示
+            if is_canceled:
+                return
+
             progress_msg.close()
 
             staging_pool_count = len([f for f in files_to_generate if f["source"] == "staging_pool"])
@@ -3001,9 +3013,13 @@ class CustomFileSelector(QWidget):
     
     def _get_thumbnail_path(self, file_path):
         """
-        获取文件的缩略图路径
-        使用缩略图管理器统一管理
+        获取文件当前实际可用的缩略图路径。
+        优先使用 WebP；若不存在则回退 PNG。
         """
+        thumbnail_path = get_existing_thumbnail_path(file_path)
+        if thumbnail_path:
+            return thumbnail_path
+
         thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
         return thumbnail_manager.get_thumbnail_path(file_path)
     

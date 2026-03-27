@@ -248,7 +248,15 @@ def collect_binaries() -> List[Tuple[str, str]]:
                 binaries.append((str(dll_path), "freeassetfilter/core/cpp_lut_preview"))
         print_info(f"收集到 cpp_lut_preview DLLs")
     
-    # 4. 收集Python扩展模块(.pyd文件)
+    # 4. Rust 原生缩略图引擎 DLL
+    rust_thumb_dll = project_root / "freeassetfilter" / "core" / "native" / "thumbnail_generator.dll"
+    if rust_thumb_dll.exists():
+        binaries.append((str(rust_thumb_dll), "freeassetfilter/core/native"))
+        print_info("收集到 thumbnail_generator.dll")
+    else:
+        print_warning("未找到 thumbnail_generator.dll（将使用Python回退缩略图链路）")
+
+    # 5. 收集Python扩展模块(.pyd文件)
     # cpp_color_extractor
     if cpp_color_dir.exists():
         for pyd_file in cpp_color_dir.glob("*.pyd"):
@@ -273,6 +281,7 @@ def collect_hidden_imports() -> List[str]:
         # C++扩展模块
         "freeassetfilter.core.cpp_color_extractor",
         "freeassetfilter.core.cpp_lut_preview",
+        "freeassetfilter.core.rust_thumbnail_bridge",
         # 重要包
         "PIL",
         "PIL._imagingtk",
@@ -558,6 +567,37 @@ def clean_qt6_dlls() -> Tuple[int, int]:
     
     print_success(f"共移除 {removed_count} 个文件/目录，节省 {saved_space / 1024 / 1024:.2f} MB")
     return removed_count, saved_space
+
+
+def clean_native_sources_from_dist():
+    """清理打包产物中不需要的Rust源码/构建中间目录，只保留DLL"""
+    print_header("清理打包目录中的原生源码残留")
+
+    project_root = get_project_root()
+    dist_root = project_root / OUTPUT_DIR / PROJECT_NAME / "_internal" / "freeassetfilter" / "core" / "native"
+
+    if not dist_root.exists():
+        print_info("未发现 native 目录，跳过")
+        return
+
+    # 删除整个 thumbnail_rust 源码目录（保留同级 thumbnail_generator.dll）
+    rust_src_dir = dist_root / "thumbnail_rust"
+    if rust_src_dir.exists():
+        try:
+            shutil.rmtree(rust_src_dir)
+            print_success(f"已移除打包残留目录: {rust_src_dir}")
+        except Exception as e:
+            print_warning(f"无法删除 {rust_src_dir}: {e}")
+
+    # 兜底删除可能散落的构建描述文件
+    for extra in ["Cargo.toml", "Cargo.lock"]:
+        p = dist_root / extra
+        if p.exists():
+            try:
+                p.unlink()
+                print_success(f"已移除文件: {p}")
+            except Exception as e:
+                print_warning(f"无法删除 {p}: {e}")
 
 
 def verify_output() -> bool:
@@ -890,7 +930,10 @@ def main():
     saved_space = 0
     if not args.no_clean_qt:
         removed_dlls, saved_space = clean_qt6_dlls()
-    
+
+    # 清理打包目录中的原生源码残留（仅保留运行所需DLL）
+    clean_native_sources_from_dist()
+
     # UPX压缩
     upx_compressed = 0
     upx_saved = 0

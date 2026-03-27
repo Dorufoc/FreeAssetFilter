@@ -20,9 +20,10 @@ import os
 import hashlib
 import threading
 import time
-from typing import Optional, Tuple, Callable, Dict, Set
+from typing import Optional, Tuple, Callable, Dict, Set, List
 from pathlib import Path
 from dataclasses import dataclass
+from freeassetfilter.core.rust_thumbnail_bridge import RustThumbnailBridge
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
@@ -116,6 +117,10 @@ class ThumbnailManager:
     
     # 缩略图质量
     QUALITY = 85
+
+    # 缩略图缓存格式（优先 JPG，兼容历史 PNG）
+    THUMB_EXT_PRIMARY = '.jpg'
+    THUMB_EXT_LEGACY = '.png'
     
     # 视频帧读取最大重试次数
     MAX_FRAME_READ_RETRIES = 3
@@ -161,6 +166,12 @@ class ThumbnailManager:
         # 视频帧缓存：文件路径 -> VideoFrameCache
         self._frame_caches: Dict[str, VideoFrameCache] = {}
         self._frame_cache_lock = threading.Lock()
+
+        # Rust 原生缩略图引擎（统一承担高性能生成、调度与缓存）
+        self._rust_bridge = RustThumbnailBridge()
+        self._native_cache_limit = 200 * 1024 * 1024
+        if self._rust_bridge.available:
+            self._rust_bridge.set_cache_limit(self._native_cache_limit)
         
         # 正在处理的视频文件集合（用于请求去重）
         self._processing_videos: Set[str] = set()
@@ -189,9 +200,16 @@ class ThumbnailManager:
         """
         return self._thumb_dir
     
+    def _get_thumbnail_hash(self, file_path: str) -> str:
+        """
+        获取文件路径对应的缩略图哈希名
+        """
+        md5_hash = hashlib.md5(file_path.encode('utf-8'))
+        return md5_hash.hexdigest()[:16]
+
     def get_thumbnail_path(self, file_path: str) -> str:
         """
-        获取文件的缩略图路径
+        获取文件的主缩略图路径（优先格式）
         
         Args:
             file_path: 原始文件路径
@@ -199,10 +217,30 @@ class ThumbnailManager:
         Returns:
             str: 缩略图文件路径
         """
-        # 使用文件路径的MD5哈希作为缩略图文件名
-        md5_hash = hashlib.md5(file_path.encode('utf-8'))
-        file_hash = md5_hash.hexdigest()[:16]
-        return os.path.join(self._thumb_dir, f"{file_hash}.png")
+        file_hash = self._get_thumbnail_hash(file_path)
+        return os.path.join(self._thumb_dir, f"{file_hash}{self.THUMB_EXT_PRIMARY}")
+
+    def get_legacy_thumbnail_path(self, file_path: str) -> str:
+        """
+        获取历史 PNG 缩略图路径（兼容旧缓存）
+        """
+        file_hash = self._get_thumbnail_hash(file_path)
+        return os.path.join(self._thumb_dir, f"{file_hash}{self.THUMB_EXT_LEGACY}")
+
+    def get_existing_thumbnail_path(self, file_path: str) -> Optional[str]:
+        """
+        获取当前实际存在的缩略图路径。
+        优先返回主格式 JPG；若不存在则回退到历史/兼容 PNG。
+        """
+        thumbnail_path = self.get_thumbnail_path(file_path)
+        if os.path.exists(thumbnail_path):
+            return thumbnail_path
+
+        legacy_path = self.get_legacy_thumbnail_path(file_path)
+        if os.path.exists(legacy_path):
+            return legacy_path
+
+        return None
     
     def has_thumbnail(self, file_path: str) -> bool:
         """
@@ -214,8 +252,17 @@ class ThumbnailManager:
         Returns:
             bool: 是否存在缩略图
         """
-        thumbnail_path = self.get_thumbnail_path(file_path)
-        return os.path.exists(thumbnail_path)
+        return self.get_existing_thumbnail_path(file_path) is not None
+
+    def _update_file_access_time(self, file_path: str):
+        """
+        更新文件访问时间（LRU语义）
+        """
+        try:
+            now = time.time()
+            os.utime(file_path, (now, now))
+        except Exception:
+            pass
     
     def is_media_file(self, file_path: str) -> bool:
         """
@@ -228,10 +275,12 @@ class ThumbnailManager:
             bool: 是否为媒体文件
         """
         suffix = os.path.splitext(file_path)[1].lower()
-        return (suffix in self.IMAGE_FORMATS or 
-                suffix in self.RAW_FORMATS or 
-                suffix in self.PSD_FORMATS or 
-                suffix in self.VIDEO_FORMATS)
+        return (
+            suffix in self.IMAGE_FORMATS
+            or suffix in self.RAW_FORMATS
+            or suffix in self.PSD_FORMATS
+            or suffix in self.VIDEO_FORMATS
+        )
     
     def is_image_file(self, file_path: str) -> bool:
         """
@@ -292,7 +341,8 @@ class ThumbnailManager:
             if not os.path.exists(self._thumb_dir):
                 return
             
-            thumbnail_files = glob.glob(os.path.join(self._thumb_dir, "*.png"))
+            thumbnail_files = glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_PRIMARY}"))
+            thumbnail_files.extend(glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_LEGACY}")))
             
             if len(thumbnail_files) < max_cache_files:
                 return
@@ -345,11 +395,16 @@ class ThumbnailManager:
             return None
 
         thumbnail_path = self.get_thumbnail_path(file_path)
+        legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
 
-        # 如果缩略图已存在且不强制重新生成，更新访问时间并返回
-        if not force_regenerate and os.path.exists(thumbnail_path):
-            self._update_file_access_time(thumbnail_path)
-            return thumbnail_path
+        # 如果缩略图已存在且不强制重新生成，优先返回 JPG，其次兼容历史 PNG
+        if not force_regenerate:
+            if os.path.exists(thumbnail_path):
+                self._update_file_access_time(thumbnail_path)
+                return thumbnail_path
+            if os.path.exists(legacy_thumbnail_path):
+                self._update_file_access_time(legacy_thumbnail_path)
+                return legacy_thumbnail_path
 
         # 检查是否为媒体文件
         if not self.is_media_file(file_path):
@@ -360,23 +415,242 @@ class ThumbnailManager:
 
         # 生成缩略图
         try:
-            if self.is_image_file(file_path):
-                result = self._create_image_thumbnail(file_path, thumbnail_path)
-            elif self.is_video_file(file_path):
-                result = self._create_video_thumbnail(file_path, thumbnail_path)
-            else:
-                result = None
+            suffix = os.path.splitext(file_path)[1].lower()
+            use_python_dedicated = (
+                suffix in self.RAW_FORMATS
+                or suffix in self.PSD_FORMATS
+                or suffix == '.svg'
+            )
+
+            # 优先使用 Rust 原生引擎（RAW/PSD/SVG 保留 Python 专用链路）
+            result = None
+            if not use_python_dedicated:
+                result = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+
+            # 回退到 Python 实现
+            if result is None:
+                if self.is_image_file(file_path):
+                    result = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+                elif self.is_video_file(file_path):
+                    result = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
+                else:
+                    result = None
 
             # 如果成功生成，更新访问时间
-            if result and os.path.exists(thumbnail_path):
-                self._update_file_access_time(thumbnail_path)
+            if result and os.path.exists(result):
+                self._update_file_access_time(result)
 
             return result
         except Exception as e:
             error(f"[ThumbnailManager] 生成缩略图失败: {file_path}, 错误: {e}")
 
         return None
+
+    def create_thumbnails_batch(
+        self,
+        files_to_generate: List[Dict],
+        progress_callback: Optional[Callable[[int, int, Dict, bool], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None
+    ) -> Tuple[int, int]:
+        """
+        批量创建缩略图（支持 Rust 原生批量并发 + 逐项进度回调）
+
+        Args:
+            files_to_generate: 文件信息列表（至少包含 path 字段）
+            progress_callback: 进度回调 (current, total, file_data, success)
+            cancel_check: 取消检查函数，返回 True 时尽快停止
+
+        Returns:
+            Tuple[int, int]: (成功数量, 已处理数量)
+        """
+        total_count = len(files_to_generate)
+        if total_count == 0:
+            return 0, 0
+
+        success_count = 0
+        processed_count = 0
+        dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
+
+        rust_candidates = []
+        python_candidates = []
+
+        for file_data in files_to_generate:
+            if cancel_check and cancel_check():
+                break
+
+            file_path = file_data.get("path", "")
+            if not file_path or not os.path.exists(file_path):
+                processed_count += 1
+                if progress_callback:
+                    progress_callback(processed_count, total_count, file_data, False)
+                continue
+
+            thumbnail_path = self.get_thumbnail_path(file_path)
+            legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
+
+            # 已存在缓存，直接记为成功
+            if os.path.exists(thumbnail_path) or os.path.exists(legacy_thumbnail_path):
+                existing = thumbnail_path if os.path.exists(thumbnail_path) else legacy_thumbnail_path
+                self._update_file_access_time(existing)
+                success_count += 1
+                processed_count += 1
+                if progress_callback:
+                    progress_callback(processed_count, total_count, file_data, True)
+                continue
+
+            suffix = os.path.splitext(file_path)[1].lower()
+            use_python_dedicated = (
+                suffix in self.RAW_FORMATS
+                or suffix in self.PSD_FORMATS
+                or suffix == '.svg'
+            )
+
+            item = {
+                "file_data": file_data,
+                "file_path": file_path,
+                "thumbnail_path": thumbnail_path,
+                "legacy_thumbnail_path": legacy_thumbnail_path,
+            }
+
+            if self._rust_bridge.available and not use_python_dedicated:
+                rust_candidates.append(item)
+            else:
+                python_candidates.append(item)
+
+        # Rust 批量路径：一次传入多个文件路径，由原生层并发处理
+        batch_size = 64
+        for start in range(0, len(rust_candidates), batch_size):
+            if cancel_check and cancel_check():
+                break
+
+            chunk = rust_candidates[start:start + batch_size]
+            chunk_paths = [it["file_path"] for it in chunk]
+            batch_jpg = self._rust_bridge.generate_jpg_batch(chunk_paths, dpi_scaled_size, dpi_scaled_size)
+
+            for idx, item in enumerate(chunk):
+                if cancel_check and cancel_check():
+                    break
+
+                file_data = item["file_data"]
+                file_path = item["file_path"]
+                thumbnail_path = item["thumbnail_path"]
+                legacy_thumbnail_path = item["legacy_thumbnail_path"]
+
+                result_path = None
+                try:
+                    jpg_bytes = batch_jpg[idx] if idx < len(batch_jpg) else None
+                    if jpg_bytes:
+                        with open(thumbnail_path, "wb") as f:
+                            f.write(jpg_bytes)
+                        result_path = thumbnail_path
+                    else:
+                        # 批量失败项回退到单项路径
+                        result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+                        if result_path is None and self.is_image_file(file_path):
+                            result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+
+                    success = bool(result_path and os.path.exists(result_path))
+                    if success:
+                        self._update_file_access_time(result_path)
+                        success_count += 1
+                except Exception:
+                    success = False
+
+                processed_count += 1
+                if progress_callback:
+                    progress_callback(processed_count, total_count, file_data, success)
+
+        # Python 专用链路（RAW/PSD/SVG/视频等）
+        for item in python_candidates:
+            if cancel_check and cancel_check():
+                break
+
+            file_data = item["file_data"]
+            file_path = item["file_path"]
+            legacy_thumbnail_path = item["legacy_thumbnail_path"]
+
+            result_path = None
+            try:
+                if self.is_image_file(file_path):
+                    result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+                elif self.is_video_file(file_path):
+                    result_path = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
+
+                success = bool(result_path and os.path.exists(result_path))
+                if success:
+                    self._update_file_access_time(result_path)
+                    success_count += 1
+            except Exception:
+                success = False
+
+            processed_count += 1
+            if progress_callback:
+                progress_callback(processed_count, total_count, file_data, success)
+
+        return success_count, processed_count
     
+    def _create_native_thumbnail(self, file_path: str, thumbnail_path: str, legacy_thumbnail_path: str) -> Optional[str]:
+        """
+        使用 Rust 原生引擎生成缩略图
+        
+        Args:
+            file_path: 文件路径
+            thumbnail_path: 缩略图保存路径
+            
+        Returns:
+            Optional[str]: 成功返回缩略图路径，失败返回None
+        """
+        if not self._rust_bridge.available:
+            return None
+
+        try:
+            dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
+
+            # 优先使用 Rust 直接 JPG 输出，降低磁盘 IO 与批量预览开销
+            jpg_bytes = self._rust_bridge.generate_jpg(file_path, dpi_scaled_size, dpi_scaled_size)
+            if jpg_bytes:
+                with open(thumbnail_path, "wb") as f:
+                    f.write(jpg_bytes)
+                debug(f"[ThumbnailManager] Rust(JPG直出)缩略图生成成功: {thumbnail_path}")
+                return thumbnail_path
+
+            # 回退到 Rust JPEG 输出（兼容别名接口）
+            jpeg_bytes = self._rust_bridge.generate_jpeg(file_path, dpi_scaled_size, dpi_scaled_size)
+            if jpeg_bytes:
+                with open(thumbnail_path, "wb") as f:
+                    f.write(jpeg_bytes)
+                debug(f"[ThumbnailManager] Rust(JPEG直出)缩略图生成成功: {thumbnail_path}")
+                return thumbnail_path
+
+            # 回退到 RGBA 路径
+            if not PIL_AVAILABLE:
+                return None
+
+            generated = self._rust_bridge.generate_rgba(file_path, dpi_scaled_size, dpi_scaled_size)
+            if not generated:
+                return None
+
+            raw, width, height, channels = generated
+            if channels not in (3, 4):
+                return None
+
+            mode = "RGBA" if channels == 4 else "RGB"
+            img = Image.frombytes(mode, (width, height), raw)
+            if mode == "RGB":
+                img = img.convert("RGBA")
+            img = img.convert("RGB")
+            img.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
+            try:
+                img.close()
+            except Exception:
+                pass
+
+            debug(f"[ThumbnailManager] Rust(RGBA回退)缩略图生成成功: {thumbnail_path}")
+            return thumbnail_path
+        except Exception as e:
+            warning(f"[ThumbnailManager] Rust缩略图生成失败，回退Python: {file_path}, 错误: {e}")
+            return None
+
     def _create_image_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """
         为图片文件创建缩略图
@@ -434,7 +708,8 @@ class ThumbnailManager:
                 thumbnail.paste(img_converted, (x_offset, y_offset))
             
             # 保存缩略图
-            thumbnail.save(thumbnail_path, format='PNG', quality=self.QUALITY)
+            thumbnail = thumbnail.convert("RGB")
+            thumbnail.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
             
             debug(f"[ThumbnailManager] 图片缩略图生成成功: {thumbnail_path}")
             return thumbnail_path
@@ -775,7 +1050,8 @@ class ThumbnailManager:
             thumbnail.paste(frame_pil, (x_offset, y_offset))
             
             # 保存缩略图
-            thumbnail.save(thumbnail_path, format='PNG', quality=self.QUALITY)
+            thumbnail = thumbnail.convert("RGB")
+            thumbnail.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
             
             debug(f"[ThumbnailManager] 视频缩略图生成成功: {thumbnail_path}")
             return thumbnail_path
@@ -1055,7 +1331,8 @@ class ThumbnailManager:
             if not os.path.exists(self._thumb_dir):
                 return 0
             
-            thumbnail_files = glob.glob(os.path.join(self._thumb_dir, "*.png"))
+            thumbnail_files = glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_PRIMARY}"))
+            thumbnail_files.extend(glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_LEGACY}")))
             deleted_count = 0
             
             for file_path in thumbnail_files:
@@ -1086,7 +1363,8 @@ class ThumbnailManager:
             if not os.path.exists(self._thumb_dir):
                 return 0
 
-            thumbnail_files = glob.glob(os.path.join(self._thumb_dir, "*.png"))
+            thumbnail_files = glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_PRIMARY}"))
+            thumbnail_files.extend(glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_LEGACY}")))
             return len(thumbnail_files)
 
         except Exception as e:
@@ -1134,16 +1412,25 @@ def create_thumbnail(file_path: str, dpi_scale: float = 1.0, force_regenerate: b
 
 def get_thumbnail_path(file_path: str) -> str:
     """
-    便捷函数：获取文件缩略图路径
+    便捷函数：获取文件主缩略图路径
     
     Args:
         file_path: 文件路径
         
     Returns:
-        str: 缩略图路径
+        str: 主缩略图路径
     """
     manager = get_thumbnail_manager()
     return manager.get_thumbnail_path(file_path)
+
+
+def get_existing_thumbnail_path(file_path: str) -> Optional[str]:
+    """
+    便捷函数：获取当前实际存在的缩略图路径。
+    优先返回 JPG；若不存在则回退 PNG。
+    """
+    manager = get_thumbnail_manager()
+    return manager.get_existing_thumbnail_path(file_path)
 
 
 def has_thumbnail(file_path: str) -> bool:
@@ -1219,6 +1506,7 @@ __all__ = [
     'get_thumbnail_manager',
     'create_thumbnail',
     'get_thumbnail_path',
+    'get_existing_thumbnail_path',
     'has_thumbnail',
     'is_media_file',
     'is_image_file',

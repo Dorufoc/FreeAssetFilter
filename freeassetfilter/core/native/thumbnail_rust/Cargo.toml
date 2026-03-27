@@ -1,0 +1,15 @@
+[package]
+name = "thumbnail_generator"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "thumbnail_generator"
+crate-type = ["cdylib"]
+
+[dependencies]
+image = { version = "0.25", default-features = true, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
+once_cell = "1.20"
+sysinfo = "0.37"
+rayon = "1.10"
+opencv = { version = "0.98", default-features = false, features = ["clang-runtime", "imgproc", "videoio"] }
