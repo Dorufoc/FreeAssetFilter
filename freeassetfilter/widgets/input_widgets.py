@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QScrollArea
 )
 from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize, QRectF
-from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QPalette
 from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
 from .D_more_menu import D_MoreMenu
@@ -222,8 +222,56 @@ class CustomInputBox(QWidget):
         """
         更新输入框样式
         """
+        # 更新 line_edit 的文字与占位符颜色，确保主题切换后立即生效
+        padding_left = int(8 * self.dpi_scale)
+        padding_right = int(8 * self.dpi_scale)
+
+        self.line_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: transparent;
+                border: none;
+                color: %s;
+                padding-left: %dpx;
+                padding-right: %dpx;
+            }
+            QLineEdit:focus {
+                outline: none;
+            }
+        """ % (self._text_color.name(), padding_left, padding_right))
+
         # 更新样式后触发重绘
         self.update()
+
+    def update_theme(self):
+        """
+        统一主题刷新入口
+        重新从 settings_manager 读取输入框相关颜色并刷新显示。
+        """
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            self._border_color = QColor(app.settings_manager.get_setting("appearance.colors.input_border", self._border_color.name()))
+            self._background_color = QColor(app.settings_manager.get_setting("appearance.colors.input_background", self._background_color.name()))
+            self._text_color = QColor(app.settings_manager.get_setting("appearance.colors.input_text", self._text_color.name()))
+            self._placeholder_color = QColor(app.settings_manager.get_setting("appearance.colors.text_placeholder", self._placeholder_color.name()))
+            self._active_border_color = QColor(app.settings_manager.get_setting("appearance.colors.input_focus_border", self._active_border_color.name()))
+            self._active_background_color = QColor(app.settings_manager.get_setting("appearance.colors.input_background", self._active_background_color.name()))
+
+            palette = self.line_edit.palette()
+            palette.setColor(self.line_edit.foregroundRole(), self._text_color)
+
+            placeholder_role = None
+            if hasattr(QPalette, "ColorRole") and hasattr(QPalette.ColorRole, "PlaceholderText"):
+                placeholder_role = QPalette.ColorRole.PlaceholderText
+            elif hasattr(QPalette, "PlaceholderText"):
+                placeholder_role = QPalette.PlaceholderText
+
+            if placeholder_role is not None:
+                palette.setColor(placeholder_role, self._placeholder_color)
+
+            self.line_edit.setPalette(palette)
+
+        self.update_style()
+        self.repaint()
     
     def paintEvent(self, event):
         """

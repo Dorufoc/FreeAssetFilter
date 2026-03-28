@@ -1050,6 +1050,26 @@ class CustomButton(QPushButton):
         self._anim_border_color = QColor(normal_border)
         self._anim_text_color = QColor(normal_text)
 
+    def update_theme(self):
+        """
+        统一主题刷新入口
+        - 重新读取主题色
+        - 重新应用按钮样式
+        - 重置动画颜色
+        - 重新渲染 SVG 图标
+        """
+        try:
+            # 允许主题切换后重新基于最新 settings 计算样式
+            self.update_style()
+
+            # 图标按钮需要重新渲染，确保深浅色模式下 SVG 颜色立即更新
+            if self._display_mode == "icon":
+                self._render_icon()
+
+            self.update()
+        except Exception as e:
+            debug(f"CustomButton.update_theme 刷新失败: {e}")
+
     def set_primary(self, is_primary):
         """
         设置按钮是否使用强调色（兼容旧接口）
@@ -1058,7 +1078,7 @@ class CustomButton(QPushButton):
             is_primary (bool): 是否使用强调色
         """
         self.button_type = "primary" if is_primary else "secondary"
-        self.update_style()
+        self.update_theme()
         self.resizeEvent(None)  # 触发resizeEvent，更新圆角半径
     
     def set_button_type(self, button_type):
@@ -1071,7 +1091,7 @@ class CustomButton(QPushButton):
         self.button_type = button_type
         # 重新初始化动画，确保动画颜色与新的按钮类型一致
         self._init_animations()
-        self.update_style()
+        self.update_theme()
         self.resizeEvent(None)  # 触发resizeEvent，更新圆角半径
     
     def setText(self, text):

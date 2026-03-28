@@ -3,30 +3,24 @@
 """
 全局鼠标监控组件
 
-提供全局鼠标移动和点击检测功能，可用于检测用户的鼠标活动。
-支持独立监控鼠标移动和鼠标点击事件。
+提供全局鼠标移动、点击、滚轮检测及空闲超时功能。
+兼容原 MouseActivityMonitor 的常用接口，并保留更完整的全局监控能力。
 
 功能特点：
 - 使用 Windows 低级鼠标钩子 (WH_MOUSE_LL) 实现全局监控
-- 同时支持鼠标移动和鼠标点击事件检测
-- 提供信号通知方式
+- 同时支持鼠标移动、鼠标点击和滚轮事件检测
+- 支持配置空闲超时时间
+- 提供信号和回调函数两种通知方式
 - 线程安全的实现
 - 可独立启动和停止监控
 
 使用示例：
 ```python
-# 创建全局鼠标监控器
-monitor = GlobalMouseMonitor()
-
-# 连接信号
+monitor = GlobalMouseMonitor(timeout=5000)
 monitor.mouse_moved.connect(on_mouse_move)
 monitor.mouse_clicked.connect(on_mouse_click)
-
-# 开始监控
+monitor.timeout_reached.connect(on_timeout)
 monitor.start()
-
-# 停止监控
-monitor.stop()
 ```
 
 Author: FreeAssetFilter
@@ -34,6 +28,7 @@ Date: 2025
 """
 
 import ctypes
+import time
 from ctypes import wintypes
 from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
@@ -45,12 +40,14 @@ class GlobalMouseMonitor(QObject):
     """
     全局鼠标监控器类
 
-    用于检测全局鼠标移动和点击事件。
-    当检测到鼠标移动或点击时，会触发相应的信号。
+    用于检测全局鼠标移动、点击、滚轮事件，并支持空闲超时。
+    当检测到鼠标活动时，会触发相应的信号或回调函数。
 
     Attributes:
         mouse_moved (Signal): 鼠标移动信号
         mouse_clicked (Signal): 鼠标点击信号
+        mouse_scrolled (Signal): 鼠标滚轮信号
+        timeout_reached (Signal): 空闲超时信号
     """
 
     mouse_moved = Signal()
@@ -62,14 +59,22 @@ class GlobalMouseMonitor(QObject):
     mouse_scrolled = Signal()
     """鼠标滚轮信号 - 当检测到鼠标滚轮滚动时触发"""
 
-    def __init__(self, parent=None):
+    timeout_reached = Signal()
+    """空闲超时信号"""
+
+    def __init__(self, parent=None, timeout=3000):
         """
         初始化全局鼠标监控器
 
         Args:
             parent: 父QObject对象
+            timeout (int): 空闲超时时间（毫秒），默认3000ms
         """
         super().__init__(parent)
+
+        self._timeout = timeout
+        self._activity_callback = None
+        self._timeout_callback = None
 
         self._mouse_hook = None
         self._mouse_proc_func = None
@@ -81,10 +86,70 @@ class GlobalMouseMonitor(QObject):
         self._pending_click = False
         self._pending_scroll = False
 
+        self._last_hook_emit_time = 0
+        self._last_move_emit_time = 0
+
         # 定时器用于处理钩子回调中的信号发射
         self._signal_timer = QTimer(self)
-        self._signal_timer.setInterval(10)  # 10ms间隔
+        self._signal_timer.setInterval(10)
         self._signal_timer.timeout.connect(self._process_pending_signals)
+
+        # 空闲超时定时器
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._on_timeout)
+
+    @property
+    def timeout(self):
+        """
+        获取超时时间（毫秒）
+
+        Returns:
+            int: 超时时间
+        """
+        return self._timeout
+
+    @timeout.setter
+    def timeout(self, value):
+        """
+        设置超时时间
+
+        Args:
+            value (int): 超时时间（毫秒）
+        """
+        self._timeout = value
+        if self._is_monitoring:
+            self._hide_timer.start(self._timeout)
+
+    @property
+    def activity_callback(self):
+        """获取鼠标活动回调函数"""
+        return self._activity_callback
+
+    @activity_callback.setter
+    def activity_callback(self, value):
+        """
+        设置鼠标活动回调函数
+
+        Args:
+            value (callable): 可调用对象，会在检测到鼠标活动时调用
+        """
+        self._activity_callback = value
+
+    @property
+    def timeout_callback(self):
+        """获取空闲超时回调函数"""
+        return self._timeout_callback
+
+    @timeout_callback.setter
+    def timeout_callback(self, value):
+        """
+        设置空闲超时回调函数
+
+        Args:
+            value (callable): 可调用对象，会在空闲超时时调用
+        """
+        self._timeout_callback = value
 
     def is_monitoring(self):
         """
@@ -108,7 +173,7 @@ class GlobalMouseMonitor(QObject):
         try:
             user32 = ctypes.windll.user32
             WH_MOUSE_LL = 14
-            
+
             # 鼠标消息常量
             WM_MOUSEMOVE = 0x0200
             WM_LBUTTONDOWN = 0x0201
@@ -122,7 +187,6 @@ class GlobalMouseMonitor(QObject):
                 """鼠标钩子回调函数"""
                 try:
                     if nCode == 0:
-                        # 处理鼠标移动
                         if wParam == WM_MOUSEMOVE:
                             pt = wintypes.POINT()
                             user32.GetCursorPos(ctypes.byref(pt))
@@ -130,13 +194,14 @@ class GlobalMouseMonitor(QObject):
 
                             if self._last_mouse_pos is None or self._last_mouse_pos != current_pos:
                                 self._last_mouse_pos = current_pos
-                                self._pending_move = True
-                        
-                        # 处理鼠标点击（左键、右键、中键、X键按下）
+                                current_time = time.time() * 1000
+                                if (current_time - self._last_hook_emit_time) >= 16:
+                                    self._last_hook_emit_time = current_time
+                                    self._pending_move = True
+
                         elif wParam in (WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_XBUTTONDOWN):
                             self._pending_click = True
 
-                        # 处理鼠标滚轮滚动（垂直和水平滚轮）
                         elif wParam in (WM_MOUSEWHEEL, WM_MOUSEHWHEEL):
                             self._pending_scroll = True
 
@@ -145,7 +210,9 @@ class GlobalMouseMonitor(QObject):
 
                 return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
-            mouse_proc_func = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)(mouse_proc)
+            mouse_proc_func = ctypes.CFUNCTYPE(
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
+            )(mouse_proc)
 
             self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_func, None, 0)
             if not self._mouse_hook:
@@ -156,6 +223,7 @@ class GlobalMouseMonitor(QObject):
             self._mouse_proc_func = mouse_proc_func
             self._is_monitoring = True
             self._signal_timer.start()
+            self._hide_timer.start(self._timeout)
 
             return True
 
@@ -171,6 +239,7 @@ class GlobalMouseMonitor(QObject):
             return
 
         self._signal_timer.stop()
+        self._hide_timer.stop()
 
         if self._mouse_hook:
             try:
@@ -185,21 +254,63 @@ class GlobalMouseMonitor(QObject):
         self._pending_move = False
         self._pending_click = False
         self._pending_scroll = False
+        self._last_hook_emit_time = 0
+        self._last_move_emit_time = 0
+
+    def reset_timer(self):
+        """
+        重置空闲计时器
+        """
+        if self._is_monitoring:
+            self._hide_timer.stop()
+            self._hide_timer.start(self._timeout)
+
+    def _notify_activity(self):
+        """统一处理鼠标活动后的计时器和回调逻辑"""
+        if self._activity_callback:
+            try:
+                self._activity_callback()
+            except Exception as e:
+                error(f"[GlobalMouseMonitor] 活动回调函数执行失败: {e}")
+
+        if self._is_monitoring:
+            self._hide_timer.stop()
+            self._hide_timer.start(self._timeout)
 
     @Slot()
     def _process_pending_signals(self):
         """处理待发射的信号"""
         if self._pending_move:
-            self._pending_move = False
-            self.mouse_moved.emit()
+            current_time = time.time() * 1000
+            if (current_time - self._last_move_emit_time) >= 50:
+                self._last_move_emit_time = current_time
+                self._pending_move = False
+                self.mouse_moved.emit()
+                self._notify_activity()
+            else:
+                self._pending_move = False
+                self.reset_timer()
 
         if self._pending_click:
             self._pending_click = False
             self.mouse_clicked.emit()
+            self._notify_activity()
 
         if self._pending_scroll:
             self._pending_scroll = False
             self.mouse_scrolled.emit()
+            self._notify_activity()
+
+    @Slot()
+    def _on_timeout(self):
+        """空闲超时处理"""
+        self.timeout_reached.emit()
+
+        if self._timeout_callback:
+            try:
+                self._timeout_callback()
+            except Exception as e:
+                error(f"[GlobalMouseMonitor] 超时回调函数执行失败: {e}")
 
     def __del__(self):
         """析构函数，确保清理资源"""

@@ -9,6 +9,7 @@ import os
 import json
 import copy
 import threading
+import tempfile
 from functools import lru_cache
 
 # 导入日志模块
@@ -126,6 +127,9 @@ class SettingsManager:
 
             SettingsManager._initialized = True
             self._settings_lock = threading.RLock()
+            self._save_timer = None
+            self._save_delay_seconds = 0.35
+            self._save_pending = False
             self.settings = None
             self._settings_file = settings_file
             self._initialize_settings()
@@ -323,7 +327,7 @@ class SettingsManager:
             volume (int): 音量值 (0-100)
         """
         self.set_setting("player.last_volume", volume)
-        self.save_settings()
+        self.schedule_save()
 
     def save_player_speed(self, speed):
         """
@@ -333,8 +337,37 @@ class SettingsManager:
             speed (float): 倍速值
         """
         self.set_setting("player.last_speed", speed)
+        self.schedule_save()
+
+    def schedule_save(self, delay=None):
+        """
+        延迟调度设置写盘，将高频设置变更合并为一次磁盘写入。
+
+        Args:
+            delay: 延迟秒数，None 时使用默认延迟
+        """
+        with self._settings_lock:
+            if delay is None:
+                delay = self._save_delay_seconds
+
+            self._save_pending = True
+
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+
+            self._save_timer = threading.Timer(delay, self._flush_scheduled_save)
+            self._save_timer.daemon = True
+            self._save_timer.start()
+
+    def _flush_scheduled_save(self):
+        """执行已调度的设置写盘"""
+        with self._settings_lock:
+            self._save_timer = None
+            if not self._save_pending:
+                return
+
         self.save_settings()
-    
+
     def save_settings(self):
         import datetime
         def _debug(msg):
@@ -344,6 +377,11 @@ class SettingsManager:
         with self._settings_lock:
             _debug("开始保存设置")
             debug(f"设置文件路径: {self._settings_file}")
+
+            self._save_pending = False
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+                self._save_timer = None
 
             if "appearance" in self.settings and "colors" in self.settings["appearance"]:
                 base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color", "custom_design_color"]
@@ -366,8 +404,23 @@ class SettingsManager:
                     _debug(f"  {color_key}: {color_value}")
 
             try:
-                with open(self._settings_file, "w", encoding="utf-8") as f:
-                    json.dump(self.settings, f, ensure_ascii=False, indent=4)
+                settings_dir = os.path.dirname(self._settings_file) or "."
+                os.makedirs(settings_dir, exist_ok=True)
+
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=settings_dir,
+                    delete=False,
+                    suffix=".tmp"
+                ) as tmp_file:
+                    json.dump(self.settings, tmp_file, ensure_ascii=False, indent=4)
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
+                    temp_path = tmp_file.name
+
+                os.replace(temp_path, self._settings_file)
+
                 _debug(f"设置保存成功: {self._settings_file}")
                 info(f"设置已保存到: {self._settings_file}")
             except PermissionError as e:
@@ -382,6 +435,13 @@ class SettingsManager:
             except IOError as e:
                 _debug(f"设置保存失败，IO错误: {e}")
                 error(f"保存设置失败，IO错误: {e}")
+            finally:
+                temp_path = locals().get("temp_path")
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
     
     def get_setting(self, key_path, default=None, use_file_for_colors=False):
         """
@@ -449,9 +509,9 @@ class SettingsManager:
             if "appearance.colors" in key_path:
                 _debug(f"设置完成: {key_path} = {value}")
 
-            # 只有显式要求时才自动保存
+            # 只有显式要求时才自动保存，但使用延迟合并写盘避免高频 I/O
             if auto_save:
-                self.save_settings()
+                self.schedule_save()
     
     def _merge_settings(self, default, loaded):
         base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color", "custom_design_color"]
@@ -500,6 +560,7 @@ class SettingsManager:
     def reset_to_defaults(self):
         with self._settings_lock:
             self.settings = self._create_default_settings_copy()
+            self._save_pending = True
 
     def get_color_from_file(self, color_key, default=None):
         """

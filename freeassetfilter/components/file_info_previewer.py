@@ -368,15 +368,6 @@ class FileInfoPreviewer(QObject):
         """
         # 创建滚动区域，作为主容器
         scroll_area = QScrollArea()
-        scroll_area.setStyleSheet(f"""
-            QScrollArea {{
-                border: 0px solid transparent;
-                background-color: {self.background_color};
-            }}
-            QScrollArea > QWidget > QWidget {{
-                background-color: {self.base_color};
-            }}
-        """)
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -408,8 +399,8 @@ class FileInfoPreviewer(QObject):
 
         # 创建主widget
         main_widget = QWidget()
+        self.main_widget = main_widget
         main_widget.setFont(self.global_font)
-        main_widget.setStyleSheet(f"background-color: {self.background_color};")
         main_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
@@ -502,6 +493,8 @@ class FileInfoPreviewer(QObject):
 
         # 将主widget设置为滚动区域的内容
         scroll_area.setWidget(main_widget)
+
+        self.update_theme()
 
         return scroll_area
 
@@ -776,18 +769,6 @@ class FileInfoPreviewer(QObject):
         info = {}
         info["文件大小"] = self._format_size(os.path.getsize(file_path))
 
-        # 尝试使用moviepy
-        try:
-            from moviepy.editor import VideoFileClip
-            with VideoFileClip(file_path) as clip:
-                info["时长"] = self._format_duration(clip.duration)
-                info["分辨率"] = f"{clip.size[0]} x {clip.size[1]}"
-                info["帧率"] = f"{clip.fps:.2f} fps"
-                return info
-        except (ImportError, OSError, ValueError, AttributeError) as e:
-            debug(f"获取视频信息失败 (moviepy): {e}")
-
-        # 尝试使用opencv-python
         try:
             import cv2
             cap = cv2.VideoCapture(file_path)
@@ -846,22 +827,16 @@ class FileInfoPreviewer(QObject):
         try:
             duration = 0
             try:
-                from moviepy.editor import VideoFileClip
-                with VideoFileClip(file_path) as clip:
-                    duration = clip.duration
+                import cv2
+                cap = cv2.VideoCapture(file_path)
+                if cap.isOpened():
+                    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    if frame_count > 0 and fps > 0:
+                        duration = frame_count / fps
+                    cap.release()
             except (ImportError, OSError, ValueError, AttributeError) as e:
-                debug(f"获取视频时长失败 (moviepy): {e}")
-                try:
-                    import cv2
-                    cap = cv2.VideoCapture(file_path)
-                    if cap.isOpened():
-                        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                        fps = cap.get(cv2.CAP_PROP_FPS)
-                        if frame_count > 0 and fps > 0:
-                            duration = frame_count / fps
-                        cap.release()
-                except (ImportError, OSError, ValueError, AttributeError) as e:
-                    debug(f"获取视频时长失败 (opencv): {e}")
+                debug(f"获取视频时长失败 (opencv): {e}")
 
             if duration > 0:
                 file_size = os.path.getsize(file_path)
@@ -1429,6 +1404,86 @@ class FileInfoPreviewer(QObject):
             return f"{bitrate / 1000:.1f} Kbps"
         else:
             return f"{bitrate / 1000000:.1f} Mbps"
+
+    def update_theme(self):
+        """刷新文件信息预览器主题"""
+        self._load_theme_colors()
+
+        if hasattr(self, "scroll_area") and self.scroll_area:
+            self.scroll_area.setStyleSheet(f"""
+                QScrollArea {{
+                    border: 0px solid transparent;
+                    background-color: {self.background_color};
+                }}
+                QScrollArea > QWidget > QWidget {{
+                    background-color: {self.base_color};
+                }}
+            """)
+            if hasattr(self.scroll_area, "verticalScrollBar") and self.scroll_area.verticalScrollBar():
+                scrollbar = self.scroll_area.verticalScrollBar()
+                if hasattr(scrollbar, "set_colors"):
+                    scrollbar.set_colors(
+                        self.normal_color, self.secondary_color, self.accent_color, self.auxiliary_color
+                    )
+            if hasattr(self.scroll_area, "horizontalScrollBar") and self.scroll_area.horizontalScrollBar():
+                scrollbar = self.scroll_area.horizontalScrollBar()
+                if hasattr(scrollbar, "set_colors"):
+                    scrollbar.set_colors(
+                        self.normal_color, self.secondary_color, self.accent_color, self.auxiliary_color
+                    )
+
+        if hasattr(self, "main_widget") and self.main_widget:
+            self.main_widget.setStyleSheet(f"background-color: {self.background_color};")
+
+        if hasattr(self, "info_group") and self.info_group:
+            self.info_group.setStyleSheet(f"""
+                QWidget {{
+                    background-color: {self.auxiliary_color};
+                    border: none;
+                }}
+            """)
+
+        if hasattr(self, "more_info_btn") and self.more_info_btn and hasattr(self.more_info_btn, "update_theme"):
+            try:
+                self.more_info_btn.update_theme()
+            except Exception:
+                pass
+
+        if hasattr(self, "basic_info_widgets"):
+            for widget_pair in self.basic_info_widgets.values():
+                label_widget = widget_pair.get("label")
+                value_widget = widget_pair.get("value")
+
+                if label_widget:
+                    label_widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                    label_widget.update()
+
+                if value_widget:
+                    value_widget.setStyleSheet(f"""
+                        QTextEdit {{
+                            color: {self.secondary_color};
+                            background-color: transparent;
+                            border: none;
+                        }}
+                    """)
+                    value_widget.viewport().update()
+                    value_widget.update()
+
+        if hasattr(self, "details_info_widgets"):
+            for label_widget, value_widget in self.details_info_widgets:
+                if label_widget:
+                    label_widget.setStyleSheet(f"color: {self.secondary_color}; border: none;")
+                    label_widget.update()
+                if value_widget:
+                    value_widget.setStyleSheet(f"""
+                        QTextEdit {{
+                            color: {self.secondary_color};
+                            background-color: transparent;
+                            border: none;
+                        }}
+                    """)
+                    value_widget.viewport().update()
+                    value_widget.update()
 
     def update_ui(self):
         """更新UI显示"""

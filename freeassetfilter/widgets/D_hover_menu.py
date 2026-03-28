@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QApplication
 from PySide6.QtCore import Qt, QPoint, QRect, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QEvent
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPainterPath
 
-from freeassetfilter.utils.mouse_activity_monitor import MouseActivityMonitor
+from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
@@ -119,7 +119,7 @@ class D_HoverMenu(QWidget):
         self._timeout_timer.timeout.connect(self._on_timeout)
 
         self._auto_hide_enabled = False
-        self._mouse_activity_monitor = MouseActivityMonitor(self, timeout=5000)
+        self._mouse_activity_monitor = GlobalMouseMonitor(self, timeout=5000)
         self._mouse_activity_monitor.mouse_moved.connect(self._show_control_bar)
         self._mouse_activity_monitor.timeout_reached.connect(self._hide_control_bar)
         self._mouse_monitor_active = False
@@ -268,12 +268,12 @@ class D_HoverMenu(QWidget):
             if not self._mouse_monitor_active:
                 self._mouse_activity_monitor.start()
                 self._mouse_monitor_active = True
-                debug(f"[D_HoverMenu] MouseActivityMonitor started")
+                debug(f"[D_HoverMenu] GlobalMouseMonitor started")
         else:
             if self._mouse_monitor_active:
                 self._mouse_activity_monitor.stop()
                 self._mouse_monitor_active = False
-                debug(f"[D_HoverMenu] MouseActivityMonitor stopped")
+                debug(f"[D_HoverMenu] GlobalMouseMonitor stopped")
 
     def _start_timeout_timer(self):
         """启动超时定时器"""
@@ -865,7 +865,7 @@ class D_HoverMenu(QWidget):
         self._fade_animation.start()
         # 发射控制栏显示信号
         self.controlBarShown.emit()
-        # 启动超时定时器（仅在非经典模式下，因为经典模式由 MouseActivityMonitor 处理）
+        # 启动超时定时器（仅在非经典模式下，因为经典模式由 GlobalMouseMonitor 处理）
         from freeassetfilter.utils.app_logger import debug
         debug(f"[D_HoverMenu] _show_control_bar finished: _mouse_monitor_active={self._mouse_monitor_active}, _is_visible={self._is_visible}")
         if not self._mouse_monitor_active:

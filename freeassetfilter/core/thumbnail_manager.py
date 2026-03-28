@@ -54,42 +54,76 @@ class FrameCacheEntry:
     frame: any  # numpy array
     timestamp: float
     position: int
+    estimated_bytes: int = 0
 
 
 @dataclass
 class VideoFrameCache:
     """视频帧缓存管理器"""
     max_entries: int = 5
+    max_bytes: int = 32 * 1024 * 1024
     cache: Dict[int, FrameCacheEntry] = None
     last_accessed: float = 0
+    current_bytes: int = 0
     
     def __post_init__(self):
         if self.cache is None:
             self.cache = {}
         self.last_accessed = time.time()
+
+    def _estimate_frame_bytes(self, frame) -> int:
+        """估算帧占用字节数"""
+        if frame is None:
+            return 0
+        try:
+            if hasattr(frame, 'nbytes'):
+                return int(frame.nbytes)
+            if hasattr(frame, 'itemsize') and hasattr(frame, 'size'):
+                return int(frame.itemsize * frame.size)
+            if hasattr(frame, '__len__'):
+                return int(len(frame))
+        except Exception:
+            pass
+        return 0
+
+    def _evict_oldest(self):
+        """移除最旧条目"""
+        if not self.cache:
+            return
+        oldest_pos = min(self.cache.keys(), key=lambda k: self.cache[k].timestamp)
+        oldest_entry = self.cache.pop(oldest_pos)
+        self.current_bytes = max(0, self.current_bytes - int(oldest_entry.estimated_bytes or 0))
+        if oldest_entry.frame is not None:
+            oldest_entry.frame = None
     
     def get(self, position: int) -> Optional:
         """获取缓存的帧"""
         self.last_accessed = time.time()
         if position in self.cache:
+            self.cache[position].timestamp = time.time()
             return self.cache[position].frame
         return None
     
     def put(self, position: int, frame):
         """缓存帧"""
         self.last_accessed = time.time()
-        # 如果缓存已满，移除最旧的条目并显式释放帧数据
-        if len(self.cache) >= self.max_entries:
-            oldest_pos = min(self.cache.keys(), key=lambda k: self.cache[k].timestamp)
-            oldest_entry = self.cache[oldest_pos]
-            if oldest_entry.frame is not None:
-                oldest_entry.frame = None
-            del self.cache[oldest_pos]
+        if position in self.cache:
+            old_entry = self.cache.pop(position)
+            self.current_bytes = max(0, self.current_bytes - int(old_entry.estimated_bytes or 0))
+            if old_entry.frame is not None:
+                old_entry.frame = None
+
+        estimated_bytes = self._estimate_frame_bytes(frame)
         self.cache[position] = FrameCacheEntry(
             frame=frame,
             timestamp=time.time(),
-            position=position
+            position=position,
+            estimated_bytes=estimated_bytes
         )
+        self.current_bytes += estimated_bytes
+
+        while len(self.cache) > self.max_entries or self.current_bytes > self.max_bytes:
+            self._evict_oldest()
     
     def clear(self):
         """清空缓存，显式释放帧数据"""
@@ -97,6 +131,7 @@ class VideoFrameCache:
             if entry.frame is not None:
                 entry.frame = None
         self.cache.clear()
+        self.current_bytes = 0
 
 
 class ThumbnailManager:
@@ -132,6 +167,20 @@ class ThumbnailManager:
     
     # 视频处理超时时间（秒）
     VIDEO_PROCESSING_TIMEOUT = 30
+
+    # 缩略图磁盘缓存限制
+    MAX_THUMB_CACHE_SIZE = 500 * 1024 * 1024  # 500MB
+    MAX_THUMB_CACHE_FILES = 10000
+    THUMB_CACHE_TARGET_SIZE = int(MAX_THUMB_CACHE_SIZE * 0.8)
+    THUMB_CACHE_TARGET_FILES = int(MAX_THUMB_CACHE_FILES * 0.8)
+
+    # 视频帧缓存全局限制
+    MAX_FRAME_CACHE_GROUPS = 128
+    MAX_FRAME_CACHE_BYTES = 256 * 1024 * 1024
+    MAX_FRAME_CACHE_BYTES_PER_GROUP = 32 * 1024 * 1024
+
+    # SVG 渲染缓存限制
+    MAX_SVG_CACHE_ENTRIES = 64
     
     # 最大图像尺寸限制（防止内存溢出）
     MAX_IMAGE_DIMENSION = 8192
@@ -174,6 +223,11 @@ class ThumbnailManager:
         self._native_cache_limit = 200 * 1024 * 1024
         if self._rust_bridge.available:
             self._rust_bridge.set_cache_limit(self._native_cache_limit)
+
+        # SVG 渲染缓存：(file_path, mtime) -> PIL.Image
+        self._svg_render_cache: Dict[Tuple[str, float], Image.Image] = {}
+        self._svg_cache_access_order: deque = deque()
+        self._svg_cache_lock = threading.Lock()
         
         # 正在处理的视频文件集合（用于请求去重）
         self._processing_videos: Set[str] = set()
@@ -332,26 +386,22 @@ class ThumbnailManager:
     def _check_and_enforce_limits_before_create(self):
         """
         在创建新缩略图前检查并强制执行缓存限制
-        
-        检查缩略图缓存目录大小，如果超过限制则清理最旧的文件
+
+        同时按照总大小与文件数量双阈值控制缓存目录，
+        一旦超过任一限制，则按最近最少访问（LRU）清理到安全水位。
         """
         try:
             import glob
-            max_cache_size = 500 * 1024 * 1024  # 500MB
-            max_cache_files = 10000
-            
+
             if not os.path.exists(self._thumb_dir):
                 return
-            
+
             thumbnail_files = glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_PRIMARY}"))
             thumbnail_files.extend(glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_LEGACY}")))
-            
-            if len(thumbnail_files) < max_cache_files:
-                return
-            
+
             total_size = 0
             file_info_list = []
-            
+
             for file_path in thumbnail_files:
                 try:
                     stat = os.stat(file_path)
@@ -359,25 +409,42 @@ class ThumbnailManager:
                     total_size += stat.st_size
                 except (OSError, IOError):
                     continue
-            
-            if total_size < max_cache_size and len(file_info_list) < max_cache_files:
+
+            current_file_count = len(file_info_list)
+            if (
+                total_size < self.MAX_THUMB_CACHE_SIZE
+                and current_file_count < self.MAX_THUMB_CACHE_FILES
+            ):
                 return
-            
+
             file_info_list.sort(key=lambda x: x[1])
-            
-            files_to_delete = max(1, len(file_info_list) // 10)
+
             deleted_count = 0
-            
-            for file_path, _, _ in file_info_list[:files_to_delete]:
+            remaining_size = total_size
+            remaining_count = current_file_count
+
+            for file_path, _, file_size in file_info_list:
+                if (
+                    remaining_size <= self.THUMB_CACHE_TARGET_SIZE
+                    and remaining_count <= self.THUMB_CACHE_TARGET_FILES
+                ):
+                    break
+
                 try:
                     os.remove(file_path)
                     deleted_count += 1
+                    remaining_size -= file_size
+                    remaining_count -= 1
                 except (OSError, IOError) as e:
                     debug(f"[ThumbnailManager] 删除缓存文件失败 {file_path}: {e}")
-            
+
             if deleted_count > 0:
-                debug(f"[ThumbnailManager] 缓存限制检查：已清理 {deleted_count} 个旧缩略图")
-                
+                debug(
+                    "[ThumbnailManager] 缓存限制检查："
+                    f"已清理 {deleted_count} 个旧缩略图，"
+                    f"剩余 {max(remaining_count, 0)} 个文件 / {max(remaining_size, 0)} 字节"
+                )
+
         except Exception as e:
             warning(f"[ThumbnailManager] 检查缓存限制时出错: {e}")
     
@@ -474,19 +541,22 @@ class ThumbnailManager:
             "native_image": max(2, min(6, (os.cpu_count() or 4))),
             "native_video": max(1, min(3, max(1, (os.cpu_count() or 4) // 2))),
             "python_image": max(1, min(2, (os.cpu_count() or 4) // 2 or 1)),
+            "python_video": max(1, min(3, max(1, (os.cpu_count() or 4) // 2))),
         }
-        queue_order = ["native_video", "python_image", "native_image"]
+        queue_order = ["native_video", "python_video", "python_image", "native_image"]
 
         task_queues = {
             "native_image": deque(),
             "native_video": deque(),
             "python_image": deque(),
+            "python_video": deque(),
         }
         queue_active_counts = {name: 0 for name in task_queues}
         queue_avg_duration = {
             "native_image": 0.15,
             "native_video": 1.5,
             "python_image": 0.35,
+            "python_video": 2.0,
         }
 
         def _run_task(queue_name: str, item: Dict) -> Tuple[str, Dict, bool, Optional[str], float]:
@@ -511,7 +581,9 @@ class ThumbnailManager:
                     if result_path is None:
                         result_path = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
                 elif queue_name == "python_image":
-                    result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+                    result_path = self._create_image_thumbnail(file_path, thumbnail_path)
+                elif queue_name == "python_video":
+                    result_path = self._create_video_thumbnail(file_path, thumbnail_path)
 
                 success = bool(result_path and os.path.exists(result_path))
                 if success:
@@ -564,7 +636,7 @@ class ThumbnailManager:
                 if self._rust_bridge.available:
                     task_queues["native_video"].append(item)
                 else:
-                    task_queues["python_image"].append(item)
+                    task_queues["python_video"].append(item)
             elif self._rust_bridge.available and not use_python_dedicated:
                 task_queues["native_image"].append(item)
             else:
@@ -780,28 +852,16 @@ class ThumbnailManager:
             
             # 使用thumbnail方法生成缩略图，保持宽高比
             img.thumbnail((dpi_scaled_size, dpi_scaled_size), Image.Resampling.LANCZOS)
-            new_width, new_height = img.size
-            
-            # 创建透明背景
-            dpi_scaled_background_size = int(self.BASE_SIZE * self.dpi_scale)
-            thumbnail = Image.new("RGBA", (dpi_scaled_background_size, dpi_scaled_background_size), (0, 0, 0, 0))
-            
-            # 居中绘制
-            x_offset = (dpi_scaled_background_size - new_width) // 2
-            y_offset = (dpi_scaled_background_size - new_height) // 2
-            
-            # 处理不同模式的图像
+
+            # 直接输出保持原始比例的缩略图，避免补白后在 JPEG 中显示为白边
             if img.mode == 'RGBA':
-                thumbnail.paste(img, (x_offset, y_offset), img)
+                thumbnail = img.convert("RGB")
             elif img.mode == 'P':
                 img_converted = img.convert('RGBA')
-                thumbnail.paste(img_converted, (x_offset, y_offset), img_converted)
+                thumbnail = img_converted.convert("RGB")
             else:
-                img_converted = img.convert('RGBA')
-                thumbnail.paste(img_converted, (x_offset, y_offset))
-            
-            # 保存缩略图
-            thumbnail = thumbnail.convert("RGB")
+                thumbnail = img.convert("RGB")
+
             thumbnail.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
             
             debug(f"[ThumbnailManager] 图片缩略图生成成功: {thumbnail_path}")
@@ -828,6 +888,26 @@ class ThumbnailManager:
                 except Exception:
                     pass
     
+    def _get_total_frame_cache_bytes(self) -> int:
+        """获取所有视频帧缓存的总内存占用"""
+        return sum(cache.current_bytes for cache in self._frame_caches.values())
+
+    def _enforce_global_frame_cache_limit(self):
+        """按内存预算清理全局视频帧缓存"""
+        while (
+            len(self._frame_caches) > self.MAX_FRAME_CACHE_GROUPS
+            or self._get_total_frame_cache_bytes() > self.MAX_FRAME_CACHE_BYTES
+        ):
+            if not self._frame_caches:
+                break
+            oldest_key = min(
+                self._frame_caches.keys(),
+                key=lambda k: self._frame_caches[k].last_accessed
+            )
+            oldest_cache = self._frame_caches.pop(oldest_key, None)
+            if oldest_cache is not None:
+                oldest_cache.clear()
+
     def _get_or_create_frame_cache(self, file_path: str) -> VideoFrameCache:
         """获取或创建视频帧缓存"""
         with self._frame_cache_lock:
@@ -838,11 +918,18 @@ class ThumbnailManager:
                 if current_time - v.last_accessed > self.FRAME_CACHE_EXPIRY
             ]
             for k in expired_keys:
-                del self._frame_caches[k]
-            
+                cache = self._frame_caches.pop(k, None)
+                if cache is not None:
+                    cache.clear()
+
             # 获取或创建缓存
             if file_path not in self._frame_caches:
-                self._frame_caches[file_path] = VideoFrameCache()
+                self._enforce_global_frame_cache_limit()
+                self._frame_caches[file_path] = VideoFrameCache(
+                    max_bytes=self.MAX_FRAME_CACHE_BYTES_PER_GROUP
+                )
+
+            self._enforce_global_frame_cache_limit()
             return self._frame_caches[file_path]
     
     def _try_acquire_video_lock(self, file_path: str) -> bool:
@@ -1128,22 +1215,9 @@ class ThumbnailManager:
             # 检查PIL图像尺寸限制
             if not self._check_image_size_limit(frame_pil):
                 return None
-            
-            # 创建透明背景
-            dpi_scaled_background_size = int(self.BASE_SIZE * self.dpi_scale)
-            thumbnail = Image.new(
-                "RGBA",
-                (dpi_scaled_background_size, dpi_scaled_background_size),
-                (0, 0, 0, 0)
-            )
-            
-            # 居中绘制
-            x_offset = (dpi_scaled_background_size - new_width) // 2
-            y_offset = (dpi_scaled_background_size - new_height) // 2
-            thumbnail.paste(frame_pil, (x_offset, y_offset))
-            
-            # 保存缩略图
-            thumbnail = thumbnail.convert("RGB")
+
+            # 直接输出保持原始比例的视频帧缩略图，避免补白后在 JPEG 中显示为白边
+            thumbnail = frame_pil
             thumbnail.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
             
             debug(f"[ThumbnailManager] 视频缩略图生成成功: {thumbnail_path}")
@@ -1309,11 +1383,19 @@ class ThumbnailManager:
         qimage = None
         painter = None
         renderer = None
+        cache_key = None
         
         try:
             from PySide6.QtSvg import QSvgRenderer
             from PySide6.QtGui import QImage, QPainter
             from PySide6.QtCore import Qt
+
+            file_mtime = os.path.getmtime(file_path)
+            cache_key = (file_path, file_mtime)
+            with self._svg_cache_lock:
+                cached_img = self._svg_render_cache.get(cache_key)
+                if cached_img is not None:
+                    return cached_img.copy(), True
             
             # 直接使用QSvgRenderer渲染SVG，不经过SvgRenderer的复杂处理
             renderer = QSvgRenderer(file_path)
@@ -1392,6 +1474,24 @@ class ThumbnailManager:
             
             # 创建PIL图像
             img = Image.frombytes("RGBA", (width, height), img_data)
+
+            with self._svg_cache_lock:
+                try:
+                    self._svg_render_cache[cache_key] = img.copy()
+                    self._svg_cache_access_order.append(cache_key)
+
+                    while len(self._svg_cache_access_order) > self.MAX_SVG_CACHE_ENTRIES:
+                        oldest_key = self._svg_cache_access_order.popleft()
+                        if oldest_key == cache_key:
+                            continue
+                        old_img = self._svg_render_cache.pop(oldest_key, None)
+                        if old_img is not None:
+                            try:
+                                old_img.close()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
             
             return img, True
             
@@ -1435,6 +1535,23 @@ class ThumbnailManager:
                         deleted_count += 1
                     except (OSError, IOError) as e:
                         debug(f"[ThumbnailManager] 删除缩略图文件失败 {file_path}: {e}")
+
+            with self._frame_cache_lock:
+                for cache in self._frame_caches.values():
+                    cache.clear()
+                self._frame_caches.clear()
+
+            with self._svg_cache_lock:
+                for cached_img in self._svg_render_cache.values():
+                    try:
+                        cached_img.close()
+                    except Exception:
+                        pass
+                self._svg_render_cache.clear()
+                self._svg_cache_access_order.clear()
+
+            if self._rust_bridge.available:
+                self._rust_bridge.clear_cache()
             
             info(f"[ThumbnailManager] 已清理 {deleted_count} 个缩略图缓存文件")
             return deleted_count
@@ -1463,6 +1580,123 @@ class ThumbnailManager:
         except Exception as e:
             debug(f"获取缩略图数量失败: {e}")
             return 0
+
+    def _get_all_thumbnail_files(self) -> List[Tuple[str, float]]:
+        """
+        获取所有缩略图文件及其时间戳
+
+        Returns:
+            List[Tuple[str, float]]: [(文件路径, 时间戳)]
+        """
+        thumbnail_files: List[Tuple[str, float]] = []
+
+        try:
+            if not os.path.exists(self._thumb_dir):
+                return thumbnail_files
+
+            for filename in os.listdir(self._thumb_dir):
+                if filename.endswith(self.THUMB_EXT_PRIMARY) or filename.endswith(self.THUMB_EXT_LEGACY):
+                    file_path = os.path.join(self._thumb_dir, filename)
+                    try:
+                        file_time = os.path.getctime(file_path)
+                    except (OSError, IOError):
+                        try:
+                            file_time = os.path.getmtime(file_path)
+                        except (OSError, IOError) as e:
+                            debug(f"[ThumbnailManager] 获取文件时间失败 {file_path}: {e}")
+                            continue
+                    thumbnail_files.append((file_path, file_time))
+        except (OSError, IOError) as e:
+            debug(f"[ThumbnailManager] 访问缩略图目录失败 {self._thumb_dir}: {e}")
+
+        return thumbnail_files
+
+    def clean_thumbnails(self, cleanup_period_days: Optional[int] = None, max_cache_size: int = 2000) -> Tuple[int, int]:
+        """
+        清理缩略图缓存，删除超过最大数量的旧文件，或删除超过指定天数的文件
+
+        Args:
+            cleanup_period_days: 缓存清理周期（天），如果提供则删除超过此天数的文件
+            max_cache_size: 按数量清理时允许保留的最大文件数
+
+        Returns:
+            Tuple[int, int]: (删除的文件数量, 剩余的文件数量)
+        """
+        thumbnail_files = self._get_all_thumbnail_files()
+        total_files = len(thumbnail_files)
+        files_to_delete_paths: List[str] = []
+
+        if cleanup_period_days:
+            current_time = time.time()
+            cutoff_time = current_time - (cleanup_period_days * 86400)
+            for file_path, file_time in thumbnail_files:
+                if file_time < cutoff_time:
+                    files_to_delete_paths.append(file_path)
+        else:
+            if total_files <= max_cache_size:
+                return 0, total_files
+
+            files_to_delete = total_files - max_cache_size
+            thumbnail_files.sort(key=lambda x: x[1])
+            files_to_delete_paths = [file_path for file_path, _ in thumbnail_files[:files_to_delete]]
+
+        deleted_count = 0
+        for file_path in files_to_delete_paths:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    deleted_count += 1
+            except (OSError, IOError) as e:
+                debug(f"[ThumbnailManager] 删除缓存文件失败 {file_path}: {e}")
+
+        return deleted_count, total_files - deleted_count
+
+    def is_thumbnail_exists(self, file_path: str) -> bool:
+        """
+        检查指定文件的缩略图是否存在
+
+        Args:
+            file_path: 原始文件路径
+
+        Returns:
+            bool: 如果缩略图存在返回True，否则返回False
+        """
+        return self.has_thumbnail(file_path)
+
+    def get_cache_statistics(self, max_cache_size: int = 2000) -> Dict[str, Optional[float]]:
+        """
+        获取缓存统计信息
+
+        Args:
+            max_cache_size: 用于计算占用比例的最大文件数阈值
+
+        Returns:
+            Dict[str, Optional[float]]: 缓存统计信息
+        """
+        thumbnail_files = self._get_all_thumbnail_files()
+        total_files = len(thumbnail_files)
+
+        if total_files == 0:
+            return {
+                "total_files": 0,
+                "max_files": max_cache_size,
+                "usage_percentage": 0,
+                "oldest_file_time": None,
+                "newest_file_time": None,
+            }
+
+        file_times = [file_time for _, file_time in thumbnail_files]
+        oldest_time = min(file_times)
+        newest_time = max(file_times)
+        usage_percentage = (total_files / max_cache_size) * 100 if max_cache_size > 0 else 0
+
+        return {
+            "total_files": total_files,
+            "max_files": max_cache_size,
+            "usage_percentage": usage_percentage,
+            "oldest_file_time": oldest_time,
+            "newest_file_time": newest_time,
+        }
 
 
 # 全局缩略图管理器实例
@@ -1593,6 +1827,29 @@ def clear_all_thumbnails() -> int:
     return manager.clear_all_thumbnails()
 
 
+def clean_thumbnails(cleanup_period_days: Optional[int] = None, max_cache_size: int = 2000) -> Tuple[int, int]:
+    """
+    便捷函数：清理缩略图缓存
+
+    Args:
+        cleanup_period_days: 缓存清理周期（天）
+        max_cache_size: 按数量清理时允许保留的最大文件数
+
+    Returns:
+        Tuple[int, int]: (删除数量, 剩余数量)
+    """
+    manager = get_thumbnail_manager()
+    return manager.clean_thumbnails(cleanup_period_days=cleanup_period_days, max_cache_size=max_cache_size)
+
+
+def get_cache_statistics(max_cache_size: int = 2000) -> Dict[str, Optional[float]]:
+    """
+    便捷函数：获取缩略图缓存统计信息
+    """
+    manager = get_thumbnail_manager()
+    return manager.get_cache_statistics(max_cache_size=max_cache_size)
+
+
 # 模块导出
 __all__ = [
     'ThumbnailManager',
@@ -1605,4 +1862,6 @@ __all__ = [
     'is_image_file',
     'is_video_file',
     'clear_all_thumbnails',
+    'clean_thumbnails',
+    'get_cache_statistics',
 ]

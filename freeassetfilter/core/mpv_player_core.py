@@ -25,7 +25,7 @@ from ctypes import c_void_p, c_int, c_int64, c_double, c_char_p, POINTER, Struct
 from typing import Optional, Callable, Dict, Any, List, Tuple, Union
 from enum import IntEnum
 
-from PySide6.QtCore import QObject, Signal, QThread, Qt, QTimer
+from PySide6.QtCore import QObject, Signal, QThread, Qt, QTimer, QMetaObject, Slot
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error, get_safe_error_for_ui, sanitize_path
@@ -447,8 +447,18 @@ class MPVPlayerCore(QObject):
         self._video_height: int = 0
         
         self._state_lock = threading.Lock()
+        self._last_emitted_position: Optional[float] = None
+        self._last_emitted_duration: Optional[float] = None
+        self._last_emitted_state: Optional[bool] = None
+        self._last_emitted_volume: Optional[int] = None
+        self._last_emitted_speed: Optional[float] = None
+        self._last_emitted_muted: Optional[bool] = None
+        self._last_emitted_video_size: Tuple[int, int] = (0, 0)
+        self._position_emit_threshold: float = 0.05
+        self._float_emit_epsilon: float = 0.0001
         
         self._initialized = False
+        self._signal_timer = None
     
     def _worker_thread_func(self):
         """MPV工作线程主函数 - 所有MPV操作都在此线程执行"""
@@ -670,10 +680,89 @@ class MPVPlayerCore(QObject):
         elif event_id == MpvEventId.PLAYBACK_RESTART:
             with self._state_lock:
                 self._is_seeking = False
-            self._signal_queue.put(('seekFinished',))
+            self._queue_signal_if_changed('seekFinished')
         elif event_id == MpvEventId.SHUTDOWN:
             self._stop_event.set()
     
+    def _enqueue_signal(self, signal_name: str, *args):
+        """非阻塞入队信号，队列满时丢弃最旧项，避免工作线程卡死"""
+        signal_data = (signal_name, *args)
+
+        try:
+            self._signal_queue.put_nowait(signal_data)
+            return
+        except queue.Full:
+            pass
+
+        try:
+            self._signal_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+        try:
+            self._signal_queue.put_nowait(signal_data)
+        except queue.Full:
+            debug(f"[MPVPlayerCore] 信号队列拥塞，丢弃信号: {signal_name}")
+
+    def _queue_signal_if_changed(self, signal_name: str, *args):
+        """仅在值发生变化时入队信号，减少高频重复发射"""
+        should_emit = False
+
+        with self._state_lock:
+            if signal_name == 'positionChanged':
+                position = float(args[0]) if len(args) > 0 else 0.0
+                duration = float(args[1]) if len(args) > 1 else self._duration
+                if (
+                    self._last_emitted_position is None
+                    or self._last_emitted_duration is None
+                    or abs(position - self._last_emitted_position) >= self._position_emit_threshold
+                    or abs(duration - self._last_emitted_duration) >= self._position_emit_threshold
+                ):
+                    self._last_emitted_position = position
+                    self._last_emitted_duration = duration
+                    should_emit = True
+            elif signal_name == 'durationChanged':
+                duration = float(args[0])
+                if (
+                    self._last_emitted_duration is None
+                    or abs(duration - self._last_emitted_duration) >= self._float_emit_epsilon
+                ):
+                    self._last_emitted_duration = duration
+                    should_emit = True
+            elif signal_name == 'stateChanged':
+                state = bool(args[0])
+                if self._last_emitted_state is None or self._last_emitted_state != state:
+                    self._last_emitted_state = state
+                    should_emit = True
+            elif signal_name == 'volumeChanged':
+                volume = int(args[0])
+                if self._last_emitted_volume is None or self._last_emitted_volume != volume:
+                    self._last_emitted_volume = volume
+                    should_emit = True
+            elif signal_name == 'speedChanged':
+                speed = float(args[0])
+                if (
+                    self._last_emitted_speed is None
+                    or abs(speed - self._last_emitted_speed) >= self._float_emit_epsilon
+                ):
+                    self._last_emitted_speed = speed
+                    should_emit = True
+            elif signal_name == 'mutedChanged':
+                muted = bool(args[0])
+                if self._last_emitted_muted is None or self._last_emitted_muted != muted:
+                    self._last_emitted_muted = muted
+                    should_emit = True
+            elif signal_name == 'videoSizeChanged':
+                size = (int(args[0]), int(args[1]))
+                if self._last_emitted_video_size != size:
+                    self._last_emitted_video_size = size
+                    should_emit = True
+            else:
+                should_emit = True
+
+        if should_emit:
+            self._enqueue_signal(signal_name, *args)
+
     def _handle_property_change_event(self, mpv_handle: c_void_p, event: MpvEvent):
         """处理属性变化事件"""
         if not event.data:
@@ -702,21 +791,16 @@ class MPVPlayerCore(QObject):
                 self._position = float(value)
             elif prop_name == "duration" and value is not None:
                 self._duration = float(value)
-                self._signal_queue.put(('durationChanged', self._duration))
             elif prop_name == "pause":
                 is_paused = bool(value) if value is not None else False
                 self._is_paused = is_paused
                 self._is_playing = not is_paused
-                self._signal_queue.put(('stateChanged', self._is_playing))
             elif prop_name == "volume" and value is not None:
                 self._volume = int(value)
-                self._signal_queue.put(('volumeChanged', self._volume))
             elif prop_name == "speed" and value is not None:
                 self._speed = float(value)
-                self._signal_queue.put(('speedChanged', self._speed))
             elif prop_name == "mute":
                 self._muted = bool(value) if value is not None else False
-                self._signal_queue.put(('mutedChanged', self._muted))
             elif prop_name == "loop-file" and value is not None:
                 self._loop_mode = str(value)
             elif prop_name == "video-params/w" and value is not None:
@@ -724,8 +808,23 @@ class MPVPlayerCore(QObject):
                 h_val = self._get_property_double(mpv_handle, "video-params/h")
                 if h_val is not None:
                     self._video_height = int(h_val)
-                if self._video_width > 0 and self._video_height > 0:
-                    self._signal_queue.put(('videoSizeChanged', self._video_width, self._video_height))
+
+        if prop_name == "time-pos" and value is not None:
+            self._queue_signal_if_changed('positionChanged', self._position, self._duration)
+        elif prop_name == "duration" and value is not None:
+            self._queue_signal_if_changed('durationChanged', self._duration)
+            self._queue_signal_if_changed('positionChanged', self._position, self._duration)
+        elif prop_name == "pause":
+            self._queue_signal_if_changed('stateChanged', self._is_playing)
+        elif prop_name == "volume" and value is not None:
+            self._queue_signal_if_changed('volumeChanged', self._volume)
+        elif prop_name == "speed" and value is not None:
+            self._queue_signal_if_changed('speedChanged', self._speed)
+        elif prop_name == "mute":
+            self._queue_signal_if_changed('mutedChanged', self._muted)
+        elif prop_name == "video-params/w" and value is not None:
+            if self._video_width > 0 and self._video_height > 0:
+                self._queue_signal_if_changed('videoSizeChanged', self._video_width, self._video_height)
     
     def _handle_file_loaded_event(self, mpv_handle: c_void_p):
         """处理文件加载完成事件"""
@@ -733,7 +832,7 @@ class MPVPlayerCore(QObject):
         if duration is not None and duration > 0:
             with self._state_lock:
                 self._duration = duration
-            self._signal_queue.put(('durationChanged', self._duration))
+            self._queue_signal_if_changed('durationChanged', self._duration)
 
         # 获取当前的播放状态（MPV加载文件后会自动开始播放）
         # 使用 FLAG 类型获取 pause 属性
@@ -750,8 +849,8 @@ class MPVPlayerCore(QObject):
             self._is_playing = not is_paused
 
         # 将信号放入队列，由主线程处理
-        self._signal_queue.put(('stateChanged', self._is_playing))
-        self._signal_queue.put(('fileLoaded', self._current_file))
+        self._queue_signal_if_changed('stateChanged', self._is_playing)
+        self._enqueue_signal('fileLoaded', self._current_file)
     
     def _handle_end_file_event(self, mpv_handle: c_void_p, event: MpvEvent):
         """处理文件播放结束事件"""
@@ -766,15 +865,15 @@ class MPVPlayerCore(QObject):
         with self._state_lock:
             self._is_playing = False
             self._is_paused = False
-        self._signal_queue.put(('stateChanged', False))
+        self._queue_signal_if_changed('stateChanged', False)
         
         if reason == MpvEndFileReason.ERROR:
             # 使用安全的错误信息，不包含敏感路径
             error_msg = self._dll_loader.get_error_string(error_code)
             safe_error_msg = sanitize_path(error_msg)
-            self._signal_queue.put(('errorOccurred', error_code, safe_error_msg))
+            self._enqueue_signal('errorOccurred', error_code, safe_error_msg)
         
-        self._signal_queue.put(('fileEnded', reason))
+        self._enqueue_signal('fileEnded', reason)
     
     def _update_position_state(self, mpv_handle: c_void_p):
         """更新播放位置状态（在工作线程中执行，不直接发射信号）"""
@@ -788,8 +887,8 @@ class MPVPlayerCore(QObject):
                 if duration is not None and duration > 0:
                     self._duration = duration
             
-            # 将信号放入队列，由主线程处理
-            self._signal_queue.put(('positionChanged', self._position, self._duration))
+            # 将信号放入队列，由主线程处理，并对高频位置更新做阈值去重
+            self._queue_signal_if_changed('positionChanged', self._position, self._duration)
         except (RuntimeError, AttributeError, OSError) as e:
             error(f"[MPVWorker] 更新位置状态时出错: {e}")
     
@@ -905,7 +1004,6 @@ class MPVPlayerCore(QObject):
             with self._state_lock:
                 self._is_playing = True
                 self._is_paused = False
-            self.stateChanged.emit(True)
         return result >= 0
     
     def _pause_internal(self, mpv_handle: c_void_p) -> bool:
@@ -920,7 +1018,6 @@ class MPVPlayerCore(QObject):
             with self._state_lock:
                 self._is_playing = False
                 self._is_paused = True
-            self.stateChanged.emit(False)
         return result >= 0
     
     def _stop_internal(self, mpv_handle: c_void_p) -> bool:
@@ -936,7 +1033,6 @@ class MPVPlayerCore(QObject):
                 self._is_playing = False
                 self._is_paused = False
                 self._position = 0.0
-            self.stateChanged.emit(False)
         return result >= 0
     
     def _seek_internal(self, mpv_handle: c_void_p, position: float, **kwargs) -> bool:
@@ -959,7 +1055,6 @@ class MPVPlayerCore(QObject):
         if result >= 0:
             with self._state_lock:
                 self._volume = volume
-            self.volumeChanged.emit(volume)
         return result >= 0
     
     def _set_speed_internal(self, mpv_handle: c_void_p, speed: float, **kwargs) -> bool:
@@ -974,7 +1069,6 @@ class MPVPlayerCore(QObject):
         if result >= 0:
             with self._state_lock:
                 self._speed = speed
-            self.speedChanged.emit(speed)
         return result >= 0
     
     def _set_muted_internal(self, mpv_handle: c_void_p, muted: bool, **kwargs) -> bool:
@@ -988,7 +1082,6 @@ class MPVPlayerCore(QObject):
         if result >= 0:
             with self._state_lock:
                 self._muted = muted
-            self.mutedChanged.emit(muted)
         return result >= 0
     
     def _set_loop_internal(self, mpv_handle: c_void_p, loop_mode: str, **kwargs) -> bool:
@@ -1192,7 +1285,7 @@ class MPVPlayerCore(QObject):
         """发射错误信号（通过信号队列，由主线程处理）"""
         # 清理错误消息中的敏感路径
         safe_message = sanitize_path(error_message)
-        self._signal_queue.put(('errorOccurred', error_code, safe_message))
+        self._enqueue_signal('errorOccurred', error_code, safe_message)
     
     def _send_command(self, cmd_type: MPVCommandType, *args, **kwargs) -> Any:
         """发送命令到工作线程并等待结果"""
@@ -1284,17 +1377,31 @@ class MPVPlayerCore(QObject):
         self._worker_thread.start()
         
         if self._initialized_event.wait(timeout=10.0):
-            # 启动信号处理定时器
-            self._start_signal_timer()
+            # 在QObject所属线程中启动信号处理定时器，避免非Qt线程启动QTimer
+            QMetaObject.invokeMethod(self, "_start_signal_timer", Qt.QueuedConnection)
             return True
         
         return False
     
+    @Slot()
     def _start_signal_timer(self):
         """启动信号处理定时器"""
+        if self._signal_timer is not None:
+            return
+
         self._signal_timer = QTimer(self)
         self._signal_timer.timeout.connect(self._process_signal_queue)
         self._signal_timer.start(100)  # 每100ms处理一次信号队列（从50ms优化为100ms，降低CPU占用）
+
+    @Slot()
+    def _stop_signal_timer(self):
+        """停止信号处理定时器"""
+        if self._signal_timer is not None:
+            try:
+                self._signal_timer.stop()
+            except (RuntimeError, AttributeError) as e:
+                debug(f"[MPVPlayerCore] 停止信号定时器失败: {e}")
+            self._signal_timer = None
     
     def _process_signal_queue(self):
         """处理信号队列（在主线程中执行）"""
@@ -1790,12 +1897,11 @@ class MPVPlayerCore(QObject):
         self._stop_event.set()
 
         # 停止信号处理定时器
-        if hasattr(self, '_signal_timer') and self._signal_timer:
+        if self._signal_timer is not None:
             try:
-                self._signal_timer.stop()
-                self._signal_timer = None
+                QMetaObject.invokeMethod(self, "_stop_signal_timer", Qt.QueuedConnection)
             except (RuntimeError, AttributeError) as e:
-                debug(f"[MPVPlayerCore] 停止信号定时器失败: {e}")
+                debug(f"[MPVPlayerCore] 请求停止信号定时器失败: {e}")
 
         # 预清理 - 让 MPV 进入空闲状态
         try:

@@ -185,13 +185,7 @@ fn decode_with_image_crate(path: &str, width: u32, height: u32) -> Result<(Vec<u
     let rw = resized.width();
     let rh = resized.height();
 
-    // 直接在 Rust 侧做透明底方图合成，减少 Python 二次处理开销
-    let mut canvas = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 0]));
-    let x = ((width as i64 - rw as i64) / 2).max(0);
-    let y = ((height as i64 - rh as i64) / 2).max(0);
-    image::imageops::overlay(&mut canvas, &resized, x, y);
-
-    Ok((canvas.into_raw(), width, height))
+    Ok((resized.into_raw(), rw, rh))
 }
 
 fn read_frame_at(cap: &mut VideoCapture, frame_index_1based: i64) -> Option<Mat> {
@@ -333,12 +327,7 @@ fn compose_rgba_canvas_from_bgr_frame(frame: &Mat, target_w: u32, target_h: u32)
     let resized_rgba =
         image::RgbaImage::from_raw(resize_w as u32, resize_h as u32, bytes).ok_or(STATUS_DECODE_FAILED)?;
 
-    let mut canvas = image::RgbaImage::from_pixel(target_w, target_h, image::Rgba([0, 0, 0, 0]));
-    let x = ((target_w as i64 - resize_w as i64) / 2).max(0);
-    let y = ((target_h as i64 - resize_h as i64) / 2).max(0);
-    image::imageops::overlay(&mut canvas, &resized_rgba, x, y);
-
-    Ok((canvas.into_raw(), target_w, target_h))
+    Ok((resized_rgba.into_raw(), resize_w as u32, resize_h as u32))
 }
 
 fn make_hw_capture_params(accel_type: i32, device_index: i32, enable_opencl: bool) -> Vector<i32> {

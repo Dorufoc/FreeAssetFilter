@@ -323,6 +323,12 @@ class FileBlockCard(QWidget):
         self._update_icon()
         
         self.layout.addWidget(self.icon_label, alignment=Qt.AlignCenter)
+
+    def _clear_icon_children(self):
+        """清理图标容器中的临时子控件，避免 SVG/拖拽预览对象残留"""
+        for child in self.icon_label.findChildren(QWidget, options=Qt.FindDirectChildrenOnly):
+            child.setParent(None)
+            child.deleteLater()
     
     def _update_icon(self):
         """更新文件图标"""
@@ -386,33 +392,9 @@ class FileBlockCard(QWidget):
                 else:
                     svg_widget = SvgRenderer.render_svg_to_widget(icon_path, base_icon_size, self.dpi_scale, replace_colors=True)
                 
-                if isinstance(svg_widget, QSvgWidget):
-                    for child in self.icon_label.findChildren(QLabel):
-                        child.deleteLater()
-                    for child in self.icon_label.findChildren(QSvgWidget):
-                        child.deleteLater()
-                    svg_widget.setParent(self.icon_label)
-                    svg_widget.setFixedSize(base_icon_size, base_icon_size)
-                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
-                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
-                    svg_widget.show()
-                elif isinstance(svg_widget, QLabel):
-                    for child in self.icon_label.findChildren(QLabel):
-                        child.deleteLater()
-                    for child in self.icon_label.findChildren(QSvgWidget):
-                        child.deleteLater()
-                    svg_widget.setParent(self.icon_label)
-                    svg_widget.setFixedSize(base_icon_size, base_icon_size)
-                    svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
-                    svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
-                    svg_widget.show()
-                elif isinstance(svg_widget, QWidget):
-                    for child in self.icon_label.findChildren(QLabel):
-                        child.deleteLater()
-                    for child in self.icon_label.findChildren(QSvgWidget):
-                        child.deleteLater()
-                    for child in self.icon_label.findChildren(QWidget):
-                        child.deleteLater()
+                if isinstance(svg_widget, (QSvgWidget, QLabel, QWidget)):
+                    self._clear_icon_children()
+                    self.icon_label.clear()
                     svg_widget.setParent(self.icon_label)
                     svg_widget.setFixedSize(base_icon_size, base_icon_size)
                     svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
@@ -434,6 +416,7 @@ class FileBlockCard(QWidget):
     
     def _set_icon_pixmap(self, pixmap, size):
         """设置图标Pixmap，保持原始比例"""
+        self._clear_icon_children()
         scaled_size = int(size * self.devicePixelRatio())
         if scaled_size > 0:
             # 获取原始图像的宽高比
@@ -463,6 +446,7 @@ class FileBlockCard(QWidget):
     
     def _set_default_icon(self):
         """设置默认图标"""
+        self._clear_icon_children()
         pixmap = QPixmap(self.icon_label.size())
         pixmap.fill(Qt.transparent)
         self.icon_label.setPixmap(pixmap)
@@ -878,6 +862,20 @@ class FileBlockCard(QWidget):
         self._unpreview_anim_group.addAnimation(self._anim_unpreview_bg)
         self._unpreview_anim_group.addAnimation(self._anim_unpreview_border)
     
+    def _stop_all_animations(self):
+        """停止所有动画组，避免对象销毁或状态切换时残留运行"""
+        for attr_name in (
+            "_hover_anim_group",
+            "_leave_anim_group",
+            "_select_anim_group",
+            "_deselect_anim_group",
+            "_preview_anim_group",
+            "_unpreview_anim_group",
+        ):
+            group = getattr(self, attr_name, None)
+            if group is not None:
+                group.stop()
+
     def _trigger_hover_animation(self):
         """触发悬停动画"""
         if not hasattr(self, '_style_colors'):
@@ -921,6 +919,19 @@ class FileBlockCard(QWidget):
         """更新卡片和标签的完整样式"""
         self._update_card_style()
         self._update_label_styles()
+
+    def update_theme(self):
+        """
+        重新加载主题颜色并刷新当前卡片样式/图标/动画缓存
+        供主窗口增量主题切换时调用，避免通过重建卡片来刷新配色
+        """
+        self._stop_all_animations()
+        self._init_colors()
+        self._init_animations()
+        self._update_styles()
+        self._update_icon()
+        self._init_interaction_settings_cache()
+        self.update()
     
     def _update_card_style(self):
         """更新卡片背景色和边框样式"""
@@ -1465,6 +1476,23 @@ class FileBlockCard(QWidget):
             card_height = self._drag_card.height()
             self._drag_card.move(global_pos.x() - card_width // 2, global_pos.y() - card_height // 2)
     
+    def _cleanup_drag_state(self):
+        """清理拖拽相关状态和临时窗口"""
+        self._long_press_timer.stop()
+        self._is_long_pressing = False
+        self._touch_start_pos = None
+        self._is_touch_dragging = False
+        self._drag_start_pos = None
+
+        if self._drag_card:
+            self._drag_card.hide()
+            self._drag_card.deleteLater()
+            self._drag_card = None
+
+        self._is_dragging = False
+        self.unsetCursor()
+        self._update_styles()
+
     def _end_drag(self, global_pos):
         """
         结束拖拽操作
@@ -1484,13 +1512,7 @@ class FileBlockCard(QWidget):
         # 发出拖拽结束信号
         self.drag_ended.emit(self.file_info, drop_target)
         
-        # 清理拖拽卡片
-        if self._drag_card:
-            self._drag_card.deleteLater()
-            self._drag_card = None
-        
-        self._is_dragging = False
-        self._is_long_pressing = False
+        self._cleanup_drag_state()
     
     def _detect_drop_target(self, global_pos):
         """
@@ -1540,3 +1562,15 @@ class FileBlockCard(QWidget):
             bool: 是否正在拖拽
         """
         return self._is_dragging
+
+    def hideEvent(self, event):
+        """隐藏时清理悬挂的拖拽状态与定时器"""
+        self._cleanup_drag_state()
+        self._stop_all_animations()
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        """关闭时释放动画、定时器与浮动拖拽卡片"""
+        self._cleanup_drag_state()
+        self._stop_all_animations()
+        super().closeEvent(event)

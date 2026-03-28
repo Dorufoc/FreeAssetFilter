@@ -188,10 +188,17 @@ class CustomFileSelector(QWidget):
         self._is_loading = False  # 是否正在加载
         self._all_files_count = 0  # 文件总数
         self._pending_width_update = False  # 标记是否有待执行的宽度更新
+        self._scroll_load_scheduled = False  # 滚动补载是否已排队
+        self._last_viewport_width = 0  # 记录上次视口宽度，避免重复布局
         self._lazy_load_timer = QTimer(self)  # 分批加载定时器
         self._lazy_load_timer.setSingleShot(True)
         self._lazy_load_timer.setInterval(33)  # 每33ms加载一批（约30fps，减少CPU占用）
         self._lazy_load_timer.timeout.connect(self._load_next_batch)
+
+        self._scroll_load_timer = QTimer(self)  # 滚动懒加载节流定时器
+        self._scroll_load_timer.setSingleShot(True)
+        self._scroll_load_timer.setInterval(33)
+        self._scroll_load_timer.timeout.connect(self._load_remaining_on_scroll)
         
         # 首次显示标志位，用于避免初始化时卡片重叠
         self._first_show = True
@@ -294,14 +301,17 @@ class CustomFileSelector(QWidget):
         
         # 创建顶部控制面板
         control_panel = self._create_control_panel()
+        self.control_panel = control_panel
         main_layout.addWidget(control_panel)
         
         # 创建文件列表区域
         files_area = self._create_files_area()
+        self.files_area = files_area
         main_layout.addWidget(files_area, 1)
         
         # 创建底部状态栏
         status_bar = self._create_status_bar()
+        self.status_bar = status_bar
         main_layout.addWidget(status_bar)
     
     def _create_control_panel(self):
@@ -363,6 +373,7 @@ class CustomFileSelector(QWidget):
         import os
         arrow_right_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "arrow_right.svg")
         go_btn = CustomButton(arrow_right_icon_path, button_type="normal", display_mode="icon", tooltip_text="前往")
+        self.go_btn = go_btn
         go_btn.clicked.connect(self.go_to_path)
         dir_layout.addWidget(go_btn)
         # 添加到悬浮信息目标控件
@@ -387,6 +398,7 @@ class CustomFileSelector(QWidget):
         import os
         refresh_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "refresh.svg")
         refresh_btn = CustomButton(refresh_icon_path, button_type="normal", display_mode="icon", tooltip_text="刷新")
+        self.refresh_btn = refresh_btn
         refresh_btn.clicked.connect(self.refresh_files)
         nav_layout.addWidget(refresh_btn)
         # 添加到悬浮信息目标控件
@@ -569,6 +581,117 @@ class CustomFileSelector(QWidget):
         #layout.addWidget(self.selected_count_label, 1, Qt.AlignRight)
         
         return status_bar
+
+    def _get_theme_colors(self):
+        """
+        获取当前主题颜色
+        """
+        app = QApplication.instance()
+        colors = {
+            "base_color": "#212121",
+            "auxiliary_color": "#313131",
+            "normal_color": "#717171",
+            "secondary_color": "#FFFFFF",
+            "accent_color": "#F0C54D",
+        }
+
+        if hasattr(app, "settings_manager"):
+            colors["base_color"] = app.settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
+            colors["auxiliary_color"] = app.settings_manager.get_setting("appearance.colors.auxiliary_color", colors["auxiliary_color"])
+            colors["normal_color"] = app.settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
+            colors["secondary_color"] = app.settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
+            colors["accent_color"] = app.settings_manager.get_setting("appearance.colors.accent_color", colors["accent_color"])
+
+        return colors
+
+    def update_theme(self):
+        """
+        增量刷新文件选择器主题，不重建文件列表
+        """
+        colors = self._get_theme_colors()
+
+        self.setStyleSheet(f"background-color: {colors['secondary_color']};")
+
+        if hasattr(self, "control_panel") and self.control_panel:
+            self.control_panel.setStyleSheet(
+                f"QGroupBox {{ border: none; background-color: {colors['base_color']}; }}"
+            )
+
+        if hasattr(self, "status_bar") and self.status_bar:
+            self.status_bar.setStyleSheet(
+                f"QFrame {{ border: none; background-color: {colors['base_color']}; }}"
+            )
+
+        if hasattr(self, "files_scroll_area") and self.files_scroll_area:
+            scaled_padding = int(3 * self.dpi_scale)
+            scrollbar_style = f"""
+                QScrollArea {{
+                    border: 1px solid {colors['normal_color']};
+                    border-radius: 8px;
+                    background-color: {colors['base_color']};
+                    padding: {scaled_padding}px;
+                }}
+                QScrollArea > QWidget > QWidget {{
+                    background-color: {colors['base_color']};
+                }}
+            """
+            self.files_scroll_area.setStyleSheet(scrollbar_style)
+            scrollbar = self.files_scroll_area.verticalScrollBar()
+            if hasattr(scrollbar, "apply_theme_from_settings"):
+                scrollbar.apply_theme_from_settings()
+
+        if hasattr(self, "files_container") and self.files_container:
+            self.files_container.setStyleSheet(
+                f"#FilesContainer {{ border: none; background-color: {colors['base_color']}; }}"
+            )
+
+        for button_name in (
+            "drive_btn",
+            "go_btn",
+            "parent_btn",
+            "refresh_btn",
+            "favorites_btn",
+            "last_path_btn",
+            "filter_btn",
+            "sort_btn",
+            "timeline_btn",
+            "generate_thumbnails_btn",
+            "clear_thumbnails_btn",
+        ):
+            button = getattr(self, button_name, None)
+            if button and hasattr(button, "_init_animations"):
+                try:
+                    button._init_animations()
+                    button.update()
+                except Exception:
+                    pass
+
+        for menu_name in ("drive_combo", "sort_menu"):
+            menu = getattr(self, menu_name, None)
+            if menu and hasattr(menu, "update_theme"):
+                try:
+                    menu.update_theme()
+                except Exception:
+                    pass
+
+        for i in range(self.files_layout.count()):
+            item = self.files_layout.itemAt(i)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None and hasattr(widget, "update_theme"):
+                try:
+                    widget.update_theme()
+                except Exception:
+                    pass
+
+        if hasattr(self, "hover_tooltip") and self.hover_tooltip:
+            try:
+                self.hover_tooltip.update()
+            except Exception:
+                pass
+
+        self.update()
     
     def _generate_thumbnails(self):
         """
@@ -1699,6 +1822,7 @@ class CustomFileSelector(QWidget):
         self._pending_files = files
         self._loaded_count = 0
         self._is_loading = True
+        self._scroll_load_scheduled = False
         self._refresh_callback = callback
         
         self._fixed_max_cols = self._calculate_max_columns()
@@ -1751,6 +1875,7 @@ class CustomFileSelector(QWidget):
         
         if not self._pending_files:
             self._is_loading = False
+            self._scroll_load_scheduled = False
             if hasattr(self, '_fixed_max_cols'):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
@@ -1780,6 +1905,7 @@ class CustomFileSelector(QWidget):
             self._lazy_load_timer.start()
         else:
             self._is_loading = False
+            self._scroll_load_scheduled = False
             if hasattr(self, '_fixed_max_cols'):
                 del self._fixed_max_cols
             self.files_container.setMinimumHeight(0)
@@ -1814,29 +1940,47 @@ class CustomFileSelector(QWidget):
         
         scrollbar = scroll_area.verticalScrollBar()
         max_value = scrollbar.maximum()
-        
-        # 当滚动到接近底部时触发加载（还有约30%未滚动时就开始加载）
-        if value >= max_value * 0.7:
-            QTimer.singleShot(100, self._load_remaining_on_scroll)
+        if max_value <= 0:
+            return
+
+        viewport_height = max(1, scroll_area.viewport().height())
+        preload_distance = max(int(viewport_height * 1.5), int(200 * self.dpi_scale))
+        remaining_distance = max_value - value
+
+        # 当距离底部不足约 1.5 屏时开始预取，并通过节流定时器合并高频滚动事件
+        if remaining_distance <= preload_distance:
+            self._scroll_load_scheduled = True
+            self._scroll_load_timer.start()
 
     def _load_remaining_on_scroll(self):
         """滚动时加载剩余的卡片"""
+        self._scroll_load_scheduled = False
+
         if not self._pending_files or self._is_loading:
             return
-        
+
+        scroll_area = self.files_scroll_area
+        viewport_height = scroll_area.viewport().height() if scroll_area else 0
+        estimated_card_height = max(int(75 * self.dpi_scale), 1)
+        estimated_rows_per_screen = max(1, viewport_height // estimated_card_height) if viewport_height > 0 else 1
+
+        max_cols = getattr(self, '_fixed_max_cols', self._calculate_max_columns())
+        max_cols = max(1, max_cols)
+
+        preload_screens = 2
+        target_batch_size = max(
+            self._batch_size,
+            estimated_rows_per_screen * max_cols * preload_screens
+        )
+
         self._is_loading = True
-        while self._pending_files:
-            batch = self._pending_files[:self._batch_size]
-            self._pending_files = self._pending_files[self._batch_size:]
-            self._create_file_cards_batch(batch)
-            self._loaded_count += len(batch)
-            
-            if len(self._pending_files) > 0:
-                break
+        batch = self._pending_files[:target_batch_size]
+        self._pending_files = self._pending_files[target_batch_size:]
+        self._create_file_cards_batch(batch)
+        self._loaded_count += len(batch)
         
         if self._pending_files:
             self._is_loading = False
-            self._lazy_load_timer.start()
         else:
             self._is_loading = False
             if hasattr(self, '_fixed_max_cols'):
@@ -1853,10 +1997,12 @@ class CustomFileSelector(QWidget):
         """
         self.resize_timer.stop()
         self._lazy_load_timer.stop()
+        self._scroll_load_timer.stop()
         self._pending_files = []
         self._loaded_count = 0
         self._is_loading = False
         self._pending_width_update = False
+        self._scroll_load_scheduled = False
 
         if hasattr(self, '_last_max_cols'):
             del self._last_max_cols
@@ -2285,8 +2431,10 @@ class CustomFileSelector(QWidget):
         """
         # 设置布局脏标记，触发布局更新
         self._layout_dirty = True
-        # 立即检查布局
-        self._check_card_layout()
+        self._update_all_cards_width()
+
+        if self._pending_files and not self._is_loading:
+            self._load_remaining_on_scroll()
     
     def _update_all_cards_width(self):
         """更新所有卡片的动态宽度，并重新排列卡片"""
@@ -2306,8 +2454,6 @@ class CustomFileSelector(QWidget):
             container_width = self.files_container.width()
 
         if container_width <= 0:
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(50, self._update_all_cards_width)
             return
 
         max_cols = self._calculate_max_columns()
@@ -2321,12 +2467,25 @@ class CustomFileSelector(QWidget):
         # 修正计算公式：n 列卡片之间有 (n-1) 个间距
         available_width = container_width - (max_cols - 1) * spacing - total_margin
         card_width = available_width // max_cols
+
+        if (
+            hasattr(self, '_last_container_width')
+            and hasattr(self, '_last_max_cols')
+            and hasattr(self, '_last_card_width')
+            and self._last_container_width == container_width
+            and self._last_max_cols == max_cols
+            and self._last_card_width == card_width
+        ):
+            self._layout_dirty = False
+            return
         
         if hasattr(self, '_last_max_cols') and self._last_max_cols != max_cols:
             #print(f"[DEBUG] 列数变化: {self._last_max_cols} -> {max_cols}，重新排列卡片")
             self._rearrange_cards(max_cols)
         
+        self._last_container_width = container_width
         self._last_max_cols = max_cols
+        self._last_card_width = card_width
         
         for i in range(self.files_layout.count()):
             item = self.files_layout.itemAt(i)
@@ -2335,6 +2494,8 @@ class CustomFileSelector(QWidget):
                 if widget is not None and hasattr(widget, 'objectName') and widget.objectName() == "FileBlockCard":
                     if hasattr(widget, 'set_flexible_width'):
                         widget.set_flexible_width(card_width)
+
+        self._layout_dirty = False
     
     def _check_card_layout(self):
         """
@@ -3055,11 +3216,18 @@ class CustomFileSelector(QWidget):
                 return True
         elif event.type() == QEvent.Resize:
             #print(f"[DEBUG] resize事件触发 from {obj.objectName() if hasattr(obj, 'objectName') else str(obj)}")
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(50, self._update_all_cards_width)
-            if self._pending_files and not self._is_loading:
-                QTimer.singleShot(100, self._load_remaining_on_scroll)
-            return True
+            target_width = 0
+            if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
+                target_width = self.files_scroll_area.viewport().width()
+            elif hasattr(self, 'files_container') and self.files_container:
+                target_width = self.files_container.width()
+
+            if target_width > 0 and target_width != self._last_viewport_width:
+                self._last_viewport_width = target_width
+                self._layout_dirty = True
+                self.resize_timer.start()
+
+            return False
         
         return super().eventFilter(obj, event)
     

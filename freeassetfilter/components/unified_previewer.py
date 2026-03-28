@@ -96,6 +96,81 @@ class UnifiedPreviewer(QWidget):
         # 初始化UI
         self.init_ui()
     
+    def _get_theme_colors(self):
+        """
+        获取当前主题颜色
+        """
+        app = QApplication.instance()
+        colors = {
+            "window_background": "#2D2D2D",
+            "base_color": "#212121",
+            "normal_color": "#717171",
+            "secondary_color": "#FFFFFF",
+        }
+
+        if hasattr(app, "settings_manager"):
+            colors["window_background"] = app.settings_manager.get_setting("appearance.colors.window_background", colors["window_background"])
+            colors["base_color"] = app.settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
+            colors["normal_color"] = app.settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
+            colors["secondary_color"] = app.settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
+
+        return colors
+
+    def update_theme(self):
+        """
+        增量刷新统一预览器主题，不重建预览组件
+        """
+        colors = self._get_theme_colors()
+        border_radius = int(8 * self.dpi_scale)
+
+        self.setStyleSheet(f"background-color: {colors['window_background']}; border: none;")
+
+        if hasattr(self, "content_splitter") and self.content_splitter:
+            self.content_splitter.setStyleSheet(
+                f"QSplitter {{ background-color: {colors['base_color']}; border-radius: {border_radius}px; }} "
+                f"QSplitter::handle {{ background-color: {colors['base_color']}; }}"
+            )
+
+        if hasattr(self, "preview_area") and self.preview_area:
+            self.preview_area.setStyleSheet(
+                f"#PreviewArea {{ background-color: {colors['window_background']}; border: 1px solid {colors['normal_color']}; }}"
+            )
+
+        if hasattr(self, "info_group") and self.info_group:
+            self.info_group.setStyleSheet(
+                f"#InfoGroup {{ background-color: {colors['window_background']}; border: 1px solid {colors['normal_color']}; }}"
+            )
+
+        if hasattr(self, "default_label") and self.default_label:
+            self.default_label.setStyleSheet(f"color: {colors['normal_color']};")
+
+        for button_name in (
+            "copy_to_clipboard_button",
+            "open_with_system_button",
+            "locate_in_selector_button",
+            "clear_preview_button",
+        ):
+            button = getattr(self, button_name, None)
+            if button and hasattr(button, "update_theme"):
+                try:
+                    button.update_theme()
+                except Exception:
+                    pass
+
+        if hasattr(self, "file_info_viewer") and self.file_info_viewer and hasattr(self.file_info_viewer, "update_theme"):
+            try:
+                self.file_info_viewer.update_theme()
+            except Exception:
+                pass
+
+        if hasattr(self, "current_preview_widget") and self.current_preview_widget and hasattr(self.current_preview_widget, "update_theme"):
+            try:
+                self.current_preview_widget.update_theme()
+            except Exception:
+                pass
+
+        self.update()
+
     def stop_preview(self):
         """
         安全停止所有预览组件，释放资源

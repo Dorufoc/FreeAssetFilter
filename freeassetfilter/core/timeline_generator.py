@@ -18,6 +18,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import os
 import sys
 import csv
+import json
 import threading
 import concurrent.futures
 from itertools import groupby
@@ -33,6 +34,80 @@ from PySide6.QtCore import (
 )
 
 
+_DURATION_CACHE_LOCK = threading.Lock()
+_DURATION_CACHE = None
+_DURATION_CACHE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'timeline')
+)
+_DURATION_CACHE_PATH = os.path.join(_DURATION_CACHE_DIR, 'video_duration_cache.json')
+
+
+def _ensure_duration_cache_loaded():
+    """懒加载视频时长缓存"""
+    global _DURATION_CACHE
+
+    with _DURATION_CACHE_LOCK:
+        if _DURATION_CACHE is not None:
+            return
+
+        _DURATION_CACHE = {}
+        try:
+            if os.path.exists(_DURATION_CACHE_PATH):
+                with open(_DURATION_CACHE_PATH, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        _DURATION_CACHE = data
+        except Exception as e:
+            warning(f"加载视频时长缓存失败: {e}")
+            _DURATION_CACHE = {}
+
+
+def _make_duration_cache_key(file_path: str, stat_result: os.stat_result) -> str:
+    """生成基于路径+mtime+size的缓存键"""
+    normalized_path = os.path.normcase(os.path.abspath(file_path))
+    return f"{normalized_path}|{int(stat_result.st_mtime)}|{stat_result.st_size}"
+
+
+def _prune_duration_cache_locked():
+    """清理已失效的视频时长缓存项"""
+    stale_keys = []
+
+    for cache_key, payload in _DURATION_CACHE.items():
+        if not isinstance(payload, dict):
+            stale_keys.append(cache_key)
+            continue
+
+        file_path = payload.get('path')
+        if not file_path:
+            stale_keys.append(cache_key)
+            continue
+
+        try:
+            stat_result = os.stat(file_path)
+            expected_key = _make_duration_cache_key(file_path, stat_result)
+            if expected_key != cache_key:
+                stale_keys.append(cache_key)
+        except OSError:
+            stale_keys.append(cache_key)
+
+    for cache_key in stale_keys:
+        _DURATION_CACHE.pop(cache_key, None)
+
+
+def save_duration_cache():
+    """将视频时长缓存持久化到磁盘"""
+    _ensure_duration_cache_loaded()
+
+    with _DURATION_CACHE_LOCK:
+        try:
+            os.makedirs(_DURATION_CACHE_DIR, exist_ok=True)
+            _prune_duration_cache_locked()
+            with open(_DURATION_CACHE_PATH, 'w', encoding='utf-8') as f:
+                json.dump(_DURATION_CACHE, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            warning(f"保存视频时长缓存失败: {e}")
+
+
 # 核心数据结构：原始事件
 def get_video_duration(file_path):
     """
@@ -45,31 +120,50 @@ def get_video_duration(file_path):
         float - 视频时长（秒），如果无法获取则返回默认值60秒
     """
     default_duration = 60.0
-    
-    # 尝试使用moviepy（如果可用）
+    _ensure_duration_cache_loaded()
+
     try:
-        from moviepy.editor import VideoFileClip
-        with VideoFileClip(file_path) as clip:
-            return clip.duration
-    except Exception as e:
-        debug(f"moviepy 获取视频时长失败 {file_path}: {e}")
-        pass
-    
-    # 尝试使用opencv-python（如果可用）
+        stat_result = os.stat(file_path)
+    except OSError as e:
+        debug(f"获取视频文件状态失败 {file_path}: {e}")
+        return default_duration
+
+    cache_key = _make_duration_cache_key(file_path, stat_result)
+    with _DURATION_CACHE_LOCK:
+        cached_payload = _DURATION_CACHE.get(cache_key)
+        if isinstance(cached_payload, dict):
+            cached_duration = cached_payload.get('duration')
+            if isinstance(cached_duration, (int, float)) and cached_duration > 0:
+                return float(cached_duration)
+
+    duration = None
+
     try:
         import cv2
         cap = cv2.VideoCapture(file_path)
-        if cap.isOpened():
-            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            if frame_count > 0 and fps > 0:
-                return frame_count / fps
+        try:
+            if cap.isOpened():
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                if frame_count > 0 and fps > 0:
+                    duration = frame_count / fps
+        finally:
             cap.release()
     except Exception as e:
         debug(f"OpenCV 获取视频时长失败 {file_path}: {e}")
-        pass
-    
-    return default_duration
+
+    if duration is None or duration <= 0:
+        duration = default_duration
+
+    with _DURATION_CACHE_LOCK:
+        _DURATION_CACHE[cache_key] = {
+            'path': os.path.abspath(file_path),
+            'mtime': int(stat_result.st_mtime),
+            'size': stat_result.st_size,
+            'duration': float(duration)
+        }
+
+    return float(duration)
 
 class TimelineEvent:
     """
@@ -261,6 +355,7 @@ class FolderScanner(QThread):
         # 生成JSON记录
         json_path = self._generate_json(main_folder_name, video_count, subfolder_set, results)
         
+        save_duration_cache()
         self.scan_finished.emit(results, csv_path, json_path)
         
     def _generate_csv(self, events, main_folder_name):
@@ -473,6 +568,7 @@ class CSVParser(QThread):
         except (OSError, csv.Error) as e:
             error(f"Error reading CSV file: {e}")
 
+        save_duration_cache()
         self.finished.emit(results)
     
     def parse_datetime(self, datetime_str):

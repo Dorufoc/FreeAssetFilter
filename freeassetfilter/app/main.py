@@ -71,7 +71,7 @@ except (ValueError, TypeError) as e:
 def handle_exception(exc_type, exc_value, exc_traceback):
     """
     处理未捕获的Python异常
-    
+
     Args:
         exc_type: 异常类型
         exc_value: 异常值
@@ -81,7 +81,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         # 如果是用户中断，使用系统默认的异常处理
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-    
+
     # 使用日志模块记录异常
     log_exception(exc_type, exc_value, exc_traceback)
 
@@ -103,40 +103,34 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
 )
-from PySide6.QtCore import Qt, QUrl, QEvent
+from PySide6.QtCore import Qt, QUrl, QEvent, QTimer, QThread
 from PySide6.QtGui import QFont, QIcon
 
-# 导入自定义控件库
-from freeassetfilter.widgets.D_widgets import CustomWindow, CustomButton
 
+class StartupWarmupThread(QThread):
+    """
+    启动后后台预热线程
+    避免 LUT/C++ 相关初始化阻塞主线程首屏展示
+    """
 
+    def run(self):
+        try:
+            from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
+            info("[预热] 开始后台预热 LUT 预览 C++ 模块...")
+            lut_cpp_warmup()
 
-# 导入自定义文件选择器组件
-from freeassetfilter.components.file_selector import CustomFileSelector
-# 导入统一文件预览器组件
-from freeassetfilter.components.unified_previewer import UnifiedPreviewer
-# 导入文件临时存储池组件
-from freeassetfilter.components.file_staging_pool import FileStagingPool
-# 导入SVG渲染器，用于主题更新时清除SVG颜色缓存
-from freeassetfilter.core.svg_renderer import SvgRenderer
-
-# 预热 C++ LUT 预览模块
-try:
-    from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
-    info("[预热] 开始预热 LUT 预览 C++ 模块...")
-    lut_cpp_warmup()
-
-    # 预加载 LUT 生成器（包含参考图像）
-    from freeassetfilter.core.lut_preview_generator import get_preview_generator
-    info("[预热] 预加载 LUT 生成器...")
-    get_preview_generator()
-    info("[预热] LUT 预览 C++ 模块预热完成")
-except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-    error(f"[预热] LUT 预览 C++ 模块预热失败 - 文件操作错误: {e}")
-except (ValueError, TypeError) as e:
-    error(f"[预热] LUT 预览 C++ 模块预热失败 - 数据转换错误: {e}")
-except (ImportError, ModuleNotFoundError) as e:
-    error(f"[预热] LUT 预览 C++ 模块预热失败 - 模块导入错误: {e}")
+            from freeassetfilter.core.lut_preview_generator import get_preview_generator
+            info("[预热] 开始后台预加载 LUT 生成器...")
+            get_preview_generator()
+            info("[预热] LUT 预览后台预热完成")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"[预热] LUT 预览后台预热失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            error(f"[预热] LUT 预览后台预热失败 - 数据转换错误: {e}")
+        except (ImportError, ModuleNotFoundError) as e:
+            error(f"[预热] LUT 预览后台预热失败 - 模块导入错误: {e}")
+        except Exception as e:
+            error(f"[预热] LUT 预览后台预热失败 - 未知错误: {e}")
 
 
 class FreeAssetFilterApp(QMainWindow):
@@ -144,7 +138,7 @@ class FreeAssetFilterApp(QMainWindow):
     FreeAssetFilter 主应用程序类
     提供核心功能的主界面
     """
-    
+
     def __init__(self):
         super().__init__()
 
@@ -168,7 +162,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 设置默认大小为系统缩放的1.5倍
         window_width = int(base_window_width * system_scale * 1.5)
-        window_height = int(window_width * (10/16))
+        window_height = int(window_width * (10 / 16))
 
         # 获取当前屏幕的可用尺寸（逻辑像素）
         # 使用 geometry() 而不是 availableGeometry() 避免多显示器虚拟桌面问题
@@ -195,27 +189,36 @@ class FreeAssetFilterApp(QMainWindow):
         window_geometry.moveCenter(center_point)
         # 设置窗口位置（自动处理物理像素和逻辑像素的转换）
         self.move(window_geometry.topLeft())
-        
+
         # 设置程序图标
         icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
         self.setWindowIcon(QIcon(icon_path))
-        
+
         # 用于生成唯一的文件选择器实例ID
         self.file_selector_counter = 0
-        
+
         # 主题更新状态标志，防止重复调用
         self._update_theme_in_progress = False
         self._theme_update_queued = False
-        
+        self._ui_state_backup = None
+        self._splitter = None
+
+        # 启动阶段异步任务状态
+        self._pending_restore_items = []
+        self._pending_restore_unlinked_files = []
+        self._restore_total_count = 0
+        self._restore_success_count = 0
+        self._restore_batch_size = 20
+        self._startup_warmup_thread = None
+
         # 获取全局字体
         global_font = getattr(app, 'global_font', QFont())
         # 创建全局字体的副本，避免修改全局字体对象
         self.global_font = QFont(global_font)
-        #print(f"\n[DEBUG] 主窗口获取到的全局字体: {self.global_font.family()}, 缩放后大小: {self.global_font.pointSize()}")
-        
+
         # 设置窗口字体
         self.setFont(self.global_font)
-        
+
         # 创建UI
         self.init_ui()
 
@@ -234,7 +237,7 @@ class FreeAssetFilterApp(QMainWindow):
         from PySide6.QtWidgets import QDialog
         for widget in self.findChildren(QDialog):
             widget.close()
-        
+
         # 保存文件选择器A的当前路径
         last_path = 'All'
         if hasattr(self, 'file_selector_a'):
@@ -243,14 +246,6 @@ class FreeAssetFilterApp(QMainWindow):
         # 保存文件存储池状态，传递文件选择器的当前路径
         if hasattr(self, 'file_staging_pool'):
             self.file_staging_pool.save_backup(last_path)
-        
-        # 检查并执行缩略图缓存自动清理
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager') and app.settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
-            from freeassetfilter.core.thumbnail_cleaner import get_thumbnail_cleaner
-            thumbnail_cleaner = get_thumbnail_cleaner()
-            deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails()
-            #print(f"[DEBUG] 退出前自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
 
         # 清理统一预览器中的临时PDF文件
         if hasattr(self, 'unified_previewer'):
@@ -264,7 +259,7 @@ class FreeAssetFilterApp(QMainWindow):
                         self.unified_previewer._preview_thread.wait(100)
             # 然后清理预览
             self.unified_previewer._clear_preview()
-        
+
         # 统一清理：删除整个temp文件夹
         import shutil
         import os
@@ -276,12 +271,15 @@ class FreeAssetFilterApp(QMainWindow):
                 logger.debug(f"已删除临时文件夹: {temp_dir}")
             except (OSError, PermissionError) as e:
                 logger.warning(f"删除临时文件夹失败: {e}")
-        
+
+        # 停止后台预热线程
+        if self._startup_warmup_thread and self._startup_warmup_thread.isRunning():
+            self._startup_warmup_thread.quit()
+            self._startup_warmup_thread.wait(500)
+
         # 调用父类的closeEvent
         super().closeEvent(event)
-    
 
-    
     def _apply_title_bar_theme(self):
         """
         应用窗口标题栏主题（深色/浅色模式）
@@ -323,7 +321,7 @@ class FreeAssetFilterApp(QMainWindow):
         - 确保组件获得焦点时能够接收键盘事件
         """
         super().focusInEvent(event)
-        
+
     def resizeEvent(self, event):
         """
         处理窗口大小变化事件
@@ -331,16 +329,15 @@ class FreeAssetFilterApp(QMainWindow):
         - 监听窗口尺寸变化，稳定后重新计算卡片尺寸
         """
         super().resizeEvent(event)
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(50, self._on_resize_stabilized)
-    
+
     def _on_resize_stabilized(self):
         """
         窗口尺寸稳定后的回调
         - 使用连续检测机制确保窗口尺寸已完全稳定
         """
         self._check_and_update_cards(retry_count=0)
-    
+
     def _check_and_update_cards(self, retry_count=0):
         """
         检测并更新卡片尺寸
@@ -348,24 +345,23 @@ class FreeAssetFilterApp(QMainWindow):
         """
         if not hasattr(self, 'file_selector_a') or not self.file_selector_a:
             return
-        
+
         if not hasattr(self.file_selector_a, '_update_all_cards_width'):
             return
-        
+
         container = self.file_selector_a.files_container
         current_width = container.width()
-        
+
         if current_width <= 0:
             max_retries = 15
             if retry_count < max_retries:
-                from PySide6.QtCore import QTimer
                 from PySide6.QtWidgets import QApplication
                 QApplication.processEvents()
                 QTimer.singleShot(30, lambda: self._check_and_update_cards(retry_count + 1))
             return
-        
+
         self.file_selector_a._update_all_cards_width()
-    
+
     def changeEvent(self, event):
         """
         处理窗口状态变化事件
@@ -373,10 +369,9 @@ class FreeAssetFilterApp(QMainWindow):
         - 状态变化时重新计算文件选择器卡片尺寸
         """
         if event.type() == QEvent.WindowStateChange:
-            from PySide6.QtCore import QTimer
             QTimer.singleShot(200, self._on_window_state_changed)
         super().changeEvent(event)
-    
+
     def _on_window_state_changed(self):
         """
         窗口状态变化后的回调
@@ -386,17 +381,175 @@ class FreeAssetFilterApp(QMainWindow):
         from PySide6.QtWidgets import QApplication
         QApplication.processEvents()
         self._check_and_update_cards(retry_count=0)
-    
+
     def _create_file_selector_widget(self):
         """
         创建内嵌式文件选择器组件
-        
+
         Returns:
             QWidget: 内嵌式文件选择器组件
         """
-        # 直接返回自定义文件选择器组件实例
+        from freeassetfilter.components.file_selector import CustomFileSelector
         return CustomFileSelector()
-    
+
+    def _get_theme_colors(self):
+        """
+        获取当前主题相关颜色，优先使用设置管理器缓存接口
+        """
+        app = QApplication.instance()
+        auxiliary_color = "#f1f3f5"
+        normal_color = "#e0e0e0"
+        base_color = "#212121"
+
+        if hasattr(app, "settings_manager"):
+            auxiliary_color = app.settings_manager.get_setting(
+                "appearance.colors.auxiliary_color", "#f1f3f5"
+            )
+            normal_color = app.settings_manager.get_setting(
+                "appearance.colors.normal_color", "#e0e0e0"
+            )
+            base_color = app.settings_manager.get_setting(
+                "appearance.colors.base_color", "#212121"
+            )
+
+        return auxiliary_color, normal_color, base_color
+
+    def _refresh_widget_theme_recursively(self, root_widget):
+        """
+        递归刷新控件树主题，兜底处理没有统一 update_theme 入口的子组件
+        """
+        if not root_widget:
+            return
+
+        try:
+            if hasattr(root_widget, "update_theme"):
+                root_widget.update_theme()
+            elif hasattr(root_widget, "set_theme"):
+                root_widget.set_theme()
+            elif hasattr(root_widget, "_init_animations"):
+                root_widget._init_animations()
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"递归刷新控件主题入口失败: {e}")
+
+        try:
+            style = root_widget.style()
+            if style is not None:
+                style.unpolish(root_widget)
+                style.polish(root_widget)
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"重新 polish 控件样式失败: {e}")
+
+        try:
+            if hasattr(root_widget, "apply_theme_from_settings"):
+                root_widget.apply_theme_from_settings()
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"应用控件主题设置失败: {e}")
+
+        try:
+            root_widget.update()
+        except (RuntimeError, AttributeError):
+            pass
+
+        try:
+            for child in root_widget.findChildren(QWidget):
+                if child is root_widget:
+                    continue
+
+                try:
+                    if hasattr(child, "update_theme"):
+                        child.update_theme()
+                    elif hasattr(child, "set_theme"):
+                        child.set_theme()
+                    elif hasattr(child, "_init_animations"):
+                        child._init_animations()
+                except (RuntimeError, AttributeError, TypeError) as e:
+                    logger.debug(f"刷新子控件主题失败: {e}")
+
+                try:
+                    if hasattr(child, "apply_theme_from_settings"):
+                        child.apply_theme_from_settings()
+                except (RuntimeError, AttributeError, TypeError) as e:
+                    logger.debug(f"应用子控件主题设置失败: {e}")
+
+                try:
+                    style = child.style()
+                    if style is not None:
+                        style.unpolish(child)
+                        style.polish(child)
+                except (RuntimeError, AttributeError, TypeError) as e:
+                    logger.debug(f"重新 polish 子控件样式失败: {e}")
+
+                try:
+                    child.update()
+                except (RuntimeError, AttributeError):
+                    pass
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"递归遍历子控件失败: {e}")
+
+    def _apply_theme_to_existing_widgets(self):
+        """
+        对当前已存在的控件树执行增量主题刷新，避免整棵布局重建
+        """
+        auxiliary_color, normal_color, base_color = self._get_theme_colors()
+        border_radius = 8
+
+        if hasattr(self, "central_widget") and self.central_widget:
+            self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
+
+        column_style = (
+            f"background-color: {base_color}; "
+            f"border: 1px solid {normal_color}; "
+            f"border-radius: {border_radius}px;"
+        )
+
+        for widget_name in ("left_column", "middle_column", "right_column"):
+            widget = getattr(self, widget_name, None)
+            if widget:
+                widget.setStyleSheet(column_style)
+
+        if hasattr(self, "status_label") and self.status_label:
+            self.status_label.setStyleSheet("color: #888888; margin-top: 0px;")
+
+        themed_widgets = [
+            getattr(self, "file_selector_a", None),
+            getattr(self, "file_staging_pool", None),
+            getattr(self, "unified_previewer", None),
+            getattr(self, "github_button", None),
+            getattr(self, "global_settings_button", None),
+            getattr(self, "hover_tooltip", None),
+        ]
+
+        for widget in themed_widgets:
+            if not widget:
+                continue
+
+            try:
+                self._refresh_widget_theme_recursively(widget)
+            except (RuntimeError, AttributeError, TypeError) as e:
+                logger.debug(f"递归刷新组件主题失败: {e}")
+
+        for container_name in ("left_column", "middle_column", "right_column", "central_widget"):
+            container = getattr(self, container_name, None)
+            if container:
+                try:
+                    self._refresh_widget_theme_recursively(container)
+                except (RuntimeError, AttributeError, TypeError) as e:
+                    logger.debug(f"刷新容器主题失败: {e}")
+
+        if self._splitter:
+            try:
+                style = self._splitter.style()
+                if style is not None:
+                    style.unpolish(self._splitter)
+                    style.polish(self._splitter)
+            except (RuntimeError, AttributeError, TypeError) as e:
+                logger.debug(f"刷新分割器样式失败: {e}")
+            self._splitter.update()
+
+        if hasattr(self, "central_widget") and self.central_widget:
+            self.central_widget.update()
+        self.update()
+
     def init_ui(self):
         """
         初始化用户界面
@@ -404,30 +557,21 @@ class FreeAssetFilterApp(QMainWindow):
         # 创建中央部件
         self.central_widget = QWidget()
         # 获取主题颜色
-        app = QApplication.instance()
-        auxiliary_color = "#f1f3f5"  # 默认辅助色
-        normal_color = "#e0e0e0"  # 默认普通色
-        base_color = "#212121"  # 默认基础色
-        if hasattr(app, 'settings_manager'):
-            # 颜色直接从JSON文件读取，绕过内存缓存
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5", use_file_for_colors=True)  # 辅助色
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0", use_file_for_colors=True)  # 普通色
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121", use_file_for_colors=True)  # 基础色
+        auxiliary_color, normal_color, base_color = self._get_theme_colors()
         self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
         self.setCentralWidget(self.central_widget)
-        
+
         # 创建主布局：标题 + 三列
         main_layout = QVBoxLayout(self.central_widget)
         # 设置间距和边距
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(10, 10, 10, 10)
 
-
-
         # 创建三列布局，使用QSplitter实现可拖动分割
         splitter = QSplitter(Qt.Horizontal)
         splitter.setContentsMargins(0, 0, 0, 0)
-        
+        self._splitter = splitter
+
         # 左侧列：文件选择器A
         self.left_column = QWidget()
         self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -436,49 +580,47 @@ class FreeAssetFilterApp(QMainWindow):
         self.left_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         left_layout = QVBoxLayout(self.left_column)
 
-
-        
         # 内嵌文件选择器A
         self.file_selector_a = self._create_file_selector_widget()
         left_layout.addWidget(self.file_selector_a)
-        
+
         # 中间列：文件临时存储池
         self.middle_column = QWidget()
         self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.middle_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         middle_layout = QVBoxLayout(self.middle_column)
-        
+
         # 添加文件临时存储池组件
+        from freeassetfilter.components.file_staging_pool import FileStagingPool
         self.file_staging_pool = FileStagingPool()
         middle_layout.addWidget(self.file_staging_pool)
-        
+
         # 右侧列：统一文件预览器
         self.right_column = QWidget()
         self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.right_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         right_layout = QVBoxLayout(self.right_column)
-        
+
         # 统一文件预览器
+        from freeassetfilter.components.unified_previewer import UnifiedPreviewer
         self.unified_previewer = UnifiedPreviewer(self)
         right_layout.addWidget(self.unified_previewer, 1)
-        
+
         # 将三列添加到分割器，调整初始比例
         splitter.addWidget(self.left_column)
         splitter.addWidget(self.middle_column)
         splitter.addWidget(self.right_column)
-        
+
         # 设置分割器初始大小，将三个板块宽度默认值设定为比值334（3:3:4）
         # 计算总宽度（使用逻辑像素）
         total_width = self.window_width - 40  # 减去边距和边框宽度
         # 根据3:3:4的比例分配宽度
-        left_width = int(total_width * (3/10))
-        middle_width = int(total_width * (3/10))
-        right_width = int(total_width * (4/10))
+        left_width = int(total_width * (3 / 10))
+        middle_width = int(total_width * (3 / 10))
+        right_width = int(total_width * (4 / 10))
         sizes = [left_width, middle_width, right_width]
-        #print(f"[DEBUG] 三列初始宽度比例: 3:3:4")
-        #print(f"[DEBUG] 三列初始宽度: {left_width}, {middle_width}, {right_width}")
         splitter.setSizes(sizes)
-        
+
         # 连接文件选择器的左键点击信号到预览器
         self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
 
@@ -487,38 +629,38 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 连接预览器的信号：请求在文件选择器中打开路径，同时传递文件信息以便滚动定位
         self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
-        
+
         # 连接文件临时存储池的信号到预览器
         self.file_staging_pool.item_right_clicked.connect(self.unified_previewer.set_file)
         # 添加左键点击信号连接，用于预览
         self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
-        
+
         # 连接文件临时存储池的信号到处理方法，用于从文件选择器中删除文件
         self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
-        
+
         # 连接文件临时存储池的信号到处理方法，用于通知文件选择器文件已被添加到储存池
         self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
-        
+
         # 连接文件临时存储池的导航信号到处理方法，用于更新文件选择器的路径
         self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
-        
+
         # 连接统一预览器的预览状态信号
         self.unified_previewer.preview_started.connect(self.handle_preview_started)
         self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
-        
+
         # 添加分割器到主布局
         main_layout.addWidget(splitter, 1)
-        
+
         # 创建状态标签和全局设置按钮的布局
         status_container = QWidget()
         status_container_layout = QVBoxLayout(status_container)
         status_container_layout.setContentsMargins(0, 0, 0, 0)
         status_container_layout.setAlignment(Qt.AlignCenter)
-        
+
         # 创建状态标签和全局设置按钮的水平布局
         status_layout = QHBoxLayout()
         status_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # 创建GitHub按钮，使用svg图标
         from freeassetfilter.widgets.button_widgets import CustomButton
         github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
@@ -527,10 +669,10 @@ class FreeAssetFilterApp(QMainWindow):
         # 连接到GitHub跳转函数
         self.github_button.clicked.connect(self._open_github)
         status_layout.addWidget(self.github_button)
-        
+
         # 添加左侧占位符，将状态标签推到居中位置
         status_layout.addStretch()
-        
+
         # 状态标签
         self.status_label = QLabel("FreeAssetFilter 1.0.0-alpha.3 | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
@@ -541,38 +683,31 @@ class FreeAssetFilterApp(QMainWindow):
         margin = 0
         self.status_label.setStyleSheet(f"color: #888888; margin-top: {margin}px;")
         status_layout.addWidget(self.status_label)
-        
+
         # 添加右侧占位符，将全局设置按钮推到右侧
         status_layout.addStretch()
-        
+
         # 创建全局设置按钮，使用svg图标
-        from freeassetfilter.widgets.button_widgets import CustomButton
         setting_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
         self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
         self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         # 连接到全局设置函数
         self.global_settings_button.clicked.connect(self._open_global_settings)
         status_layout.addWidget(self.global_settings_button)
-        
+
         # 将水平布局添加到容器的垂直布局中
         status_container_layout.addLayout(status_layout)
-        
+
         # 添加状态容器到主布局
         main_layout.addWidget(status_container)
-        
+
         # 初始化自定义悬浮提示
         from freeassetfilter.widgets.hover_tooltip import HoverTooltip
         self.hover_tooltip = HoverTooltip(self)
         # 将GitHub按钮和全局设置按钮添加为目标控件
         self.hover_tooltip.set_target_widget(self.github_button)
         self.hover_tooltip.set_target_widget(self.global_settings_button)
-        #print(f"[DEBUG] 状态标签设置字体: {self.status_label.font().family()}")
-        
-        # 自定义窗口演示按钮已移至组件启动器，此处隐藏
-        
-        # 初始化完成后，检查是否需要恢复上次的文件列表
-        # 移到window.show()之后执行，确保主面板先显示
-        
+
         # 应用主题设置
         self.update_theme()
 
@@ -589,147 +724,193 @@ class FreeAssetFilterApp(QMainWindow):
     def show_info(self, title, message):
         """
         显示信息提示
-        
+
         Args:
             title (str): 提示标题
             message (str): 提示消息
         """
         # 简单的信息显示，使用状态标签
         self.status_label.setText(f"{title}: {message}")
-    
+
     def _backup_ui_state(self):
         """
-        备份当前UI状态到JSON文件，包括文件选择器路径和文件存储池信息
-        
+        备份当前UI状态到内存，避免主题切换过程中产生额外磁盘 I/O
+
         Returns:
             bool: 是否成功备份
         """
-        import json
-        import os
-        from datetime import datetime
-        
         try:
-            backup_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
-            os.makedirs(backup_dir, exist_ok=True)
-            
-            backup_file = os.path.join(backup_dir, 'ui_state_backup.json')
-            
             backup_data = {
-                'timestamp': datetime.now().isoformat(),
-                'file_selector': {
-                    'current_path': None,
-                    'selected_files': {}
+                "file_selector": {
+                    "current_path": None,
+                    "selected_files": {},
+                    "_selected_file_paths": [],
+                    "previewing_file_path": None,
+                    "filter_pattern": "*",
+                    "sort_by": "name",
+                    "sort_order": "asc",
+                    "view_mode": "card",
                 },
-                'file_staging_pool': {
-                    'items': []
+                "file_staging_pool": {
+                    "items": [],
+                    "previewing_file_path": None,
                 },
-                'splitter_sizes': [100, 100, 100]
+                "splitter_sizes": [100, 100, 100],
             }
-            
-            old_file_selector = getattr(self, 'file_selector_a', None)
-            old_staging_pool = getattr(self, 'file_staging_pool', None)
-            
+
+            old_file_selector = getattr(self, "file_selector_a", None)
+            old_staging_pool = getattr(self, "file_staging_pool", None)
+
             if old_file_selector:
                 try:
-                    if hasattr(old_file_selector, 'current_path'):
-                        backup_data['file_selector']['current_path'] = old_file_selector.current_path
-                    if hasattr(old_file_selector, 'selected_files'):
+                    if hasattr(old_file_selector, "current_path"):
+                        backup_data["file_selector"]["current_path"] = old_file_selector.current_path
+                    if hasattr(old_file_selector, "selected_files"):
                         selected = old_file_selector.selected_files
                         if isinstance(selected, dict):
-                            backup_data['file_selector']['selected_files'] = {
+                            backup_data["file_selector"]["selected_files"] = {
                                 k: list(v) for k, v in selected.items()
                             }
+                    if hasattr(old_file_selector, "_selected_file_paths"):
+                        backup_data["file_selector"]["_selected_file_paths"] = list(
+                            old_file_selector._selected_file_paths
+                        )
+                    if hasattr(old_file_selector, "previewing_file_path"):
+                        backup_data["file_selector"]["previewing_file_path"] = old_file_selector.previewing_file_path
+                    if hasattr(old_file_selector, "filter_pattern"):
+                        backup_data["file_selector"]["filter_pattern"] = old_file_selector.filter_pattern
+                    if hasattr(old_file_selector, "sort_by"):
+                        backup_data["file_selector"]["sort_by"] = old_file_selector.sort_by
+                    if hasattr(old_file_selector, "sort_order"):
+                        backup_data["file_selector"]["sort_order"] = old_file_selector.sort_order
+                    if hasattr(old_file_selector, "view_mode"):
+                        backup_data["file_selector"]["view_mode"] = old_file_selector.view_mode
                 except (RuntimeError, AttributeError) as e:
                     logger.debug(f"备份文件选择器状态时出错: {e}")
-            
+
             if old_staging_pool:
                 try:
-                    if hasattr(old_staging_pool, 'items'):
-                        backup_data['file_staging_pool']['items'] = list(old_staging_pool.items)
+                    if hasattr(old_staging_pool, "items"):
+                        backup_data["file_staging_pool"]["items"] = list(old_staging_pool.items)
+                    if hasattr(old_staging_pool, "previewing_file_path"):
+                        backup_data["file_staging_pool"]["previewing_file_path"] = old_staging_pool.previewing_file_path
                 except (RuntimeError, AttributeError) as e:
                     logger.debug(f"备份文件存储池状态时出错: {e}")
-            
-            if hasattr(self, '_splitter'):
+
+            if self._splitter:
                 try:
-                    backup_data['splitter_sizes'] = list(self._splitter.sizes())
+                    backup_data["splitter_sizes"] = list(self._splitter.sizes())
                 except (RuntimeError, AttributeError) as e:
                     logger.debug(f"备份分割器大小时出错: {e}")
-            
-            with open(backup_file, 'w', encoding='utf-8') as f:
-                json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            
+
+            self._ui_state_backup = backup_data
             return True
-        except (OSError, PermissionError, TypeError) as e:
+        except (TypeError, AttributeError) as e:
             logger.warning(f"备份UI状态失败: {e}")
             return False
-    
+
     def _restore_ui_state(self):
         """
-        从JSON文件恢复UI状态，包括文件选择器路径和文件存储池信息
-        
+        从内存恢复 UI 状态
+
         Returns:
             bool: 是否成功恢复
         """
-        import json
-        import os
-        
+        backup_data = self._ui_state_backup
+        if not backup_data:
+            return False
+
         try:
-            backup_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'ui_state_backup.json')
-            
-            if not os.path.exists(backup_file):
-                return False
-            
-            with open(backup_file, 'r', encoding='utf-8') as f:
-                backup_data = json.load(f)
-            
-            new_file_selector = getattr(self, 'file_selector_a', None)
-            new_staging_pool = getattr(self, 'file_staging_pool', None)
-            
+            new_file_selector = getattr(self, "file_selector_a", None)
+            new_staging_pool = getattr(self, "file_staging_pool", None)
+
             if new_file_selector:
                 try:
-                    if 'current_path' in backup_data['file_selector']:
-                        new_file_selector.current_path = backup_data['file_selector']['current_path']
-                    if 'selected_files' in backup_data['file_selector']:
-                        raw_selected = backup_data['file_selector']['selected_files']
+                    file_selector_state = backup_data.get("file_selector", {})
+
+                    if "current_path" in file_selector_state:
+                        new_file_selector.current_path = file_selector_state["current_path"]
+                    if "selected_files" in file_selector_state:
+                        raw_selected = file_selector_state["selected_files"]
                         if isinstance(raw_selected, dict):
                             new_file_selector.selected_files = {
                                 k: set(v) if isinstance(v, list) else v
                                 for k, v in raw_selected.items()
                             }
-                    if hasattr(new_file_selector, '_refresh_file_list'):
-                        new_file_selector._refresh_file_list()
+                    if "_selected_file_paths" in file_selector_state:
+                        new_file_selector._selected_file_paths = set(file_selector_state["_selected_file_paths"])
+                    if "previewing_file_path" in file_selector_state:
+                        new_file_selector.previewing_file_path = file_selector_state["previewing_file_path"]
+                    if "filter_pattern" in file_selector_state:
+                        new_file_selector.filter_pattern = file_selector_state["filter_pattern"]
+                    if "sort_by" in file_selector_state:
+                        new_file_selector.sort_by = file_selector_state["sort_by"]
+                    if "sort_order" in file_selector_state:
+                        new_file_selector.sort_order = file_selector_state["sort_order"]
+                    if "view_mode" in file_selector_state:
+                        new_file_selector.view_mode = file_selector_state["view_mode"]
+
+                    if hasattr(new_file_selector, "_update_filter_button_style"):
+                        new_file_selector._update_filter_button_style()
+                    if hasattr(new_file_selector, "_update_timeline_button_visibility"):
+                        new_file_selector._update_timeline_button_visibility()
+                    if hasattr(new_file_selector, "_update_file_selection_state"):
+                        new_file_selector._update_file_selection_state()
+                    if (
+                        getattr(new_file_selector, "previewing_file_path", None)
+                        and hasattr(new_file_selector, "set_previewing_file")
+                    ):
+                        new_file_selector.set_previewing_file(new_file_selector.previewing_file_path)
                 except (RuntimeError, AttributeError) as e:
                     logger.debug(f"恢复文件选择器状态时出错: {e}")
-            
+
             if new_staging_pool:
                 try:
-                    if 'items' in backup_data['file_staging_pool']:
-                        items_data = backup_data['file_staging_pool']['items']
-                        if hasattr(new_staging_pool, 'add_file'):
+                    staging_pool_state = backup_data.get("file_staging_pool", {})
+                    if "items" in staging_pool_state:
+                        items_data = staging_pool_state["items"]
+                        existing_paths = set()
+                        if hasattr(new_staging_pool, "items"):
+                            existing_paths = {
+                                os.path.normpath(item.get("path", ""))
+                                for item in new_staging_pool.items
+                                if isinstance(item, dict) and item.get("path")
+                            }
+
+                        if hasattr(new_staging_pool, "add_file"):
                             for item_data in items_data:
                                 try:
-                                    if isinstance(item_data, dict) and 'path' in item_data:
-                                        if item_data not in new_staging_pool.items:
+                                    if isinstance(item_data, dict) and "path" in item_data:
+                                        item_path = os.path.normpath(item_data["path"])
+                                        if item_path not in existing_paths:
                                             new_staging_pool.add_file(item_data)
+                                            existing_paths.add(item_path)
                                 except (TypeError, AttributeError) as e:
                                     logger.debug(f"添加文件到存储池时出错: {e}")
                                     continue
+
+                    previewing_file_path = staging_pool_state.get("previewing_file_path")
+                    if previewing_file_path:
+                        if hasattr(new_staging_pool, "set_previewing_file"):
+                            new_staging_pool.set_previewing_file(previewing_file_path)
+                    elif hasattr(new_staging_pool, "clear_previewing_state"):
+                        new_staging_pool.clear_previewing_state()
                 except (RuntimeError, AttributeError) as e:
                     logger.debug(f"恢复文件存储池状态时出错: {e}")
-            
-            if 'splitter_sizes' in backup_data and hasattr(self, '_splitter'):
+
+            if "splitter_sizes" in backup_data and self._splitter:
                 try:
-                    old_sizes = backup_data['splitter_sizes']
+                    old_sizes = backup_data["splitter_sizes"]
                     if sum(old_sizes) > 0:
                         self._splitter.setSizes(old_sizes)
                 except (RuntimeError, AttributeError) as e:
                     logger.debug(f"恢复分割器大小时出错: {e}")
-            
+
             return True
-        except (OSError, PermissionError, json.JSONDecodeError, KeyError) as e:
+        except (TypeError, KeyError) as e:
             logger.warning(f"恢复UI状态失败: {e}")
             return False
-    
+
     def _rebuild_main_layout(self):
         """
         重建主布局，用于主题切换时确保所有组件使用正确样式
@@ -737,22 +918,22 @@ class FreeAssetFilterApp(QMainWindow):
         app = QApplication.instance()
         if app is None:
             return False
-        
+
         if not self.isVisible():
             return False
-        
+
         if hasattr(app, 'global_font'):
             self.global_font = QFont(app.global_font)
             self.setFont(self.global_font)
-        
+
         self._backup_ui_state()
-        
+
         # 颜色直接从JSON文件读取，绕过内存缓存
         auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5", use_file_for_colors=True)
         normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0", use_file_for_colors=True)
         base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121", use_file_for_colors=True)
         border_radius = 8
-        
+
         old_central_widget = getattr(self, 'central_widget', None)
         old_staging_pool = getattr(self, 'file_staging_pool', None)
         old_file_selector = getattr(self, 'file_selector_a', None)
@@ -764,72 +945,74 @@ class FreeAssetFilterApp(QMainWindow):
                 old_preview_items = list(old_staging_pool._all_items)
             except (RuntimeError, AttributeError) as e:
                 logger.debug(f"获取旧预览项时出错: {e}")
-        
+
         if old_file_selector and hasattr(old_file_selector, 'selected_files'):
             try:
                 old_selected_files = list(old_file_selector.selected_files)
             except (RuntimeError, AttributeError) as e:
                 logger.debug(f"获取旧选中文件时出错: {e}")
-        
+
         old_splitter_sizes = [100, 100, 100]
-        if hasattr(self, '_splitter'):
+        if self._splitter:
             try:
                 old_splitter_sizes = list(self._splitter.sizes())
             except (RuntimeError, AttributeError) as e:
                 logger.debug(f"获取分割器大小时出错: {e}")
-        
+
         try:
             if old_central_widget:
                 old_central_widget.deleteLater()
         except (RuntimeError, AttributeError) as e:
             logger.debug(f"删除旧中央部件时出错: {e}")
-        
+
         self.central_widget = QWidget()
         self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
         self.setCentralWidget(self.central_widget)
-        
+
         main_layout = QVBoxLayout(self.central_widget)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        
+
         splitter = QSplitter(Qt.Horizontal)
         splitter.setContentsMargins(0, 0, 0, 0)
         self._splitter = splitter
-        
+
         self.left_column = QWidget()
         self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.left_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         left_layout = QVBoxLayout(self.left_column)
-        
+
         self.file_selector_a = self._create_file_selector_widget()
         left_layout.addWidget(self.file_selector_a)
-        
+
         self.middle_column = QWidget()
         self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.middle_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         middle_layout = QVBoxLayout(self.middle_column)
-        
+
+        from freeassetfilter.components.file_staging_pool import FileStagingPool
         self.file_staging_pool = FileStagingPool()
         middle_layout.addWidget(self.file_staging_pool)
-        
+
         self.right_column = QWidget()
         self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.right_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
         right_layout = QVBoxLayout(self.right_column)
-        
+
+        from freeassetfilter.components.unified_previewer import UnifiedPreviewer
         self.unified_previewer = UnifiedPreviewer(self)
         right_layout.addWidget(self.unified_previewer, 1)
-        
+
         splitter.addWidget(self.left_column)
         splitter.addWidget(self.middle_column)
         splitter.addWidget(self.right_column)
-        
+
         total_width = self.window_width - 40
-        left_width = int(total_width * (3/10))
-        middle_width = int(total_width * (3/10))
-        right_width = int(total_width * (4/10))
+        left_width = int(total_width * (3 / 10))
+        middle_width = int(total_width * (3 / 10))
+        right_width = int(total_width * (4 / 10))
         splitter.setSizes([left_width, middle_width, right_width])
-        
+
         self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
         self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
         self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
@@ -840,17 +1023,17 @@ class FreeAssetFilterApp(QMainWindow):
         self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
         self.unified_previewer.preview_started.connect(self.handle_preview_started)
         self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
-        
+
         main_layout.addWidget(splitter, 1)
-        
+
         status_container = QWidget()
         status_container_layout = QVBoxLayout(status_container)
         status_container_layout.setContentsMargins(0, 0, 0, 0)
         status_container_layout.setAlignment(Qt.AlignCenter)
-        
+
         status_layout = QHBoxLayout()
         status_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         from freeassetfilter.widgets.button_widgets import CustomButton
         github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
         self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
@@ -862,7 +1045,6 @@ class FreeAssetFilterApp(QMainWindow):
 
         self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
-        # 使用小一号的字体
         status_font = QFont(self.global_font)
         status_font.setPointSize(int(self.global_font.pointSize() * 0.85))
         self.status_label.setFont(status_font)
@@ -876,15 +1058,15 @@ class FreeAssetFilterApp(QMainWindow):
         self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.global_settings_button.clicked.connect(self._open_global_settings)
         status_layout.addWidget(self.global_settings_button)
-        
+
         status_container_layout.addLayout(status_layout)
         main_layout.addWidget(status_container)
-        
+
         from freeassetfilter.widgets.hover_tooltip import HoverTooltip
         self.hover_tooltip = HoverTooltip(self)
         self.hover_tooltip.set_target_widget(self.github_button)
         self.hover_tooltip.set_target_widget(self.global_settings_button)
-        
+
         try:
             if old_preview_items:
                 for item in old_preview_items:
@@ -895,27 +1077,27 @@ class FreeAssetFilterApp(QMainWindow):
                                 self.file_staging_pool._update_staging_area()
                             except (RuntimeError, AttributeError) as e:
                                 logger.debug(f"恢复预览项时出错: {e}")
-            
+
             if old_selected_files and hasattr(self.file_selector_a, 'selected_files'):
                 try:
                     self.file_selector_a.selected_files = list(old_selected_files)
                     self.file_selector_a._refresh_file_list()
                 except (RuntimeError, AttributeError) as e:
                     logger.debug(f"恢复选中文件时出错: {e}")
-            
+
             if sum(old_splitter_sizes) > 0:
                 splitter.setSizes(old_splitter_sizes)
         except (RuntimeError, AttributeError) as e:
             logger.debug(f"恢复布局状态时出错: {e}")
-        
+
         self._restore_ui_state()
-        
+
         return True
-    
+
     def update_theme(self, delayed=False):
         """
-        更新应用主题，通过重建主布局确保所有组件使用正确样式
-        
+        更新应用主题，优先增量刷新现有控件，避免重建主布局
+
         Args:
             delayed: 是否延迟执行，用于防止在窗口关闭时调用
         """
@@ -924,26 +1106,99 @@ class FreeAssetFilterApp(QMainWindow):
                 self._theme_update_queued = True
                 QTimer.singleShot(50, lambda: self.update_theme(delayed=True))
             return
-        
+
         self._update_theme_in_progress = True
         self._theme_update_queued = False
-        
+
+        self._backup_ui_state()
+
         # 清除SVG颜色缓存，确保新组件使用最新的主题颜色
+        from freeassetfilter.core.svg_renderer import SvgRenderer
         SvgRenderer._invalidate_color_cache()
 
         try:
-            success = self._rebuild_main_layout()
-            if not success:
-                self._update_theme_in_progress = False
-                return
+            if hasattr(self, "central_widget") and self.central_widget:
+                self._apply_theme_to_existing_widgets()
+                self._restore_ui_state()
+            else:
+                success = self._rebuild_main_layout()
+                if not success:
+                    self._update_theme_in_progress = False
+                    return
+                self._restore_ui_state()
         except (RuntimeError, AttributeError) as e:
-            logger.warning(f"重建主布局时出错: {e}")
+            logger.warning(f"更新主题时出错，回退到重建布局: {e}")
+            try:
+                self._rebuild_main_layout()
+                self._restore_ui_state()
+            except (RuntimeError, AttributeError) as rebuild_error:
+                logger.warning(f"重建主布局时出错: {rebuild_error}")
         finally:
             self._update_theme_in_progress = False
 
         # 更新窗口标题栏主题
         self._apply_title_bar_theme()
-    
+
+    def schedule_startup_tasks(self):
+        """
+        在首屏显示后分阶段执行启动任务，避免阻塞窗口显示
+        """
+        QTimer.singleShot(100, self.check_and_restore_backup)
+        QTimer.singleShot(400, self._start_background_warmup)
+        QTimer.singleShot(800, self._schedule_thumbnail_cleanup)
+
+    def _start_background_warmup(self):
+        """
+        启动后台预热线程
+        """
+        if self._startup_warmup_thread and self._startup_warmup_thread.isRunning():
+            return
+
+        self._startup_warmup_thread = StartupWarmupThread(self)
+        self._startup_warmup_thread.finished.connect(self._on_startup_warmup_finished)
+        self._startup_warmup_thread.start()
+
+    def _on_startup_warmup_finished(self):
+        """
+        后台预热完成回调
+        """
+        info("[预热] 启动阶段后台预热任务结束")
+
+    def _schedule_thumbnail_cleanup(self):
+        """
+        将缩略图缓存清理延后到窗口显示后执行
+        """
+        app = QApplication.instance()
+        settings_manager = getattr(app, 'settings_manager', None)
+        if settings_manager is None:
+            return
+
+        if not settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
+            return
+
+        cache_cleanup_period = settings_manager.get_setting("file_selector.cache_cleanup_period", 7)
+        last_cleanup_time = settings_manager.get_setting("file_selector.last_cleanup_time", None)
+        current_time = time.time()
+
+        if last_cleanup_time is None or (current_time - last_cleanup_time) > (cache_cleanup_period * 86400):
+            QTimer.singleShot(0, lambda: self._run_thumbnail_cleanup(cache_cleanup_period, current_time))
+
+    def _run_thumbnail_cleanup(self, cache_cleanup_period, current_time):
+        """
+        执行缩略图缓存清理
+        """
+        try:
+            from freeassetfilter.core.thumbnail_manager import clean_thumbnails
+            deleted_count, remaining_count = clean_thumbnails(cleanup_period_days=cache_cleanup_period)
+            info(f"[启动] 缩略图缓存清理完成: 删除 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
+
+            app = QApplication.instance()
+            if hasattr(app, 'settings_manager'):
+                app.settings_manager.set_setting("file_selector.last_cleanup_time", current_time)
+                app.settings_manager.save_settings()
+        except Exception as e:
+            warning(f"[启动] 缩略图缓存清理失败: {e}")
+
     def show_custom_window_demo(self):
         """
         演示自定义窗口的使用
@@ -951,14 +1206,14 @@ class FreeAssetFilterApp(QMainWindow):
         # 设置窗口大小
         window_width = 400
         window_height = 300
-        
+
         # 创建自定义窗口实例，并将其赋值给self，防止被垃圾回收
+        from freeassetfilter.widgets.D_widgets import CustomWindow
+        from freeassetfilter.widgets.D_widgets import CustomButton
         self.custom_window = CustomWindow("自定义窗口演示", self)
         self.custom_window.setGeometry(200, 200, window_width, window_height)
-        
+
         # 添加示例控件
-        
-        # 1. 添加标题标签
         title_label = QLabel("这是一个自定义窗口")
         title_font = QFont(self.global_font)
         title_font.setPointSize(int(self.global_font.pointSize() * 1.5))
@@ -974,12 +1229,11 @@ class FreeAssetFilterApp(QMainWindow):
         """)
         self.custom_window.add_widget(title_label)
 
-        # 2. 添加说明文本
-        info_label = QLabel("这个窗口具有以下特点：\n\n" \
-                            "• 纯白圆角矩形外观\n" \
-                            "• 右上角圆形关闭按钮\n" \
-                            "• 可拖拽移动（通过标题栏）\n" \
-                            "• 支持内嵌其他控件\n" \
+        info_label = QLabel("这个窗口具有以下特点：\n\n"
+                            "• 纯白圆角矩形外观\n"
+                            "• 右上角圆形关闭按钮\n"
+                            "• 可拖拽移动（通过标题栏）\n"
+                            "• 支持内嵌其他控件\n"
                             "• 带阴影效果")
         info_margin = 24
         info_label.setFont(self.global_font)
@@ -992,33 +1246,31 @@ class FreeAssetFilterApp(QMainWindow):
         """)
         info_label.setWordWrap(True)
         self.custom_window.add_widget(info_label)
-        
-        # 3. 添加自定义按钮
+
         demo_button = CustomButton("示例按钮")
         demo_button.clicked.connect(lambda: QMessageBox.information(self.custom_window, "提示", "自定义按钮被点击了！"))
         self.custom_window.add_widget(demo_button)
-        
-        # 显示窗口
+
         self.custom_window.show()
-    
+
     def handle_file_selection_changed(self, file_info, is_selected):
         """
         处理文件选择状态变化事件
-        
+
         Args:
             file_info (dict): 文件信息
             is_selected (bool): 是否被选中
         """
         import datetime
         from freeassetfilter.utils.app_logger import debug as logger_debug
-        
+
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             logger_debug(f"[{timestamp}] [handle_file_selection_changed] {msg}")
-        
+
         file_path = os.path.normpath(file_info['path'])
         debug(f"文件选择状态变化: 路径={file_path}, 选中={is_selected}")
-        
+
         if is_selected:
             existing_paths = [os.path.normpath(item['path']) for item in self.file_staging_pool.items]
             debug(f"储存池现有路径: {existing_paths}")
@@ -1030,42 +1282,46 @@ class FreeAssetFilterApp(QMainWindow):
         else:
             debug(f"取消选中，准备从储存池移除")
             self.file_staging_pool.remove_file(file_path)
-    
+
     def handle_remove_from_selector(self, file_info):
         """
         从文件选择器中删除文件（取消选中状态）
-        
+
         Args:
             file_info (dict): 文件信息
         """
         import datetime
         from freeassetfilter.utils.app_logger import debug as logger_debug
-        
+
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             logger_debug(f"[{timestamp}] [handle_remove_from_selector] {msg}")
-        
+
         file_path = os.path.normpath(file_info['path'])
         file_dir = os.path.normpath(os.path.dirname(file_path))
         debug(f"从选择器移除文件: 路径={file_path}, 目录={file_dir}")
         debug(f"移除前的selected_files: {self.file_selector_a.selected_files}")
-        
+
         if file_dir in self.file_selector_a.selected_files:
             self.file_selector_a.selected_files[file_dir].discard(file_path)
             debug(f"从集合中移除文件，剩余文件: {self.file_selector_a.selected_files[file_dir]}")
-            
+
             if not self.file_selector_a.selected_files[file_dir]:
                 del self.file_selector_a.selected_files[file_dir]
                 debug(f"目录集合为空，删除目录条目")
-        
+
+        if hasattr(self.file_selector_a, '_selected_file_paths'):
+            self.file_selector_a._selected_file_paths.discard(file_path)
+            debug(f"移除后的扁平选中集合: {self.file_selector_a._selected_file_paths}")
+
         debug(f"移除后的selected_files: {self.file_selector_a.selected_files}")
         debug(f"调用_update_file_selection_state")
         self.file_selector_a._update_file_selection_state()
-    
+
     def handle_navigate_to_path(self, path, file_info=None):
         """
         处理导航到指定路径的请求，更新文件选择器的当前路径
-        
+
         Args:
             path (str): 要导航到的路径
             file_info (dict, optional): 文件信息，如果提供则导航后滚动到该文件位置
@@ -1073,7 +1329,7 @@ class FreeAssetFilterApp(QMainWindow):
         if hasattr(self, 'file_selector_a') and self.file_selector_a:
             path = os.path.normpath(path)
             self.file_selector_a.current_path = path
-            
+
             def on_files_refreshed():
                 if file_info:
                     self.file_staging_pool.add_file(file_info)
@@ -1081,40 +1337,43 @@ class FreeAssetFilterApp(QMainWindow):
                 # 滚动到目标文件位置
                 if file_info:
                     self.file_selector_a.scroll_to_file(file_info)
-            
+
             self.file_selector_a.refresh_files(callback=on_files_refreshed, scroll_to_top=not file_info)
-    
+
     def handle_file_added_to_pool(self, file_info):
         """
         处理文件被添加到储存池的事件，将文件添加到文件选择器的选中文件列表中
-        
+
         Args:
             file_info (dict): 文件信息
         """
         file_path = os.path.normpath(file_info['path'])
         file_dir = os.path.normpath(os.path.dirname(file_path))
-        
+
         if file_dir not in self.file_selector_a.selected_files:
             self.file_selector_a.selected_files[file_dir] = set()
-        
+
         if file_path not in self.file_selector_a.selected_files[file_dir]:
             self.file_selector_a.selected_files[file_dir].add(file_path)
-            
-            def on_files_refreshed():
-                self.file_selector_a._update_file_selection_state()
-            
-            if self.file_selector_a.current_path == file_dir:
-                if self.file_selector_a._is_loading:
-                    self.file_selector_a._refresh_callback = on_files_refreshed
-                else:
-                    self.file_selector_a._update_file_selection_state()
+
+        if hasattr(self.file_selector_a, '_selected_file_paths'):
+            self.file_selector_a._selected_file_paths.add(file_path)
+
+        def on_files_refreshed():
+            self.file_selector_a._update_file_selection_state()
+
+        if self.file_selector_a.current_path == file_dir:
+            if self.file_selector_a._is_loading:
+                self.file_selector_a._refresh_callback = on_files_refreshed
             else:
                 self.file_selector_a._update_file_selection_state()
-    
+        else:
+            self.file_selector_a._update_file_selection_state()
+
     def handle_preview_started(self, file_info):
         """
         处理预览开始事件，更新文件选择器和存储池中对应文件的预览态
-        
+
         Args:
             file_info (dict): 文件信息
         """
@@ -1122,16 +1381,16 @@ class FreeAssetFilterApp(QMainWindow):
         debug(f"[Main] handle_preview_started called with path: {file_path}")
         if not file_path:
             return
-        
+
         # 更新文件选择器中的卡片预览态
         if hasattr(self, 'file_selector_a') and self.file_selector_a:
             self.file_selector_a.set_previewing_file(file_path)
-        
+
         # 更新文件存储池中的卡片预览态
         if hasattr(self, 'file_staging_pool') and self.file_staging_pool:
             debug(f"[Main] Calling file_staging_pool.set_previewing_file: {file_path}")
             self.file_staging_pool.set_previewing_file(file_path)
-    
+
     def handle_preview_cleared(self):
         """
         处理预览清除事件，清除所有卡片的预览态
@@ -1140,92 +1399,151 @@ class FreeAssetFilterApp(QMainWindow):
         if hasattr(self, 'file_selector_a') and self.file_selector_a:
             self.file_selector_a.clear_previewing_state()
             self.file_selector_a.previewing_file_path = None
-        
+
         # 清除文件存储池中的卡片预览态
         if hasattr(self, 'file_staging_pool') and self.file_staging_pool:
             self.file_staging_pool.clear_previewing_state()
             self.file_staging_pool.previewing_file_path = None
-    
+
     def check_and_restore_backup(self):
         """
         检查是否存在备份文件，并根据设置决定是否自动恢复或询问用户
         注意：只恢复文件存储池，文件选择器的状态由其他模块处理
         """
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
-        from freeassetfilter.utils.path_utils import get_app_data_path
-        import os
         import json
 
         backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
 
-        if os.path.exists(backup_file):
+        if not os.path.exists(backup_file):
+            return
+
+        try:
             with open(backup_file, 'r', encoding='utf-8') as f:
                 backup_data = json.load(f)
+        except (OSError, IOError, ValueError, TypeError) as e:
+            warning(f"读取备份文件失败: {e}")
+            return
 
-            items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
+        items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
 
-            if items:
-                auto_restore = True
-                app = QApplication.instance()
-                if hasattr(app, 'settings_manager'):
-                    auto_restore = app.settings_manager.get_setting("file_staging.auto_restore_records", True)
+        if not items:
+            return
 
-                if auto_restore:
-                    self.restore_backup(backup_data)
+        auto_restore = True
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            auto_restore = app.settings_manager.get_setting("file_staging.auto_restore_records", True)
+
+        if auto_restore:
+            self.start_restore_backup(backup_data)
+        else:
+            confirm_msg = CustomMessageBox(self)
+            confirm_msg.set_title("恢复上次选中内容")
+            confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
+            confirm_msg.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
+
+            is_confirmed = False
+
+            def on_confirm_clicked(button_index):
+                nonlocal is_confirmed
+                is_confirmed = (button_index == 0)
+                confirm_msg.close()
+
+            confirm_msg.buttonClicked.connect(on_confirm_clicked)
+            confirm_msg.exec()
+
+            if is_confirmed:
+                self.start_restore_backup(backup_data)
+
+    def start_restore_backup(self, backup_data):
+        """
+        启动分批异步恢复，避免主线程长时间阻塞
+
+        Args:
+            backup_data (dict or list): 备份数据
+        """
+        items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
+        if not items:
+            return
+
+        self._pending_restore_items = list(items)
+        self._pending_restore_unlinked_files = []
+        self._restore_total_count = len(items)
+        self._restore_success_count = 0
+
+        if hasattr(self, 'file_staging_pool'):
+            setattr(self.file_staging_pool, "_suspend_backup_save", True)
+
+        self.status_label.setText(f"正在恢复上次记录... 0/{self._restore_total_count}")
+        QTimer.singleShot(0, self._process_restore_batch)
+
+    def _process_restore_batch(self):
+        """
+        分批恢复备份项，每批处理少量数据，将控制权交还事件循环
+        """
+        if not hasattr(self, 'file_staging_pool'):
+            return
+
+        batch = self._pending_restore_items[:self._restore_batch_size]
+        self._pending_restore_items = self._pending_restore_items[self._restore_batch_size:]
+
+        for file_info in batch:
+            try:
+                file_path = file_info.get("path", "")
+                if file_path and os.path.exists(file_path):
+                    self.file_staging_pool.add_file(file_info)
+                    self._restore_success_count += 1
                 else:
-                    confirm_msg = CustomMessageBox(self)
-                    confirm_msg.set_title("恢复上次选中内容")
-                    confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
-                    confirm_msg.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
+                    self._pending_restore_unlinked_files.append({
+                        "original_file_info": file_info,
+                        "status": "unlinked",
+                        "new_path": None,
+                        "md5": None
+                    })
+            except Exception as e:
+                warning(f"恢复备份项失败: {e}")
 
-                    is_confirmed = False
+        processed_count = self._restore_total_count - len(self._pending_restore_items)
+        self.status_label.setText(f"正在恢复上次记录... {processed_count}/{self._restore_total_count}")
 
-                    def on_confirm_clicked(button_index):
-                        nonlocal is_confirmed
-                        is_confirmed = (button_index == 0)
-                        confirm_msg.close()
+        if self._pending_restore_items:
+            QTimer.singleShot(0, self._process_restore_batch)
+        else:
+            self._finish_restore_backup()
 
-                    confirm_msg.buttonClicked.connect(on_confirm_clicked)
-                    confirm_msg.exec()
+    def _finish_restore_backup(self):
+        """
+        完成恢复流程，统一保存备份并处理未链接文件
+        """
+        if hasattr(self, 'file_staging_pool'):
+            setattr(self.file_staging_pool, "_suspend_backup_save", False)
+            try:
+                last_path = getattr(getattr(self, 'file_selector_a', None), 'current_path', 'All')
+                self.file_staging_pool.save_backup(last_path)
+            except Exception as e:
+                warning(f"恢复完成后统一保存备份失败: {e}")
 
-                    if is_confirmed:
-                        self.restore_backup(backup_data)
-    
+        summary_text = f"已恢复 {self._restore_success_count}/{self._restore_total_count} 个条目"
+        if self._pending_restore_unlinked_files:
+            summary_text += f" | {len(self._pending_restore_unlinked_files)} 个条目待手动链接"
+        self.status_label.setText(summary_text)
+
+        if self._pending_restore_unlinked_files:
+            QTimer.singleShot(
+                0,
+                lambda: self.file_staging_pool.show_unlinked_files_dialog(self._pending_restore_unlinked_files)
+            )
+
     def restore_backup(self, backup_data):
         """
-        从备份数据恢复文件存储池内容，包含文件存在性校验
-        注意：只恢复文件存储池，不处理文件选择器的状态
-        
+        兼容旧调用入口：改为使用新的分批恢复流程
+
         Args:
-            backup_data (dict or list): 备份数据，可以是包含items和selector_state的字典，或旧格式的文件列表
+            backup_data (dict or list): 备份数据
         """
-        import os
-        
-        # 处理不同格式的备份数据
-        items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
-        
-        # 恢复文件到存储池，并检查文件是否存在
-        success_count = 0
-        unlinked_files = []
-        
-        for file_info in items:
-            # 检查文件是否存在
-            if os.path.exists(file_info["path"]):
-                # 添加到文件存储池
-                self.file_staging_pool.add_file(file_info)
-                success_count += 1
-            else:
-                # 添加到未链接文件列表
-                unlinked_files.append({
-                    "original_file_info": file_info,
-                    "status": "unlinked",  # unlinked, ignored, linked
-                    "new_path": None,
-                    "md5": self.file_staging_pool.calculate_md5(file_info["path"]) if os.path.exists(file_info["path"]) else None
-                })
-        
-        # 如果有未链接文件，显示处理对话框
-        if unlinked_files:
-            self.file_staging_pool.show_unlinked_files_dialog(unlinked_files)
+        self.start_restore_backup(backup_data)
+
 
 def main():
     """
@@ -1255,9 +1573,7 @@ def main():
             # 检查错误码，ERROR_ALREADY_EXISTS = 183
             error_code = kernel32.GetLastError()
             if error_code == 183:  # ERROR_ALREADY_EXISTS
-                # 互斥锁已存在，说明程序已经在运行
                 warning("程序已经在运行中，禁止启动多个实例")
-                # 显示提示窗口
                 try:
                     from PySide6.QtWidgets import QApplication as _QApplication, QMessageBox
                     _temp_app = _QApplication(sys.argv)
@@ -1275,39 +1591,27 @@ def main():
                 info("单实例检测通过，程序启动")
 
     # 获取通过文件关联传递进来的文件路径（Inno Setup通过命令行参数传递）
-    # sys.argv[0] 是程序本身的路径
-    # sys.argv[1] 是被打开的文件路径（如果有）
     associated_file_path = sys.argv[1] if len(sys.argv) > 1 else None
     if associated_file_path:
         info(f"[文件关联] 接收到关联文件: {associated_file_path}")
-    
+
     # 修改sys.argv[0]以确保Windows任务栏显示正确图标
     sys.argv[0] = os.path.abspath(__file__)
-    
+
     # 在Windows系统上设置应用程序身份，确保任务栏显示正确图标
     if sys.platform == 'win32':
         import ctypes
-        # 加载Windows API库
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeAssetFilter.App")
-        
+
         # 设置DPI感知级别
         try:
-            # 尝试设置为每显示器DPI感知v2（Windows 10 1607及以上版本支持）
             user32 = ctypes.windll.user32
-            # PROCESS_PER_MONITOR_DPI_AWARE_V2 = 2
-            # PROCESS_PER_MONITOR_DPI_AWARE = 1
-            # PROCESS_SYSTEM_DPI_AWARE = 1
-            # PROCESS_DPI_UNAWARE = 0
-            
-            # 尝试使用SetProcessDpiAwarenessContext API（Windows 10 1607及以上版本）
-            # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = 0x3
             SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
             SetProcessDpiAwarenessContext.restype = ctypes.c_void_p
             SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = 0x3
             result = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
             if result == 0:
-                # 如果失败，尝试使用SetProcessDpiAwareness API（Windows 8.1及以上版本）
                 shcore = ctypes.windll.shcore
                 SetProcessDpiAwareness = shcore.SetProcessDpiAwareness
                 SetProcessDpiAwareness.restype = ctypes.c_long
@@ -1318,7 +1622,6 @@ def main():
             else:
                 logger.debug("设置为每显示器DPI感知v2模式")
         except (AttributeError, OSError) as e:
-            # 如果上述API都不可用，尝试使用SetProcessDPIAware（Windows Vista及以上版本）
             try:
                 user32 = ctypes.windll.user32
                 SetProcessDPIAware = user32.SetProcessDPIAware
@@ -1327,15 +1630,10 @@ def main():
                 logger.debug("设置为系统DPI感知模式")
             except (AttributeError, OSError) as e2:
                 logger.debug(f"设置DPI感知失败: {e2}")
-    
-    # 设置DPI相关属性 (Qt6中已默认启用高DPI支持，无需手动设置)
-    # QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)  # Qt6中已弃用
-    # QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)      # Qt6中已弃用
 
     app = QApplication(sys.argv)
-    
+
     # 将关联文件路径存储到app对象，供其他组件访问
-    # 其他组件可以通过 QApplication.instance().associated_file_path 获取
     app.associated_file_path = associated_file_path
 
     # 预导入 cv2，避免多线程环境下的导入竞态条件
@@ -1346,8 +1644,7 @@ def main():
         logger.debug(f"cv2 模块未安装: {e}")
 
     # 设置全局DPI缩放因子为系统缩放的1.4倍
-    # 获取当前光标所在的屏幕（多显示器环境下更准确）
-    from PySide6.QtGui import QCursor
+    from PySide6.QtGui import QCursor, QFontDatabase, QFont
     cursor_pos = QCursor.pos()
     screen = QApplication.screenAt(cursor_pos)
     if screen is None:
@@ -1356,18 +1653,17 @@ def main():
     physical_dpi = screen.physicalDotsPerInch()
     system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
     app.dpi_scale_factor = system_scale * 1.4
-    
+
     # 设置应用程序图标，用于任务栏显示
     icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
     app.setWindowIcon(QIcon(icon_path))
-    
+
     # 导入设置管理器
     from freeassetfilter.core.settings_manager import SettingsManager
-    
+
     # 检测并设置全局字体
-    from PySide6.QtGui import QFontDatabase, QFont
     font_families = QFontDatabase.families()
-    
+
     # 加载 FiraCode-VF 字体（用于代码高亮显示）
     firacode_font_path = get_resource_path('freeassetfilter/icons/FiraCode-VF.ttf')
     firacode_font_family = None
@@ -1375,51 +1671,46 @@ def main():
         font_id = QFontDatabase.addApplicationFont(firacode_font_path)
         if font_id != -1:
             firacode_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-    
+
     # 初始化设置管理器
     settings_manager = SettingsManager()
-    
+
     # 从设置管理器中获取字体设置
-    DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 10)  # 基础字体大小，可统一调整
-    saved_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")  # 从设置中获取保存的字体样式
-    
+    DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 10)
+    saved_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
+
     # 检查保存的字体是否可用，如果不可用则回退到微软雅黑
     selected_font = saved_font_style
     if selected_font not in font_families:
-        # 保存的字体不可用，尝试使用微软雅黑
         yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
         for font_name in yahei_fonts:
             if font_name in font_families:
                 selected_font = font_name
                 break
-        
-        # 如果微软雅黑也不可用，则使用系统默认字体
+
         if selected_font not in font_families:
             selected_font = None
-    
+
     if selected_font:
-        # 设置全局字体，使用Regular字重(QFont.Normal)
         app.setFont(QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal))
-        # 设置全局字体变量
         global_font = QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal)
     else:
-        # 使用系统默认字体
         global_font = QFont()
         global_font.setPointSize(DEFAULT_FONT_SIZE)
         global_font.setWeight(QFont.Normal)
-    
+
     # 将默认字体大小存储到app对象中，方便其他组件访问
     app.default_font_size = DEFAULT_FONT_SIZE
-    
+
     # 将设置管理器存储到app对象中，方便其他组件访问
     app.settings_manager = settings_manager
-    
+
     # 将全局字体存储到app对象中，方便其他组件访问
     app.global_font = global_font
-    
+
     # 将 FiraCode 字体族名存储到app对象中，供代码高亮模式使用
     app.firacode_font_family = firacode_font_family
-    
+
     # 根据当前主题动态设置全局滚动条样式
     theme = settings_manager.get_setting("appearance.theme", "default")
     if theme == "dark":
@@ -1432,134 +1723,100 @@ def main():
         scrollbar_bg = "#f0f0f0"
         scrollbar_handle = "#c0c0c0"
         scrollbar_handle_hover = "#a0a0a0"
-    
-    # 生成滚动条样式
+
     scrollbar_style = """
         /* 滚动区域样式 */
         QScrollArea {
             background-color: %s;
             border: none;
         }
-        
+
         /* 垂直滚动条样式 */
         QScrollBar:vertical {
             width: 8px;
             background: %s;
             border-radius: 3px;
         }
-        
+
         QScrollBar::handle:vertical {
             background: %s;
             border-radius: 3px;
         }
-        
+
         QScrollBar::handle:vertical:hover {
             background: %s;
         }
-        
+
         QScrollBar::sub-line:vertical,
         QScrollBar::add-line:vertical {
             height: 0px;
         }
-        
+
         /* 水平滚动条样式 */
         QScrollBar:horizontal {
             height: 8px;
             background: %s;
             border-radius: 3px;
         }
-        
+
         QScrollBar::handle:horizontal {
             background: %s;
             border-radius: 3px;
         }
-        
+
         QScrollBar::handle:horizontal:hover {
             background: %s;
         }
-        
+
         QScrollBar::sub-line:horizontal,
         QScrollBar::add-line:horizontal {
             width: 0px;
         }
-    """ % (scroll_area_bg, scrollbar_bg, scrollbar_handle, scrollbar_handle_hover, 
-              scrollbar_bg, scrollbar_handle, scrollbar_handle_hover)
-    
-    # 设置全局滚动条样式
+    """ % (scroll_area_bg, scrollbar_bg, scrollbar_handle, scrollbar_handle_hover,
+           scrollbar_bg, scrollbar_handle, scrollbar_handle_hover)
+
     app.setStyleSheet(scrollbar_style)
-    
-    # 检查并执行缩略图缓存自动清理
-    if settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
-        from freeassetfilter.core.thumbnail_cleaner import get_thumbnail_cleaner
-        thumbnail_cleaner = get_thumbnail_cleaner()
-        
-        # 获取缓存清理周期（天）
-        cache_cleanup_period = settings_manager.get_setting("file_selector.cache_cleanup_period", 7)
-        
-        # 获取上次清理时间
-        last_cleanup_time = settings_manager.get_setting("file_selector.last_cleanup_time", None)
-        
-        # 获取当前时间
-        current_time = time.time()
-        
-        # 检查是否需要清理缓存
-        if last_cleanup_time is None or (current_time - last_cleanup_time) > (cache_cleanup_period * 86400):
-            # 执行缓存清理
-            deleted_count, remaining_count = thumbnail_cleaner.clean_thumbnails(cleanup_period_days=cache_cleanup_period)
-            #print(f"[DEBUG] 自动清理缩略图缓存: 删除了 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
-            
-            # 更新上次清理时间
-            settings_manager.set_setting("file_selector.last_cleanup_time", current_time)
-            settings_manager.save_settings()
-    
+
     window = FreeAssetFilterApp()
     # 应用主题设置
     window.update_theme()
     # 窗口启动时窗口化显示
     window.show()
-    # 窗口显示后再检查并恢复文件列表，确保主面板先显示
-    window.check_and_restore_backup()
-    
+    # 首屏显示后再分阶段执行恢复/预热/清理，避免阻塞启动
+    window.schedule_startup_tasks()
+
     # 应用程序退出前记录当前时间
     def on_app_exit():
         import json
         import os
-        
-        # 记录程序退出时间
+
         exit_time = time.time()
-        
-        # 直接操作JSON文件，只更新app.last_exit_time字段，避免保存整个设置文件
         settings_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'settings.json')
-        
+
         try:
-            # 如果设置文件存在，只更新app.last_exit_time字段
             if os.path.exists(settings_file):
                 with open(settings_file, 'r', encoding='utf-8') as f:
                     settings_data = json.load(f)
-                
-                # 确保app部分存在
+
                 if 'app' not in settings_data:
                     settings_data['app'] = {}
-                
-                # 更新退出时间
+
                 settings_data['app']['last_exit_time'] = exit_time
-                
-                # 保存更新后的设置
+
                 with open(settings_file, 'w', encoding='utf-8') as f:
                     json.dump(settings_data, f, indent=4, ensure_ascii=False)
             else:
-                # 文件不存在时，仍然记录时间但不创建文件（遵循原有逻辑）
                 settings_manager.set_setting("app.last_exit_time", exit_time)
-                
+
         except (OSError, PermissionError, json.JSONDecodeError, TypeError) as e:
-            # 发生错误时，使用原有方式记录时间（不保存）
             settings_manager.set_setting("app.last_exit_time", exit_time)
             logger.warning(f"保存退出时间失败: {e}")
-    
+
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
-    
+
     sys.exit(app.exec())
+
 
 # 主程序入口
 if __name__ == "__main__":

@@ -813,42 +813,25 @@ class CustomFileHorizontalCard(QWidget):
         return get_icon_path(icon_name, icon_dir)
 
     def _set_icon_pixmap(self, pixmap, size):
-        """设置图标Pixmap，保持原始比例"""
+        """设置图标Pixmap，保持 1:1 占位区域，图像在区域内按比例居中显示"""
         logical_size = int(size)
         physical_size = int(size * self.devicePixelRatio())
         if logical_size > 0 and physical_size > 0:
             if not isinstance(self.icon_display, QLabel):
                 self._create_icon_label()
-            
-            # 获取原始图像的宽高比
-            orig_width = pixmap.width()
-            orig_height = pixmap.height()
-            
-            if orig_width > 0 and orig_height > 0:
-                aspect_ratio = orig_width / orig_height
-                
-                # 根据宽高比计算目标尺寸，确保图像在指定size的范围内保持比例
-                if aspect_ratio >= 1:
-                    # 宽度大于等于高度，以宽度为基准
-                    target_width = physical_size
-                    target_height = int(physical_size / aspect_ratio)
-                else:
-                    # 高度大于宽度，以高度为基准
-                    target_height = physical_size
-                    target_width = int(physical_size * aspect_ratio)
-            else:
-                # 如果无法获取原始尺寸，使用正方形
-                target_width = physical_size
-                target_height = physical_size
-            
-            # 设置标签大小为计算出的目标尺寸（逻辑像素）
-            display_width = int(target_width / self.devicePixelRatio())
-            display_height = int(target_height / self.devicePixelRatio())
-            self.icon_display.setFixedSize(display_width, display_height)
-            
+
+            # 横向卡片中的缩略图始终占据固定的正方形空间，
+            # 非 1:1 缩略图仅在该空间内按比例缩放并居中显示。
+            self.icon_display.setFixedSize(logical_size, logical_size)
+            self.icon_display.setAlignment(Qt.AlignCenter)
             self.icon_display.clear()
-            
-            scaled_pixmap = pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+            scaled_pixmap = pixmap.scaled(
+                physical_size,
+                physical_size,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
             scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
             self.icon_display.setPixmap(scaled_pixmap)
 
