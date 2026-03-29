@@ -37,6 +37,53 @@ class CustomInputBox(QWidget):
     # 编辑完成信号，当用户按下回车键或失去焦点时发出
     editingFinished = Signal(str)
     
+    def _resolve_theme_colors(self, app, border_color, background_color, text_color,
+                              placeholder_color, active_border_color, active_background_color):
+        """
+        解析输入框主题颜色：
+        优先使用 input_* 专用配置，不存在时回退到当前主题基础颜色。
+        """
+        resolved = {
+            "border_color": border_color,
+            "background_color": background_color,
+            "text_color": text_color,
+            "placeholder_color": placeholder_color,
+            "active_border_color": active_border_color,
+            "active_background_color": active_background_color,
+        }
+
+        if not hasattr(app, "settings_manager"):
+            return resolved
+
+        settings_manager = app.settings_manager
+
+        resolved["border_color"] = settings_manager.get_setting(
+            "appearance.colors.input_border",
+            settings_manager.get_setting("appearance.colors.normal_color", border_color)
+        )
+        resolved["background_color"] = settings_manager.get_setting(
+            "appearance.colors.input_background",
+            settings_manager.get_setting("appearance.colors.base_color", background_color)
+        )
+        resolved["text_color"] = settings_manager.get_setting(
+            "appearance.colors.input_text",
+            settings_manager.get_setting("appearance.colors.secondary_color", text_color)
+        )
+        resolved["placeholder_color"] = settings_manager.get_setting(
+            "appearance.colors.text_placeholder",
+            settings_manager.get_setting("appearance.colors.normal_color", placeholder_color)
+        )
+        resolved["active_border_color"] = settings_manager.get_setting(
+            "appearance.colors.input_focus_border",
+            settings_manager.get_setting("appearance.colors.accent_color", active_border_color)
+        )
+        resolved["active_background_color"] = settings_manager.get_setting(
+            "appearance.colors.input_background",
+            settings_manager.get_setting("appearance.colors.base_color", active_background_color)
+        )
+
+        return resolved
+
     def __init__(self,
                  parent=None,
                  placeholder_text="",
@@ -81,34 +128,27 @@ class CustomInputBox(QWidget):
         self._has_content = False
         self._editable = editable  # 是否可编辑标志
         
-        # 尝试从应用实例获取主题颜色
-        use_theme_colors = False
-        theme_border_color = border_color
-        theme_background_color = background_color
-        theme_text_color = text_color
-        theme_placeholder_color = placeholder_color
-        theme_active_border_color = active_border_color
-        theme_active_background_color = active_background_color
-        
-        if hasattr(app, 'settings_manager'):
-            use_theme_colors = True
-            theme_border_color = app.settings_manager.get_setting("appearance.colors.input_border", border_color)
-            theme_background_color = app.settings_manager.get_setting("appearance.colors.input_background", background_color)
-            theme_text_color = app.settings_manager.get_setting("appearance.colors.input_text", text_color)
-            theme_placeholder_color = app.settings_manager.get_setting("appearance.colors.text_placeholder", placeholder_color)
-            theme_active_border_color = app.settings_manager.get_setting("appearance.colors.input_focus_border", active_border_color)
-            theme_active_background_color = app.settings_manager.get_setting("appearance.colors.input_background", active_background_color)
+        # 从应用实例解析主题颜色，优先 input_*，否则回退到当前主题基础色
+        resolved_theme_colors = self._resolve_theme_colors(
+            app,
+            border_color,
+            background_color,
+            text_color,
+            placeholder_color,
+            active_border_color,
+            active_background_color,
+        )
         
         # 样式参数，应用DPI缩放
         self._width = int(width * self.dpi_scale) if width else None
         self._height = int(height * self.dpi_scale)
         self._border_radius = int(border_radius * self.dpi_scale)
-        self._border_color = QColor(theme_border_color)
-        self._background_color = QColor(theme_background_color)
-        self._text_color = QColor(theme_text_color)
-        self._placeholder_color = QColor(theme_placeholder_color)
-        self._active_border_color = QColor(theme_active_border_color)
-        self._active_background_color = QColor(theme_active_background_color)
+        self._border_color = QColor(resolved_theme_colors["border_color"])
+        self._background_color = QColor(resolved_theme_colors["background_color"])
+        self._text_color = QColor(resolved_theme_colors["text_color"])
+        self._placeholder_color = QColor(resolved_theme_colors["placeholder_color"])
+        self._active_border_color = QColor(resolved_theme_colors["active_border_color"])
+        self._active_background_color = QColor(resolved_theme_colors["active_background_color"])
         
         # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
@@ -249,12 +289,22 @@ class CustomInputBox(QWidget):
         """
         app = QApplication.instance()
         if hasattr(app, 'settings_manager'):
-            self._border_color = QColor(app.settings_manager.get_setting("appearance.colors.input_border", self._border_color.name()))
-            self._background_color = QColor(app.settings_manager.get_setting("appearance.colors.input_background", self._background_color.name()))
-            self._text_color = QColor(app.settings_manager.get_setting("appearance.colors.input_text", self._text_color.name()))
-            self._placeholder_color = QColor(app.settings_manager.get_setting("appearance.colors.text_placeholder", self._placeholder_color.name()))
-            self._active_border_color = QColor(app.settings_manager.get_setting("appearance.colors.input_focus_border", self._active_border_color.name()))
-            self._active_background_color = QColor(app.settings_manager.get_setting("appearance.colors.input_background", self._active_background_color.name()))
+            resolved_theme_colors = self._resolve_theme_colors(
+                app,
+                self._border_color.name(),
+                self._background_color.name(),
+                self._text_color.name(),
+                self._placeholder_color.name(),
+                self._active_border_color.name(),
+                self._active_background_color.name(),
+            )
+
+            self._border_color = QColor(resolved_theme_colors["border_color"])
+            self._background_color = QColor(resolved_theme_colors["background_color"])
+            self._text_color = QColor(resolved_theme_colors["text_color"])
+            self._placeholder_color = QColor(resolved_theme_colors["placeholder_color"])
+            self._active_border_color = QColor(resolved_theme_colors["active_border_color"])
+            self._active_background_color = QColor(resolved_theme_colors["active_background_color"])
 
             palette = self.line_edit.palette()
             palette.setColor(self.line_edit.foregroundRole(), self._text_color)

@@ -8,7 +8,7 @@ FreeAssetFilter 按钮类自定义控件
 from PySide6.QtWidgets import (
     QPushButton, QWidget, QSizePolicy, QApplication, QStyleOptionButton
 )
-from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize, QTimer, QPropertyAnimation, Property, QEasingCurve, QParallelAnimationGroup
+from PySide6.QtCore import Qt, QPoint, Signal, QRect, QRectF, QSize, QTimer, QPropertyAnimation, Property, QEasingCurve, QParallelAnimationGroup
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QKeyEvent
 from PySide6.QtWidgets import QStyle
 from PySide6.QtWidgets import QGraphicsDropShadowEffect
@@ -111,8 +111,9 @@ class CustomButton(QPushButton):
         self._display_mode = display_mode
         # SVG图标路径
         self._icon_path = text if self._display_mode == "icon" else None
-        # 渲染后的图标Pixmap
-        self._icon_pixmap = None
+        # 缓存后的SVG渲染器
+        self._icon_renderer = None
+        self._icon_render_signature = None
         # 悬浮信息文本
         self._tooltip_text = tooltip_text
         
@@ -1064,7 +1065,8 @@ class CustomButton(QPushButton):
 
             # 图标按钮需要重新渲染，确保深浅色模式下 SVG 颜色立即更新
             if self._display_mode == "icon":
-                self._render_icon()
+                self._icon_render_signature = None
+                self._render_icon(force=True)
 
             self.update()
         except Exception as e:
@@ -1151,25 +1153,47 @@ class CustomButton(QPushButton):
         # 设置最小宽度
         self.setMinimumWidth(min_width)
     
-    def _render_icon(self):
+    def _render_icon(self, force=False):
         """
-        渲染SVG图标为QPixmap
-        调用项目中已开发的SVG渲染组件进行图标渲染
+        预处理并缓存 SVG 渲染器
+        避免在 paintEvent 中重复读取文件和执行颜色替换
         """
         try:
-            if self._icon_path and os.path.exists(self._icon_path):
-                # 计算合适的图标大小，确保图标不会超出按钮范围
-                # 先获取按钮的实际尺寸，考虑DPI缩放
-                button_size = min(self.width(), self.height())
-                # 图标大小为按钮尺寸的90%，不直接乘以DPI缩放因子（在SvgRenderer中处理）
-                icon_size = button_size * 0.52
-                # 使用项目中已有的SvgRenderer渲染SVG图标，传递DPI缩放因子
-                self._icon_pixmap = SvgRenderer.render_svg_to_pixmap(self._icon_path, int(icon_size), self.dpi_scale)
-            else:
-                self._icon_pixmap = None
-        except (OSError, ValueError) as e:
+            if not self._icon_path or not os.path.exists(self._icon_path):
+                self._icon_renderer = None
+                self._icon_render_signature = None
+                return
+
+            render_signature = (
+                self._icon_path,
+                self.button_type,
+            )
+
+            if not force and self._icon_render_signature == render_signature and self._icon_renderer is not None:
+                return
+
+            with open(self._icon_path, "r", encoding="utf-8") as f:
+                svg_content = f.read()
+
+            svg_content = SvgRenderer._replace_svg_colors(
+                svg_content,
+                force_black_to_base=(self.button_type == "primary")
+            )
+
+            from PySide6.QtSvg import QSvgRenderer
+            svg_renderer = QSvgRenderer(svg_content.encode("utf-8"))
+
+            if not svg_renderer.isValid():
+                self._icon_renderer = None
+                self._icon_render_signature = None
+                return
+
+            self._icon_renderer = svg_renderer
+            self._icon_render_signature = render_signature
+        except (OSError, ValueError, TypeError) as e:
             debug(f"渲染SVG图标失败: {e}")
-            self._icon_pixmap = None
+            self._icon_renderer = None
+            self._icon_render_signature = None
     
     def resizeEvent(self, event):
         """
@@ -1206,73 +1230,41 @@ class CustomButton(QPushButton):
         如果是图标模式，先调用父类绘制按钮样式但不绘制文字，再直接渲染SVG；否则调用父类绘制文字
         """
         if self._display_mode == "icon":
-            # 获取当前绘制器
             painter = QPainter(self)
-            
-            # 保存绘制器状态
             painter.save()
-            
-            # 绘制按钮样式（背景、边框等）
-            # 我们不调用super().paintEvent(event)，因为它会绘制文字
-            # 而是直接绘制按钮的背景和边框
+
             style_option = QStyleOptionButton()
             self.initStyleOption(style_option)
-            
-            # 绘制按钮背景和边框
+
             self.style().drawControl(QStyle.CE_PushButtonBevel, style_option, painter, self)
             self.style().drawControl(QStyle.CE_PushButton, style_option, painter, self)
-            
-            # 恢复绘制器状态
+
             painter.restore()
-            
-            # 如果有图标路径，使用SvgRenderer预处理并渲染SVG
-            if self._icon_path and os.path.exists(self._icon_path):
-                # 设置渲染提示（使用已创建的painter）
-                painter.setRenderHint(QPainter.Antialiasing)
+
+            if self._icon_renderer and self._icon_renderer.isValid():
+                painter.setRenderHint(QPainter.Antialiasing, True)
                 painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
                 painter.setRenderHint(QPainter.TextAntialiasing, True)
-                
-                try:
-                    from PySide6.QtSvg import QSvgRenderer
-                    from PySide6.QtCore import QRectF
 
-                    # 读取SVG文件内容并进行颜色替换预处理
-                    with open(self._icon_path, 'r', encoding='utf-8') as f:
-                        svg_content = f.read()
+                button_size = max(1, min(self.width(), self.height()))
+                icon_size = max(1, int(button_size * 0.52))
+                svg_size = self._icon_renderer.defaultSize()
 
-                    # 预处理SVG内容：替换颜色
-                    # 强调样式（primary）按钮的SVG图标需要将#000000替换为base_color
-                    force_black_to_base = (self.button_type == "primary")
-                    svg_content = SvgRenderer._replace_svg_colors(svg_content, force_black_to_base=force_black_to_base)
+                if svg_size.width() > 0 and svg_size.height() > 0:
+                    aspect_ratio = svg_size.width() / svg_size.height()
+                    if aspect_ratio >= 1:
+                        icon_width = icon_size
+                        icon_height = max(1, int(icon_size / aspect_ratio))
+                    else:
+                        icon_height = icon_size
+                        icon_width = max(1, int(icon_size * aspect_ratio))
+                else:
+                    icon_width = icon_size
+                    icon_height = icon_size
 
-                    # 使用预处理后的内容创建QSvgRenderer
-                    svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
-
-                    # 计算合适的图标大小，确保图标不会超出按钮范围
-                    button_size = min(self.width(), self.height())
-                    icon_size = button_size * 0.52
-
-                    # 计算图标绘制位置（居中）
-                    icon_rect = painter.window()
-                    icon_rect.setWidth(int(icon_size))
-                    icon_rect.setHeight(int(icon_size))
-                    icon_rect.moveCenter(painter.window().center())
-
-                    # 将QRect转换为QRectF，因为QSvgRenderer.render方法期望第二个参数是QRectF类型
-                    icon_rectf = QRectF(icon_rect)
-
-                    # 直接渲染SVG到按钮上
-                    svg_renderer.render(painter, icon_rectf)
-                except (OSError, ImportError, ValueError) as e:
-                    debug(f"直接渲染SVG图标失败: {e}")
-                    # 如果直接渲染失败，回退到使用位图
-                    if self._icon_pixmap:
-                        # 计算图标绘制位置（居中）
-                        icon_rect = self._icon_pixmap.rect()
-                        icon_rect.moveCenter(painter.window().center())
-
-                        # 绘制图标
-                        painter.drawPixmap(icon_rect, self._icon_pixmap)
+                icon_rect = QRectF(0, 0, icon_width, icon_height)
+                icon_rect.moveCenter(self.rect().center())
+                self._icon_renderer.render(painter, icon_rect)
         else:
             # 文字模式，调用父类绘制文字
             super().paintEvent(event)

@@ -414,75 +414,72 @@ class FreeAssetFilterApp(QMainWindow):
 
         return auxiliary_color, normal_color, base_color
 
-    def _refresh_widget_theme_recursively(self, root_widget):
+    def _refresh_widget_self_only(self, widget):
         """
-        递归刷新控件树主题，兜底处理没有统一 update_theme 入口的子组件
+        仅刷新单个控件自身样式，不递归处理子控件
+        """
+        if not widget:
+            return
+
+        try:
+            if hasattr(widget, "apply_theme_from_settings"):
+                widget.apply_theme_from_settings()
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"应用控件主题设置失败: {e}")
+
+        try:
+            style = widget.style()
+            if style is not None:
+                style.unpolish(widget)
+                style.polish(widget)
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"重新 polish 控件样式失败: {e}")
+
+        try:
+            widget.update()
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _refresh_widget_theme_recursively(self, root_widget, visited=None):
+        """
+        递归刷新控件树主题，优先调用组件自己的 update_theme，避免重复遍历整棵子树
         """
         if not root_widget:
             return
 
+        if visited is None:
+            visited = set()
+
+        widget_id = id(root_widget)
+        if widget_id in visited:
+            return
+        visited.add(widget_id)
+
+        has_explicit_theme_handler = False
+
         try:
             if hasattr(root_widget, "update_theme"):
                 root_widget.update_theme()
+                has_explicit_theme_handler = True
             elif hasattr(root_widget, "set_theme"):
                 root_widget.set_theme()
+                has_explicit_theme_handler = True
             elif hasattr(root_widget, "_init_animations"):
                 root_widget._init_animations()
         except (RuntimeError, AttributeError, TypeError) as e:
             logger.debug(f"递归刷新控件主题入口失败: {e}")
 
-        try:
-            style = root_widget.style()
-            if style is not None:
-                style.unpolish(root_widget)
-                style.polish(root_widget)
-        except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"重新 polish 控件样式失败: {e}")
+        self._refresh_widget_self_only(root_widget)
+
+        # 组件自己已经处理其内部主题时，不再对子树做重复遍历
+        if has_explicit_theme_handler:
+            return
 
         try:
-            if hasattr(root_widget, "apply_theme_from_settings"):
-                root_widget.apply_theme_from_settings()
-        except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"应用控件主题设置失败: {e}")
-
-        try:
-            root_widget.update()
-        except (RuntimeError, AttributeError):
-            pass
-
-        try:
-            for child in root_widget.findChildren(QWidget):
+            for child in root_widget.findChildren(QWidget, options=Qt.FindDirectChildrenOnly):
                 if child is root_widget:
                     continue
-
-                try:
-                    if hasattr(child, "update_theme"):
-                        child.update_theme()
-                    elif hasattr(child, "set_theme"):
-                        child.set_theme()
-                    elif hasattr(child, "_init_animations"):
-                        child._init_animations()
-                except (RuntimeError, AttributeError, TypeError) as e:
-                    logger.debug(f"刷新子控件主题失败: {e}")
-
-                try:
-                    if hasattr(child, "apply_theme_from_settings"):
-                        child.apply_theme_from_settings()
-                except (RuntimeError, AttributeError, TypeError) as e:
-                    logger.debug(f"应用子控件主题设置失败: {e}")
-
-                try:
-                    style = child.style()
-                    if style is not None:
-                        style.unpolish(child)
-                        style.polish(child)
-                except (RuntimeError, AttributeError, TypeError) as e:
-                    logger.debug(f"重新 polish 子控件样式失败: {e}")
-
-                try:
-                    child.update()
-                except (RuntimeError, AttributeError):
-                    pass
+                self._refresh_widget_theme_recursively(child, visited)
         except (RuntimeError, AttributeError, TypeError) as e:
             logger.debug(f"递归遍历子控件失败: {e}")
 
@@ -492,6 +489,7 @@ class FreeAssetFilterApp(QMainWindow):
         """
         auxiliary_color, normal_color, base_color = self._get_theme_colors()
         border_radius = 8
+        visited = set()
 
         if hasattr(self, "central_widget") and self.central_widget:
             self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
@@ -524,27 +522,24 @@ class FreeAssetFilterApp(QMainWindow):
                 continue
 
             try:
-                self._refresh_widget_theme_recursively(widget)
+                self._refresh_widget_theme_recursively(widget, visited)
             except (RuntimeError, AttributeError, TypeError) as e:
                 logger.debug(f"递归刷新组件主题失败: {e}")
 
+        # 顶层容器只刷新自身，避免把同一子树重复递归一遍
         for container_name in ("left_column", "middle_column", "right_column", "central_widget"):
             container = getattr(self, container_name, None)
             if container:
                 try:
-                    self._refresh_widget_theme_recursively(container)
+                    self._refresh_widget_self_only(container)
                 except (RuntimeError, AttributeError, TypeError) as e:
                     logger.debug(f"刷新容器主题失败: {e}")
 
         if self._splitter:
             try:
-                style = self._splitter.style()
-                if style is not None:
-                    style.unpolish(self._splitter)
-                    style.polish(self._splitter)
+                self._refresh_widget_self_only(self._splitter)
             except (RuntimeError, AttributeError, TypeError) as e:
                 logger.debug(f"刷新分割器样式失败: {e}")
-            self._splitter.update()
 
         if hasattr(self, "central_widget") and self.central_widget:
             self.central_widget.update()

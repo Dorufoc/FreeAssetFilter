@@ -617,6 +617,12 @@ class CustomFileSelector(QWidget):
                 f"QGroupBox {{ border: none; background-color: {colors['base_color']}; }}"
             )
 
+        if hasattr(self, "path_edit") and self.path_edit and hasattr(self.path_edit, "update_theme"):
+            try:
+                self.path_edit.update_theme()
+            except Exception:
+                pass
+
         if hasattr(self, "status_bar") and self.status_bar:
             self.status_bar.setStyleSheet(
                 f"QFrame {{ border: none; background-color: {colors['base_color']}; }}"
@@ -659,10 +665,9 @@ class CustomFileSelector(QWidget):
             "clear_thumbnails_btn",
         ):
             button = getattr(self, button_name, None)
-            if button and hasattr(button, "_init_animations"):
+            if button and hasattr(button, "update_theme"):
                 try:
-                    button._init_animations()
-                    button.update()
+                    button.update_theme()
                 except Exception:
                     pass
 
