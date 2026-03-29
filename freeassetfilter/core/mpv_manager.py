@@ -80,6 +80,11 @@ class MPVOperationType(Enum):
     GET_VIDEO_SIZE = "get_video_size"
     LOAD_LUT = "load_lut"
     UNLOAD_LUT = "unload_lut"
+    LOAD_SUBTITLE = "load_subtitle"
+    GET_SUBTITLE_STATE = "get_subtitle_state"
+    GET_SUBTITLE_TRACKS = "get_subtitle_tracks"
+    SET_SUBTITLE_VISIBILITY = "set_subtitle_visibility"
+    SET_SUBTITLE_TRACK = "set_subtitle_track"
 
 
 @dataclass
@@ -437,6 +442,21 @@ class MPVManager(QObject):
 
                 elif operation_type == MPVOperationType.UNLOAD_LUT:
                     return self._do_unload_lut()
+
+                elif operation_type == MPVOperationType.LOAD_SUBTITLE:
+                    return self._do_load_subtitle(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.GET_SUBTITLE_STATE:
+                    return self._do_get_subtitle_state()
+
+                elif operation_type == MPVOperationType.GET_SUBTITLE_TRACKS:
+                    return self._do_get_subtitle_tracks()
+
+                elif operation_type == MPVOperationType.SET_SUBTITLE_VISIBILITY:
+                    return self._do_set_subtitle_visibility(*args, **kwargs)
+
+                elif operation_type == MPVOperationType.SET_SUBTITLE_TRACK:
+                    return self._do_set_subtitle_track(*args, **kwargs)
 
                 else:
                     raise ValueError(f"未知操作类型: {operation_type}")
@@ -877,6 +897,118 @@ class MPVManager(QObject):
 
         except RuntimeError as e:
             error(f"卸载LUT运行时错误: {e}")
+            return False
+
+    def _do_load_subtitle(self, subtitle_file_path: str) -> bool:
+        """
+        执行加载外部字幕操作
+
+        Args:
+            subtitle_file_path: 字幕文件路径
+
+        Returns:
+            bool: 是否成功
+        """
+        if self._mpv_core is None:
+            warning("[Subtitle] MPV未初始化")
+            return False
+
+        try:
+            return self._mpv_core.load_subtitle(subtitle_file_path)
+        except RuntimeError as e:
+            error(f"加载字幕运行时错误: {e}")
+            return False
+
+    def _do_get_subtitle_state(self) -> Dict[str, Any]:
+        """
+        获取当前字幕状态
+
+        Returns:
+            Dict[str, Any]: 字幕状态字典
+        """
+        if self._mpv_core is None:
+            return {
+                "has_available_subtitles": False,
+                "has_embedded_subtitles": False,
+                "has_external_subtitles": False,
+                "is_subtitle_visible": False,
+                "has_active_subtitle": False,
+                "selected_track_id": None,
+                "selected_track": None,
+                "selected_track_external": False,
+                "tracks": [],
+            }
+
+        try:
+            return self._mpv_core.get_subtitle_state()
+        except RuntimeError as e:
+            error(f"获取字幕状态运行时错误: {e}")
+            return {
+                "has_available_subtitles": False,
+                "has_embedded_subtitles": False,
+                "has_external_subtitles": False,
+                "is_subtitle_visible": False,
+                "has_active_subtitle": False,
+                "selected_track_id": None,
+                "selected_track": None,
+                "selected_track_external": False,
+                "tracks": [],
+            }
+
+    def _do_get_subtitle_tracks(self) -> List[Dict[str, Any]]:
+        """
+        获取当前字幕轨列表
+
+        Returns:
+            List[Dict[str, Any]]: 字幕轨列表
+        """
+        if self._mpv_core is None:
+            return []
+
+        try:
+            return self._mpv_core.get_subtitle_tracks()
+        except RuntimeError as e:
+            error(f"获取字幕轨列表运行时错误: {e}")
+            return []
+
+    def _do_set_subtitle_visibility(self, visible: bool) -> bool:
+        """
+        设置字幕可见性
+
+        Args:
+            visible: 是否显示字幕
+
+        Returns:
+            bool: 是否成功
+        """
+        if self._mpv_core is None:
+            warning("[Subtitle] MPV未初始化")
+            return False
+
+        try:
+            return self._mpv_core.set_subtitle_visibility(visible)
+        except RuntimeError as e:
+            error(f"设置字幕可见性运行时错误: {e}")
+            return False
+
+    def _do_set_subtitle_track(self, track_id: Union[int, str, None]) -> bool:
+        """
+        切换当前字幕轨
+
+        Args:
+            track_id: 字幕轨ID，None表示隐藏
+
+        Returns:
+            bool: 是否成功
+        """
+        if self._mpv_core is None:
+            warning("[Subtitle] MPV未初始化")
+            return False
+
+        try:
+            return self._mpv_core.set_subtitle_track(track_id)
+        except RuntimeError as e:
+            error(f"切换字幕轨运行时错误: {e}")
             return False
 
     # ==================== 信号处理回调 ====================
@@ -1668,6 +1800,161 @@ class MPVManager(QObject):
         except RuntimeError as e:
             error(f"unload_lut 运行时错误: {e}")
             return False
+
+    def load_subtitle(self, subtitle_file_path: str, component_id: str = "unknown", timeout: float = 5.0) -> bool:
+        """
+        加载外部字幕文件
+
+        Args:
+            subtitle_file_path: 字幕文件路径
+            component_id: 组件标识
+            timeout: 超时时间（秒）
+
+        Returns:
+            是否加载成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.LOAD_SUBTITLE,
+            subtitle_file_path,
+            component_id=component_id,
+            priority=3
+        )
+
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            self._logger.error(f"加载字幕操作超时: {subtitle_file_path}")
+            return False
+        except RuntimeError as e:
+            error(f"load_subtitle 运行时错误: {e}")
+            return False
+
+    def get_subtitle_state(self, timeout: float = 1.0) -> Dict[str, Any]:
+        """
+        获取当前字幕状态
+
+        Args:
+            timeout: 超时时间（秒）
+
+        Returns:
+            Dict[str, Any]: 字幕状态字典
+        """
+        future = self._submit_operation(
+            MPVOperationType.GET_SUBTITLE_STATE,
+            priority=5
+        )
+
+        try:
+            result = future.result(timeout=timeout)
+            return result if isinstance(result, dict) else {}
+        except FutureTimeoutError:
+            return {}
+        except RuntimeError as e:
+            error(f"get_subtitle_state 运行时错误: {e}")
+            return {}
+
+    def get_subtitle_tracks(self, timeout: float = 1.0) -> List[Dict[str, Any]]:
+        """
+        获取当前字幕轨列表
+
+        Args:
+            timeout: 超时时间（秒）
+
+        Returns:
+            List[Dict[str, Any]]: 字幕轨列表
+        """
+        future = self._submit_operation(
+            MPVOperationType.GET_SUBTITLE_TRACKS,
+            priority=5
+        )
+
+        try:
+            result = future.result(timeout=timeout)
+            return result if isinstance(result, list) else []
+        except FutureTimeoutError:
+            return []
+        except RuntimeError as e:
+            error(f"get_subtitle_tracks 运行时错误: {e}")
+            return []
+
+    def set_subtitle_visibility(
+        self,
+        visible: bool,
+        component_id: str = "unknown",
+        timeout: float = 5.0
+    ) -> bool:
+        """
+        设置字幕可见性
+
+        Args:
+            visible: 是否显示字幕
+            component_id: 组件标识
+            timeout: 超时时间（秒）
+
+        Returns:
+            bool: 是否设置成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SET_SUBTITLE_VISIBILITY,
+            visible,
+            component_id=component_id,
+            priority=3
+        )
+
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            self._logger.error("设置字幕可见性操作超时")
+            return False
+        except RuntimeError as e:
+            error(f"set_subtitle_visibility 运行时错误: {e}")
+            return False
+
+    def set_subtitle_track(
+        self,
+        track_id: Union[int, str, None],
+        component_id: str = "unknown",
+        timeout: float = 5.0
+    ) -> bool:
+        """
+        切换当前字幕轨
+
+        Args:
+            track_id: 字幕轨ID，None表示隐藏字幕
+            component_id: 组件标识
+            timeout: 超时时间（秒）
+
+        Returns:
+            bool: 是否切换成功
+        """
+        future = self._submit_operation(
+            MPVOperationType.SET_SUBTITLE_TRACK,
+            track_id,
+            component_id=component_id,
+            priority=3
+        )
+
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            self._logger.error(f"切换字幕轨操作超时: {track_id}")
+            return False
+        except RuntimeError as e:
+            error(f"set_subtitle_track 运行时错误: {e}")
+            return False
+
+    def hide_subtitle(self, component_id: str = "unknown", timeout: float = 5.0) -> bool:
+        """
+        隐藏当前字幕
+
+        Args:
+            component_id: 组件标识
+            timeout: 超时时间（秒）
+
+        Returns:
+            bool: 是否成功
+        """
+        return self.set_subtitle_visibility(False, component_id=component_id, timeout=timeout)
 
     def get_current_lut(self) -> str:
         """

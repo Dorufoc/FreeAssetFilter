@@ -90,9 +90,12 @@ class CustomSelectListItem(QWidget):
         # 计算合适的高度：考虑字体高度、边距和图标大小
         font_metrics = self.text_label.fontMetrics()
         font_height = font_metrics.height()
-        # 优化高度计算：减少额外空间
-        min_height = int(max(font_height + 2 * (scaled_margin + text_margin), scaled_icon_size + 2 * scaled_margin) * self.dpi_scale)
-        self.setMinimumHeight(min_height)
+        # item_margin / text_margin 已经完成 DPI 缩放，这里不要再次乘以 dpi_scale
+        min_height = max(
+            font_height + 2 * (item_margin + text_margin),
+            scaled_icon_size + 2 * item_margin
+        )
+        self.setMinimumHeight(int(min_height))
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.update_style()
         

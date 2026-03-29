@@ -172,6 +172,11 @@ class MPVCommandType(IntEnum):
     CLEAR_GLSL_SHADERS = 21
     SET_LUT = 22
     CLEAR_LUT = 23
+    LOAD_SUBTITLE = 24
+    GET_SUBTITLE_STATE = 25
+    GET_SUBTITLE_TRACKS = 26
+    SET_SUBTITLE_VISIBILITY = 27
+    SET_SUBTITLE_TRACK = 28
     CLOSE = 99
 
 
@@ -319,7 +324,7 @@ class MPVDLLLoader:
         self._dll.mpv_set_property_string.restype = ctypes.c_int
         self._dll.mpv_set_property_string.argtypes = [c_void_p, c_char_p, c_char_p]
         
-        self._dll.mpv_get_property_string.restype = c_char_p
+        self._dll.mpv_get_property_string.restype = c_void_p
         self._dll.mpv_get_property_string.argtypes = [c_void_p, c_char_p]
         
         self._dll.mpv_set_property.restype = ctypes.c_int
@@ -621,9 +626,9 @@ class MPVPlayerCore(QObject):
             "demuxer-max-bytes": "50M",  # 限制解复用器最大字节数
             "demuxer-max-back-bytes": "25M",  # 限制回退字节数
 
-            # 字幕安全：禁用外部字幕加载
+            # 字幕相关
             "sub-auto": "no",  # 不自动加载字幕
-            "sub-font-provider": "none",  # 禁用字体提供程序
+            "sub-font-provider": "auto",  # 允许MPV正常解析外部字幕所需字体
 
             # 音频安全
             "volume-max": "100",  # 限制最大音量为100%
@@ -954,6 +959,16 @@ class MPVPlayerCore(QObject):
                 result = self._set_lut_internal(mpv_handle, *args, **kwargs)
             elif cmd_type == MPVCommandType.CLEAR_LUT:
                 result = self._clear_lut_internal(mpv_handle)
+            elif cmd_type == MPVCommandType.LOAD_SUBTITLE:
+                result = self._load_subtitle_internal(mpv_handle, *args, **kwargs)
+            elif cmd_type == MPVCommandType.GET_SUBTITLE_STATE:
+                result = self._get_subtitle_state_internal(mpv_handle)
+            elif cmd_type == MPVCommandType.GET_SUBTITLE_TRACKS:
+                result = self._get_subtitle_tracks_internal(mpv_handle)
+            elif cmd_type == MPVCommandType.SET_SUBTITLE_VISIBILITY:
+                result = self._set_subtitle_visibility_internal(mpv_handle, *args, **kwargs)
+            elif cmd_type == MPVCommandType.SET_SUBTITLE_TRACK:
+                result = self._set_subtitle_track_internal(mpv_handle, *args, **kwargs)
             elif cmd_type == MPVCommandType.CLOSE:
                 self._stop_event.set()
                 result = True
@@ -1241,6 +1256,196 @@ class MPVPlayerCore(QObject):
         except (RuntimeError, AttributeError, OSError) as e:
             error(f"[LUT] 清除LUT失败: {e}")
             return False
+
+    def _load_subtitle_internal(self, mpv_handle: c_void_p, subtitle_path: str, **kwargs) -> bool:
+        """内部加载外部字幕实现"""
+        if not mpv_handle:
+            return False
+
+        try:
+            abs_path = os.path.abspath(subtitle_path)
+            if not os.path.exists(abs_path):
+                self._emit_error(MpvErrorCode.LOADING_FAILED, "字幕文件不存在")
+                return False
+
+            cmd_args = [
+                b"sub-add",
+                abs_path.encode("utf-8"),
+                b"select",
+                None
+            ]
+            cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
+            result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
+            debug(f"[Subtitle] sub-add 结果: {result}")
+
+            if result < 0:
+                return False
+
+            visibility_result = self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle,
+                b"sub-visibility",
+                b"yes"
+            )
+            debug(f"[Subtitle] sub-visibility=yes 结果: {visibility_result}")
+
+            sid_result = self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle,
+                b"sid",
+                b"auto"
+            )
+            debug(f"[Subtitle] sid=auto 结果: {sid_result}")
+
+            return True
+        except (RuntimeError, AttributeError, OSError, UnicodeEncodeError) as e:
+            error(f"[Subtitle] 加载字幕失败: {e}")
+            return False
+
+    def _get_subtitle_tracks_internal(self, mpv_handle: c_void_p) -> List[Dict[str, Any]]:
+        """获取当前可用的字幕轨列表"""
+        if not mpv_handle:
+            return []
+
+        tracks: List[Dict[str, Any]] = []
+
+        try:
+            track_count = self._get_property_int64(mpv_handle, "track-list/count") or 0
+
+            for index in range(track_count):
+                track_type = self._get_property_string(mpv_handle, f"track-list/{index}/type") or ""
+                if track_type != "sub":
+                    continue
+
+                track_id = self._get_property_int64(mpv_handle, f"track-list/{index}/id")
+                if track_id is None:
+                    continue
+
+                track_info = {
+                    "id": int(track_id),
+                    "type": track_type,
+                    "title": self._get_property_string(mpv_handle, f"track-list/{index}/title") or "",
+                    "lang": self._get_property_string(mpv_handle, f"track-list/{index}/lang") or "",
+                    "selected": bool(self._get_property_flag(mpv_handle, f"track-list/{index}/selected")),
+                    "external": bool(self._get_property_flag(mpv_handle, f"track-list/{index}/external")),
+                    "external_filename": self._get_property_string(
+                        mpv_handle,
+                        f"track-list/{index}/external-filename"
+                    ) or "",
+                }
+                tracks.append(track_info)
+        except (RuntimeError, AttributeError, OSError, ValueError, TypeError) as e:
+            error(f"[Subtitle] 获取字幕轨列表失败: {e}")
+            return []
+
+        return tracks
+
+    def _get_subtitle_state_internal(self, mpv_handle: c_void_p) -> Dict[str, Any]:
+        """获取当前字幕状态"""
+        tracks = self._get_subtitle_tracks_internal(mpv_handle)
+        sid_raw = self._get_property_string(mpv_handle, "sid")
+        visibility = self._get_property_flag(mpv_handle, "sub-visibility")
+
+        selected_track_id: Optional[int] = None
+        if sid_raw and sid_raw not in ("no", "auto"):
+            try:
+                selected_track_id = int(sid_raw)
+            except ValueError:
+                selected_track_id = None
+
+        selected_track = next((track for track in tracks if track.get("selected")), None)
+        if selected_track is None and selected_track_id is not None:
+            selected_track = next(
+                (track for track in tracks if track.get("id") == selected_track_id),
+                None
+            )
+
+        if selected_track is not None:
+            selected_track_id = int(selected_track["id"])
+
+        has_embedded = any(not track.get("external", False) for track in tracks)
+        has_external = any(track.get("external", False) for track in tracks)
+        has_available = len(tracks) > 0
+
+        is_visible = bool(visibility) if visibility is not None else selected_track is not None
+        has_active = is_visible and selected_track is not None
+
+        return {
+            "has_available_subtitles": has_available,
+            "has_embedded_subtitles": has_embedded,
+            "has_external_subtitles": has_external,
+            "is_subtitle_visible": is_visible,
+            "has_active_subtitle": has_active,
+            "selected_track_id": selected_track_id,
+            "selected_track": selected_track,
+            "selected_track_external": bool(selected_track.get("external", False)) if selected_track else False,
+            "tracks": tracks,
+        }
+
+    def _set_subtitle_visibility_internal(self, mpv_handle: c_void_p, visible: bool, **kwargs) -> bool:
+        """设置字幕可见性"""
+        if not mpv_handle:
+            return False
+
+        try:
+            visibility_value = b"yes" if visible else b"no"
+            result = self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle,
+                b"sub-visibility",
+                visibility_value
+            )
+            debug(f"[Subtitle] sub-visibility 设置结果: {result}")
+
+            if result < 0:
+                return False
+
+            if not visible:
+                sid_result = self._dll_loader.dll.mpv_set_property_string(
+                    mpv_handle,
+                    b"sid",
+                    b"no"
+                )
+                debug(f"[Subtitle] sid=no 结果: {sid_result}")
+                return sid_result >= 0
+
+            return True
+        except (RuntimeError, AttributeError, OSError) as e:
+            error(f"[Subtitle] 设置字幕可见性失败: {e}")
+            return False
+
+    def _set_subtitle_track_internal(
+        self,
+        mpv_handle: c_void_p,
+        track_id: Union[int, str, None],
+        **kwargs
+    ) -> bool:
+        """切换当前字幕轨"""
+        if not mpv_handle:
+            return False
+
+        try:
+            if track_id in (None, "", -1, "no"):
+                return self._set_subtitle_visibility_internal(mpv_handle, False)
+
+            sid_value = str(track_id).encode("utf-8")
+            sid_result = self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle,
+                b"sid",
+                sid_value
+            )
+            debug(f"[Subtitle] sid={track_id} 结果: {sid_result}")
+
+            if sid_result < 0:
+                return False
+
+            visibility_result = self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle,
+                b"sub-visibility",
+                b"yes"
+            )
+            debug(f"[Subtitle] sub-visibility=yes 结果: {visibility_result}")
+            return visibility_result >= 0
+        except (RuntimeError, AttributeError, OSError, UnicodeEncodeError) as e:
+            error(f"[Subtitle] 切换字幕轨失败: {e}")
+            return False
     
     def _set_window_id_internal(self, mpv_handle: c_void_p, window_id: int, **kwargs) -> bool:
         """内部设置窗口ID实现"""
@@ -1269,17 +1474,43 @@ class MPVPlayerCore(QObject):
             mpv_handle, name.encode('utf-8'), MpvFormat.DOUBLE, byref(c_value)
         )
         return c_value.value if result >= 0 else None
+
+    def _get_property_int64(self, mpv_handle: c_void_p, name: str) -> Optional[int]:
+        """获取整型属性"""
+        if not mpv_handle:
+            return None
+        c_value = c_int64(0)
+        result = self._dll_loader.dll.mpv_get_property(
+            mpv_handle, name.encode('utf-8'), MpvFormat.INT64, byref(c_value)
+        )
+        return int(c_value.value) if result >= 0 else None
+
+    def _get_property_flag(self, mpv_handle: c_void_p, name: str) -> Optional[bool]:
+        """获取布尔属性"""
+        if not mpv_handle:
+            return None
+        c_value = ctypes.c_int(0)
+        result = self._dll_loader.dll.mpv_get_property(
+            mpv_handle, name.encode('utf-8'), MpvFormat.FLAG, byref(c_value)
+        )
+        return bool(c_value.value) if result >= 0 else None
     
     def _get_property_string(self, mpv_handle: c_void_p, name: str) -> Optional[str]:
         """获取字符串属性"""
-        result = self._dll_loader.dll.mpv_get_property_string(
+        if not mpv_handle:
+            return None
+
+        result_ptr = self._dll_loader.dll.mpv_get_property_string(
             mpv_handle, name.encode('utf-8')
         )
-        if result:
-            value = result.decode('utf-8')
-            self._dll_loader.dll.mpv_free(result)
-            return value
-        return None
+        if not result_ptr:
+            return None
+
+        try:
+            raw_value = ctypes.string_at(result_ptr)
+            return raw_value.decode('utf-8', errors='replace')
+        finally:
+            self._dll_loader.dll.mpv_free(result_ptr)
     
     def _emit_error(self, error_code: int, error_message: str):
         """发射错误信号（通过信号队列，由主线程处理）"""
@@ -1693,6 +1924,65 @@ class MPVPlayerCore(QObject):
             bool: 操作是否成功
         """
         result = self._send_command(MPVCommandType.CLEAR_LUT, timeout=5.0)
+        return result if result is not None else False
+
+    def load_subtitle(self, subtitle_path: str) -> bool:
+        """
+        加载外部字幕文件
+
+        Args:
+            subtitle_path: 字幕文件路径
+
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.LOAD_SUBTITLE, subtitle_path, timeout=5.0)
+        return result if result is not None else False
+
+    def get_subtitle_state(self) -> Dict[str, Any]:
+        """
+        获取当前字幕状态
+
+        Returns:
+            Dict[str, Any]: 字幕状态字典
+        """
+        result = self._send_command(MPVCommandType.GET_SUBTITLE_STATE, timeout=1.0)
+        return result if isinstance(result, dict) else {}
+
+    def get_subtitle_tracks(self) -> List[Dict[str, Any]]:
+        """
+        获取当前字幕轨列表
+
+        Returns:
+            List[Dict[str, Any]]: 字幕轨列表
+        """
+        result = self._send_command(MPVCommandType.GET_SUBTITLE_TRACKS, timeout=1.0)
+        return result if isinstance(result, list) else []
+
+    def set_subtitle_visibility(self, visible: bool) -> bool:
+        """
+        设置字幕可见性
+
+        Args:
+            visible: 是否显示字幕
+
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.SET_SUBTITLE_VISIBILITY, visible, timeout=5.0)
+        return result if result is not None else False
+
+    def set_subtitle_track(self, track_id: Union[int, str, None]) -> bool:
+        """
+        切换当前字幕轨
+
+        Args:
+            track_id: 字幕轨ID，传入None或"no"表示隐藏字幕
+
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.SET_SUBTITLE_TRACK, track_id, timeout=5.0)
         return result if result is not None else False
     
     def set_window_id(self, window_id: int) -> bool:

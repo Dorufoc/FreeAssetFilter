@@ -16,7 +16,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 
 import os
-from typing import Optional
+from typing import Optional, Any, Dict, List
 
 try:
     from mutagen import File as mutagen_file
@@ -36,7 +36,7 @@ except ImportError:
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy,
-    QFrame, QApplication
+    QFrame, QApplication, QFileDialog
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QEvent
 from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen
@@ -46,6 +46,7 @@ from freeassetfilter.core.mpv_manager import MPVManager, MPVState
 from freeassetfilter.widgets.player_control_bar import PlayerControlBar
 from freeassetfilter.widgets.D_hover_menu import D_HoverMenu
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
+from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
@@ -479,6 +480,14 @@ class VideoPlayer(QWidget):
         # 音频封面数据
         self._current_audio_cover: Optional[bytes] = None  # 当前音频文件的封面数据
 
+        # 字幕状态缓存
+        self._subtitle_state_cache: Dict[str, Any] = self._get_empty_subtitle_state()
+        self._subtitle_track_dialog: Optional[CustomMessageBox] = None
+        self._auto_subtitle_extensions = {
+            ".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".ttml",
+            ".dfxp", ".smi", ".sami", ".rt", ".txt", ".sup", ".mpl", ".mks"
+        }
+
         # 进度同步定时器
         self._sync_timer = QTimer(self)
         self._sync_timer.setInterval(200)  # 每200ms同步一次
@@ -691,6 +700,7 @@ class VideoPlayer(QWidget):
         self._control_bar.speedChanged.connect(self._on_speed_changed)
         self._control_bar.lutSelected.connect(self._on_lut_selected)
         self._control_bar.lutCleared.connect(self._on_lut_cleared)
+        self._control_bar.subtitleClicked.connect(self._on_subtitle_clicked)
         self._control_bar.detachClicked.connect(self._on_detach_clicked)
         self._control_bar.keyPressed.connect(self._on_control_bar_key_pressed)
         
@@ -984,6 +994,270 @@ class VideoPlayer(QWidget):
         except Exception as e:
             warning(f"[VideoPlayer] 初始化进度显示失败: {e}")
 
+    def _get_empty_subtitle_state(self) -> Dict[str, Any]:
+        """获取默认的空字幕状态"""
+        return {
+            "has_available_subtitles": False,
+            "has_embedded_subtitles": False,
+            "has_external_subtitles": False,
+            "is_subtitle_visible": False,
+            "has_active_subtitle": False,
+            "selected_track_id": None,
+            "selected_track": None,
+            "selected_track_external": False,
+            "tracks": [],
+        }
+
+    def _reset_subtitle_state(self):
+        """重置字幕状态缓存和按钮样式"""
+        self._subtitle_state_cache = self._get_empty_subtitle_state()
+        if hasattr(self, '_control_bar'):
+            self._control_bar.set_subtitle_loaded(False)
+
+    def _close_subtitle_track_dialog(self):
+        """关闭字幕轨选择弹窗"""
+        if self._subtitle_track_dialog:
+            try:
+                self._subtitle_track_dialog.close()
+                self._subtitle_track_dialog.deleteLater()
+            except RuntimeError:
+                pass
+            finally:
+                self._subtitle_track_dialog = None
+
+    def _get_embedded_subtitle_tracks(self, state: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """获取当前可用的内嵌字幕轨"""
+        subtitle_state = state or self._subtitle_state_cache or self._get_empty_subtitle_state()
+        tracks = subtitle_state.get("tracks") or []
+        return [
+            track for track in tracks
+            if isinstance(track, dict) and not bool(track.get("external"))
+        ]
+
+    def _format_subtitle_track_label(self, track: Dict[str, Any], index: int) -> str:
+        """格式化字幕轨显示文本"""
+        if track.get("title"):
+            title = str(track.get("title"))
+        elif track.get("external_filename"):
+            title = os.path.basename(str(track.get("external_filename")))
+        elif track.get("lang"):
+            title = f"字幕轨 {index + 1}"
+        else:
+            title = f"字幕轨 {track.get('id', index + 1)}"
+
+        meta_parts = []
+        if track.get("lang"):
+            meta_parts.append(str(track.get("lang")).upper())
+        meta_parts.append("外挂" if track.get("external") else "内嵌")
+        if track.get("selected"):
+            meta_parts.append("当前")
+
+        return f"{title}（{' / '.join(meta_parts)}）" if meta_parts else title
+
+    def _refresh_subtitle_state(self) -> Dict[str, Any]:
+        """刷新字幕状态缓存并同步控制栏按钮样式"""
+        default_state = self._get_empty_subtitle_state()
+
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            self._subtitle_state_cache = default_state
+            if hasattr(self, '_control_bar'):
+                self._control_bar.set_subtitle_loaded(False)
+            return default_state
+
+        state = self._mpv_manager.get_subtitle_state()
+        if not isinstance(state, dict):
+            state = default_state
+        else:
+            merged_state = default_state.copy()
+            merged_state.update(state)
+            state = merged_state
+
+        self._subtitle_state_cache = state
+
+        is_subtitle_loaded = bool(
+            state.get("has_active_subtitle") and state.get("is_subtitle_visible")
+        )
+        if hasattr(self, '_control_bar'):
+            self._control_bar.set_subtitle_loaded(is_subtitle_loaded)
+
+        return state
+
+    def _find_matching_subtitle_file(self, video_path: str) -> Optional[str]:
+        """查找与当前视频同目录、同名不同后缀的字幕文件"""
+        if not video_path:
+            return None
+
+        base_dir = os.path.dirname(video_path)
+        video_stem, video_ext = os.path.splitext(os.path.basename(video_path))
+        video_ext = video_ext.lower()
+
+        if not base_dir or not os.path.isdir(base_dir):
+            return None
+
+        try:
+            candidates = []
+            for entry in os.listdir(base_dir):
+                entry_path = os.path.join(base_dir, entry)
+                if not os.path.isfile(entry_path):
+                    continue
+
+                stem, ext = os.path.splitext(entry)
+                ext = ext.lower()
+                if stem != video_stem:
+                    continue
+                if ext == video_ext:
+                    continue
+                if ext not in self._auto_subtitle_extensions:
+                    continue
+
+                candidates.append(entry_path)
+
+            if not candidates:
+                return None
+
+            candidates.sort()
+            return candidates[0]
+        except Exception as e:
+            warning(f"[VideoPlayer] 自动匹配外挂字幕失败: {e}")
+            return None
+
+    def _load_subtitle_path(self, subtitle_path: str, show_osd: bool = True, emit_error: bool = True) -> bool:
+        """加载指定字幕文件路径"""
+        if not subtitle_path or not self._mpv_manager:
+            return False
+
+        success = self._mpv_manager.load_subtitle(
+            subtitle_path,
+            component_id=self._component_id
+        )
+
+        if success:
+            info(f"[VideoPlayer] 外部字幕加载成功: {subtitle_path}")
+            self._refresh_subtitle_state()
+            QTimer.singleShot(100, self._refresh_subtitle_state)
+            if show_osd and self._detached_window:
+                self._detached_window.show_osd("字幕已加载")
+        else:
+            error(f"[VideoPlayer] 外部字幕加载失败: {subtitle_path}")
+            if emit_error:
+                self.errorOccurred.emit("字幕加载失败")
+
+        return success
+
+    def _try_auto_load_matching_subtitle(self):
+        """尝试自动加载与当前视频同名的外挂字幕"""
+        if not self._current_file or self._playback_mode != self.VIDEO_MODE:
+            return
+
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            return
+
+        subtitle_state = self._refresh_subtitle_state()
+        if subtitle_state.get("has_available_subtitles"):
+            return
+
+        matched_subtitle = self._find_matching_subtitle_file(self._current_file)
+        if not matched_subtitle:
+            return
+
+        success = self._load_subtitle_path(
+            matched_subtitle,
+            show_osd=True,
+            emit_error=False
+        )
+        if success:
+            info(f"[VideoPlayer] 已自动加载同名外挂字幕: {matched_subtitle}")
+
+    def _open_external_subtitle_picker(self) -> bool:
+        """打开外部字幕文件选择器并加载字幕"""
+        initial_dir = os.path.dirname(self._current_file) if self._current_file else ""
+        subtitle_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择字幕文件",
+            initial_dir,
+            "字幕文件 (*.srt *.ass *.ssa *.sub *.idx *.vtt *.ttml *.dfxp *.smi *.sami *.rt *.txt *.sup *.mpl *.mks);;所有文件 (*.*)"
+        )
+
+        if not subtitle_path:
+            return False
+
+        return self._load_subtitle_path(subtitle_path)
+
+    def _open_subtitle_track_dialog(self, state: Optional[Dict[str, Any]] = None):
+        """打开内嵌字幕轨选择弹窗"""
+        subtitle_state = state or self._refresh_subtitle_state()
+        embedded_tracks = self._get_embedded_subtitle_tracks(subtitle_state)
+
+        if not embedded_tracks:
+            self._open_external_subtitle_picker()
+            return
+
+        self._close_subtitle_track_dialog()
+
+        dialog = CustomMessageBox(self)
+        self._subtitle_track_dialog = dialog
+        dialog.set_title("选择字幕轨")
+        dialog.set_text("请选择当前视频要使用的内置字幕")
+        dialog.set_list(
+            [self._format_subtitle_track_label(track, index) for index, track in enumerate(embedded_tracks)],
+            selection_mode="single",
+            default_width=420,
+            default_height=220,
+            min_width=320,
+            min_height=160
+        )
+        dialog.set_buttons(["导入外部字幕", "取消"], Qt.Horizontal, ["primary", "normal"])
+
+        def clear_dialog_reference(*args):
+            if self._subtitle_track_dialog is dialog:
+                self._subtitle_track_dialog = None
+
+        def apply_track(index: int):
+            if index < 0 or index >= len(embedded_tracks):
+                return
+
+            track_id = embedded_tracks[index].get("id")
+            if track_id is None:
+                self.errorOccurred.emit("无效的字幕轨")
+                return
+
+            success = self._mpv_manager.set_subtitle_track(
+                track_id,
+                component_id=self._component_id
+            ) if self._mpv_manager else False
+
+            if success:
+                info(f"[VideoPlayer] 切换字幕轨成功: {track_id}")
+                self._refresh_subtitle_state()
+                QTimer.singleShot(100, self._refresh_subtitle_state)
+                if self._detached_window:
+                    self._detached_window.show_osd("字幕已切换")
+                dialog.close()
+            else:
+                error(f"[VideoPlayer] 切换字幕轨失败: {track_id}")
+                self.errorOccurred.emit("切换字幕失败")
+
+        def on_dialog_button_clicked(button_index: int):
+            if button_index == 0:
+                dialog.close()
+                self._open_external_subtitle_picker()
+            else:
+                dialog.close()
+
+        if dialog._list:
+            dialog._list.itemClicked.connect(apply_track)
+            dialog._list.itemDoubleClicked.connect(apply_track)
+
+            selected_track_id = subtitle_state.get("selected_track_id")
+            for index, track in enumerate(embedded_tracks):
+                if track.get("id") == selected_track_id:
+                    dialog._list.set_current_item(index)
+                    break
+
+        dialog.buttonClicked.connect(on_dialog_button_clicked)
+        dialog.finished.connect(clear_dialog_reference)
+        dialog.exec()
+
     def _on_manager_file_loaded(self, file_path: str):
         """
         MPV管理器文件加载完成处理
@@ -1010,6 +1284,8 @@ class VideoPlayer(QWidget):
                 self._control_bar.set_volume(current_volume, emit_signal=False)
 
         QTimer.singleShot(200, self._initialize_progress_display)
+        QTimer.singleShot(250, self._refresh_subtitle_state)
+        QTimer.singleShot(350, self._try_auto_load_matching_subtitle)
 
     def _on_manager_file_ended(self, reason: int):
         """
@@ -1071,6 +1347,40 @@ class VideoPlayer(QWidget):
             success = self._mpv_manager.unload_lut(component_id=self._component_id)
             if success:
                 self._control_bar.set_lut_loaded(False)
+
+    def _on_subtitle_clicked(self):
+        """字幕按钮点击处理"""
+        if not self._current_file:
+            self.errorOccurred.emit("请先加载视频文件后再操作字幕")
+            return
+
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            self.errorOccurred.emit("播放器未初始化")
+            return
+
+        subtitle_state = self._refresh_subtitle_state()
+        is_subtitle_loaded = bool(
+            subtitle_state.get("has_active_subtitle") and subtitle_state.get("is_subtitle_visible")
+        )
+
+        if is_subtitle_loaded:
+            success = self._mpv_manager.hide_subtitle(component_id=self._component_id)
+            if success:
+                info("[VideoPlayer] 当前字幕已隐藏")
+                self._refresh_subtitle_state()
+                QTimer.singleShot(100, self._refresh_subtitle_state)
+                if self._detached_window:
+                    self._detached_window.show_osd("字幕已隐藏")
+            else:
+                error("[VideoPlayer] 隐藏字幕失败")
+                self.errorOccurred.emit("隐藏字幕失败")
+            return
+
+        if self._get_embedded_subtitle_tracks(subtitle_state):
+            self._open_subtitle_track_dialog(subtitle_state)
+            return
+
+        self._open_external_subtitle_picker()
 
     def _on_detach_clicked(self):
         """分离窗口按钮点击处理"""
@@ -1618,6 +1928,9 @@ class VideoPlayer(QWidget):
             self.errorOccurred.emit(f"文件不存在: {file_path}")
             return False
 
+        self._close_subtitle_track_dialog()
+        self._reset_subtitle_state()
+
         if not self._is_mpv_embedded:
             self._embed_mpv_window()
 
@@ -2015,6 +2328,9 @@ class VideoPlayer(QWidget):
             async_mode: 是否异步关闭（默认True，不阻塞UI）
         """
         debug(f"[VideoPlayer] ========== 开始清理资源 (async={async_mode}) ==========")
+
+        self._close_subtitle_track_dialog()
+        self._reset_subtitle_state()
 
         # 停止进度同步定时器
         debug(f"[VideoPlayer] 停止进度同步定时器...")

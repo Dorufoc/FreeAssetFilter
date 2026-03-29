@@ -58,6 +58,7 @@ class PlayerControlBar(QWidget):
         speedChanged: 倍速变化信号 (speed: float)
         lutSelected: LUT选择信号 (lut_path: str)
         lutCleared: LUT清除信号
+        subtitleClicked: 外部字幕按钮点击信号
     """
 
     playPauseClicked = Signal()
@@ -71,6 +72,7 @@ class PlayerControlBar(QWidget):
     speedChanged = Signal(float)
     lutSelected = Signal(str)
     lutCleared = Signal()
+    subtitleClicked = Signal()
     keyPressed = Signal(object)  # 键盘按键信号，用于传递键盘事件到父窗口
     
     def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True):
@@ -100,6 +102,7 @@ class PlayerControlBar(QWidget):
         self._user_interacting = False
         self._is_detached = False
         self._is_lut_loaded = False
+        self._is_subtitle_loaded = False
         self._speed = 1.0  # 当前播放倍速
         self._block_volume_signal = False  # 用于阻止音量信号循环
         self._block_speed_signal = False   # 用于阻止倍速信号循环
@@ -228,6 +231,14 @@ class PlayerControlBar(QWidget):
         )
         bottom_layout.addWidget(self._speed_button)
 
+        self._subtitle_button = self._create_icon_button(
+            "subtitle.svg",
+            tooltip_text="添加字幕",
+            height=20,
+            button_type="normal"
+        )
+        bottom_layout.addWidget(self._subtitle_button)
+
         # 倍速下拉菜单
         self._speed_menu = CustomDropdownMenu(self, position="top", use_internal_button=False)
         scaled_speed_width = int(60 * self.dpi_scale)
@@ -316,6 +327,7 @@ class PlayerControlBar(QWidget):
 
         # 倍速按钮信号
         self._speed_button.clicked.connect(self._on_speed_button_clicked)
+        self._subtitle_button.clicked.connect(self._on_subtitle_button_clicked)
 
         if self._show_lut_controls:
             self._lut_button.clicked.connect(self._on_lut_button_clicked)
@@ -525,6 +537,31 @@ class PlayerControlBar(QWidget):
             speed: 选中的倍速值
         """
         self.set_speed(speed)
+
+    def _on_subtitle_button_clicked(self):
+        """字幕按钮点击处理"""
+        self.subtitleClicked.emit()
+
+    def _update_subtitle_button_style(self):
+        """更新字幕按钮样式（根据字幕加载状态切换普通/强调样式）"""
+        if hasattr(self, '_subtitle_button'):
+            button_type = "primary" if self._is_subtitle_loaded else "normal"
+            self._subtitle_button.set_button_type(button_type)
+            self._subtitle_button.update_style()
+
+    def set_subtitle_loaded(self, loaded: bool):
+        """
+        设置字幕加载状态
+
+        Args:
+            loaded: 是否存在已加载且可见的字幕
+        """
+        self._is_subtitle_loaded = loaded
+        self._update_subtitle_button_style()
+
+    def is_subtitle_loaded(self) -> bool:
+        """获取字幕加载状态"""
+        return self._is_subtitle_loaded
 
     def set_playing(self, is_playing: bool):
         """
@@ -757,6 +794,8 @@ class PlayerControlBar(QWidget):
         # 更新倍速按钮样式
         if hasattr(self, '_speed_button'):
             self._update_speed_button_style()
+        if hasattr(self, '_subtitle_button'):
+            self._update_subtitle_button_style()
     
     def hideEvent(self, event):
         """隐藏事件"""
