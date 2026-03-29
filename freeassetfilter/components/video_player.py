@@ -1201,10 +1201,10 @@ class VideoPlayer(QWidget):
         dialog.set_list(
             [self._format_subtitle_track_label(track, index) for index, track in enumerate(embedded_tracks)],
             selection_mode="single",
-            default_width=420,
-            default_height=220,
-            min_width=320,
-            min_height=160
+            default_width=210,
+            default_height=110,
+            min_width=160,
+            min_height=80
         )
         dialog.set_buttons(["导入外部字幕", "取消"], Qt.Horizontal, ["primary", "normal"])
 
