@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 from freeassetfilter.widgets.D_more_menu import D_MoreMenu
 from PySide6.QtGui import (
     QImage, QPixmap, QPainter, QPen, QColor, QCursor,
-    QFont, QIcon
+    QFont, QIcon, QTransform
 )
 from PySide6.QtGui import QMovie
 from PySide6.QtCore import (
@@ -475,9 +475,11 @@ class ImageWidget(QWidget):
         # 不再需要获取设备像素比，Qt会自动处理
         
         # 初始化所有属性，确保在使用前都被定义
+        self.source_image = None
         self.original_image = None
         self.scaled_image = None
         self.pixmap = None
+        self.rotation_steps = 0
         self._physical_image_width = 0  # 保存缩放后的物理像素宽度
         self._physical_image_height = 0  # 保存缩放后的物理像素高度
         self.scale_factor = 1.0
@@ -581,15 +583,57 @@ class ImageWidget(QWidget):
         except Exception as e:
             error(f"切换背景色时出错: {e}")
     
+    def _apply_rotation(self):
+        """
+        根据当前旋转状态更新显示图像
+        """
+        try:
+            if self.source_image is None or self.source_image.isNull():
+                return
+            if self.rotation_steps % 4 == 0:
+                self.original_image = self.source_image.copy()
+            else:
+                transform = QTransform().rotate((self.rotation_steps % 4) * 90)
+                self.original_image = self.source_image.transformed(transform, Qt.SmoothTransformation)
+        except Exception as e:
+            error(f"应用图片旋转时出错: {e}")
+
+    def rotate_clockwise(self):
+        """
+        顺时针旋转90度
+        """
+        try:
+            if self.source_image is None or self.source_image.isNull():
+                return
+            self.rotation_steps = (self.rotation_steps + 1) % 4
+            self.pan_offset = QPoint()
+            self._apply_rotation()
+            self.calculate_fit_scale()
+            self.update_image()
+            self.update()
+        except Exception as e:
+            error(f"旋转图片时出错: {e}")
+
+    def _set_loaded_image(self, image, image_path):
+        """
+        设置新加载的图片并重置视图状态
+        """
+        if image is None or image.isNull():
+            return
+
+        self.current_file_path = image_path
+        self.source_image = image.copy()
+        self.rotation_steps = 0
+        self._apply_rotation()
+        self.pan_offset = QPoint()
+        QTimer.singleShot(100, self._delayed_fit_scale)
+
     def _on_ico_processing_complete(self, qimage, image_path):
         """
         ICO文件处理完成槽函数
         """
         if not qimage.isNull():
-            self.current_file_path = image_path
-            self.original_image = qimage
-            self.pan_offset = QPoint()
-            QTimer.singleShot(100, self._delayed_fit_scale)
+            self._set_loaded_image(qimage, image_path)
 
         self.ico_processor = None
 
@@ -605,10 +649,7 @@ class ImageWidget(QWidget):
         HEIC/AVIF文件处理完成槽函数
         """
         if not qimage.isNull():
-            self.current_file_path = image_path
-            self.original_image = qimage
-            self.pan_offset = QPoint()
-            QTimer.singleShot(100, self._delayed_fit_scale)
+            self._set_loaded_image(qimage, image_path)
 
         self.heif_avif_processor = None
 
@@ -624,12 +665,10 @@ class ImageWidget(QWidget):
         PSD文件处理完成槽函数
         使用原始的QImage(image_path)方式加载，保持接口一致性
         """
-        self.original_image = QImage(temp_path)
-        
-        if not self.original_image.isNull():
-            self.current_file_path = temp_path
-            self.pan_offset = QPoint()
-            QTimer.singleShot(100, self._delayed_fit_scale)
+        image = QImage(temp_path)
+
+        if not image.isNull():
+            self._set_loaded_image(image, temp_path)
         else:
             error(f"加载临时PSD文件失败: {temp_path}")
 
@@ -656,15 +695,7 @@ class ImageWidget(QWidget):
         RAW文件处理完成槽函数
         """
         if not qimage.isNull():
-            # 保存当前文件路径和图像
-            self.current_file_path = image_path
-            self.original_image = qimage
-            
-            # 重置平移参数
-            self.pan_offset = QPoint()
-            
-            # 使用QTimer延迟执行自适应缩放，确保图片渲染完成且布局稳定
-            QTimer.singleShot(100, self._delayed_fit_scale)
+            self._set_loaded_image(qimage, image_path)
         
         # 清理处理器
         self.raw_processor = None
@@ -742,14 +773,10 @@ class ImageWidget(QWidget):
 
                 return True
             else:
-                self.original_image = QImage(image_path)
-            
-            if not self.original_image.isNull():
-                self.current_file_path = image_path
-                self.pan_offset = QPoint()
-                
-                QTimer.singleShot(100, self._delayed_fit_scale)
-                return True
+                image = QImage(image_path)
+                if not image.isNull():
+                    self._set_loaded_image(image, image_path)
+                    return True
             return False
         except (OSError, IOError) as e:
             error(f"加载图片时文件错误: {e}")
@@ -1048,7 +1075,8 @@ class ImageWidget(QWidget):
             items = [
                 {"text": "复制色度值", "data": "copy_color"},
                 {"text": "缩放到适合大小", "data": "fit_to_size"},
-                {"text": "切换背景色", "data": "switch_bg_color"}
+                {"text": "切换背景色", "data": "switch_bg_color"},
+                {"text": "旋转", "data": "rotate_clockwise"}
             ]
 
             self._context_menu.set_items(items)
@@ -1069,6 +1097,8 @@ class ImageWidget(QWidget):
             self.copy_color_value()
         elif data == "switch_bg_color":
             self._switch_bg_color()
+        elif data == "rotate_clockwise":
+            self.rotate_clockwise()
         elif data == "copy_path":
             self.copy_file_path()
         elif data == "copy_name":
@@ -1363,8 +1393,10 @@ class GifWidget(QWidget):
         self.setMaximumSize(16777215, 16777215)
         
         self.movie = None
+        self.base_pixmap = None
         self.current_pixmap = None
         self.original_size = QSize()
+        self.rotation_steps = 0
         self.scale_factor = 1.0
         self.min_scale = 0.1
         self.max_scale = 10.0
@@ -1419,8 +1451,47 @@ class GifWidget(QWidget):
             error(f"获取背景色时出错: {e}")
         return "#212121"
     
+    def _apply_rotation_to_current_frame(self):
+        """
+        根据当前旋转状态更新GIF当前帧显示内容
+        """
+        try:
+            if not self.base_pixmap or self.base_pixmap.isNull():
+                self.current_pixmap = None
+                self.original_size = QSize()
+                return
+
+            if self.rotation_steps % 4 == 0:
+                self.current_pixmap = self.base_pixmap
+            else:
+                transform = QTransform().rotate((self.rotation_steps % 4) * 90)
+                self.current_pixmap = self.base_pixmap.transformed(transform, Qt.SmoothTransformation)
+
+            self.original_size = self.current_pixmap.size()
+        except Exception as e:
+            error(f"应用GIF旋转时出错: {e}")
+
+    def rotate_clockwise(self):
+        """
+        顺时针旋转GIF预览90度
+        """
+        try:
+            if not self.base_pixmap or self.base_pixmap.isNull():
+                return
+            self.rotation_steps = (self.rotation_steps + 1) % 4
+            self.pan_offset = QPoint()
+            self._apply_rotation_to_current_frame()
+            self.calculate_fit_scale()
+            self.update()
+        except Exception as e:
+            error(f"旋转GIF时出错: {e}")
+
     def set_movie(self, movie):
         self.movie = movie
+        self.rotation_steps = 0
+        self.base_pixmap = None
+        self.current_pixmap = None
+        self.original_size = QSize()
         if self.movie:
             self.movie.frameChanged.connect(self.on_frame_changed)
             self.pan_offset = QPoint()
@@ -1430,8 +1501,8 @@ class GifWidget(QWidget):
     def _on_first_frame_loaded(self, frame_number):
         """第一帧加载完成后获取尺寸并更新"""
         if frame_number == 0 and self.movie:
-            self.original_size = self.movie.currentPixmap().size()
-            self.current_pixmap = self.movie.currentPixmap()
+            self.base_pixmap = self.movie.currentPixmap()
+            self._apply_rotation_to_current_frame()
             self.calculate_fit_scale()
             self.update()
             # 断开一次性连接
@@ -1442,7 +1513,8 @@ class GifWidget(QWidget):
     
     def on_frame_changed(self):
         if self.movie:
-            self.current_pixmap = self.movie.currentPixmap()
+            self.base_pixmap = self.movie.currentPixmap()
+            self._apply_rotation_to_current_frame()
             self.update()
     
     def _delayed_fit_scale(self):
@@ -1727,7 +1799,8 @@ class GifWidget(QWidget):
             items = [
                 {"text": "复制色度值", "data": "copy_color"},
                 {"text": "缩放到适合大小", "data": "fit_to_size"},
-                {"text": "切换背景色", "data": "switch_bg_color"}
+                {"text": "切换背景色", "data": "switch_bg_color"},
+                {"text": "旋转", "data": "rotate_clockwise"}
             ]
             
             self._context_menu.set_items(items)
@@ -1772,6 +1845,8 @@ class GifWidget(QWidget):
             self.reset_view()
         elif data == "switch_bg_color":
             self._switch_bg_color()
+        elif data == "rotate_clockwise":
+            self.rotate_clockwise()
     
     def _switch_bg_color(self):
         """切换到下一个背景色"""
