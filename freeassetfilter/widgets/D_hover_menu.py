@@ -109,7 +109,8 @@ class D_HoverMenu(QWidget):
         self._fade_animation = None
         self._opacity_value = 1.0
 
-        self._vertical_offset = 0
+        self._hidden_vertical_offset = int(20 * self.dpi_scale)
+        self._vertical_offset = self._hidden_vertical_offset
         self._vertical_animation = None
         self._vertical_animation_duration = 300
         self._base_position = QPoint(0, 0)
@@ -147,17 +148,10 @@ class D_HoverMenu(QWidget):
                 child.installEventFilter(self)
                 self._install_event_filter_recursive(child)
 
-    def eventFilter(self, obj, event):
-        """
-        事件过滤器：捕获子控件的键盘事件并传递给父窗口
-        """
-        if event.type() == QEvent.KeyPress:
-            # 只发射信号，不转发给父窗口，避免事件被重复处理
-            # 父窗口（DetachedVideoWindow）有自己的keyPressEvent处理
-            self.keyPressed.emit(event)
-            # 阻止事件继续传递，避免重复处理
-            return True
-        return super().eventFilter(obj, event)
+
+    def _is_menu_widget(self, obj):
+        """判断对象是否属于当前悬浮菜单自身或其子控件"""
+        return obj is self or (isinstance(obj, QWidget) and self.isAncestorOf(obj))
 
     def keyPressEvent(self, event):
         """
@@ -304,8 +298,8 @@ class D_HoverMenu(QWidget):
         from freeassetfilter.utils.app_logger import debug
         debug(f"[D_HoverMenu] _on_timeout called: _is_visible={self._is_visible}, _is_animating={self._is_animating}")
         if self._is_visible and not self._is_animating:
-            debug(f"[D_HoverMenu] Calling _fade_out()")
-            self._fade_out()
+            debug(f"[D_HoverMenu] Calling _hide_control_bar()")
+            self._hide_control_bar()
         elif self._is_visible and self._is_animating:
             debug(f"[D_HoverMenu] Animation in progress, restarting timer")
             self._start_timeout_timer()
@@ -325,37 +319,109 @@ class D_HoverMenu(QWidget):
         if was_hidden:
             self.controlBarHidden.emit()
 
-    def _fade_in(self):
-        """淡入显示"""
-        if self._is_visible and not self._is_animating:
+    def _prepare_geometry_for_show(self):
+        """在显示前计算并应用基础位置"""
+        if self._custom_position_callback and (self._target_widget or self._target_rect):
+            if self._target_rect:
+                target_rect = self._target_rect
+            else:
+                target_rect = self._target_widget.rect()
+
+                if self._use_sub_widget_mode:
+                    target_local = self._target_widget.mapTo(self.parent(), QPoint(0, 0))
+                    target_rect.moveTo(target_local)
+                else:
+                    target_global = self._target_widget.mapToGlobal(QPoint(0, 0))
+                    target_rect.moveTo(target_global)
+
+            pos = self._custom_position_callback(target_rect, self.size())
+
+            if not self._use_sub_widget_mode:
+                self._adjust_to_screen(pos)
+
+            self._base_position = pos
+            self._update_position_with_offset()
+        elif self._target_widget or self._target_rect:
+            self._calculate_position()
+        else:
+            screen = QApplication.primaryScreen()
+            screen_geometry = screen.geometry() if screen else self.screen().geometry()
+            screen_center = screen_geometry.center()
+            pos = QPoint(screen_center.x() - self.width() // 2, screen_center.y() - self.height() // 2)
+
+            if not self._use_sub_widget_mode:
+                self._adjust_to_screen(pos)
+
+            self._base_position = pos
+            self._update_position_with_offset()
+
+    def _animate_show(self):
+        """执行向上显示 + 淡入的非线性动画"""
+        if self._is_visible and not self._is_animating and self._get_opacity() >= 0.99 and self._vertical_offset == 0:
             return
 
         self._is_animating = True
         self._stop_timeout_timer()
 
+        self._prepare_geometry_for_show()
+
+        start_opacity = self._get_opacity()
+        start_offset = self._vertical_offset
+
+        if not self.isVisible():
+            start_opacity = 0.0
+            if start_offset == 0:
+                start_offset = self._hidden_vertical_offset
+            self._opacity_value = start_opacity
+            self._vertical_offset = start_offset
+            self._update_mouse_transparency()
+            self._update_position_with_offset()
+            super().show()
+        elif start_offset == 0 and start_opacity <= 0.01:
+            start_offset = self._hidden_vertical_offset
+            self._vertical_offset = start_offset
+            self._update_position_with_offset()
+
+        self._vertical_animation.stop()
+        self._vertical_animation.setStartValue(start_offset)
+        self._vertical_animation.setEndValue(0)
+        self._vertical_animation.start()
+
         self._fade_animation.stop()
-        self._fade_animation.setStartValue(self._get_opacity())
+        self._fade_animation.setStartValue(start_opacity)
         self._fade_animation.setEndValue(1.0)
         self._fade_animation.start()
 
-        super().show()
         self._is_visible = True
 
-    def _fade_out(self):
-        """淡出隐藏"""
+    def _fade_in(self):
+        """兼容旧接口：统一走显示动画"""
+        self._animate_show()
+
+    def _animate_hide(self):
+        """执行向下隐藏 + 淡出的非线性动画"""
         from freeassetfilter.utils.app_logger import debug
-        debug(f"[D_HoverMenu] _fade_out called: _is_visible={self._is_visible}, _is_animating={self._is_animating}")
+        debug(f"[D_HoverMenu] _animate_hide called: _is_visible={self._is_visible}, _is_animating={self._is_animating}")
         if not self._is_visible or self._is_animating:
-            debug(f"[D_HoverMenu] _fade_out returned early")
+            debug(f"[D_HoverMenu] _animate_hide returned early")
             return
 
         self._is_animating = True
         self._stop_timeout_timer()
+
+        self._vertical_animation.stop()
+        self._vertical_animation.setStartValue(self._vertical_offset)
+        self._vertical_animation.setEndValue(self._hidden_vertical_offset)
+        self._vertical_animation.start()
 
         self._fade_animation.stop()
         self._fade_animation.setStartValue(self._get_opacity())
         self._fade_animation.setEndValue(0.0)
         self._fade_animation.start()
+
+    def _fade_out(self):
+        """兼容旧接口：统一走隐藏动画"""
+        self._animate_hide()
 
     def set_content(self, widget):
         """
@@ -472,14 +538,19 @@ class D_HoverMenu(QWidget):
             self._target_widget = None
 
     def eventFilter(self, obj, event):
-        """事件过滤器 - 监听目标控件及其顶层窗口的移动事件"""
+        """事件过滤器 - 同时处理键盘事件转发和目标窗口移动隐藏"""
+        if event.type() == QEvent.KeyPress and self._is_menu_widget(obj):
+            self.keyPressed.emit(event)
+            return True
+
         if event.type() == QEvent.Move and self._hide_on_window_move:
             if obj == self._target_widget:
                 if self._is_visible and not self._is_animating:
-                    self._fade_out()
+                    self._animate_hide()
             elif self._target_widget and obj == self._target_widget.window():
                 if self._is_visible and not self._is_animating:
-                    self._fade_out()
+                    self._animate_hide()
+
         return super().eventFilter(obj, event)
 
     def set_position(self, position):
@@ -524,103 +595,46 @@ class D_HoverMenu(QWidget):
         """
         pos = QPoint(x, y)
         self._adjust_to_screen(pos)
-        self.move(pos)
-        self._fade_in()
+        self._base_position = QPoint(pos)
+        self._vertical_offset = self._hidden_vertical_offset
+        self._update_position_with_offset()
+        self._animate_show()
 
     def show(self):
-        """显示菜单（带淡入动画）"""
-        if self._custom_position_callback and (self._target_widget or self._target_rect):
-            if self._target_rect:
-                target_rect = self._target_rect
-            else:
-                target_rect = self._target_widget.rect()
-                
-                if self._use_sub_widget_mode:
-                    # 子控件模式：使用相对于父窗口的坐标
-                    target_local = self._target_widget.mapTo(self.parent(), QPoint(0, 0))
-                    target_rect.moveTo(target_local)
-                else:
-                    # 独立窗口模式：使用全局坐标
-                    target_global = self._target_widget.mapToGlobal(QPoint(0, 0))
-                    target_rect.moveTo(target_global)
-            
-            pos = self._custom_position_callback(target_rect, self.size())
-            
-            if not self._use_sub_widget_mode:
-                self._adjust_to_screen(pos)
-            
-            self.move(pos)
-        elif self._target_widget or self._target_rect:
-            self._calculate_position()
-        else:
-            # Qt6中使用primaryScreen替代desktop
-            screen = QApplication.primaryScreen()
-            screen_geometry = screen.geometry() if screen else self.screen().geometry()
-            screen_center = screen_geometry.center()
-            pos = QPoint(screen_center.x() - self.width() // 2, screen_center.y() - self.height() // 2)
-            
-            if not self._use_sub_widget_mode:
-                self._adjust_to_screen(pos)
-            
-            self.move(pos)
-
-        self._fade_in()
+        """显示菜单（带向上显示 + 淡入动画）"""
+        self._animate_show()
 
     def hide(self):
-        """隐藏菜单（带淡出动画）"""
+        """隐藏菜单（带向下隐藏 + 淡出动画）"""
         if self._is_visible and not self._is_animating:
-            self._fade_out()
+            self._animate_hide()
         elif not self._is_animating:
             super().hide()
     
     def hide_immediately(self):
         """立即隐藏菜单（无动画）"""
         self._is_visible = False
+        self._is_animating = False
         self._stop_timeout_timer()
+        self._fade_animation.stop()
+        self._vertical_animation.stop()
+        self._opacity_value = 0.0
+        self._vertical_offset = self._hidden_vertical_offset
+        self._update_mouse_transparency()
         super().hide()
     
     def show_immediately(self):
         """立即显示菜单（无动画）"""
         self._is_visible = True
+        self._is_animating = False
         self._stop_timeout_timer()
+        self._fade_animation.stop()
+        self._vertical_animation.stop()
+        self._opacity_value = 1.0
+        self._vertical_offset = 0
         self.setWindowOpacity(1.0)
+        self._prepare_geometry_for_show()
         self._update_mouse_transparency()
-        
-        if self._custom_position_callback and (self._target_widget or self._target_rect):
-            if self._target_rect:
-                target_rect = self._target_rect
-            else:
-                target_rect = self._target_widget.rect()
-                
-                if self._use_sub_widget_mode:
-                    # 子控件模式：使用相对于父窗口的坐标
-                    target_local = self._target_widget.mapTo(self.parent(), QPoint(0, 0))
-                    target_rect.moveTo(target_local)
-                else:
-                    # 独立窗口模式：使用全局坐标
-                    target_global = self._target_widget.mapToGlobal(QPoint(0, 0))
-                    target_rect.moveTo(target_global)
-            
-            pos = self._custom_position_callback(target_rect, self.size())
-            
-            if not self._use_sub_widget_mode:
-                self._adjust_to_screen(pos)
-            
-            self.move(pos)
-        elif self._target_widget or self._target_rect:
-            self._calculate_position()
-        else:
-            # Qt6中使用primaryScreen替代desktop
-            screen = QApplication.primaryScreen()
-            screen_geometry = screen.geometry() if screen else self.screen().geometry()
-            screen_center = screen_geometry.center()
-            pos = QPoint(screen_center.x() - self.width() // 2, screen_center.y() - self.height() // 2)
-            
-            if not self._use_sub_widget_mode:
-                self._adjust_to_screen(pos)
-            
-            self.move(pos)
-        
         super().show()
 
     def toggle(self):
@@ -754,7 +768,9 @@ class D_HoverMenu(QWidget):
         border_pen.setWidth(1)
         painter.setPen(border_pen)
 
-        brush = QBrush(QColor(base_color))
+        base_qcolor = QColor(base_color)
+        base_qcolor.setAlphaF(0.8)
+        brush = QBrush(base_qcolor)
         painter.setBrush(brush)
 
         rect = QRect(0, 0, self.width() - 1, self.height() - 1)
@@ -772,15 +788,12 @@ class D_HoverMenu(QWidget):
 
     def _update_position_with_offset(self):
         """根据垂直偏移更新菜单位置"""
-        if not self._target_widget and not self._target_rect:
-            return
-
         final_pos = QPoint(self._base_position)
         final_pos.setY(final_pos.y() + self._vertical_offset)
-        
+
         if not self._use_sub_widget_mode:
             self._adjust_to_screen(final_pos)
-        
+
         self.move(final_pos)
 
     def set_vertical_offset(self, offset, animate=False):
@@ -850,19 +863,7 @@ class D_HoverMenu(QWidget):
         if self.isVisible() and self._get_opacity() > 0.9 and self._vertical_offset == 0:
             return
 
-        # 同时执行垂直位置动画和透明度淡入
-        self._is_visible = True
-        self._is_animating = True
-        self._stop_timeout_timer()
-        self.animate_to_vertical_offset(0)
-        # 确保窗口可见
-        if not self.isVisible():
-            super().show()
-        # 淡入动画
-        self._fade_animation.stop()
-        self._fade_animation.setStartValue(self._get_opacity())
-        self._fade_animation.setEndValue(1.0)
-        self._fade_animation.start()
+        self._animate_show()
         # 发射控制栏显示信号
         self.controlBarShown.emit()
         # 启动超时定时器（仅在非经典模式下，因为经典模式由 GlobalMouseMonitor 处理）
@@ -905,13 +906,7 @@ class D_HoverMenu(QWidget):
         if not self.isVisible() or self._get_opacity() < 0.1:
             return
 
-        # 只移动20像素
-        self.animate_to_vertical_offset(20)
-        # 淡出动画
-        self._fade_animation.stop()
-        self._fade_animation.setStartValue(self._get_opacity())
-        self._fade_animation.setEndValue(0.0)
-        self._fade_animation.start()
+        self._animate_hide()
 
     def set_auto_hide_enabled(self, enabled):
         """

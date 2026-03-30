@@ -191,7 +191,9 @@ class SettingsManager:
                 "control_bar_show_lut": False,
                 "control_bar_show_subtitle": False,
                 "control_bar_show_volume": True,
-                "control_bar_show_speed": True
+                "control_bar_show_speed": True,
+                "fullscreen_classic_control_bar": True,
+                "control_bar_timeout": 3
             },
             "developer": {
                 "debug_mode": False,

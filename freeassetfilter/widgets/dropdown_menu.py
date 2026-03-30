@@ -402,8 +402,13 @@ class CustomDropdownMenu(QWidget):
         """
         if position in ["top", "bottom"]:
             self._position = position
+            # 只有在dropdown_menu已存在时才设置位置
             if self.dropdown_menu is not None:
-                self.dropdown_menu.set_position(position)
+                try:
+                    self.dropdown_menu.set_position(position)
+                except (RuntimeError, AttributeError):
+                    # 如果dropdown_menu已经被销毁，忽略错误
+                    pass
     
     def set_target_button(self, button):
         """
@@ -413,8 +418,13 @@ class CustomDropdownMenu(QWidget):
             button: 目标按钮部件
         """
         self._external_target_button = button
+        # 只有在dropdown_menu已存在时才设置目标按钮
         if self.dropdown_menu is not None:
-            self.dropdown_menu.set_target_button(button)
+            try:
+                self.dropdown_menu.set_target_button(button)
+            except (RuntimeError, AttributeError):
+                # 如果dropdown_menu已经被销毁，忽略错误
+                pass
     
     def _update_button_text(self):
         """
@@ -479,9 +489,14 @@ class CustomDropdownMenu(QWidget):
             # 列表容器宽度减去滚动条宽度，避免文字被遮挡
             self.list_container.setFixedWidth(button_width - scroll_bar_width)
         
-        # 调整菜单大小
+        # 只有在dropdown_menu已存在时才调整菜单大小
+        # 绝对不要在不需要的时候创建dropdown_menu
         if self.dropdown_menu is not None:
-            self.dropdown_menu.adjustSize()
+            try:
+                self.dropdown_menu.adjustSize()
+            except (RuntimeError, AttributeError):
+                # 如果dropdown_menu已经被销毁，忽略错误
+                pass
     
     def toggle_menu(self):
         """
@@ -636,7 +651,13 @@ class CustomDropdownMenu(QWidget):
         窗口大小变化事件
         """
         super().resizeEvent(event)
-        self._adjust_menu_size()
+        # 只调整内部组件大小，绝对不要触发dropdown_menu的创建
+        # 计算基于条目数量的高度
+        item_count = len(self._items)
+        if item_count > 0:
+            calculated_height = min(item_count, self._max_items) * self._item_height
+            scroll_height = min(calculated_height, self._max_height)
+            self.scroll_area.setFixedHeight(scroll_height)
         
     def setStyleSheet(self, styleSheet):
         """

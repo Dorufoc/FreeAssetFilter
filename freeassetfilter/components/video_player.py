@@ -575,6 +575,10 @@ class VideoPlayer(QWidget):
         use_classic_mode = self._settings_manager.get_setting("player.fullscreen_classic_control_bar", True)
         self._floating_control_bar.set_mouse_move_detection(use_classic_mode)
 
+        # 设置控制栏超时隐藏时间
+        control_bar_timeout = self._settings_manager.get_setting("player.control_bar_timeout", 3)
+        self._floating_control_bar.set_timeout_duration(control_bar_timeout * 1000)
+
         self._floating_control_bar.set_auto_hide_enabled(True)  # 启用自动隐藏功能
 
         # 连接浮动控制栏的键盘事件信号
@@ -1571,31 +1575,29 @@ class VideoPlayer(QWidget):
         将视频播放器分离到独立窗口
         """
         debug(f"[VideoPlayer] 开始分离窗口")
-        
+
         # 保存原始父窗口和布局
         self._original_parent = self.parent()
         self._original_layout = None
         if self._original_parent and hasattr(self._original_parent, 'layout'):
             self._original_layout = self._original_parent.layout()
-        
+
         # 先将播放器从原布局中移除
         if self._original_layout:
             self._original_layout.removeWidget(self)
-        
+
         # 创建独立窗口
         self._detached_window = DetachedVideoWindow(None)
-        
+
         # 将播放器添加到独立窗口
         self.setParent(self._detached_window)
         self._detached_window._main_layout.addWidget(self)
-        
-        # 显示独立窗口并强制获取焦点
-        self._detached_window.show()
-        self._detached_window._force_focus()
-        
-        # 更新控制栏的分离状态
+
+        # 更新控制栏的分离状态，并在窗口显示前立即切换为浮动模式
+        # 避免无边框窗口已出现但控制栏仍停留在固定模式的视觉延迟
         self._control_bar.set_detached(True)
-        
+        self._switch_to_floating_mode()
+
         # 连接独立窗口的关闭信号
         self._detached_window.closed.connect(self._reattach_to_parent)
         # 连接独立窗口的焦点变化信号
@@ -1616,43 +1618,46 @@ class VideoPlayer(QWidget):
         self._detached_window.key3Pressed.connect(lambda: self.set_speed(3.0))
         self._detached_window.keyTildePressed.connect(lambda: self.set_speed(0.5))
 
-        # 延迟执行，确保窗口完全显示且尺寸稳定后再处理
-        # 使用更长的延迟时间（500ms）以应对低性能电脑
-        def delayed_init():
-            debug(f"[VideoPlayer] 延迟初始化分离窗口")
+        # 显示独立窗口并强制获取焦点
+        self._detached_window.show()
+        self._detached_window._force_focus()
+
+        # 下一轮事件循环中完成几何同步和MPV重连，避免长时间等待导致控制栏晚切换
+        def finalize_detach():
+            debug(f"[VideoPlayer] 完成分离窗口初始化")
             if not self._detached_window:
                 return
-                
-            # 处理所有待处理的事件，确保窗口状态最新
+
+            # 处理所有待处理事件，确保窗口状态和几何已更新
             QApplication.processEvents()
-            
-            # 确保窗口已经显示并处于活跃状态
+
             self._detached_window.raise_()
             self._detached_window.activateWindow()
-            # 强制设置焦点到分离窗口，确保键盘事件能被接收
             self._detached_window.setFocus()
-            
-            # 强制更新布局
+
             self._detached_window.updateGeometry()
             self.updateGeometry()
             if hasattr(self, '_video_surface') and self._video_surface:
                 self._video_surface.updateGeometry()
-            
-            # 处理事件以确保几何信息已更新
+
             QApplication.processEvents()
-            
-            # 切换到浮动控制栏模式
-            self._switch_to_floating_mode()
-            
-            # 只重新连接MPV窗口到新的渲染区域
+
+            # 更新浮动控制栏位置，确保与最终窗口尺寸保持一致
+            if self._floating_control_bar:
+                screen = self._detached_window.screen() or QApplication.primaryScreen()
+                if screen:
+                    self._floating_control_bar.set_target_rect(screen.geometry())
+                    self._floating_control_bar.show_immediately()
+
+            # 重新连接MPV窗口到新的渲染区域
             self._reconnect_mpv_window()
-            
+
             # 再次确保焦点在分离窗口上（MPV嵌入后可能会抢占焦点）
             self._detached_window.activateWindow()
             self._detached_window.setFocus()
-        
-        QTimer.singleShot(500, delayed_init)
-        
+
+        QTimer.singleShot(0, finalize_detach)
+
         debug(f"[VideoPlayer] 窗口分离完成")
     
     def _on_detached_window_focus_changed(self, has_focus: bool):

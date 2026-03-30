@@ -1014,6 +1014,20 @@ class ModernSettingsWindow(QDialog):
         )
         experimental_layout.addWidget(self.fullscreen_classic_control_bar_switch)
 
+        # 控制栏超时隐藏时间滑块
+        self.control_bar_timeout_bar = CustomSettingItem(
+            text="控制栏超时隐藏时间",
+            secondary_text="设置控制栏自动隐藏的超时时间（1-10秒）",
+            interaction_type=CustomSettingItem.VALUE_BAR_TYPE,
+            min_value=1,
+            max_value=10,
+            initial_value=self._get_current_setting_value("player.control_bar_timeout", 3)
+        )
+        self.control_bar_timeout_bar.value_changed.connect(
+            lambda value: self.current_settings.update({"player.control_bar_timeout": value})
+        )
+        experimental_layout.addWidget(self.control_bar_timeout_bar)
+
         self.scroll_layout.addWidget(experimental_group)
 
     def _on_control_bar_volume_changed(self, value):
@@ -1942,6 +1956,7 @@ class ModernSettingsWindow(QDialog):
             "player.default_speed": self.settings_manager.get_setting("player.default_speed", 1.0),
             "player.audio_background_style": self.settings_manager.get_setting("player.audio_background_style", "流体动画"),
             "player.fullscreen_classic_control_bar": self.settings_manager.get_setting("player.fullscreen_classic_control_bar", True),
+            "player.control_bar_timeout": self.settings_manager.get_setting("player.control_bar_timeout", 3),
             "text_preview.word_wrap": self.settings_manager.get_setting("text_preview.word_wrap", True),
             "text_preview.use_global_font": self.settings_manager.get_setting("text_preview.use_global_font", True),
             "text_preview.custom_font_family": self.settings_manager.get_setting("text_preview.custom_font_family", "Microsoft YaHei"),
@@ -2233,6 +2248,11 @@ class ModernSettingsWindow(QDialog):
         if hasattr(self, 'fullscreen_classic_control_bar_switch') and self.fullscreen_classic_control_bar_switch:
             default_value = defaults["player"]["fullscreen_classic_control_bar"]
             self.fullscreen_classic_control_bar_switch.set_switch_value(default_value)
+
+        # 更新控制栏超时隐藏时间设置（如果有的话）
+        if hasattr(self, 'control_bar_timeout_bar') and self.control_bar_timeout_bar:
+            default_value = defaults["player"]["control_bar_timeout"]
+            self.control_bar_timeout_bar.set_value(default_value)
 
         # 更新current_settings中的主题颜色为默认值
         default_colors = defaults["appearance"]["colors"]

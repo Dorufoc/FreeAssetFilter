@@ -39,7 +39,7 @@ class CustomControlMenu(QWidget):
         Args:
             parent: 父窗口部件
         """
-        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+        super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
         from PySide6.QtWidgets import QApplication
@@ -79,10 +79,13 @@ class CustomControlMenu(QWidget):
         """
         初始化UI组件
         """
-        # 设置窗口属性
+        # 设置窗口属性（只设置一次，避免重复设置导致窗口重建）
         self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        
+        # 确保窗口初始状态是隐藏的
+        self.hide()
         
         # 创建主布局
         main_layout = QVBoxLayout(self)
@@ -153,8 +156,15 @@ class CustomControlMenu(QWidget):
         显示菜单
         先定位，再显示
         """
+        # 严格检查：只有在内容已设置的情况下才显示
         if not self._is_content_set:
             return
+        
+        # 确保窗口标志已设置
+        if not self.windowFlags() & Qt.Popup:
+            self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setAttribute(Qt.WA_ShowWithoutActivating)
         
         # 计算菜单位置
         self._calculate_position()

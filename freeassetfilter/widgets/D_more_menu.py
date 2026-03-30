@@ -142,7 +142,7 @@ class D_MoreMenu(QWidget):
         Args:
             parent: 父窗口部件
         """
-        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        super().__init__(parent)
 
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -181,8 +181,17 @@ class D_MoreMenu(QWidget):
 
     def _init_ui(self):
         """初始化UI组件"""
+        # 设置窗口属性（只设置一次，避免重复设置导致窗口重建）
+        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+
+        self._timeout_timer = QTimer(self)
+        self._timeout_timer.setSingleShot(True)
+        self._timeout_timer.timeout.connect(self.hide)
+
+        # 确保窗口初始状态是隐藏的
+        self.hide()
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(
@@ -207,10 +216,6 @@ class D_MoreMenu(QWidget):
         self._list_layout.setSpacing(int(2 * self.dpi_scale))
 
         main_layout.addWidget(self._content_widget)
-
-        self._timeout_timer = QTimer(self)
-        self._timeout_timer.setSingleShot(True)
-        self._timeout_timer.timeout.connect(self.hide)
 
     def paintEvent(self, event):
         """绘制阴影和背景"""
@@ -421,13 +426,20 @@ class D_MoreMenu(QWidget):
 
     def show(self):
         """显示菜单"""
+        # 确保窗口标志已设置
+        if not self.windowFlags() & Qt.Popup:
+            self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setAttribute(Qt.WA_ShowWithoutActivating)
+        
         super().show()
         if self._timeout_enabled:
             self._timeout_timer.start(self._timeout_duration)
 
     def hide(self):
         """隐藏菜单"""
-        self._timeout_timer.stop()
+        if hasattr(self, '_timeout_timer') and self._timeout_timer:
+            self._timeout_timer.stop()
         super().hide()
 
     def is_visible(self):
@@ -495,12 +507,13 @@ class D_MoreMenu(QWidget):
 
     def enterEvent(self, event):
         """鼠标进入事件"""
-        self._timeout_timer.stop()
+        if hasattr(self, '_timeout_timer') and self._timeout_timer:
+            self._timeout_timer.stop()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         """鼠标离开事件"""
-        if self._timeout_enabled:
+        if self._timeout_enabled and hasattr(self, '_timeout_timer') and self._timeout_timer:
             self._timeout_timer.start(self._timeout_duration)
         super().leaveEvent(event)
 
