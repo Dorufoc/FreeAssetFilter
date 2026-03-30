@@ -109,6 +109,9 @@ class PlayerControlBar(QWidget):
 
         self._show_lut_controls = show_lut_controls
         self._show_detach_button = show_detach_button
+        
+        # 从设置管理器读取按钮可见性设置
+        self._load_control_bar_settings()
 
         # 音量控制防抖定时器
         self._volume_debounce_timer = QTimer(self)
@@ -123,6 +126,23 @@ class PlayerControlBar(QWidget):
         # 安装事件过滤器到所有子控件，捕获键盘事件
         # 注意：必须在 _init_ui 之后调用，因为子控件在此时才被创建
         self._install_event_filter_to_children()
+    
+    def _load_control_bar_settings(self):
+        """从设置管理器加载控制栏按钮可见性设置"""
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            settings_manager = app.settings_manager
+            self._show_fullscreen_button = settings_manager.get_setting("player.control_bar_show_fullscreen", True)
+            self._show_lut_controls = settings_manager.get_setting("player.control_bar_show_lut", False)
+            self._show_subtitle_button = settings_manager.get_setting("player.control_bar_show_subtitle", False)
+            self._show_volume_button = settings_manager.get_setting("player.control_bar_show_volume", True)
+            self._show_speed_button = settings_manager.get_setting("player.control_bar_show_speed", True)
+        else:
+            self._show_fullscreen_button = True
+            self._show_lut_controls = False
+            self._show_subtitle_button = False
+            self._show_volume_button = True
+            self._show_speed_button = True
 
     def _install_event_filter_to_children(self):
         """为所有子控件安装事件过滤器，捕获键盘事件"""
@@ -218,43 +238,47 @@ class PlayerControlBar(QWidget):
         bottom_layout.addStretch(1)
 
         # 音量控制按钮
-        self._volume_control = DVolumeControl(self)
-        self._volume_control.set_volume(self._volume)
-        bottom_layout.addWidget(self._volume_control)
+        if self._show_volume_button:
+            self._volume_control = DVolumeControl(self)
+            self._volume_control.set_volume(self._volume)
+            bottom_layout.addWidget(self._volume_control)
 
         # 倍速按钮
-        self._speed_button = self._create_icon_button(
-            "speed.svg",
-            tooltip_text="播放倍速",
-            height=20,
-            button_type="normal"
-        )
-        bottom_layout.addWidget(self._speed_button)
+        if self._show_speed_button:
+            self._speed_button = self._create_icon_button(
+                "speed.svg",
+                tooltip_text="播放倍速",
+                height=20,
+                button_type="normal"
+            )
+            bottom_layout.addWidget(self._speed_button)
 
-        self._subtitle_button = self._create_icon_button(
-            "subtitle.svg",
-            tooltip_text="添加字幕",
-            height=20,
-            button_type="normal"
-        )
-        bottom_layout.addWidget(self._subtitle_button)
+        if self._show_subtitle_button:
+            self._subtitle_button = self._create_icon_button(
+                "subtitle.svg",
+                tooltip_text="添加字幕",
+                height=20,
+                button_type="normal"
+            )
+            bottom_layout.addWidget(self._subtitle_button)
 
         # 倍速下拉菜单
-        self._speed_menu = CustomDropdownMenu(self, position="top", use_internal_button=False)
-        scaled_speed_width = int(60 * self.dpi_scale)
-        self._speed_menu.set_fixed_width(scaled_speed_width)
-        speed_items = [
-            {"text": "0.5x", "data": 0.5},
-            {"text": "0.75x", "data": 0.75},
-            {"text": "1.0x", "data": 1.0},
-            {"text": "1.25x", "data": 1.25},
-            {"text": "1.5x", "data": 1.5},
-            {"text": "2.0x", "data": 2.0},
-            {"text": "3.0x", "data": 3.0}
-        ]
-        self._speed_menu.set_items(speed_items, default_item=speed_items[2])  # 默认1.0x
-        self._speed_menu.set_target_button(self._speed_button)
-        self._speed_menu.itemClicked.connect(self._on_speed_item_clicked)
+        if self._show_speed_button:
+            self._speed_menu = CustomDropdownMenu(self, position="top", use_internal_button=False)
+            scaled_speed_width = int(60 * self.dpi_scale)
+            self._speed_menu.set_fixed_width(scaled_speed_width)
+            speed_items = [
+                {"text": "0.5x", "data": 0.5},
+                {"text": "0.75x", "data": 0.75},
+                {"text": "1.0x", "data": 1.0},
+                {"text": "1.25x", "data": 1.25},
+                {"text": "1.5x", "data": 1.5},
+                {"text": "2.0x", "data": 2.0},
+                {"text": "3.0x", "data": 3.0}
+            ]
+            self._speed_menu.set_items(speed_items, default_item=speed_items[2])  # 默认1.0x
+            self._speed_menu.set_target_button(self._speed_button)
+            self._speed_menu.itemClicked.connect(self._on_speed_item_clicked)
 
         if self._show_lut_controls:
             self._lut_button = self._create_icon_button(
@@ -264,7 +288,7 @@ class PlayerControlBar(QWidget):
             )
             bottom_layout.addWidget(self._lut_button)
 
-        if self._show_detach_button:
+        if self._show_detach_button and self._show_fullscreen_button:
             self._detach_button = self._create_icon_button(
                 "maxsize.svg",
                 alt_icon_name="minisize.svg",
@@ -322,17 +346,21 @@ class PlayerControlBar(QWidget):
         self._progress_bar.userInteractionEnded.connect(self._on_user_interacting_end)
 
         # 音量控制信号
-        self._volume_control.valueChanged.connect(self._on_volume_value_changed)
-        self._volume_control.mutedChanged.connect(self._on_mute_changed)
+        if self._show_volume_button and hasattr(self, '_volume_control'):
+            self._volume_control.valueChanged.connect(self._on_volume_value_changed)
+            self._volume_control.mutedChanged.connect(self._on_mute_changed)
 
         # 倍速按钮信号
-        self._speed_button.clicked.connect(self._on_speed_button_clicked)
-        self._subtitle_button.clicked.connect(self._on_subtitle_button_clicked)
+        if self._show_speed_button and hasattr(self, '_speed_button'):
+            self._speed_button.clicked.connect(self._on_speed_button_clicked)
+        
+        if self._show_subtitle_button and hasattr(self, '_subtitle_button'):
+            self._subtitle_button.clicked.connect(self._on_subtitle_button_clicked)
 
-        if self._show_lut_controls:
+        if self._show_lut_controls and hasattr(self, '_lut_button'):
             self._lut_button.clicked.connect(self._on_lut_button_clicked)
 
-        if self._show_detach_button:
+        if self._show_detach_button and self._show_fullscreen_button and hasattr(self, '_detach_button'):
             self._detach_button.clicked.connect(self._on_detach_button_clicked)
     
     def _update_style(self):
@@ -411,6 +439,8 @@ class PlayerControlBar(QWidget):
         
         icon_path = os.path.join(icon_dir, icon_name)
         self._play_button._icon_path = icon_path
+        self._play_button._icon_render_signature = None
+        self._play_button._render_icon(force=True)
         self._play_button.update()
     
     def _on_play_button_clicked(self):
@@ -639,6 +669,9 @@ class PlayerControlBar(QWidget):
             emit_signal: 是否发射volumeChanged信号，默认为True
                         当从MPV回调更新UI时设置为False以避免循环
         """
+        if not self._show_volume_button:
+            return
+            
         volume = max(0, min(100, volume))
         if self._volume != volume:
             self._volume = volume
@@ -659,6 +692,9 @@ class PlayerControlBar(QWidget):
         Args:
             muted: 是否静音
         """
+        if not self._show_volume_button:
+            return
+            
         if self._is_muted != muted:
             self._is_muted = muted
             # 同步更新音量控制组件显示
@@ -675,6 +711,9 @@ class PlayerControlBar(QWidget):
             emit_signal: 是否发射speedChanged信号，默认为True
                         当从MPV回调更新UI时设置为False以避免循环
         """
+        if not self._show_speed_button:
+            return
+            
         old_speed = self._speed
         self._speed = speed
         # 同步更新下拉菜单选中项
@@ -692,7 +731,7 @@ class PlayerControlBar(QWidget):
 
     def _update_speed_button_style(self):
         """更新倍速按钮样式（根据当前倍速切换普通/强调样式）"""
-        if hasattr(self, '_speed_button'):
+        if self._show_speed_button and hasattr(self, '_speed_button'):
             # 倍速不为1.0时使用强调样式，否则使用普通样式
             button_type = "primary" if self._speed != 1.0 else "normal"
             self._speed_button.set_button_type(button_type)
@@ -709,12 +748,16 @@ class PlayerControlBar(QWidget):
         Args:
             detached: 是否已分离
         """
+        if not (self._show_detach_button and self._show_fullscreen_button):
+            return
+            
         self._is_detached = detached
         self._update_detach_button_icon()
     
     def _update_detach_button_icon(self):
         """更新分离按钮图标"""
-        if not hasattr(self, '_detach_button') or not self._detach_button:
+        if not (self._show_detach_button and self._show_fullscreen_button and 
+                hasattr(self, '_detach_button') and self._detach_button):
             return
         
         icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
@@ -731,6 +774,8 @@ class PlayerControlBar(QWidget):
         icon_path = os.path.join(icon_dir, icon_name)
         self._detach_button._icon_path = icon_path
         self._detach_button.setToolTip(tooltip_text)
+        self._detach_button._icon_render_signature = None
+        self._detach_button._render_icon(force=True)
         self._detach_button.update()
     
     def set_detach_button_visible(self, visible: bool):
@@ -740,7 +785,7 @@ class PlayerControlBar(QWidget):
         Args:
             visible: 是否可见
         """
-        if hasattr(self, '_detach_button') and self._detach_button:
+        if self._show_fullscreen_button and hasattr(self, '_detach_button') and self._detach_button:
             self._detach_button.setVisible(visible)
     
     def set_lut_loaded(self, loaded: bool):
@@ -750,7 +795,26 @@ class PlayerControlBar(QWidget):
         Args:
             loaded: 是否已加载LUT
         """
+        if not self._show_lut_controls:
+            return
+            
         self._is_lut_loaded = loaded
+        self._update_lut_button_style()
+    
+    def _update_lut_button_style(self):
+        """更新LUT按钮样式（根据LUT加载状态）"""
+        if not (self._show_lut_controls and hasattr(self, '_lut_button')):
+            return
+        
+        # 根据LUT状态设置按钮高亮
+        if self._is_lut_loaded:
+            # LUT已加载，使用强调样式
+            self._lut_button.set_button_type("primary")
+        else:
+            # LUT未加载，使用普通样式
+            self._lut_button.set_button_type("normal")
+        
+        self._lut_button.update()
     
     def is_lut_loaded(self) -> bool:
         """获取LUT加载状态"""
@@ -786,15 +850,15 @@ class PlayerControlBar(QWidget):
             self._speed_label.update_style()
         if self._show_lut_controls and hasattr(self, '_lut_button'):
             self._lut_button.update_style()
-        if self._show_detach_button and hasattr(self, '_detach_button'):
+        if self._show_detach_button and self._show_fullscreen_button and hasattr(self, '_detach_button'):
             self._detach_button.update_style()
         # 更新音量控制组件样式
-        if hasattr(self, '_volume_control'):
+        if self._show_volume_button and hasattr(self, '_volume_control'):
             self._volume_control.update_style()
         # 更新倍速按钮样式
-        if hasattr(self, '_speed_button'):
+        if self._show_speed_button and hasattr(self, '_speed_button'):
             self._update_speed_button_style()
-        if hasattr(self, '_subtitle_button'):
+        if self._show_subtitle_button and hasattr(self, '_subtitle_button'):
             self._update_subtitle_button_style()
     
     def hideEvent(self, event):

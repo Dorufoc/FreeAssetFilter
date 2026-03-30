@@ -1231,25 +1231,22 @@ class CustomButton(QPushButton):
         """
         if self._display_mode == "icon":
             painter = QPainter(self)
-            painter.save()
-
+            
+            # 绘制按钮背景和边框
             style_option = QStyleOptionButton()
             self.initStyleOption(style_option)
-
             self.style().drawControl(QStyle.CE_PushButtonBevel, style_option, painter, self)
             self.style().drawControl(QStyle.CE_PushButton, style_option, painter, self)
 
-            painter.restore()
-
+            # 绘制SVG图标
             if self._icon_renderer and self._icon_renderer.isValid():
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                painter.setRenderHint(QPainter.TextAntialiasing, True)
-
-                button_size = max(1, min(self.width(), self.height()))
+                # 计算图标大小
+                button_size = min(self.width(), self.height())
                 icon_size = max(1, int(button_size * 0.52))
+                
                 svg_size = self._icon_renderer.defaultSize()
-
+                
+                # 根据SVG原始比例计算图标尺寸
                 if svg_size.width() > 0 and svg_size.height() > 0:
                     aspect_ratio = svg_size.width() / svg_size.height()
                     if aspect_ratio >= 1:
@@ -1261,10 +1258,29 @@ class CustomButton(QPushButton):
                 else:
                     icon_width = icon_size
                     icon_height = icon_size
-
-                icon_rect = QRectF(0, 0, icon_width, icon_height)
-                icon_rect.moveCenter(self.rect().center())
-                self._icon_renderer.render(painter, icon_rect)
+                
+                # 创建pixmap并渲染SVG
+                pixmap = QPixmap(icon_width, icon_height)
+                pixmap.fill(Qt.transparent)
+                
+                pixmap_painter = QPainter(pixmap)
+                pixmap_painter.setRenderHint(QPainter.Antialiasing, True)
+                pixmap_painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                
+                # 直接渲染到整个pixmap
+                self._icon_renderer.render(pixmap_painter)
+                pixmap_painter.end()
+                
+                # 绘制到按钮上，居中
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                
+                x = (self.width() - pixmap.width()) // 2
+                y = (self.height() - pixmap.height()) // 2
+                
+                painter.drawPixmap(x, y, pixmap)
+            
+            painter.end()
         else:
             # 文字模式，调用父类绘制文字
             super().paintEvent(event)

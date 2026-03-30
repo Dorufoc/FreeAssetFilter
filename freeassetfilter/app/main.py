@@ -921,6 +921,22 @@ class FreeAssetFilterApp(QMainWindow):
             self.global_font = QFont(app.global_font)
             self.setFont(self.global_font)
 
+        # 在整个重建过程中禁用更新，防止闪烁
+        previous_updates_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
+        
+        # 保存应用实例的更新状态
+        app_previous_updates_enabled = app.updatesEnabled()
+        app.setUpdatesEnabled(False)
+        
+        # 启用 HoverTooltip 安全模式，防止在重建过程中意外显示
+        if hasattr(self, 'hover_tooltip') and self.hover_tooltip:
+            try:
+                if hasattr(self.hover_tooltip, 'set_safe_mode'):
+                    self.hover_tooltip.set_safe_mode(True)
+            except (RuntimeError, AttributeError) as e:
+                logger.debug(f"设置 HoverTooltip 安全模式失败: {e}")
+
         self._backup_ui_state()
 
         # 颜色直接从JSON文件读取，绕过内存缓存
@@ -930,35 +946,48 @@ class FreeAssetFilterApp(QMainWindow):
         border_radius = 8
 
         old_central_widget = getattr(self, 'central_widget', None)
-        old_staging_pool = getattr(self, 'file_staging_pool', None)
-        old_file_selector = getattr(self, 'file_selector_a', None)
-        old_preview_items = []
-        old_selected_files = []
-
-        if old_staging_pool and hasattr(old_staging_pool, '_all_items'):
-            try:
-                old_preview_items = list(old_staging_pool._all_items)
-            except (RuntimeError, AttributeError) as e:
-                logger.debug(f"获取旧预览项时出错: {e}")
-
-        if old_file_selector and hasattr(old_file_selector, 'selected_files'):
-            try:
-                old_selected_files = list(old_file_selector.selected_files)
-            except (RuntimeError, AttributeError) as e:
-                logger.debug(f"获取旧选中文件时出错: {e}")
-
-        old_splitter_sizes = [100, 100, 100]
-        if self._splitter:
-            try:
-                old_splitter_sizes = list(self._splitter.sizes())
-            except (RuntimeError, AttributeError) as e:
-                logger.debug(f"获取分割器大小时出错: {e}")
 
         try:
             if old_central_widget:
-                old_central_widget.deleteLater()
+                # 彻底隐藏所有窗口类型的控件，包括直接子窗口和递归查找的所有子窗口
+                # 使用 findChildren 查找所有 QWidget 类型，检查它们是否是窗口
+                all_widgets = old_central_widget.findChildren(QWidget)
+                
+                for child in all_widgets:
+                    try:
+                        # 检查控件是否有效
+                        if not child or not hasattr(child, 'isWindow'):
+                            continue
+                        
+                        # 隐藏所有窗口类型的控件
+                        if child.isWindow():
+                            # 停止可能正在运行的动画
+                            if hasattr(child, 'stop'):
+                                try:
+                                    child.stop()
+                                except (RuntimeError, AttributeError):
+                                    pass
+                            # 彻底隐藏
+                            child.hide()
+                            # 确保不处理事件
+                            child.blockSignals(True)
+                    except (RuntimeError, AttributeError):
+                        continue
+                
+                # 额外检查主窗口的所有子窗口
+                for child in self.findChildren(QWidget):
+                    try:
+                        if child and child.isWindow() and child != self:
+                            child.hide()
+                            child.blockSignals(True)
+                    except (RuntimeError, AttributeError):
+                        continue
+
+                # 最后隐藏旧中央部件
+                old_central_widget.hide()
+                old_central_widget.blockSignals(True)
         except (RuntimeError, AttributeError) as e:
-            logger.debug(f"删除旧中央部件时出错: {e}")
+            logger.debug(f"隐藏旧中央部件时出错: {e}")
 
         self.central_widget = QWidget()
         self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
@@ -1062,36 +1091,37 @@ class FreeAssetFilterApp(QMainWindow):
         self.hover_tooltip.set_target_widget(self.github_button)
         self.hover_tooltip.set_target_widget(self.global_settings_button)
 
-        try:
-            if old_preview_items:
-                for item in old_preview_items:
-                    if hasattr(self.file_staging_pool, '_all_items'):
-                        if item not in self.file_staging_pool._all_items:
-                            try:
-                                self.file_staging_pool._all_items.append(item)
-                                self.file_staging_pool._update_staging_area()
-                            except (RuntimeError, AttributeError) as e:
-                                logger.debug(f"恢复预览项时出错: {e}")
-
-            if old_selected_files and hasattr(self.file_selector_a, 'selected_files'):
-                try:
-                    self.file_selector_a.selected_files = list(old_selected_files)
-                    self.file_selector_a._refresh_file_list()
-                except (RuntimeError, AttributeError) as e:
-                    logger.debug(f"恢复选中文件时出错: {e}")
-
-            if sum(old_splitter_sizes) > 0:
-                splitter.setSizes(old_splitter_sizes)
-        except (RuntimeError, AttributeError) as e:
-            logger.debug(f"恢复布局状态时出错: {e}")
-
         self._restore_ui_state()
+        
+        # 恢复应用实例和主窗口的更新状态
+        try:
+            app.setUpdatesEnabled(app_previous_updates_enabled)
+        except (RuntimeError, AttributeError):
+            pass
+        
+        try:
+            self.setUpdatesEnabled(previous_updates_enabled)
+        except (RuntimeError, AttributeError):
+            pass
+        
+        # 强制更新主窗口
+        self.update()
+        
+        # 禁用 HoverTooltip 安全模式
+        if hasattr(self, 'hover_tooltip') and self.hover_tooltip:
+            try:
+                if hasattr(self.hover_tooltip, 'set_safe_mode'):
+                    self.hover_tooltip.set_safe_mode(False)
+            except (RuntimeError, AttributeError) as e:
+                logger.debug(f"禁用 HoverTooltip 安全模式失败: {e}")
 
         return True
 
     def update_theme(self, delayed=False):
         """
-        更新应用主题，优先增量刷新现有控件，避免重建主布局
+        更新应用主题：
+        - 启动阶段窗口尚未显示时，使用轻量样式刷新
+        - 窗口显示后，优先直接重建主布局，避免对整棵旧控件树做高成本增量刷新
 
         Args:
             delayed: 是否延迟执行，用于防止在窗口关闭时调用
@@ -1105,31 +1135,34 @@ class FreeAssetFilterApp(QMainWindow):
         self._update_theme_in_progress = True
         self._theme_update_queued = False
 
-        self._backup_ui_state()
+        previous_updates_enabled = self.updatesEnabled()
+        self.setUpdatesEnabled(False)
 
         # 清除SVG颜色缓存，确保新组件使用最新的主题颜色
         from freeassetfilter.core.svg_renderer import SvgRenderer
         SvgRenderer._invalidate_color_cache()
 
         try:
-            if hasattr(self, "central_widget") and self.central_widget:
-                self._apply_theme_to_existing_widgets()
-                self._restore_ui_state()
+            # 启动阶段窗口未显示时，不做重建，避免无意义构造/销毁
+            if not self.isVisible():
+                if hasattr(self, "central_widget") and self.central_widget:
+                    self._apply_theme_to_existing_widgets()
             else:
                 success = self._rebuild_main_layout()
-                if not success:
-                    self._update_theme_in_progress = False
-                    return
-                self._restore_ui_state()
+                if not success and hasattr(self, "central_widget") and self.central_widget:
+                    self._apply_theme_to_existing_widgets()
         except (RuntimeError, AttributeError) as e:
-            logger.warning(f"更新主题时出错，回退到重建布局: {e}")
+            logger.warning(f"更新主题时出错，回退到轻量刷新: {e}")
             try:
-                self._rebuild_main_layout()
-                self._restore_ui_state()
-            except (RuntimeError, AttributeError) as rebuild_error:
-                logger.warning(f"重建主布局时出错: {rebuild_error}")
+                if hasattr(self, "central_widget") and self.central_widget:
+                    self._apply_theme_to_existing_widgets()
+            except (RuntimeError, AttributeError) as fallback_error:
+                logger.warning(f"轻量刷新主题时出错: {fallback_error}")
         finally:
+            self.setUpdatesEnabled(previous_updates_enabled)
             self._update_theme_in_progress = False
+
+        self.update()
 
         # 更新窗口标题栏主题
         self._apply_title_bar_theme()
@@ -1470,7 +1503,6 @@ class FreeAssetFilterApp(QMainWindow):
         if hasattr(self, 'file_staging_pool'):
             setattr(self.file_staging_pool, "_suspend_backup_save", True)
 
-        self.status_label.setText(f"正在恢复上次记录... 0/{self._restore_total_count}")
         QTimer.singleShot(0, self._process_restore_batch)
 
     def _process_restore_batch(self):
@@ -1500,7 +1532,6 @@ class FreeAssetFilterApp(QMainWindow):
                 warning(f"恢复备份项失败: {e}")
 
         processed_count = self._restore_total_count - len(self._pending_restore_items)
-        self.status_label.setText(f"正在恢复上次记录... {processed_count}/{self._restore_total_count}")
 
         if self._pending_restore_items:
             QTimer.singleShot(0, self._process_restore_batch)
@@ -1519,10 +1550,7 @@ class FreeAssetFilterApp(QMainWindow):
             except Exception as e:
                 warning(f"恢复完成后统一保存备份失败: {e}")
 
-        summary_text = f"已恢复 {self._restore_success_count}/{self._restore_total_count} 个条目"
-        if self._pending_restore_unlinked_files:
-            summary_text += f" | {len(self._pending_restore_unlinked_files)} 个条目待手动链接"
-        self.status_label.setText(summary_text)
+
 
         if self._pending_restore_unlinked_files:
             QTimer.singleShot(

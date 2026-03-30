@@ -810,6 +810,73 @@ class ModernSettingsWindow(QDialog):
         """
         添加播放器设置项
         """
+        # 控制栏常驻功能区设置组
+        control_bar_group = QGroupBox("控制栏常驻功能区")
+        control_bar_group.setStyleSheet(self.group_box_style)
+        control_bar_layout = QVBoxLayout(control_bar_group)
+
+        # 全屏按钮开关
+        self.control_bar_fullscreen_switch = CustomSettingItem(
+            text="全屏按钮",
+            secondary_text="在控制栏显示全屏按钮",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self._get_current_setting_value("player.control_bar_show_fullscreen", True)
+        )
+        self.control_bar_fullscreen_switch.switch_toggled.connect(
+            lambda value: self.current_settings.update({"player.control_bar_show_fullscreen": value})
+        )
+        control_bar_layout.addWidget(self.control_bar_fullscreen_switch)
+
+        # LUT按钮开关
+        self.control_bar_lut_switch = CustomSettingItem(
+            text="LUT按钮",
+            secondary_text="在控制栏显示LUT按钮",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self._get_current_setting_value("player.control_bar_show_lut", False)
+        )
+        self.control_bar_lut_switch.switch_toggled.connect(
+            lambda value: self.current_settings.update({"player.control_bar_show_lut": value})
+        )
+        control_bar_layout.addWidget(self.control_bar_lut_switch)
+
+        # 字幕按钮开关
+        self.control_bar_subtitle_switch = CustomSettingItem(
+            text="字幕按钮",
+            secondary_text="在控制栏显示字幕按钮",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self._get_current_setting_value("player.control_bar_show_subtitle", False)
+        )
+        self.control_bar_subtitle_switch.switch_toggled.connect(
+            lambda value: self.current_settings.update({"player.control_bar_show_subtitle": value})
+        )
+        control_bar_layout.addWidget(self.control_bar_subtitle_switch)
+
+        # 音量按钮开关
+        self.control_bar_volume_switch = CustomSettingItem(
+            text="音量按钮",
+            secondary_text="在控制栏显示音量按钮，关闭时强制使用默认音量100%",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self._get_current_setting_value("player.control_bar_show_volume", True)
+        )
+        self.control_bar_volume_switch.switch_toggled.connect(
+            lambda value: self._on_control_bar_volume_changed(value)
+        )
+        control_bar_layout.addWidget(self.control_bar_volume_switch)
+
+        # 倍速按钮开关
+        self.control_bar_speed_switch = CustomSettingItem(
+            text="倍速按钮",
+            secondary_text="在控制栏显示倍速按钮，关闭时强制使用默认倍速1x",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self._get_current_setting_value("player.control_bar_show_speed", True)
+        )
+        self.control_bar_speed_switch.switch_toggled.connect(
+            lambda value: self._on_control_bar_speed_changed(value)
+        )
+        control_bar_layout.addWidget(self.control_bar_speed_switch)
+
+        self.scroll_layout.addWidget(control_bar_group)
+
         # 音量设置组
         volume_group = QGroupBox("音量设置")
         volume_group.setStyleSheet(self.group_box_style)
@@ -836,7 +903,9 @@ class ModernSettingsWindow(QDialog):
         )
         self.default_volume_bar.value_changed.connect(lambda value: self.current_settings.update({"player.default_volume": value}))
         # 根据开关状态设置初始可见性
-        self.default_volume_bar.setVisible(self.use_default_volume_switch.get_switch_value())
+        volume_button_showing = self._get_current_setting_value("player.control_bar_show_volume", True)
+        self.use_default_volume_switch.setVisible(volume_button_showing)
+        self.default_volume_bar.setVisible(volume_button_showing and self.use_default_volume_switch.get_switch_value())
         volume_layout.addWidget(self.default_volume_bar)
 
         self.scroll_layout.addWidget(volume_group)
@@ -887,7 +956,9 @@ class ModernSettingsWindow(QDialog):
 
         self.default_speed_setting.button_clicked.connect(on_speed_button_clicked)
         # 根据开关状态设置初始可见性
-        self.default_speed_setting.setVisible(self.use_default_speed_switch.get_switch_value())
+        speed_button_showing = self._get_current_setting_value("player.control_bar_show_speed", True)
+        self.use_default_speed_switch.setVisible(speed_button_showing)
+        self.default_speed_setting.setVisible(speed_button_showing and self.use_default_speed_switch.get_switch_value())
         speed_layout.addWidget(self.default_speed_setting)
 
         self.scroll_layout.addWidget(speed_group)
@@ -945,6 +1016,48 @@ class ModernSettingsWindow(QDialog):
 
         self.scroll_layout.addWidget(experimental_group)
 
+    def _on_control_bar_volume_changed(self, value):
+        """
+        处理控制栏音量按钮开关变化
+
+        Args:
+            value (bool): 开关状态
+        """
+        self.current_settings.update({"player.control_bar_show_volume": value})
+        if value:
+            # 开启时，显示音量设置项
+            self.use_default_volume_switch.setVisible(True)
+            self.default_volume_bar.setVisible(self.use_default_volume_switch.get_switch_value())
+        else:
+            # 关闭时，强制设置使用默认音量100%，并隐藏音量设置项
+            self.current_settings.update({
+                "player.use_default_volume": True,
+                "player.default_volume": 100
+            })
+            self.use_default_volume_switch.setVisible(False)
+            self.default_volume_bar.setVisible(False)
+
+    def _on_control_bar_speed_changed(self, value):
+        """
+        处理控制栏倍速按钮开关变化
+
+        Args:
+            value (bool): 开关状态
+        """
+        self.current_settings.update({"player.control_bar_show_speed": value})
+        if value:
+            # 开启时，显示倍速设置项
+            self.use_default_speed_switch.setVisible(True)
+            self.default_speed_setting.setVisible(self.use_default_speed_switch.get_switch_value())
+        else:
+            # 关闭时，强制设置使用默认倍速1x，并隐藏倍速设置项
+            self.current_settings.update({
+                "player.use_default_speed": True,
+                "player.default_speed": 1.0
+            })
+            self.use_default_speed_switch.setVisible(False)
+            self.default_speed_setting.setVisible(False)
+
     def _on_use_default_volume_changed(self, value):
         """
         处理使用默认音量开关变化
@@ -953,8 +1066,10 @@ class ModernSettingsWindow(QDialog):
             value (bool): 开关状态
         """
         self.current_settings.update({"player.use_default_volume": value})
-        # 显示/隐藏默认音量滑块
-        self.default_volume_bar.setVisible(value)
+        # 显示/隐藏默认音量滑块（只有当音量按钮显示时才处理）
+        volume_button_showing = self._get_current_setting_value("player.control_bar_show_volume", True)
+        if volume_button_showing:
+            self.default_volume_bar.setVisible(value)
 
     def _on_use_default_speed_changed(self, value):
         """
@@ -964,8 +1079,10 @@ class ModernSettingsWindow(QDialog):
             value (bool): 开关状态
         """
         self.current_settings.update({"player.use_default_speed": value})
-        # 显示/隐藏默认倍速选择按钮
-        self.default_speed_setting.setVisible(value)
+        # 显示/隐藏默认倍速选择按钮（只有当倍速按钮显示时才处理）
+        speed_button_showing = self._get_current_setting_value("player.control_bar_show_speed", True)
+        if speed_button_showing:
+            self.default_speed_setting.setVisible(value)
 
     def _add_general_settings(self):
         """

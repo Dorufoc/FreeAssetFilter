@@ -92,8 +92,9 @@ class CustomSettingItem(QWidget):
         # 初始化UI
         self.init_ui()
 
-        # 初始化悬浮提示组件
-        self._init_hover_tooltip()
+        # 使用Qt原生的tooltip功能，避免创建大量独立窗口
+        if self._tooltip_text:
+            self.setToolTip(self._tooltip_text)
         
     def init_ui(self):
         """初始化UI组件"""
@@ -567,6 +568,7 @@ class CustomSettingItem(QWidget):
             text: 提示文本内容
         """
         self._tooltip_text = text
+        self.setToolTip(text)
 
     def get_tooltip_text(self):
         """
@@ -576,19 +578,6 @@ class CustomSettingItem(QWidget):
             str: 提示文本内容
         """
         return self._tooltip_text
-
-    def _init_hover_tooltip(self):
-        """
-        初始化悬浮提示组件
-        为设置项添加hover tooltip支持
-        """
-        # 导入HoverTooltip类
-        from .hover_tooltip import HoverTooltip
-
-        # 创建悬浮提示组件
-        self.hover_tooltip = HoverTooltip(self)
-        # 设置当前控件为监听目标
-        self.hover_tooltip.set_target_widget(self)
 
 
 # 更新 __init__.py 文件，导出新控件

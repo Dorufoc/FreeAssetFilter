@@ -121,18 +121,9 @@ class CustomDropdownMenu(QWidget):
             # 不使用内部按钮时，设置为None
             self.main_button = None
         
-        # 创建下拉菜单
-        self.dropdown_menu = CustomControlMenu(self)
-        
-        # 调整菜单内边距
-        self.dropdown_menu._padding = 2
-        
-        # 设置阴影半径
-        self.dropdown_menu._shadow_radius = 0
-        
-        # 设置菜单样式
-        self.dropdown_menu.setStyleSheet("QWidget { border: none; background-color: transparent; }")
-        
+        # 延迟创建下拉菜单，避免主题刷新/主界面重建时批量生成 Qt.Popup 顶层窗口
+        self.dropdown_menu = None
+
         # 创建滚动区域
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -158,16 +149,39 @@ class CustomDropdownMenu(QWidget):
         # 将列表容器设置到滚动区域
         self.scroll_area.setWidget(self.list_container)
         
-        # 将滚动区域设置为菜单的内容
-        self.dropdown_menu.set_content(self.scroll_area)
-        
-        # 强制调整菜单大小
-        self.dropdown_menu.adjustSize()
-        
         # 连接信号和槽（仅在存在内部按钮时）
         if self.main_button:
             self.main_button.clicked.connect(self.toggle_menu)
         
+    def _ensure_dropdown_menu(self):
+        """
+        懒创建真正的 popup 菜单窗口
+        避免在主界面重建时提前构造大量 Qt.Popup 顶层窗口。
+        """
+        if self.dropdown_menu is not None:
+            return self.dropdown_menu
+
+        self.dropdown_menu = CustomControlMenu(self)
+
+        # 调整菜单内边距
+        self.dropdown_menu._padding = 2
+
+        # 设置阴影半径
+        self.dropdown_menu._shadow_radius = 0
+
+        # 设置菜单样式
+        self.dropdown_menu.setStyleSheet("QWidget { border: none; background-color: transparent; }")
+
+        # 将滚动区域设置为菜单的内容
+        self.dropdown_menu.set_content(self.scroll_area)
+        self.dropdown_menu.adjustSize()
+
+        if self._external_target_button is not None:
+            self.dropdown_menu.set_target_button(self._external_target_button)
+        self.dropdown_menu.set_position(self._position)
+
+        return self.dropdown_menu
+
     def set_items(self, items, default_item=None):
         """
         设置下拉菜单的列表项
@@ -388,7 +402,7 @@ class CustomDropdownMenu(QWidget):
         """
         if position in ["top", "bottom"]:
             self._position = position
-            if hasattr(self, 'dropdown_menu'):
+            if self.dropdown_menu is not None:
                 self.dropdown_menu.set_position(position)
     
     def set_target_button(self, button):
@@ -399,7 +413,7 @@ class CustomDropdownMenu(QWidget):
             button: 目标按钮部件
         """
         self._external_target_button = button
-        if hasattr(self, 'dropdown_menu'):
+        if self.dropdown_menu is not None:
             self.dropdown_menu.set_target_button(button)
     
     def _update_button_text(self):
@@ -466,7 +480,8 @@ class CustomDropdownMenu(QWidget):
             self.list_container.setFixedWidth(button_width - scroll_bar_width)
         
         # 调整菜单大小
-        self.dropdown_menu.adjustSize()
+        if self.dropdown_menu is not None:
+            self.dropdown_menu.adjustSize()
     
     def toggle_menu(self):
         """
@@ -489,17 +504,18 @@ class CustomDropdownMenu(QWidget):
             # 如果没有目标按钮，无法显示菜单
             if not target_button:
                 return
+            dropdown_menu = self._ensure_dropdown_menu()
             # 设置目标按钮
-            self.dropdown_menu.set_target_button(target_button)
+            dropdown_menu.set_target_button(target_button)
             # 设置菜单位置
-            self.dropdown_menu.set_position(self._position)
+            dropdown_menu.set_position(self._position)
             # 显示菜单
-            self.dropdown_menu.show()
+            dropdown_menu.show()
             self._menu_visible = True
             # 连接菜单关闭信号
-            self.dropdown_menu.closeEvent = self._on_menu_close
+            dropdown_menu.closeEvent = self._on_menu_close
             # 连接点击外部区域关闭菜单信号
-            self.dropdown_menu.mousePressEvent = self._on_menu_click
+            dropdown_menu.mousePressEvent = self._on_menu_click
             # 连接按钮的leaveEvent（仅在目标按钮是内部按钮时）
             if self.main_button and target_button is self.main_button:
                 # 保存原始的leaveEvent方法
@@ -514,7 +530,8 @@ class CustomDropdownMenu(QWidget):
         隐藏菜单
         """
         if self._menu_visible:
-            self.dropdown_menu.close()
+            if self.dropdown_menu is not None:
+                self.dropdown_menu.close()
             self._menu_visible = False
             if self._external_target_button is None and self.main_button:
                 # 恢复原始的leaveEvent方法
@@ -533,7 +550,8 @@ class CustomDropdownMenu(QWidget):
                 self.main_button.leaveEvent = self._original_leave_event
             self._original_leave_event = None
         # 调用原始的closeEvent
-        super(CustomControlMenu, self.dropdown_menu).closeEvent(event)
+        if self.dropdown_menu is not None:
+            super(CustomControlMenu, self.dropdown_menu).closeEvent(event)
         
     def _on_button_leave(self, event):
         """
@@ -551,7 +569,7 @@ class CustomDropdownMenu(QWidget):
         菜单点击事件，处理点击外部区域关闭菜单
         """
         # 如果点击的是菜单内部，不处理
-        if self.dropdown_menu.rect().contains(event.pos()):
+        if self.dropdown_menu is not None and self.dropdown_menu.rect().contains(event.pos()):
             return
         # 否则关闭菜单
         self.hide_menu()
@@ -586,10 +604,11 @@ class CustomDropdownMenu(QWidget):
             return
         
         # 检查鼠标是否在菜单上
-        menu_pos = self.dropdown_menu.mapToGlobal(QPoint(0, 0))
-        menu_rect = QRect(menu_pos, self.dropdown_menu.size())
-        if menu_rect.contains(global_pos):
-            return
+        if self.dropdown_menu is not None:
+            menu_pos = self.dropdown_menu.mapToGlobal(QPoint(0, 0))
+            menu_rect = QRect(menu_pos, self.dropdown_menu.size())
+            if menu_rect.contains(global_pos):
+                return
         
         # 鼠标不在组件或菜单上，隐藏菜单
         self.hide_menu()

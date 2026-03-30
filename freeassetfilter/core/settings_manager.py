@@ -186,7 +186,12 @@ class SettingsManager:
                 "default_speed": 1.0,
                 "last_volume": 100,
                 "last_speed": 1.0,
-                "enable_fullscreen": False
+                "enable_fullscreen": False,
+                "control_bar_show_fullscreen": True,
+                "control_bar_show_lut": False,
+                "control_bar_show_subtitle": False,
+                "control_bar_show_volume": True,
+                "control_bar_show_speed": True
             },
             "developer": {
                 "debug_mode": False,

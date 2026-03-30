@@ -456,9 +456,6 @@ class VideoPlayer(QWidget):
         self._current_file: str = ""
         self._playback_mode = playback_mode  # 播放模式：video 或 audio
 
-        self._show_lut_controls = show_lut_controls
-        self._show_detach_button = show_detach_button
-
         self._user_interacting = False
         self._pending_seek_value: Optional[int] = None
         
@@ -500,6 +497,11 @@ class VideoPlayer(QWidget):
             self._settings_manager = app.settings_manager
         else:
             self._settings_manager = SettingsManager()
+        
+        # 从设置管理器读取控制栏按钮可见性设置
+        self._show_lut_controls = self._settings_manager.get_setting("player.control_bar_show_lut", False)
+        self._show_detach_button = self._settings_manager.get_setting("player.control_bar_show_fullscreen", True)
+        
         self._initial_volume = initial_volume if initial_volume is not None else self._settings_manager.get_player_volume()
         self._initial_speed = initial_speed if initial_speed is not None else self._settings_manager.get_player_speed()
 

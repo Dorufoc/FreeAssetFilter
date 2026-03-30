@@ -36,6 +36,9 @@ class HoverTooltip(QWidget):
         self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
+        # 安全标志，防止在重建过程中意外显示
+        self._safe_mode = False
+        
         # 创建标签显示文本内容
         self.label = QLabel(self)
         self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -506,8 +509,28 @@ class HoverTooltip(QWidget):
         # 返回False确保事件继续传播到目标控件
         return False
     
+    def set_safe_mode(self, enabled):
+        """
+        设置安全模式，防止在重建过程中意外显示
+        
+        Args:
+            enabled (bool): 是否启用安全模式
+        """
+        self._safe_mode = enabled
+        if enabled:
+            try:
+                self.timer.stop()
+                self._stop_mouse_monitor()
+                self._fade_out()
+            except (RuntimeError, AttributeError):
+                pass
+    
     def show_tooltip(self):
         """显示悬浮提示框"""
+        # 安全模式检查
+        if self._safe_mode:
+            return
+            
         # 清理已失效的弱引用
         valid_refs = []
         for ref in self.target_widgets:
