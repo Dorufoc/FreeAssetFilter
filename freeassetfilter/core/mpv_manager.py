@@ -85,6 +85,9 @@ class MPVOperationType(Enum):
     GET_SUBTITLE_TRACKS = "get_subtitle_tracks"
     SET_SUBTITLE_VISIBILITY = "set_subtitle_visibility"
     SET_SUBTITLE_TRACK = "set_subtitle_track"
+    GET_AUDIO_STATE = "get_audio_state"
+    GET_AUDIO_TRACKS = "get_audio_tracks"
+    SET_AUDIO_TRACK = "set_audio_track"
 
 
 @dataclass
@@ -257,6 +260,15 @@ class MPVManager(QObject):
         # 操作队列
         self._operation_queue: Queue = Queue()
         self._queue_lock = Lock()
+        self._pending_operation_lock = RLock()
+        self._pending_latest_operations: Dict[Tuple[str, str], MPVOperation] = {}
+        self._coalescible_operations = {
+            MPVOperationType.SEEK,
+            MPVOperationType.SET_POSITION,
+            MPVOperationType.SET_VOLUME,
+            MPVOperationType.SET_SPEED,
+            MPVOperationType.SET_MUTED,
+        }
         self._operation_thread: Optional[threading.Thread] = None
         self._stop_event = Event()
 
@@ -307,6 +319,8 @@ class MPVManager(QObject):
             except Empty:
                 debug("清空操作队列: 队列为空")
                 break
+        with self._pending_operation_lock:
+            self._pending_latest_operations.clear()
         # 清空组件注册表
         self._registered_components.clear()
         # 重置状态
@@ -331,6 +345,20 @@ class MPVManager(QObject):
 
                 if operation is None:
                     continue
+
+                if operation.operation_type in self._coalescible_operations:
+                    pending_key = (operation.component_id, operation.operation_type.value)
+                    with self._pending_operation_lock:
+                        latest_operation = self._pending_latest_operations.get(pending_key)
+                        if latest_operation is not operation:
+                            self._logger.debug(
+                                f"跳过过期操作: {operation.operation_type.value}, "
+                                f"组件: {operation.component_id}"
+                            )
+                            if operation.future and not operation.future.done():
+                                operation.future.set_result(False)
+                            continue
+                        self._pending_latest_operations.pop(pending_key, None)
 
                 self._logger.debug(
                     f"处理操作: {operation.operation_type.value}, "
@@ -458,6 +486,15 @@ class MPVManager(QObject):
                 elif operation_type == MPVOperationType.SET_SUBTITLE_TRACK:
                     return self._do_set_subtitle_track(*args, **kwargs)
 
+                elif operation_type == MPVOperationType.GET_AUDIO_STATE:
+                    return self._do_get_audio_state()
+
+                elif operation_type == MPVOperationType.GET_AUDIO_TRACKS:
+                    return self._do_get_audio_tracks()
+
+                elif operation_type == MPVOperationType.SET_AUDIO_TRACK:
+                    return self._do_set_audio_track(*args, **kwargs)
+
                 else:
                     raise ValueError(f"未知操作类型: {operation_type}")
 
@@ -522,6 +559,13 @@ class MPVManager(QObject):
         )
 
         with self._queue_lock:
+            if operation_type in self._coalescible_operations:
+                pending_key = (component_id, operation_type.value)
+                with self._pending_operation_lock:
+                    previous_operation = self._pending_latest_operations.get(pending_key)
+                    self._pending_latest_operations[pending_key] = operation
+                if previous_operation and previous_operation.future and not previous_operation.future.done():
+                    previous_operation.future.set_result(False)
             self._operation_queue.put(operation)
 
         self._logger.debug(
@@ -1011,6 +1055,72 @@ class MPVManager(QObject):
             error(f"切换字幕轨运行时错误: {e}")
             return False
 
+    def _do_get_audio_state(self) -> Dict[str, Any]:
+        """
+        获取当前音轨状态
+
+        Returns:
+            Dict[str, Any]: 音轨状态字典
+        """
+        if self._mpv_core is None:
+            return {
+                "has_available_audio_tracks": False,
+                "has_multiple_audio_tracks": False,
+                "track_count": 0,
+                "selected_track_id": None,
+                "selected_track": None,
+                "tracks": [],
+            }
+
+        try:
+            return self._mpv_core.get_audio_state()
+        except RuntimeError as e:
+            error(f"获取音轨状态运行时错误: {e}")
+            return {
+                "has_available_audio_tracks": False,
+                "has_multiple_audio_tracks": False,
+                "track_count": 0,
+                "selected_track_id": None,
+                "selected_track": None,
+                "tracks": [],
+            }
+
+    def _do_get_audio_tracks(self) -> List[Dict[str, Any]]:
+        """
+        获取当前音轨列表
+
+        Returns:
+            List[Dict[str, Any]]: 音轨列表
+        """
+        if self._mpv_core is None:
+            return []
+
+        try:
+            return self._mpv_core.get_audio_tracks()
+        except RuntimeError as e:
+            error(f"获取音轨列表运行时错误: {e}")
+            return []
+
+    def _do_set_audio_track(self, track_id: Union[int, str, None]) -> bool:
+        """
+        切换当前音轨
+
+        Args:
+            track_id: 音轨ID，None表示自动选择
+
+        Returns:
+            bool: 是否成功
+        """
+        if self._mpv_core is None:
+            warning("[Audio] MPV未初始化")
+            return False
+
+        try:
+            return self._mpv_core.set_audio_track(track_id)
+        except RuntimeError as e:
+            error(f"切换音轨运行时错误: {e}")
+            return False
+
     # ==================== 信号处理回调 ====================
 
     def _on_state_changed(self, is_playing: bool):
@@ -1288,15 +1398,14 @@ class MPVManager(QObject):
         Returns:
             是否加载成功
         """
-        future = self._submit_operation(
-            MPVOperationType.LOAD_FILE,
-            file_path,
-            is_audio,
-            component_id=component_id,
-            priority=3
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.LOAD_FILE,
+                file_path,
+                is_audio,
+                component_id=component_id,
+                priority=3
+            )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             self._logger.error(f"加载文件操作超时: {file_path}")
@@ -1315,13 +1424,12 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.PLAY,
-            component_id=component_id,
-            priority=2
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.PLAY,
+                component_id=component_id,
+                priority=2
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1339,13 +1447,12 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.PAUSE,
-            component_id=component_id,
-            priority=2
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.PAUSE,
+                component_id=component_id,
+                priority=2
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1363,13 +1470,12 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.STOP,
-            component_id=component_id,
-            priority=2
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.STOP,
+                component_id=component_id,
+                priority=2
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1392,14 +1498,13 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SEEK,
-            position,
-            component_id=component_id,
-            priority=3
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SEEK,
+                position,
+                component_id=component_id,
+                priority=3
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1422,14 +1527,13 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SET_POSITION,
-            position,
-            component_id=component_id,
-            priority=3
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SET_POSITION,
+                position,
+                component_id=component_id,
+                priority=3
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1452,14 +1556,13 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SET_VOLUME,
-            volume,
-            component_id=component_id,
-            priority=4
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SET_VOLUME,
+                volume,
+                component_id=component_id,
+                priority=4
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1482,14 +1585,13 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SET_SPEED,
-            speed,
-            component_id=component_id,
-            priority=4
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SET_SPEED,
+                speed,
+                component_id=component_id,
+                priority=4
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1512,14 +1614,13 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SET_MUTED,
-            muted,
-            component_id=component_id,
-            priority=4
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SET_MUTED,
+                muted,
+                component_id=component_id,
+                priority=4
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1542,14 +1643,13 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SET_LOOP,
-            loop_mode,
-            component_id=component_id,
-            priority=4
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SET_LOOP,
+                loop_mode,
+                component_id=component_id,
+                priority=4
+            )
             return future.result(timeout=5.0)
         except FutureTimeoutError:
             return False
@@ -1572,14 +1672,13 @@ class MPVManager(QObject):
         Returns:
             是否设置成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SET_WINDOW_ID,
-            window_id,
-            component_id=component_id,
-            priority=1
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SET_WINDOW_ID,
+                window_id,
+                component_id=component_id,
+                priority=1
+            )
             return future.result(timeout=10.0)
         except FutureTimeoutError:
             return False
@@ -1594,12 +1693,11 @@ class MPVManager(QObject):
         Returns:
             当前位置（秒）
         """
-        future = self._submit_operation(
-            MPVOperationType.GET_POSITION,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.GET_POSITION,
+                priority=5
+            )
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 0.0
@@ -1614,12 +1712,11 @@ class MPVManager(QObject):
         Returns:
             总时长（秒）
         """
-        future = self._submit_operation(
-            MPVOperationType.GET_DURATION,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.GET_DURATION,
+                priority=5
+            )
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 0.0
@@ -1634,12 +1731,11 @@ class MPVManager(QObject):
         Returns:
             音量值（0-100）
         """
-        future = self._submit_operation(
-            MPVOperationType.GET_VOLUME,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.GET_VOLUME,
+                priority=5
+            )
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 100
@@ -1654,12 +1750,11 @@ class MPVManager(QObject):
         Returns:
             播放速度
         """
-        future = self._submit_operation(
-            MPVOperationType.GET_SPEED,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.GET_SPEED,
+                priority=5
+            )
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return 1.0
@@ -1674,12 +1769,11 @@ class MPVManager(QObject):
         Returns:
             是否正在播放
         """
-        future = self._submit_operation(
-            MPVOperationType.IS_PLAYING,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.IS_PLAYING,
+                priority=5
+            )
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return False
@@ -1694,12 +1788,11 @@ class MPVManager(QObject):
         Returns:
             是否暂停
         """
-        future = self._submit_operation(
-            MPVOperationType.IS_PAUSED,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.IS_PAUSED,
+                priority=5
+            )
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return False
@@ -1714,12 +1807,11 @@ class MPVManager(QObject):
         Returns:
             是否静音
         """
-        future = self._submit_operation(
-            MPVOperationType.IS_MUTED,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.IS_MUTED,
+                priority=5
+            )
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return False
@@ -1734,12 +1826,11 @@ class MPVManager(QObject):
         Returns:
             (宽度, 高度)元组
         """
-        future = self._submit_operation(
-            MPVOperationType.GET_VIDEO_SIZE,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.GET_VIDEO_SIZE,
+                priority=5
+            )
             return future.result(timeout=1.0)
         except FutureTimeoutError:
             return (0, 0)
@@ -1759,14 +1850,13 @@ class MPVManager(QObject):
         Returns:
             是否加载成功
         """
-        future = self._submit_operation(
-            MPVOperationType.LOAD_LUT,
-            lut_file_path,
-            component_id=component_id,
-            priority=3
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.LOAD_LUT,
+                lut_file_path,
+                component_id=component_id,
+                priority=3
+            )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             self._logger.error(f"加载LUT操作超时: {lut_file_path}")
@@ -1786,13 +1876,12 @@ class MPVManager(QObject):
         Returns:
             是否卸载成功
         """
-        future = self._submit_operation(
-            MPVOperationType.UNLOAD_LUT,
-            component_id=component_id,
-            priority=3
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.UNLOAD_LUT,
+                component_id=component_id,
+                priority=3
+            )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             self._logger.error("卸载LUT操作超时")
@@ -1813,14 +1902,13 @@ class MPVManager(QObject):
         Returns:
             是否加载成功
         """
-        future = self._submit_operation(
-            MPVOperationType.LOAD_SUBTITLE,
-            subtitle_file_path,
-            component_id=component_id,
-            priority=3
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.LOAD_SUBTITLE,
+                subtitle_file_path,
+                component_id=component_id,
+                priority=3
+            )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             self._logger.error(f"加载字幕操作超时: {subtitle_file_path}")
@@ -1839,12 +1927,11 @@ class MPVManager(QObject):
         Returns:
             Dict[str, Any]: 字幕状态字典
         """
-        future = self._submit_operation(
-            MPVOperationType.GET_SUBTITLE_STATE,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.GET_SUBTITLE_STATE,
+                priority=5
+            )
             result = future.result(timeout=timeout)
             return result if isinstance(result, dict) else {}
         except FutureTimeoutError:
@@ -1863,12 +1950,11 @@ class MPVManager(QObject):
         Returns:
             List[Dict[str, Any]]: 字幕轨列表
         """
-        future = self._submit_operation(
-            MPVOperationType.GET_SUBTITLE_TRACKS,
-            priority=5
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.GET_SUBTITLE_TRACKS,
+                priority=5
+            )
             result = future.result(timeout=timeout)
             return result if isinstance(result, list) else []
         except FutureTimeoutError:
@@ -1894,14 +1980,13 @@ class MPVManager(QObject):
         Returns:
             bool: 是否设置成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SET_SUBTITLE_VISIBILITY,
-            visible,
-            component_id=component_id,
-            priority=3
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SET_SUBTITLE_VISIBILITY,
+                visible,
+                component_id=component_id,
+                priority=3
+            )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             self._logger.error("设置字幕可见性操作超时")
@@ -1927,14 +2012,13 @@ class MPVManager(QObject):
         Returns:
             bool: 是否切换成功
         """
-        future = self._submit_operation(
-            MPVOperationType.SET_SUBTITLE_TRACK,
-            track_id,
-            component_id=component_id,
-            priority=3
-        )
-
         try:
+            future = self._submit_operation(
+                MPVOperationType.SET_SUBTITLE_TRACK,
+                track_id,
+                component_id=component_id,
+                priority=3
+            )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             self._logger.error(f"切换字幕轨操作超时: {track_id}")
@@ -1955,6 +2039,84 @@ class MPVManager(QObject):
             bool: 是否成功
         """
         return self.set_subtitle_visibility(False, component_id=component_id, timeout=timeout)
+
+    def get_audio_state(self, timeout: float = 1.0) -> Dict[str, Any]:
+        """
+        获取当前音轨状态
+
+        Args:
+            timeout: 超时时间（秒）
+
+        Returns:
+            Dict[str, Any]: 音轨状态字典
+        """
+        try:
+            future = self._submit_operation(
+                MPVOperationType.GET_AUDIO_STATE,
+                priority=5
+            )
+            result = future.result(timeout=timeout)
+            return result if isinstance(result, dict) else {}
+        except FutureTimeoutError:
+            return {}
+        except RuntimeError as e:
+            error(f"get_audio_state 运行时错误: {e}")
+            return {}
+
+    def get_audio_tracks(self, timeout: float = 1.0) -> List[Dict[str, Any]]:
+        """
+        获取当前音轨列表
+
+        Args:
+            timeout: 超时时间（秒）
+
+        Returns:
+            List[Dict[str, Any]]: 音轨列表
+        """
+        try:
+            future = self._submit_operation(
+                MPVOperationType.GET_AUDIO_TRACKS,
+                priority=5
+            )
+            result = future.result(timeout=timeout)
+            return result if isinstance(result, list) else []
+        except FutureTimeoutError:
+            return []
+        except RuntimeError as e:
+            error(f"get_audio_tracks 运行时错误: {e}")
+            return []
+
+    def set_audio_track(
+        self,
+        track_id: Union[int, str, None],
+        component_id: str = "unknown",
+        timeout: float = 5.0
+    ) -> bool:
+        """
+        切换当前音轨
+
+        Args:
+            track_id: 音轨ID，None表示自动选择
+            component_id: 组件标识
+            timeout: 超时时间（秒）
+
+        Returns:
+            bool: 是否切换成功
+        """
+        try:
+            future = self._submit_operation(
+                MPVOperationType.SET_AUDIO_TRACK,
+                track_id,
+                component_id=component_id,
+                priority=3
+            )
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            self._logger.error(f"切换音轨操作超时: {track_id}")
+            return False
+        except RuntimeError as e:
+            error(f"set_audio_track 运行时错误: {e}")
+            return False
 
     def get_current_lut(self) -> str:
         """
@@ -2020,9 +2182,9 @@ class MPVManager(QObject):
         Returns:
             当前位置（秒），失败返回None
         """
-        if self._mpv_core is None:
+        if self._mpv_core is None or self._is_shutting_down:
             return None
-        return self._mpv_core.get_position()
+        return self._mpv_core.get_position_cached()
 
     def get_duration_direct(self) -> Optional[float]:
         """
@@ -2031,9 +2193,9 @@ class MPVManager(QObject):
         Returns:
             总时长（秒），失败返回None
         """
-        if self._mpv_core is None:
+        if self._mpv_core is None or self._is_shutting_down:
             return None
-        return self._mpv_core.get_duration()
+        return self._mpv_core.get_duration_cached()
 
     # ==================== 组件管理 ====================
 

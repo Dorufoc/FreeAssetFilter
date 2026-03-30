@@ -177,6 +177,9 @@ class MPVCommandType(IntEnum):
     GET_SUBTITLE_TRACKS = 26
     SET_SUBTITLE_VISIBILITY = 27
     SET_SUBTITLE_TRACK = 28
+    GET_AUDIO_STATE = 29
+    GET_AUDIO_TRACKS = 30
+    SET_AUDIO_TRACK = 31
     CLOSE = 99
 
 
@@ -405,7 +408,7 @@ class MPVPlayerCore(QObject):
     volumeChanged = Signal(int)
     speedChanged = Signal(float)
     mutedChanged = Signal(bool)
-    fileLoaded = Signal(str, bool)
+    fileLoaded = Signal(str)
     fileEnded = Signal(int)
     errorOccurred = Signal(int, str)
     seekFinished = Signal()
@@ -436,6 +439,7 @@ class MPVPlayerCore(QObject):
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._initialized_event = threading.Event()
+        self._command_request_lock = threading.RLock()
         
         self._current_file: str = ""
         self._is_playing: bool = False
@@ -969,6 +973,12 @@ class MPVPlayerCore(QObject):
                 result = self._set_subtitle_visibility_internal(mpv_handle, *args, **kwargs)
             elif cmd_type == MPVCommandType.SET_SUBTITLE_TRACK:
                 result = self._set_subtitle_track_internal(mpv_handle, *args, **kwargs)
+            elif cmd_type == MPVCommandType.GET_AUDIO_STATE:
+                result = self._get_audio_state_internal(mpv_handle)
+            elif cmd_type == MPVCommandType.GET_AUDIO_TRACKS:
+                result = self._get_audio_tracks_internal(mpv_handle)
+            elif cmd_type == MPVCommandType.SET_AUDIO_TRACK:
+                result = self._set_audio_track_internal(mpv_handle, *args, **kwargs)
             elif cmd_type == MPVCommandType.CLOSE:
                 self._stop_event.set()
                 result = True
@@ -1364,9 +1374,17 @@ class MPVPlayerCore(QObject):
         has_embedded = any(not track.get("external", False) for track in tracks)
         has_external = any(track.get("external", False) for track in tracks)
         has_available = len(tracks) > 0
+        sid_is_disabled = sid_raw == "no"
 
-        is_visible = bool(visibility) if visibility is not None else selected_track is not None
-        has_active = is_visible and selected_track is not None
+        # 对于 mkv 等会自动启用默认字幕的情况，sid 可能保持为 "auto"，
+        # 但此时字幕实际上已经在显示。只要字幕可见、存在可用字幕，且 sid 并未被显式关闭，
+        # 就应视为当前有字幕正在被应用，以便控制栏字幕按钮正确高亮。
+        is_visible = bool(visibility) if visibility is not None else (
+            selected_track is not None or (has_available and not sid_is_disabled)
+        )
+        has_active = is_visible and (
+            selected_track is not None or (has_available and not sid_is_disabled)
+        )
 
         return {
             "has_available_subtitles": has_available,
@@ -1447,6 +1465,100 @@ class MPVPlayerCore(QObject):
             error(f"[Subtitle] 切换字幕轨失败: {e}")
             return False
     
+    def _get_audio_tracks_internal(self, mpv_handle: c_void_p) -> List[Dict[str, Any]]:
+        """获取当前可用的音轨列表"""
+        if not mpv_handle:
+            return []
+
+        tracks: List[Dict[str, Any]] = []
+
+        try:
+            track_count = self._get_property_int64(mpv_handle, "track-list/count") or 0
+
+            for index in range(track_count):
+                track_type = self._get_property_string(mpv_handle, f"track-list/{index}/type") or ""
+                if track_type != "audio":
+                    continue
+
+                track_id = self._get_property_int64(mpv_handle, f"track-list/{index}/id")
+                if track_id is None:
+                    continue
+
+                track_info = {
+                    "id": int(track_id),
+                    "type": track_type,
+                    "title": self._get_property_string(mpv_handle, f"track-list/{index}/title") or "",
+                    "lang": self._get_property_string(mpv_handle, f"track-list/{index}/lang") or "",
+                    "selected": bool(self._get_property_flag(mpv_handle, f"track-list/{index}/selected")),
+                    "external": bool(self._get_property_flag(mpv_handle, f"track-list/{index}/external")),
+                    "external_filename": self._get_property_string(
+                        mpv_handle,
+                        f"track-list/{index}/external-filename"
+                    ) or "",
+                }
+                tracks.append(track_info)
+        except (RuntimeError, AttributeError, OSError, ValueError, TypeError) as e:
+            error(f"[Audio] 获取音轨列表失败: {e}")
+            return []
+
+        return tracks
+
+    def _get_audio_state_internal(self, mpv_handle: c_void_p) -> Dict[str, Any]:
+        """获取当前音轨状态"""
+        tracks = self._get_audio_tracks_internal(mpv_handle)
+        aid_raw = self._get_property_string(mpv_handle, "aid")
+
+        selected_track_id: Optional[int] = None
+        if aid_raw and aid_raw not in ("no", "auto"):
+            try:
+                selected_track_id = int(aid_raw)
+            except ValueError:
+                selected_track_id = None
+
+        selected_track = next((track for track in tracks if track.get("selected")), None)
+        if selected_track is None and selected_track_id is not None:
+            selected_track = next(
+                (track for track in tracks if track.get("id") == selected_track_id),
+                None
+            )
+
+        if selected_track is not None:
+            selected_track_id = int(selected_track["id"])
+
+        track_count = len(tracks)
+
+        return {
+            "has_available_audio_tracks": track_count > 0,
+            "has_multiple_audio_tracks": track_count > 1,
+            "track_count": track_count,
+            "selected_track_id": selected_track_id,
+            "selected_track": selected_track,
+            "tracks": tracks,
+        }
+
+    def _set_audio_track_internal(
+        self,
+        mpv_handle: c_void_p,
+        track_id: Union[int, str, None],
+        **kwargs
+    ) -> bool:
+        """切换当前音轨"""
+        if not mpv_handle:
+            return False
+
+        try:
+            aid_value = b"auto" if track_id in (None, "", "auto") else str(track_id).encode("utf-8")
+            aid_result = self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle,
+                b"aid",
+                aid_value
+            )
+            debug(f"[Audio] aid={aid_value.decode('utf-8', errors='ignore')} 结果: {aid_result}")
+            return aid_result >= 0
+        except (RuntimeError, AttributeError, OSError, UnicodeEncodeError) as e:
+            error(f"[Audio] 切换音轨失败: {e}")
+            return False
+
     def _set_window_id_internal(self, mpv_handle: c_void_p, window_id: int, **kwargs) -> bool:
         """内部设置窗口ID实现"""
         if not mpv_handle:
@@ -1520,69 +1632,70 @@ class MPVPlayerCore(QObject):
     
     def _send_command(self, cmd_type: MPVCommandType, *args, **kwargs) -> Any:
         """发送命令到工作线程并等待结果"""
-        # 检查是否正在关闭或已关闭
-        if self._stop_event.is_set():
-            return None
-
-        with self._state_lock:
-            if not self._initialized:
+        with self._command_request_lock:
+            if self._stop_event.is_set() and cmd_type != MPVCommandType.CLOSE:
                 return None
 
-        if not self._worker_thread or not self._worker_thread.is_alive():
-            return None
+            with self._state_lock:
+                if not self._initialized and cmd_type != MPVCommandType.CLOSE:
+                    return None
 
-        result_id = id(time.time())
-        command = {
-            'type': cmd_type,
-            'args': args,
-            'kwargs': kwargs,
-            'result_id': result_id
-        }
+            if not self._worker_thread or not self._worker_thread.is_alive():
+                return None
 
-        try:
-            self._command_queue.put(command, block=False)
-        except queue.Full:
-            warning(f"[MPVPlayerCore] 命令队列已满({self._command_queue_maxsize})，丢弃最旧命令")
-            try:
-                while not self._command_queue.empty():
-                    old_cmd = self._command_queue.get(block=False)
-                    if old_cmd.get('type') == MPVCommandType.CLOSE:
-                        self._command_queue.put(old_cmd, block=False)
-                        break
-                    else:
-                        old_result_id = old_cmd.get('result_id')
-                        if old_result_id is not None:
-                            try:
-                                self._result_queue.put((old_result_id, None), block=False)
-                            except queue.Full:
-                                pass
-            except queue.Empty:
-                pass
+            result_id = id(time.time())
+            command = {
+                'type': cmd_type,
+                'args': args,
+                'kwargs': kwargs,
+                'result_id': result_id
+            }
+
             try:
                 self._command_queue.put(command, block=False)
             except queue.Full:
-                error("[MPVPlayerCore] 命令队列仍然满，放弃执行命令")
-                return None
+                warning(f"[MPVPlayerCore] 命令队列已满({self._command_queue_maxsize})，丢弃最旧命令")
+                try:
+                    while not self._command_queue.empty():
+                        old_cmd = self._command_queue.get(block=False)
+                        if old_cmd.get('type') == MPVCommandType.CLOSE:
+                            self._command_queue.put(old_cmd, block=False)
+                            break
+                        else:
+                            old_result_id = old_cmd.get('result_id')
+                            if old_result_id is not None:
+                                try:
+                                    self._result_queue.put((old_result_id, None), block=False)
+                                except queue.Full:
+                                    pass
+                except queue.Empty:
+                    pass
+                try:
+                    self._command_queue.put(command, block=False)
+                except queue.Full:
+                    error("[MPVPlayerCore] 命令队列仍然满，放弃执行命令")
+                    return None
 
-        # 使用默认5秒超时，可通过kwargs覆盖
-        timeout = kwargs.get('timeout', self._command_timeout)
-        start_time = time.time()
+            timeout = kwargs.get('timeout', self._command_timeout)
+            start_time = time.time()
 
-        while time.time() - start_time < timeout:
-            # 检查是否正在关闭
-            if self._stop_event.is_set():
-                return None
+            while time.time() - start_time < timeout:
+                if self._stop_event.is_set() and cmd_type != MPVCommandType.CLOSE:
+                    return None
 
-            try:
-                rid, result = self._result_queue.get(block=True, timeout=0.05)
-                if rid == result_id:
-                    return result
-            except queue.Empty:
-                continue
+                try:
+                    rid, result = self._result_queue.get(block=True, timeout=0.05)
+                    if rid == result_id:
+                        return result
+                    try:
+                        self._result_queue.put((rid, result), block=False)
+                    except queue.Full:
+                        debug(f"[MPVPlayerCore] 结果队列拥塞，丢弃非目标结果: {rid}")
+                except queue.Empty:
+                    continue
 
-        # 超时返回None
-        warning(f"[MPVPlayerCore] 命令 {cmd_type} 执行超时({timeout}s)")
-        return None
+            warning(f"[MPVPlayerCore] 命令 {cmd_type} 执行超时({timeout}s)")
+            return None
     
     def initialize(self) -> bool:
         """
@@ -1985,6 +2098,39 @@ class MPVPlayerCore(QObject):
         result = self._send_command(MPVCommandType.SET_SUBTITLE_TRACK, track_id, timeout=5.0)
         return result if result is not None else False
     
+    def get_audio_state(self) -> Dict[str, Any]:
+        """
+        获取当前音轨状态
+
+        Returns:
+            Dict[str, Any]: 音轨状态字典
+        """
+        result = self._send_command(MPVCommandType.GET_AUDIO_STATE, timeout=1.0)
+        return result if isinstance(result, dict) else {}
+
+    def get_audio_tracks(self) -> List[Dict[str, Any]]:
+        """
+        获取当前音轨列表
+
+        Returns:
+            List[Dict[str, Any]]: 音轨列表
+        """
+        result = self._send_command(MPVCommandType.GET_AUDIO_TRACKS, timeout=1.0)
+        return result if isinstance(result, list) else []
+
+    def set_audio_track(self, track_id: Union[int, str, None]) -> bool:
+        """
+        切换当前音轨
+
+        Args:
+            track_id: 音轨ID，传入None或"auto"表示自动选择
+
+        Returns:
+            bool: 操作是否成功
+        """
+        result = self._send_command(MPVCommandType.SET_AUDIO_TRACK, track_id, timeout=5.0)
+        return result if result is not None else False
+
     def set_window_id(self, window_id: int) -> bool:
         """
         设置渲染窗口ID
@@ -2034,6 +2180,11 @@ class MPVPlayerCore(QObject):
         result = self._send_command(MPVCommandType.GET_POSITION, timeout=1.0)
         return result
     
+    def get_position_cached(self) -> Optional[float]:
+        """直接读取缓存的当前播放位置，不向MPV线程发送命令"""
+        with self._state_lock:
+            return self._position if self._initialized else None
+    
     def get_duration(self) -> Optional[float]:
         """
         获取视频总时长
@@ -2044,6 +2195,11 @@ class MPVPlayerCore(QObject):
         result = self._send_command(MPVCommandType.GET_DURATION, timeout=1.0)
         return result
     
+    def get_duration_cached(self) -> Optional[float]:
+        """直接读取缓存的媒体总时长，不向MPV线程发送命令"""
+        with self._state_lock:
+            return self._duration if self._initialized else None
+    
     def get_volume(self) -> int:
         """
         获取当前音量
@@ -2051,6 +2207,11 @@ class MPVPlayerCore(QObject):
         Returns:
             int: 音量值（0-100）
         """
+        with self._state_lock:
+            return self._volume
+    
+    def get_volume_cached(self) -> int:
+        """直接读取缓存的当前音量"""
         with self._state_lock:
             return self._volume
     
@@ -2064,6 +2225,11 @@ class MPVPlayerCore(QObject):
         with self._state_lock:
             return self._speed
     
+    def get_speed_cached(self) -> float:
+        """直接读取缓存的当前播放速度"""
+        with self._state_lock:
+            return self._speed
+    
     def is_playing(self) -> bool:
         """
         获取播放状态
@@ -2071,6 +2237,11 @@ class MPVPlayerCore(QObject):
         Returns:
             bool: 是否正在播放
         """
+        with self._state_lock:
+            return self._is_playing
+    
+    def is_playing_cached(self) -> bool:
+        """直接读取缓存的播放状态"""
         with self._state_lock:
             return self._is_playing
     
@@ -2084,6 +2255,11 @@ class MPVPlayerCore(QObject):
         with self._state_lock:
             return self._is_paused
     
+    def is_paused_cached(self) -> bool:
+        """直接读取缓存的暂停状态"""
+        with self._state_lock:
+            return self._is_paused
+    
     def is_muted(self) -> bool:
         """
         获取静音状态
@@ -2091,6 +2267,11 @@ class MPVPlayerCore(QObject):
         Returns:
             bool: 是否静音
         """
+        with self._state_lock:
+            return self._muted
+    
+    def is_muted_cached(self) -> bool:
+        """直接读取缓存的静音状态"""
         with self._state_lock:
             return self._muted
     
@@ -2183,9 +2364,6 @@ class MPVPlayerCore(QObject):
             if not self._initialized and not self._worker_thread:
                 return
 
-        # 首先设置停止事件，阻止新的命令发送
-        self._stop_event.set()
-
         # 停止信号处理定时器
         if self._signal_timer is not None:
             try:
@@ -2204,6 +2382,9 @@ class MPVPlayerCore(QObject):
             self._send_command(MPVCommandType.CLOSE, timeout=0.5)
         except Exception as e:
             debug(f"[MPVPlayerCore] 发送CLOSE命令失败: {e}")
+
+        # 标记停止，阻止新的普通命令继续进入
+        self._stop_event.set()
 
         # 清空命令队列，释放等待的线程
         self._clear_command_queue()

@@ -459,6 +459,7 @@ class VideoPlayer(QWidget):
 
         self._user_interacting = False
         self._pending_seek_value: Optional[int] = None
+        self._last_committed_seek_value: Optional[int] = None
         
         # 分离窗口相关变量
         self._detached_window: Optional[DetachedVideoWindow] = None
@@ -482,6 +483,9 @@ class VideoPlayer(QWidget):
         # 字幕状态缓存
         self._subtitle_state_cache: Dict[str, Any] = self._get_empty_subtitle_state()
         self._subtitle_track_dialog: Optional[CustomMessageBox] = None
+        self._audio_state_cache: Dict[str, Any] = self._get_empty_audio_state()
+        self._audio_track_dialog: Optional[CustomMessageBox] = None
+        self._last_subtitle_state_sync_time = 0.0
         self._auto_subtitle_extensions = {
             ".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".ttml",
             ".dfxp", ".smi", ".sami", ".rt", ".txt", ".sup", ".mpl", ".mks"
@@ -491,6 +495,12 @@ class VideoPlayer(QWidget):
         self._sync_timer = QTimer(self)
         self._sync_timer.setInterval(200)  # 每200ms同步一次
         self._sync_timer.timeout.connect(self._sync_progress_from_player)
+
+        # 拖动进度条时的 seek 节流，兼顾实时预览与稳定性
+        self._seek_debounce_timer = QTimer(self)
+        self._seek_debounce_timer.setSingleShot(True)
+        self._seek_debounce_timer.setInterval(45)
+        self._seek_debounce_timer.timeout.connect(self._flush_pending_seek)
 
         # 初始化设置管理器并读取初始设置
         # 从 QApplication 实例获取 SettingsManager，如果不存在则创建新实例
@@ -786,6 +796,7 @@ class VideoPlayer(QWidget):
         self._control_bar.lutSelected.connect(self._on_lut_selected)
         self._control_bar.lutCleared.connect(self._on_lut_cleared)
         self._control_bar.subtitleClicked.connect(self._on_subtitle_clicked)
+        self._control_bar.audioClicked.connect(self._on_audio_clicked)
         self._control_bar.detachClicked.connect(self._on_detach_clicked)
         self._control_bar.keyPressed.connect(self._on_control_bar_key_pressed)
         
@@ -926,13 +937,18 @@ class VideoPlayer(QWidget):
     
     def _on_progress_changed(self, value: int):
         """进度条值变化处理"""
+        self._pending_seek_value = value
+
         if self._user_interacting and self._mpv_manager and self._mpv_manager.is_initialized():
-            duration = self._mpv_manager.get_duration() or 0
+            duration = self._mpv_manager.get_duration_direct() or 0
             if duration > 0:
                 position = (value / 1000.0) * duration
-                self._mpv_manager.seek(position, component_id=self._component_id)
                 self._update_time_display(position, duration)
-        self._pending_seek_value = value
+
+            # 节流而不是纯防抖：拖动期间持续按固定频率提交 seek，
+            # 让用户尽可能看到接近实时的画面反馈，同时避免请求风暴。
+            if not self._seek_debounce_timer.isActive():
+                self._seek_debounce_timer.start()
     
     def _on_user_interact_started(self):
         """用户开始与进度条交互"""
@@ -941,6 +957,7 @@ class VideoPlayer(QWidget):
     def _on_user_interact_ended(self):
         """用户结束与进度条交互"""
         self._user_interacting = False
+        self._flush_pending_seek()
     
     def _on_volume_changed(self, volume: int):
         """
@@ -1031,11 +1048,14 @@ class VideoPlayer(QWidget):
                 return
             self._last_sync_time = current_time
 
-            # 直接从MPVPlayerCore获取最新数据，不经过队列
+            state = self._mpv_manager.get_state()
             position = self._mpv_manager.get_position_direct()
             duration = self._mpv_manager.get_duration_direct()
-            is_playing = self._mpv_manager.is_playing()
-            is_paused = self._mpv_manager.is_paused()
+
+            if position is None:
+                position = state.position
+            if duration is None:
+                duration = state.duration
 
             # 只有当值有变化时才更新UI
             last_pos = getattr(self, '_last_sync_position', None)
@@ -1053,11 +1073,47 @@ class VideoPlayer(QWidget):
                     self._control_bar.set_position(position, duration or 0)
 
             # 同步播放状态
-            self._control_bar.set_playing(is_playing and not is_paused)
+            self._control_bar.set_playing(state.is_playing and not state.is_paused)
+
+            # 某些 mkv 的默认内嵌字幕会在文件加载完成后的稍后时机才真正变为活动状态。
+            # 这里以较低频率持续同步字幕状态，确保按钮样式能在默认字幕生效后自动高亮。
+            if self._playback_mode == self.VIDEO_MODE and self._current_file:
+                if (current_time - self._last_subtitle_state_sync_time) >= 800:
+                    self._last_subtitle_state_sync_time = current_time
+                    self._refresh_subtitle_state()
 
         except Exception as e:
             # 同步失败时不影响播放，仅记录日志
             warning(f"[VideoPlayer] 同步进度时出错: {e}")
+
+    def _flush_pending_seek(self):
+        """提交最后一次待处理的 seek，避免拖动进度条时高频请求堆积"""
+        if (
+            self._pending_seek_value is None
+            or not self._mpv_manager
+            or not self._mpv_manager.is_initialized()
+        ):
+            return
+
+        duration = self._mpv_manager.get_duration_direct() or 0.0
+        if duration <= 0:
+            return
+
+        pending_value = int(self._pending_seek_value)
+        if self._last_committed_seek_value == pending_value:
+            return
+
+        position = (pending_value / 1000.0) * duration
+        success = self._mpv_manager.seek(position, component_id=self._component_id)
+        if success:
+            self._last_committed_seek_value = pending_value
+            self._update_time_display(position, duration)
+
+        # 如果用户仍在拖动，并且在本次发送期间又产生了新的目标位置，
+        # 继续以节流频率补发下一次 seek，保证拖动中画面尽量实时跟随。
+        if self._user_interacting and self._pending_seek_value != self._last_committed_seek_value:
+            if not self._seek_debounce_timer.isActive():
+                self._seek_debounce_timer.start()
 
     def _initialize_progress_display(self):
         """
@@ -1093,11 +1149,28 @@ class VideoPlayer(QWidget):
             "tracks": [],
         }
 
+    def _get_empty_audio_state(self) -> Dict[str, Any]:
+        """获取默认的空音轨状态"""
+        return {
+            "has_available_audio_tracks": False,
+            "has_multiple_audio_tracks": False,
+            "track_count": 0,
+            "selected_track_id": None,
+            "selected_track": None,
+            "tracks": [],
+        }
+
     def _reset_subtitle_state(self):
         """重置字幕状态缓存和按钮样式"""
         self._subtitle_state_cache = self._get_empty_subtitle_state()
         if hasattr(self, '_control_bar'):
             self._control_bar.set_subtitle_loaded(False)
+
+    def _reset_audio_state(self):
+        """重置音轨状态缓存和按钮可见性"""
+        self._audio_state_cache = self._get_empty_audio_state()
+        if hasattr(self, '_control_bar'):
+            self._control_bar.set_audio_button_visible(False)
 
     def _close_subtitle_track_dialog(self):
         """关闭字幕轨选择弹窗"""
@@ -1110,6 +1183,17 @@ class VideoPlayer(QWidget):
             finally:
                 self._subtitle_track_dialog = None
 
+    def _close_audio_track_dialog(self):
+        """关闭音轨选择弹窗"""
+        if self._audio_track_dialog:
+            try:
+                self._audio_track_dialog.close()
+                self._audio_track_dialog.deleteLater()
+            except RuntimeError:
+                pass
+            finally:
+                self._audio_track_dialog = None
+
     def _get_embedded_subtitle_tracks(self, state: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """获取当前可用的内嵌字幕轨"""
         subtitle_state = state or self._subtitle_state_cache or self._get_empty_subtitle_state()
@@ -1118,6 +1202,12 @@ class VideoPlayer(QWidget):
             track for track in tracks
             if isinstance(track, dict) and not bool(track.get("external"))
         ]
+
+    def _get_available_audio_tracks(self, state: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """获取当前可用音轨"""
+        audio_state = state or self._audio_state_cache or self._get_empty_audio_state()
+        tracks = audio_state.get("tracks") or []
+        return [track for track in tracks if isinstance(track, dict)]
 
     def _format_subtitle_track_label(self, track: Dict[str, Any], index: int) -> str:
         """格式化字幕轨显示文本"""
@@ -1134,6 +1224,23 @@ class VideoPlayer(QWidget):
         if track.get("lang"):
             meta_parts.append(str(track.get("lang")).upper())
         meta_parts.append("外挂" if track.get("external") else "内嵌")
+        if track.get("selected"):
+            meta_parts.append("当前")
+
+        return f"{title}（{' / '.join(meta_parts)}）" if meta_parts else title
+
+    def _format_audio_track_label(self, track: Dict[str, Any], index: int) -> str:
+        """格式化音轨显示文本"""
+        if track.get("title"):
+            title = str(track.get("title"))
+        elif track.get("lang"):
+            title = f"音轨 {index + 1}"
+        else:
+            title = f"音轨 {track.get('id', index + 1)}"
+
+        meta_parts = []
+        if track.get("lang"):
+            meta_parts.append(str(track.get("lang")).upper())
         if track.get("selected"):
             meta_parts.append("当前")
 
@@ -1164,6 +1271,36 @@ class VideoPlayer(QWidget):
         )
         if hasattr(self, '_control_bar'):
             self._control_bar.set_subtitle_loaded(is_subtitle_loaded)
+
+        return state
+
+    def _refresh_audio_state(self) -> Dict[str, Any]:
+        """刷新音轨状态缓存并同步控制栏按钮显隐"""
+        default_state = self._get_empty_audio_state()
+
+        if (
+            self._playback_mode != self.VIDEO_MODE
+            or not self._current_file
+            or not self._mpv_manager
+            or not self._mpv_manager.is_initialized()
+        ):
+            self._audio_state_cache = default_state
+            if hasattr(self, '_control_bar'):
+                self._control_bar.set_audio_button_visible(False)
+            return default_state
+
+        state = self._mpv_manager.get_audio_state()
+        if not isinstance(state, dict):
+            state = default_state
+        else:
+            merged_state = default_state.copy()
+            merged_state.update(state)
+            state = merged_state
+
+        self._audio_state_cache = state
+
+        if hasattr(self, '_control_bar'):
+            self._control_bar.set_audio_button_visible(bool(state.get("has_multiple_audio_tracks")))
 
         return state
 
@@ -1343,6 +1480,95 @@ class VideoPlayer(QWidget):
         dialog.finished.connect(clear_dialog_reference)
         dialog.exec()
 
+    def _open_audio_track_dialog(self, state: Optional[Dict[str, Any]] = None):
+        """打开音轨选择弹窗"""
+        audio_state = state or self._refresh_audio_state()
+        audio_tracks = self._get_available_audio_tracks(audio_state)
+
+        if len(audio_tracks) <= 1:
+            return
+
+        self._close_audio_track_dialog()
+
+        dialog = CustomMessageBox(self)
+        self._audio_track_dialog = dialog
+        dialog.set_title("选择音轨")
+        dialog.set_text("请选择当前视频要使用的音轨")
+        dialog.set_list(
+            [self._format_audio_track_label(track, index) for index, track in enumerate(audio_tracks)],
+            selection_mode="single",
+            default_width=210,
+            default_height=110,
+            min_width=160,
+            min_height=80
+        )
+        dialog.set_buttons(["取消"], Qt.Horizontal, ["normal"])
+
+        def clear_dialog_reference(*args):
+            if self._audio_track_dialog is dialog:
+                self._audio_track_dialog = None
+
+        def apply_track(index: int):
+            if index < 0 or index >= len(audio_tracks):
+                return
+
+            track_id = audio_tracks[index].get("id")
+            if track_id is None:
+                self.errorOccurred.emit("无效的音轨")
+                return
+
+            success = self._mpv_manager.set_audio_track(
+                track_id,
+                component_id=self._component_id
+            ) if self._mpv_manager else False
+
+            if success:
+                info(f"[VideoPlayer] 切换音轨成功: {track_id}")
+                self._refresh_audio_state()
+                QTimer.singleShot(100, self._refresh_audio_state)
+                if self._detached_window:
+                    self._detached_window.show_osd("音轨已切换")
+                dialog.close()
+            else:
+                error(f"[VideoPlayer] 切换音轨失败: {track_id}")
+                self.errorOccurred.emit("切换音轨失败")
+
+        def on_dialog_button_clicked(button_index: int):
+            dialog.close()
+
+        if dialog._list:
+            dialog._list.itemClicked.connect(apply_track)
+            dialog._list.itemDoubleClicked.connect(apply_track)
+
+            selected_track_id = audio_state.get("selected_track_id")
+            selected_track = audio_state.get("selected_track") or {}
+            selected_index = -1
+
+            for index, track in enumerate(audio_tracks):
+                if track.get("id") == selected_track_id:
+                    selected_index = index
+                    break
+
+            if selected_index < 0:
+                for index, track in enumerate(audio_tracks):
+                    if bool(track.get("selected")):
+                        selected_index = index
+                        break
+
+            if selected_index < 0 and selected_track:
+                selected_track_id = selected_track.get("id")
+                for index, track in enumerate(audio_tracks):
+                    if track.get("id") == selected_track_id:
+                        selected_index = index
+                        break
+
+            if selected_index >= 0:
+                dialog._list.set_current_item(selected_index)
+
+        dialog.buttonClicked.connect(on_dialog_button_clicked)
+        dialog.finished.connect(clear_dialog_reference)
+        dialog.exec()
+
     def _on_manager_file_loaded(self, file_path: str):
         """
         MPV管理器文件加载完成处理
@@ -1370,6 +1596,7 @@ class VideoPlayer(QWidget):
 
         QTimer.singleShot(200, self._initialize_progress_display)
         QTimer.singleShot(250, self._refresh_subtitle_state)
+        QTimer.singleShot(275, self._refresh_audio_state)
         QTimer.singleShot(350, self._try_auto_load_matching_subtitle)
 
     def _on_manager_file_ended(self, reason: int):
@@ -1466,6 +1693,25 @@ class VideoPlayer(QWidget):
             return
 
         self._open_external_subtitle_picker()
+
+    def _on_audio_clicked(self):
+        """音轨按钮点击处理"""
+        if not self._current_file:
+            self.errorOccurred.emit("请先加载视频文件后再操作音轨")
+            return
+
+        if self._playback_mode != self.VIDEO_MODE:
+            return
+
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            self.errorOccurred.emit("播放器未初始化")
+            return
+
+        audio_state = self._refresh_audio_state()
+        if not audio_state.get("has_multiple_audio_tracks"):
+            return
+
+        self._open_audio_track_dialog(audio_state)
 
     def _on_detach_clicked(self):
         """分离窗口按钮点击处理"""
@@ -2017,7 +2263,14 @@ class VideoPlayer(QWidget):
             return False
 
         self._close_subtitle_track_dialog()
+        self._close_audio_track_dialog()
+        self._last_subtitle_state_sync_time = 0.0
         self._reset_subtitle_state()
+        self._reset_audio_state()
+        if self._seek_debounce_timer.isActive():
+            self._seek_debounce_timer.stop()
+        self._pending_seek_value = None
+        self._last_committed_seek_value = None
         was_detached_mode = bool(self._detached_window)
         if was_detached_mode:
             self._stop_cursor_auto_hide_monitor()
@@ -2424,7 +2677,12 @@ class VideoPlayer(QWidget):
         debug(f"[VideoPlayer] ========== 开始清理资源 (async={async_mode}) ==========")
 
         self._close_subtitle_track_dialog()
+        self._close_audio_track_dialog()
         self._reset_subtitle_state()
+        self._reset_audio_state()
+        if self._seek_debounce_timer.isActive():
+            self._seek_debounce_timer.stop()
+        self._pending_seek_value = None
 
         # 停止进度同步定时器
         debug(f"[VideoPlayer] 停止进度同步定时器...")
@@ -2490,6 +2748,9 @@ class VideoPlayer(QWidget):
         确保资源正确关闭并清理
         """
         self._stop_cursor_auto_hide_monitor()
+        if self._seek_debounce_timer.isActive():
+            self._seek_debounce_timer.stop()
+        self._pending_seek_value = None
 
         # 使用异步模式关闭MPV管理器，避免阻塞UI
         if self._mpv_manager:

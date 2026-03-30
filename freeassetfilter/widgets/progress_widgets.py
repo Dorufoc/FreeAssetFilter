@@ -627,9 +627,14 @@ class D_ProgressBar(QWidget):
         self._handle_border_width = max(1, int(2 * self.dpi_scale))
         self._handle_border_color = QColor("#FFFFFF")
 
+        self._animation_enabled = True
         self._animation_duration = 250
         self._animation_easing_curve = QEasingCurve.InOutQuart
+        self._responsive_animation_min_duration = 45
+        self._responsive_animation_max_duration = 120
+        self._responsive_animation_easing_curve = QEasingCurve(QEasingCurve.Linear)
         self._animation = QPropertyAnimation(self, b"_display_value")
+        self._animation.setDuration(self._animation_duration)
         self._animation.setEasingCurve(self._animation_easing_curve)
         self._animation.valueChanged.connect(self._on_animation_value_changed)
         self._animation.finished.connect(self._on_animation_finished)
@@ -660,6 +665,24 @@ class D_ProgressBar(QWidget):
     def _on_animation_finished(self):
         """动画结束时的回调"""
         self.valueChanged.emit(self._value)
+
+    def _calculate_responsive_animation_duration(self, start_value, end_value):
+        """计算高频更新场景下更灵敏的动画时长"""
+        base_duration = max(1, int(self._animation_duration))
+        if base_duration <= self._responsive_animation_min_duration:
+            return base_duration
+
+        value_span = max(1, self._maximum - self._minimum)
+        distance_ratio = min(1.0, abs(end_value - start_value) / value_span)
+
+        min_duration = min(base_duration, self._responsive_animation_min_duration)
+        max_duration = min(base_duration, self._responsive_animation_max_duration)
+
+        if min_duration >= max_duration:
+            return base_duration
+
+        scaled_duration = int(base_duration * max(0.2, distance_ratio))
+        return max(min_duration, min(max_duration, scaled_duration))
 
     def setAnimationDuration(self, duration):
         """
@@ -736,10 +759,13 @@ class D_ProgressBar(QWidget):
         Args:
             enabled (bool): 是否启用动画
         """
+        self._animation_enabled = enabled
+
         if enabled:
             self._animation.setDuration(self._animation_duration)
             self._animation.setEasingCurve(self._animation_easing_curve)
         else:
+            self._animation.stop()
             self._animation.setDuration(0)
 
     def _init_sizes(self):
@@ -922,6 +948,9 @@ class D_ProgressBar(QWidget):
             self._value = value
 
             should_use_animation = use_animation if use_animation is not None else not self._animation_suspended
+            should_use_animation = (
+                should_use_animation and self._animation_enabled and self._animation_duration > 0
+            )
 
             if not should_use_animation:
                 self._animation.stop()
@@ -932,10 +961,28 @@ class D_ProgressBar(QWidget):
                     self._last_emitted_value = value
                     self.valueChanged.emit(value)
             else:
+                animation_was_running = self._animation.state() == QPropertyAnimation.Running
+                start_value = int(self._display_value_storage)
+
+                if start_value == value:
+                    self._animation.stop()
+                    self._display_value_storage = value
+                    self.update()
+                    return
+
                 self._animation.stop()
-                self._animation.setStartValue(self._display_value)
+                self._animation.setStartValue(start_value)
                 self._animation.setEndValue(value)
-                self._animation.setDuration(self._animation_duration)
+
+                if animation_was_running:
+                    self._animation.setDuration(
+                        self._calculate_responsive_animation_duration(start_value, value)
+                    )
+                    self._animation.setEasingCurve(self._responsive_animation_easing_curve)
+                else:
+                    self._animation.setDuration(self._animation_duration)
+                    self._animation.setEasingCurve(self._animation_easing_curve)
+
                 self._animation.start()
 
     def value(self):
