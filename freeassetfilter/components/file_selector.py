@@ -442,8 +442,6 @@ class CustomFileSelector(QWidget):
         
         # 排序方式下拉菜单（使用外部按钮，不创建内部按钮）
         self.sort_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
-        scaled_sort_width = int(50 * self.dpi_scale)
-        self.sort_menu.set_fixed_width(scaled_sort_width)
         sort_items = [
             {"text": "名称升序", "data": ("name", "asc")},
             {"text": "名称降序", "data": ("name", "desc")},

@@ -40,7 +40,8 @@ class ScrollingText(QWidget):
     
     def __init__(self, parent=None, text="", width=200, height=30, 
                  font_size=None, text_color=None, dpi_scale=1.0,
-                 linear_animation=True, loop_mode=None, scroll_trigger=None):
+                 linear_animation=True, loop_mode=None, scroll_trigger=None,
+                 auto_scale_size=True, text_align="center"):
         """
         初始化滚动文本控件
         
@@ -63,6 +64,8 @@ class ScrollingText(QWidget):
         self._original_height = height
         self._original_font_size = font_size
         self._dpi_scale = dpi_scale
+        self._auto_scale_size = auto_scale_size
+        self._text_align = text_align
         
         # 文本内容
         self._text = text
@@ -103,13 +106,21 @@ class ScrollingText(QWidget):
         # 设置控件大小
         # 如果原始宽度为0，则完全填充父容器宽度
         if self._original_width <= 0:
-            # 让布局系统自动设置宽度（完全填充父容器）
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            self.setMinimumHeight(int(self._original_height * self._dpi_scale))
+
+            if self._original_height > 0:
+                if self._auto_scale_size:
+                    self.setMinimumHeight(int(self._original_height * self._dpi_scale))
+                else:
+                    self.setMinimumHeight(int(self._original_height))
         else:
-            # 使用固定宽度
-            scaled_width = int(self._original_width * self._dpi_scale)
-            scaled_height = int(self._original_height * self._dpi_scale)
+            if self._auto_scale_size:
+                scaled_width = int(self._original_width * self._dpi_scale)
+                scaled_height = int(self._original_height * self._dpi_scale)
+            else:
+                scaled_width = int(self._original_width)
+                scaled_height = int(self._original_height)
+
             self.setFixedSize(scaled_width, scaled_height)
         
         # 设置字体，使用全局字体让Qt6自动处理DPI缩放
@@ -129,6 +140,16 @@ class ScrollingText(QWidget):
         self._container_height = self.height()
         self._scroll_distance = max(0, self._text_width - self._container_width)
     
+    def _get_rest_offset(self):
+        """
+        获取文本在静止状态下的偏移量。
+        - left: 左对齐
+        - center: 始终按中心基准显示，即使文本超长也保持中心截取
+        """
+        if self._text_align == "left":
+            return 0
+        return (self._container_width - self._text_width) // 2
+
     def _init_scroll_animation(self):
         """初始化滚动动画"""
         # 重新计算文本尺寸
@@ -140,11 +161,13 @@ class ScrollingText(QWidget):
             QTimer.singleShot(50, self._init_scroll_animation)
             return
 
+        rest_offset = self._get_rest_offset()
+
         # 判断是否需要滚动
         if self._scroll_distance <= 0:
-            # 文本不需要滚动，居中显示
+            # 文本不需要滚动
             self._is_scrolling = False
-            self._scroll_offset = (self._container_width - self._text_width) // 2
+            self._scroll_offset = rest_offset
             self.update()
             return
 
@@ -152,7 +175,7 @@ class ScrollingText(QWidget):
         if self._scroll_trigger == self.SCROLL_TRIGGER_HOVER:
             self._is_scrolling = False
             self._is_hover_mode = False
-            self._scroll_offset = 0
+            self._scroll_offset = rest_offset
             self.update()
             return
 
@@ -199,38 +222,38 @@ class ScrollingText(QWidget):
         """创建滚动动画"""
         if self._scroll_distance <= 0:
             return
-        
-        # 初始化偏移量为0（从左侧开始）
-        self._scroll_offset = 0
-        
+
+        start_offset = self._scroll_offset if self._scroll_trigger == self.SCROLL_TRIGGER_HOVER else 0
+        end_offset = -self._scroll_distance
+
         # 根据文本长度计算动画持续时间
         scroll_duration = self._calculate_scroll_duration()
-        
+
         # 获取缓动曲线
         easing_curve = self._get_easing_curve()
-        
+
         # 创建正向滚动动画（从右到左）
         self._forward_animation = QPropertyAnimation(self, b"scroll_offset")
         self._forward_animation.setDuration(scroll_duration)
-        self._forward_animation.setStartValue(0)
-        self._forward_animation.setEndValue(-self._scroll_distance)
+        self._forward_animation.setStartValue(start_offset)
+        self._forward_animation.setEndValue(end_offset)
         self._forward_animation.setEasingCurve(easing_curve)
-        
+
         # 连接动画完成信号
         self._forward_animation.finished.connect(self._on_forward_finished)
-        
+
         # 如果是PingPong模式，创建反向动画
         if self._loop_mode == self.LOOP_MODE_PINGPONG:
             self._backward_animation = QPropertyAnimation(self, b"scroll_offset")
             self._backward_animation.setDuration(scroll_duration)
-            self._backward_animation.setStartValue(-self._scroll_distance)
-            self._backward_animation.setEndValue(0)
+            self._backward_animation.setStartValue(end_offset)
+            self._backward_animation.setEndValue(start_offset)
             self._backward_animation.setEasingCurve(easing_curve)
             self._backward_animation.finished.connect(self._on_backward_finished)
-        
+
         # 标记为可滚动状态
         self._is_scrolling = True
-        
+
         # 开始动画
         self._start_scroll_cycle()
     
@@ -319,20 +342,24 @@ class ScrollingText(QWidget):
         self._scroll_distance = max(0, self._text_width - self._container_width)
 
         if self._scroll_distance <= 0:
-            # 文本不需要滚动，居中显示
+            target_offset = self._get_rest_offset()
+
             if self._is_scrolling:
-                # 从滚动模式切换到居中模式
                 self._is_scrolling = False
-                self._scroll_offset = (self._container_width - self._text_width) // 2
+                self._scroll_offset = target_offset
                 self.update()
-            elif self._scroll_offset != (self._container_width - self._text_width) // 2:
-                # 确保非滚动模式下文本居中
-                self._scroll_offset = (self._container_width - self._text_width) // 2
+            elif self._scroll_offset != target_offset:
+                self._scroll_offset = target_offset
                 self.update()
         else:
-            # 文本需要滚动
-            if not self._is_scrolling and self._scroll_trigger != self.SCROLL_TRIGGER_HOVER:
-                # 从居中模式切换到滚动模式，创建动画（仅自动触发模式）
+            target_offset = self._get_rest_offset()
+
+            if not self._is_scrolling and self._scroll_trigger == self.SCROLL_TRIGGER_HOVER:
+                if self._scroll_offset != target_offset:
+                    self._scroll_offset = target_offset
+                    self.update()
+            elif not self._is_scrolling and self._scroll_trigger != self.SCROLL_TRIGGER_HOVER:
+                # 从静止模式切换到滚动模式，创建动画（仅自动触发模式）
                 self._create_scroll_animation()
             elif self._is_scrolling:
                 # 已经在滚动模式，重新计算动画终点
@@ -353,14 +380,24 @@ class ScrollingText(QWidget):
     def paintEvent(self, event):
         """
         绘制事件处理
-        使用QPainter直接绘制文本，避免子控件被裁剪的问题
+        使用QPainter直接绘制文本，并显式裁切到控件区域内。
         """
-        # 如果容器宽度为0，跳过绘制（布局尚未完成）
+        # 若布局刚完成而缓存尺寸尚未更新，则基于当前实际尺寸即时更新一次
+        if self.width() > 0 and self.height() > 0:
+            old_width = getattr(self, "_container_width", 0)
+            old_height = getattr(self, "_container_height", 0)
+            self._update_text_metrics()
+
+            # 若实际尺寸变化，立即同步滚动状态，确保 hover 模式判断正确
+            if self._container_width != old_width or self._container_height != old_height:
+                self._recalculate_scroll_state()
+
         if self._container_width <= 0:
             return
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setClipRect(self.rect())
 
         # 设置字体
         painter.setFont(self._font)
@@ -374,8 +411,8 @@ class ScrollingText(QWidget):
         ascent = font_metrics.ascent()
         y = (self._container_height - text_height) // 2 + ascent
 
-        # 绘制文本（使用滚动偏移量）
-        painter.drawText(int(self._scroll_offset), int(y), self._text)
+        # 在控件可视区域内裁切绘制文本
+        painter.drawText(QPoint(int(self._scroll_offset), int(y)), self._text)
     
     def set_text(self, text):
         """
@@ -435,9 +472,10 @@ class ScrollingText(QWidget):
         self._dpi_scale = dpi_scale
         
         # 更新控件大小
-        scaled_width = int(self._original_width * dpi_scale)
-        scaled_height = int(self._original_height * dpi_scale)
-        self.setFixedSize(scaled_width, scaled_height)
+        if self._auto_scale_size and self._original_width > 0:
+            scaled_width = int(self._original_width * dpi_scale)
+            scaled_height = int(self._original_height * dpi_scale)
+            self.setFixedSize(scaled_width, scaled_height)
         
         # 注意：字体大小不随DPI缩放而改变
         # 因为字体渲染系统会自动处理DPI缩放
@@ -589,7 +627,7 @@ class ScrollingText(QWidget):
         
         self._return_animation.setDuration(return_duration)
         self._return_animation.setStartValue(current_offset)
-        self._return_animation.setEndValue(0)
+        self._return_animation.setEndValue(self._get_rest_offset())
         self._return_animation.setEasingCurve(QEasingCurve.OutQuad)
         
         # 动画完成后清理状态
@@ -602,7 +640,7 @@ class ScrollingText(QWidget):
         self._is_scrolling = False
         self._has_started = False
         self._is_hover_mode = False
-        self._scroll_offset = 0
+        self._scroll_offset = self._get_rest_offset()
         self.update()
     
     def mousePressEvent(self, event):
