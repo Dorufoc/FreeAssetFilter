@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QFrame, QApplication, QFileDialog
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QEvent
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen
+from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QCursor
 
 from freeassetfilter.core.mpv_player_core import MPVPlayerCore, MpvEndFileReason
 from freeassetfilter.core.mpv_manager import MPVManager, MPVState
@@ -48,6 +48,7 @@ from freeassetfilter.widgets.D_hover_menu import D_HoverMenu
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
@@ -467,6 +468,7 @@ class VideoPlayer(QWidget):
         self._floating_control_bar: Optional[D_HoverMenu] = None
         self._is_floating_mode = False  # 是否处于浮动模式
         self._control_bar_border_radius = control_bar_border_radius  # 浮动控制栏圆角半径
+        self._cursor_activity_monitor: Optional[GlobalMouseMonitor] = None  # 分离窗口鼠标指针自动隐藏监控
 
         # MPV管理器实例（单例）
         self._mpv_manager: Optional[MPVManager] = None
@@ -542,7 +544,84 @@ class VideoPlayer(QWidget):
         """初始化浮动控制栏"""
         # 不在这里初始化，而是在需要时动态设置
         self._floating_control_bar = None
-    
+
+    def _get_cursor_timeout_duration(self) -> int:
+        """获取分离窗口鼠标指针自动隐藏超时时间（毫秒）"""
+        timeout_seconds = self._settings_manager.get_setting("player.control_bar_timeout", 3)
+        try:
+            timeout_ms = int(float(timeout_seconds) * 1000)
+        except (TypeError, ValueError):
+            timeout_ms = 3000
+        return max(1000, timeout_ms)
+
+    def _ensure_cursor_activity_monitor(self):
+        """确保分离窗口鼠标指针活动监控器已创建"""
+        if self._cursor_activity_monitor is None:
+            self._cursor_activity_monitor = GlobalMouseMonitor(
+                self,
+                timeout=self._get_cursor_timeout_duration()
+            )
+            self._cursor_activity_monitor.mouse_moved.connect(self._on_cursor_activity)
+            self._cursor_activity_monitor.mouse_clicked.connect(self._on_cursor_activity)
+            self._cursor_activity_monitor.mouse_scrolled.connect(self._on_cursor_activity)
+            self._cursor_activity_monitor.timeout_reached.connect(self._on_cursor_hide_timeout)
+        else:
+            self._cursor_activity_monitor.timeout = self._get_cursor_timeout_duration()
+
+    def _start_cursor_auto_hide_monitor(self):
+        """启动分离窗口鼠标指针自动隐藏监控"""
+        if not self._detached_window:
+            return
+
+        self._ensure_cursor_activity_monitor()
+
+        if self._cursor_activity_monitor:
+            self._cursor_activity_monitor.timeout = self._get_cursor_timeout_duration()
+            self._detached_window.show_cursor()
+            if not self._cursor_activity_monitor.is_monitoring():
+                self._cursor_activity_monitor.start()
+            self._cursor_activity_monitor.reset_timer()
+            debug(f"[VideoPlayer] 鼠标指针自动隐藏监控已启动，超时: {self._cursor_activity_monitor.timeout}ms")
+
+    def _stop_cursor_auto_hide_monitor(self):
+        """停止分离窗口鼠标指针自动隐藏监控"""
+        if self._cursor_activity_monitor and self._cursor_activity_monitor.is_monitoring():
+            self._cursor_activity_monitor.stop()
+            debug(f"[VideoPlayer] 鼠标指针自动隐藏监控已停止")
+
+        if self._detached_window:
+            self._detached_window.show_cursor()
+
+    def _is_cursor_inside_detached_window(self) -> bool:
+        """检查当前鼠标位置是否位于分离窗口范围内"""
+        if not self._detached_window or not self._detached_window.isVisible():
+            return False
+
+        global_pos = QCursor.pos()
+        return self._detached_window.frameGeometry().contains(global_pos)
+
+    @Slot()
+    def _on_cursor_activity(self):
+        """处理分离窗口鼠标活动：显示鼠标指针并重置超时计时"""
+        if not self._detached_window or not self._detached_window.isVisible():
+            return
+
+        if not self._is_cursor_inside_detached_window():
+            return
+
+        self._detached_window.show_cursor()
+        if self._cursor_activity_monitor and self._cursor_activity_monitor.is_monitoring():
+            self._cursor_activity_monitor.reset_timer()
+
+    @Slot()
+    def _on_cursor_hide_timeout(self):
+        """处理分离窗口鼠标指针自动隐藏超时"""
+        if not self._detached_window or not self._detached_window.isVisible():
+            return
+
+        self._detached_window.hide_cursor()
+        debug(f"[VideoPlayer] 鼠标指针超时自动隐藏")
+
     def _switch_to_floating_mode(self):
         """切换到浮动控制栏模式"""
         if self._is_floating_mode:
@@ -1491,20 +1570,16 @@ class VideoPlayer(QWidget):
     def _on_control_bar_shown(self):
         """
         浮动控制栏显示时的处理
-        显示鼠标指针
+        鼠标指针显隐由独立计时器控制，此处仅保留日志
         """
-        if self._detached_window:
-            self._detached_window.show_cursor()
-            debug(f"[VideoPlayer] 控制栏显示，显示鼠标指针")
+        debug(f"[VideoPlayer] 控制栏显示")
 
     def _on_control_bar_hidden(self):
         """
         浮动控制栏隐藏时的处理
-        隐藏鼠标指针
+        鼠标指针显隐由独立计时器控制，此处仅保留日志
         """
-        if self._detached_window:
-            self._detached_window.hide_cursor()
-            debug(f"[VideoPlayer] 控制栏隐藏，隐藏鼠标指针")
+        debug(f"[VideoPlayer] 控制栏隐藏")
 
     def _save_playback_state(self):
         """
@@ -1622,6 +1697,9 @@ class VideoPlayer(QWidget):
         self._detached_window.show()
         self._detached_window._force_focus()
 
+        # 分离窗口模式下独立控制鼠标指针显隐，不再依赖控制栏显示状态
+        self._start_cursor_auto_hide_monitor()
+
         # 下一轮事件循环中完成几何同步和MPV重连，避免长时间等待导致控制栏晚切换
         def finalize_detach():
             debug(f"[VideoPlayer] 完成分离窗口初始化")
@@ -1677,6 +1755,9 @@ class VideoPlayer(QWidget):
         将视频播放器恢复到原父窗口
         """
         debug(f"[VideoPlayer] 开始恢复窗口")
+
+        # 恢复前先停止分离窗口鼠标指针自动隐藏逻辑
+        self._stop_cursor_auto_hide_monitor()
         
         # 先切换回固定控制栏模式
         self._switch_to_fixed_mode()
@@ -1937,6 +2018,9 @@ class VideoPlayer(QWidget):
 
         self._close_subtitle_track_dialog()
         self._reset_subtitle_state()
+        was_detached_mode = bool(self._detached_window)
+        if was_detached_mode:
+            self._stop_cursor_auto_hide_monitor()
 
         if not self._is_mpv_embedded:
             self._embed_mpv_window()
@@ -1984,6 +2068,9 @@ class VideoPlayer(QWidget):
                 self.set_loop_mode("yes")
                 # 应用播放器设置（音量和倍速）
                 self._apply_player_settings()
+
+        if result and was_detached_mode and self._detached_window:
+            self._start_cursor_auto_hide_monitor()
 
         return result
     
@@ -2402,6 +2489,8 @@ class VideoPlayer(QWidget):
         关闭事件处理
         确保资源正确关闭并清理
         """
+        self._stop_cursor_auto_hide_monitor()
+
         # 使用异步模式关闭MPV管理器，避免阻塞UI
         if self._mpv_manager:
             self._mpv_manager.close(async_mode=True, timeout=2.0)

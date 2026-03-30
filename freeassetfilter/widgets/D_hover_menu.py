@@ -637,6 +637,12 @@ class D_HoverMenu(QWidget):
         self._update_mouse_transparency()
         super().show()
 
+        if self._auto_hide_enabled:
+            if self._mouse_monitor_active:
+                self._mouse_activity_monitor.reset_timer()
+            else:
+                self.reset_auto_hide_timer()
+
     def toggle(self):
         """切换显示/隐藏状态"""
         if self._is_visible:
