@@ -228,11 +228,62 @@ class FreeAssetFilterApp(QMainWindow):
         # 应用窗口标题栏深色模式（根据当前主题设置）
         self._apply_title_bar_theme()
 
+    def _cleanup_preview_before_close(self):
+        """
+        在主窗口关闭前优先清理预览区域，避免预览组件在主程序销毁过程中残留资源。
+        """
+        if not hasattr(self, 'unified_previewer') or not self.unified_previewer:
+            return
+
+        try:
+            # 先停止任何正在运行的预览线程
+            if hasattr(self.unified_previewer, '_preview_thread') and self.unified_previewer._preview_thread:
+                if self.unified_previewer._preview_thread.isRunning():
+                    self.unified_previewer._preview_thread.cancel()
+                    self.unified_previewer._preview_thread.wait(500)
+                    if self.unified_previewer._preview_thread.isRunning():
+                        self.unified_previewer._preview_thread.terminate()
+                        self.unified_previewer._preview_thread.wait(100)
+
+            # 清理预览区域内容
+            self.unified_previewer._clear_preview(app_closing=True)
+
+            # 清理文件信息面板内容
+            if hasattr(self.unified_previewer, 'file_info_viewer') and self.unified_previewer.file_info_viewer:
+                self.unified_previewer.file_info_viewer.current_file = None
+                self.unified_previewer.file_info_viewer.file_info = {}
+
+                if hasattr(self.unified_previewer.file_info_viewer, 'basic_info_labels'):
+                    for key, widget in self.unified_previewer.file_info_viewer.basic_info_labels.items():
+                        widget.setPlainText("-")
+
+                if hasattr(self.unified_previewer.file_info_viewer, 'details_info_widgets'):
+                    for label_widget, value_widget in self.unified_previewer.file_info_viewer.details_info_widgets:
+                        label_widget.setText("")
+                        value_widget.setPlainText("-")
+
+            # 重置当前预览状态，确保主程序继续退出前界面已被清空
+            self.unified_previewer.current_file_info = None
+            if hasattr(self.unified_previewer, 'default_label') and self.unified_previewer.default_label:
+                self.unified_previewer.default_label.show()
+            if hasattr(self.unified_previewer, 'clear_preview_button'):
+                self.unified_previewer.clear_preview_button.hide()
+            if hasattr(self.unified_previewer, 'open_with_system_button'):
+                self.unified_previewer.open_with_system_button.hide()
+            if hasattr(self.unified_previewer, 'copy_to_clipboard_button'):
+                self.unified_previewer.copy_to_clipboard_button.hide()
+            if hasattr(self.unified_previewer, 'locate_in_selector_button'):
+                self.unified_previewer.locate_in_selector_button.hide()
+        except Exception as e:
+            logger.warning(f"关闭主窗口前清理预览区域失败: {e}")
+
     def closeEvent(self, event):
         """
-        主窗口关闭事件，确保保存文件选择器的当前路径和文件存储池状态
-        并关闭所有子窗口（包括全局设置窗口）
+        主窗口关闭事件，确保先清理预览区域，再保存状态并关闭主程序
         """
+        # 用户尝试关闭程序时，优先清理预览区域
+        self._cleanup_preview_before_close()
+
         # 关闭所有子窗口，确保全局设置窗口等随主窗口关闭而销毁
         from PySide6.QtWidgets import QDialog
         for widget in self.findChildren(QDialog):
@@ -246,19 +297,6 @@ class FreeAssetFilterApp(QMainWindow):
         # 保存文件存储池状态，传递文件选择器的当前路径
         if hasattr(self, 'file_staging_pool'):
             self.file_staging_pool.save_backup(last_path)
-
-        # 清理统一预览器中的临时PDF文件
-        if hasattr(self, 'unified_previewer'):
-            # 先停止任何正在运行的预览线程
-            if hasattr(self.unified_previewer, '_preview_thread') and self.unified_previewer._preview_thread:
-                if self.unified_previewer._preview_thread.isRunning():
-                    self.unified_previewer._preview_thread.cancel()
-                    self.unified_previewer._preview_thread.wait(500)
-                    if self.unified_previewer._preview_thread.isRunning():
-                        self.unified_previewer._preview_thread.terminate()
-                        self.unified_previewer._preview_thread.wait(100)
-            # 应用退出时使用非阻塞清理，避免主线程卡在 MPV 同步销毁流程
-            self.unified_previewer._clear_preview(app_closing=True)
 
         # 统一清理：删除整个temp文件夹
         import shutil

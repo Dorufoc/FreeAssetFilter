@@ -14,7 +14,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QGraphicsOpacityEffect
-from PySide6.QtCore import Qt, QTimer, QPointF, Signal, QRect, QRunnable, QThreadPool, QMutex, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QTimer, QPointF, Signal, QRect, QRectF, QRunnable, QThreadPool, QMutex, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import (
     QPainter,
     QColor,
@@ -783,6 +783,8 @@ class AudioBackground(QWidget):
         }
 
         self._fluid_blobs = []
+        self._fluid_render_scale = 0.38
+        self._fluid_blob_softness = 1.12
         self._initialize_fluid_blobs()
 
         self._cover_data = None
@@ -1604,30 +1606,81 @@ class AudioBackground(QWidget):
         painter.save()
         painter.setOpacity(opacity_scale)
 
-        top_base = self._mix_colors(colors[3], QColor(58, 42, 82), 0.28)
-        mid_base = self._mix_colors(colors[0], QColor(34, 30, 56), 0.34)
-        bottom_base = self._mix_colors(colors[1], QColor(24, 28, 52), 0.40)
+        top_base = self._mix_colors(colors[3], QColor(72, 56, 102), 0.22)
+        mid_base = self._mix_colors(colors[0], QColor(60, 54, 92), 0.26)
+        bottom_base = self._mix_colors(colors[1], QColor(54, 56, 88), 0.28)
 
         background = QLinearGradient(0, 0, width, height)
         background.setColorAt(0.0, self._with_alpha(top_base, 255))
-        background.setColorAt(0.42, self._with_alpha(mid_base, 255))
+        background.setColorAt(0.45, self._with_alpha(mid_base, 255))
         background.setColorAt(1.0, self._with_alpha(bottom_base, 255))
         painter.fillRect(0, 0, width, height, background)
 
+        render_width = max(128, int(width * self._fluid_render_scale))
+        render_height = max(128, int(height * self._fluid_render_scale))
+        scale_to_buffer_x = render_width / max(1, width)
+        scale_to_buffer_y = render_height / max(1, height)
+        radius_scale = max(scale_to_buffer_x, scale_to_buffer_y)
+
+        fluid_buffer = QImage(render_width, render_height, QImage.Format_ARGB32_Premultiplied)
+        fluid_buffer.fill(Qt.transparent)
+
+        buffer_painter = QPainter(fluid_buffer)
+        buffer_painter.setRenderHint(QPainter.Antialiasing, True)
+        buffer_painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        buffer_painter.setCompositionMode(QPainter.CompositionMode_Screen)
+
         t = (time.perf_counter() - self._animation_start_time) * self._animation_speed
+
+        blob_states = []
         for blob in self._fluid_blobs:
             color = colors[blob["color_index"] % len(colors)]
-            center_x, center_y, radius, scale_x, scale_y, alpha = self._compute_blob_state(blob, t, width, height)
+            center_x, center_y, radius, scale_x, scale_y, alpha = self._compute_blob_state(
+                blob, t, width, height
+            )
+            blob_states.append((blob, color, center_x, center_y, radius, scale_x, scale_y, alpha))
+
+            softness = self._fluid_blob_softness + (0.18 if blob["layer"] == "highlight" else 0.0)
+            blend_alpha = 0.98 if blob["layer"] == "highlight" else 0.92
             self._draw_soft_blob(
-                painter,
-                center_x,
-                center_y,
-                radius,
+                buffer_painter,
+                center_x * scale_to_buffer_x,
+                center_y * scale_to_buffer_y,
+                radius * radius_scale,
                 scale_x,
                 scale_y,
                 self._tint_blob_color(color, blob["layer"]),
-                alpha,
+                min(1.0, alpha * blend_alpha),
+                softness=softness,
             )
+
+        buffer_painter.end()
+
+        painter.drawImage(QRect(0, 0, width, height), fluid_buffer)
+
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode_Screen)
+        for blob, color, center_x, center_y, radius, scale_x, scale_y, alpha in blob_states:
+            if blob["layer"] == "highlight":
+                definition_color = self._adjust_color(color, sat_mul=1.00, val_mul=1.24)
+                definition_radius = radius * 0.76
+                definition_alpha = min(1.0, alpha * 0.46)
+            else:
+                definition_color = self._adjust_color(color, sat_mul=1.08, val_mul=1.10)
+                definition_radius = radius * 0.68
+                definition_alpha = min(1.0, alpha * 0.30)
+
+            self._draw_blob_definition(
+                painter,
+                center_x,
+                center_y,
+                definition_radius,
+                scale_x,
+                scale_y,
+                definition_color,
+                definition_alpha,
+            )
+        painter.restore()
 
         self._paint_global_haze(painter, width, height, colors)
         painter.restore()
@@ -1675,39 +1728,87 @@ class AudioBackground(QWidget):
         scale_y: float,
         color: QColor,
         opacity: float,
+        softness: float = 1.42,
     ):
         rx = radius * scale_x
         ry = radius * scale_y
+        outer_radius = max(rx, ry) * max(1.0, softness)
 
-        path = QPainterPath()
-        path.addEllipse(QPointF(center_x, center_y), rx, ry)
-
-        gradient = QRadialGradient(center_x, center_y, max(rx, ry))
-        gradient.setColorAt(0.00, self._with_alpha(self._adjust_color(color, sat_mul=1.08, val_mul=1.08), int(255 * opacity)))
-        gradient.setColorAt(0.18, self._with_alpha(color, int(235 * opacity)))
-        gradient.setColorAt(0.42, self._with_alpha(self._adjust_color(color, sat_mul=1.02, val_mul=1.10), int(168 * opacity)))
-        gradient.setColorAt(0.70, self._with_alpha(self._adjust_color(color, sat_mul=0.94, val_mul=1.02), int(92 * opacity)))
+        gradient = QRadialGradient(0, 0, outer_radius)
+        gradient.setColorAt(0.00, self._with_alpha(self._adjust_color(color, sat_mul=1.10, val_mul=1.12), int(255 * opacity)))
+        gradient.setColorAt(0.16, self._with_alpha(self._adjust_color(color, sat_mul=1.05, val_mul=1.10), int(236 * opacity)))
+        gradient.setColorAt(0.34, self._with_alpha(color, int(182 * opacity)))
+        gradient.setColorAt(0.58, self._with_alpha(self._adjust_color(color, sat_mul=0.96, val_mul=1.03), int(92 * opacity)))
+        gradient.setColorAt(0.82, self._with_alpha(self._adjust_color(color, sat_mul=0.90, val_mul=1.00), int(22 * opacity)))
         gradient.setColorAt(1.00, QColor(0, 0, 0, 0))
 
         painter.save()
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(gradient))
-        painter.drawPath(path)
+        painter.translate(center_x, center_y)
+
+        if outer_radius > 0:
+            painter.scale(rx / outer_radius, ry / outer_radius)
+
+        painter.fillRect(
+            QRectF(-outer_radius, -outer_radius, outer_radius * 2, outer_radius * 2),
+            QBrush(gradient),
+        )
+        painter.restore()
+
+    def _draw_blob_definition(
+        self,
+        painter: QPainter,
+        center_x: float,
+        center_y: float,
+        radius: float,
+        scale_x: float,
+        scale_y: float,
+        color: QColor,
+        opacity: float,
+    ):
+        rx = radius * scale_x
+        ry = radius * scale_y
+        outer_radius = max(rx, ry)
+
+        gradient = QRadialGradient(0, 0, outer_radius)
+        gradient.setColorAt(0.00, self._with_alpha(self._adjust_color(color, sat_mul=1.04, val_mul=1.18), int(190 * opacity)))
+        gradient.setColorAt(0.18, self._with_alpha(self._adjust_color(color, sat_mul=1.02, val_mul=1.10), int(124 * opacity)))
+        gradient.setColorAt(0.38, self._with_alpha(color, int(62 * opacity)))
+        gradient.setColorAt(0.58, self._with_alpha(self._adjust_color(color, sat_mul=0.96, val_mul=1.02), int(18 * opacity)))
+        gradient.setColorAt(1.00, QColor(0, 0, 0, 0))
+
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.translate(center_x, center_y)
+
+        if outer_radius > 0:
+            painter.scale(rx / outer_radius, ry / outer_radius)
+
+        painter.fillRect(
+            QRectF(-outer_radius, -outer_radius, outer_radius * 2, outer_radius * 2),
+            QBrush(gradient),
+        )
         painter.restore()
 
     def _paint_global_haze(self, painter: QPainter, width: int, height: int, colors: list):
-        soft_wash = QLinearGradient(0, 0, 0, height)
-        soft_wash.setColorAt(0.0, self._with_alpha(self._adjust_color(colors[3], sat_mul=0.86, val_mul=1.16), 18))
-        soft_wash.setColorAt(0.35, QColor(255, 255, 255, 0))
-        soft_wash.setColorAt(0.70, QColor(255, 255, 255, 0))
-        soft_wash.setColorAt(1.0, self._with_alpha(self._adjust_color(colors[1], sat_mul=0.90, val_mul=1.08), 14))
-        painter.fillRect(0, 0, width, height, soft_wash)
+        vertical_wash = QLinearGradient(0, 0, 0, height)
+        vertical_wash.setColorAt(0.0, self._with_alpha(self._adjust_color(colors[3], sat_mul=0.90, val_mul=1.10), 8))
+        vertical_wash.setColorAt(0.50, QColor(255, 255, 255, 0))
+        vertical_wash.setColorAt(1.0, self._with_alpha(self._adjust_color(colors[1], sat_mul=0.92, val_mul=1.06), 6))
+        painter.fillRect(0, 0, width, height, vertical_wash)
 
-        top_glow = QRadialGradient(width * 0.50, height * 0.08, width * 0.92)
-        top_color = self._with_alpha(self._adjust_color(colors[3], sat_mul=0.90, val_mul=1.18), 22)
-        top_glow.setColorAt(0.0, top_color)
-        top_glow.setColorAt(0.75, QColor(0, 0, 0, 0))
-        painter.fillRect(0, 0, width, height, top_glow)
+        horizontal_wash = QLinearGradient(0, 0, width, 0)
+        horizontal_wash.setColorAt(0.0, self._with_alpha(self._adjust_color(colors[0], sat_mul=0.88, val_mul=1.10), 8))
+        horizontal_wash.setColorAt(0.18, QColor(255, 255, 255, 0))
+        horizontal_wash.setColorAt(0.82, QColor(255, 255, 255, 0))
+        horizontal_wash.setColorAt(1.0, self._with_alpha(self._adjust_color(colors[2], sat_mul=0.88, val_mul=1.08), 8))
+        painter.fillRect(0, 0, width, height, horizontal_wash)
+
+        center_lift = QRadialGradient(width * 0.50, height * 0.50, max(width, height) * 0.92)
+        center_lift.setColorAt(0.0, self._with_alpha(self._adjust_color(colors[4], sat_mul=0.82, val_mul=1.16), 18))
+        center_lift.setColorAt(0.58, self._with_alpha(self._adjust_color(colors[0], sat_mul=0.84, val_mul=1.10), 8))
+        center_lift.setColorAt(1.0, self._with_alpha(self._adjust_color(colors[1], sat_mul=0.86, val_mul=1.06), 4))
+        painter.fillRect(0, 0, width, height, center_lift)
 
     def _begin_theme_transition(self, previous_colors):
         if not previous_colors or not self._is_loaded or self._current_mode != self.MODE_FLUID:
