@@ -2,40 +2,50 @@
 # -*- coding: utf-8 -*-
 """
 FreeAssetFilter 现代化下拉菜单组件
-基于 D_HoverMenu + CustomSelectList 实现，提供更稳定、更现代、可扩展的下拉菜单能力。
-
-特性：
-- 复用 D_HoverMenu 的稳定弹出/定位/边界修正能力
-- 复用 CustomSelectList 的统一列表视觉风格
-- 支持 top / bottom / left / right 及四角扩展位置
-- 支持内部按钮模式与外部目标控件模式
-- 支持键盘快捷键召唤、方向键导航、Enter 确认、Esc 关闭
-- 保持对旧版 CustomDropdownMenu 接口的兼容
+基于 D_HoverMenu 实现，保留现有下拉菜单的定位、显示隐藏动画与交互逻辑，
+但其内部列表控件的样式与布局计算全面参考图片预览器右键菜单 D_MoreMenu。
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QApplication, QLabel
+from PySide6.QtWidgets import (
+    QWidget,
+    QHBoxLayout,
+    QVBoxLayout,
+    QApplication,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+)
 from PySide6.QtCore import Qt, Signal, QEvent, QPoint, QRect, QSize, QTimer
-from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QShortcut, QColor, QPainter, QPen, QBrush
+from PySide6.QtGui import (
+    QFont,
+    QFontMetrics,
+    QKeySequence,
+    QShortcut,
+    QColor,
+    QPainter,
+    QPen,
+    QBrush,
+)
 
 from .D_hover_menu import D_HoverMenu
-from .list_widgets import CustomSelectList
 from .button_widgets import CustomButton
+from .smooth_scroller import D_ScrollBar, SmoothScroller
 from freeassetfilter.utils.app_logger import debug
 
 
 class _DropdownHoverMenu(D_HoverMenu):
     """
     专用于下拉菜单的悬浮菜单承载层。
-    复用 D_HoverMenu 的圆角卡片绘制思路，但使用 dropdown 专用的不透明卡片样式。
 
     与通用 D_HoverMenu 不同：
     - 下拉菜单仅保留透明度动画
     - 不保留位移动画
-    - 使用稳定的自绘圆角卡片，而不是视频悬浮栏那种半透明背景
+    - 使用稳定的不透明圆角卡片样式
     """
 
     def paintEvent(self, event):
@@ -46,6 +56,7 @@ class _DropdownHoverMenu(D_HoverMenu):
             settings_manager = app.settings_manager
         else:
             from freeassetfilter.core.settings_manager import SettingsManager
+
             settings_manager = SettingsManager()
 
         current_colors = settings_manager.get_setting("appearance.colors", {})
@@ -117,6 +128,405 @@ class _DropdownHoverMenu(D_HoverMenu):
         self._fade_animation.start()
 
 
+class _DropdownMenuItem(QPushButton):
+    """
+    dropdown 专用菜单项。
+    样式与交互参考 D_MoreMenuItem，但支持 selected / highlighted 状态。
+    """
+
+    clickedWithIndex = Signal(int)
+
+    def __init__(self, index: int, item_info: Dict[str, Any], parent=None):
+        super().__init__(parent)
+
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
+        self.global_font = getattr(app, "global_font", QFont())
+        self.settings_manager = getattr(app, "settings_manager", None)
+
+        self._index = index
+        self._item_info = item_info
+        self._hovered = False
+        self._selected = False
+        self._enabled_state = bool(item_info.get("enabled", True))
+
+        self.setText(str(item_info.get("text", "")))
+        self.setFont(self.global_font)
+        self.setFlat(True)
+        self.setCursor(Qt.PointingHandCursor if self._enabled_state else Qt.ArrowCursor)
+        self.setEnabled(self._enabled_state)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        tooltip = str(item_info.get("tooltip", "") or "")
+        if tooltip:
+            self.setToolTip(tooltip)
+
+        self.clicked.connect(self._emit_clicked_with_index)
+        self._apply_stylesheet()
+
+    def _colors(self):
+        colors = {
+            "base_color": "#ffffff",
+            "normal_color": "#f0f0f0",
+            "secondary_color": "#333333",
+            "accent_color": "#B036EE",
+        }
+
+        if self.settings_manager:
+            current_colors = self.settings_manager.get_setting("appearance.colors", {})
+            colors.update(current_colors)
+
+        return colors
+
+    def _selected_background(self, accent_color: str) -> str:
+        qcolor = QColor(accent_color)
+        qcolor.setAlpha(80)
+        return f"rgba({qcolor.red()}, {qcolor.green()}, {qcolor.blue()}, 0.31)"
+
+    def _apply_stylesheet(self):
+        colors = self._colors()
+
+        text_color = colors.get("secondary_color", "#333333")
+        hover_color = colors.get("normal_color", "#f0f0f0")
+        accent_color = colors.get("accent_color", "#B036EE")
+        selected_bg = self._selected_background(accent_color)
+
+        border_radius = int(4 * self.dpi_scale)
+        padding_left = int(8 * self.dpi_scale)
+        padding_right = int(20 * self.dpi_scale)
+        padding_v = int(6 * self.dpi_scale)
+        hover_margin = int(1 * self.dpi_scale)
+
+        base_background = "transparent"
+        border = "none"
+
+        if self._selected:
+            base_background = selected_bg
+            border = f"1px solid {accent_color}"
+
+        disabled_text_color = QColor(text_color)
+        disabled_text_color.setAlpha(110)
+
+        self.setStyleSheet(
+            f"""
+            QPushButton {{
+                color: {text_color if self._enabled_state else disabled_text_color.name(QColor.HexArgb)};
+                padding: {padding_v}px {padding_right}px {padding_v}px {padding_left}px;
+                background-color: {base_background};
+                border: {border};
+                border-radius: {border_radius}px;
+                text-align: left;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color if self._enabled_state and not self._selected else base_background};
+                margin: {hover_margin}px;
+                padding: {max(0, padding_v - hover_margin)}px {max(0, padding_right - hover_margin)}px {max(0, padding_v - hover_margin)}px {max(0, padding_left - hover_margin)}px;
+                border: {border};
+                border-radius: {border_radius}px;
+            }}
+            """
+        )
+
+    def _emit_clicked_with_index(self):
+        self.clickedWithIndex.emit(self._index)
+
+    def enterEvent(self, event):
+        self._hovered = True
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        super().leaveEvent(event)
+
+    def set_selected(self, selected: bool):
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self._apply_stylesheet()
+
+    def is_selected(self) -> bool:
+        return self._selected
+
+    def item_index(self) -> int:
+        return self._index
+
+    def set_item_text(self, text: str):
+        self.setText(text)
+
+    def item_info(self) -> Dict[str, Any]:
+        return self._item_info
+
+
+class _DropdownMenuList(QWidget):
+    """
+    dropdown 专用列表容器。
+
+    参考 D_MoreMenu 的卡片式菜单布局：
+    - 外层内容区无额外边框，交给 hover_menu 绘制
+    - 内层按钮列表使用按钮式菜单项
+    - 宽高计算由文本内容、padding、可见项数量驱动
+    """
+
+    itemClicked = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
+        self.global_font = getattr(app, "global_font", QFont())
+        self.settings_manager = getattr(app, "settings_manager", None)
+
+        self._items: List[Dict[str, Any]] = []
+        self._item_widgets: List[_DropdownMenuItem] = []
+        self._current_index = -1
+        self._fixed_width: Optional[int] = None
+        self._max_visible_items = 6
+        self._max_height = int(140 * self.dpi_scale)
+
+        self._padding = int(4 * self.dpi_scale)
+        self._item_spacing = int(2 * self.dpi_scale)
+        self._row_min_height = int(20 * self.dpi_scale)
+        self._scrollbar_reserved_width = int(10 * self.dpi_scale)
+
+        # 兼容旧调用链：
+        # 过去外部代码会访问 dropdown.list_widget.list_widget.sizeHintForRow(0)
+        # 这里将 list_widget 指回自身，并补齐少量兼容方法。
+        self.list_widget = self
+
+        self._init_ui()
+
+    def _init_ui(self):
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(self._padding, self._padding, self._padding, self._padding)
+        main_layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
+        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
+        SmoothScroller.apply_to_scroll_area(self.scroll_area)
+        self.scroll_area.setAttribute(Qt.WA_AcceptTouchEvents, False)
+        if self.scroll_area.viewport():
+            self.scroll_area.viewport().setAttribute(Qt.WA_AcceptTouchEvents, False)
+        self.scroll_area.setStyleSheet(
+            """
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea > QWidget > QWidget {
+                background: transparent;
+                border: none;
+            }
+            """
+        )
+
+        self.content_widget = QWidget(self.scroll_area)
+        self.content_widget.setAttribute(Qt.WA_StyledBackground, True)
+        self.content_widget.setStyleSheet("background: transparent; border: none;")
+        self.content_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(self._item_spacing)
+
+        self.scroll_area.setWidget(self.content_widget)
+
+        # 下拉菜单列表只允许垂直滚动：
+        # QScroller 在 QScrollArea 上默认可产生二维平移，即使横向滚动条被隐藏，
+        # 内容宽度与视口宽度稍有抖动时仍可能出现“左右还能拖动一点”的错觉。
+        # 这里强制将横向滚动值钳制为 0，彻底禁止横向滚动偏移。
+        horizontal_scrollbar = self.scroll_area.horizontalScrollBar()
+        horizontal_scrollbar.setDisabled(True)
+        horizontal_scrollbar.rangeChanged.connect(lambda *_: horizontal_scrollbar.setValue(0))
+        horizontal_scrollbar.valueChanged.connect(
+            lambda value: horizontal_scrollbar.setValue(0) if value != 0 else None
+        )
+
+        main_layout.addWidget(self.scroll_area)
+
+    def clear_items(self):
+        while self.content_layout.count():
+            item = self.content_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        self._items = []
+        self._item_widgets = []
+        self._current_index = -1
+        self._apply_size()
+
+    def set_items(self, items: Sequence[Dict[str, Any]]):
+        self.clear_items()
+
+        self._items = list(items)
+
+        for index, item_info in enumerate(self._items):
+            item_widget = _DropdownMenuItem(index, item_info, self.content_widget)
+            item_widget.clickedWithIndex.connect(self.itemClicked.emit)
+            self.content_layout.addWidget(item_widget)
+            self._item_widgets.append(item_widget)
+
+        if self._item_widgets:
+            self.set_current_index(0)
+        else:
+            self._current_index = -1
+
+        self._apply_size()
+
+    def set_fixed_width(self, width: Optional[int]):
+        self._fixed_width = None if width is None else max(1, int(width))
+        self._apply_size()
+
+    def set_max_visible_items(self, count: int):
+        self._max_visible_items = max(1, int(count))
+        self._apply_size()
+
+    def set_max_height(self, height: int):
+        self._max_height = max(int(28 * self.dpi_scale), int(height))
+        self._apply_size()
+
+    def count(self) -> int:
+        return len(self._item_widgets)
+
+    def sizeHintForRow(self, index: int) -> int:
+        """兼容旧版 QListWidget 风格接口。"""
+        if index < 0 or index >= len(self._item_widgets):
+            return self._row_height()
+        return self._row_height()
+
+    def current_index(self) -> int:
+        return self._current_index
+
+    def item_widget(self, index: int) -> Optional[_DropdownMenuItem]:
+        if 0 <= index < len(self._item_widgets):
+            return self._item_widgets[index]
+        return None
+
+    def clear_selection(self):
+        self._current_index = -1
+        for widget in self._item_widgets:
+            widget.set_selected(False)
+
+    def set_current_index(self, index: int):
+        if not (0 <= index < len(self._item_widgets)):
+            self.clear_selection()
+            return
+
+        self._current_index = index
+        for item_index, widget in enumerate(self._item_widgets):
+            widget.set_selected(item_index == index)
+
+    def scroll_to_index(self, index: int):
+        widget = self.item_widget(index)
+        if widget is not None:
+            self.scroll_area.ensureWidgetVisible(widget, 0, int(4 * self.dpi_scale))
+
+    def _row_height(self) -> int:
+        font_metrics = QFontMetrics(self.global_font)
+        text_height = font_metrics.height()
+        padding_v = int(6 * self.dpi_scale)
+        hover_margin = int(1 * self.dpi_scale)
+        return max(self._row_min_height, text_height + (padding_v - hover_margin) * 2 + int(2 * self.dpi_scale))
+
+    def _calculate_content_width(self) -> int:
+        if self._fixed_width is not None:
+            return max(1, self._fixed_width)
+
+        max_item_width = 0
+        for index, item_widget in enumerate(self._item_widgets):
+            full_text = str(self._items[index].get("text", ""))
+            item_widget.set_item_text(full_text)
+            max_item_width = max(max_item_width, item_widget.sizeHint().width())
+
+        if max_item_width > 0:
+            return max(1, max_item_width)
+
+        font_metrics = QFontMetrics(self.global_font)
+        max_text_width = 0
+
+        for item in self._items:
+            text = str(item.get("text", ""))
+            if text:
+                max_text_width = max(max_text_width, font_metrics.horizontalAdvance(text))
+
+        padding_left = int(8 * self.dpi_scale)
+        padding_right = int(20 * self.dpi_scale)
+
+        return max(1, max_text_width + padding_left + padding_right)
+
+    def _has_vertical_scrollbar(self) -> bool:
+        return len(self._item_widgets) > self._max_visible_items
+
+    def _effective_scrollbar_width(self) -> int:
+        scrollbar = self.scroll_area.verticalScrollBar() if hasattr(self, "scroll_area") else None
+        if scrollbar is not None:
+            hint_width = scrollbar.sizeHint().width()
+            if hint_width > 0:
+                return hint_width
+        return self._scrollbar_reserved_width
+
+    def _calculate_total_width(self) -> int:
+        content_width = self._calculate_content_width()
+        scrollbar_width = self._effective_scrollbar_width() if self._has_vertical_scrollbar() else 0
+        return content_width + scrollbar_width + self._padding * 2
+
+    def _calculate_visible_height(self) -> int:
+        item_count = len(self._item_widgets)
+        row_height = self._row_height()
+        visible_items = min(item_count, self._max_visible_items) if item_count > 0 else 1
+
+        content_height = visible_items * row_height
+        if visible_items > 1:
+            content_height += (visible_items - 1) * self._item_spacing
+
+        total_height = content_height + self._padding * 2
+        return min(max(total_height, int(28 * self.dpi_scale)), self._max_height)
+
+    def _sync_item_text_and_size(self, content_width: int, row_height: int):
+        for index, item_widget in enumerate(self._item_widgets):
+            text = str(self._items[index].get("text", ""))
+            item_widget.set_item_text(text)
+            item_widget.setFixedHeight(row_height)
+            item_widget.setFixedWidth(content_width)
+
+    def _apply_size(self):
+        content_width = self._calculate_content_width()
+        visible_height = self._calculate_visible_height()
+        row_height = self._row_height()
+
+        item_count = len(self._item_widgets)
+        visible_items = min(item_count, self._max_visible_items) if item_count > 0 else 1
+        scroll_content_height = visible_items * row_height
+        if visible_items > 1:
+            scroll_content_height += (visible_items - 1) * self._item_spacing
+
+        needs_scrollbar = self._has_vertical_scrollbar()
+        scrollbar_width = self._effective_scrollbar_width() if needs_scrollbar else 0
+        scroll_width = content_width + scrollbar_width
+
+        self._sync_item_text_and_size(content_width, row_height)
+
+        self.scroll_area.setFixedWidth(scroll_width)
+        self.scroll_area.setFixedHeight(max(1, visible_height - self._padding * 2))
+        self.content_widget.setFixedWidth(content_width)
+        self.setFixedSize(scroll_width + self._padding * 2, visible_height)
+
+        horizontal_scrollbar = self.scroll_area.horizontalScrollBar()
+        if horizontal_scrollbar is not None:
+            horizontal_scrollbar.setValue(0)
+
+    def sizeHint(self):
+        return QSize(self._calculate_total_width(), self._calculate_visible_height())
+
+
 class Ddropmenu(QWidget):
     """
     新一代下拉菜单组件。
@@ -124,7 +534,7 @@ class Ddropmenu(QWidget):
     支持：
     - 外部按钮/控件作为锚点
     - 内部按钮模式
-    - 列表单选
+    - 单选菜单列表
     - 键盘召唤与键盘导航
     - 兼容旧版 CustomDropdownMenu 的常用接口
     """
@@ -169,6 +579,10 @@ class Ddropmenu(QWidget):
         self._menu_visible = False
         self._shortcut: Optional[QShortcut] = None
 
+        self._layout_refresh_timer = QTimer(self)
+        self._layout_refresh_timer.setSingleShot(True)
+        self._layout_refresh_timer.timeout.connect(self._refresh_visible_menu_position)
+
         self._init_ui()
         self._bind_signals()
 
@@ -191,14 +605,7 @@ class Ddropmenu(QWidget):
         else:
             self.main_button = None
 
-        self.list_widget = CustomSelectList(
-            parent=self,
-            default_width=90,
-            default_height=72,
-            min_width=60,
-            min_height=28,
-            selection_mode="single",
-        )
+        self.list_widget = _DropdownMenuList(parent=self)
         self.list_widget.hide()
 
         self.hover_menu = _DropdownHoverMenu(
@@ -209,24 +616,17 @@ class Ddropmenu(QWidget):
             use_sub_widget_mode=False,
             fill_width=False,
             margin=int(2 * self.dpi_scale),
-            border_radius=int(8 * self.dpi_scale),
+            border_radius=int(4 * self.dpi_scale),
         )
         self.hover_menu.set_content(self.list_widget)
         self.hover_menu.set_timeout_enabled(False)
         self.hover_menu.keyPressed.connect(self._on_menu_key_pressed)
         self.hover_menu.controlBarHidden.connect(self._on_menu_hidden)
 
-        # dropdown 使用 itemWidget 自定义文本层，因此需要去掉 CustomSelectList
-        # 默认样式里 QListWidget::item 的左侧文本内边距，否则视觉中心会持续左偏。
-        list_style = self.list_widget.list_widget.styleSheet()
-        self.list_widget.list_widget.setStyleSheet(
-            list_style + """
-            QListWidget::item {
-                padding-left: 0px;
-                padding-right: 0px;
-            }
-            """
-        )
+        self.list_widget.installEventFilter(self)
+        self.list_widget.scroll_area.installEventFilter(self)
+        self.list_widget.content_widget.installEventFilter(self)
+        self.hover_menu.installEventFilter(self)
 
     def _bind_signals(self):
         if self.main_button:
@@ -255,63 +655,18 @@ class Ddropmenu(QWidget):
     def _display_text_for_item(self, item: Dict[str, Any]) -> str:
         return str(item.get("text", ""))
 
-    def _install_scrolling_item_widgets(self):
-        """为 dropdown 列表项安装基础文本控件，保证文本正确居中显示。"""
-        text_color = "#333333"
-        if self.settings_manager:
-            text_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+    def _schedule_layout_refresh(self, delay_ms: int = 0):
+        delay_ms = max(0, int(delay_ms))
+        self._layout_refresh_timer.stop()
+        self._layout_refresh_timer.start(delay_ms)
 
-        list_control = self.list_widget.list_widget
-        item_height = max(
-            int(19 * self.dpi_scale),
-            list_control.sizeHintForRow(0) if list_control.count() > 0 else int(19 * self.dpi_scale)
-        )
+    def _refresh_visible_menu_position(self):
+        """内容宽高稳定后，重新同步一次弹出菜单位置。"""
+        if not self.hover_menu.isVisible():
+            return
 
-        viewport_width = list_control.viewport().width() if list_control.viewport() else 0
-        fallback_width = max(
-            viewport_width,
-            list_control.width(),
-            self.list_widget.width(),
-            self._fixed_width or 0,
-            self.list_widget.sizeHint().width(),
-            int(60 * self.dpi_scale),
-        )
-
-        font_metrics = QFontMetrics(self.global_font)
-
-        for index, item_info in enumerate(self._items):
-            qt_item = list_control.item(index)
-            if qt_item is None:
-                continue
-
-            item_rect = list_control.visualItemRect(qt_item)
-            item_width = item_rect.width() if item_rect.isValid() and item_rect.width() > 0 else max(1, fallback_width - int(2 * self.dpi_scale))
-
-            row_widget = QWidget()
-            row_widget.setAttribute(Qt.WA_StyledBackground, True)
-            row_widget.setStyleSheet("background: transparent; border: none;")
-            row_widget.setFixedSize(item_width, item_height)
-
-            qt_item.setText("")
-
-            row_layout = QVBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(0)
-
-            display_text = self._display_text_for_item(item_info)
-            elided_text = font_metrics.elidedText(display_text, Qt.ElideRight, max(1, item_width - int(8 * self.dpi_scale)))
-
-            label = QLabel(elided_text, row_widget)
-            label.setFont(self.global_font)
-            label.setAlignment(Qt.AlignCenter)
-            label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            label.setStyleSheet(
-                f"background: transparent; border: none; margin: 0; padding: 0; color: {text_color};"
-            )
-
-            row_layout.addWidget(label)
-            qt_item.setSizeHint(QSize(item_width, item_height))
-            list_control.setItemWidget(qt_item, row_widget)
+        self.hover_menu.updateGeometry()
+        self.hover_menu._prepare_geometry_for_show()
 
     def _target_widget(self):
         return self._external_target_widget or self.main_button
@@ -354,8 +709,6 @@ class Ddropmenu(QWidget):
             content_width = menu_size.width()
             content_height = menu_size.height()
 
-        # 直接按照 hover_menu 内真实内容区域几何中心进行对齐，
-        # 避免使用容器宽高差值估算导致的视觉偏移。
         centered_x = int(round(anchor_center_x - (content_x + content_width / 2.0)))
         centered_y = int(round(anchor_center_y - (content_y + content_height / 2.0)))
 
@@ -416,44 +769,20 @@ class Ddropmenu(QWidget):
         self.main_button.update()
 
     def _update_list_visual_state(self):
-        if 0 <= self._current_index < self.list_widget.list_widget.count():
-            self.list_widget.set_current_item(self._current_index)
-            current_item = self.list_widget.list_widget.item(self._current_index)
-            if current_item:
-                self.list_widget.list_widget.scrollToItem(current_item)
+        if 0 <= self._current_index < self.list_widget.count():
+            self.list_widget.set_current_index(self._current_index)
+            self.list_widget.scroll_to_index(self._current_index)
         else:
             self.list_widget.clear_selection()
 
     def _adjust_menu_size(self):
-        item_count = len(self._items)
+        self.list_widget.set_fixed_width(self._fixed_width)
+        self.list_widget.set_max_height(self._max_height)
+        self.list_widget.set_max_visible_items(self._max_visible_items)
 
-        row_height = self.list_widget.list_widget.sizeHintForRow(0) if item_count > 0 else 0
-        row_height = max(int(19 * self.dpi_scale), row_height)
-
-        visible_items = min(item_count, self._max_visible_items) if item_count > 0 else 1
-
-        # 高度策略：仅定义最大高度，上限由 _max_height 控制；
-        # 实际显示高度根据内部条目数量自适应，不再人为设置偏大的最小高度。
-        list_padding = int(6 * self.dpi_scale)
-        visible_height = visible_items * row_height + list_padding
-
-        if item_count <= 0:
-            visible_height = int(28 * self.dpi_scale)
-        else:
-            visible_height = min(self._max_height, visible_height)
-
-        content_width = self._fixed_width if self._fixed_width else self.list_widget.sizeHint().width()
-        content_width = max(content_width, int(60 * self.dpi_scale))
-
-        # 只控制 CustomSelectList 的可见尺寸，让其内部 QListWidget 继续使用项目自带的
-        # D_ScrollBar + SmoothScroller 布局与滚动逻辑。
-        self.list_widget.setFixedSize(content_width, visible_height)
-        self.list_widget.adjust_width_to_content()
-        self.list_widget.setFixedWidth(content_width)
-        self.list_widget.setFixedHeight(visible_height)
-
-        # 外层卡片严格跟随实际可见内容尺寸，不再依赖 D_HoverMenu._update_size 的 sizeHint 逻辑
-        self.hover_menu.setFixedSize(self.list_widget.width(), self.list_widget.height())
+        content_size = self.list_widget.sizeHint()
+        self.list_widget.setFixedSize(content_size)
+        self.hover_menu.setFixedSize(content_size)
         self.hover_menu.updateGeometry()
         self.hover_menu.update()
 
@@ -535,12 +864,18 @@ class Ddropmenu(QWidget):
         if not (0 <= self._current_index < len(self._items)):
             return
 
+        if not self._items[self._current_index].get("enabled", True):
+            return
+
         selected_data = self._items[self._current_index]["data"]
         self.itemClicked.emit(selected_data)
         self.hide_menu()
 
     def _on_list_item_clicked(self, index: int):
         if not (0 <= index < len(self._items)):
+            return
+
+        if not self._items[index].get("enabled", True):
             return
 
         self._select_index(index, emit_signal=True)
@@ -579,8 +914,7 @@ class Ddropmenu(QWidget):
     def set_items(self, items: Sequence[Any], default_item: Any = None):
         self._items = [self._normalize_item(item) for item in items]
 
-        self.list_widget.clear_items()
-        self.list_widget.add_items(self._items)
+        self.list_widget.set_items(self._items)
 
         if default_item is not None:
             self.set_current_item(default_item)
@@ -593,7 +927,7 @@ class Ddropmenu(QWidget):
                 self.main_button.setText("")
 
         self._adjust_menu_size()
-        QTimer.singleShot(0, self._install_scrolling_item_widgets)
+        self._schedule_layout_refresh(0)
 
     def set_current_item(self, item: Any):
         index = item if isinstance(item, int) and 0 <= item < len(self._items) else self._find_index_by_value(item)
@@ -616,14 +950,17 @@ class Ddropmenu(QWidget):
             self.main_button.setFixedWidth(self._fixed_width)
         self._adjust_menu_size()
         self._apply_button_text()
+        self._schedule_layout_refresh(0)
 
     def set_max_height(self, height: int):
         self._max_height = max(int(28 * self.dpi_scale), int(height))
         self._adjust_menu_size()
+        self._schedule_layout_refresh(0)
 
     def set_max_visible_items(self, count: int):
         self._max_visible_items = max(1, int(count))
         self._adjust_menu_size()
+        self._schedule_layout_refresh(0)
 
     def set_position(self, position: str):
         if position in self.POSITION_MAP:
@@ -693,8 +1030,7 @@ class Ddropmenu(QWidget):
             self._select_index(0, emit_signal=False)
 
         self.list_widget.show()
-        self.list_widget.list_widget.setFocus()
-        QTimer.singleShot(0, self._install_scrolling_item_widgets)
+        self._schedule_layout_refresh(0)
 
     def hide_menu(self):
         if not self._menu_visible and not self.hover_menu.isVisible():
@@ -725,16 +1061,25 @@ class Ddropmenu(QWidget):
             self._adjust_menu_size()
 
         if self._items:
-            QTimer.singleShot(0, self._install_scrolling_item_widgets)
+            self._schedule_layout_refresh(0)
 
     def eventFilter(self, obj, event):
         app = QApplication.instance()
 
         if (
-            obj is self._target_widget()
-            and self.is_menu_visible()
-            and event.type() == QEvent.MouseButtonPress
+            obj in (
+                self.list_widget,
+                self.list_widget.scroll_area,
+                self.list_widget.content_widget,
+                self.hover_menu,
+            )
+            and event.type() in (QEvent.Resize, QEvent.Show, QEvent.LayoutRequest)
+            and self._items
         ):
+            delay_ms = 16 if event.type() == QEvent.Show else 0
+            self._schedule_layout_refresh(delay_ms)
+
+        if obj is self._target_widget() and self.is_menu_visible() and event.type() == QEvent.MouseButtonPress:
             self.hide_menu()
             event.accept()
             return True

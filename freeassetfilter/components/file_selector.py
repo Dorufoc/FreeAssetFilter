@@ -349,9 +349,7 @@ class CustomFileSelector(QWidget):
         self.drive_combo = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
         # 设置外部目标按钮
         self.drive_combo.set_target_button(self.drive_btn)
-        # 设置固定宽度为25DX（25 * dpi_scale）
-        drive_combo_width = int(25 * self.dpi_scale)
-        self.drive_combo.set_fixed_width(drive_combo_width)
+        # 盘符菜单宽度改为按内容自适应，不再设置固定宽度
         # 动态获取当前系统存在的盘符
         self._update_drive_list()
         self.drive_combo.itemClicked.connect(self._on_drive_changed)
@@ -442,6 +440,7 @@ class CustomFileSelector(QWidget):
         
         # 排序方式下拉菜单（使用外部按钮，不创建内部按钮）
         self.sort_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
+        # 排序菜单保持内容自适应宽度，不设置固定宽度
         sort_items = [
             {"text": "名称升序", "data": ("name", "asc")},
             {"text": "名称降序", "data": ("name", "desc")},
@@ -1579,6 +1578,15 @@ class CustomFileSelector(QWidget):
             
             # 设置列表项和默认选中项
             self.drive_combo.set_items(all_drives, default_item=current_drive)
+
+            # 盘符菜单不使用滚动布局，直接完整显示所有条目
+            visible_drive_count = max(1, len(all_drives))
+            self.drive_combo.set_max_visible_items(visible_drive_count)
+
+            estimated_row_height = self.drive_combo.list_widget.list_widget.sizeHintForRow(0)
+            estimated_row_height = max(int(19 * self.dpi_scale), estimated_row_height)
+            full_menu_height = visible_drive_count * estimated_row_height + int(6 * self.dpi_scale)
+            self.drive_combo.set_max_height(full_menu_height)
     
     def _on_drive_changed(self, drive):
         """
@@ -1587,7 +1595,7 @@ class CustomFileSelector(QWidget):
         Args:
             drive (str): 选中的盘符文本
         """
-        # 直接使用传递的盘符文本
+        drive = drive.strip()
         
         # 跳过分隔符选项
         if drive == "--- 网络位置 ---":
