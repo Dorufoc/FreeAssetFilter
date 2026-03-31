@@ -69,6 +69,7 @@ class ModernSettingsWindow(QDialog):
     
     # 信号定义
     settings_saved = Signal(dict)  # 设置保存信号
+    player_restart_requested = Signal(dict)  # 请求立即重启播放器
     
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Dialog | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint)
@@ -1990,6 +1991,7 @@ class ModernSettingsWindow(QDialog):
         font_changed = self._check_font_changed()
         theme_changed = self._check_theme_changed()
         colors_changed = self._check_colors_changed()
+        player_settings_changed = self._check_player_settings_changed()
 
         for key, value in self.current_settings.items():
             self.settings_manager.set_setting(key, value)
@@ -2011,6 +2013,9 @@ class ModernSettingsWindow(QDialog):
             self._show_font_change_reminder()
 
         self.settings_saved.emit(self.current_settings)
+
+        if player_settings_changed:
+            self._prompt_restart_player_if_needed()
 
         self.close()
     
@@ -2061,6 +2066,36 @@ class ModernSettingsWindow(QDialog):
             if original_value != current_value:
                 return True
         return False
+
+    def _check_player_settings_changed(self):
+        """
+        检查播放器相关设置是否发生变更。
+        """
+        for key, current_value in self.current_settings.items():
+            if not key.startswith("player."):
+                continue
+
+            original_value = self.settings_manager.get_setting(key, current_value)
+            if original_value != current_value:
+                return True
+
+        return False
+
+    def _prompt_restart_player_if_needed(self):
+        """
+        当播放器相关设置变更后，询问用户是否立即重启当前播放器。
+        """
+        msg_box = CustomMessageBox(self)
+        msg_box.set_title("播放器设置已保存")
+        msg_box.set_text("检测到播放器相关设置已变更。\n是否立即重启当前播放器并恢复当前播放内容与进度？")
+        msg_box.set_buttons(["立即重启播放器", "稍后生效"], Qt.Horizontal, ["primary", "secondary"])
+
+        def on_button_clicked(button_index):
+            if button_index == 0:
+                self.player_restart_requested.emit(dict(self.current_settings))
+
+        msg_box.buttonClicked.connect(on_button_clicked)
+        msg_box.exec()
     
     def _show_font_change_reminder(self):
         """

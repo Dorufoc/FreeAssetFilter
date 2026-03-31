@@ -1984,6 +1984,7 @@ class UnifiedPreviewer(QWidget):
             
             self._current_settings_window = ModernSettingsWindow(parent_widget)
             self._current_settings_window.settings_saved.connect(self._update_appearance_after_settings_change)
+            self._current_settings_window.player_restart_requested.connect(self._restart_current_media_preview)
             self._current_settings_window.finished.connect(self._on_settings_window_closed)
             self._current_settings_window.exec()
         except (RuntimeError, AttributeError):
@@ -2031,6 +2032,97 @@ class UnifiedPreviewer(QWidget):
                     pass
         except (RuntimeError, AttributeError):
             pass
+
+    def _capture_current_media_session(self):
+        """
+        抓取当前媒体播放器会话，用于重启后恢复播放内容。
+        """
+        try:
+            if not self.current_preview_widget:
+                return None
+
+            from freeassetfilter.components.video_player import VideoPlayer
+
+            if not isinstance(self.current_preview_widget, VideoPlayer):
+                return None
+
+            player = self.current_preview_widget
+            current_file = getattr(player, "_current_file", "")
+            if not current_file:
+                return None
+
+            state = player._save_playback_state() if hasattr(player, "_save_playback_state") else {}
+            state.update({
+                "file_path": current_file,
+                "playback_mode": getattr(player, "_playback_mode", "video"),
+            })
+            return state
+        except Exception as e:
+            error(f"[UnifiedPreviewer] 抓取当前媒体会话失败: {e}")
+            return None
+
+    def _restart_current_media_preview(self, settings=None):
+        """
+        安全重启当前媒体预览，并恢复播放内容与进度。
+        """
+        session = self._capture_current_media_session()
+        if not session:
+            return
+
+        file_path = session.get("file_path")
+        playback_mode = session.get("playback_mode", "video")
+        if not file_path:
+            return
+
+        def _rebuild_player():
+            try:
+                from freeassetfilter.components.video_player import VideoPlayer
+                from freeassetfilter.core.settings_manager import SettingsManager
+
+                if self.current_preview_widget:
+                    self.stop_preview()
+
+                settings_manager = SettingsManager()
+                enable_detach = settings_manager.get_setting("player.enable_fullscreen", False)
+                initial_volume = settings_manager.get_player_volume()
+                initial_speed = settings_manager.get_player_speed()
+
+                if playback_mode == VideoPlayer.AUDIO_MODE:
+                    player = VideoPlayer(
+                        playback_mode="audio",
+                        show_lut_controls=False,
+                        show_detach_button=False,
+                        initial_volume=initial_volume,
+                        initial_speed=initial_speed
+                    )
+                    self.current_preview_type = "audio"
+                else:
+                    player = VideoPlayer(
+                        playback_mode="video",
+                        show_detach_button=enable_detach,
+                        initial_volume=initial_volume,
+                        initial_speed=initial_speed
+                    )
+                    self.current_preview_type = "video"
+
+                self.preview_layout.addWidget(player, 1)
+                self.current_preview_widget = player
+
+                if hasattr(player, "load_media"):
+                    player.load_media(file_path, is_audio=(playback_mode == VideoPlayer.AUDIO_MODE))
+
+                def _restore():
+                    try:
+                        if hasattr(player, "_restore_playback_state"):
+                            player._restore_playback_state(session)
+                    except Exception as restore_error:
+                        error(f"[UnifiedPreviewer] 恢复媒体会话失败: {restore_error}")
+
+                QTimer.singleShot(350, _restore)
+            except Exception as e:
+                error(f"[UnifiedPreviewer] 重建媒体播放器失败: {e}")
+
+        QTimer.singleShot(200, _rebuild_player)
 
     def _refresh_file_selector_and_staging_pool(self):
         """
