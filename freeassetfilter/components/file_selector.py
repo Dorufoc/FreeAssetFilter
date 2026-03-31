@@ -199,6 +199,11 @@ class CustomFileSelector(QWidget):
         self._scroll_load_timer.setSingleShot(True)
         self._scroll_load_timer.setInterval(33)
         self._scroll_load_timer.timeout.connect(self._load_remaining_on_scroll)
+
+        self._scrollbar_check_timer = QTimer(self)  # 滚动条状态检查节流定时器
+        self._scrollbar_check_timer.setSingleShot(True)
+        self._scrollbar_check_timer.setInterval(80)
+        self._scrollbar_check_timer.timeout.connect(self._run_scrollbar_check)
         
         # 首次显示标志位，用于避免初始化时卡片重叠
         self._first_show = True
@@ -2053,24 +2058,20 @@ class CustomFileSelector(QWidget):
         触发滚动条状态检查
         在文件卡片加载完成后调用，确保滚动条正确显示/隐藏
         """
-        # 获取滚动区域
-        scroll_area = None
-        parent_widget = self.files_container.parent()
-        while parent_widget and not isinstance(parent_widget, QScrollArea):
-            parent_widget = parent_widget.parent()
-        if parent_widget:
-            scroll_area = parent_widget
-        
-        if scroll_area:
-            # 获取垂直滚动条并触发状态检查
-            from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
-            scrollbar = scroll_area.verticalScrollBar()
-            if isinstance(scrollbar, D_ScrollBar):
-                # 使用多次延迟检查，确保布局已完全更新
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(50, scrollbar._check_and_update_width)
-                QTimer.singleShot(150, scrollbar._check_and_update_width)
-                QTimer.singleShot(300, scrollbar._check_and_update_width)
+        if hasattr(self, "_scrollbar_check_timer"):
+            self._scrollbar_check_timer.start()
+
+    def _run_scrollbar_check(self):
+        """执行一次节流后的滚动条状态检查"""
+        scroll_area = getattr(self, "files_scroll_area", None)
+        if not scroll_area:
+            return
+
+        from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
+
+        scrollbar = scroll_area.verticalScrollBar()
+        if isinstance(scrollbar, D_ScrollBar):
+            scrollbar._check_and_update_width()
     
     def _get_files(self):
         """
@@ -2277,13 +2278,8 @@ class CustomFileSelector(QWidget):
         完全基于视口宽度动态计算，没有固定限制
         使用 _calculate_card_base_width 计算卡片基础宽度
         """
-        scroll_area = None
-        parent_widget = self.files_container.parent()
-        while parent_widget and not isinstance(parent_widget, QScrollArea):
-            parent_widget = parent_widget.parent()
-        if parent_widget:
-            scroll_area = parent_widget
-        else:
+        scroll_area = getattr(self, "files_scroll_area", None)
+        if not scroll_area:
             return 2
 
         viewport_width = scroll_area.viewport().width()
@@ -2382,12 +2378,7 @@ class CustomFileSelector(QWidget):
         -----------------------------------------------
                               卡片列数
         """
-        scroll_area = None
-        parent_widget = self.files_container.parent()
-        while parent_widget and not isinstance(parent_widget, QScrollArea):
-            parent_widget = parent_widget.parent()
-        if parent_widget:
-            scroll_area = parent_widget
+        scroll_area = getattr(self, "files_scroll_area", None)
 
         if scroll_area:
             container_width = scroll_area.viewport().width()
@@ -2454,12 +2445,7 @@ class CustomFileSelector(QWidget):
         # 设置布局脏标记
         self._layout_dirty = True
         
-        scroll_area = None
-        parent_widget = self.files_container.parent()
-        while parent_widget and not isinstance(parent_widget, QScrollArea):
-            parent_widget = parent_widget.parent()
-        if parent_widget:
-            scroll_area = parent_widget
+        scroll_area = getattr(self, "files_scroll_area", None)
         
         if scroll_area:
             container_width = scroll_area.viewport().width()
@@ -3870,7 +3856,6 @@ class CustomFileSelector(QWidget):
         if target_index < 0:
             return
 
-        # 获取滚动区域和视口
         scroll_area = getattr(self, 'files_scroll_area', None)
         if not scroll_area:
             return
@@ -3878,43 +3863,40 @@ class CustomFileSelector(QWidget):
         viewport = scroll_area.viewport()
         vertical_scrollbar = scroll_area.verticalScrollBar()
 
-        # 获取当前布局的列数
         max_cols = self._calculate_max_columns()
         if max_cols <= 0:
             max_cols = 3
 
-        # 计算目标卡片所在的行号（从0开始）
         target_row = target_index // max_cols
-
-        # 获取卡片高度和间距（使用DPI缩放值）
         spacing = int(5 * self.dpi_scale)
-        
-        # 使用实际卡片的平均高度进行计算
-        card_height = int(75 * self.dpi_scale)  # 默认高度
+
+        card_height = int(75 * self.dpi_scale)
         if self.files_layout.count() > 0:
             first_item = self.files_layout.itemAt(0)
             if first_item and first_item.widget():
                 card_height = first_item.widget().height()
-        
-        # 计算滚动位置：目标行 * (卡片高度 + 间距) + 上边距
-        # 注意：files_layout.setContentsMargins(scaled_card_margin, 0, scaled_card_margin, 0)，上边距为0
-        top_margin = 0
-        desired_scroll_pos = target_row * (card_height + spacing) + top_margin
 
-        # 获取视口可见区域高度
+        desired_scroll_pos = target_row * (card_height + spacing)
+
         viewport_height = viewport.height()
         max_scroll = vertical_scrollbar.maximum()
 
-        # 检查卡片是否超过视口高度
         if card_height > viewport_height:
-            # 卡片高度超过视口，滚动到卡片底部刚好在视口底部
             desired_scroll_pos = target_row * (card_height + spacing) + card_height - viewport_height
 
-        # 确保滚动值在有效范围内
         desired_scroll_pos = max(0, min(desired_scroll_pos, max_scroll))
 
-        # 直接设置滚动位置，不使用动画
-        vertical_scrollbar.setValue(desired_scroll_pos)
+        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
+
+        if hasattr(self, "_scroll_to_file_animation") and self._scroll_to_file_animation:
+            self._scroll_to_file_animation.stop()
+
+        self._scroll_to_file_animation = QPropertyAnimation(vertical_scrollbar, b"value", self)
+        self._scroll_to_file_animation.setDuration(220)
+        self._scroll_to_file_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._scroll_to_file_animation.setStartValue(vertical_scrollbar.value())
+        self._scroll_to_file_animation.setEndValue(desired_scroll_pos)
+        self._scroll_to_file_animation.start()
 
 # 使用项目中的自定义提示弹窗实现CSV生成进度显示
 
