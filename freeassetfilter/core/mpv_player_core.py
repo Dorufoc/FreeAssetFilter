@@ -1484,6 +1484,23 @@ class MPVPlayerCore(QObject):
                 if track_id is None:
                     continue
 
+                codec = self._get_property_string(mpv_handle, f"track-list/{index}/codec") or ""
+                decoder_desc = self._get_property_string(mpv_handle, f"track-list/{index}/decoder-desc") or ""
+                audio_channels = self._get_property_string(mpv_handle, f"track-list/{index}/audio-channels") or ""
+                demux_channels = self._get_property_string(mpv_handle, f"track-list/{index}/demux-channels") or ""
+                samplerate = self._get_property_int64(mpv_handle, f"track-list/{index}/demux-samplerate")
+                ff_index = self._get_property_int64(mpv_handle, f"track-list/{index}/ff-index")
+                default_flag = self._get_property_flag(mpv_handle, f"track-list/{index}/default")
+                forced_flag = self._get_property_flag(mpv_handle, f"track-list/{index}/forced")
+
+                has_audio = any([
+                    bool(codec.strip()),
+                    bool(decoder_desc.strip()),
+                    bool(audio_channels.strip()),
+                    bool(demux_channels.strip()),
+                    bool(samplerate and samplerate > 0),
+                ])
+
                 track_info = {
                     "id": int(track_id),
                     "type": track_type,
@@ -1495,6 +1512,15 @@ class MPVPlayerCore(QObject):
                         mpv_handle,
                         f"track-list/{index}/external-filename"
                     ) or "",
+                    "codec": codec,
+                    "decoder_desc": decoder_desc,
+                    "audio_channels": audio_channels,
+                    "demux_channels": demux_channels,
+                    "samplerate": int(samplerate) if samplerate is not None else 0,
+                    "ff_index": int(ff_index) if ff_index is not None else None,
+                    "default": bool(default_flag),
+                    "forced": bool(forced_flag),
+                    "has_audio": has_audio,
                 }
                 tracks.append(track_info)
         except (RuntimeError, AttributeError, OSError, ValueError, TypeError) as e:
@@ -1526,11 +1552,13 @@ class MPVPlayerCore(QObject):
             selected_track_id = int(selected_track["id"])
 
         track_count = len(tracks)
+        valid_track_count = sum(1 for track in tracks if bool(track.get("has_audio")))
 
         return {
-            "has_available_audio_tracks": track_count > 0,
+            "has_available_audio_tracks": valid_track_count > 0,
             "has_multiple_audio_tracks": track_count > 1,
             "track_count": track_count,
+            "valid_track_count": valid_track_count,
             "selected_track_id": selected_track_id,
             "selected_track": selected_track,
             "tracks": tracks,

@@ -1212,6 +1212,7 @@ class VideoPlayer(QWidget):
             "has_available_audio_tracks": False,
             "has_multiple_audio_tracks": False,
             "track_count": 0,
+            "valid_track_count": 0,
             "selected_track_id": None,
             "selected_track": None,
             "tracks": [],
@@ -1259,10 +1260,21 @@ class VideoPlayer(QWidget):
         ]
 
     def _get_available_audio_tracks(self, state: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """获取当前可用音轨"""
+        """获取当前可用音轨（仅返回存在真实音频内容的音轨）"""
         audio_state = state or self._audio_state_cache or self._get_empty_audio_state()
         tracks = audio_state.get("tracks") or []
-        return [track for track in tracks if isinstance(track, dict)]
+        return [
+            track for track in tracks
+            if isinstance(track, dict) and bool(track.get("has_audio"))
+        ]
+
+    def _show_audio_message(self, title: str, text: str):
+        """使用项目内自定义控件显示音轨提示"""
+        dialog = CustomMessageBox(self)
+        dialog.set_title(title)
+        dialog.set_text(text)
+        dialog.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+        dialog.exec()
 
     def _format_subtitle_track_label(self, track: Dict[str, Any], index: int) -> str:
         """格式化字幕轨显示文本"""
@@ -1350,6 +1362,8 @@ class VideoPlayer(QWidget):
             state = merged_state
 
         self._audio_state_cache = state
+        if hasattr(self, "_control_bar"):
+            self._control_bar.set_audio_button_visible(True)
         return state
 
     def _find_matching_subtitle_file(self, video_path: str) -> Optional[str]:
@@ -1752,20 +1766,29 @@ class VideoPlayer(QWidget):
     def _on_audio_clicked(self):
         """音轨按钮点击处理"""
         if not self._current_file:
-            self.errorOccurred.emit("请先加载媒体文件后再操作音轨")
+            self._show_audio_message("提示", "请先加载媒体文件后再操作音轨")
             return
 
         if not self._mpv_manager or not self._mpv_manager.is_initialized():
-            self.errorOccurred.emit("播放器未初始化")
+            self._show_audio_message("提示", "播放器未初始化")
             return
 
         audio_state = self._refresh_audio_state()
-        if not audio_state.get("has_available_audio_tracks"):
-            self.errorOccurred.emit("当前媒体没有可用音轨")
+        all_audio_tracks = audio_state.get("tracks") or []
+        valid_audio_tracks = self._get_available_audio_tracks(audio_state)
+        total_track_count = len([track for track in all_audio_tracks if isinstance(track, dict)])
+        valid_track_count = len(valid_audio_tracks)
+
+        if total_track_count <= 1:
+            self._show_audio_message("提示", "当前视频暂无其他音轨")
             return
 
-        if not audio_state.get("has_multiple_audio_tracks"):
-            self.errorOccurred.emit("当前媒体只有一条音轨，无需切换")
+        if valid_track_count <= 0:
+            self._show_audio_message("提示", "当前视频其他音轨暂无音频")
+            return
+
+        if valid_track_count == 1:
+            self._show_audio_message("提示", "当前视频其他音轨暂无音频")
             return
 
         self._open_audio_track_dialog(audio_state)

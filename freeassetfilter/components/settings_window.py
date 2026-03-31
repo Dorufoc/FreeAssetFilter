@@ -851,6 +851,18 @@ class ModernSettingsWindow(QDialog):
         )
         control_bar_layout.addWidget(self.control_bar_subtitle_switch)
 
+        # 音轨按钮开关
+        self.control_bar_audio_switch = CustomSettingItem(
+            text="音轨按钮",
+            secondary_text="在控制栏显示音轨按钮",
+            interaction_type=CustomSettingItem.SWITCH_TYPE,
+            initial_value=self._get_current_setting_value("player.control_bar_show_audio", True)
+        )
+        self.control_bar_audio_switch.switch_toggled.connect(
+            lambda value: self.current_settings.update({"player.control_bar_show_audio": value})
+        )
+        control_bar_layout.addWidget(self.control_bar_audio_switch)
+
         # 音量按钮开关
         self.control_bar_volume_switch = CustomSettingItem(
             text="音量按钮",
@@ -1955,6 +1967,7 @@ class ModernSettingsWindow(QDialog):
             "player.use_default_speed": self.settings_manager.get_setting("player.use_default_speed", True),
             "player.default_speed": self.settings_manager.get_setting("player.default_speed", 1.0),
             "player.audio_background_style": self.settings_manager.get_setting("player.audio_background_style", "流体动画"),
+            "player.control_bar_show_audio": self.settings_manager.get_setting("player.control_bar_show_audio", True),
             "player.fullscreen_classic_control_bar": self.settings_manager.get_setting("player.fullscreen_classic_control_bar", True),
             "player.control_bar_timeout": self.settings_manager.get_setting("player.control_bar_timeout", 3),
             "text_preview.word_wrap": self.settings_manager.get_setting("text_preview.word_wrap", True),
