@@ -56,8 +56,6 @@ progress_widgets_summary.md
 FreeAssetFilter.zip
 .VSCodeCounter/
 .venv/
-freeassetfilter/core/cpp_color_extractor/build.py
-freeassetfilter/core/cpp_color_extractor/build_manual.py
 test_audio_background.py
 build/
 nuitka-crash-report.xml
@@ -65,25 +63,20 @@ FreeAssetFilter.spec
 freeassetfilter.egg-info/
 
 # Rust/native thumbnail build artifacts
-# 默认忽略 Rust target 与构建缓存，仅保留最终交付产物
-freeassetfilter/core/native/thumbnail_rust/target/*
+# 默认忽略 Rust target 与构建缓存，仅保留源码与最终交付产物
+freeassetfilter/core/native/thumbnail_rust/target/
 freeassetfilter/core/native/thumbnail_rust/.cargo/
 
-# 保留 Cargo.lock 以便稳定复现、一键编译
-!freeassetfilter/core/native/thumbnail_rust/Cargo.lock
+# Rust/native color extractor build artifacts
+# 默认忽略 Rust target 与构建缓存，仅保留源码与最终交付产物
+freeassetfilter/core/native/color_extractor_rust/target/
+freeassetfilter/core/native/color_extractor_rust/.cargo/
 
-# 保留可直接运行的预编译 DLL（main.py 可直接调用）
+# 保留可直接运行的预编译 DLL（应用可直接调用）
 !freeassetfilter/core/native/thumbnail_generator.dll
 !freeassetfilter/core/native/opencv_world4120.dll
 !freeassetfilter/core/native/opencv_videoio_ffmpeg4130_64.dll
-
-# 只放行 release 最终产物文件，不放行构建过程产物与缓存
-!freeassetfilter/core/native/thumbnail_rust/target/release/
-freeassetfilter/core/native/thumbnail_rust/target/release/*
-!freeassetfilter/core/native/thumbnail_rust/target/release/thumbnail_generator.dll
-!freeassetfilter/core/native/thumbnail_rust/target/release/thumbnail_generator.dll.lib
-!freeassetfilter/core/native/thumbnail_rust/target/release/thumbnail_generator.dll.exp
-!freeassetfilter/core/native/thumbnail_rust/target/release/thumbnail_generator.pdb
+!freeassetfilter/core/native/rust_color_extractor_native.dll
 
 # Test & runtime artifacts
 test_results/

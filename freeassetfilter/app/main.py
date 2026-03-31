@@ -257,8 +257,8 @@ class FreeAssetFilterApp(QMainWindow):
                     if self.unified_previewer._preview_thread.isRunning():
                         self.unified_previewer._preview_thread.terminate()
                         self.unified_previewer._preview_thread.wait(100)
-            # 然后清理预览
-            self.unified_previewer._clear_preview()
+            # 应用退出时使用非阻塞清理，避免主线程卡在 MPV 同步销毁流程
+            self.unified_previewer._clear_preview(app_closing=True)
 
         # 统一清理：删除整个temp文件夹
         import shutil

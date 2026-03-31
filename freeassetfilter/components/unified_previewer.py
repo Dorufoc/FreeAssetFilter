@@ -679,13 +679,15 @@ class UnifiedPreviewer(QWidget):
         except Exception as e:
             error(f"复制文件到剪切板失败: {e}")
 
-    def _clear_preview(self, emit_signal=True):
+    def _clear_preview(self, emit_signal=True, app_closing=False):
         """
         清除当前预览内容，确保所有组件都被正确释放，但保留控制栏
         
         Args:
             emit_signal (bool): 是否发出预览清除信号，默认为True。
                                在切换预览类型时不应发出信号，避免清除新设置的预览态。
+            app_closing (bool): 是否处于应用退出流程。
+                                退出时应避免在主线程执行阻塞式播放器清理，并强制清理分离窗口中的播放器。
         """
         # 先停止后台线程，避免在清理过程中发生访问冲突
         self._cleanup_preview_thread()
@@ -702,8 +704,12 @@ class UnifiedPreviewer(QWidget):
             try:
                 from freeassetfilter.components.video_player import VideoPlayer
                 if isinstance(self.current_preview_widget, VideoPlayer):
-                    # 检查是否有分离窗口
-                    if hasattr(self.current_preview_widget, '_detached_window') and self.current_preview_widget._detached_window:
+                    # 应用退出时必须强制清理分离窗口中的播放器，避免残留顶层窗口或后台资源
+                    if (
+                        not app_closing
+                        and hasattr(self.current_preview_widget, '_detached_window')
+                        and self.current_preview_widget._detached_window
+                    ):
                         is_detached_video_player = True
                         info(f"[UnifiedPreviewer] 视频播放器已分离到独立窗口，跳过清理")
             except Exception as e:
@@ -745,23 +751,24 @@ class UnifiedPreviewer(QWidget):
                     from freeassetfilter.components.video_player import VideoPlayer
                     if isinstance(self.current_preview_widget, VideoPlayer):
                         video_player_widget = self.current_preview_widget
-                        # 调用cleanup方法进行完整的资源清理（使用同步模式确保完全清理）
+                        # 切换预览时使用同步清理，确保旧 MPV 完全释放后再创建新播放器；
+                        # 应用退出时改为异步清理，避免在主线程 join/等待导致程序退出卡死。
                         if hasattr(video_player_widget, 'cleanup'):
                             try:
-                                # 使用同步模式确保资源完全释放
-                                video_player_widget.cleanup(async_mode=False)
+                                video_player_widget.cleanup(async_mode=app_closing)
                             except Exception as e:
                                 error(f"调用VideoPlayer.cleanup()时出错: {e}")
-                        
-                        # 处理事件，确保清理操作完成
-                        # 使用 ExcludeUserInputEvents 标志排除用户输入事件，避免在处理过程中
-                        # 触发鼠标/键盘事件导致重入问题（如eventFilter中的事件处理）
-                        from PySide6.QtCore import QCoreApplication, QEventLoop
-                        QCoreApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
-                        # 等待一小段时间确保MPV资源完全释放
-                        from PySide6.QtCore import QThread
-                        QThread.msleep(100)  # 等待100ms让MPV完全释放
+                        if not app_closing:
+                            # 处理事件，确保清理操作完成
+                            # 使用 ExcludeUserInputEvents 标志排除用户输入事件，避免在处理过程中
+                            # 触发鼠标/键盘事件导致重入问题（如eventFilter中的事件处理）
+                            from PySide6.QtCore import QCoreApplication, QEventLoop
+                            QCoreApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+
+                            # 等待一小段时间确保MPV资源完全释放
+                            from PySide6.QtCore import QThread
+                            QThread.msleep(100)  # 等待100ms让MPV完全释放
                 except Exception as e:
                     error(f"清理VideoPlayer组件时出错: {e}")
 
@@ -789,7 +796,11 @@ class UnifiedPreviewer(QWidget):
         try:
             from freeassetfilter.components.video_player import VideoPlayer
             if isinstance(self.current_preview_widget, VideoPlayer):
-                if hasattr(self.current_preview_widget, '_detached_window') and self.current_preview_widget._detached_window:
+                if (
+                    not app_closing
+                    and hasattr(self.current_preview_widget, '_detached_window')
+                    and self.current_preview_widget._detached_window
+                ):
                     is_detached_video_player = True
         except Exception as e:
             error(f"检查VideoPlayer分离状态时出错: {e}")

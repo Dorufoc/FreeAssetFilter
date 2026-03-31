@@ -460,6 +460,8 @@ class VideoPlayer(QWidget):
         self._user_interacting = False
         self._pending_seek_value: Optional[int] = None
         self._last_committed_seek_value: Optional[int] = None
+        self._awaiting_initial_play_state = False
+        self._initial_play_state_deadline_ms = 0.0
         
         # 分离窗口相关变量
         self._detached_window: Optional[DetachedVideoWindow] = None
@@ -987,8 +989,15 @@ class VideoPlayer(QWidget):
             state: 新的MPV状态
         """
         debug(f"[VideoPlayer] MPV状态变化: playing={state.is_playing}, paused={state.is_paused}")
-        # 根据状态更新控制栏
-        if state.is_playing and not state.is_paused:
+
+        is_actually_playing = self._get_authoritative_playing_state()
+
+        # 首次自动播放建立期间，避免旧的 False 状态把刚刚正确显示的播放中图标覆盖回去
+        if self._should_defer_false_play_state(is_actually_playing):
+            return
+
+        if is_actually_playing:
+            self._awaiting_initial_play_state = False
             self._control_bar.set_playing(True)
         else:
             self._control_bar.set_playing(False)
@@ -1034,6 +1043,48 @@ class VideoPlayer(QWidget):
         # 同步更新控制栏显示（不发射信号，避免循环）
         self._control_bar.set_speed(speed, emit_signal=False)
 
+    def _should_defer_false_play_state(self, is_actually_playing: bool) -> bool:
+        """
+        在首次自动播放状态尚未稳定前，延迟用旧的 False 状态覆盖控制栏。
+
+        Args:
+            is_actually_playing: 当前读取到的真实播放状态
+
+        Returns:
+            bool: 是否应跳过本次 False 覆盖
+        """
+        if is_actually_playing:
+            return False
+
+        if not self._awaiting_initial_play_state:
+            return False
+
+        import time
+        current_time = time.time() * 1000
+        if current_time > self._initial_play_state_deadline_ms:
+            self._awaiting_initial_play_state = False
+            return False
+
+        return self._control_bar.is_playing()
+
+    def _get_authoritative_playing_state(self) -> bool:
+        """
+        获取更接近 MPV 实时状态的播放状态。
+
+        优先使用 manager 对核心状态的直接查询，而不是仅依赖 get_state() 的缓存，
+        避免首次 load_file 自动播放阶段缓存尚未刷新时把按钮错误覆盖回暂停态。
+        """
+        if not self._mpv_manager:
+            return False
+
+        try:
+            is_playing = bool(self._mpv_manager.is_playing())
+            is_paused = bool(self._mpv_manager.is_paused())
+            return is_playing and not is_paused
+        except Exception:
+            state = self._mpv_manager.get_state()
+            return bool(state.is_playing and not state.is_paused)
+
     def _sync_progress_from_player(self):
         """
         从播放器主动同步进度和状态到控制栏
@@ -1074,8 +1125,12 @@ class VideoPlayer(QWidget):
                     # 即使duration无效也更新位置
                     self._control_bar.set_position(position, duration or 0)
 
-            # 同步播放状态
-            self._control_bar.set_playing(state.is_playing and not state.is_paused)
+            # 同步播放状态（优先读取核心实时状态，避免缓存状态滞后）
+            is_actually_playing = self._get_authoritative_playing_state()
+            if not self._should_defer_false_play_state(is_actually_playing):
+                if is_actually_playing:
+                    self._awaiting_initial_play_state = False
+                self._control_bar.set_playing(is_actually_playing)
 
             # 某些 mkv 的默认内嵌字幕会在文件加载完成后的稍后时机才真正变为活动状态。
             # 这里以较低频率持续同步字幕状态，确保按钮样式能在默认字幕生效后自动高亮。
@@ -1580,17 +1635,23 @@ class VideoPlayer(QWidget):
         """
         info(f"[VideoPlayer] 文件加载完成: {file_path}")
 
-        # 不直接设置播放状态，让 stateChanged 信号来处理，确保状态同步
-        # self._control_bar.set_playing(True)
-
         if not self._sync_timer.isActive():
             self._sync_timer.start()
 
-        # 获取当前实际速度值并同步到控制栏，确保按钮样式正确
+        # 文件加载完成后立即做一次状态兜底同步，避免首次自动播放时
+        # 仅依赖异步 stateChanged 信号导致播放按钮图标短暂或持续不同步。
         if self._mpv_manager:
+            is_actually_playing = self._get_authoritative_playing_state()
+            if not self._should_defer_false_play_state(is_actually_playing):
+                if is_actually_playing:
+                    self._awaiting_initial_play_state = False
+                self._control_bar.set_playing(is_actually_playing)
+
+            # 获取当前实际速度值并同步到控制栏，确保按钮样式正确
             current_speed = self._mpv_manager.get_speed()
             if current_speed is not None:
                 self._control_bar.set_speed(current_speed, emit_signal=False)
+
             # 获取当前实际音量值并同步到控制栏
             current_volume = self._mpv_manager.get_volume()
             if current_volume is not None:
@@ -2290,6 +2351,14 @@ class VideoPlayer(QWidget):
             self._current_file = file_path
             result = self._mpv_manager.load_file(file_path, component_id=self._component_id)
             if result:
+                # MPV loadfile 默认会自动开始播放，但首次状态信号到达存在异步延迟。
+                # 先乐观同步一次控制栏状态，并开启短暂保护窗口，
+                # 避免旧的 False 状态立即把按钮覆盖回去。
+                import time
+                self._awaiting_initial_play_state = True
+                self._initial_play_state_deadline_ms = time.time() * 1000 + 1200
+                self._control_bar.set_playing(True)
+
                 # 从设置中获取背景样式
                 background_style = self._settings_manager.get_setting("player.audio_background_style", "流体动画")
                 
@@ -2319,6 +2388,13 @@ class VideoPlayer(QWidget):
             result = self._mpv_manager.load_file(file_path, component_id=self._component_id)
             if result:
                 self._current_file = file_path
+                # MPV loadfile 默认会自动开始播放，但首次状态信号到达存在异步延迟。
+                # 先乐观同步一次控制栏状态，并开启短暂保护窗口，
+                # 避免旧的 False 状态立即把按钮覆盖回去。
+                import time
+                self._awaiting_initial_play_state = True
+                self._initial_play_state_deadline_ms = time.time() * 1000 + 1200
+                self._control_bar.set_playing(True)
                 # 设置为无限单曲循环模式
                 self.set_loop_mode("yes")
                 # 应用播放器设置（音量和倍速）

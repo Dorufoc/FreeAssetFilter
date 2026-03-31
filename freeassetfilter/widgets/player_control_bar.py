@@ -449,12 +449,15 @@ class PlayerControlBar(QWidget):
     def _update_play_button_icon(self):
         """更新播放按钮图标"""
         icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
-        
+
+        # 当前项目中的图标命名按“下一步动作”解释：
+        # - 播放中显示“暂停时.svg”（表示点击后可暂停）
+        # - 暂停/未播放显示“播放时.svg”（表示点击后可播放）
         if self._is_playing:
             icon_name = self._play_button._alt_icon_name or "暂停时.svg"
         else:
             icon_name = self._play_button._primary_icon_name or "播放时.svg"
-        
+
         icon_path = os.path.join(icon_dir, icon_name)
         self._play_button._icon_path = icon_path
         self._play_button._icon_render_signature = None
@@ -646,9 +649,10 @@ class PlayerControlBar(QWidget):
         Args:
             is_playing: 是否正在播放
         """
-        if self._is_playing != is_playing:
-            self._is_playing = is_playing
-            self._update_play_button_icon()
+        self._is_playing = is_playing
+        # 即使状态值未变化，也强制刷新一次图标，
+        # 避免初始化/样式刷新/异步状态同步后图标残留旧状态。
+        self._update_play_button_icon()
     
     def set_progress(self, value: int, use_animation: bool = True):
         """

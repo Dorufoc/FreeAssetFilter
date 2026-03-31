@@ -5,7 +5,7 @@
 
 从音乐封面图像中提取主色调，用于流体渐变背景渲染
 
-本模块优先使用 C++ 实现以获得更高性能，如果 C++ 模块不可用则自动降级到纯 Python 实现。
+本模块优先使用 Rust DLL 实现以获得更高性能，如果 Rust 模块不可用则自动降级到纯 Python 实现。
 """
 
 import io
@@ -22,17 +22,17 @@ from PIL import Image
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
-# 尝试导入 C++ 扩展模块
-_CPP_AVAILABLE = False
-_CPP_MODULE = None
+# 尝试导入 Rust DLL 包装模块
+_RUST_AVAILABLE = False
+_RUST_MODULE = None
 
 try:
-    from .cpp_color_extractor import color_extractor_cpp
-    _CPP_AVAILABLE = True
-    _CPP_MODULE = color_extractor_cpp
-    info("[ColorExtractor] C++ 扩展模块加载成功，将使用高性能实现")
+    from .native import rust_color_extractor
+    _RUST_AVAILABLE = True
+    _RUST_MODULE = rust_color_extractor
+    info("[ColorExtractor] Rust DLL 扩展模块加载成功，将使用高性能实现")
 except ImportError as e:
-    warning(f"[ColorExtractor] C++ 扩展模块加载失败: {e}")
+    warning(f"[ColorExtractor] Rust DLL 扩展模块加载失败: {e}")
     info("[ColorExtractor] 将使用纯 Python 实现（性能较低）")
 
 # 用于处理音频文件元数据
@@ -50,11 +50,11 @@ except ImportError:
     MP4 = None
 
 
-def _prepare_image_data_for_cpp(cover_data: bytes) -> bytes:
+def _prepare_image_data_for_rust(cover_data: bytes) -> bytes:
     """
-    将图像数据转换为 C++ 模块可用的格式
-    
-    格式：前4字节宽度 + 4字节高度 + RGB像素数据
+    将图像数据转换为 Rust 模块可用的格式
+
+    格式：前4字节宽度 + 4字节高度 + RGBA 像素数据
     """
     try:
         image = Image.open(io.BytesIO(cover_data))
@@ -79,7 +79,7 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
     """
     从封面图像数据中提取主色调
 
-    优先使用 C++ 实现以获得更高性能，如果失败则降级到 Python 实现。
+    优先使用 Rust DLL 实现以获得更高性能，如果失败则降级到 Python 实现。
 
     Args:
         cover_data: 封面图像的二进制数据
@@ -93,20 +93,20 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
         warning("[ColorExtractor] 封面数据为空")
         return []
     
-    # 优先使用 C++ 实现
-    if _CPP_AVAILABLE:
+    # 优先使用 Rust DLL 实现
+    if _RUST_AVAILABLE:
         try:
             start_time = time.time()
             
             # 准备图像数据
-            cpp_data = _prepare_image_data_for_cpp(cover_data)
-            
-            # 调用 C++ 函数（CIEDE2000 距离默认 60.0）
-            cpp_min_distance = min_distance / 2.0  # 转换欧氏距离到近似 CIEDE2000 距离（150/2.0=75）
-            colors_rgb = _CPP_MODULE.extract_colors(
-                cpp_data, 
+            rust_data = _prepare_image_data_for_rust(cover_data)
+
+            # 调用 Rust 函数（CIEDE2000 距离默认 60.0）
+            rust_min_distance = min_distance / 2.0  # 转换欧氏距离到近似 CIEDE2000 距离（150/2.0=75）
+            colors_rgb = _RUST_MODULE.extract_colors(
+                rust_data,
                 num_colors=num_colors, 
-                min_distance=cpp_min_distance,
+                min_distance=rust_min_distance,
                 max_image_size=150
             )
             
@@ -115,14 +115,14 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
             # 转换为 QColor 列表
             result = [QColor(r, g, b) for r, g, b in colors_rgb]
             
-            debug(f"[ColorExtractor] C++ 提取到 {len(result)} 个颜色，耗时 {elapsed:.2f}ms")
+            debug(f"[ColorExtractor] Rust 提取到 {len(result)} 个颜色，耗时 {elapsed:.2f}ms")
             for i, c in enumerate(result):
                 debug(f"  颜色{i+1}: RGB({c.red()}, {c.green()}, {c.blue()})")
 
             return result
 
         except (OSError, IOError, ValueError, TypeError) as e:
-            error(f"[ColorExtractor] C++ 提取失败: {e}，降级到 Python 实现")
+            error(f"[ColorExtractor] Rust 提取失败: {e}，降级到 Python 实现")
     
     # 降级到 Python 实现
     return _extract_cover_colors_python(cover_data, num_colors, min_distance)
@@ -480,13 +480,13 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
     return generate_colors_from_accent(accent_hex)
 
 
-def is_cpp_available() -> bool:
-    """检查 C++ 扩展模块是否可用"""
-    return _CPP_AVAILABLE
+def is_rust_available() -> bool:
+    """检查 Rust DLL 扩展模块是否可用"""
+    return _RUST_AVAILABLE
 
 
 def get_extractor_version() -> str:
     """获取当前使用的提取器版本信息"""
-    if _CPP_AVAILABLE:
-        return f"C++ ({_CPP_MODULE.__version__})"
+    if _RUST_AVAILABLE:
+        return f"Rust ({_RUST_MODULE.__version__})"
     return "Python (fallback)"
