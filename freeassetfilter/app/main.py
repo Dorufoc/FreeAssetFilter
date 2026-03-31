@@ -939,6 +939,8 @@ class FreeAssetFilterApp(QMainWindow):
 
         self._backup_ui_state()
 
+        old_hover_tooltip = getattr(self, 'hover_tooltip', None)
+
         # 颜色直接从JSON文件读取，绕过内存缓存
         auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5", use_file_for_colors=True)
         normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0", use_file_for_colors=True)
@@ -1085,6 +1087,28 @@ class FreeAssetFilterApp(QMainWindow):
 
         status_container_layout.addLayout(status_layout)
         main_layout.addWidget(status_container)
+
+        if old_hover_tooltip:
+            try:
+                if hasattr(old_hover_tooltip, 'cleanup'):
+                    old_hover_tooltip.cleanup()
+            except (RuntimeError, AttributeError) as e:
+                logger.debug(f"清理旧 HoverTooltip 失败: {e}")
+
+            try:
+                old_hover_tooltip.hide()
+            except (RuntimeError, AttributeError):
+                pass
+
+            try:
+                old_hover_tooltip.setParent(None)
+            except (RuntimeError, AttributeError):
+                pass
+
+            try:
+                old_hover_tooltip.deleteLater()
+            except (RuntimeError, AttributeError):
+                pass
 
         from freeassetfilter.widgets.hover_tooltip import HoverTooltip
         self.hover_tooltip = HoverTooltip(self)

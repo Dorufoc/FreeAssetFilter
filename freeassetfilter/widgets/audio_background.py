@@ -877,6 +877,15 @@ class AudioBackground(QWidget):
             self._current_color_task.cancel()
             self._current_color_task = None
 
+        # 音频封面配色提取使用了 QThreadPool，若应用关闭时仅 cancel 而不等待，
+        # worker 线程可能仍在执行，导致主窗口关闭后进程残留。
+        # 这里在卸载阶段等待短时间，尽量确保后台任务已经退出。
+        if self._thread_pool is not None:
+            try:
+                self._thread_pool.waitForDone(1500)
+            except Exception as e:
+                warning(f"[AudioBackground] 等待颜色提取线程池结束失败: {e}")
+
         self._cover_data = None
         self._blurred_pixmap = None
         self._cover_pixmap = None

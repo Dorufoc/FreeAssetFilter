@@ -80,6 +80,8 @@ class GlobalMouseMonitor(QObject):
         self._mouse_proc_func = None
         self._last_mouse_pos = None
         self._is_monitoring = False
+        self._stopping = False
+        self._disposed = False
 
         # 用于在钩子回调中安全地发射信号
         self._pending_move = False
@@ -167,6 +169,9 @@ class GlobalMouseMonitor(QObject):
         Returns:
             bool: 是否成功启动监控
         """
+        if self._disposed:
+            return False
+
         if self._is_monitoring:
             return True
 
@@ -235,27 +240,38 @@ class GlobalMouseMonitor(QObject):
         """
         停止监控鼠标活动
         """
-        if not self._is_monitoring:
+        if self._stopping:
             return
 
-        self._signal_timer.stop()
-        self._hide_timer.stop()
+        if not self._is_monitoring:
+            self._pending_move = False
+            self._pending_click = False
+            self._pending_scroll = False
+            return
 
-        if self._mouse_hook:
-            try:
-                ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
-            except OSError as e:
-                error(f"[GlobalMouseMonitor] 卸载鼠标钩子失败: {e}")
+        self._stopping = True
 
-        self._mouse_hook = None
-        self._mouse_proc_func = None
-        self._last_mouse_pos = None
-        self._is_monitoring = False
-        self._pending_move = False
-        self._pending_click = False
-        self._pending_scroll = False
-        self._last_hook_emit_time = 0
-        self._last_move_emit_time = 0
+        try:
+            self._signal_timer.stop()
+            self._hide_timer.stop()
+
+            if self._mouse_hook:
+                try:
+                    ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
+                except OSError as e:
+                    error(f"[GlobalMouseMonitor] 卸载鼠标钩子失败: {e}")
+
+            self._mouse_hook = None
+            self._mouse_proc_func = None
+            self._last_mouse_pos = None
+            self._is_monitoring = False
+            self._pending_move = False
+            self._pending_click = False
+            self._pending_scroll = False
+            self._last_hook_emit_time = 0
+            self._last_move_emit_time = 0
+        finally:
+            self._stopping = False
 
     def reset_timer(self):
         """
@@ -280,6 +296,12 @@ class GlobalMouseMonitor(QObject):
     @Slot()
     def _process_pending_signals(self):
         """处理待发射的信号"""
+        if self._disposed or self._stopping or not self._is_monitoring:
+            self._pending_move = False
+            self._pending_click = False
+            self._pending_scroll = False
+            return
+
         if self._pending_move:
             current_time = time.time() * 1000
             if (current_time - self._last_move_emit_time) >= 50:
@@ -304,6 +326,9 @@ class GlobalMouseMonitor(QObject):
     @Slot()
     def _on_timeout(self):
         """空闲超时处理"""
+        if self._disposed or self._stopping:
+            return
+
         self.timeout_reached.emit()
 
         if self._timeout_callback:
@@ -314,4 +339,5 @@ class GlobalMouseMonitor(QObject):
 
     def __del__(self):
         """析构函数，确保清理资源"""
+        self._disposed = True
         self.stop()

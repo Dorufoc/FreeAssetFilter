@@ -10,12 +10,22 @@ FreeAssetFilter 悬浮详细信息组件
 """
 
 import weakref
-from PySide6.QtWidgets import QWidget, QLabel, QApplication
-from PySide6.QtCore import Qt, QPoint, QTimer, QRect, QEvent, QPropertyAnimation, QEasingCurve, Property, QByteArray
-from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QFontDatabase, QTransform, QCursor
 
+from PySide6.QtCore import (
+    Property,
+    QEvent,
+    QPoint,
+    QRect,
+    QTimer,
+    Qt,
+    QEasingCurve,
+    QPropertyAnimation,
+)
+from PySide6.QtGui import QColor, QBrush, QCursor, QFont, QPainter, QPen, QTransform
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
+
+from freeassetfilter.utils.app_logger import debug
 from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
-from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class HoverTooltip(QWidget):
@@ -28,67 +38,55 @@ class HoverTooltip(QWidget):
     - 白色圆角卡片样式
     - 灰色400字重文字
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # 设置窗口标志
         self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        
-        # 安全标志，防止在重建过程中意外显示
+
+        # 生命周期与安全控制
         self._safe_mode = False
-        
+        self._disposed = False
+        self._cleaning_up = False
+
         # 创建标签显示文本内容
         self.label = QLabel(self)
         self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        
-        # 获取应用实例，使用main中定义的全局字体
-        from PySide6.QtWidgets import QApplication
+
         app = QApplication.instance()
-        
-        # 获取DPI缩放因子
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+
         # 设置字体样式：创建一个新的字体实例，确保不受调用组件字体影响
-        # 使用全局字体作为基础，大小为全局字体的0.8倍
         font = QFont()
-        
-        # 优先使用应用的全局字体配置
-        if hasattr(app, 'global_font'):
+        if app and hasattr(app, "global_font"):
             global_font = app.global_font
-            # 复制全局字体的所有属性
             font.setFamily(global_font.family())
             font.setStyle(global_font.style())
             font.setWeight(global_font.weight())
-            
-            # 获取全局字体的原始大小
             global_size = global_font.pointSizeF()
         else:
-            # 如果没有全局字体，使用默认大小10
             global_size = 10.0
-        
-        # 计算新的字体大小：全局大小 * 0.8 并取整
-        new_size = int(global_size * 0.8)
+
+        new_size = max(1, int(global_size * 0.8))
         font.setPointSize(new_size)
-        
         self.label.setFont(font)
-        
+
         # 应用初始样式
         self.update_style()
-        
+
         # 显示定时器（鼠标静止后显示tooltip）
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(1000)  # 1秒延迟
         self.timer.timeout.connect(self.show_tooltip)
-        
+
         # 鼠标位置跟踪
         self.last_mouse_pos = QPoint()
         self.target_widgets = []  # 存储目标控件的弱引用列表
-        
+
         # 鼠标活动监控器（全局鼠标钩子）
-        # 用于检测鼠标移动、点击和滚轮状态，当鼠标移动、点击或滚动时立即隐藏tooltip
         self._mouse_monitor = GlobalMouseMonitor(self)
         self._mouse_monitor.mouse_moved.connect(self._on_global_mouse_moved)
         self._mouse_monitor.mouse_clicked.connect(self._on_global_mouse_clicked)
@@ -106,34 +104,157 @@ class HoverTooltip(QWidget):
         self._fade_animation.setEasingCurve(QEasingCurve.InOutQuad)
         self._fade_animation.finished.connect(self._on_animation_finished)
 
-        self._scale_animation = QPropertyAnimation(self, QByteArray(b"_tooltip_scale"))
+        self._scale_animation = QPropertyAnimation(self, b"_tooltip_scale")
         self._scale_animation.setDuration(self._fade_duration)
         self._scale_animation.setEasingCurve(QEasingCurve.InOutQuad)
 
-        # 初始化隐藏
-        self._opacity_value = 1.0
-        self._scale_value = 1.0
         self.hide()
-    
+
+        destroyed_signal = getattr(self, "destroyed", None)
+        if destroyed_signal is not None:
+            try:
+                destroyed_signal.connect(self._on_self_destroyed)
+            except (RuntimeError, TypeError):
+                pass
+
+    # --------------------------
+    # 生命周期与安全控制
+    # --------------------------
+    def _is_usable(self):
+        """检查当前对象是否仍可安全使用"""
+        return not self._disposed and not self._cleaning_up
+
+    def cleanup(self):
+        """
+        显式释放 tooltip 占用的资源。
+        该方法是幂等的，可重复调用。
+        """
+        if self._disposed or self._cleaning_up:
+            return
+
+        self._cleaning_up = True
+
+        try:
+            if hasattr(self, "timer") and self.timer:
+                self.timer.stop()
+        except RuntimeError as e:
+            debug(f"HoverTooltip timer stop error during cleanup: {e}")
+
+        try:
+            self._stop_mouse_monitor()
+        except RuntimeError as e:
+            debug(f"HoverTooltip mouse monitor stop error during cleanup: {e}")
+
+        try:
+            if hasattr(self, "_fade_animation") and self._fade_animation:
+                self._fade_animation.stop()
+        except RuntimeError as e:
+            debug(f"HoverTooltip fade animation stop error during cleanup: {e}")
+
+        try:
+            if hasattr(self, "_scale_animation") and self._scale_animation:
+                self._scale_animation.stop()
+        except RuntimeError as e:
+            debug(f"HoverTooltip scale animation stop error during cleanup: {e}")
+
+        self._detach_all_target_widgets()
+
+        try:
+            self._is_animating = False
+            self._opacity_value = 1.0
+            self._scale_value = 1.0
+            self.setWindowOpacity(1.0)
+        except RuntimeError:
+            pass
+
+        try:
+            super().hide()
+        except RuntimeError as e:
+            debug(f"HoverTooltip hide error during cleanup: {e}")
+
+        self._disposed = True
+        self._cleaning_up = False
+
+    def _on_self_destroyed(self, obj=None):
+        """对象销毁前的兜底清理"""
+        try:
+            self.cleanup()
+        except Exception as e:
+            debug(f"HoverTooltip cleanup on destroyed failed: {e}")
+
+    def _detach_all_target_widgets(self):
+        """移除所有目标控件上的事件过滤器并清理失效引用"""
+        valid_refs = []
+
+        for ref in getattr(self, "target_widgets", []):
+            try:
+                target = ref()
+            except RuntimeError:
+                continue
+
+            if target is None:
+                continue
+
+            try:
+                _ = target.objectName()
+            except RuntimeError:
+                continue
+
+            try:
+                target.removeEventFilter(self)
+            except (RuntimeError, TypeError):
+                pass
+
+            if not self._disposed:
+                valid_refs.append(ref)
+
+        self.target_widgets = [] if self._disposed else valid_refs
+
+    def _prune_invalid_targets(self):
+        """清理已失效的弱引用，同时移除不可用控件上的事件过滤器残留"""
+        valid_refs = []
+
+        for ref in self.target_widgets:
+            try:
+                target = ref()
+            except RuntimeError:
+                continue
+
+            if target is None:
+                continue
+
+            try:
+                _ = target.objectName()
+            except RuntimeError:
+                continue
+
+            valid_refs.append(ref)
+
+        self.target_widgets = valid_refs
+
+    # --------------------------
+    # 样式与动画
+    # --------------------------
     def update_style(self):
         """
         更新组件样式
         """
-        # 获取应用实例和设置管理器
+        if self._disposed:
+            return
+
         app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
+        if app and hasattr(app, "settings_manager"):
             settings_manager = app.settings_manager
         else:
-            # 回退方案：如果应用实例中没有settings_manager，再创建新实例
             from freeassetfilter.core.settings_manager import SettingsManager
+
             settings_manager = SettingsManager()
-        
-        # 获取颜色设置
+
         current_colors = settings_manager.get_setting("appearance.colors", {})
         secondary_color = current_colors.get("secondary_color", "#333333")
-        
-        # 设置样式表
-        self.setStyleSheet(f"""
+
+        self.setStyleSheet(
+            f"""
             QWidget {{
                 background: transparent;
                 border: none;
@@ -144,9 +265,9 @@ class HoverTooltip(QWidget):
                 padding: 4px;
                 font-weight: 400;
             }}
-        """)
-        
-        # 重新绘制组件
+        """
+        )
+
         self.update()
 
     def _get_opacity(self):
@@ -155,6 +276,8 @@ class HoverTooltip(QWidget):
 
     def _set_opacity(self, opacity):
         """设置透明度"""
+        if self._disposed:
+            return
         self._opacity_value = max(0.0, min(1.0, opacity))
         self.setWindowOpacity(self._opacity_value)
 
@@ -166,68 +289,34 @@ class HoverTooltip(QWidget):
 
     def _set_scale(self, scale):
         """设置缩放比例"""
+        if self._disposed:
+            return
         self._scale_value = max(0.01, min(2.0, scale))
-        self.update_transform()
+        self.update()
 
     _tooltip_scale = Property(float, _get_scale, _set_scale)
 
-    def update_transform(self):
-        """更新缩放变换"""
-        transform = QTransform()
-        center_x = self.width() / 2
-        center_y = self.height() / 2
-        transform.translate(center_x, center_y)
-        transform.scale(self._scale_value, self._scale_value)
-        transform.translate(-center_x, -center_y)
-        self.setGraphicsEffect(None)
-
-    def paintEvent(self, event):
-        """重写paintEvent应用缩放效果"""
-        if abs(self._scale_value - 1.0) > 0.01:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-
-            transform = QTransform()
-            center_x = self.width() / 2
-            center_y = self.height() / 2
-            transform.translate(center_x, center_y)
-            transform.scale(self._scale_value, self._scale_value)
-            transform.translate(-center_x, -center_y)
-
-            painter.setTransform(transform)
-            super().paintEvent(event)
-        else:
-            super().paintEvent(event)
-
     def _on_animation_finished(self):
         """动画结束处理"""
+        if self._disposed:
+            return
+
         try:
             if self._opacity_value <= 0.01:
                 super().hide()
                 self._opacity_value = 1.0
             self._is_animating = False
         except RuntimeError:
-            # 对象可能已被销毁，忽略错误
             pass
 
     def _fade_in(self):
         """淡入显示（透明度0→1，缩放0.5→1）"""
-        if self._is_animating:
+        if not self._is_usable() or self._is_animating:
             return
 
         self._is_animating = True
-        
-        # 使用try-except防止动画对象已被销毁时抛出异常
+
         try:
-            # 检查动画对象是否仍然有效
-            if not hasattr(self, '_fade_animation') or not hasattr(self, '_scale_animation'):
-                raise RuntimeError("Animation objects do not exist")
-            
-            # 尝试访问动画对象以验证它们是否仍然有效
-            _ = self._fade_animation.duration()
-            _ = self._scale_animation.duration()
-            
             self._fade_animation.stop()
             self._scale_animation.stop()
 
@@ -245,7 +334,6 @@ class HoverTooltip(QWidget):
             self._scale_animation.setEndValue(1.0)
             self._scale_animation.start()
         except RuntimeError as e:
-            # 动画对象已被销毁，直接显示（无动画）
             debug(f"HoverTooltip fade in animation error: {e}")
             self._is_animating = False
             self._opacity_value = 1.0
@@ -258,21 +346,19 @@ class HoverTooltip(QWidget):
 
     def _fade_out(self):
         """淡出隐藏（透明度1→0，缩放1→0.5）"""
+        if not self._is_usable():
+            return
+
+        if not self.isVisible():
+            self._is_animating = False
+            return
+
         if self._is_animating:
             return
 
         self._is_animating = True
-        
-        # 使用try-except防止动画对象已被销毁时抛出异常
+
         try:
-            # 检查动画对象是否仍然有效
-            if not hasattr(self, '_fade_animation') or not hasattr(self, '_scale_animation'):
-                raise RuntimeError("Animation objects do not exist")
-            
-            # 尝试访问动画对象以验证它们是否仍然有效
-            _ = self._fade_animation.duration()
-            _ = self._scale_animation.duration()
-            
             self._fade_animation.stop()
             self._scale_animation.stop()
 
@@ -284,7 +370,6 @@ class HoverTooltip(QWidget):
             self._scale_animation.setEndValue(0.5)
             self._scale_animation.start()
         except RuntimeError as e:
-            # 动画对象已被销毁，直接隐藏
             debug(f"HoverTooltip fade out animation error: {e}")
             self._is_animating = False
             try:
@@ -292,230 +377,248 @@ class HoverTooltip(QWidget):
             except RuntimeError:
                 pass
 
+    # --------------------------
+    # 目标控件管理
+    # --------------------------
     def set_target_widget(self, widget):
         """设置要监听的目标控件"""
-        # 检查控件是否已经在列表中（通过比较弱引用的目标）
+        if not self._is_usable() or widget is None:
+            return
+
+        self._prune_invalid_targets()
+
         for ref in self.target_widgets:
             try:
                 existing_widget = ref()
-                if existing_widget is None:
-                    continue
-                # 检查控件是否仍然有效
-                try:
-                    _ = existing_widget.objectName()
-                except RuntimeError:
-                    continue
-                if existing_widget is widget:
-                    return  # 已经存在，不需要重复添加
             except RuntimeError:
                 continue
 
-        # 添加弱引用
+            if existing_widget is None:
+                continue
+
+            try:
+                _ = existing_widget.objectName()
+            except RuntimeError:
+                continue
+
+            if existing_widget is widget:
+                return
+
         ref = weakref.ref(widget)
         self.target_widgets.append(ref)
-        widget.installEventFilter(self)
 
-        # 监听控件销毁信号，确保控件被移除时tooltip能正确隐藏
-        widget.destroyed.connect(self._on_target_widget_destroyed)
-    
+        try:
+            widget.installEventFilter(self)
+        except RuntimeError as e:
+            debug(f"HoverTooltip installEventFilter error: {e}")
+            self._prune_invalid_targets()
+            return
+
+        destroyed_signal = getattr(widget, "destroyed", None)
+        if destroyed_signal is not None:
+            try:
+                destroyed_signal.connect(self._on_target_widget_destroyed)
+            except (RuntimeError, TypeError):
+                pass
+
     def _on_target_widget_destroyed(self, obj=None):
         """
         目标控件被销毁时的处理函数
-        
-        当控件被移除时，隐藏tooltip并清理已失效的引用
         """
-        # 停止定时器
+        if self._disposed:
+            return
+
         try:
             self.timer.stop()
         except RuntimeError as e:
             debug(f"HoverTooltip timer stop error: {e}")
 
-        # 停止全局鼠标监控
         self._stop_mouse_monitor()
-        
-        # 停止动画（如果正在进行）
+
         try:
-            if hasattr(self, '_fade_animation') and hasattr(self, '_scale_animation'):
-                self._fade_animation.stop()
-                self._scale_animation.stop()
+            self._fade_animation.stop()
+            self._scale_animation.stop()
         except RuntimeError:
             pass
 
-        # 隐藏tooltip，使用try-except防止对象已被销毁
         try:
             self._is_animating = False
             super().hide()
         except RuntimeError as e:
             debug(f"HoverTooltip hide error: {e}")
-        
-        # 清理已失效的弱引用
-        try:
-            valid_refs = []
-            for ref in self.target_widgets:
-                try:
-                    target = ref()
-                    if target is None:
-                        continue
-                    # 验证控件是否仍然有效
-                    try:
-                        _ = target.objectName()
-                        valid_refs.append(ref)
-                    except RuntimeError:
-                        pass
-                except RuntimeError:
-                    pass
-            self.target_widgets = valid_refs
-        except RuntimeError:
-            pass
 
+        self._prune_invalid_targets()
+
+    # --------------------------
+    # 鼠标监控
+    # --------------------------
     def _start_mouse_monitor(self):
         """启动全局鼠标活动监控"""
+        if not self._is_usable():
+            return
+
         if not self._mouse_monitor_active:
-            self._mouse_monitor.start()
-            self._mouse_monitor_active = True
-    
+            started = self._mouse_monitor.start()
+            self._mouse_monitor_active = bool(started)
+
     def _stop_mouse_monitor(self):
         """停止全局鼠标活动监控"""
         if self._mouse_monitor_active:
-            self._mouse_monitor.stop()
-            self._mouse_monitor_active = False
-    
+            try:
+                self._mouse_monitor.stop()
+            finally:
+                self._mouse_monitor_active = False
+
     def _on_global_mouse_moved(self):
         """
         全局鼠标移动回调函数
-        
-        当检测到全局鼠标移动时，立即隐藏tooltip并重启定时器。
-        无论鼠标是否在目标控件范围内，只要移动就隐藏，
-        这是为了确保tooltip不会遮挡用户操作。
         """
-        # 只要tooltip正在显示，鼠标移动就立即隐藏
+        if not self._is_usable():
+            return
+
         if self.isVisible():
             self._fade_out()
-        
-        # 检查鼠标是否还在目标控件上，如果是则重启定时器
+
         current_widget = QApplication.widgetAt(QCursor.pos())
         is_over_target = False
-        
+
         for ref in self.target_widgets:
             try:
                 target = ref()
-                if target is None:
-                    continue
-                # 先检查target是否仍然有效（通过访问一个安全属性）
-                try:
-                    _ = target.objectName()
-                except RuntimeError:
-                    # 控件已被删除
-                    continue
-                # 同样检查current_widget是否有效
-                if current_widget:
-                    try:
-                        _ = current_widget.objectName()
-                    except RuntimeError:
-                        current_widget = None
-                if current_widget == target or (current_widget and target.isAncestorOf(current_widget)):
-                    is_over_target = True
-                    break
             except RuntimeError:
-                # 控件已被删除，跳过
                 continue
 
-        # 如果鼠标在目标控件上，更新位置并重启定时器
+            if target is None:
+                continue
+
+            try:
+                _ = target.objectName()
+            except RuntimeError:
+                continue
+
+            if current_widget:
+                try:
+                    _ = current_widget.objectName()
+                except RuntimeError:
+                    current_widget = None
+
+            if current_widget == target or (current_widget and target.isAncestorOf(current_widget)):
+                is_over_target = True
+                break
+
         if is_over_target:
             self.last_mouse_pos = QCursor.pos()
             self.timer.start()
         else:
-            # 鼠标不在目标控件上，停止定时器和监控
             self.timer.stop()
             self._stop_mouse_monitor()
 
     def _on_global_mouse_clicked(self):
         """
         全局鼠标点击回调函数
-
-        当检测到全局鼠标点击时，立即隐藏tooltip。
-        无论鼠标是否在目标控件范围内，只要点击就隐藏。
         """
-        # 只要tooltip正在显示，鼠标点击就立即隐藏
+        if not self._is_usable():
+            return
+
         if self.isVisible():
             self._fade_out()
 
-        # 点击时停止定时器
         self.timer.stop()
 
     def _on_global_mouse_scrolled(self):
         """
         全局鼠标滚轮滚动回调函数
-
-        当检测到全局鼠标滚轮滚动时，立即隐藏tooltip。
-        无论鼠标是否在目标控件范围内，只要滚动就隐藏。
         """
-        # 只要tooltip正在显示，鼠标滚轮滚动就立即隐藏
+        if not self._is_usable():
+            return
+
         if self.isVisible():
             self._fade_out()
 
-        # 滚动时停止定时器
         self.timer.stop()
 
+    # --------------------------
+    # 事件处理
+    # --------------------------
     def eventFilter(self, obj, event):
         """事件过滤器，监听鼠标事件"""
-        # 检查obj是否是我们目标控件列表中的一个
+        if not self._is_usable():
+            return False
+
         is_target = False
         for ref in self.target_widgets:
             try:
                 target = ref()
-                if target is None:
-                    continue
-                # 先检查target是否仍然有效
-                try:
-                    _ = target.objectName()
-                except RuntimeError:
-                    continue
-                if target is obj:
-                    is_target = True
-                    break
             except RuntimeError:
                 continue
 
+            if target is None:
+                continue
+
+            try:
+                _ = target.objectName()
+            except RuntimeError:
+                continue
+
+            if target is obj:
+                is_target = True
+                break
+
         if is_target:
             event_type = event.type()
-            
+
             if event_type == QEvent.MouseMove:
-                # 鼠标移动时更新位置并重置定时器
                 self.last_mouse_pos = event.globalPos()
                 self.timer.start()
                 self._fade_out()
             elif event_type == QEvent.Enter:
-                # 鼠标进入时启动定时器和全局鼠标监控
                 self.last_mouse_pos = event.globalPos()
                 self.timer.start()
                 self._start_mouse_monitor()
             elif event_type == QEvent.Leave:
-                # 鼠标离开时隐藏并停止定时器
-                # 注意：不立即停止鼠标监控，让全局钩子继续检测鼠标是否真的移走
                 self._fade_out()
                 self.timer.stop()
             elif event_type == QEvent.MouseButtonPress or event_type == QEvent.MouseButtonRelease:
-                # 点击时隐藏并停止定时器，不影响控件的点击事件
                 self._fade_out()
                 self.timer.stop()
                 self._stop_mouse_monitor()
             elif event_type == QEvent.MouseButtonDblClick:
-                # 双击时隐藏并停止定时器，不影响控件的双击事件
                 self._fade_out()
                 self.timer.stop()
                 self._stop_mouse_monitor()
-        
-        # 返回False确保事件继续传播到目标控件
+
         return False
-    
+
+    def hideEvent(self, event):
+        """隐藏时确保停止计时器与鼠标监控"""
+        if not self._disposed:
+            try:
+                self.timer.stop()
+            except RuntimeError:
+                pass
+
+            try:
+                self._stop_mouse_monitor()
+            except RuntimeError:
+                pass
+
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        """关闭时显式清理资源"""
+        self.cleanup()
+        super().closeEvent(event)
+
     def set_safe_mode(self, enabled):
         """
         设置安全模式，防止在重建过程中意外显示
-        
+
         Args:
             enabled (bool): 是否启用安全模式
         """
+        if self._disposed:
+            return
+
         self._safe_mode = enabled
         if enabled:
             try:
@@ -524,144 +627,125 @@ class HoverTooltip(QWidget):
                 self._fade_out()
             except (RuntimeError, AttributeError):
                 pass
-    
+
+    # --------------------------
+    # Tooltip 显示与文本获取
+    # --------------------------
     def show_tooltip(self):
         """显示悬浮提示框"""
-        # 安全模式检查
-        if self._safe_mode:
+        if not self._is_usable() or self._safe_mode:
             return
-            
-        # 清理已失效的弱引用
-        valid_refs = []
-        for ref in self.target_widgets:
-            try:
-                target = ref()
-                if target is None:
-                    continue
-                # 验证控件是否仍然有效
-                try:
-                    _ = target.objectName()
-                    valid_refs.append(ref)
-                except RuntimeError:
-                    pass
-            except RuntimeError:
-                pass
-        self.target_widgets = valid_refs
 
-        # 检查是否有可见的目标控件
+        self._prune_invalid_targets()
+
         visible_widgets = []
         for ref in self.target_widgets:
             try:
                 target = ref()
-                if target is None:
-                    continue
-                # 先检查target是否仍然有效
-                try:
-                    _ = target.objectName()
-                except RuntimeError:
-                    continue
-                if target.isVisible():
-                    visible_widgets.append(target)
             except RuntimeError:
                 continue
+
+            if target is None:
+                continue
+
+            try:
+                _ = target.objectName()
+            except RuntimeError:
+                continue
+
+            if target.isVisible():
+                visible_widgets.append(target)
 
         if not visible_widgets:
             return
 
-        # 获取当前鼠标位置的控件
         widget = QApplication.widgetAt(self.last_mouse_pos)
         if not widget:
             return
 
-        # 检查鼠标是否在我们的目标控件上
         current_widget = None
         for ref in self.target_widgets:
             try:
                 target = ref()
-                if target is None:
-                    continue
-                # 先检查target是否仍然有效
-                try:
-                    _ = target.objectName()
-                except RuntimeError:
-                    continue
-                # 检查widget是否有效
-                if widget:
-                    try:
-                        _ = widget.objectName()
-                    except RuntimeError:
-                        widget = None
-                if widget == target or (widget and target.isAncestorOf(widget)):
-                    current_widget = target
-                    break
             except RuntimeError:
                 continue
 
+            if target is None:
+                continue
+
+            try:
+                _ = target.objectName()
+            except RuntimeError:
+                continue
+
+            if widget:
+                try:
+                    _ = widget.objectName()
+                except RuntimeError:
+                    widget = None
+
+            if widget == target or (widget and target.isAncestorOf(widget)):
+                current_widget = target
+                break
+
         if not current_widget:
             return
-        
-        # 获取鼠标位置的文本内容
+
         text = self.get_text_at_position()
         if not text:
             return
-        
-        # 设置文本内容
+
         self.label.setText(text)
-        
-        # 调整大小
+
         self.label.adjustSize()
         margin = int(4 * self.dpi_scale)
         self.resize(self.label.width() + margin, self.label.height() + margin)
-        
-        # 将文本标签在主容器中居中放置
+
         label_x = (self.width() - self.label.width()) // 2
         label_y = (self.height() - self.label.height()) // 2
         self.label.move(label_x, label_y)
-        
-        # 设置位置（鼠标指针下方）
-        pos = self.last_mouse_pos
+
+        pos = QPoint(self.last_mouse_pos)
         pos.setY(pos.y() + int(5 * self.dpi_scale))
-        
-        # 确保提示框在屏幕内 (Qt6中使用primaryScreen替代desktop)
+
         screen = QApplication.primaryScreen()
-        screen_rect = screen.geometry() if screen else self.screen().geometry()
+        current_screen = self.screen()
+        screen_rect = screen.geometry() if screen else (current_screen.geometry() if current_screen else QRect())
         margin = int(2.5 * self.dpi_scale)
-        if pos.x() + self.width() > screen_rect.width():
-            pos.setX(screen_rect.width() - self.width() - margin)
-        if pos.y() + self.height() > screen_rect.height():
-            pos.setY(screen_rect.height() - self.height() - margin)
-        
+
+        if screen_rect.isValid():
+            if pos.x() + self.width() > screen_rect.width():
+                pos.setX(screen_rect.width() - self.width() - margin)
+            if pos.y() + self.height() > screen_rect.height():
+                pos.setY(screen_rect.height() - self.height() - margin)
+
         self.move(pos)
         self._fade_in()
-    
+
     def get_text_at_position(self, widget=None):
         """获取鼠标位置的文本内容"""
+        if self._disposed:
+            return ""
+
         try:
             return self._get_text_at_position_internal(widget)
         except RuntimeError:
-            # 控件可能在获取过程中被删除，返回空字符串
             return ""
 
     def _get_text_at_position_internal(self, widget=None):
         """获取鼠标位置的文本内容（内部实现）"""
-        # 首先直接获取鼠标位置的控件，无论是否被布局覆盖
         direct_widget = QApplication.widgetAt(self.last_mouse_pos)
         if direct_widget:
-            # 验证控件是否仍然有效
             try:
                 _ = direct_widget.objectName()
             except RuntimeError:
                 return ""
 
-            # 导入CustomButton类
             from .button_widgets import CustomButton
 
-            # 检查是否是CustomButton
             if isinstance(direct_widget, CustomButton):
-                # 如果有自定义的悬浮信息文本，优先使用
                 if direct_widget._tooltip_text:
                     return direct_widget._tooltip_text
-                # 如果是文本模式，直接返回文本
                 elif direct_widget._display_mode == "text":
                     text_attr = direct_widget.text
                     if callable(text_attr):
@@ -670,9 +754,7 @@ class HoverTooltip(QWidget):
                             return text_value
                     elif text_attr:
                         return text_attr
-                # 如果是图标模式，返回图标描述
                 elif direct_widget._display_mode == "icon" and direct_widget._icon_path:
-                    # SVG路径到文字描述的映射字典
                     svg_tooltip_map = {
                         "favorites.svg": "收藏夹",
                         "back.svg": "返回上一次退出程序时的目录",
@@ -688,25 +770,21 @@ class HoverTooltip(QWidget):
                         "settings.svg": "设置",
                         "help.svg": "帮助",
                         "info.svg": "信息",
-                        "trash.svg": "清空所有项目"
+                        "trash.svg": "清空所有项目",
                     }
 
-                    # 提取SVG文件名
                     import os
-                    svg_filename = os.path.basename(direct_widget._icon_path)
 
-                    # 返回对应的文字描述
+                    svg_filename = os.path.basename(direct_widget._icon_path)
                     return svg_tooltip_map.get(svg_filename, svg_filename)
 
-            # 特殊处理CustomSettingItem组件
             from .setting_widgets import CustomSettingItem
+
             if isinstance(direct_widget, CustomSettingItem) or isinstance(direct_widget.parent(), CustomSettingItem):
-                # 获取CustomSettingItem实例
                 setting_item = direct_widget if isinstance(direct_widget, CustomSettingItem) else direct_widget.parent()
-                # 优先使用自定义的tooltip文本
                 if setting_item._tooltip_text:
                     return setting_item._tooltip_text
-                # 否则返回设置名称和介绍信息
+
                 tooltip_parts = []
                 if setting_item.text:
                     tooltip_parts.append(f"{setting_item.text}")
@@ -716,26 +794,26 @@ class HoverTooltip(QWidget):
                     return "\n".join(tooltip_parts)
                 return ""
 
-            # 特殊处理CustomFileHorizontalCard组件
             from .file_horizontal_card import CustomFileHorizontalCard
-            if isinstance(direct_widget, CustomFileHorizontalCard) or isinstance(direct_widget.parent(), CustomFileHorizontalCard):
+
+            if isinstance(direct_widget, CustomFileHorizontalCard) or isinstance(
+                direct_widget.parent(), CustomFileHorizontalCard
+            ):
                 card = direct_widget if isinstance(direct_widget, CustomFileHorizontalCard) else direct_widget.parent()
                 file_path = card.file_path
                 if card._display_name:
                     file_name = card._display_name
                 else:
                     import os
+
                     file_name = os.path.basename(file_path)
 
-                # 获取文件信息
                 import os
                 from PySide6.QtCore import QFileInfo
-                file_info = QFileInfo(file_path)
 
-                # 判断是文件夹还是文件
+                file_info = QFileInfo(file_path)
                 is_dir = file_info.isDir()
 
-                # 格式化文件大小
                 if is_dir:
                     size_str = "文件夹"
                 else:
@@ -749,28 +827,32 @@ class HoverTooltip(QWidget):
                     else:
                         size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
 
-                # 文件类型
-                if is_dir:
-                    file_type = "文件夹"
-                else:
-                    file_type = f".{file_info.suffix()}"
-
-                # 路径
+                file_type = "文件夹" if is_dir else f".{file_info.suffix()}"
                 abs_path = file_info.absoluteFilePath()
 
-                # 日期格式化
                 if file_info.exists():
                     if is_dir:
                         created_time = "文件夹"
-                        modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
+                        modified_time = (
+                            file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                            if file_info.lastModified().isValid()
+                            else "未知"
+                        )
                     else:
-                        created_time = file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if file_info.birthTime().isValid() else "未知"
-                        modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
+                        created_time = (
+                            file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
+                            if file_info.birthTime().isValid()
+                            else "未知"
+                        )
+                        modified_time = (
+                            file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                            if file_info.lastModified().isValid()
+                            else "未知"
+                        )
                 else:
                     created_time = "文件不存在"
                     modified_time = "文件不存在"
 
-                # 构建悬浮信息文本（与FileBlockCard格式一致）
                 tooltip_text = f"名称: {file_name}\n"
                 tooltip_text += f"路径: {abs_path}\n"
                 tooltip_text += f"类型: {file_type}\n"
@@ -780,8 +862,10 @@ class HoverTooltip(QWidget):
 
                 return tooltip_text
 
-            # 特殊处理文件选择器中的文件卡片（QWidget#FileBlockCard）
-            if direct_widget.objectName() == "FileBlockCard" or (hasattr(direct_widget.parent(), "objectName") and direct_widget.parent().objectName() == "FileBlockCard"):
+            if direct_widget.objectName() == "FileBlockCard" or (
+                hasattr(direct_widget.parent(), "objectName")
+                and direct_widget.parent().objectName() == "FileBlockCard"
+            ):
                 card = direct_widget if direct_widget.objectName() == "FileBlockCard" else direct_widget.parent()
                 if hasattr(card, "file_info"):
                     file_info = card.file_info
@@ -791,7 +875,6 @@ class HoverTooltip(QWidget):
                     is_dir = file_info["is_dir"]
                     file_type = "文件夹" if is_dir else f".{file_info['suffix']}"
 
-                    # 格式化文件大小
                     if is_dir:
                         size_str = "文件夹"
                     else:
@@ -804,23 +887,33 @@ class HoverTooltip(QWidget):
                         else:
                             size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
 
-                    # 使用QFileInfo获取更准确的文件信息，特别是日期
-                    from PySide6.QtCore import QFileInfo, QDateTime
+                    from PySide6.QtCore import QFileInfo
+
                     qfile_info = QFileInfo(file_path)
 
-                    # 日期格式化
                     if qfile_info.exists():
                         if is_dir:
                             created_time = "文件夹"
-                            modified_time = qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if qfile_info.lastModified().isValid() else "未知"
+                            modified_time = (
+                                qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                                if qfile_info.lastModified().isValid()
+                                else "未知"
+                            )
                         else:
-                            created_time = qfile_info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if qfile_info.birthTime().isValid() else "未知"
-                            modified_time = qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if qfile_info.lastModified().isValid() else "未知"
+                            created_time = (
+                                qfile_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
+                                if qfile_info.birthTime().isValid()
+                                else "未知"
+                            )
+                            modified_time = (
+                                qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                                if qfile_info.lastModified().isValid()
+                                else "未知"
+                            )
                     else:
                         created_time = "文件不存在"
                         modified_time = "文件不存在"
 
-                    # 构建悬浮信息文本（与CustomFileHorizontalCard格式一致）
                     tooltip_text = f"名称: {file_name}\n"
                     tooltip_text += f"路径: {file_path}\n"
                     tooltip_text += f"类型: {file_type}\n"
@@ -830,7 +923,6 @@ class HoverTooltip(QWidget):
 
                     return tooltip_text
 
-            # 检查直接控件是否有文本
             if hasattr(direct_widget, "text"):
                 text_attr = direct_widget.text
                 if callable(text_attr):
@@ -840,15 +932,12 @@ class HoverTooltip(QWidget):
                 elif text_attr:
                     return text_attr
 
-        # 如果没有指定控件，使用直接获取的控件
         if not widget:
             widget = direct_widget
             if not widget:
                 return ""
 
-        # 递归查找有文本的子控件
         def find_text_in_children(w):
-            # 检查当前控件是否有文本
             if hasattr(w, "text"):
                 text_attr = w.text
                 if callable(text_attr):
@@ -858,7 +947,6 @@ class HoverTooltip(QWidget):
                 elif text_attr:
                     return text_attr
 
-            # 特殊处理文件选择器中的文件卡片（QWidget#FileCard）
             if hasattr(w, "objectName") and w.objectName() == "FileCard":
                 if hasattr(w, "file_info"):
                     file_info = w.file_info
@@ -866,7 +954,6 @@ class HoverTooltip(QWidget):
                     file_path = file_info["path"]
                     return f"{file_name}\n{file_path}"
 
-            # 检查是否有itemAt方法（如QListWidget、QTreeWidget等）
             if hasattr(w, "itemAt"):
                 pos = w.mapFromGlobal(self.last_mouse_pos)
                 item = w.itemAt(pos)
@@ -874,16 +961,12 @@ class HoverTooltip(QWidget):
                     text_attr = item.text
                     if callable(text_attr):
                         return text_attr()
-                    else:
-                        return text_attr
+                    return text_attr
 
-            # 递归检查所有子控件和布局
-            from PySide6.QtWidgets import QWidget, QLayout
+            from PySide6.QtWidgets import QLayout, QWidget
 
-            # 检查所有直接子控件
             for child in w.children():
                 if isinstance(child, QWidget):
-                    # 检查子控件是否可见且鼠标在其范围内
                     if child.isVisible():
                         child_rect = child.rect()
                         child_global_pos = child.mapToGlobal(QPoint(0, 0))
@@ -894,32 +977,29 @@ class HoverTooltip(QWidget):
                             if text:
                                 return text
                 elif isinstance(child, QLayout):
-                    # 检查布局中的所有控件
                     for i in range(child.count()):
                         layout_item = child.itemAt(i)
                         if layout_item:
                             if layout_item.widget():
                                 layout_widget = layout_item.widget()
                                 if layout_widget.isVisible():
-                                    # 检查鼠标是否在布局控件范围内
                                     layout_widget_rect = layout_widget.rect()
                                     layout_widget_global_pos = layout_widget.mapToGlobal(QPoint(0, 0))
-                                    mouse_in_layout_widget = QRect(layout_widget_global_pos, layout_widget_rect.size()).contains(self.last_mouse_pos)
+                                    mouse_in_layout_widget = QRect(
+                                        layout_widget_global_pos, layout_widget_rect.size()
+                                    ).contains(self.last_mouse_pos)
 
                                     if mouse_in_layout_widget:
-                                        # 递归查找布局控件的文本
                                         text = find_text_in_children(layout_widget)
                                         if text:
                                             return text
                             elif layout_item.layout():
-                                # 递归检查子布局
                                 text = find_text_in_children(layout_item.layout())
                                 if text:
                                     return text
 
             return ""
 
-        # 检查目标控件是否有文本
         if hasattr(widget, "text"):
             text_attr = widget.text
             if callable(text_attr):
@@ -929,32 +1009,29 @@ class HoverTooltip(QWidget):
             elif text_attr:
                 return text_attr
 
-        # 递归检查子控件
         text = find_text_in_children(widget)
         if text:
             return text
 
-        # 如果没有找到文本，尝试检查直接控件的父控件
         if direct_widget:
             parent = direct_widget.parent()
             while parent:
                 from .file_horizontal_card import CustomFileHorizontalCard
+
                 if isinstance(parent, CustomFileHorizontalCard):
                     file_path = parent.file_path
                     if parent._display_name:
                         file_name = parent._display_name
                     else:
                         import os
+
                         file_name = os.path.basename(file_path)
-                    
-                    # 获取完整文件信息
+
                     from PySide6.QtCore import QFileInfo
+
                     file_info = QFileInfo(file_path)
-                    
-                    # 判断是文件夹还是文件
                     is_dir = file_info.isDir()
-                    
-                    # 格式化文件大小
+
                     if is_dir:
                         size_str = "文件夹"
                     else:
@@ -967,31 +1044,38 @@ class HoverTooltip(QWidget):
                             size_str = f"{file_size / (1024 * 1024):.2f} MB"
                         else:
                             size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
-                    
-                    # 文件类型
-                    if is_dir:
-                        file_type = "文件夹"
-                    else:
-                        file_type = f".{file_info.suffix()}"
-                    
-                    # 路径
+
+                    file_type = "文件夹" if is_dir else f".{file_info.suffix()}"
                     abs_path = file_info.absoluteFilePath()
-                    
-                    # 日期格式化
+
                     if file_info.exists():
                         if is_dir:
                             created_time = "文件夹"
-                            modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
+                            modified_time = (
+                                file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                                if file_info.lastModified().isValid()
+                                else "未知"
+                            )
                         else:
-                            created_time = file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss") if file_info.birthTime().isValid() else "未知"
-                            modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss") if file_info.lastModified().isValid() else "未知"
+                            created_time = (
+                                file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
+                                if file_info.birthTime().isValid()
+                                else "未知"
+                            )
+                            modified_time = (
+                                file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                                if file_info.lastModified().isValid()
+                                else "未知"
+                            )
                     else:
                         created_time = "文件不存在"
                         modified_time = "文件不存在"
-                    
-                    # 构建悬浮信息文本
-                    return f"名称: {file_name}\n路径: {abs_path}\n类型: {file_type}\n大小: {size_str}\n修改时间: {modified_time}\n创建时间: {created_time}"
-                
+
+                    return (
+                        f"名称: {file_name}\n路径: {abs_path}\n类型: {file_type}\n大小: {size_str}\n"
+                        f"修改时间: {modified_time}\n创建时间: {created_time}"
+                    )
+
                 if hasattr(parent, "text"):
                     text_attr = parent.text
                     if callable(text_attr):
@@ -1001,40 +1085,46 @@ class HoverTooltip(QWidget):
                     elif text_attr:
                         return text_attr
                 parent = parent.parent()
-        
+
         return ""
-    
+
     def paintEvent(self, event):
-        """绘制圆角卡片"""
+        """绘制圆角卡片，并在绘制时应用缩放效果"""
+        if self._disposed:
+            return
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        
-        # 获取颜色设置
-        from PySide6.QtWidgets import QApplication
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        if abs(self._scale_value - 1.0) > 0.01:
+            transform = QTransform()
+            center_x = self.width() / 2
+            center_y = self.height() / 2
+            transform.translate(center_x, center_y)
+            transform.scale(self._scale_value, self._scale_value)
+            transform.translate(-center_x, -center_y)
+            painter.setTransform(transform)
+
         app = QApplication.instance()
-        
-        # 从应用实例获取设置管理器，而不是创建新实例
-        if hasattr(app, 'settings_manager'):
+        if app and hasattr(app, "settings_manager"):
             settings_manager = app.settings_manager
         else:
-            # 回退方案：如果应用实例中没有settings_manager，再创建新实例
             from freeassetfilter.core.settings_manager import SettingsManager
+
             settings_manager = SettingsManager()
-        
+
         current_colors = settings_manager.get_setting("appearance.colors", {})
         base_color = current_colors.get("base_color", "#ffffff")
         normal_color = current_colors.get("normal_color", "#333333")
-        
-        # 绘制边框
+
         border_pen = QPen(QColor(normal_color))
         border_pen.setWidth(1)
         painter.setPen(border_pen)
-        
-        # 绘制背景
+
         brush = QBrush(QColor(base_color))
         painter.setBrush(brush)
-        
-        # 绘制圆角矩形
+
         rect = QRect(0, 0, self.width() - 1, self.height() - 1)
         radius = 4
         painter.drawRoundedRect(rect, radius, radius)
