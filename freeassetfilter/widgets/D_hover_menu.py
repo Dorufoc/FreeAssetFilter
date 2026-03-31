@@ -50,7 +50,7 @@ class D_HoverMenu(QWidget):
 
     closed = Signal()
 
-    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None):
+    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None, background_alpha=1.0, enable_vertical_animation=False):
         """
         初始化悬浮菜单
 
@@ -63,6 +63,8 @@ class D_HoverMenu(QWidget):
             fill_width: 是否横向填充整个父窗口宽度
             margin: 外边距（像素）
             border_radius: 圆角半径（像素），默认为None表示使用默认值4像素
+            background_alpha: 背景透明度，范围 0.0-1.0，默认 1.0（不透明）
+            enable_vertical_animation: 是否启用垂直位移动画，默认 False（仅透明度动画）
         """
         super().__init__(parent)
         
@@ -72,6 +74,8 @@ class D_HoverMenu(QWidget):
         self._fill_width = fill_width
         self._margin = margin
         self._border_radius = border_radius if border_radius is not None else 8
+        self._background_alpha = max(0.0, min(1.0, background_alpha))
+        self._enable_vertical_animation = enable_vertical_animation
         
         if use_sub_widget_mode:
             # 子控件模式：作为父窗口的子控件
@@ -109,7 +113,7 @@ class D_HoverMenu(QWidget):
         self._fade_animation = None
         self._opacity_value = 1.0
 
-        self._hidden_vertical_offset = int(20 * self.dpi_scale)
+        self._hidden_vertical_offset = int(20 * self.dpi_scale) if self._enable_vertical_animation else 0
         self._vertical_offset = self._hidden_vertical_offset
         self._vertical_animation = None
         self._vertical_animation_duration = 300
@@ -382,10 +386,15 @@ class D_HoverMenu(QWidget):
             self._vertical_offset = start_offset
             self._update_position_with_offset()
 
-        self._vertical_animation.stop()
-        self._vertical_animation.setStartValue(start_offset)
-        self._vertical_animation.setEndValue(0)
-        self._vertical_animation.start()
+        if self._enable_vertical_animation:
+            self._vertical_animation.stop()
+            self._vertical_animation.setStartValue(start_offset)
+            self._vertical_animation.setEndValue(0)
+            self._vertical_animation.start()
+        else:
+            self._vertical_animation.stop()
+            self._vertical_offset = 0
+            self._update_position_with_offset()
 
         self._fade_animation.stop()
         self._fade_animation.setStartValue(start_opacity)
@@ -409,10 +418,15 @@ class D_HoverMenu(QWidget):
         self._is_animating = True
         self._stop_timeout_timer()
 
-        self._vertical_animation.stop()
-        self._vertical_animation.setStartValue(self._vertical_offset)
-        self._vertical_animation.setEndValue(self._hidden_vertical_offset)
-        self._vertical_animation.start()
+        if self._enable_vertical_animation:
+            self._vertical_animation.stop()
+            self._vertical_animation.setStartValue(self._vertical_offset)
+            self._vertical_animation.setEndValue(self._hidden_vertical_offset)
+            self._vertical_animation.start()
+        else:
+            self._vertical_animation.stop()
+            self._vertical_offset = self._hidden_vertical_offset
+            self._update_position_with_offset()
 
         self._fade_animation.stop()
         self._fade_animation.setStartValue(self._get_opacity())
@@ -775,7 +789,7 @@ class D_HoverMenu(QWidget):
         painter.setPen(border_pen)
 
         base_qcolor = QColor(base_color)
-        base_qcolor.setAlphaF(0.8)
+        base_qcolor.setAlphaF(self._background_alpha)
         brush = QBrush(base_qcolor)
         painter.setBrush(brush)
 
@@ -943,6 +957,48 @@ class D_HoverMenu(QWidget):
             bool: 是否启用自动隐藏
         """
         return self._auto_hide_enabled
+
+    def set_background_alpha(self, alpha):
+        """
+        设置背景透明度
+
+        Args:
+            alpha: 背景透明度，范围 0.0-1.0
+        """
+        self._background_alpha = max(0.0, min(1.0, alpha))
+        self.update()  # 触发重绘
+
+    def get_background_alpha(self):
+        """
+        获取当前背景透明度
+
+        Returns:
+            float: 背景透明度，范围 0.0-1.0
+        """
+        return self._background_alpha
+
+    def set_vertical_animation_enabled(self, enabled):
+        """
+        设置是否启用垂直位移动画
+
+        Args:
+            enabled: True 启用垂直位移动画，False 仅保留透明度动画
+        """
+        self._enable_vertical_animation = bool(enabled)
+        self._hidden_vertical_offset = int(20 * self.dpi_scale) if self._enable_vertical_animation else 0
+        if not self._enable_vertical_animation and self._vertical_offset != 0:
+            self._vertical_animation.stop()
+            self._vertical_offset = 0
+            self._update_position_with_offset()
+
+    def is_vertical_animation_enabled(self):
+        """
+        获取当前是否启用垂直位移动画
+
+        Returns:
+            bool: 是否启用垂直位移动画
+        """
+        return self._enable_vertical_animation
 
     def set_border_radius(self, radius):
         """

@@ -952,7 +952,7 @@ class ModernSettingsWindow(QDialog):
         # 倍速选择按钮点击处理
         def on_speed_button_clicked(button_index):
             # 创建倍速下拉菜单
-            self.speed_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            self.speed_dropdown_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
             speed_items = [f"{speed}x" for speed in speed_options]
             self.speed_dropdown_menu.set_items(speed_items, default_item=f"{current_speed}x")
 
@@ -992,7 +992,7 @@ class ModernSettingsWindow(QDialog):
         )
 
         def on_background_style_button_clicked(button_index):
-            self.background_style_dropdown = CustomDropdownMenu(self, position="bottom")
+            self.background_style_dropdown = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
             self.background_style_dropdown.set_items(background_styles, default_item=current_style)
 
             def on_style_item_clicked(selected_style):
@@ -1192,7 +1192,7 @@ class ModernSettingsWindow(QDialog):
         # 主题选择下拉菜单
         def on_theme_selector_clicked(button_index):
             theme_options = list(self.preset_themes.keys()) + ["自定义"]
-            self.theme_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            self.theme_dropdown_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
             self.theme_dropdown_menu.set_items(theme_options, default_item=initial_theme)
             
             def on_theme_item_clicked(selected_theme):
@@ -1265,7 +1265,7 @@ class ModernSettingsWindow(QDialog):
         )
 
         def on_icon_style_button_clicked(button_index):
-            self.icon_style_dropdown = CustomDropdownMenu(self, position="bottom")
+            self.icon_style_dropdown = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
             self.icon_style_dropdown.set_items(icon_styles, default_item=current_icon_style_text)
 
             def on_icon_style_item_clicked(selected_style):
@@ -1306,7 +1306,7 @@ class ModernSettingsWindow(QDialog):
         # 字体样式选择按钮点击处理
         def on_font_style_button_clicked(button_index):
             # 创建自定义下拉菜单（点击时才创建，避免初始位置错误）
-            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
             # 设置字体列表项
             self.font_dropdown_menu.set_items(font_families, default_item=current_font)
             # 字体选择下拉菜单项点击处理
@@ -1381,7 +1381,7 @@ class ModernSettingsWindow(QDialog):
         )
 
         def on_custom_font_button_clicked(button_index):
-            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            self.font_dropdown_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
             self.font_dropdown_menu.set_items(font_families, default_item=current_custom_font)
 
             def on_font_item_clicked(selected_font_family):
@@ -1460,7 +1460,7 @@ class ModernSettingsWindow(QDialog):
         )
 
         def on_markdown_font_button_clicked(button_index):
-            self.markdown_font_dropdown_menu = CustomDropdownMenu(self, position="bottom")
+            self.markdown_font_dropdown_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
             self.markdown_font_dropdown_menu.set_items(font_families, default_item=current_markdown_font)
 
             def on_markdown_font_item_clicked(selected_font_family):

@@ -1228,10 +1228,15 @@ class CustomButton(QPushButton):
         """
         绘制按钮
         如果是图标模式，先调用父类绘制按钮样式但不绘制文字，再直接渲染SVG；否则调用父类绘制文字
+
+        图标渲染策略：
+        - 不再先渲染到中间 QPixmap 再 drawPixmap，避免二次采样导致的模糊
+        - 直接将 SVG 渲染到按钮的最终目标区域
+        - 目标区域按设备像素比对齐到像素网格，尽量避免半像素导致的虚化
         """
         if self._display_mode == "icon":
             painter = QPainter(self)
-            
+
             # 绘制按钮背景和边框
             style_option = QStyleOptionButton()
             self.initStyleOption(style_option)
@@ -1240,46 +1245,44 @@ class CustomButton(QPushButton):
 
             # 绘制SVG图标
             if self._icon_renderer and self._icon_renderer.isValid():
-                # 计算图标大小
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+
+                dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
+
+                # 计算图标逻辑尺寸
                 button_size = min(self.width(), self.height())
-                icon_size = max(1, int(button_size * 0.52))
-                
+                desired_icon_size = max(1.0, button_size * 0.52)
+
                 svg_size = self._icon_renderer.defaultSize()
-                
+
                 # 根据SVG原始比例计算图标尺寸
                 if svg_size.width() > 0 and svg_size.height() > 0:
                     aspect_ratio = svg_size.width() / svg_size.height()
                     if aspect_ratio >= 1:
-                        icon_width = icon_size
-                        icon_height = max(1, int(icon_size / aspect_ratio))
+                        desired_icon_width = desired_icon_size
+                        desired_icon_height = max(1.0, desired_icon_size / aspect_ratio)
                     else:
-                        icon_height = icon_size
-                        icon_width = max(1, int(icon_size * aspect_ratio))
+                        desired_icon_height = desired_icon_size
+                        desired_icon_width = max(1.0, desired_icon_size * aspect_ratio)
                 else:
-                    icon_width = icon_size
-                    icon_height = icon_size
-                
-                # 创建pixmap并渲染SVG
-                pixmap = QPixmap(icon_width, icon_height)
-                pixmap.fill(Qt.transparent)
-                
-                pixmap_painter = QPainter(pixmap)
-                pixmap_painter.setRenderHint(QPainter.Antialiasing, True)
-                pixmap_painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                
-                # 直接渲染到整个pixmap
-                self._icon_renderer.render(pixmap_painter)
-                pixmap_painter.end()
-                
-                # 绘制到按钮上，居中
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                
-                x = (self.width() - pixmap.width()) // 2
-                y = (self.height() - pixmap.height()) // 2
-                
-                painter.drawPixmap(x, y, pixmap)
-            
+                    desired_icon_width = desired_icon_size
+                    desired_icon_height = desired_icon_size
+
+                # 对齐到设备像素网格，避免非整数设备像素尺寸/坐标触发取样模糊
+                icon_width_px = max(1, round(desired_icon_width * dpr))
+                icon_height_px = max(1, round(desired_icon_height * dpr))
+                icon_width = icon_width_px / dpr
+                icon_height = icon_height_px / dpr
+
+                x_px = round(((self.width() - icon_width) / 2) * dpr)
+                y_px = round(((self.height() - icon_height) / 2) * dpr)
+                x = x_px / dpr
+                y = y_px / dpr
+
+                target_rect = QRectF(x, y, icon_width, icon_height)
+                self._icon_renderer.render(painter, target_rect)
+
             painter.end()
         else:
             # 文字模式，调用父类绘制文字

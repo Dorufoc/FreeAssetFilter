@@ -283,6 +283,7 @@ class _DropdownMenuList(QWidget):
         self._fixed_width: Optional[int] = None
         self._max_visible_items = 6
         self._max_height = int(140 * self.dpi_scale)
+        self._use_scroll_layout = True
 
         self._padding = int(4 * self.dpi_scale)
         self._item_spacing = int(2 * self.dpi_scale)
@@ -393,6 +394,10 @@ class _DropdownMenuList(QWidget):
         self._max_height = max(int(28 * self.dpi_scale), int(height))
         self._apply_size()
 
+    def set_use_scroll_layout(self, use_scroll_layout: bool):
+        self._use_scroll_layout = bool(use_scroll_layout)
+        self._apply_size()
+
     def count(self) -> int:
         return len(self._item_widgets)
 
@@ -463,7 +468,7 @@ class _DropdownMenuList(QWidget):
         return max(1, max_text_width + padding_left + padding_right)
 
     def _has_vertical_scrollbar(self) -> bool:
-        return len(self._item_widgets) > self._max_visible_items
+        return self._use_scroll_layout and len(self._item_widgets) > self._max_visible_items
 
     def _effective_scrollbar_width(self) -> int:
         scrollbar = self.scroll_area.verticalScrollBar() if hasattr(self, "scroll_area") else None
@@ -481,14 +486,20 @@ class _DropdownMenuList(QWidget):
     def _calculate_visible_height(self) -> int:
         item_count = len(self._item_widgets)
         row_height = self._row_height()
-        visible_items = min(item_count, self._max_visible_items) if item_count > 0 else 1
+
+        if self._use_scroll_layout:
+            visible_items = min(item_count, self._max_visible_items) if item_count > 0 else 1
+        else:
+            visible_items = item_count if item_count > 0 else 1
 
         content_height = visible_items * row_height
         if visible_items > 1:
             content_height += (visible_items - 1) * self._item_spacing
 
-        total_height = content_height + self._padding * 2
-        return min(max(total_height, int(28 * self.dpi_scale)), self._max_height)
+        total_height = max(content_height + self._padding * 2, int(28 * self.dpi_scale))
+        if self._use_scroll_layout:
+            return min(total_height, self._max_height)
+        return total_height
 
     def _sync_item_text_and_size(self, content_width: int, row_height: int):
         for index, item_widget in enumerate(self._item_widgets):
@@ -503,7 +514,15 @@ class _DropdownMenuList(QWidget):
         row_height = self._row_height()
 
         item_count = len(self._item_widgets)
-        visible_items = min(item_count, self._max_visible_items) if item_count > 0 else 1
+        if self._use_scroll_layout:
+            visible_items = min(item_count, self._max_visible_items) if item_count > 0 else 1
+            self.scroll_area.setWidgetResizable(True)
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        else:
+            visible_items = item_count if item_count > 0 else 1
+            self.scroll_area.setWidgetResizable(False)
+            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         scroll_content_height = visible_items * row_height
         if visible_items > 1:
             scroll_content_height += (visible_items - 1) * self._item_spacing
@@ -517,7 +536,13 @@ class _DropdownMenuList(QWidget):
         self.scroll_area.setFixedWidth(scroll_width)
         self.scroll_area.setFixedHeight(max(1, visible_height - self._padding * 2))
         self.content_widget.setFixedWidth(content_width)
+        self.content_widget.setFixedHeight(max(1, scroll_content_height))
         self.setFixedSize(scroll_width + self._padding * 2, visible_height)
+
+        vertical_scrollbar = self.scroll_area.verticalScrollBar()
+        if vertical_scrollbar is not None:
+            vertical_scrollbar.setDisabled(not self._use_scroll_layout)
+            vertical_scrollbar.setValue(0)
 
         horizontal_scrollbar = self.scroll_area.horizontalScrollBar()
         if horizontal_scrollbar is not None:
@@ -959,6 +984,11 @@ class Ddropmenu(QWidget):
 
     def set_max_visible_items(self, count: int):
         self._max_visible_items = max(1, int(count))
+        self._adjust_menu_size()
+        self._schedule_layout_refresh(0)
+
+    def set_use_scroll_layout(self, use_scroll_layout: bool):
+        self.list_widget.set_use_scroll_layout(use_scroll_layout)
         self._adjust_menu_size()
         self._schedule_layout_refresh(0)
 

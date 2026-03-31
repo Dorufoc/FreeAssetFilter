@@ -180,27 +180,34 @@ class ArchiveBrowser(QWidget):
         self.path_edit.set_text("无压缩包路径")
         path_layout.addWidget(self.path_edit, 1)
         
-        # 编码选择下拉框（放到地址栏后面）
-        self.encoding_combo = CustomDropdownMenu(self, position="bottom")
-        
-        # 应用与文件选择器一致的尺寸设置方法
-        # 设置最小宽度，应用DPI缩放
-        scaled_combo_width = int(40 * self.dpi_scale)
-        self.encoding_combo.set_fixed_width(scaled_combo_width)
-        
-        # 设置字体，使用缩放后的字体
-        self.encoding_combo.setFont(control_font)
-        
+        # 编码选择下拉框（放到地址栏后面，使用外部按钮 + 下拉菜单模式）
+        self.encoding_combo = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
+
         # 添加支持的编码（只显示编码格式本身）
         encoding_items = []
         for enc in self.supported_encodings:
             encoding_items.append({"text": enc.upper(), "data": enc})
+
         # 设置默认选择为UTF-8（7z默认输出UTF-8）
-        self.encoding_combo.set_items(encoding_items)
-        self.encoding_combo.set_current_item({"text": "UTF-8", "data": "utf-8"})
-        # 连接选择变化信号
+        self.encoding_combo.set_items(encoding_items, default_item={"text": "UTF-8", "data": "utf-8"})
         self.encoding_combo.itemClicked.connect(self._on_encoding_changed)
-        path_layout.addWidget(self.encoding_combo)
+
+        self.encoding_button = CustomButton(
+            "UTF-8",
+            button_type="normal",
+            display_mode="text",
+            height=button_height,
+            tooltip_text="编码"
+        )
+        self.encoding_button.setFont(control_font)
+        self.encoding_combo.set_target_button(self.encoding_button)
+
+        def show_encoding_menu():
+            self.encoding_combo.set_target_button(self.encoding_button)
+            self.encoding_combo.show_menu()
+
+        self.encoding_button.clicked.connect(show_encoding_menu)
+        path_layout.addWidget(self.encoding_button)
         
         main_layout.addLayout(path_layout)
         
@@ -498,8 +505,9 @@ class ArchiveBrowser(QWidget):
             self.current_path = ""
             # 重置编码为默认值UTF-8（7z默认输出UTF-8）
             self.manual_encoding = "utf-8"
-            # 更新编码选择下拉框
+            # 更新编码选择下拉框和外部按钮显示
             self.encoding_combo.set_current_item({"text": "UTF-8", "data": "utf-8"})
+            self.encoding_button.setText("UTF-8")
             self.refresh()
         else:
             QMessageBox.warning(self, "警告", "无效的压缩包路径")
@@ -510,6 +518,8 @@ class ArchiveBrowser(QWidget):
         """
         # 获取选择的编码
         self.manual_encoding = item_data
+        if hasattr(self, "encoding_button") and self.encoding_button:
+            self.encoding_button.setText(str(item_data).upper())
         # 立即刷新文件列表，应用新编码
         self.refresh()
     

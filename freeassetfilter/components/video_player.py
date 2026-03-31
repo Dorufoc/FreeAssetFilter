@@ -656,7 +656,9 @@ class VideoPlayer(QWidget):
             use_sub_widget_mode=False,  # 不使用子控件模式，使用独立窗口模式
             fill_width=True,  # 横向填充整个显示区域
             margin=30,  # 添加30像素的外边距
-            border_radius=self._control_bar_border_radius if self._control_bar_border_radius is not None else 8  # 圆角半径
+            border_radius=self._control_bar_border_radius if self._control_bar_border_radius is not None else 8,  # 圆角半径
+            background_alpha=0.8,  # 浮动控制栏保留半透明背景
+            enable_vertical_animation=True  # 浮动控制栏启用位移动画
         )
         self._floating_control_bar.set_content(self._control_bar)
 

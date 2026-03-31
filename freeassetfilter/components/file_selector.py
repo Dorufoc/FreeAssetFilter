@@ -349,6 +349,8 @@ class CustomFileSelector(QWidget):
         self.drive_combo = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
         # 设置外部目标按钮
         self.drive_combo.set_target_button(self.drive_btn)
+        # 盘符菜单使用特殊模式：不使用滚动布局，条目完整显示
+        self.drive_combo.set_use_scroll_layout(False)
         # 盘符菜单宽度改为按内容自适应，不再设置固定宽度
         # 动态获取当前系统存在的盘符
         self._update_drive_list()

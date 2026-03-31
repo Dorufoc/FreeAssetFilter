@@ -1055,7 +1055,7 @@ class TextPreviewWidget(QWidget):
         icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
         font_icon_path = os.path.join(icon_dir, "font.svg")
         
-        self.font_dropdown = CustomDropdownMenu(use_internal_button=False)
+        self.font_dropdown = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
         self.font_dropdown.set_fixed_width(int(100 * self.dpi_scale))
         self.font_button = CustomButton(
             font_icon_path,
@@ -1071,10 +1071,15 @@ class TextPreviewWidget(QWidget):
         default_index = 0
         self.font_dropdown.set_items(font_items, font_items[default_index])
         self.font_dropdown.itemClicked.connect(self._on_font_selected)
-        self.font_button.clicked.connect(self.font_dropdown.show_menu)
+
+        def show_font_menu():
+            self.font_dropdown.set_target_button(self.font_button)
+            self.font_dropdown.show_menu()
+
+        self.font_button.clicked.connect(show_font_menu)
         toolbar_layout.addWidget(self.font_button)
         
-        self.encoding_dropdown = CustomDropdownMenu(use_internal_button=False)
+        self.encoding_dropdown = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
         self.encoding_dropdown.set_fixed_width(int(60 * self.dpi_scale))
         encoding_icon_path = os.path.join(icon_dir, "earth.svg")
         self.encoding_button = CustomButton(
@@ -1086,7 +1091,12 @@ class TextPreviewWidget(QWidget):
         self.encoding_dropdown.set_target_button(self.encoding_button)
         self.encoding_dropdown.set_items(["自动检测"] + ENCODING_LIST, "自动检测")
         self.encoding_dropdown.itemClicked.connect(self._on_encoding_selected)
-        self.encoding_button.clicked.connect(self.encoding_dropdown.show_menu)
+
+        def show_encoding_menu():
+            self.encoding_dropdown.set_target_button(self.encoding_button)
+            self.encoding_dropdown.show_menu()
+
+        self.encoding_button.clicked.connect(show_encoding_menu)
         toolbar_layout.addWidget(self.encoding_button)
         
         size_label = QLabel("大小")
