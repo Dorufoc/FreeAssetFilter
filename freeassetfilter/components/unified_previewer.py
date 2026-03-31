@@ -92,6 +92,7 @@ class UnifiedPreviewer(QWidget):
         self.main_window = parent
         
         self._current_settings_window = None
+        self._scheduled_preview_cleanup = False
 
         # 初始化UI
         self.init_ui()
@@ -1876,6 +1877,61 @@ class UnifiedPreviewer(QWidget):
             self.preview_layout.addWidget(error_label)
             self.current_preview_widget = error_label
 
+    def pause_active_media_preview(self) -> bool:
+        """
+        安全暂停当前媒体预览（仅音频/视频）。
+
+        Returns:
+            bool: 如果检测到媒体播放器并成功发起暂停则返回 True，否则返回 False。
+        """
+        try:
+            if not self.current_preview_widget:
+                return False
+
+            from freeassetfilter.components.video_player import VideoPlayer
+
+            if not isinstance(self.current_preview_widget, VideoPlayer):
+                return False
+
+            if hasattr(self.current_preview_widget, 'pause'):
+                return bool(self.current_preview_widget.pause())
+
+        except Exception as e:
+            error(f"[UnifiedPreviewer] 暂停当前媒体预览失败: {e}")
+
+        return False
+
+    def schedule_safe_preview_cleanup(self, delay_ms: int = 200, reason: str = ""):
+        """
+        调度一次延迟的安全预览清理。
+        默认不在保存设置时触发，仅作为后续需要安全重建预览/播放器时的备用通道。
+
+        Args:
+            delay_ms (int): 延迟毫秒数
+            reason (str): 调度原因，仅用于日志
+        """
+        if self._scheduled_preview_cleanup:
+            debug(f"[UnifiedPreviewer] 已存在待执行的预览清理任务，跳过重复调度: {reason}")
+            return
+
+        self._scheduled_preview_cleanup = True
+        debug(f"[UnifiedPreviewer] 已调度延迟预览清理，delay={delay_ms}ms, reason={reason}")
+
+        def _do_cleanup():
+            self._scheduled_preview_cleanup = False
+            try:
+                if not self.current_preview_widget:
+                    return
+
+                from freeassetfilter.components.video_player import VideoPlayer
+
+                if isinstance(self.current_preview_widget, VideoPlayer):
+                    self.stop_preview()
+            except Exception as e:
+                error(f"[UnifiedPreviewer] 执行延迟预览清理失败: {e}")
+
+        QTimer.singleShot(max(0, delay_ms), _do_cleanup)
+
     def _open_global_settings(self):
         """
         打开全局设置窗口
@@ -1916,6 +1972,8 @@ class UnifiedPreviewer(QWidget):
             return
 
         try:
+            self.pause_active_media_preview()
+
             if self._current_settings_window is not None:
                 try:
                     if self._current_settings_window.isVisible():

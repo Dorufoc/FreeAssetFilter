@@ -1998,11 +1998,9 @@ class ModernSettingsWindow(QDialog):
 
         app = self.parent() if self.parent() else None
 
-        if app and hasattr(app, 'unified_previewer'):
-            try:
-                app.unified_previewer.stop_preview()
-            except (RuntimeError, AttributeError) as e:
-                debug(f"停止预览失败: {e}")
+        # 不在保存设置时主动销毁当前预览，避免在模态设置窗口关闭和主题刷新期间
+        # 触发 MPV/native window 资源释放导致卡死或崩溃。
+        # 当前媒体预览会在打开设置窗口前先安全暂停，播放器相关设置在后续新建播放器时生效。
 
         # 主题或颜色变更时，使SVG缓存失效并应用主题
         if theme_changed or colors_changed:
