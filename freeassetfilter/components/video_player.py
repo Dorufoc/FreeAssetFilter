@@ -1224,10 +1224,8 @@ class VideoPlayer(QWidget):
             self._control_bar.set_subtitle_loaded(False)
 
     def _reset_audio_state(self):
-        """重置音轨状态缓存和按钮可见性"""
+        """重置音轨状态缓存"""
         self._audio_state_cache = self._get_empty_audio_state()
-        if hasattr(self, '_control_bar'):
-            self._control_bar.set_audio_button_visible(False)
 
     def _close_subtitle_track_dialog(self):
         """关闭字幕轨选择弹窗"""
@@ -1332,18 +1330,15 @@ class VideoPlayer(QWidget):
         return state
 
     def _refresh_audio_state(self) -> Dict[str, Any]:
-        """刷新音轨状态缓存并同步控制栏按钮显隐"""
+        """刷新音轨状态缓存"""
         default_state = self._get_empty_audio_state()
 
         if (
-            self._playback_mode != self.VIDEO_MODE
-            or not self._current_file
+            not self._current_file
             or not self._mpv_manager
             or not self._mpv_manager.is_initialized()
         ):
             self._audio_state_cache = default_state
-            if hasattr(self, '_control_bar'):
-                self._control_bar.set_audio_button_visible(False)
             return default_state
 
         state = self._mpv_manager.get_audio_state()
@@ -1355,10 +1350,6 @@ class VideoPlayer(QWidget):
             state = merged_state
 
         self._audio_state_cache = state
-
-        if hasattr(self, '_control_bar'):
-            self._control_bar.set_audio_button_visible(bool(state.get("has_multiple_audio_tracks")))
-
         return state
 
     def _find_matching_subtitle_file(self, video_path: str) -> Optional[str]:
@@ -1660,6 +1651,7 @@ class VideoPlayer(QWidget):
         QTimer.singleShot(200, self._initialize_progress_display)
         QTimer.singleShot(250, self._refresh_subtitle_state)
         QTimer.singleShot(275, self._refresh_audio_state)
+        QTimer.singleShot(500, self._refresh_audio_state)
         QTimer.singleShot(350, self._try_auto_load_matching_subtitle)
 
     def _on_manager_file_ended(self, reason: int):
@@ -1760,10 +1752,7 @@ class VideoPlayer(QWidget):
     def _on_audio_clicked(self):
         """音轨按钮点击处理"""
         if not self._current_file:
-            self.errorOccurred.emit("请先加载视频文件后再操作音轨")
-            return
-
-        if self._playback_mode != self.VIDEO_MODE:
+            self.errorOccurred.emit("请先加载媒体文件后再操作音轨")
             return
 
         if not self._mpv_manager or not self._mpv_manager.is_initialized():
@@ -1771,7 +1760,12 @@ class VideoPlayer(QWidget):
             return
 
         audio_state = self._refresh_audio_state()
+        if not audio_state.get("has_available_audio_tracks"):
+            self.errorOccurred.emit("当前媒体没有可用音轨")
+            return
+
         if not audio_state.get("has_multiple_audio_tracks"):
+            self.errorOccurred.emit("当前媒体只有一条音轨，无需切换")
             return
 
         self._open_audio_track_dialog(audio_state)

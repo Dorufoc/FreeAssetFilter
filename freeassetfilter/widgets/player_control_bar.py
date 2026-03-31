@@ -138,14 +138,12 @@ class PlayerControlBar(QWidget):
             self._show_fullscreen_button = settings_manager.get_setting("player.control_bar_show_fullscreen", True)
             self._show_lut_controls = settings_manager.get_setting("player.control_bar_show_lut", False)
             self._show_subtitle_button = settings_manager.get_setting("player.control_bar_show_subtitle", False)
-            self._show_audio_button = settings_manager.get_setting("player.control_bar_show_audio", False)
             self._show_volume_button = settings_manager.get_setting("player.control_bar_show_volume", True)
             self._show_speed_button = settings_manager.get_setting("player.control_bar_show_speed", True)
         else:
             self._show_fullscreen_button = True
             self._show_lut_controls = False
             self._show_subtitle_button = False
-            self._show_audio_button = False
             self._show_volume_button = True
             self._show_speed_button = True
 
@@ -267,15 +265,13 @@ class PlayerControlBar(QWidget):
             )
             bottom_layout.addWidget(self._subtitle_button)
 
-        if self._show_audio_button:
-            self._audio_button = self._create_icon_button(
-                "audio.svg",
-                tooltip_text="选择音轨",
-                height=20,
-                button_type="normal"
-            )
-            self._audio_button.setVisible(False)
-            bottom_layout.addWidget(self._audio_button)
+        self._audio_button = self._create_icon_button(
+            "audio.svg",
+            tooltip_text="选择音轨",
+            height=20,
+            button_type="normal"
+        )
+        bottom_layout.addWidget(self._audio_button)
 
         # 倍速下拉菜单
         if self._show_speed_button:
@@ -372,7 +368,7 @@ class PlayerControlBar(QWidget):
         if self._show_subtitle_button and hasattr(self, '_subtitle_button'):
             self._subtitle_button.clicked.connect(self._on_subtitle_button_clicked)
 
-        if self._show_audio_button and hasattr(self, '_audio_button'):
+        if hasattr(self, '_audio_button'):
             self._audio_button.clicked.connect(self._on_audio_button_clicked)
 
         if self._show_lut_controls and hasattr(self, '_lut_button'):
@@ -620,25 +616,25 @@ class PlayerControlBar(QWidget):
 
     def _update_audio_button_style(self):
         """更新音轨按钮样式（始终保持普通样式）"""
-        if self._show_audio_button and hasattr(self, '_audio_button'):
+        if hasattr(self, '_audio_button'):
             self._audio_button.set_button_type("normal")
             self._audio_button.update_style()
 
     def set_audio_button_visible(self, visible: bool):
         """
-        设置音轨按钮是否可见
+        兼容旧调用：记录当前音轨可用状态，但不再控制按钮显隐
 
         Args:
-            visible: 是否可见
+            visible: 当前是否存在可用/可切换音轨
         """
         self._has_multiple_audio_tracks = bool(visible)
-        if self._show_audio_button and hasattr(self, '_audio_button'):
+        if hasattr(self, '_audio_button'):
             self._update_audio_button_style()
-            self._audio_button.setVisible(bool(visible))
+            self._audio_button.setVisible(True)
 
     def is_audio_button_visible(self) -> bool:
         """获取音轨按钮是否可见"""
-        if self._show_audio_button and hasattr(self, '_audio_button'):
+        if hasattr(self, '_audio_button'):
             return self._audio_button.isVisible()
         return False
 
@@ -910,9 +906,9 @@ class PlayerControlBar(QWidget):
             self._update_speed_button_style()
         if self._show_subtitle_button and hasattr(self, '_subtitle_button'):
             self._update_subtitle_button_style()
-        if self._show_audio_button and hasattr(self, '_audio_button'):
+        if hasattr(self, '_audio_button'):
             self._update_audio_button_style()
-            self._audio_button.setVisible(self._has_multiple_audio_tracks)
+            self._audio_button.setVisible(True)
     
     def hideEvent(self, event):
         """隐藏事件"""

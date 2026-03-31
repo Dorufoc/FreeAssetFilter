@@ -190,7 +190,6 @@ class SettingsManager:
                 "control_bar_show_fullscreen": True,
                 "control_bar_show_lut": False,
                 "control_bar_show_subtitle": False,
-                "control_bar_show_audio": False,
                 "control_bar_show_volume": True,
                 "control_bar_show_speed": True,
                 "fullscreen_classic_control_bar": True,
