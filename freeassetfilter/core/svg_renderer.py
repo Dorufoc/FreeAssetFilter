@@ -15,7 +15,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 提供高质量的SVG到QPixmap或QSvgWidget转换，确保正确处理RGBA通道
 """
 
-from PySide6.QtCore import Qt, QSize, QThread
+from PySide6.QtCore import Qt, QSize, QThread, QRectF
 from PySide6.QtGui import QPainter, QPixmap, QImage, QColor
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtSvg import QSvgRenderer
@@ -181,7 +181,153 @@ class SvgRenderer:
             warning(f"替换SVG颜色失败: {e}")
             # 如果替换失败，返回原始SVG内容
             return svg_content
-    
+
+    @staticmethod
+    def _get_device_pixel_ratio(device_pixel_ratio=None):
+        if device_pixel_ratio is not None:
+            try:
+                resolved_dpr = float(device_pixel_ratio)
+                if resolved_dpr > 0:
+                    return resolved_dpr
+            except (ValueError, TypeError):
+                pass
+
+        try:
+            app = QGuiApplication.instance()
+            screen = app.primaryScreen() if app else None
+            if screen is not None:
+                resolved_dpr = float(screen.devicePixelRatio())
+                if resolved_dpr > 0:
+                    return resolved_dpr
+        except RuntimeError:
+            pass
+
+        return 1.0
+
+    @staticmethod
+    def _create_transparent_pixmap(width, height, device_pixel_ratio=None):
+        target_width = max(1, int(width))
+        target_height = max(1, int(height))
+        resolved_dpr = SvgRenderer._get_device_pixel_ratio(device_pixel_ratio)
+
+        physical_width = max(1, int(round(target_width * resolved_dpr)))
+        physical_height = max(1, int(round(target_height * resolved_dpr)))
+
+        pixmap = QPixmap(physical_width, physical_height)
+        pixmap.fill(Qt.transparent)
+        pixmap.setDevicePixelRatio(resolved_dpr)
+        return pixmap
+
+    @staticmethod
+    def _convert_rgba_to_hex(svg_content):
+        import re
+
+        def rgba_to_hex(match):
+            rgba_values = match.group(1).split(',')
+            r = rgba_values[0].strip()
+            g = rgba_values[1].strip()
+            b = rgba_values[2].strip()
+            a = rgba_values[3].strip()
+
+            if '%' in r:
+                r = float(r.replace('%', '')) * 2.55
+            else:
+                r = float(r)
+
+            if '%' in g:
+                g = float(g.replace('%', '')) * 2.55
+            else:
+                g = float(g)
+
+            if '%' in b:
+                b = float(b.replace('%', '')) * 2.55
+            else:
+                b = float(b)
+
+            if '%' in a:
+                a = float(a.replace('%', '')) / 100
+            else:
+                a = float(a)
+
+            r = max(0, min(255, r))
+            g = max(0, min(255, g))
+            b = max(0, min(255, b))
+            a = max(0, min(1, a))
+            a = int(a * 255)
+
+            return f'#{int(r):02x}{int(g):02x}{int(b):02x}{a:02x}'
+
+        return re.sub(r'rgba\(([^\)]+)\)', rgba_to_hex, svg_content)
+
+    @staticmethod
+    def _prepare_svg_content(svg_content, replace_colors=True):
+        processed_svg = svg_content
+        if replace_colors:
+            processed_svg = SvgRenderer._replace_svg_colors(processed_svg)
+        return SvgRenderer._convert_rgba_to_hex(processed_svg)
+
+    @staticmethod
+    def render_svg_to_exact_pixmap(
+        icon_path,
+        icon_width=24,
+        icon_height=24,
+        replace_colors=True,
+        device_pixel_ratio=None,
+    ):
+        target_width = max(1, int(icon_width))
+        target_height = max(1, int(icon_height))
+        resolved_dpr = SvgRenderer._get_device_pixel_ratio(device_pixel_ratio)
+
+        if not icon_path or not os.path.exists(icon_path):
+            return SvgRenderer._create_transparent_pixmap(target_width, target_height, resolved_dpr)
+
+        try:
+            with open(icon_path, 'r', encoding='utf-8') as f:
+                svg_content = f.read()
+
+            processed_svg = SvgRenderer._prepare_svg_content(svg_content, replace_colors=replace_colors)
+            svg_renderer = QSvgRenderer(processed_svg.encode('utf-8'))
+
+            physical_width = max(1, int(round(target_width * resolved_dpr)))
+            physical_height = max(1, int(round(target_height * resolved_dpr)))
+
+            image = QImage(physical_width, physical_height, QImage.Format_ARGB32_Premultiplied)
+            image.fill(Qt.transparent)
+
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+            svg_size = svg_renderer.defaultSize()
+            if svg_size.width() > 0 and svg_size.height() > 0:
+                target_size = QSize(svg_size.width(), svg_size.height()).scaled(
+                    physical_width,
+                    physical_height,
+                    Qt.KeepAspectRatio,
+                )
+                target_rect = QRectF(
+                    (physical_width - target_size.width()) / 2.0,
+                    (physical_height - target_size.height()) / 2.0,
+                    float(target_size.width()),
+                    float(target_size.height()),
+                )
+            else:
+                target_rect = QRectF(0.0, 0.0, float(physical_width), float(physical_height))
+
+            svg_renderer.render(painter, target_rect)
+            painter.end()
+
+            pixmap = QPixmap.fromImage(image)
+            if pixmap.isNull():
+                return SvgRenderer._create_transparent_pixmap(target_width, target_height, resolved_dpr)
+
+            pixmap.setDevicePixelRatio(resolved_dpr)
+            return pixmap
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            warning(f"按目标分辨率渲染SVG失败: {icon_path}, 错误: {e}")
+            return SvgRenderer._create_transparent_pixmap(target_width, target_height, resolved_dpr)
+
     @staticmethod
     def render_svg_to_widget(icon_path, icon_size=120, dpi_scale=1.0, replace_colors=True):
         """

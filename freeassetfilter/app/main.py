@@ -21,6 +21,7 @@ import os
 import warnings
 import time
 import traceback
+import threading
 import faulthandler
 
 # 添加父目录到Python路径，确保包能被正确导入
@@ -35,37 +36,140 @@ from freeassetfilter.utils.app_logger import (
 # 初始化日志系统
 logger = get_logger()
 
-# 启用faulthandler，捕获C++层崩溃并写入日志文件
-# 这样即使发生段错误/访问冲突等C++级别错误，也能记录到日志中
+
+def _get_available_stderr_stream():
+    """
+    获取可用于 faulthandler 的 stderr 流
+    优先使用 sys.__stderr__，确保尽量绕过可能被包装/替换的 sys.stderr
+    """
+    for stream_name in ("__stderr__", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+
+        try:
+            if stream.closed:
+                continue
+        except (AttributeError, ValueError):
+            pass
+
+        try:
+            stream.fileno()
+        except (AttributeError, OSError, ValueError, TypeError):
+            continue
+
+        return stream
+
+    return None
+
+
+def _create_fault_output_tee(stderr_stream, log_file_path):
+    """
+    创建 faulthandler 的双写输出通道：
+    - 一个写端提供给 faulthandler
+    - 后台线程将内容同时转发到 stderr 和日志文件
+
+    Returns:
+        tuple[file | None, file | None, threading.Thread | None]:
+            (提供给 faulthandler 的写端, 日志文件句柄, 转发线程)
+    """
+    import os
+
+    stderr_fd = stderr_stream.fileno()
+    log_file = open(log_file_path, "ab", buffering=0)
+
+    read_fd, write_fd = os.pipe()
+    write_stream = os.fdopen(write_fd, "wb", buffering=0)
+
+    def _tee_worker():
+        try:
+            while True:
+                chunk = os.read(read_fd, 4096)
+                if not chunk:
+                    break
+
+                try:
+                    os.write(stderr_fd, chunk)
+                except OSError:
+                    pass
+
+                try:
+                    log_file.write(chunk)
+                except (OSError, ValueError):
+                    pass
+        finally:
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+
+            try:
+                log_file.flush()
+            except (OSError, ValueError):
+                pass
+
+    tee_thread = threading.Thread(
+        target=_tee_worker,
+        name="FaultHandlerTee",
+        daemon=True
+    )
+    tee_thread.start()
+
+    return write_stream, log_file, tee_thread
+
+
+# 启用 faulthandler：
+# - 有 stderr 且日志文件可用时，尽量同时输出到终端和日志
+# - 只有 stderr 时输出到 stderr
+# - 没有控制台终端时仅写入日志
 _fault_handler_file = None
+_fault_handler_output = None
+_fault_handler_tee_thread = None
+_fault_handler_enabled = False
+
+fault_stream = _get_available_stderr_stream()
+log_file_path = None
 try:
     log_file_path = logger.get_log_file_path()
-    # 以追加模式打开日志文件，faulthandler将崩溃信息写入此文件
-    _fault_handler_file = open(log_file_path, 'a', encoding='utf-8')
-    faulthandler.enable(file=_fault_handler_file)
-    info(f"faulthandler已启用，C++层崩溃信息将写入日志: {log_file_path}")
-except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-    warning(f"启用faulthandler到日志文件失败 - 文件操作错误: {e}")
-    # 如果文件方式失败，尝试启用到stderr（如果可用）
-    if sys.stderr is not None:
-        try:
-            faulthandler.enable()
-            info("faulthandler已启用，崩溃信息将输出到stderr")
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e2:
-            warning(f"启用faulthandler到stderr也失败 - 文件操作错误: {e2}")
-        except (ValueError, TypeError) as e2:
-            warning(f"启用faulthandler到stderr也失败 - 数据转换错误: {e2}")
-except (ValueError, TypeError) as e:
-    warning(f"启用faulthandler到日志文件失败 - 数据转换错误: {e}")
-    # 如果文件方式失败，尝试启用到stderr（如果可用）
-    if sys.stderr is not None:
-        try:
-            faulthandler.enable()
-            info("faulthandler已启用，崩溃信息将输出到stderr")
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e2:
-            warning(f"启用faulthandler到stderr也失败 - 文件操作错误: {e2}")
-        except (ValueError, TypeError) as e2:
-            warning(f"启用faulthandler到stderr也失败 - 数据转换错误: {e2}")
+except (AttributeError, OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
+    log_file_path = None
+
+if fault_stream is not None and log_file_path:
+    try:
+        _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread = _create_fault_output_tee(
+            fault_stream, log_file_path
+        )
+        faulthandler.enable(file=_fault_handler_output, all_threads=True)
+        info(f"faulthandler已启用，崩溃信息将同时输出到stderr和日志: {log_file_path}")
+        _fault_handler_enabled = True
+    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+        warning(f"启用faulthandler双写输出失败 - 文件操作错误: {e}")
+    except (ValueError, TypeError) as e:
+        warning(f"启用faulthandler双写输出失败 - 数据转换错误: {e}")
+
+if not _fault_handler_enabled and fault_stream is not None:
+    try:
+        faulthandler.enable(file=fault_stream, all_threads=True)
+        info("faulthandler已启用，崩溃信息将输出到stderr")
+        _fault_handler_enabled = True
+    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+        warning(f"启用faulthandler到stderr失败 - 文件操作错误: {e}")
+    except (ValueError, TypeError) as e:
+        warning(f"启用faulthandler到stderr失败 - 数据转换错误: {e}")
+
+if not _fault_handler_enabled and log_file_path:
+    try:
+        _fault_handler_file = open(log_file_path, "a", encoding="utf-8")
+        faulthandler.enable(file=_fault_handler_file, all_threads=True)
+        info(f"faulthandler已启用，C++层崩溃信息将写入日志: {log_file_path}")
+        _fault_handler_enabled = True
+    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+        warning(f"启用faulthandler到日志文件失败 - 文件操作错误: {e}")
+    except (ValueError, TypeError) as e:
+        warning(f"启用faulthandler到日志文件失败 - 数据转换错误: {e}")
+
+if not _fault_handler_enabled:
+    warning("faulthandler未能启用，C++层崩溃信息可能无法被捕获")
 
 # 定义异常处理函数
 def handle_exception(exc_type, exc_value, exc_traceback):

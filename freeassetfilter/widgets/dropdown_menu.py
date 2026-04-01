@@ -191,17 +191,18 @@ class _DropdownMenuItem(QPushButton):
         accent_color = colors.get("accent_color", "#B036EE")
         selected_bg = self._selected_background(accent_color)
 
-        border_radius = int(4 * self.dpi_scale)
-        padding_left = int(8 * self.dpi_scale)
+        border_radius = int(6 * self.dpi_scale)
+        padding_left = int(10 * self.dpi_scale)
         padding_right = int(20 * self.dpi_scale)
         padding_v = int(6 * self.dpi_scale)
-        hover_margin = int(1 * self.dpi_scale)
 
         base_background = "transparent"
-        border = "none"
+        hover_background = hover_color if self._enabled_state else "transparent"
+        border = "1px solid transparent"
 
         if self._selected:
             base_background = selected_bg
+            hover_background = selected_bg
             border = f"1px solid {accent_color}"
 
         disabled_text_color = QColor(text_color)
@@ -218,9 +219,7 @@ class _DropdownMenuItem(QPushButton):
                 text-align: left;
             }}
             QPushButton:hover {{
-                background-color: {hover_color if self._enabled_state and not self._selected else base_background};
-                margin: {hover_margin}px;
-                padding: {max(0, padding_v - hover_margin)}px {max(0, padding_right - hover_margin)}px {max(0, padding_v - hover_margin)}px {max(0, padding_left - hover_margin)}px;
+                background-color: {hover_background};
                 border: {border};
                 border-radius: {border_radius}px;
             }}
@@ -286,8 +285,8 @@ class _DropdownMenuList(QWidget):
         self._use_scroll_layout = True
 
         self._padding = int(4 * self.dpi_scale)
-        self._item_spacing = int(2 * self.dpi_scale)
-        self._row_min_height = int(20 * self.dpi_scale)
+        self._item_spacing = int(4 * self.dpi_scale)
+        self._row_min_height = int(24 * self.dpi_scale)
         self._scrollbar_reserved_width = int(10 * self.dpi_scale)
 
         # 兼容旧调用链：
@@ -438,8 +437,8 @@ class _DropdownMenuList(QWidget):
         font_metrics = QFontMetrics(self.global_font)
         text_height = font_metrics.height()
         padding_v = int(6 * self.dpi_scale)
-        hover_margin = int(1 * self.dpi_scale)
-        return max(self._row_min_height, text_height + (padding_v - hover_margin) * 2 + int(2 * self.dpi_scale))
+        border_allowance = int(2 * self.dpi_scale)
+        return max(self._row_min_height, text_height + padding_v * 2 + border_allowance)
 
     def _calculate_content_width(self) -> int:
         if self._fixed_width is not None:
@@ -462,7 +461,7 @@ class _DropdownMenuList(QWidget):
             if text:
                 max_text_width = max(max_text_width, font_metrics.horizontalAdvance(text))
 
-        padding_left = int(8 * self.dpi_scale)
+        padding_left = int(10 * self.dpi_scale)
         padding_right = int(20 * self.dpi_scale)
 
         return max(1, max_text_width + padding_left + padding_right)
@@ -523,9 +522,9 @@ class _DropdownMenuList(QWidget):
             self.scroll_area.setWidgetResizable(False)
             self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        scroll_content_height = visible_items * row_height
-        if visible_items > 1:
-            scroll_content_height += (visible_items - 1) * self._item_spacing
+        scroll_content_height = item_count * row_height if item_count > 0 else row_height
+        if item_count > 1:
+            scroll_content_height += (item_count - 1) * self._item_spacing
 
         needs_scrollbar = self._has_vertical_scrollbar()
         scrollbar_width = self._effective_scrollbar_width() if needs_scrollbar else 0
