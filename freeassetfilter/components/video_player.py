@@ -493,9 +493,13 @@ class VideoPlayer(QWidget):
             ".dfxp", ".smi", ".sami", ".rt", ".txt", ".sup", ".mpl", ".mks"
         }
 
+        # 进度同步周期（毫秒）
+        # 统一作为 mpv 播放进度同步频率与进度条动画时长，避免动画被重复打断。
+        self._progress_sync_interval_ms = 200
+
         # 进度同步定时器
         self._sync_timer = QTimer(self)
-        self._sync_timer.setInterval(200)  # 每200ms同步一次
+        self._sync_timer.setInterval(self._progress_sync_interval_ms)
         self._sync_timer.timeout.connect(self._sync_progress_from_player)
 
         # 拖动进度条时的 seek 节流，兼顾实时预览与稳定性
@@ -541,8 +545,12 @@ class VideoPlayer(QWidget):
             self._init_audio_mode_ui(main_layout)
         
         self._control_bar = PlayerControlBar(
-            self, 
+            self,
             show_lut_controls=self._show_lut_controls
+        )
+        self._control_bar.configure_progress_animation(
+            sync_interval_ms=self._progress_sync_interval_ms,
+            linear=True
         )
         self._control_bar.set_detach_button_visible(self._show_detach_button)
         main_layout.addWidget(self._control_bar)
@@ -1010,8 +1018,15 @@ class VideoPlayer(QWidget):
             position: 当前播放位置（秒）
             duration: 总时长（秒）
         """
-        # 使用set_position方法同步进度和时间显示
-        self._control_bar.set_position(position, duration)
+        # 仅缓存来自 MPV 的实时位置变化，不直接驱动进度条动画。
+        # 控制栏 UI 统一由 _sync_timer 按固定周期（默认 200ms）更新，
+        # 这样进度条动画时长可与同步周期严格一致，并保持线性推进，
+        # 避免 positionChanged 与定时同步双重驱动导致动画反复启停。
+        self._last_sync_position = position
+        self._last_sync_duration = duration
+
+        if not self._sync_timer.isActive() and not self._user_interacting:
+            self._control_bar.set_position(position, duration)
 
     def _on_manager_volume_changed(self, volume: int):
         """
@@ -1094,12 +1109,8 @@ class VideoPlayer(QWidget):
             return
 
         try:
-            # 使用节流机制，减少不必要的UI更新
             import time
             current_time = time.time() * 1000
-            if hasattr(self, '_last_sync_time') and (current_time - self._last_sync_time) < 100:
-                return
-            self._last_sync_time = current_time
 
             state = self._mpv_manager.get_state()
             position = self._mpv_manager.get_position_direct()

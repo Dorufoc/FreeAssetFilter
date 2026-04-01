@@ -5,19 +5,16 @@ FreeAssetFilter 按钮类自定义控件
 包含各种按钮类UI组件，如自定义按钮等
 """
 
-from PySide6.QtWidgets import (
-    QPushButton, QWidget, QSizePolicy, QApplication, QStyleOptionButton
-)
-from PySide6.QtCore import Qt, QPoint, Signal, QRect, QRectF, QSize, QTimer, QPropertyAnimation, Property, QEasingCurve, QParallelAnimationGroup
-from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap, QKeyEvent
-from PySide6.QtWidgets import QStyle
-from PySide6.QtWidgets import QGraphicsDropShadowEffect
-
-# 用于SVG渲染
-from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
 import threading
+
+from PySide6.QtCore import Qt, QRectF, QSize, QTimer, Property, QVariantAnimation, QEasingCurve
+from PySide6.QtGui import QColor, QPainter, QFont, QPen, QFontMetrics
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QPushButton, QSizePolicy, QApplication
+
+from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.utils.app_logger import debug
 
 
 class CustomButton(QPushButton):
@@ -28,1045 +25,474 @@ class CustomButton(QPushButton):
     - 悬停和点击效果
     - 支持强调色和次选色方案
     - 支持文字和图标两种显示模式
-    - 支持非线性动画过渡效果
+    - 使用高性能自绘与单动画实现，避免频繁 QSS 重算
     """
-    
-    @Property(QColor)
-    def anim_bg_color(self):
-        return self._anim_bg_color
-    
-    @anim_bg_color.setter
-    def anim_bg_color(self, color):
-        self._anim_bg_color = color
-        self._update_button_style()
-    
-    @Property(QColor)
-    def anim_border_color(self):
-        return self._anim_border_color
-    
-    @anim_border_color.setter
-    def anim_border_color(self, color):
-        self._anim_border_color = color
-        self._update_button_style()
-    
-    @Property(QColor)
-    def anim_text_color(self):
-        return self._anim_text_color
-    
-    @anim_text_color.setter
-    def anim_text_color(self, color):
-        self._anim_text_color = color
-        self._update_button_style()
-    
-    def _update_button_style(self):
-        """根据当前动画颜色更新按钮样式"""
-        if not hasattr(self, '_style_colors') or not self._style_colors:
-            return
 
-        scaled_border_radius = self._height // 2
-        scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
+    _svg_cache = {}
+    _svg_cache_lock = threading.Lock()
 
-        border_width = 1.5
+    @Property(float)
+    def anim_progress(self):
+        return self._anim_progress
 
-        # 处理颜色字符串，支持透明色
-        def get_color_string(color):
-            if color.alpha() < 255:
-                return color.name(QColor.HexArgb)
-            return color.name()
+    @anim_progress.setter
+    def anim_progress(self, value):
+        self._anim_progress = float(value)
+        self.update()
 
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {get_color_string(self._anim_bg_color)};
-                color: {get_color_string(self._anim_text_color)};
-                border: {border_width}px solid {get_color_string(self._anim_border_color)};
-                border-radius: {scaled_border_radius}px;
-                padding: {scaled_padding};
-                font-weight: 600;
-            }}
-        """)
-    
-    def __init__(self, text="Button", parent=None, button_type="primary", display_mode="text", height=20, tooltip_text=""):
+    def __init__(
+        self,
+        text="Button",
+        parent=None,
+        button_type="primary",
+        display_mode="text",
+        height=20,
+        tooltip_text="",
+    ):
         """
         初始化自定义按钮
-        
+
         Args:
             text (str): 按钮文本或SVG图标路径
             parent (QWidget): 父控件
             button_type (str): 按钮类型，可选值："primary"（强调色）、"secondary"（次选色）、"normal"（普通样式）、"warning"（警告样式）
             display_mode (str): 显示模式，可选值："text"（文字显示）、"icon"（图标显示）
-                              当未传入该参数或参数为空时，默认启用文字显示功能
-                              当传入该参数且参数不为空时，启用图标显示功能
-            height (int): 按钮高度，默认为40px，与CustomInputBox保持一致
+            height (int): 按钮高度，默认为20px
             tooltip_text (str): 用于悬浮信息显示的不可见文本
         """
-        # 图标模式下，向父类传递tooltip_text或空文本
         parent_text = text if display_mode == "text" else tooltip_text
         super().__init__(parent_text, parent)
+
         self.button_type = button_type
-        
-        # 原始高度（未缩放），用于在DPI变化时重新计算
         self._original_height = height
-        
-        # 显示模式：text（文字）或icon（图标）
         self._display_mode = display_mode
-        # SVG图标路径
         self._icon_path = text if self._display_mode == "icon" else None
-        # 缓存后的SVG渲染器
-        self._icon_renderer = None
-        self._icon_render_signature = None
-        # 悬浮信息文本
         self._tooltip_text = tooltip_text
-        
-        # 获取全局字体
-        app = QApplication.instance()
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.setFont(self.global_font)
 
-        # 禁用按钮的键盘焦点和导航，避免捕获方向键和空格键
         self.setFocusPolicy(Qt.NoFocus)
+        self.setCursor(Qt.PointingHandCursor)
 
-        # 初始化动画锁和标志
-        self._anim_init_lock = threading.Lock()
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+        self._height = int(self._original_height * self.dpi_scale)
+
         self._animations_initialized = False
+        self._anim_lock = threading.Lock()
+
+        self._style_metrics = {}
+        self._style_colors = {}
+        self._disabled_colors = {}
+        self._theme_signature = None
+
+        self._state = "normal"
+        self._current_colors = None
+        self._start_colors = None
+        self._target_colors = None
+        self._anim_progress = 1.0
+
+        self.global_font = QFont()
+        self._button_font = QFont()
+        base_font = getattr(app, "global_font", QFont()) if app else QFont()
+        self.setFont(base_font)
+
+        self._icon_renderer = None
+
+        self._state_animation = QVariantAnimation(self)
+        self._state_animation.setStartValue(0.0)
+        self._state_animation.setEndValue(1.0)
+        self._state_animation.valueChanged.connect(self._on_anim_value_changed)
+        self._state_animation.finished.connect(self._on_anim_finished)
 
         self.update_style()
-        
-        # 初始化动画属性（延迟执行，避免多线程竞争导致的访问冲突）
-        QTimer.singleShot(0, self._init_animations)
-        
-        # 延迟渲染图标，确保按钮尺寸已确定
-        QTimer.singleShot(0, self._render_icon)
-    
-    def _init_animations(self):
-        """初始化按钮状态切换动画
 
-        注意：此方法通过 QTimer.singleShot 延迟调用，以避免多线程环境下
-        Qt 属性动画系统的访问冲突问题。
+        QTimer.singleShot(0, self._init_animations)
+        if self._display_mode == "icon":
+            QTimer.singleShot(0, lambda: self._render_icon(force=False))
+
+    @classmethod
+    def _get_cached_svg_renderer(cls, icon_path, button_type, theme_signature):
+        cache_key = (icon_path, button_type, theme_signature)
+        with cls._svg_cache_lock:
+            return cls._svg_cache.get(cache_key)
+
+    @classmethod
+    def _set_cached_svg_renderer(cls, icon_path, button_type, theme_signature, renderer):
+        cache_key = (icon_path, button_type, theme_signature)
+        with cls._svg_cache_lock:
+            cls._svg_cache[cache_key] = renderer
+
+    def setFont(self, font):
         """
-        # 使用锁防止竞态条件
-        with self._anim_init_lock:
-            # 防止重复初始化
+        保留原本按钮字重效果。
+        原实现依赖样式表中的 font-weight: 600；
+        自绘后改为显式维护按钮绘制字体。
+        """
+        effective_font = QFont(font) if font is not None else QFont()
+        self.global_font = QFont(effective_font)
+
+        self._button_font = QFont(effective_font)
+        self._button_font.setWeight(QFont.DemiBold)
+
+        super().setFont(self._button_font)
+
+        if hasattr(self, "_display_mode") and self._display_mode == "text":
+            if hasattr(self, "_style_metrics") and self._style_metrics:
+                self._update_minimum_width_for_text()
+            if hasattr(self, "_height"):
+                self._height = self._calculate_optimal_height()
+                self.setFixedHeight(self._height)
+            self.update()
+
+    def _get_text_metrics(self):
+        return QFontMetrics(self._button_font)
+
+    def _copy_color_map(self, color_map):
+        return {key: QColor(value) for key, value in color_map.items()}
+
+    def _on_anim_value_changed(self, value):
+        self.anim_progress = float(value)
+
+    def _on_anim_finished(self):
+        if self._target_colors is not None:
+            self._current_colors = self._copy_color_map(self._target_colors)
+            self._start_colors = self._copy_color_map(self._target_colors)
+            self._target_colors = self._copy_color_map(self._target_colors)
+        self._anim_progress = 1.0
+        self.update()
+
+    def _get_interpolated_colors(self):
+        if not self._start_colors or not self._target_colors:
+            return self._copy_color_map(self._current_colors or self._style_colors["normal"])
+
+        progress = max(0.0, min(1.0, self._anim_progress))
+        result = {}
+        for key in self._target_colors:
+            start = self._start_colors[key]
+            end = self._target_colors[key]
+            result[key] = QColor(
+                int(start.red() + (end.red() - start.red()) * progress),
+                int(start.green() + (end.green() - start.green()) * progress),
+                int(start.blue() + (end.blue() - start.blue()) * progress),
+                int(start.alpha() + (end.alpha() - start.alpha()) * progress),
+            )
+        return result
+
+    def _init_animations(self):
+        """初始化动画状态"""
+        with self._anim_lock:
             if self._animations_initialized:
                 return
-
-            # 线程安全检查：确保在主线程中执行
-            from PySide6.QtCore import QThread
-            app = QApplication.instance()
-            if app is None:
-                return
-            if QThread.currentThread() != app.thread():
-                # 如果不在主线程，重新调度到主线程
-                QTimer.singleShot(0, self._init_animations)
-                return
-
-            # 标记动画已初始化
             self._animations_initialized = True
-        
-        # 获取颜色配置
+
+        normal_colors = self._style_colors.get("normal", {})
+        self._current_colors = self._copy_color_map(normal_colors)
+        self._start_colors = self._copy_color_map(normal_colors)
+        self._target_colors = self._copy_color_map(normal_colors)
+        self._anim_progress = 1.0
+        self.update()
+
+    def _set_visual_state(self, state, animated=True):
+        if state not in self._style_colors:
+            state = "normal"
+
+        target = self._style_colors[state]
+        self._state = state
+
+        if not self._animations_initialized or not animated:
+            self._state_animation.stop()
+            self._current_colors = self._copy_color_map(target)
+            self._start_colors = self._copy_color_map(target)
+            self._target_colors = self._copy_color_map(target)
+            self._anim_progress = 1.0
+            self.update()
+            return
+
+        current_visual = self._get_interpolated_colors()
+        self._current_colors = self._copy_color_map(current_visual)
+        self._start_colors = self._copy_color_map(current_visual)
+        self._target_colors = self._copy_color_map(target)
+        self._anim_progress = 0.0
+
+        duration = 150
+        easing = QEasingCurve.OutCubic
+        if state == "pressed":
+            duration = 80
+            easing = QEasingCurve.OutQuad
+        elif state == "normal":
+            duration = 180
+            easing = QEasingCurve.InOutQuad
+        elif state == "hover":
+            duration = 140
+            easing = QEasingCurve.OutCubic
+
+        self._state_animation.stop()
+        self._state_animation.setDuration(duration)
+        self._state_animation.setEasingCurve(easing)
+        self._state_animation.setStartValue(0.0)
+        self._state_animation.setEndValue(1.0)
+        self._state_animation.start()
+
+    def _get_settings_manager(self):
         app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
+        if app and hasattr(app, "settings_manager"):
+            return app.settings_manager
+        from freeassetfilter.core.settings_manager import SettingsManager
+        return SettingsManager()
+
+    def _darken_or_lighten_color(self, color_value, percentage, settings_manager):
+        color = QColor(color_value)
+        current_theme = settings_manager.get_setting("appearance.theme", "default")
+        is_dark_mode = current_theme == "dark"
+
+        if is_dark_mode:
+            luminance = (
+                0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+            ) / 255
+            if luminance < 0.1:
+                adjusted_percentage = min(percentage * 2.5, 0.4)
+            elif luminance < 0.3:
+                adjusted_percentage = min(percentage * 1.8, 0.35)
+            else:
+                adjusted_percentage = percentage
+
+            r = min(255, int(color.red() + (255 - color.red()) * adjusted_percentage))
+            g = min(255, int(color.green() + (255 - color.green()) * adjusted_percentage))
+            b = min(255, int(color.blue() + (255 - color.blue()) * adjusted_percentage))
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-        
+            r = max(0, int(color.red() * (1 - percentage)))
+            g = max(0, int(color.green() * (1 - percentage)))
+            b = max(0, int(color.blue() * (1 - percentage)))
+
+        return QColor(r, g, b)
+
+    def _build_theme_colors(self):
+        settings_manager = self._get_settings_manager()
         current_colors = settings_manager.get_setting("appearance.colors", {})
-        
-        def darken_color(color_hex, percentage):
-            color = QColor(color_hex)
-            current_theme = settings_manager.get_setting("appearance.theme", "default")
-            is_dark_mode = (current_theme == "dark")
+        current_theme = settings_manager.get_setting("appearance.theme", "default")
 
-            if is_dark_mode:
-                # 深色模式下变浅 - 使用加法逻辑，使黑色也能变亮
-                # 从当前颜色向白色方向移动
-                # 根据颜色亮度调整幅度，越暗的颜色使用越大的幅度
-                luminance = (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) / 255
-                if luminance < 0.1:  # 非常暗的颜色（如纯黑）
-                    adjusted_percentage = min(percentage * 2.5, 0.4)  # 最大40%
-                elif luminance < 0.3:  # 较暗的颜色
-                    adjusted_percentage = min(percentage * 1.8, 0.35)  # 最大35%
-                else:
-                    adjusted_percentage = percentage
-
-                r = min(255, int(color.red() + (255 - color.red()) * adjusted_percentage))
-                g = min(255, int(color.green() + (255 - color.green()) * adjusted_percentage))
-                b = min(255, int(color.blue() + (255 - color.blue()) * adjusted_percentage))
-            else:
-                # 浅色模式下加深 - 使用乘法逻辑
-                r = max(0, int(color.red() * (1 - percentage)))
-                g = max(0, int(color.green() * (1 - percentage)))
-                b = max(0, int(color.blue() * (1 - percentage)))
-            return QColor(r, g, b)
-        
-        accent_color = current_colors.get("accent_color", "#007AFF")
-        secondary_color = current_colors.get("secondary_color", "#333333")
-        base_color = current_colors.get("base_color", "#ffffff")
-        
-        # 根据按钮类型设置颜色
-        if self.button_type == "primary":
-            normal_bg = QColor(accent_color)
-            hover_bg = darken_color(accent_color, 0.1)
-            pressed_bg = darken_color(accent_color, 0.2)
-            normal_border = QColor(accent_color)
-            hover_border = QColor(accent_color)
-            pressed_border = QColor(accent_color)
-            if self._display_mode == "icon":
-                # 图标模式下文本颜色设为透明
-                transparent = QColor(0, 0, 0, 0)
-                normal_text = transparent
-                hover_text = transparent
-                pressed_text = transparent
-            else:
-                normal_text = QColor(base_color)
-                hover_text = QColor(base_color)
-                pressed_text = QColor(base_color)
-        elif self.button_type == "normal":
-            normal_bg = QColor(base_color)
-            hover_bg = darken_color(base_color, 0.1)
-            pressed_bg = darken_color(base_color, 0.2)
-            # 边框颜色使用 base_color，与背景色保持一致
-            normal_border = QColor(base_color)
-            hover_border = QColor(base_color)
-            pressed_border = QColor(base_color)
-            if self._display_mode == "icon":
-                # 图标模式下文本颜色设为透明
-                transparent = QColor(0, 0, 0, 0)
-                normal_text = transparent
-                hover_text = transparent
-                pressed_text = transparent
-            else:
-                normal_text = QColor(secondary_color)
-                hover_text = QColor(secondary_color)
-                pressed_text = QColor(secondary_color)
-        elif self.button_type == "warning":
-            warning_color = current_colors.get("notification_error", "#F44336")
-            normal_bg = QColor(warning_color)
-            hover_bg = darken_color(warning_color, 0.1)
-            pressed_bg = darken_color(warning_color, 0.2)
-            normal_border = QColor(warning_color)
-            hover_border = darken_color(warning_color, 0.1)
-            pressed_border = darken_color(warning_color, 0.2)
-            if self._display_mode == "icon":
-                # 图标模式下文本颜色设为透明
-                transparent = QColor(0, 0, 0, 0)
-                normal_text = transparent
-                hover_text = transparent
-                pressed_text = transparent
-            else:
-                # 警告样式使用 base_color 作为文本颜色
-                normal_text = QColor(base_color)
-                hover_text = QColor(base_color)
-                pressed_text = QColor(base_color)
-        else:  # secondary
-            normal_bg = QColor(base_color)
-            hover_bg = darken_color(base_color, 0.1)
-            pressed_bg = darken_color(base_color, 0.2)
-            normal_border = QColor(accent_color)
-            hover_border = QColor(accent_color)
-            pressed_border = QColor(accent_color)
-            if self._display_mode == "icon":
-                # 图标模式下文本颜色设为透明
-                transparent = QColor(0, 0, 0, 0)
-                normal_text = transparent
-                hover_text = transparent
-                pressed_text = transparent
-            else:
-                normal_text = QColor(accent_color)
-                hover_text = QColor(accent_color)
-                pressed_text = QColor(accent_color)
-        
-        # 存储颜色配置供样式更新使用
-        self._style_colors = {
-            'normal_bg': normal_bg,
-            'hover_bg': hover_bg,
-            'pressed_bg': pressed_bg,
-            'normal_border': normal_border,
-            'hover_border': hover_border,
-            'pressed_border': pressed_border,
-            'normal_text': normal_text,
-            'hover_text': hover_text,
-            'pressed_text': pressed_text
-        }
-        
-        # 初始化动画颜色属性
-        self._anim_bg_color = QColor(normal_bg)
-        self._anim_border_color = QColor(normal_border)
-        self._anim_text_color = QColor(normal_text)
-        
-        # 创建悬停进入动画
-        self._hover_anim_group = QParallelAnimationGroup(self)
-        
-        self._anim_hover_bg = QPropertyAnimation(self, b"anim_bg_color")
-        self._anim_hover_bg.setStartValue(normal_bg)
-        self._anim_hover_bg.setEndValue(hover_bg)
-        self._anim_hover_bg.setDuration(150)
-        self._anim_hover_bg.setEasingCurve(QEasingCurve.OutCubic)
-        
-        self._anim_hover_border = QPropertyAnimation(self, b"anim_border_color")
-        self._anim_hover_border.setStartValue(normal_border)
-        self._anim_hover_border.setEndValue(hover_border)
-        self._anim_hover_border.setDuration(150)
-        self._anim_hover_border.setEasingCurve(QEasingCurve.OutCubic)
-        
-        self._anim_hover_text = QPropertyAnimation(self, b"anim_text_color")
-        self._anim_hover_text.setStartValue(normal_text)
-        self._anim_hover_text.setEndValue(hover_text)
-        self._anim_hover_text.setDuration(150)
-        self._anim_hover_text.setEasingCurve(QEasingCurve.OutCubic)
-        
-        self._hover_anim_group.addAnimation(self._anim_hover_bg)
-        self._hover_anim_group.addAnimation(self._anim_hover_border)
-        self._hover_anim_group.addAnimation(self._anim_hover_text)
-        
-        # 创建悬停离开动画（返回正常状态）
-        self._leave_anim_group = QParallelAnimationGroup(self)
-        
-        self._anim_leave_bg = QPropertyAnimation(self, b"anim_bg_color")
-        self._anim_leave_bg.setStartValue(hover_bg)
-        self._anim_leave_bg.setEndValue(normal_bg)
-        self._anim_leave_bg.setDuration(200)
-        self._anim_leave_bg.setEasingCurve(QEasingCurve.InOutQuad)
-        
-        self._anim_leave_border = QPropertyAnimation(self, b"anim_border_color")
-        self._anim_leave_border.setStartValue(hover_border)
-        self._anim_leave_border.setEndValue(normal_border)
-        self._anim_leave_border.setDuration(200)
-        self._anim_leave_border.setEasingCurve(QEasingCurve.InOutQuad)
-        
-        self._anim_leave_text = QPropertyAnimation(self, b"anim_text_color")
-        self._anim_leave_text.setStartValue(hover_text)
-        self._anim_leave_text.setEndValue(normal_text)
-        self._anim_leave_text.setDuration(200)
-        self._anim_leave_text.setEasingCurve(QEasingCurve.InOutQuad)
-        
-        self._leave_anim_group.addAnimation(self._anim_leave_bg)
-        self._leave_anim_group.addAnimation(self._anim_leave_border)
-        self._leave_anim_group.addAnimation(self._anim_leave_text)
-        
-        # 创建按下动画
-        self._press_anim_group = QParallelAnimationGroup(self)
-        
-        self._anim_press_bg = QPropertyAnimation(self, b"anim_bg_color")
-        self._anim_press_bg.setStartValue(hover_bg)
-        self._anim_press_bg.setEndValue(pressed_bg)
-        self._anim_press_bg.setDuration(80)
-        self._anim_press_bg.setEasingCurve(QEasingCurve.OutQuad)
-        
-        self._anim_press_border = QPropertyAnimation(self, b"anim_border_color")
-        self._anim_press_border.setStartValue(hover_border)
-        self._anim_press_border.setEndValue(pressed_border)
-        self._anim_press_border.setDuration(80)
-        self._anim_press_border.setEasingCurve(QEasingCurve.OutQuad)
-        
-        self._anim_press_text = QPropertyAnimation(self, b"anim_text_color")
-        self._anim_press_text.setStartValue(hover_text)
-        self._anim_press_text.setEndValue(pressed_text)
-        self._anim_press_text.setDuration(80)
-        self._anim_press_text.setEasingCurve(QEasingCurve.OutQuad)
-        
-        self._press_anim_group.addAnimation(self._anim_press_bg)
-        self._press_anim_group.addAnimation(self._anim_press_border)
-        self._press_anim_group.addAnimation(self._anim_press_text)
-        
-        # 创建释放动画（返回悬停状态）
-        self._release_anim_group = QParallelAnimationGroup(self)
-        
-        self._anim_release_bg = QPropertyAnimation(self, b"anim_bg_color")
-        self._anim_release_bg.setStartValue(pressed_bg)
-        self._anim_release_bg.setEndValue(hover_bg)
-        self._anim_release_bg.setDuration(150)
-        self._anim_release_bg.setEasingCurve(QEasingCurve.InOutQuad)
-        
-        self._anim_release_border = QPropertyAnimation(self, b"anim_border_color")
-        self._anim_release_border.setStartValue(pressed_border)
-        self._anim_release_border.setEndValue(hover_border)
-        self._anim_release_border.setDuration(150)
-        self._anim_release_border.setEasingCurve(QEasingCurve.InOutQuad)
-        
-        self._anim_release_text = QPropertyAnimation(self, b"anim_text_color")
-        self._anim_release_text.setStartValue(pressed_text)
-        self._anim_release_text.setEndValue(hover_text)
-        self._anim_release_text.setDuration(150)
-        self._anim_release_text.setEasingCurve(QEasingCurve.InOutQuad)
-        
-        self._release_anim_group.addAnimation(self._anim_release_bg)
-        self._release_anim_group.addAnimation(self._anim_release_border)
-        self._release_anim_group.addAnimation(self._anim_release_text)
-        
-        # 应用初始样式
-        self._update_button_style()
-    
-    def enterEvent(self, event):
-        """鼠标进入事件，触发动画"""
-        # 确保动画已初始化
-        if not getattr(self, '_animations_initialized', False):
-            return
-        # 先停止可能正在进行的动画
-        self._leave_anim_group.stop()
-        self._hover_anim_group.stop()
-        self._release_anim_group.stop()
-        
-        # 根据当前状态决定动画
-        colors = self._style_colors
-        if self._anim_bg_color == colors['pressed_bg']:
-            # 如果当前是按下状态，释放到悬停
-            self._release_anim_group.start()
-        else:
-            # 否则从当前状态动画到悬停状态
-            self._anim_hover_bg.setStartValue(self._anim_bg_color)
-            self._anim_hover_bg.setEndValue(colors['hover_bg'])
-            self._anim_hover_border.setStartValue(self._anim_border_color)
-            self._anim_hover_border.setEndValue(colors['hover_border'])
-            self._anim_hover_text.setStartValue(self._anim_text_color)
-            self._anim_hover_text.setEndValue(colors['hover_text'])
-            self._hover_anim_group.start()
-        
-        super().enterEvent(event)
-    
-    def leaveEvent(self, event):
-        """鼠标离开事件，触发动画"""
-        # 确保动画已初始化
-        if not getattr(self, '_animations_initialized', False):
-            return
-        self._hover_anim_group.stop()
-        self._press_anim_group.stop()
-        
-        colors = self._style_colors
-        self._anim_leave_bg.setStartValue(self._anim_bg_color)
-        self._anim_leave_bg.setEndValue(colors['normal_bg'])
-        self._anim_leave_border.setStartValue(self._anim_border_color)
-        self._anim_leave_border.setEndValue(colors['normal_border'])
-        self._anim_leave_text.setStartValue(self._anim_text_color)
-        self._anim_leave_text.setEndValue(colors['normal_text'])
-        self._leave_anim_group.start()
-        
-        super().leaveEvent(event)
-    
-    def mousePressEvent(self, event):
-        """鼠标按下事件，触发动画"""
-        # 确保动画已初始化
-        if not getattr(self, '_animations_initialized', False):
-            super().mousePressEvent(event)
-            return
-        self._hover_anim_group.stop()
-        self._leave_anim_group.stop()
-        
-        colors = self._style_colors
-        self._anim_press_bg.setStartValue(self._anim_bg_color)
-        self._anim_press_bg.setEndValue(colors['pressed_bg'])
-        self._anim_press_border.setStartValue(self._anim_border_color)
-        self._anim_press_border.setEndValue(colors['pressed_border'])
-        self._anim_press_text.setStartValue(self._anim_text_color)
-        self._anim_press_text.setEndValue(colors['pressed_text'])
-        self._press_anim_group.start()
-        
-        super().mousePressEvent(event)
-    
-    def mouseReleaseEvent(self, event):
-        """鼠标释放事件，触发动画"""
-        # 确保动画已初始化
-        if not getattr(self, '_animations_initialized', False):
-            super().mouseReleaseEvent(event)
-            return
-        self._press_anim_group.stop()
-        
-        colors = self._style_colors
-        # 判断鼠标是否在按钮上，决定返回到悬停状态还是正常状态
-        if self.rect().contains(event.pos()):
-            # 鼠标在按钮上，返回到悬停状态
-            target_bg = colors['hover_bg']
-            target_border = colors['hover_border']
-            target_text = colors['hover_text']
-        else:
-            # 鼠标不在按钮上，直接返回到正常状态
-            target_bg = colors['normal_bg']
-            target_border = colors['normal_border']
-            target_text = colors['normal_text']
-        
-        self._anim_release_bg.setStartValue(self._anim_bg_color)
-        self._anim_release_bg.setEndValue(target_bg)
-        self._anim_release_border.setStartValue(self._anim_border_color)
-        self._anim_release_border.setEndValue(target_border)
-        self._anim_release_text.setStartValue(self._anim_text_color)
-        self._anim_release_text.setEndValue(target_text)
-        self._release_anim_group.start()
-        
-        super().mouseReleaseEvent(event)
-    
-    def _calculate_optimal_height(self):
-        """
-        计算按钮的最佳高度
-        
-        逻辑：
-        1. 计算文字实际需要的高度 + 垂直内边距
-        2. 与最小高度（原始高度 * DPI缩放）比较
-        3. 返回较大值，确保按钮既不会太小，也能自适应大文字
-        
-        注意：图标模式和文字模式使用相同的计算逻辑，都基于字体高度
-        这样可以确保两种模式的按钮高度保持一致
-        
-        Returns:
-            int: 计算后的最佳高度
-        """
-        # 计算最小高度（基于原始高度参数）
-        min_height = int(self._original_height * self.dpi_scale)
-        
-        # 无论是图标模式还是文字模式，都使用字体高度来计算
-        # 这样可以确保两种模式的按钮高度保持一致
-        font_metrics = self.fontMetrics()
-        text_height = font_metrics.height()
-        
-        # 垂直方向内边距（与样式表中的padding保持一致）
-        vertical_padding = int(4 * self.dpi_scale) * 2  # 上下内边距
-        
-        # 边框高度
-        border_width = 1.5 * 2  # 上下边框
-        
-        # 计算实际需要的高度
-        required_height = int(text_height + vertical_padding + border_width)
-        
-        # 返回最大值：确保不小于最小高度，同时能容纳大文字
-        return max(required_height, min_height)
-
-    def update_style(self):
-        """
-        更新按钮样式
-        """
-        # 停止所有正在运行的动画，防止动画与样式表冲突
-        if hasattr(self, '_hover_anim_group'):
-            self._hover_anim_group.stop()
-        if hasattr(self, '_leave_anim_group'):
-            self._leave_anim_group.stop()
-        if hasattr(self, '_press_anim_group'):
-            self._press_anim_group.stop()
-        if hasattr(self, '_release_anim_group'):
-            self._release_anim_group.stop()
-
-        # 获取应用实例和最新的DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 从应用实例获取设置管理器，而不是创建新实例
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-        else:
-            # 回退方案：如果应用实例中没有settings_manager，再创建新实例
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-        
-        current_colors = settings_manager.get_setting("appearance.colors", {})
-        
-        # 从基础颜色计算其他颜色（如果不存在的话）
-        def darken_color(color_hex, percentage):
-            color = QColor(color_hex)
-            # 获取当前主题模式
-            current_theme = settings_manager.get_setting("appearance.theme", "default")
-            is_dark_mode = (current_theme == "dark")
-
-            if is_dark_mode:
-                # 深色模式下变浅 - 使用加法逻辑，使黑色也能变亮
-                # 从当前颜色向白色方向移动
-                # 根据颜色亮度调整幅度，越暗的颜色使用越大的幅度
-                luminance = (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) / 255
-                if luminance < 0.1:  # 非常暗的颜色（如纯黑）
-                    adjusted_percentage = min(percentage * 2.5, 0.4)  # 最大40%
-                elif luminance < 0.3:  # 较暗的颜色
-                    adjusted_percentage = min(percentage * 1.8, 0.35)  # 最大35%
-                else:
-                    adjusted_percentage = percentage
-
-                r = min(255, int(color.red() + (255 - color.red()) * adjusted_percentage))
-                g = min(255, int(color.green() + (255 - color.green()) * adjusted_percentage))
-                b = min(255, int(color.blue() + (255 - color.blue()) * adjusted_percentage))
-            else:
-                # 浅色模式下加深 - 使用乘法逻辑
-                r = max(0, int(color.red() * (1 - percentage)))
-                g = max(0, int(color.green() * (1 - percentage)))
-                b = max(0, int(color.blue() * (1 - percentage)))
-            return f"#{r:02x}{g:02x}{b:02x}"
-
-        # 获取基础颜色
         accent_color = current_colors.get("accent_color", "#007AFF")
         secondary_color = current_colors.get("secondary_color", "#333333")
         normal_color = current_colors.get("normal_color", "#e0e0e0")
         auxiliary_color = current_colors.get("auxiliary_color", "#f1f3f5")
         base_color = current_colors.get("base_color", "#ffffff")
-        
-        # 窗口颜色
-        current_colors["window_background"] = auxiliary_color  # 辅助色
-        current_colors["window_border"] = normal_color  # 普通色
-        
-        # 强调样式按钮颜色
-        current_colors["button_primary_normal"] = accent_color  # 强调色
-        current_colors["button_primary_hover"] = darken_color(accent_color, 0.1)  # 强调色加深10%
-        current_colors["button_primary_pressed"] = darken_color(accent_color, 0.2)  # 强调色加深20%
-        current_colors["button_primary_text"] = base_color  # 底层色
-        current_colors["button_primary_border"] = accent_color  # 强调色
-        
-        # 普通样式按钮颜色
-        current_colors["button_normal_normal"] = base_color  # 底层色
-        current_colors["button_normal_hover"] = darken_color(base_color, 0.1)  # 底层色加深10%
-        current_colors["button_normal_pressed"] = darken_color(base_color, 0.2)  # 底层色加深20%
-        current_colors["button_normal_text"] = secondary_color  # 次选色
-        current_colors["button_normal_border"] = base_color  # 底层色，与背景色一致
-        
-        # 次选样式按钮颜色
-        current_colors["button_secondary_normal"] = base_color  # 底层色
-        current_colors["button_secondary_hover"] = darken_color(base_color, 0.1)  # 底层色加深10%
-        current_colors["button_secondary_pressed"] = darken_color(base_color, 0.2)  # 底层色加深20%
-        current_colors["button_secondary_text"] = accent_color  # 强调色
-        current_colors["button_secondary_border"] = accent_color  # 强调色
-        
-        # 文字颜色
-        current_colors["text_normal"] = secondary_color  # 次选色
-        current_colors["text_disabled"] = auxiliary_color  # 辅助色
-        current_colors["text_highlight"] = accent_color  # 强调色
-        current_colors["text_placeholder"] = normal_color  # 普通色
-        
-        # 输入框颜色
-        current_colors["input_background"] = base_color  # 底层色
-        current_colors["input_border"] = normal_color  # 普通色
-        current_colors["input_focus_border"] = accent_color  # 强调色
-        current_colors["input_text"] = secondary_color  # 次选色
-        
-        # 列表颜色
-        current_colors["list_background"] = auxiliary_color  # 辅助色
-        current_colors["list_item_normal"] = normal_color  # 普通色
-        current_colors["list_item_hover"] = darken_color(normal_color, 0.1)  # 普通色加深10%
-        current_colors["list_item_selected"] = accent_color  # 强调色
-        current_colors["list_item_text"] = secondary_color  # 次选色
-        
-        # 滑块颜色
-        current_colors["slider_track"] = base_color  # 底层色
-        current_colors["slider_handle"] = accent_color  # 强调色
-        current_colors["slider_handle_hover"] = accent_color  # 强调色
-        
-        # 进度条颜色
-        current_colors["progress_bar_bg"] = base_color  # 底层色
-        current_colors["progress_bar_fg"] = accent_color  # 强调色
-        
-        # 移除通用按钮颜色（向后兼容类）
-        if "button_normal" in current_colors:
-            del current_colors["button_normal"]
-        if "button_hover" in current_colors:
-            del current_colors["button_hover"]
-        if "button_pressed" in current_colors:
-            del current_colors["button_pressed"]
-        if "button_text" in current_colors:
-            del current_colors["button_text"]
-        if "button_border" in current_colors:
-            del current_colors["button_border"]
-        
-        # 使用最新的DPI缩放因子重新计算按钮高度
-        # 使用自适应高度计算：根据文字大小和最小高度限制确定最终高度
+        warning_color = current_colors.get("notification_error", "#F44336")
+        notification_text = current_colors.get("notification_text", "#FFFFFF")
+
+        transparent = QColor(0, 0, 0, 0)
+        icon_text = transparent if self._display_mode == "icon" else None
+
+        if self.button_type == "primary":
+            normal_bg = QColor(accent_color)
+            hover_bg = self._darken_or_lighten_color(accent_color, 0.1, settings_manager)
+            pressed_bg = self._darken_or_lighten_color(accent_color, 0.2, settings_manager)
+            normal_border = QColor(accent_color)
+            hover_border = QColor(accent_color)
+            pressed_border = QColor(accent_color)
+            normal_text = icon_text or QColor(base_color)
+            hover_text = icon_text or QColor(base_color)
+            pressed_text = icon_text or QColor(base_color)
+            disabled_bg = QColor("#888888")
+            disabled_text = transparent if self._display_mode == "icon" else QColor("#FFFFFF")
+            disabled_border = QColor("#666666")
+        elif self.button_type == "normal":
+            normal_bg = QColor(base_color)
+            hover_bg = self._darken_or_lighten_color(base_color, 0.1, settings_manager)
+            pressed_bg = self._darken_or_lighten_color(base_color, 0.2, settings_manager)
+            normal_border = QColor(base_color)
+            hover_border = QColor(base_color)
+            pressed_border = QColor(base_color)
+            normal_text = icon_text or QColor(secondary_color)
+            hover_text = icon_text or QColor(secondary_color)
+            pressed_text = icon_text or QColor(secondary_color)
+            disabled_bg = QColor("#2D2D2D")
+            disabled_text = transparent if self._display_mode == "icon" else QColor("#666666")
+            disabled_border = QColor("#444444")
+        elif self.button_type == "warning":
+            normal_bg = QColor(warning_color)
+            hover_bg = self._darken_or_lighten_color(warning_color, 0.1, settings_manager)
+            pressed_bg = self._darken_or_lighten_color(warning_color, 0.2, settings_manager)
+            normal_border = QColor(warning_color)
+            hover_border = self._darken_or_lighten_color(warning_color, 0.1, settings_manager)
+            pressed_border = self._darken_or_lighten_color(warning_color, 0.2, settings_manager)
+            normal_text = icon_text or QColor(current_colors.get("button_warning_text", notification_text))
+            hover_text = QColor(normal_text)
+            pressed_text = QColor(normal_text)
+            disabled_bg = QColor("#FF8A80")
+            disabled_text = transparent if self._display_mode == "icon" else QColor("#FFFFFF")
+            disabled_border = QColor("#FF5252")
+        else:  # secondary
+            normal_bg = QColor(base_color)
+            hover_bg = self._darken_or_lighten_color(base_color, 0.1, settings_manager)
+            pressed_bg = self._darken_or_lighten_color(base_color, 0.2, settings_manager)
+            normal_border = QColor(accent_color)
+            hover_border = QColor(accent_color)
+            pressed_border = QColor(accent_color)
+            normal_text = icon_text or QColor(accent_color)
+            hover_text = icon_text or QColor(accent_color)
+            pressed_text = icon_text or QColor(accent_color)
+            disabled_bg = QColor("#2D2D2D")
+            disabled_text = transparent if self._display_mode == "icon" else QColor("#666666")
+            disabled_border = QColor("#444444")
+
+        theme_signature = (
+            current_theme,
+            accent_color,
+            secondary_color,
+            normal_color,
+            auxiliary_color,
+            base_color,
+            warning_color,
+            notification_text,
+            self.button_type,
+            self._display_mode,
+        )
+
+        state_colors = {
+            "normal": {"bg": normal_bg, "border": normal_border, "text": normal_text},
+            "hover": {"bg": hover_bg, "border": hover_border, "text": hover_text},
+            "pressed": {"bg": pressed_bg, "border": pressed_border, "text": pressed_text},
+        }
+
+        disabled_colors = {
+            "bg": disabled_bg,
+            "border": disabled_border,
+            "text": disabled_text,
+        }
+
+        return theme_signature, state_colors, disabled_colors
+
+    def _get_border_width(self):
+        if self.button_type in ("primary", "normal"):
+            return 0.0
+        return 1.5
+
+    def _calculate_optimal_height(self):
+        min_height = int(self._original_height * self.dpi_scale)
+        text_height = self._get_text_metrics().height()
+        vertical_padding = int(4 * self.dpi_scale) * 2
+        border_width = self._get_border_width() * 2
+        required_height = int(text_height + vertical_padding + border_width)
+        return max(required_height, min_height)
+
+    def _update_minimum_width_for_text(self):
+        if self._display_mode == "icon":
+            return
+
+        text = self.text()
+        if not text:
+            return
+
+        text_width = self._get_text_metrics().horizontalAdvance(text)
+        horizontal_padding = self._style_metrics["padding_x"]
+        border_width = self._style_metrics["border_width"]
+        safety_margin = int(4 * self.dpi_scale)
+
+        min_width = text_width + (horizontal_padding * 2) + (border_width * 2) + safety_margin
+        absolute_min = int(25 * self.dpi_scale)
+        self.setMinimumWidth(max(int(min_width), absolute_min))
+
+    def _render_icon(self, force=False):
+        try:
+            if not self._icon_path or not os.path.exists(self._icon_path):
+                self._icon_renderer = None
+                return
+
+            cached_renderer = None if force else self._get_cached_svg_renderer(
+                self._icon_path,
+                self.button_type,
+                self._theme_signature,
+            )
+            if cached_renderer is not None and cached_renderer.isValid():
+                self._icon_renderer = cached_renderer
+                return
+
+            with open(self._icon_path, "r", encoding="utf-8") as f:
+                svg_content = f.read()
+
+            svg_content = SvgRenderer._replace_svg_colors(
+                svg_content,
+                force_black_to_base=(self.button_type == "primary"),
+            )
+
+            renderer = QSvgRenderer(svg_content.encode("utf-8"))
+            if not renderer.isValid():
+                self._icon_renderer = None
+                return
+
+            self._set_cached_svg_renderer(
+                self._icon_path,
+                self.button_type,
+                self._theme_signature,
+                renderer,
+            )
+            self._icon_renderer = renderer
+        except (OSError, ValueError, TypeError) as e:
+            debug(f"渲染SVG图标失败: {e}")
+            self._icon_renderer = None
+
+    def update_style(self):
+        """
+        更新按钮样式与缓存
+        """
+        app = QApplication.instance()
+        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+
+        base_font = getattr(app, "global_font", QFont()) if app else QFont()
+        self.setFont(base_font)
+
         self._height = self._calculate_optimal_height()
-        
-        # 添加阴影效果，应用最新的DPI缩放
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(int(1 * self.dpi_scale))
-        shadow.setOffset(0, int(1 * self.dpi_scale))
-        # 正确设置阴影颜色：黑色，带有适当的透明度
-        shadow.setColor(QColor(0, 0, 0, 0))  # 使用黑色阴影更明显
-        self.setGraphicsEffect(shadow)
-        
-        # 设置固定高度，使用计算后的自适应高度
         self.setFixedHeight(self._height)
 
-        # 应用最新的DPI缩放因子到按钮样式参数
-        # 计算适合的圆角半径，确保在各种尺寸下都合适
-        # 所有按钮都使用高度的一半作为圆角半径，确保圆角完整覆盖边缘
-        scaled_border_radius = self._height // 2
-        scaled_padding = f"{int(4 * self.dpi_scale)}px {int(6 * self.dpi_scale)}px"
-        fixed_border_width = 1.5  # 固定边框宽度1.5px，不随DPI缩放
+        self._style_metrics = {
+            "border_radius": self._height / 2.0,
+            "padding_y": int(4 * self.dpi_scale),
+            "padding_x": int(6 * self.dpi_scale),
+            "border_width": self._get_border_width(),
+            "icon_ratio": 0.52,
+        }
 
-        # 更新全局字体，确保使用settings.json中定义的字体大小
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.setFont(self.global_font)
-        
-        # 设置大小策略，允许按钮根据内容调整宽度
+        theme_signature, state_colors, disabled_colors = self._build_theme_colors()
+        theme_changed = theme_signature != self._theme_signature
+        self._theme_signature = theme_signature
+        self._style_colors = state_colors
+        self._disabled_colors = disabled_colors
+
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        
-        # 如果是图标模式，设置固定宽度等于高度，保持正方形
+
         if self._display_mode == "icon":
             self.setFixedWidth(self._height)
         else:
-            # 文字模式，确保按钮有足够的宽度
-            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            # 设置最小宽度，确保短文字按钮不会太小，应用DPI缩放（调整为原始的一半）
             self.setMinimumWidth(int(25 * self.dpi_scale))
             self.setMaximumWidth(16777215)
-            # 确保按钮宽度能容纳文字内容
             self.adjustSize()
-            # 根据文本内容计算并设置最小宽度，确保文本完整显示
             self._update_minimum_width_for_text()
-        
-        if self.button_type == "primary":
-            # 强调色方案
-            # 使用主题颜色
-            bg_color = current_colors.get("button_primary_normal", accent_color)
-            hover_color = current_colors.get("button_primary_hover", darken_color(accent_color, 0.1))
-            pressed_color = current_colors.get("button_primary_pressed", darken_color(accent_color, 0.2))
-            text_color = current_colors.get("button_primary_text", base_color)
-            border_color = current_colors.get("button_primary_border", accent_color)
-            disabled_bg = "#888888"
-            disabled_text = "#FFFFFF"
-            disabled_border = "#666666"
-            
-            # 对于图标按钮，文字颜色设为透明
-            if self._display_mode == "icon":
-                # 图标模式下文字颜色设为透明
-                text_color = "transparent"
-                pressed_text_color = "transparent"
-            else:
-                # 文字模式下使用正常文字颜色
-                pressed_text_color = text_color
-            
-            self.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {bg_color};
-                    color: {text_color};
-                    border: {fixed_border_width}px solid {border_color};
-                    border-radius: {scaled_border_radius}px;
-                    padding: {scaled_padding};
-                    font-weight: 600;
-                }}
-                QPushButton:hover {{
-                    background-color: {hover_color};
-                    border-color: {hover_color};
-                }}
-                QPushButton:pressed {{
-                    background-color: {pressed_color};
-                    color: {pressed_text_color};
-                    border-color: {pressed_color};
-                }}
-                QPushButton:disabled {{
-                    background-color: {disabled_bg};
-                    color: {disabled_text};
-                    border-color: {disabled_border};
-                }}
-            """)
-        elif self.button_type == "normal":
-            # 普通方案
-            # 使用主题颜色
-            bg_color = current_colors.get("button_normal_normal", current_colors.get("window_background", "#1E1E1E"))
-            hover_color = current_colors.get("button_normal_hover", current_colors.get("list_item_hover", "#3C3C3C"))
-            pressed_color = current_colors.get("button_normal_pressed", current_colors.get("list_item_selected", "#4ECDC4"))
-            text_color = current_colors.get("button_normal_text", current_colors.get("text_normal", "#FFFFFF"))
-            border_color = current_colors.get("button_normal_border", current_colors.get("window_border", "#3C3C3C"))
-            disabled_bg = "#2D2D2D"
-            disabled_text = "#666666"
-            disabled_border = "#444444"
-            
-            # 对于图标按钮，文字颜色设为透明
-            if self._display_mode == "icon":
-                # 图标模式下文字颜色设为透明
-                text_color = "transparent"
-                pressed_text_color = "transparent"
-            else:
-                # 文字模式下使用正常文字颜色
-                pressed_text_color = text_color
-            
-            self.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {bg_color};
-                    color: {text_color};
-                    border: {fixed_border_width}px solid {border_color};
-                    border-radius: {scaled_border_radius}px;
-                    padding: {scaled_padding};
-                    font-weight: 600;
-                }}
-                QPushButton:hover {{
-                    background-color: {hover_color};
-                    border-color: {hover_color};
-                }}
-                QPushButton:pressed {{
-                    background-color: {hover_color};  /* 使用hover时的颜色 */
-                    color: {pressed_text_color};
-                    border-color: {border_color};  /* 使用默认状态的边框颜色 */
-                }}
-                QPushButton:disabled {{
-                    background-color: {disabled_bg};
-                    color: {disabled_text};
-                    border-color: {disabled_border};
-                }}
-            """)
-        elif self.button_type == "warning":
-            # 警告按钮方案
-            # 使用主题颜色
-            warning_color = current_colors.get("notification_error", "#F44336")
-            bg_color = current_colors.get("button_warning_normal", warning_color)
-            hover_color = current_colors.get("button_warning_hover", darken_color(warning_color, 0.1))
-            pressed_color = current_colors.get("button_warning_pressed", darken_color(warning_color, 0.2))
-            text_color = current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF"))
-            border_color = current_colors.get("button_warning_border", warning_color)
-            disabled_bg = "#FF8A80"
-            disabled_text = "#FFFFFF"
-            disabled_border = "#FF5252"
-            
-            # 对于图标按钮，文字颜色设为透明
-            if self._display_mode == "icon":
-                # 图标模式下文字颜色设为透明
-                text_color = "transparent"
-                pressed_text_color = "transparent"
-            else:
-                # 文字模式下使用正常文字颜色
-                pressed_text_color = text_color
-            
-            self.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {bg_color};
-                    color: {text_color};
-                    border: {fixed_border_width}px solid {border_color};
-                    border-radius: {scaled_border_radius}px;
-                    padding: {scaled_padding};
-                    font-weight: 600;
-                }}
-                QPushButton:hover {{
-                    background-color: {hover_color};
-                    border-color: {hover_color};
-                }}
-                QPushButton:pressed {{
-                    background-color: {pressed_color};
-                    color: {pressed_text_color};
-                    border-color: {pressed_color};
-                }}
-                QPushButton:disabled {{
-                    background-color: {disabled_bg};
-                    color: {disabled_text};
-                    border-color: {disabled_border};
-                }}
-            """)
-        else:  # secondary
-            # 次选按钮方案：确保在白色背景下可见
-            # 使用主题颜色
-            bg_color = current_colors.get("button_secondary_normal", current_colors.get("window_background", "#1E1E1E"))
-            hover_color = current_colors.get("button_secondary_hover", current_colors.get("list_item_hover", "#3C3C3C"))
-            pressed_color = current_colors.get("button_secondary_pressed", current_colors.get("list_item_selected", "#4ECDC4"))
-            text_color = current_colors.get("button_secondary_text", current_colors.get("text_highlight", "#4ECDC4"))
-            border_color = current_colors.get("button_secondary_border", current_colors.get("text_highlight", "#4ECDC4"))
-            disabled_bg = "#2D2D2D"
-            disabled_text = "#666666"
-            disabled_border = "#444444"
-            
-            # 对于图标按钮，文字颜色设为透明
-            if self._display_mode == "icon":
-                # 图标模式下文字颜色设为透明
-                text_color = "transparent"
-                pressed_text_color = "transparent"
-            else:
-                # 文字模式下使用正常文字颜色
-                pressed_text_color = text_color
-            
-            self.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {bg_color};
-                    color: {text_color};
-                    border: {fixed_border_width}px solid {border_color};
-                    border-radius: {scaled_border_radius}px;
-                    padding: {scaled_padding};
-                    font-weight: 600;
-                }}
-                QPushButton:hover {{
-                    background-color: {hover_color};
-                    border-color: {border_color};  /* 使用默认状态的边框颜色 */
-                }}
-                QPushButton:pressed {{
-                    background-color: {hover_color};  /* 使用hover时的颜色 */
-                    color: {pressed_text_color};
-                    border-color: {border_color};  /* 使用默认状态的边框颜色 */
-                }}
-                QPushButton:disabled {{
-                    background-color: {disabled_bg};
-                    color: {disabled_text};
-                    border-color: {disabled_border};
-                }}
-            """)
-        
-        # 更新动画颜色配置
-        self._update_anim_colors(current_colors, accent_color, secondary_color, base_color, settings_manager)
-    
-    def _update_anim_colors(self, current_colors, accent_color, secondary_color, base_color, settings_manager=None):
-        """更新动画颜色配置"""
-        if not hasattr(self, '_style_colors'):
-            return
-        
-        # 如果动画未初始化，跳过动画颜色更新
-        if not getattr(self, '_animations_initialized', False):
-            return
 
-        # 如果没有传入settings_manager，尝试从应用实例获取
-        if settings_manager is None:
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                settings_manager = app.settings_manager
-            else:
-                from freeassetfilter.core.settings_manager import SettingsManager
-                settings_manager = SettingsManager()
-        
-        def get_color(color_hex):
-            return QColor(color_hex)
-        
-        def darken_color_qcolor(color_hex, percentage):
-            color = QColor(color_hex)
-            # 从settings_manager获取当前主题模式
-            current_theme = settings_manager.get_setting("appearance.theme", "default")
-            is_dark_mode = (current_theme == "dark")
+        if theme_changed and self._display_mode == "icon":
+            self._render_icon(force=False)
 
-            if is_dark_mode:
-                # 深色模式下变浅 - 使用加法逻辑，使黑色也能变亮
-                # 从当前颜色向白色方向移动
-                # 根据颜色亮度调整幅度，越暗的颜色使用越大的幅度
-                luminance = (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) / 255
-                if luminance < 0.1:  # 非常暗的颜色（如纯黑）
-                    adjusted_percentage = min(percentage * 2.5, 0.4)  # 最大40%
-                elif luminance < 0.3:  # 较暗的颜色
-                    adjusted_percentage = min(percentage * 1.8, 0.35)  # 最大35%
-                else:
-                    adjusted_percentage = percentage
+        if not self._animations_initialized:
+            self._current_colors = self._copy_color_map(self._style_colors["normal"])
+            self._start_colors = self._copy_color_map(self._style_colors["normal"])
+            self._target_colors = self._copy_color_map(self._style_colors["normal"])
+            self._anim_progress = 1.0
+        else:
+            self._set_visual_state("normal", animated=False)
 
-                r = min(255, int(color.red() + (255 - color.red()) * adjusted_percentage))
-                g = min(255, int(color.green() + (255 - color.green()) * adjusted_percentage))
-                b = min(255, int(color.blue() + (255 - color.blue()) * adjusted_percentage))
-            else:
-                # 浅色模式下加深 - 使用乘法逻辑
-                r = max(0, int(color.red() * (1 - percentage)))
-                g = max(0, int(color.green() * (1 - percentage)))
-                b = max(0, int(color.blue() * (1 - percentage)))
-            return QColor(r, g, b)
-        
-        if self.button_type == "primary":
-            normal_bg = get_color(current_colors.get("button_primary_normal", accent_color))
-            hover_bg = get_color(current_colors.get("button_primary_hover", darken_color_qcolor(accent_color, 0.1)))
-            pressed_bg = get_color(current_colors.get("button_primary_pressed", darken_color_qcolor(accent_color, 0.2)))
-            normal_border = get_color(current_colors.get("button_primary_border", accent_color))
-            hover_border = get_color(current_colors.get("button_primary_border", accent_color))
-            pressed_border = get_color(current_colors.get("button_primary_border", accent_color))
-            if self._display_mode == "icon":
-                # 图标模式下文本颜色设为透明
-                transparent = QColor(0, 0, 0, 0)
-                normal_text = transparent
-                hover_text = transparent
-                pressed_text = transparent
-            else:
-                normal_text = get_color(current_colors.get("button_primary_text", base_color))
-                hover_text = get_color(current_colors.get("button_primary_text", base_color))
-                pressed_text = get_color(current_colors.get("button_primary_text", base_color))
-        elif self.button_type == "normal":
-            normal_bg = get_color(current_colors.get("button_normal_normal", base_color))
-            hover_bg = get_color(current_colors.get("button_normal_hover", darken_color_qcolor(base_color, 0.1)))
-            pressed_bg = get_color(current_colors.get("button_normal_pressed", darken_color_qcolor(base_color, 0.2)))
-            normal_border = normal_bg
-            hover_border = hover_bg
-            pressed_border = pressed_bg
-            if self._display_mode == "icon":
-                # 图标模式下文本颜色设为透明
-                transparent = QColor(0, 0, 0, 0)
-                normal_text = transparent
-                hover_text = transparent
-                pressed_text = transparent
-            else:
-                normal_text = get_color(current_colors.get("button_normal_text", secondary_color))
-                hover_text = get_color(current_colors.get("button_normal_text", secondary_color))
-                pressed_text = get_color(current_colors.get("button_normal_text", secondary_color))
-        elif self.button_type == "warning":
-            warning_color = current_colors.get("notification_error", "#F44336")
-            normal_bg = get_color(current_colors.get("button_warning_normal", warning_color))
-            hover_bg = get_color(current_colors.get("button_warning_hover", darken_color_qcolor(warning_color, 0.1)))
-            pressed_bg = get_color(current_colors.get("button_warning_pressed", darken_color_qcolor(warning_color, 0.2)))
-            normal_border = get_color(current_colors.get("button_warning_border", warning_color))
-            hover_border = get_color(current_colors.get("button_warning_border", darken_color_qcolor(warning_color, 0.1)))
-            pressed_border = get_color(current_colors.get("button_warning_border", darken_color_qcolor(warning_color, 0.2)))
-            if self._display_mode == "icon":
-                # 图标模式下文本颜色设为透明
-                transparent = QColor(0, 0, 0, 0)
-                normal_text = transparent
-                hover_text = transparent
-                pressed_text = transparent
-            else:
-                normal_text = get_color(current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF")))
-                hover_text = get_color(current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF")))
-                pressed_text = get_color(current_colors.get("button_warning_text", current_colors.get("notification_text", "#FFFFFF")))
-        else:  # secondary
-            normal_bg = get_color(current_colors.get("button_secondary_normal", base_color))
-            hover_bg = get_color(current_colors.get("button_secondary_hover", darken_color_qcolor(base_color, 0.1)))
-            pressed_bg = get_color(current_colors.get("button_secondary_pressed", darken_color_qcolor(base_color, 0.2)))
-            normal_border = get_color(current_colors.get("button_secondary_border", accent_color))
-            hover_border = get_color(current_colors.get("button_secondary_border", accent_color))
-            pressed_border = get_color(current_colors.get("button_secondary_border", accent_color))
-            if self._display_mode == "icon":
-                # 图标模式下文本颜色设为透明
-                transparent = QColor(0, 0, 0, 0)
-                normal_text = transparent
-                hover_text = transparent
-                pressed_text = transparent
-            else:
-                normal_text = get_color(current_colors.get("button_secondary_text", accent_color))
-                hover_text = get_color(current_colors.get("button_secondary_text", accent_color))
-                pressed_text = get_color(current_colors.get("button_secondary_text", accent_color))
-        
-        self._style_colors = {
-            'normal_bg': normal_bg,
-            'hover_bg': hover_bg,
-            'pressed_bg': pressed_bg,
-            'normal_border': normal_border,
-            'hover_border': hover_border,
-            'pressed_border': pressed_border,
-            'normal_text': normal_text,
-            'hover_text': hover_text,
-            'pressed_text': pressed_text
-        }
-        
-        # 更新动画的起始和结束值
-        self._anim_hover_bg.setStartValue(normal_bg)
-        self._anim_hover_bg.setEndValue(hover_bg)
-        self._anim_hover_border.setStartValue(normal_border)
-        self._anim_hover_border.setEndValue(hover_border)
-        self._anim_hover_text.setStartValue(normal_text)
-        self._anim_hover_text.setEndValue(hover_text)
-        
-        self._anim_leave_bg.setStartValue(hover_bg)
-        self._anim_leave_bg.setEndValue(normal_bg)
-        self._anim_leave_border.setStartValue(hover_border)
-        self._anim_leave_border.setEndValue(normal_border)
-        self._anim_leave_text.setStartValue(hover_text)
-        self._anim_leave_text.setEndValue(normal_text)
-        
-        self._anim_press_bg.setStartValue(hover_bg)
-        self._anim_press_bg.setEndValue(pressed_bg)
-        self._anim_press_border.setStartValue(hover_border)
-        self._anim_press_border.setEndValue(pressed_border)
-        self._anim_press_text.setStartValue(hover_text)
-        self._anim_press_text.setEndValue(pressed_text)
-        
-        self._anim_release_bg.setStartValue(pressed_bg)
-        self._anim_release_bg.setEndValue(hover_bg)
-        self._anim_release_border.setStartValue(pressed_border)
-        self._anim_release_border.setEndValue(hover_border)
-        self._anim_release_text.setStartValue(pressed_text)
-        self._anim_release_text.setEndValue(hover_text)
-
-        # 同步当前动画属性值与新的normal状态一致，避免按钮类型切换后出现颜色闪烁
-        self._anim_bg_color = QColor(normal_bg)
-        self._anim_border_color = QColor(normal_border)
-        self._anim_text_color = QColor(normal_text)
+        self.update()
 
     def update_theme(self):
         """
         统一主题刷新入口
         - 重新读取主题色
         - 重新应用按钮样式
-        - 重置动画颜色
         - 重新渲染 SVG 图标
         """
         try:
-            # 允许主题切换后重新基于最新 settings 计算样式
+            old_signature = self._theme_signature
             self.update_style()
 
-            # 图标按钮需要重新渲染，确保深浅色模式下 SVG 颜色立即更新
-            if self._display_mode == "icon":
-                self._icon_render_signature = None
-                self._render_icon(force=True)
+            if self._display_mode == "icon" and self._theme_signature != old_signature:
+                self._render_icon(force=False)
 
             self.update()
         except Exception as e:
@@ -1075,14 +501,13 @@ class CustomButton(QPushButton):
     def set_primary(self, is_primary):
         """
         设置按钮是否使用强调色（兼容旧接口）
-        
-        Args:
-            is_primary (bool): 是否使用强调色
         """
         self.button_type = "primary" if is_primary else "secondary"
+        if self._display_mode == "icon":
+            self._icon_renderer = None
         self.update_theme()
-        self.resizeEvent(None)  # 触发resizeEvent，更新圆角半径
-    
+        self.resizeEvent(None)
+
     def set_button_type(self, button_type):
         """
         设置按钮类型
@@ -1091,199 +516,174 @@ class CustomButton(QPushButton):
             button_type (str): 按钮类型，可选值："primary"、"secondary"、"normal"、"warning"
         """
         self.button_type = button_type
-        # 重新初始化动画，确保动画颜色与新的按钮类型一致
-        self._init_animations()
+        if self._display_mode == "icon":
+            self._icon_renderer = None
         self.update_theme()
-        self.resizeEvent(None)  # 触发resizeEvent，更新圆角半径
-    
+        self.resizeEvent(None)
+
     def setText(self, text):
         """
         重写setText方法，在设置文本后自动更新最小宽度和高度
-        
-        Args:
-            text (str): 按钮文本
         """
         super().setText(text)
-        # 文本改变后，重新计算最小宽度和高度
         if self._display_mode == "text":
             self._update_minimum_width_for_text()
-            # 重新计算并更新高度（因为字体大小可能改变）
             new_height = self._calculate_optimal_height()
             if new_height != self._height:
                 self._height = new_height
                 self.setFixedHeight(self._height)
-                # 高度改变后需要更新样式（圆角半径等依赖于高度）
-                self._update_button_style()
-    
-    def _update_minimum_width_for_text(self):
-        """
-        根据文本内容计算并设置按钮的最小宽度，确保文本完整显示不被裁切
-        
-        计算逻辑：
-        - 使用当前字体计算文本的宽度
-        - 加上左右内边距（padding）
-        - 加上左右边框宽度
-        - 加上额外的安全边距，确保文本不会被裁切
-        """
-        if self._display_mode == "icon":
+            self.update()
+
+    def enterEvent(self, event):
+        if self.isEnabled():
+            self._set_visual_state("hover", animated=True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if self.isEnabled():
+            self._set_visual_state("normal", animated=True)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if self.isEnabled() and event.button() == Qt.LeftButton:
+            self._set_visual_state("pressed", animated=True)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if not self.isEnabled():
             return
-        
-        # 获取当前文本
+
+        if self.rect().contains(event.pos()):
+            self._set_visual_state("hover", animated=True)
+        else:
+            self._set_visual_state("normal", animated=True)
+
+    def resizeEvent(self, event):
+        if event is not None:
+            super().resizeEvent(event)
+
+        app = QApplication.instance()
+        new_dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+        if new_dpi_scale != self.dpi_scale:
+            self.update_style()
+
+        if self._display_mode == "icon":
+            self._render_icon(force=False)
+
+    def keyPressEvent(self, event):
+        """
+        禁用按钮的键盘响应，避免捕获方向键和空格键
+        """
+        event.ignore()
+
+    def sizeHint(self):
+        if self._display_mode == "icon":
+            return QSize(self._height, self._height)
+
+        text = self.text() or ""
+        metrics = self._get_text_metrics()
+        width = (
+            metrics.horizontalAdvance(text)
+            + self._style_metrics.get("padding_x", 6) * 2
+            + int(self._style_metrics.get("border_width", 2) * 2)
+            + int(4 * self.dpi_scale)
+        )
+        width = max(width, int(25 * self.dpi_scale))
+        return QSize(int(width), int(self._height))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def _draw_background(self, painter, colors):
+        border_width = self._style_metrics["border_width"]
+
+        body_rect = QRectF(self.rect()).adjusted(
+            border_width / 2.0,
+            border_width / 2.0,
+            -border_width / 2.0,
+            -border_width / 2.0,
+        )
+
+        radius = min(self._style_metrics["border_radius"], body_rect.height() / 2.0)
+
+        painter.setBrush(colors["bg"])
+        if border_width > 0:
+            painter.setPen(QPen(colors["border"], border_width))
+        else:
+            painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(body_rect, radius, radius)
+
+        return body_rect
+
+    def _draw_text(self, painter, body_rect, colors):
         text = self.text()
         if not text:
             return
-        
-        # 使用当前字体计算文本宽度
-        font_metrics = self.fontMetrics()
-        text_width = font_metrics.horizontalAdvance(text)
-        
-        # 获取样式参数（与update_style中保持一致）
-        scaled_padding_horizontal = int(6 * self.dpi_scale)  # 水平方向内边距
-        border_width = 1.5  # 固定边框宽度1.5px，不随DPI缩放
-        
-        # 计算最小宽度：文本宽度 + 左右内边距 + 左右边框 + 安全边距
-        # 安全边距用于防止某些字体或渲染差异导致的裁切
-        safety_margin = int(4 * self.dpi_scale)
-        min_width = text_width + (scaled_padding_horizontal * 2) + (border_width * 2) + safety_margin
-        
-        # 确保最小宽度不会小于预设的最小值
-        absolute_min = int(25 * self.dpi_scale)
-        min_width = max(min_width, absolute_min)
-        
-        # 设置最小宽度
-        self.setMinimumWidth(min_width)
-    
-    def _render_icon(self, force=False):
-        """
-        预处理并缓存 SVG 渲染器
-        避免在 paintEvent 中重复读取文件和执行颜色替换
-        """
-        try:
-            if not self._icon_path or not os.path.exists(self._icon_path):
-                self._icon_renderer = None
-                self._icon_render_signature = None
-                return
 
-            render_signature = (
-                self._icon_path,
-                self.button_type,
-            )
+        text_rect = QRectF(body_rect).adjusted(
+            self._style_metrics["padding_x"],
+            self._style_metrics["padding_y"],
+            -self._style_metrics["padding_x"],
+            -self._style_metrics["padding_y"],
+        )
 
-            if not force and self._icon_render_signature == render_signature and self._icon_renderer is not None:
-                return
+        painter.setPen(colors["text"])
+        painter.setFont(self._button_font)
+        painter.drawText(text_rect, Qt.AlignCenter, text)
 
-            with open(self._icon_path, "r", encoding="utf-8") as f:
-                svg_content = f.read()
+    def _draw_icon(self, painter, body_rect):
+        if not self._icon_renderer or not self._icon_renderer.isValid():
+            return
 
-            svg_content = SvgRenderer._replace_svg_colors(
-                svg_content,
-                force_black_to_base=(self.button_type == "primary")
-            )
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
 
-            from PySide6.QtSvg import QSvgRenderer
-            svg_renderer = QSvgRenderer(svg_content.encode("utf-8"))
+        dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
+        button_size = min(body_rect.width(), body_rect.height())
+        desired_icon_size = max(1.0, button_size * self._style_metrics["icon_ratio"])
 
-            if not svg_renderer.isValid():
-                self._icon_renderer = None
-                self._icon_render_signature = None
-                return
+        svg_size = self._icon_renderer.defaultSize()
+        if svg_size.width() > 0 and svg_size.height() > 0:
+            aspect_ratio = svg_size.width() / svg_size.height()
+            if aspect_ratio >= 1:
+                desired_icon_width = desired_icon_size
+                desired_icon_height = max(1.0, desired_icon_size / aspect_ratio)
+            else:
+                desired_icon_height = desired_icon_size
+                desired_icon_width = max(1.0, desired_icon_size * aspect_ratio)
+        else:
+            desired_icon_width = desired_icon_size
+            desired_icon_height = desired_icon_size
 
-            self._icon_renderer = svg_renderer
-            self._icon_render_signature = render_signature
-        except (OSError, ValueError, TypeError) as e:
-            debug(f"渲染SVG图标失败: {e}")
-            self._icon_renderer = None
-            self._icon_render_signature = None
-    
-    def resizeEvent(self, event):
-        """
-        大小变化事件
-        如果是图标模式，重新渲染图标
-        注意：不再动态修改样式表，而是在update_style()中一次性设置
-        """
-        super().resizeEvent(event)
-        
-        # 检查DPI缩放因子是否变化
-        app = QApplication.instance()
-        new_dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
-        # 如果DPI缩放因子发生变化，更新按钮样式
-        if new_dpi_scale != self.dpi_scale:
-            self.update_style()
-        
-        # 如果是图标模式，重新渲染图标以适应新尺寸
-        if self._display_mode == "icon":
-            self._render_icon()
-    
-    def keyPressEvent(self, event):
-        """
-        键盘按下事件处理
-        禁用按钮的键盘响应，避免捕获方向键和空格键，确保视频播放器的键盘控制正常工作
-        """
-        # 忽略所有键盘事件，不调用父类的keyPressEvent
-        # 这样按钮不会响应空格键（激活）和方向键（导航）
-        event.ignore()
+        icon_width_px = max(1, round(desired_icon_width * dpr))
+        icon_height_px = max(1, round(desired_icon_height * dpr))
+        icon_width = icon_width_px / dpr
+        icon_height = icon_height_px / dpr
+
+        x_px = round((body_rect.center().x() - icon_width / 2) * dpr)
+        y_px = round((body_rect.center().y() - icon_height / 2) * dpr)
+        x = x_px / dpr
+        y = y_px / dpr
+
+        target_rect = QRectF(x, y, icon_width, icon_height)
+        self._icon_renderer.render(painter, target_rect)
 
     def paintEvent(self, event):
-        """
-        绘制按钮
-        如果是图标模式，先调用父类绘制按钮样式但不绘制文字，再直接渲染SVG；否则调用父类绘制文字
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-        图标渲染策略：
-        - 不再先渲染到中间 QPixmap 再 drawPixmap，避免二次采样导致的模糊
-        - 直接将 SVG 渲染到按钮的最终目标区域
-        - 目标区域按设备像素比对齐到像素网格，尽量避免半像素导致的虚化
-        """
-        if self._display_mode == "icon":
-            painter = QPainter(self)
-
-            # 绘制按钮背景和边框
-            style_option = QStyleOptionButton()
-            self.initStyleOption(style_option)
-            self.style().drawControl(QStyle.CE_PushButtonBevel, style_option, painter, self)
-            self.style().drawControl(QStyle.CE_PushButton, style_option, painter, self)
-
-            # 绘制SVG图标
-            if self._icon_renderer and self._icon_renderer.isValid():
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
-
-                dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
-
-                # 计算图标逻辑尺寸
-                button_size = min(self.width(), self.height())
-                desired_icon_size = max(1.0, button_size * 0.52)
-
-                svg_size = self._icon_renderer.defaultSize()
-
-                # 根据SVG原始比例计算图标尺寸
-                if svg_size.width() > 0 and svg_size.height() > 0:
-                    aspect_ratio = svg_size.width() / svg_size.height()
-                    if aspect_ratio >= 1:
-                        desired_icon_width = desired_icon_size
-                        desired_icon_height = max(1.0, desired_icon_size / aspect_ratio)
-                    else:
-                        desired_icon_height = desired_icon_size
-                        desired_icon_width = max(1.0, desired_icon_size * aspect_ratio)
-                else:
-                    desired_icon_width = desired_icon_size
-                    desired_icon_height = desired_icon_size
-
-                # 对齐到设备像素网格，避免非整数设备像素尺寸/坐标触发取样模糊
-                icon_width_px = max(1, round(desired_icon_width * dpr))
-                icon_height_px = max(1, round(desired_icon_height * dpr))
-                icon_width = icon_width_px / dpr
-                icon_height = icon_height_px / dpr
-
-                x_px = round(((self.width() - icon_width) / 2) * dpr)
-                y_px = round(((self.height() - icon_height) / 2) * dpr)
-                x = x_px / dpr
-                y = y_px / dpr
-
-                target_rect = QRectF(x, y, icon_width, icon_height)
-                self._icon_renderer.render(painter, target_rect)
-
-            painter.end()
+        if self.isEnabled():
+            colors = self._get_interpolated_colors()
         else:
-            # 文字模式，调用父类绘制文字
-            super().paintEvent(event)
+            colors = self._copy_color_map(self._disabled_colors)
+
+        body_rect = self._draw_background(painter, colors)
+
+        if self._display_mode == "icon":
+            self._draw_icon(painter, body_rect)
+        else:
+            self._draw_text(painter, body_rect, colors)
+
+        painter.end()

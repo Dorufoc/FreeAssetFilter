@@ -219,9 +219,7 @@ class PlayerControlBar(QWidget):
         )
         self._progress_bar.setRange(0, 1000)
         self._progress_bar.setValue(0)
-        self._progress_bar.setAnimationEasingCurve(QEasingCurve(QEasingCurve.Linear))
-        self._progress_bar.setAnimationDuration(200)
-        self._progress_bar.setAnimationEnabled(True)
+        self.configure_progress_animation(sync_interval_ms=200, linear=True)
         progress_time_layout.addWidget(self._progress_bar)
 
         bottom_layout = QHBoxLayout()
@@ -435,6 +433,23 @@ class PlayerControlBar(QWidget):
         duration_str = self._format_time(self._duration)
         self._time_label.setText(f"{current_str} / {duration_str}")
     
+    def configure_progress_animation(self, sync_interval_ms: int, linear: bool = True):
+        """
+        配置进度条动画参数，使其与播放器进度同步周期保持一致。
+
+        Args:
+            sync_interval_ms: 播放器进度同步周期（毫秒）
+            linear: 是否使用线性动画
+        """
+        duration = max(1, int(sync_interval_ms))
+        self._progress_bar.setAnimationDuration(duration)
+        if linear:
+            self._progress_bar.setAnimationEasingCurve(QEasingCurve(QEasingCurve.Linear))
+            self._progress_bar.setStrictAnimationTiming(True)
+        else:
+            self._progress_bar.setStrictAnimationTiming(False)
+        self._progress_bar.setAnimationEnabled(True)
+
     def _update_progress_bar(self):
         """更新进度条"""
         if not self._user_interacting:
@@ -442,7 +457,7 @@ class PlayerControlBar(QWidget):
                 progress = int((self._current_position / self._duration) * 1000)
             else:
                 progress = 0
-            
+
             self._progress_bar.setValue(progress, use_animation=True)
     
     def _update_play_button_icon(self):

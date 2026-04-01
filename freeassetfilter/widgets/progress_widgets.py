@@ -596,14 +596,6 @@ class D_ProgressBar(QWidget):
     Vertical = 1
 
     def __init__(self, parent=None, orientation=Horizontal, is_interactive=True):
-        """
-        初始化 D_ProgressBar 控件
-
-        Args:
-            parent (QWidget): 父控件
-            orientation (int): 方向常量，Horizontal 或 Vertical
-            is_interactive (bool): 是否可交互
-        """
         super().__init__(parent)
 
         app = QApplication.instance()
@@ -620,9 +612,13 @@ class D_ProgressBar(QWidget):
         self._value = 0
         self._display_value_storage = 0
         self._is_pressed = False
+        self._is_dragging = False
+        self._press_pos = QPoint()
+        self._drag_threshold = max(3, int(4 * self.dpi_scale))
         self._animation_suspended = False
         self._is_hovered = False
         self._last_pos = 0
+        self._last_emitted_value = None
 
         self._handle_border_width = max(1, int(2 * self.dpi_scale))
         self._handle_border_color = QColor("#FFFFFF")
@@ -630,6 +626,11 @@ class D_ProgressBar(QWidget):
         self._animation_enabled = True
         self._animation_duration = 250
         self._animation_easing_curve = QEasingCurve.InOutQuart
+        self._strict_animation_timing = False
+        self._click_animation_duration_factor = 0.5
+        self._click_animation_easing_curve = QEasingCurve(QEasingCurve.OutCubic)
+        self._next_animation_duration_override = None
+        self._next_animation_easing_override = None
         self._responsive_animation_min_duration = 45
         self._responsive_animation_max_duration = 120
         self._responsive_animation_easing_curve = QEasingCurve(QEasingCurve.Linear)
@@ -639,7 +640,13 @@ class D_ProgressBar(QWidget):
         self._animation.valueChanged.connect(self._on_animation_value_changed)
         self._animation.finished.connect(self._on_animation_finished)
 
-        # 设置透明背景，避免显示默认黑色背景
+        self._track_cache = QPixmap()
+        self._progress_cache = QPixmap()
+        self._handle_cache_normal = QPixmap()
+        self._handle_cache_hover = QPixmap()
+        self._handle_cache_pressed = QPixmap()
+        self._cache_signature = None
+
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background-color: transparent;")
 
@@ -648,26 +655,39 @@ class D_ProgressBar(QWidget):
         self._init_icons()
 
     def _get_display_value(self):
-        """获取动画显示值"""
         return self._display_value_storage
 
     def _set_display_value(self, value):
-        """设置动画显示值"""
-        self._display_value_storage = value
-        self.update()
+        new_value = int(value)
+        if self._display_value_storage == new_value:
+            return
+
+        old_progress_rect = self._get_progress_rect_for_value(self._display_value_storage)
+        old_handle_rect = self._get_handle_rect_for_value(self._display_value_storage)
+
+        self._display_value_storage = new_value
+
+        new_progress_rect = self._get_progress_rect_for_value(self._display_value_storage)
+        new_handle_rect = self._get_handle_rect_for_value(self._display_value_storage)
+
+        dirty_rect = old_progress_rect.united(new_progress_rect).united(old_handle_rect).united(new_handle_rect)
+        if dirty_rect.isValid() and not dirty_rect.isNull():
+            margin = max(2, self._handle_border_width + 1)
+            self.update(dirty_rect.adjusted(-margin, -margin, margin, margin))
+        else:
+            self.update()
 
     _display_value = Property(int, fget=_get_display_value, fset=_set_display_value)
 
     def _on_animation_value_changed(self, value):
-        """动画值变化时的回调"""
         pass
 
     def _on_animation_finished(self):
-        """动画结束时的回调"""
-        self.valueChanged.emit(self._value)
+        if self._last_emitted_value != self._value:
+            self._last_emitted_value = self._value
+            self.valueChanged.emit(self._value)
 
     def _calculate_responsive_animation_duration(self, start_value, end_value):
-        """计算高频更新场景下更灵敏的动画时长"""
         base_duration = max(1, int(self._animation_duration))
         if base_duration <= self._responsive_animation_min_duration:
             return base_duration
@@ -685,35 +705,11 @@ class D_ProgressBar(QWidget):
         return max(min_duration, min(max_duration, scaled_duration))
 
     def setAnimationDuration(self, duration):
-        """
-        设置动画持续时间
-
-        Args:
-            duration (int): 动画持续时间（毫秒）
-        """
         self._animation_duration = duration
         self._animation.setDuration(duration)
 
     def setAnimationEasingCurve(self, easing_curve):
-        """
-        设置动画缓动曲线
-
-        Args:
-            easing_curve (QEasingCurve or str): 缓动曲线类型，可以是 QEasingCurve 对象或字符串名称
-                支持的字符串名称:
-                - 'Linear': 线性动画
-                - 'InQuad', 'OutQuad', 'InOutQuad': 二次曲线
-                - 'InCubic', 'OutCubic', 'InOutCubic': 三次曲线
-                - 'InQuart', 'OutQuart', 'InOutQuart': 四次曲线（默认）
-                - 'InQuint', 'OutQuint', 'InOutQuint': 五次曲线
-                - 'InSine', 'OutSine', 'InOutSine': 正弦曲线
-                - 'InExpo', 'OutExpo', 'InOutExpo': 指数曲线
-                - 'InCirc', 'OutCirc', 'InOutCirc': 圆形曲线
-                - 'InElastic', 'OutElastic', 'InOutElastic': 弹性曲线
-                - 'InBack', 'OutBack', 'InOutBack': 回退曲线
-        """
         if isinstance(easing_curve, str):
-            # 通过字符串名称设置缓动曲线
             curve_map = {
                 'Linear': QEasingCurve.Linear,
                 'InQuad': QEasingCurve.InQuad,
@@ -748,17 +744,10 @@ class D_ProgressBar(QWidget):
             self._animation_easing_curve = QEasingCurve(easing_curve_type)
             self._animation.setEasingCurve(self._animation_easing_curve)
         else:
-            # 直接使用 QEasingCurve 对象
             self._animation_easing_curve = easing_curve
             self._animation.setEasingCurve(easing_curve)
 
     def setAnimationEnabled(self, enabled):
-        """
-        启用或禁用动画
-
-        Args:
-            enabled (bool): 是否启用动画
-        """
         self._animation_enabled = enabled
 
         if enabled:
@@ -768,36 +757,73 @@ class D_ProgressBar(QWidget):
             self._animation.stop()
             self._animation.setDuration(0)
 
+    def setStrictAnimationTiming(self, enabled):
+        """
+        设置是否启用严格动画时序。
+
+        启用后，每次动画都严格使用当前设置的 duration 和 easing，
+        不再根据“动画是否仍在运行”自动缩短时长。
+        这适用于播放器进度条等需要“刷新周期 == 动画时长 == 线性匀速”的场景。
+        """
+        self._strict_animation_timing = bool(enabled)
+
+    def setClickAnimationDurationFactor(self, factor):
+        """
+        设置点击跳转动画时长系数。
+        例如 0.5 表示点击跳转动画时长为正常动画的一半。
+        """
+        try:
+            factor = float(factor)
+        except (TypeError, ValueError):
+            factor = 0.5
+        self._click_animation_duration_factor = max(0.05, factor)
+
+    def setClickAnimationEasingCurve(self, easing_curve):
+        """
+        设置点击跳转动画缓动曲线。
+        """
+        if isinstance(easing_curve, str):
+            curve_map = {
+                'Linear': QEasingCurve.Linear,
+                'InQuad': QEasingCurve.InQuad,
+                'OutQuad': QEasingCurve.OutQuad,
+                'InOutQuad': QEasingCurve.InOutQuad,
+                'InCubic': QEasingCurve.InCubic,
+                'OutCubic': QEasingCurve.OutCubic,
+                'InOutCubic': QEasingCurve.InOutCubic,
+                'InQuart': QEasingCurve.InQuart,
+                'OutQuart': QEasingCurve.OutQuart,
+                'InOutQuart': QEasingCurve.InOutQuart,
+                'InQuint': QEasingCurve.InQuint,
+                'OutQuint': QEasingCurve.OutQuint,
+                'InOutQuint': QEasingCurve.InOutQuint,
+            }
+            easing_curve = QEasingCurve(curve_map.get(easing_curve, QEasingCurve.OutCubic))
+
+        self._click_animation_easing_curve = easing_curve
+
     def _init_sizes(self):
-        """初始化尺寸参数"""
         self._update_size_policy()
+        self._invalidate_paint_cache()
 
     def _update_size_policy(self):
-        """更新尺寸策略（根据方向和交互模式）"""
         min_dim = int(60 * self.dpi_scale)
 
         margin = self._handle_border_width
         self.setContentsMargins(margin, margin, margin, margin)
 
         if self._orientation == self.Horizontal:
-            if self._is_interactive:
-                square_dim = self._bar_height + self._handle_radius * 2
-            else:
-                square_dim = self._bar_height
+            square_dim = self._bar_height + self._handle_radius * 2 if self._is_interactive else self._bar_height
             self.setMinimumSize(min_dim, square_dim + margin * 2)
             self.setMaximumHeight(square_dim + margin * 2)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         else:
-            if self._is_interactive:
-                square_dim = self._bar_height + self._handle_radius * 2
-            else:
-                square_dim = self._bar_height
+            square_dim = self._bar_height + self._handle_radius * 2 if self._is_interactive else self._bar_height
             self.setMinimumSize(square_dim + margin * 2, min_dim)
             self.setMaximumWidth(square_dim + margin * 2)
             self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
     def _init_colors(self):
-        """初始化颜色配置"""
         app = QApplication.instance()
 
         if hasattr(app, 'settings_manager'):
@@ -809,8 +835,6 @@ class D_ProgressBar(QWidget):
             secondary_color = QColor(secondary_color_str)
             base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#222222")
             base_color = QColor(base_color_str)
-
-
 
             self._track_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
             self._bg_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
@@ -835,25 +859,16 @@ class D_ProgressBar(QWidget):
         self._bg_gradient_colors = []
         self._progress_gradient_mode = False
         self._progress_gradient_colors = []
-        self._left_transparent_mode = False  # 左侧透明模式
+        self._left_transparent_mode = False
+        self._invalidate_paint_cache()
 
     def _init_icons(self):
-        """初始化图标（默认不使用，留空以使用圆形滑块）"""
         self._handle_pixmap_normal = QPixmap()
         self._handle_pixmap_hover = QPixmap()
         self._handle_pixmap_pressed = QPixmap()
+        self._invalidate_paint_cache()
 
     def _create_colored_pixmap(self, color, size):
-        """
-        创建带颜色的 SVG pixmap
-
-        Args:
-            color (QColor): 目标颜色
-            size (int): 图标尺寸
-
-        Returns:
-            QPixmap: 带颜色的 pixmap
-        """
         icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
         handle_icon_path = os.path.join(icon_dir, '进度条按钮.svg')
 
@@ -894,51 +909,252 @@ class D_ProgressBar(QWidget):
             pixmap.fill(Qt.transparent)
             return pixmap
 
-    def setOrientation(self, orientation):
-        """
-        设置进度条方向
+    def _invalidate_paint_cache(self):
+        self._cache_signature = None
+        self._track_cache = QPixmap()
+        self._progress_cache = QPixmap()
+        self._handle_cache_normal = QPixmap()
+        self._handle_cache_hover = QPixmap()
+        self._handle_cache_pressed = QPixmap()
 
-        Args:
-            orientation: 方向常量，Horizontal 或 Vertical
-        """
+    def _cache_key(self):
+        size = self.size()
+        return (
+            size.width(),
+            size.height(),
+            self._orientation,
+            self._is_interactive,
+            self._bar_height,
+            self._bar_radius,
+            self._handle_radius,
+            self._handle_border_width,
+            self._track_color.rgba(),
+            self._progress_color.rgba(),
+            self._handle_border_color.rgba(),
+            self._handle_color.rgba(),
+            self._handle_hover_color.rgba(),
+            self._handle_pressed_color.rgba(),
+            self._gradient_mode,
+            tuple(color.rgba() for color in self._bg_gradient_colors),
+            self._progress_gradient_mode,
+            tuple(color.rgba() for color in self._progress_gradient_colors),
+            self._left_transparent_mode,
+        )
+
+    def _ensure_paint_cache(self):
+        cache_key = self._cache_key()
+        if self._cache_signature == cache_key:
+            return
+
+        self._cache_signature = cache_key
+        size = self.size()
+        if size.width() <= 0 or size.height() <= 0:
+            self._track_cache = QPixmap()
+            self._progress_cache = QPixmap()
+            self._handle_cache_normal = QPixmap()
+            self._handle_cache_hover = QPixmap()
+            self._handle_cache_pressed = QPixmap()
+            return
+
+        self._build_track_cache(size)
+        self._build_progress_cache(size)
+        self._build_handle_cache()
+
+    def _build_track_cache(self, size):
+        self._track_cache = QPixmap(size)
+        self._track_cache.fill(Qt.transparent)
+
+        geom = self._calculate_geometry_for_value(self._display_value_storage)
+        bg_rect = geom["bg_rect"]
+        if not bg_rect.isValid() or bg_rect.isNull():
+            return
+
+        painter = QPainter(self._track_cache)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._create_track_brush(bg_rect))
+        painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+        painter.end()
+
+    def _build_progress_cache(self, size):
+        self._progress_cache = QPixmap(size)
+        self._progress_cache.fill(Qt.transparent)
+
+        if self._left_transparent_mode:
+            return
+
+        geom = self._calculate_geometry_for_value(self._maximum)
+        bg_rect = geom["bg_rect"]
+        if not bg_rect.isValid() or bg_rect.isNull():
+            return
+
+        painter = QPainter(self._progress_cache)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._create_progress_brush(bg_rect))
+        painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
+        painter.end()
+
+    def _build_handle_cache(self):
+        if not self._is_interactive:
+            self._handle_cache_normal = QPixmap()
+            self._handle_cache_hover = QPixmap()
+            self._handle_cache_pressed = QPixmap()
+            return
+
+        size = QSize(self._handle_radius * 2, self._handle_radius * 2)
+        self._handle_cache_normal = self._render_handle_pixmap(self._handle_color, self._handle_pixmap_normal, size)
+        self._handle_cache_hover = self._render_handle_pixmap(self._handle_hover_color, self._handle_pixmap_hover, size)
+        self._handle_cache_pressed = self._render_handle_pixmap(self._handle_pressed_color, self._handle_pixmap_pressed, size)
+
+    def _render_handle_pixmap(self, fill_color, icon_pixmap, size):
+        pixmap = QPixmap(size)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        center = QPointF(self._handle_radius, self._handle_radius)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(self._handle_border_color))
+        painter.drawEllipse(center, self._handle_radius, self._handle_radius)
+
+        inner_radius = self._handle_radius - self._handle_border_width
+        if inner_radius > 0:
+            painter.setBrush(QBrush(fill_color))
+            painter.drawEllipse(center, inner_radius, inner_radius)
+
+        if icon_pixmap and not icon_pixmap.isNull():
+            pixmap_size = self._handle_radius * 2 - self._handle_border_width * 2
+            pixmap_x = self._handle_radius - pixmap_size // 2
+            pixmap_y = self._handle_radius - pixmap_size // 2
+            painter.drawPixmap(int(pixmap_x), int(pixmap_y), pixmap_size, pixmap_size, icon_pixmap)
+
+        painter.end()
+        return pixmap
+
+    def _create_track_brush(self, bg_rect):
+        if self._gradient_mode and len(self._bg_gradient_colors) >= 2:
+            if self._orientation == self.Horizontal:
+                gradient = QLinearGradient(bg_rect.left(), 0, bg_rect.right(), 0)
+            else:
+                gradient = QLinearGradient(0, bg_rect.top(), 0, bg_rect.bottom())
+
+            for i, color in enumerate(self._bg_gradient_colors):
+                gradient.setColorAt(i / (len(self._bg_gradient_colors) - 1), color)
+            return QBrush(gradient)
+        return QBrush(self._track_color)
+
+    def _create_progress_brush(self, bg_rect):
+        if self._progress_gradient_mode and len(self._progress_gradient_colors) >= 2:
+            if self._orientation == self.Horizontal:
+                gradient = QLinearGradient(bg_rect.left(), 0, bg_rect.right(), 0)
+            else:
+                gradient = QLinearGradient(0, bg_rect.top(), 0, bg_rect.bottom())
+
+            for i, color in enumerate(self._progress_gradient_colors):
+                gradient.setColorAt(i / (len(self._progress_gradient_colors) - 1), color)
+            return QBrush(gradient)
+        return QBrush(self._progress_color)
+
+    def _normalized_progress_ratio(self, value):
+        if self._maximum <= self._minimum:
+            return 0.0
+        return max(0.0, min(1.0, (value - self._minimum) / (self._maximum - self._minimum)))
+
+    def _calculate_geometry_for_value(self, value):
+        rect = self.rect()
+
+        if self._orientation == self.Horizontal:
+            bar_y = (rect.height() - self._bar_height) // 2
+            if self._is_interactive:
+                bar_length = max(0, rect.width() - self._handle_radius * 2)
+                bar_x = self._handle_radius
+            else:
+                bar_length = max(0, rect.width())
+                bar_x = 0
+
+            progress_length = int(bar_length * self._normalized_progress_ratio(value))
+            bg_rect = QRect(bar_x, bar_y, bar_length, self._bar_height)
+            progress_rect = QRect(bar_x, bar_y, progress_length, self._bar_height)
+
+            handle_rect = QRect()
+            if self._is_interactive:
+                handle_x = bar_x + progress_length - self._handle_radius
+                handle_x = max(bar_x, min(handle_x, rect.width() - self._handle_radius * 2))
+                handle_y = bar_y + self._bar_height // 2 - self._handle_radius
+                handle_rect = QRect(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+
+            return {
+                "bg_rect": bg_rect,
+                "progress_rect": progress_rect,
+                "handle_rect": handle_rect,
+                "bar_x": bar_x,
+                "bar_y": bar_y,
+                "bar_length": bar_length,
+                "progress_length": progress_length,
+            }
+
+        bar_x = (rect.width() - self._bar_height) // 2
+        if self._is_interactive:
+            bar_length = max(0, rect.height() - self._handle_radius * 2)
+            bar_y = self._handle_radius
+        else:
+            bar_length = max(0, rect.height())
+            bar_y = 0
+
+        progress_length = int(bar_length * self._normalized_progress_ratio(value))
+        bg_rect = QRect(bar_x, bar_y, self._bar_height, bar_length)
+        progress_rect = QRect(bar_x, bar_y + bar_length - progress_length, self._bar_height, progress_length)
+
+        handle_rect = QRect()
+        if self._is_interactive:
+            handle_y = bar_y + bar_length - progress_length - self._handle_radius
+            handle_y = max(bar_y, min(handle_y, rect.height() - self._handle_radius * 2))
+            handle_x = bar_x + self._bar_height // 2 - self._handle_radius
+            handle_rect = QRect(handle_x, handle_y, self._handle_radius * 2, self._handle_radius * 2)
+
+        return {
+            "bg_rect": bg_rect,
+            "progress_rect": progress_rect,
+            "handle_rect": handle_rect,
+            "bar_x": bar_x,
+            "bar_y": bar_y,
+            "bar_length": bar_length,
+            "progress_length": progress_length,
+        }
+
+    def _get_progress_rect_for_value(self, value):
+        return self._calculate_geometry_for_value(value)["progress_rect"]
+
+    def _get_handle_rect_for_value(self, value):
+        return self._calculate_geometry_for_value(value)["handle_rect"]
+
+    def resizeEvent(self, event):
+        self._invalidate_paint_cache()
+        super().resizeEvent(event)
+
+    def setOrientation(self, orientation):
         if self._orientation != orientation:
             self._orientation = orientation
             self._init_sizes()
             self.update()
 
     def orientation(self):
-        """
-        获取进度条方向
-
-        Returns:
-            int: 方向常量
-        """
         return self._orientation
 
     def setRange(self, minimum, maximum):
-        """
-        设置进度条范围
-
-        Args:
-            minimum (int): 最小值
-            maximum (int): 最大值
-        """
         self._minimum = minimum
         self._maximum = maximum
         if self._value < minimum:
             self._value = minimum
         elif self._value > maximum:
             self._value = maximum
+
+        self._display_value_storage = max(self._minimum, min(self._display_value_storage, self._maximum))
         self.update()
 
     def setValue(self, value, use_animation=None):
-        """
-        设置进度条值
-
-        Args:
-            value (int): 进度值
-            use_animation (bool): 是否使用动画，为None时使用_animation_suspended设置
-        """
         if value < self._minimum:
             value = self._minimum
         elif value > self._maximum:
@@ -954,10 +1170,8 @@ class D_ProgressBar(QWidget):
 
             if not should_use_animation:
                 self._animation.stop()
-                self._display_value_storage = value
-                self.update()
-                # 用户交互时减少信号发射频率，只在值变化较大时发射
-                if not hasattr(self, '_last_emitted_value') or abs(value - self._last_emitted_value) >= 5:
+                self._display_value = value
+                if self._last_emitted_value is None or abs(value - self._last_emitted_value) >= 5:
                     self._last_emitted_value = value
                     self.valueChanged.emit(value)
             else:
@@ -966,15 +1180,29 @@ class D_ProgressBar(QWidget):
 
                 if start_value == value:
                     self._animation.stop()
-                    self._display_value_storage = value
-                    self.update()
+                    self._display_value = value
                     return
 
                 self._animation.stop()
                 self._animation.setStartValue(start_value)
                 self._animation.setEndValue(value)
 
-                if animation_was_running:
+                duration_override = self._next_animation_duration_override
+                easing_override = self._next_animation_easing_override
+                self._next_animation_duration_override = None
+                self._next_animation_easing_override = None
+
+                if duration_override is not None or easing_override is not None:
+                    self._animation.setDuration(
+                        max(1, int(duration_override if duration_override is not None else self._animation_duration))
+                    )
+                    self._animation.setEasingCurve(
+                        easing_override if easing_override is not None else self._animation_easing_curve
+                    )
+                elif self._strict_animation_timing:
+                    self._animation.setDuration(self._animation_duration)
+                    self._animation.setEasingCurve(self._animation_easing_curve)
+                elif animation_was_running:
                     self._animation.setDuration(
                         self._calculate_responsive_animation_duration(start_value, value)
                     )
@@ -986,74 +1214,35 @@ class D_ProgressBar(QWidget):
                 self._animation.start()
 
     def value(self):
-        """
-        获取当前进度值
-
-        Returns:
-            int: 当前进度值
-        """
         return self._value
 
     def setInteractive(self, is_interactive):
-        """
-        设置进度条是否可交互
-
-        Args:
-            is_interactive (bool): 是否可交互
-        """
-        self._is_interactive = is_interactive
-        self._update_size_policy()
-        self.update()
+        if self._is_interactive != is_interactive:
+            self._is_interactive = is_interactive
+            self._update_size_policy()
+            self._invalidate_paint_cache()
+            self.update()
 
     def isInteractive(self):
-        """
-        获取进度条是否可交互
-
-        Returns:
-            bool: 是否可交互
-        """
         return self._is_interactive
 
     def set_bg_color(self, color):
-        """
-        设置背景颜色（轨道底板颜色）
-
-        Args:
-            color (QColor): 背景颜色
-        """
         self._track_color = QColor(color)
         self._bg_color = QColor(color)
+        self._invalidate_paint_cache()
         self.update()
 
     def set_track_color(self, color):
-        """
-        设置轨道底板颜色（进度条未填充部分的颜色）
-
-        Args:
-            color (QColor): 轨道底板颜色
-        """
         self._track_color = QColor(color)
+        self._invalidate_paint_cache()
         self.update()
 
     def set_progress_color(self, color):
-        """
-        设置进度颜色
-
-        Args:
-            color (QColor): 进度颜色
-        """
         self._progress_color = QColor(color)
+        self._invalidate_paint_cache()
         self.update()
 
     def set_handle_colors(self, normal, hover=None, pressed=None):
-        """
-        设置滑块颜色
-
-        Args:
-            normal (QColor): 正常状态颜色
-            hover (QColor): 悬停状态颜色，可选
-            pressed (QColor): 按下状态颜色，可选
-        """
         self._handle_color = QColor(normal)
         if hover:
             self._handle_hover_color = QColor(hover)
@@ -1064,148 +1253,121 @@ class D_ProgressBar(QWidget):
         self.update()
 
     def set_gradient_mode(self, enabled):
-        """
-        设置是否使用渐变背景
-
-        Args:
-            enabled (bool): 是否启用渐变模式
-        """
         self._gradient_mode = enabled
+        self._invalidate_paint_cache()
         self.update()
 
     def set_bg_gradient_colors(self, colors):
-        """
-        设置轨道背景渐变颜色列表
-
-        Args:
-            colors (list): QColor颜色列表，至少需要2个颜色
-        """
         self._bg_gradient_colors = colors
+        self._invalidate_paint_cache()
         self.update()
 
     def set_progress_gradient_mode(self, enabled):
-        """
-        设置是否使用进度渐变
-
-        Args:
-            enabled (bool): 是否启用进度渐变模式
-        """
         self._progress_gradient_mode = enabled
+        self._invalidate_paint_cache()
         self.update()
 
     def set_progress_gradient_colors(self, colors):
-        """
-        设置进度渐变颜色列表
-
-        Args:
-            colors (list): QColor颜色列表，至少需要2个颜色
-        """
         self._progress_gradient_colors = colors
+        self._invalidate_paint_cache()
         self.update()
 
     def set_left_transparent_mode(self, enabled):
-        """
-        设置左侧透明模式
-        启用后，进度条左侧（已填充部分）将透明，只显示滑块
-
-        Args:
-            enabled (bool): 是否启用左侧透明模式
-        """
         self._left_transparent_mode = enabled
+        self._invalidate_paint_cache()
         self.update()
 
     def set_handle_border_color(self, color):
-        """
-        设置滑块边框颜色
-
-        Args:
-            color (QColor): 边框颜色
-        """
         self._handle_border_color = QColor(color)
+        self._invalidate_paint_cache()
         self.update()
 
     def set_handle_border_width(self, width):
-        """
-        设置滑块边框宽度
-
-        Args:
-            width (int): 边框宽度（像素）
-        """
         self._handle_border_width = max(1, int(width))
         margin = self._handle_border_width
         self.setContentsMargins(margin, margin, margin, margin)
+        self._invalidate_paint_cache()
         self.update()
 
     def mousePressEvent(self, event):
-        """
-        鼠标按下事件
-        """
         if not self._is_interactive:
             super().mousePressEvent(event)
             return
 
         if event.button() == Qt.LeftButton:
             self._is_pressed = True
-            self._animation_suspended = True
-
-            if self._animation.state() == QPropertyAnimation.Running:
-                self._animation.stop()
-
-            self._display_value_storage = self._value
+            self._is_dragging = False
+            self._press_pos = event.pos()
+            self._last_pos = event.pos().x() if self._orientation == self.Horizontal else event.pos().y()
             self.userInteracting.emit()
-            self._update_value_from_event(event)
+            self.update(self._get_handle_rect_for_value(self._display_value_storage).adjusted(-2, -2, 2, 2))
 
     def mouseMoveEvent(self, event):
-        """
-        鼠标移动事件
-        """
         if not self._is_interactive:
             super().mouseMoveEvent(event)
             return
 
         if self._is_pressed:
-            self._update_value_from_event(event)
+            if not self._is_dragging:
+                move_delta = event.pos() - self._press_pos
+                drag_distance = abs(move_delta.x()) if self._orientation == self.Horizontal else abs(move_delta.y())
+                if drag_distance >= self._drag_threshold:
+                    self._is_dragging = True
+                    self._animation_suspended = True
+                    if self._animation.state() == QPropertyAnimation.Running:
+                        self._animation.stop()
+                    self._display_value_storage = self._value
+                    self._invalidate_paint_cache()
+
+            if self._is_dragging:
+                self._update_value_from_event(event, use_animation=False)
         else:
-            self._is_hovered = True
-            self.update()
+            if not self._is_hovered:
+                self._is_hovered = True
+                self.update(self._get_handle_rect_for_value(self._display_value_storage).adjusted(-2, -2, 2, 2))
 
     def mouseReleaseEvent(self, event):
-        """
-        鼠标释放事件
-        """
         if not self._is_interactive:
             super().mouseReleaseEvent(event)
             return
 
         if self._is_pressed and event.button() == Qt.LeftButton:
+            was_dragging = self._is_dragging
             self._is_pressed = False
-            self._animation_suspended = False
-            self.userInteractionEnded.emit()
-            self.update()
+            self._is_dragging = False
+
+            if was_dragging:
+                self._animation_suspended = False
+                self._invalidate_paint_cache()
+                self.userInteractionEnded.emit()
+                self.update(self._get_handle_rect_for_value(self._display_value_storage).adjusted(-2, -2, 2, 2))
+            else:
+                self._animation_suspended = False
+                self._next_animation_duration_override = max(
+                    1,
+                    int(self._animation_duration * self._click_animation_duration_factor)
+                )
+                self._next_animation_easing_override = self._click_animation_easing_curve
+                self._update_value_from_event(event, use_animation=True)
+                if self._last_emitted_value != self._value:
+                    self._last_emitted_value = self._value
+                    self.valueChanged.emit(self._value)
+                self.userInteractionEnded.emit()
+                self.update(self._get_handle_rect_for_value(self._display_value_storage).adjusted(-2, -2, 2, 2))
 
     def wheelEvent(self, event):
-        """
-        鼠标滚轮事件，处理滚轮调整进度值
-        仅当进度条可交互时响应滚轮事件
-        """
         if not self._is_interactive:
             super().wheelEvent(event)
             return
 
-        # 获取滚轮滚动角度，每格通常为120
         delta = event.angleDelta().y()
-
-        # 计算每次滚动的步进值（范围的1%）
         step = max(1, (self._maximum - self._minimum) // 100)
 
         if delta > 0:
-            # 向上滚动，增加数值
             new_value = self._value + step
         else:
-            # 向下滚动，减少数值
             new_value = self._value - step
 
-        # 限制在有效范围内
         new_value = max(self._minimum, min(new_value, self._maximum))
 
         if new_value != self._value:
@@ -1216,200 +1378,74 @@ class D_ProgressBar(QWidget):
         event.accept()
 
     def enterEvent(self, event):
-        """
-        鼠标进入事件
-        """
-        self._is_hovered = True
-        self.update()
+        if not self._is_hovered:
+            self._is_hovered = True
+            self.update(self._get_handle_rect_for_value(self._display_value_storage).adjusted(-2, -2, 2, 2))
 
     def leaveEvent(self, event):
-        """
-        鼠标离开事件
-        """
-        self._is_hovered = False
-        self.update()
+        if self._is_hovered:
+            self._is_hovered = False
+            self.update(self._get_handle_rect_for_value(self._display_value_storage).adjusted(-2, -2, 2, 2))
 
-    def _update_value_from_event(self, event):
-        """
-        根据鼠标事件更新进度值
-
-        Args:
-            event: 鼠标事件
-        """
+    def _update_value_from_event(self, event, use_animation=None):
         if self._orientation == self.Horizontal:
-            self._update_value_from_pos(event.pos().x())
+            self._update_value_from_pos(event.pos().x(), use_animation=use_animation)
         else:
-            self._update_value_from_pos(event.pos().y())
+            self._update_value_from_pos(event.pos().y(), use_animation=use_animation)
 
-    def _update_value_from_pos(self, pos):
-        """
-        根据鼠标位置更新进度值
-
-        Args:
-            pos (int): 鼠标坐标
-        """
+    def _update_value_from_pos(self, pos, use_animation=None):
         rect = self.rect()
-        
+
         if self._orientation == self.Horizontal:
             bar_length = max(0, rect.width() - self._handle_radius * 2)
             relative_pos = max(0, min(pos - self._handle_radius, bar_length))
-
-            if bar_length > 0:
-                ratio = relative_pos / bar_length
-            else:
-                ratio = 0.0
+            ratio = (relative_pos / bar_length) if bar_length > 0 else 0.0
         else:
             bar_length = max(0, rect.height() - self._handle_radius * 2)
             relative_pos = max(0, min(pos - self._handle_radius, bar_length))
-
-            if bar_length > 0:
-                ratio = 1.0 - (relative_pos / bar_length)
-            else:
-                ratio = 0.0
+            ratio = 1.0 - (relative_pos / bar_length) if bar_length > 0 else 0.0
 
         value = int(self._minimum + ratio * (self._maximum - self._minimum))
-        self.setValue(value)
+        self.setValue(value, use_animation=use_animation)
 
     def paintEvent(self, event):
-        """
-        绘制进度条
-        """
-        from PySide6.QtCore import Qt as QtCore
+        self._ensure_paint_cache()
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        rect = self.rect()
+        if not self._track_cache.isNull():
+            painter.drawPixmap(0, 0, self._track_cache)
 
-        if self._orientation == self.Horizontal:
-            self._paint_horizontal(painter, rect)
-        else:
-            self._paint_vertical(painter, rect)
+        geom = self._calculate_geometry_for_value(self._display_value_storage)
+        progress_rect = geom["progress_rect"]
+
+        if (
+            not self._left_transparent_mode
+            and not self._progress_cache.isNull()
+            and progress_rect.isValid()
+            and not progress_rect.isNull()
+        ):
+            if self._orientation == self.Horizontal:
+                source_rect = QRect(progress_rect.x(), progress_rect.y(), progress_rect.width(), progress_rect.height())
+            else:
+                source_rect = QRect(progress_rect.x(), progress_rect.y(), progress_rect.width(), progress_rect.height())
+
+            painter.drawPixmap(progress_rect, self._progress_cache, source_rect)
+
+        if self._is_interactive:
+            handle_rect = geom["handle_rect"]
+            if handle_rect.isValid() and not handle_rect.isNull():
+                handle_cache = self._handle_cache_normal
+                if self._is_pressed:
+                    handle_cache = self._handle_cache_pressed
+                elif self._is_hovered:
+                    handle_cache = self._handle_cache_hover
+
+                if not handle_cache.isNull():
+                    painter.drawPixmap(handle_rect.topLeft(), handle_cache)
 
         painter.end()
-
-    def _paint_horizontal(self, painter, rect):
-        """绘制横向进度条"""
-        bar_y = (rect.height() - self._bar_height) // 2
-
-        if self._is_interactive:
-            bar_width = rect.width() - self._handle_radius * 2
-            bar_x = self._handle_radius
-        else:
-            bar_width = rect.width()
-            bar_x = 0
-
-        bg_rect = QRect(bar_x, bar_y, bar_width, self._bar_height)
-
-        if self._gradient_mode and len(self._bg_gradient_colors) >= 2:
-            gradient = QLinearGradient(bar_x, 0, bar_x + bar_width, 0)
-            for i, color in enumerate(self._bg_gradient_colors):
-                gradient.setColorAt(i / (len(self._bg_gradient_colors) - 1), color)
-            painter.setBrush(QBrush(gradient))
-        else:
-            painter.setBrush(QBrush(self._track_color))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
-
-        progress_ratio = (self._display_value - self._minimum) / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
-        progress_width = int(bar_width * progress_ratio)
-
-        if progress_width > 0 and not self._left_transparent_mode:
-            progress_rect = QRect(bar_x, bar_y, progress_width, self._bar_height)
-
-            if self._progress_gradient_mode and len(self._progress_gradient_colors) >= 2:
-                progress_gradient = QLinearGradient(bar_x, 0, bar_x + progress_width, 0)
-                for i, color in enumerate(self._progress_gradient_colors):
-                    progress_gradient.setColorAt(i / (len(self._progress_gradient_colors) - 1), color)
-                painter.setBrush(QBrush(progress_gradient))
-            else:
-                painter.setBrush(QBrush(self._progress_color))
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
-
-        if self._is_interactive:
-            handle_x = bar_x + progress_width - self._handle_radius
-            handle_x = max(bar_x, min(handle_x, rect.width() - self._handle_radius * 2))
-            handle_y = bar_y + self._bar_height // 2 - self._handle_radius
-            self._paint_handle(painter, handle_x, handle_y)
-
-    def _paint_vertical(self, painter, rect):
-        """绘制纵向进度条"""
-        bar_x = (rect.width() - self._bar_height) // 2
-
-        if self._is_interactive:
-            bar_height = rect.height() - self._handle_radius * 2
-            bar_y = self._handle_radius
-        else:
-            bar_height = rect.height()
-            bar_y = 0
-
-        bg_rect = QRect(bar_x, bar_y, self._bar_height, bar_height)
-
-        if self._gradient_mode and len(self._bg_gradient_colors) >= 2:
-            gradient = QLinearGradient(0, bar_y, 0, bar_y + bar_height)
-            for i, color in enumerate(self._bg_gradient_colors):
-                gradient.setColorAt(i / (len(self._bg_gradient_colors) - 1), color)
-            painter.setBrush(QBrush(gradient))
-        else:
-            painter.setBrush(QBrush(self._track_color))
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(bg_rect, self._bar_radius, self._bar_radius)
-
-        progress_ratio = (self._display_value - self._minimum) / (self._maximum - self._minimum) if self._maximum > self._minimum else 0
-        progress_height = int(bar_height * progress_ratio)
-
-        if progress_height > 0 and not self._left_transparent_mode:
-            progress_rect = QRect(bar_x, bar_y + bar_height - progress_height, self._bar_height, progress_height)
-
-            if self._progress_gradient_mode and len(self._progress_gradient_colors) >= 2:
-                progress_gradient = QLinearGradient(0, bar_y + bar_height - progress_height, 0, bar_y + bar_height)
-                for i, color in enumerate(self._progress_gradient_colors):
-                    progress_gradient.setColorAt(i / (len(self._progress_gradient_colors) - 1), color)
-                painter.setBrush(QBrush(progress_gradient))
-            else:
-                painter.setBrush(QBrush(self._progress_color))
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(progress_rect, self._bar_radius, self._bar_radius)
-
-        if self._is_interactive:
-            handle_y = bar_y + bar_height - progress_height - self._handle_radius
-            handle_y = max(bar_y, min(handle_y, rect.height() - self._handle_radius * 2))
-            handle_x = bar_x + self._bar_height // 2 - self._handle_radius
-            self._paint_handle(painter, handle_x, handle_y)
-
-    def _paint_handle(self, painter, x, y):
-        """绘制滑块（x, y 为滑块左上角坐标）"""
-        center_x = x + self._handle_radius
-        center_y = y + self._handle_radius
-
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(self._handle_border_color))
-        painter.drawEllipse(QPointF(center_x, center_y), self._handle_radius, self._handle_radius)
-
-        fill_color = self._handle_color
-        if self._is_pressed:
-            fill_color = self._handle_pressed_color
-        elif self._is_hovered:
-            fill_color = self._handle_hover_color
-
-        inner_radius = self._handle_radius - self._handle_border_width
-        if inner_radius > 0:
-            painter.setBrush(QBrush(fill_color))
-            painter.drawEllipse(QPointF(center_x, center_y), inner_radius, inner_radius)
-
-        pixmap = self._handle_pixmap_normal
-        if self._is_pressed:
-            pixmap = self._handle_pixmap_pressed
-        elif self._is_hovered:
-            pixmap = self._handle_pixmap_hover
-
-        if pixmap and not pixmap.isNull():
-            pixmap_size = self._handle_radius * 2 - self._handle_border_width * 2
-            pixmap_x = center_x - pixmap_size // 2
-            pixmap_y = center_y - pixmap_size // 2
-            painter.drawPixmap(int(pixmap_x), int(pixmap_y), pixmap_size, pixmap_size, pixmap)
 
 
 class CustomValueBar(QWidget):
