@@ -2134,29 +2134,20 @@ class FileStagingPool(QWidget):
         """刷新文件选择器中指定文件的卡片缩略图"""
         try:
             file_selector = self._get_file_selector()
-            if not file_selector or not hasattr(file_selector, 'files_layout'):
+            if not file_selector:
                 return
 
             normalized_target = os.path.normpath(file_path)
 
-            for i in range(file_selector.files_layout.count()):
-                item = file_selector.files_layout.itemAt(i)
-                if item is None:
-                    continue
+            if hasattr(file_selector, '_refresh_visible_card_thumbnail'):
+                file_selector._refresh_visible_card_thumbnail(normalized_target)
+                return
 
-                widget = item.widget()
-                if widget is None or not hasattr(widget, 'file_info'):
-                    continue
-
-                widget_path = os.path.normpath(widget.file_info.get("path", ""))
-                if widget_path == normalized_target:
-                    if hasattr(widget, '_create_file_icon'):
-                        try:
-                            widget._create_file_icon()
-                        except Exception:
-                            pass
-                    widget.update()
-                    break
+            if hasattr(file_selector, '_find_visible_card_by_path'):
+                widget = file_selector._find_visible_card_by_path(normalized_target)
+                if widget and hasattr(widget, 'refresh_thumbnail'):
+                    widget.refresh_thumbnail()
+                    return
         except Exception as e:
             error(f"刷新文件选择器单个卡片缩略图失败: {e}")
 

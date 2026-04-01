@@ -88,8 +88,19 @@ class FileBlockCard(QWidget):
     _font_family_cache = None
 
     @classmethod
-    def _clear_shared_caches(cls):
-        cls._icon_cache.clear()
+    def _clear_shared_caches(cls, file_path=None):
+        if file_path is None:
+            cls._icon_cache.clear()
+            return
+
+        normalized_path = os.path.normpath(file_path)
+        keys_to_remove = [
+            cache_key
+            for cache_key in cls._icon_cache.keys()
+            if cache_key and len(cache_key) > 0 and os.path.normpath(str(cache_key[0])) == normalized_path
+        ]
+        for cache_key in keys_to_remove:
+            cls._icon_cache.pop(cache_key, None)
 
     @classmethod
     def _get_overlay_font_family(cls):
@@ -738,8 +749,29 @@ class FileBlockCard(QWidget):
 
     def set_file_info(self, file_info):
         self.file_info = file_info
+        self._icon_cache_key = None
         self._update_text_cache(force=True)
         self._update_icon(force=True)
+        self.update()
+
+    def refresh_thumbnail(self):
+        self._icon_cache_key = None
+        self._update_icon(force=True)
+        self.update()
+
+    def prepare_for_reuse(self, file_info, flexible_width=None):
+        self._cleanup_drag_state()
+        self._stop_all_animations()
+        self._is_selected = False
+        self._is_hovered = False
+        self._is_previewing = False
+        self._anim_bg_color = QColor(self._style_colors["normal_bg"])
+        self._anim_border_color = QColor(self._style_colors["normal_border"])
+        self.set_file_info(file_info)
+        if flexible_width is not None:
+            self.set_flexible_width(flexible_width)
+        else:
+            self.updateGeometry()
         self.update()
 
     def sizeHint(self):
@@ -992,6 +1024,43 @@ class FileBlockCard(QWidget):
 
     def _get_icon_path(self):
         return get_file_icon_path(self.file_info)
+
+    def _safe_get_mtime(self, path):
+        if not path:
+            return None
+        try:
+            return os.path.getmtime(path)
+        except (OSError, IOError, PermissionError, FileNotFoundError, RuntimeError, TypeError, ValueError):
+            return None
+
+    def _build_icon_source_signature(self):
+        file_path = self.file_info.get("path", "")
+        is_dir = self.file_info.get("is_dir", False)
+        suffix = self.file_info.get("suffix", "").lower()
+
+        if not file_path:
+            return ("empty",)
+
+        if not is_dir and suffix in ["lnk", "exe", "url"]:
+            file_mtime = self._safe_get_mtime(file_path)
+            return ("system_icon", os.path.normpath(file_path), file_mtime)
+
+        thumbnail_path = get_existing_thumbnail_path(file_path)
+        is_photo = suffix in [
+            "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg",
+            "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb"
+        ]
+        is_video = suffix in [
+            "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"
+        ]
+
+        if (is_photo or is_video) and thumbnail_path and os.path.exists(thumbnail_path):
+            thumbnail_mtime = self._safe_get_mtime(thumbnail_path)
+            return ("thumbnail", os.path.normpath(thumbnail_path), thumbnail_mtime)
+
+        icon_path = self._get_icon_path()
+        icon_mtime = self._safe_get_mtime(icon_path) if icon_path and os.path.exists(icon_path) else None
+        return ("file_icon", os.path.normpath(icon_path) if icon_path else "", icon_mtime)
 
     def _get_device_pixel_ratio(self):
         try:
@@ -1347,6 +1416,7 @@ class FileBlockCard(QWidget):
         suffix = self.file_info.get("suffix", "").lower()
         icon_size = int(38 * self.dpi_scale)
         device_pixel_ratio = round(self._get_device_pixel_ratio(), 4)
+        icon_source_signature = self._build_icon_source_signature()
         cache_key = (
             file_path,
             self.file_info.get("is_dir", False),
@@ -1359,6 +1429,7 @@ class FileBlockCard(QWidget):
             self.normal_color,
             self.accent_color,
             self.secondary_color,
+            icon_source_signature,
         )
 
         if not force and self._icon_cache_key == cache_key and not self._icon_pixmap.isNull():
