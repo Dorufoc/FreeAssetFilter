@@ -40,6 +40,13 @@ import threading
 
 from freeassetfilter.utils.app_logger import info, debug, warning
 
+try:
+    from PySide6.QtOpenGLWidgets import QOpenGLWidget
+    _OPENGL_WIDGET_AVAILABLE = True
+except ImportError:
+    QOpenGLWidget = QWidget
+    _OPENGL_WIDGET_AVAILABLE = False
+
 
 class CoverCache:
     """
@@ -304,10 +311,13 @@ class ColorExtractionTask(QRunnable):
 
         try:
             base_colors = None
+            rust_palette_ready = False
 
             if self._rust_available:
                 base_colors = self._extract_colors_rust()
-                if not base_colors:
+                if base_colors and len(base_colors) >= 5:
+                    rust_palette_ready = True
+                elif not base_colors:
                     warning("[ColorExtractionTask] Rust 提取失败，降级到 Python 实现")
 
             if not base_colors and not self.is_cancelled():
@@ -321,7 +331,14 @@ class ColorExtractionTask(QRunnable):
                     self.callback(self.task_id, None)
                 return
 
-            styled_colors = self._build_visual_palette(base_colors)
+            if rust_palette_ready:
+                styled_colors = [
+                    (int(c[0]), int(c[1]), int(c[2]))
+                    for c in base_colors[:5]
+                    if isinstance(c, (list, tuple)) and len(c) >= 3
+                ]
+            else:
+                styled_colors = self._build_visual_palette(base_colors)
 
             if self.callback and not self.is_cancelled():
                 self.callback(self.task_id, styled_colors)
@@ -347,10 +364,11 @@ class ColorExtractionTask(QRunnable):
             header = struct.pack('ii', width, height)
             image_data = header + pixels
 
+            # Rust 端已经包含聚类、主题筛选与视觉配色构建
             colors_rgb = self._rust_module.extract_colors(
                 image_data,
-                num_colors=8,
-                min_distance=42.0,
+                num_colors=5,
+                min_distance=22.0,
                 max_image_size=160,
             )
 
@@ -602,14 +620,16 @@ class ColorExtractionTask(QRunnable):
 
     def _build_visual_palette(self, colors_rgb):
         """
-        从封面图中确定 3 个主题色（优先取占比较高、但彼此不能过近的颜色），
-        然后补 2 个过渡色，形成：
+        从基础提取结果构建 3 个主题色 + 2 个过渡色：
         [主题色1, 过渡色1, 主题色2, 过渡色2, 主题色3]
+
+        优先使用已提取结果，避免重复对封面再次做 KMeans。
         """
-        theme_colors = self._extract_theme_seed_colors()
+        theme_colors = self._extract_theme_seed_colors_from_base(colors_rgb)
+
+        # 仅在基础结果不足时才回退到二次提取（低概率路径）
         if len(theme_colors) < 3:
-            qt_colors = [QColor(r, g, b) for r, g, b in colors_rgb if len((r, g, b)) == 3]
-            theme_colors = [self._prepare_color_for_background(color) for color in qt_colors[:3]]
+            theme_colors = self._extract_theme_seed_colors()
 
         if len(theme_colors) < 3:
             return None
@@ -632,6 +652,42 @@ class ColorExtractionTask(QRunnable):
             + ", ".join([f"({r},{g},{b})" for r, g, b in result])
         )
         return result
+
+    def _extract_theme_seed_colors_from_base(self, colors_rgb):
+        """
+        基于已有提取结果选择 3 个主题种子色，避免再次遍历整张封面图。
+        """
+        prepared = []
+        for color in colors_rgb or []:
+            if not isinstance(color, (list, tuple)) or len(color) < 3:
+                continue
+            r, g, b = int(color[0]), int(color[1]), int(color[2])
+            prepared.append(self._prepare_color_for_background(QColor(r, g, b)))
+
+        if not prepared:
+            return []
+
+        # 优先高饱和/高亮，增强流体背景视觉层次
+        prepared.sort(key=lambda c: (c.saturation(), c.value()), reverse=True)
+
+        selected = []
+        min_hue_distance = 20
+        for color in prepared:
+            if len(selected) >= 3:
+                break
+
+            hue = color.hue()
+            if all(self._hue_distance(hue, chosen.hue()) >= min_hue_distance for chosen in selected):
+                selected.append(color)
+
+        if len(selected) < 3:
+            for color in prepared:
+                if len(selected) >= 3:
+                    break
+                if color not in selected:
+                    selected.append(color)
+
+        return selected[:3]
 
     def _extract_theme_seed_colors(self):
         """
@@ -730,6 +786,37 @@ class ColorExtractionTask(QRunnable):
         return min(diff, 360 - diff)
 
 
+class FluidOpenGLLayer(QOpenGLWidget):
+    """
+    基于 QOpenGLWidget 的流体渲染层（GPU 路径）。
+    渲染逻辑委托给 AudioBackground._paint_fluid_background。
+    """
+
+    def __init__(self, host, parent=None):
+        super().__init__(parent)
+        self._host = host
+        self.setAutoFillBackground(False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+
+    def paintGL(self):
+        if not self._host or not self._host.isLoaded():
+            return
+        if self._host.getMode() != self._host.MODE_FLUID:
+            return
+
+        width = self.width()
+        height = self.height()
+        if width <= 0 or height <= 0:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        self._host._paint_fluid_background(painter, width, height)
+        painter.end()
+
+
 class AudioBackground(QWidget):
     """
     音频背景组件
@@ -787,10 +874,27 @@ class AudioBackground(QWidget):
         self._fluid_blob_softness = 1.12
         self._initialize_fluid_blobs()
 
+        # 流体渲染缓冲复用，避免每帧创建 QImage
+        self._fluid_buffer = None
+        self._fluid_buffer_size = (0, 0)
+
+        # GPU 流体渲染层
+        self._gpu_fluid_enabled = False
+        self._fluid_gl_layer = None
+
         self._cover_data = None
         self._blurred_pixmap = None
+        self._blurred_pixmap_key = None
+
+        # 模糊背景缩放缓存，避免 paintEvent 中重复 scaled()
+        self._scaled_blur_pixmap_cache = None
+        self._scaled_blur_cache_size = (0, 0)
+        self._scaled_blur_cache_source_key = None
 
         self._cover_pixmap = None
+        self._cover_source_image = None
+        self._cover_source_key = None
+
         self._cover_size = 200
         self._max_cover_size = 200
         self._min_cover_size = 80
@@ -845,7 +949,57 @@ class AudioBackground(QWidget):
         self.setStyleSheet("background-color: transparent;")
         self.setVisible(False)
 
+        self._init_fluid_gl_layer()
+
     # ==================== 通用方法 ====================
+
+    def _init_fluid_gl_layer(self):
+        # 默认禁用 GPU 流体层，避免 Windows 下 QOpenGLWidget 首次 show/hide 触发整窗闪烁。
+        # 需要启用时可设置环境变量：FAF_ENABLE_AUDIO_BG_GPU=1
+        enable_gpu = os.environ.get("FAF_ENABLE_AUDIO_BG_GPU", "0") == "1"
+        if not enable_gpu:
+            self._gpu_fluid_enabled = False
+            self._fluid_gl_layer = None
+            debug("[AudioBackground] GPU 流体渲染层已禁用（默认）")
+            return
+
+        if not _OPENGL_WIDGET_AVAILABLE:
+            self._gpu_fluid_enabled = False
+            self._fluid_gl_layer = None
+            return
+
+        try:
+            self._fluid_gl_layer = FluidOpenGLLayer(self, self)
+            self._fluid_gl_layer.setGeometry(self.rect())
+            self._fluid_gl_layer.hide()
+            self._fluid_gl_layer.lower()
+            self._gpu_fluid_enabled = True
+            debug("[AudioBackground] 已启用 GPU 流体渲染层")
+        except Exception as e:
+            self._fluid_gl_layer = None
+            self._gpu_fluid_enabled = False
+            warning(f"[AudioBackground] 启用 GPU 流体渲染失败，回退 CPU 路径: {e}")
+
+    def _show_fluid_gl_layer(self):
+        if self._gpu_fluid_enabled and self._fluid_gl_layer:
+            self._fluid_gl_layer.setGeometry(self.rect())
+            self._fluid_gl_layer.show()
+            self._fluid_gl_layer.lower()
+            self._cover_container.raise_()
+
+    def _hide_fluid_gl_layer(self):
+        if self._fluid_gl_layer:
+            self._fluid_gl_layer.hide()
+
+    def _request_fluid_repaint(self):
+        if (
+            self._gpu_fluid_enabled
+            and self._fluid_gl_layer
+            and self._fluid_gl_layer.isVisible()
+        ):
+            self._fluid_gl_layer.update()
+        else:
+            self.update()
 
     def load(self, mode=None):
         if mode:
@@ -859,14 +1013,22 @@ class AudioBackground(QWidget):
 
         if self._current_mode == self.MODE_FLUID:
             self._start_fluid_animation()
+            self._show_fluid_gl_layer()
+        else:
+            self._hide_fluid_gl_layer()
 
         self._cover_container.show()
+        self._cover_container.raise_()
         QTimer.singleShot(0, self._init_cover_container_geometry)
         self.update()
 
     def _init_cover_container_geometry(self):
         self._cover_container.setGeometry(self.rect())
         self._update_cover_size()
+        if self._fluid_gl_layer:
+            self._fluid_gl_layer.setGeometry(self.rect())
+            self._fluid_gl_layer.lower()
+        self._cover_container.raise_()
 
     def unload(self):
         if not self._is_loaded:
@@ -874,6 +1036,7 @@ class AudioBackground(QWidget):
 
         self._is_loaded = False
         self._stop_fluid_animation()
+        self._hide_fluid_gl_layer()
 
         if self._current_color_task:
             self._current_color_task.cancel()
@@ -890,13 +1053,20 @@ class AudioBackground(QWidget):
 
         self._cover_data = None
         self._blurred_pixmap = None
+        self._blurred_pixmap_key = None
         self._cover_pixmap = None
+        self._cover_source_image = None
+        self._cover_source_key = None
         self._has_resolved_cover_colors = False
         self._pending_cover_data = None
         self._cover_fade_phase = None
         self._cover_fade_anim.stop()
         self._cover_opacity_effect.setOpacity(1.0)
         self._theme_transition_previous_colors = None
+
+        self._fluid_buffer = None
+        self._fluid_buffer_size = (0, 0)
+        self._invalidate_blur_scaled_cache()
 
         self._cover_label.hide()
         self._svg_container.hide()
@@ -924,12 +1094,17 @@ class AudioBackground(QWidget):
         if self._is_loaded:
             if mode == self.MODE_FLUID:
                 self._blurred_pixmap = None
+                self._blurred_pixmap_key = None
+                self._invalidate_blur_scaled_cache()
                 self._start_fluid_animation()
+                self._show_fluid_gl_layer()
+                self._request_fluid_repaint()
             else:
+                self._hide_fluid_gl_layer()
                 self._stop_fluid_animation()
                 if self._cover_data:
                     self._process_cover()
-            self.update()
+                self.update()
 
     def getMode(self) -> str:
         return self._current_mode
@@ -1108,7 +1283,7 @@ class AudioBackground(QWidget):
             return
         if self.width() <= 0 or self.height() <= 0:
             return
-        self.update()
+        self._request_fluid_repaint()
 
     def setTheme(self, theme: str):
         if theme not in self._theme_colors:
@@ -1119,7 +1294,7 @@ class AudioBackground(QWidget):
         self._begin_theme_transition(previous_colors)
 
         if self._is_loaded and self._current_mode == self.MODE_FLUID:
-            self.update()
+            self._request_fluid_repaint()
         self.themeChanged.emit(theme)
 
     def getTheme(self) -> str:
@@ -1144,7 +1319,7 @@ class AudioBackground(QWidget):
         self._begin_theme_transition(previous_colors)
 
         if self._is_loaded and self._current_mode == self.MODE_FLUID:
-            self.update()
+            self._request_fluid_repaint()
 
     def useAccentTheme(self):
         previous_colors = self._copy_theme_colors(self._theme_colors.get(self._current_theme))
@@ -1154,9 +1329,19 @@ class AudioBackground(QWidget):
         self._begin_theme_transition(previous_colors)
 
         if self._is_loaded and self._current_mode == self.MODE_FLUID:
-            self.update()
+            self._request_fluid_repaint()
 
     # ==================== 封面显示方法 ====================
+
+    def _compute_cover_key(self, cover_data: bytes) -> str:
+        if not cover_data:
+            return ""
+        return hashlib.md5(cover_data).hexdigest()
+
+    def _invalidate_blur_scaled_cache(self):
+        self._scaled_blur_pixmap_cache = None
+        self._scaled_blur_cache_size = (0, 0)
+        self._scaled_blur_cache_source_key = None
 
     def setAudioCover(self, cover_data: bytes = None):
         if self._current_color_task:
@@ -1204,6 +1389,8 @@ class AudioBackground(QWidget):
 
     def _apply_audio_cover_content(self, cover_data: bytes = None):
         self._cover_data = cover_data
+        self._cover_source_key = self._compute_cover_key(cover_data) if cover_data else None
+        self._cover_source_image = None
 
         self._cover_label.hide()
         self._svg_container.hide()
@@ -1251,6 +1438,9 @@ class AudioBackground(QWidget):
                 if image.mode != 'RGBA':
                     image = image.convert('RGBA')
 
+                # 保存一次源图，后续 resize 时直接复用，避免重复解码 bytes
+                self._cover_source_image = image.copy()
+
                 display_image = image.copy()
                 display_image.thumbnail((self._cover_size, self._cover_size), Image.Resampling.LANCZOS)
 
@@ -1277,10 +1467,14 @@ class AudioBackground(QWidget):
             except (IOError, ValueError) as e:
                 warning(f"[AudioBackground] 加载封面失败: {e}")
                 self._cover_pixmap = None
+                self._cover_source_image = None
+                self._cover_source_key = None
                 self._load_default_cover()
                 self.useAccentTheme()
         else:
             self._cover_pixmap = None
+            self._cover_source_image = None
+            self._cover_source_key = None
             self._load_default_cover()
             self.useAccentTheme()
 
@@ -1385,11 +1579,13 @@ class AudioBackground(QWidget):
             return
 
         try:
-            image = Image.open(io.BytesIO(self._cover_data))
-            if image.mode != 'RGBA':
-                image = image.convert('RGBA')
+            if self._cover_source_image is None:
+                source_image = Image.open(io.BytesIO(self._cover_data))
+                if source_image.mode != 'RGBA':
+                    source_image = source_image.convert('RGBA')
+                self._cover_source_image = source_image
 
-            display_image = image.copy()
+            display_image = self._cover_source_image.copy()
             display_image.thumbnail((self._cover_size, self._cover_size), Image.Resampling.LANCZOS)
 
             self._cover_pixmap = self._pil_to_pixmap(display_image)
@@ -1437,12 +1633,18 @@ class AudioBackground(QWidget):
     def _process_cover(self):
         if not self._cover_data:
             self._blurred_pixmap = None
+            self._blurred_pixmap_key = None
+            self._invalidate_blur_scaled_cache()
             self.update()
             return
+
+        cover_key = self._compute_cover_key(self._cover_data)
 
         cached = self._cover_cache.get(self._cover_data)
         if cached and cached.get('blurred_pixmap'):
             self._blurred_pixmap = cached['blurred_pixmap']
+            self._blurred_pixmap_key = cover_key
+            self._invalidate_blur_scaled_cache()
             self.update()
             return
 
@@ -1469,12 +1671,16 @@ class AudioBackground(QWidget):
 
             image_blurred = image_cropped.filter(ImageFilter.GaussianBlur(radius=15))
             self._blurred_pixmap = self._pil_to_pixmap(image_blurred)
+            self._blurred_pixmap_key = cover_key
+            self._invalidate_blur_scaled_cache()
 
             self._cover_cache.put(self._cover_data, blurred_pixmap=self._blurred_pixmap)
 
         except (IOError, ValueError) as e:
             warning(f"[AudioBackground] 处理封面失败: {e}")
             self._blurred_pixmap = None
+            self._blurred_pixmap_key = None
+            self._invalidate_blur_scaled_cache()
 
     def _pil_to_pixmap(self, pil_image) -> QPixmap:
         if pil_image.mode != 'RGBA':
@@ -1508,6 +1714,49 @@ class AudioBackground(QWidget):
 
         return QRect(x, y, new_width, new_height)
 
+    def _get_scaled_blur_pixmap(self, width: int, height: int):
+        if (
+            self._blurred_pixmap is None
+            or self._blurred_pixmap.isNull()
+            or width <= 0
+            or height <= 0
+        ):
+            return None
+
+        cache_size = (width, height)
+        cache_source_key = self._blurred_pixmap_key
+
+        if (
+            self._scaled_blur_pixmap_cache is not None
+            and self._scaled_blur_cache_size == cache_size
+            and self._scaled_blur_cache_source_key == cache_source_key
+            and not self._scaled_blur_pixmap_cache.isNull()
+        ):
+            return self._scaled_blur_pixmap_cache
+
+        scaled = self._blurred_pixmap.scaled(
+            width,
+            height,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+
+        self._scaled_blur_pixmap_cache = scaled
+        self._scaled_blur_cache_size = cache_size
+        self._scaled_blur_cache_source_key = cache_source_key
+        return scaled
+
+    def _get_or_create_fluid_buffer(self, render_width: int, render_height: int):
+        if (
+            self._fluid_buffer is None
+            or self._fluid_buffer_size != (render_width, render_height)
+        ):
+            self._fluid_buffer = QImage(render_width, render_height, QImage.Format_ARGB32_Premultiplied)
+            self._fluid_buffer_size = (render_width, render_height)
+
+        self._fluid_buffer.fill(Qt.transparent)
+        return self._fluid_buffer
+
     # ==================== 绘制方法 ====================
 
     def resizeEvent(self, event):
@@ -1515,6 +1764,13 @@ class AudioBackground(QWidget):
         if self._is_loaded and self._cover_container.isVisible():
             self._cover_container.setGeometry(self.rect())
             self._update_cover_size()
+
+        if self._fluid_gl_layer:
+            self._fluid_gl_layer.setGeometry(self.rect())
+            self._fluid_gl_layer.lower()
+            self._cover_container.raise_()
+
+        self._invalidate_blur_scaled_cache()
         self.update()
 
     def _update_cover_size(self):
@@ -1560,6 +1816,15 @@ class AudioBackground(QWidget):
 
     def paintEvent(self, event):
         if not self._is_loaded or not self.isVisible():
+            return
+
+        # GPU 路径下流体由 QOpenGLWidget 子控件绘制，父控件无需重复绘制
+        if (
+            self._current_mode == self.MODE_FLUID
+            and self._gpu_fluid_enabled
+            and self._fluid_gl_layer
+            and self._fluid_gl_layer.isVisible()
+        ):
             return
 
         painter = QPainter(self)
@@ -1622,8 +1887,7 @@ class AudioBackground(QWidget):
         scale_to_buffer_y = render_height / max(1, height)
         radius_scale = max(scale_to_buffer_x, scale_to_buffer_y)
 
-        fluid_buffer = QImage(render_width, render_height, QImage.Format_ARGB32_Premultiplied)
-        fluid_buffer.fill(Qt.transparent)
+        fluid_buffer = self._get_or_create_fluid_buffer(render_width, render_height)
 
         buffer_painter = QPainter(fluid_buffer)
         buffer_painter.setRenderHint(QPainter.Antialiasing, True)
@@ -1845,24 +2109,22 @@ class AudioBackground(QWidget):
     def _paint_cover_blur_background(self, painter: QPainter, width: int, height: int):
         painter.fillRect(0, 0, width, height, QColor("#000000"))
 
-        if self._blurred_pixmap and not self._blurred_pixmap.isNull():
-            display_rect = self._calculate_scaled_rect()
-
-            scaled_pixmap = self._blurred_pixmap.scaled(
-                display_rect.width(),
-                display_rect.height(),
-                Qt.KeepAspectRatioByExpanding,
-                Qt.SmoothTransformation,
-            )
-
+        scaled_pixmap = self._get_scaled_blur_pixmap(width, height)
+        if scaled_pixmap and not scaled_pixmap.isNull():
             draw_x = (width - scaled_pixmap.width()) // 2
             draw_y = (height - scaled_pixmap.height()) // 2
-
             painter.setOpacity(1.0)
             painter.drawPixmap(draw_x, draw_y, scaled_pixmap)
 
     def clear(self):
         self._cover_data = None
         self._blurred_pixmap = None
+        self._blurred_pixmap_key = None
         self._cover_pixmap = None
+        self._cover_source_image = None
+        self._cover_source_key = None
+        self._fluid_buffer = None
+        self._fluid_buffer_size = (0, 0)
+        self._invalidate_blur_scaled_cache()
+        self._hide_fluid_gl_layer()
         self.update()
