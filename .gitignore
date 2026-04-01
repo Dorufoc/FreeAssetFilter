@@ -72,11 +72,9 @@ freeassetfilter/core/native/thumbnail_rust/.cargo/
 freeassetfilter/core/native/color_extractor_rust/target/
 freeassetfilter/core/native/color_extractor_rust/.cargo/
 
-# 保留可直接运行的预编译 DLL（应用可直接调用）
-!freeassetfilter/core/native/thumbnail_generator.dll
+# 保留运行时依赖 DLL（Rust 主 DLL 统一直接取源码正式编译产物，不再保留复制版）
 !freeassetfilter/core/native/opencv_world4120.dll
 !freeassetfilter/core/native/opencv_videoio_ffmpeg4130_64.dll
-!freeassetfilter/core/native/rust_color_extractor_native.dll
 
 # Test & runtime artifacts
 test_results/

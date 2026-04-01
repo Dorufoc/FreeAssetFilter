@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import sys
 from ctypes import c_char_p, c_float, c_int, c_size_t, c_uint8, POINTER, Structure
 from pathlib import Path
 from typing import List, Tuple
@@ -41,12 +42,19 @@ class RustColorExtractorBridge:
     def available(self) -> bool:
         return self._available and self._dll is not None
 
+    def _is_frozen_app(self) -> bool:
+        return bool(getattr(sys, "frozen", False))
+
     def _candidate_paths(self) -> List[Path]:
         base_dir = Path(__file__).resolve().parent
-        return [
-            base_dir / "rust_color_extractor_native.dll",
-            base_dir / "color_extractor_rust" / "target" / "release" / "rust_color_extractor_native.dll",
-        ]
+        bundled_dll = base_dir / "rust_color_extractor_native.dll"
+        dev_release_dll = base_dir / "color_extractor_rust" / "target" / "release" / "rust_color_extractor_native.dll"
+        dev_debug_dll = base_dir / "color_extractor_rust" / "target" / "debug" / "rust_color_extractor_native.dll"
+
+        if self._is_frozen_app():
+            return [bundled_dll]
+
+        return [dev_release_dll, dev_debug_dll]
 
     def _load(self):
         for path in self._candidate_paths():

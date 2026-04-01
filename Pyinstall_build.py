@@ -248,15 +248,41 @@ def collect_binaries() -> List[Tuple[str, str]]:
                 binaries.append((str(dll_path), "freeassetfilter/core/cpp_lut_preview"))
         print_info(f"收集到 cpp_lut_preview DLLs")
     
-    # 4. Rust 原生缩略图引擎 DLL
-    rust_thumb_dll = project_root / "freeassetfilter" / "core" / "native" / "thumbnail_generator.dll"
+    # 4. Rust 原生缩略图引擎 DLL（统一使用源码正式编译产物）
+    rust_thumb_dll = (
+        project_root
+        / "freeassetfilter"
+        / "core"
+        / "native"
+        / "thumbnail_rust"
+        / "target"
+        / "release"
+        / "thumbnail_generator.dll"
+    )
     if rust_thumb_dll.exists():
         binaries.append((str(rust_thumb_dll), "freeassetfilter/core/native"))
-        print_info("收集到 thumbnail_generator.dll")
+        print_info(f"收集到 thumbnail_generator.dll（来源: {rust_thumb_dll}）")
     else:
-        print_warning("未找到 thumbnail_generator.dll（将使用Python回退缩略图链路）")
+        print_warning("未找到 thumbnail_rust/target/release/thumbnail_generator.dll（将使用Python回退缩略图链路）")
 
-    # 5. 收集Python扩展模块(.pyd文件)
+    # 5. Rust 颜色提取 DLL（统一使用源码正式编译产物）
+    rust_color_dll = (
+        project_root
+        / "freeassetfilter"
+        / "core"
+        / "native"
+        / "color_extractor_rust"
+        / "target"
+        / "release"
+        / "rust_color_extractor_native.dll"
+    )
+    if rust_color_dll.exists():
+        binaries.append((str(rust_color_dll), "freeassetfilter/core/native"))
+        print_info(f"收集到 rust_color_extractor_native.dll（来源: {rust_color_dll}）")
+    else:
+        print_warning("未找到 color_extractor_rust/target/release/rust_color_extractor_native.dll")
+
+    # 6. 收集Python扩展模块(.pyd文件)
     # cpp_color_extractor
     if cpp_color_dir.exists():
         for pyd_file in cpp_color_dir.glob("*.pyd"):

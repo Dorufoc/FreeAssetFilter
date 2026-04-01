@@ -1,25 +1,17 @@
 use image::codecs::jpeg::JpegEncoder;
-use image::{ColorType, ImageEncoder};
+use image::ColorType;
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
+use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::os::raw::{c_char, c_int};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::System;
-
-use opencv::core::{AlgorithmHint, Mat, Size, Vector};
-use opencv::imgproc;
-use opencv::prelude::*;
-use opencv::videoio::{
-    self, VideoCapture, CAP_FFMPEG, CAP_INTEL_MFX, CAP_MSMF, CAP_PROP_FRAME_COUNT,
-    CAP_PROP_HW_ACCELERATION, CAP_PROP_HW_ACCELERATION_USE_OPENCL, CAP_PROP_HW_DEVICE,
-    CAP_PROP_N_THREADS, CAP_PROP_POS_FRAMES, VIDEO_ACCELERATION_ANY,
-    VIDEO_ACCELERATION_D3D11, VIDEO_ACCELERATION_MFX,
-};
 
 const DEFAULT_MAX_MEMORY_BYTES: usize = 200 * 1024 * 1024;
 const DEFAULT_K: usize = 2;
@@ -179,234 +171,85 @@ impl NativeEngine {
     }
 }
 
+#[derive(Default, Debug, Clone)]
+struct VideoProbeInfo {
+    duration_secs: Option<f64>,
+}
+
+#[derive(Default, Debug, Clone)]
+struct DecodeStats {
+    d3d11va_attempts: u64,
+    d3d11va_hits: u64,
+    dxva2_attempts: u64,
+    dxva2_hits: u64,
+    qsv_attempts: u64,
+    qsv_hits: u64,
+    software_attempts: u64,
+    software_hits: u64,
+    software_fallbacks: u64,
+}
+
+impl DecodeStats {
+    fn record_attempt(&mut self, mode: Option<&str>) {
+        match mode {
+            Some("d3d11va") => self.d3d11va_attempts += 1,
+            Some("dxva2") => self.dxva2_attempts += 1,
+            Some("qsv") => self.qsv_attempts += 1,
+            _ => self.software_attempts += 1,
+        }
+    }
+
+    fn record_hit(&mut self, mode: Option<&str>) {
+        match mode {
+            Some("d3d11va") => self.d3d11va_hits += 1,
+            Some("dxva2") => self.dxva2_hits += 1,
+            Some("qsv") => self.qsv_hits += 1,
+            _ => self.software_hits += 1,
+        }
+    }
+
+    fn record_software_fallback(&mut self) {
+        self.software_fallbacks += 1;
+    }
+
+    fn to_json(&self) -> String {
+        format!(
+            "{{\"d3d11va_attempts\":{},\"d3d11va_hits\":{},\"dxva2_attempts\":{},\"dxva2_hits\":{},\"qsv_attempts\":{},\"qsv_hits\":{},\"software_attempts\":{},\"software_hits\":{},\"software_fallbacks\":{}}}",
+            self.d3d11va_attempts,
+            self.d3d11va_hits,
+            self.dxva2_attempts,
+            self.dxva2_hits,
+            self.qsv_attempts,
+            self.qsv_hits,
+            self.software_attempts,
+            self.software_hits,
+            self.software_fallbacks
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FrameExtractResult {
+    bytes: Vec<u8>,
+    mode: Option<String>,
+    verified_hw: bool,
+    software_fallback: bool,
+}
+
 fn decode_with_image_crate(path: &str, width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), i32> {
     let input = image::open(path).map_err(|_| STATUS_DECODE_FAILED)?;
     let resized = input.thumbnail(width, height).to_rgba8();
     let rw = resized.width();
     let rh = resized.height();
-
     Ok((resized.into_raw(), rw, rh))
 }
 
-fn read_frame_at(cap: &mut VideoCapture, frame_index_1based: i64) -> Option<Mat> {
-    let target_index = frame_index_1based.saturating_sub(1).max(0) as f64;
-    if cap.set(CAP_PROP_POS_FRAMES, target_index).is_err() {
-        return None;
-    }
-    let mut frame = Mat::default();
-    if cap.read(&mut frame).ok()? && !frame.empty() {
-        return Some(frame);
-    }
-    None
-}
-
-fn build_probe_positions(total_frames: i64, probe_count: usize) -> Vec<i64> {
-    if total_frames <= 1 {
-        return vec![0];
-    }
-    if probe_count <= 1 {
-        return vec![0, total_frames - 1];
-    }
-
-    let mut positions = Vec::with_capacity(probe_count + 2);
-    positions.push(0);
-
-    for i in 0..probe_count {
-        let p = ((i as f64) * ((total_frames - 1) as f64) / ((probe_count - 1) as f64)).round() as i64;
-        positions.push(p.clamp(0, total_frames - 1));
-    }
-
-    positions.push(total_frames - 1);
-    positions.sort_unstable();
-    positions.dedup();
-    positions
-}
-
-fn extract_nth_keyframe_by_seek(cap: &mut VideoCapture, nth: usize, total_frames: i64) -> Option<Mat> {
-    if nth == 0 || total_frames <= 0 {
-        return None;
-    }
-
-    let mut seen = HashSet::new();
-    let mut found_count = 0usize;
-
-    // 第一轮：稀疏探测，尽量减少 seek+decode 次数
-    for pos in build_probe_positions(total_frames, 48) {
-        if cap.set(CAP_PROP_POS_FRAMES, pos as f64).is_err() {
-            continue;
-        }
-
-        let mut frame = Mat::default();
-        let ok = cap.read(&mut frame).ok().unwrap_or(false);
-        if !ok || frame.empty() {
-            continue;
-        }
-
-        // 多数后端 seek 到最近关键帧，这里用“实际落点”作为关键帧去重标识
-        let mut landed = cap.get(CAP_PROP_POS_FRAMES).ok().unwrap_or(pos as f64 + 1.0) as i64 - 1;
-        if landed < 0 {
-            landed = pos;
-        }
-
-        if seen.insert(landed) {
-            found_count += 1;
-            if found_count == nth {
-                return Some(frame);
-            }
-        }
-    }
-
-    // 第二轮：加密探测，提高低关键帧密度视频命中率
-    for pos in build_probe_positions(total_frames, 160) {
-        if cap.set(CAP_PROP_POS_FRAMES, pos as f64).is_err() {
-            continue;
-        }
-
-        let mut frame = Mat::default();
-        let ok = cap.read(&mut frame).ok().unwrap_or(false);
-        if !ok || frame.empty() {
-            continue;
-        }
-
-        let mut landed = cap.get(CAP_PROP_POS_FRAMES).ok().unwrap_or(pos as f64 + 1.0) as i64 - 1;
-        if landed < 0 {
-            landed = pos;
-        }
-
-        if seen.insert(landed) {
-            found_count += 1;
-            if found_count == nth {
-                return Some(frame);
-            }
-        }
-    }
-
-    None
-}
-
-fn compose_rgba_canvas_from_bgr_frame(frame: &Mat, target_w: u32, target_h: u32) -> Result<(Vec<u8>, u32, u32), i32> {
-    if target_w == 0 || target_h == 0 {
-        return Err(STATUS_INVALID_ARG);
-    }
-
-    let src_w = frame.cols().max(0) as u32;
-    let src_h = frame.rows().max(0) as u32;
-    if src_w == 0 || src_h == 0 {
-        return Err(STATUS_DECODE_FAILED);
-    }
-
-    let scale = f64::min(target_w as f64 / src_w as f64, target_h as f64 / src_h as f64);
-    let resize_w = ((src_w as f64 * scale).round() as i32).max(1);
-    let resize_h = ((src_h as f64 * scale).round() as i32).max(1);
-
-    let mut resized = Mat::default();
-    imgproc::resize(
-        frame,
-        &mut resized,
-        Size::new(resize_w, resize_h),
-        0.0,
-        0.0,
-        imgproc::INTER_AREA,
-    )
-    .map_err(|_| STATUS_DECODE_FAILED)?;
-
-    let mut rgba = Mat::default();
-    let ch = resized.channels();
-    let code = if ch == 4 {
-        imgproc::COLOR_BGRA2RGBA
-    } else if ch == 1 {
-        imgproc::COLOR_GRAY2RGBA
-    } else {
-        imgproc::COLOR_BGR2RGBA
-    };
-
-    imgproc::cvt_color(&resized, &mut rgba, code, 0, AlgorithmHint::ALGO_HINT_DEFAULT)
-        .map_err(|_| STATUS_DECODE_FAILED)?;
-
-    let bytes = rgba.data_bytes().map_err(|_| STATUS_DECODE_FAILED)?.to_vec();
-    let resized_rgba =
-        image::RgbaImage::from_raw(resize_w as u32, resize_h as u32, bytes).ok_or(STATUS_DECODE_FAILED)?;
-
-    Ok((resized_rgba.into_raw(), resize_w as u32, resize_h as u32))
-}
-
-fn make_hw_capture_params(accel_type: i32, device_index: i32, enable_opencl: bool) -> Vector<i32> {
-    let mut params = Vector::<i32>::new();
-    params.push(CAP_PROP_HW_ACCELERATION);
-    params.push(accel_type);
-    params.push(CAP_PROP_HW_DEVICE);
-    params.push(device_index);
-    params.push(CAP_PROP_HW_ACCELERATION_USE_OPENCL);
-    params.push(if enable_opencl { 1 } else { 0 });
-    // FFmpeg 后端可额外显式允许其内部线程策略
-    params.push(CAP_PROP_N_THREADS);
-    params.push(0);
-    params
-}
-
-fn try_open_with_backend(path: &str, backend: i32, accel_type: i32, enable_opencl: bool) -> Option<VideoCapture> {
-    let params = make_hw_capture_params(accel_type, 0, enable_opencl);
-    if let Ok(cap) = VideoCapture::from_file_with_params(path, backend, &params) {
-        if cap.is_opened().ok().unwrap_or(false) {
-            return Some(cap);
-        }
-    }
-    None
-}
-
-fn open_video_capture(path: &str) -> Result<VideoCapture, i32> {
-    // Windows 上优先尝试更明确的 GPU 路径：
-    // 1. MSMF + D3D11
-    if let Some(cap) = try_open_with_backend(path, CAP_MSMF, VIDEO_ACCELERATION_D3D11, true) {
-        return Ok(cap);
-    }
-
-    // 2. FFmpeg + D3D11
-    if let Some(cap) = try_open_with_backend(path, CAP_FFMPEG, VIDEO_ACCELERATION_D3D11, true) {
-        return Ok(cap);
-    }
-
-    // 3. Intel MFX / oneVPL
-    if let Some(cap) = try_open_with_backend(path, CAP_INTEL_MFX, VIDEO_ACCELERATION_MFX, false) {
-        return Ok(cap);
-    }
-
-    // 4. 任意后端 + ANY
-    if let Some(cap) = try_open_with_backend(path, videoio::CAP_ANY, VIDEO_ACCELERATION_ANY, true) {
-        return Ok(cap);
-    }
-
-    // 5. FFmpeg + ANY
-    if let Some(cap) = try_open_with_backend(path, CAP_FFMPEG, VIDEO_ACCELERATION_ANY, true) {
-        return Ok(cap);
-    }
-
-    // 6. 最终回退到普通打开（软件解码）
-    let cap = VideoCapture::from_file(path, videoio::CAP_ANY).map_err(|_| STATUS_DECODE_FAILED)?;
-    if cap.is_opened().map_err(|_| STATUS_DECODE_FAILED)? {
-        Ok(cap)
-    } else {
-        Err(STATUS_DECODE_FAILED)
-    }
-}
-
-fn decode_video_with_opencv(path: &str, width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), i32> {
-    let mut cap = open_video_capture(path)?;
-
-    let total_frames = cap
-        .get(CAP_PROP_FRAME_COUNT)
-        .ok()
-        .map(|v| v.max(0.0).round() as i64)
-        .unwrap_or(0);
-
-    // 按要求的降级顺序：第4关键帧 -> 第3关键帧 -> 第1关键帧 -> 第10普通帧
-    let frame = extract_nth_keyframe_by_seek(&mut cap, 4, total_frames)
-        .or_else(|| extract_nth_keyframe_by_seek(&mut cap, 3, total_frames))
-        .or_else(|| extract_nth_keyframe_by_seek(&mut cap, 1, total_frames))
-        .or_else(|| read_frame_at(&mut cap, 10))
-        .ok_or(STATUS_DECODE_FAILED)?;
-
-    compose_rgba_canvas_from_bgr_frame(&frame, width, height)
+fn decode_image_bytes_to_rgba(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), i32> {
+    let input = image::load_from_memory(bytes).map_err(|_| STATUS_DECODE_FAILED)?;
+    let rgba = input.to_rgba8();
+    let rw = rgba.width();
+    let rh = rgba.height();
+    Ok((rgba.into_raw(), rw, rh))
 }
 
 fn is_video_ext(path: &str) -> bool {
@@ -419,6 +262,286 @@ fn is_video_ext(path: &str) -> bool {
         ext.as_str(),
         "mp4" | "mov" | "mkv" | "flv" | "3gp" | "mxf" | "avi" | "webm" | "wmv" | "mpg" | "mpeg" | "m4v"
     )
+}
+
+fn candidate_native_dir_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(cwd) = env::current_dir() {
+        paths.push(cwd.join("freeassetfilter").join("core").join("native"));
+        paths.push(cwd.join("core").join("native"));
+        paths.push(cwd.join("native"));
+    }
+
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            paths.push(dir.join("freeassetfilter").join("core").join("native"));
+            paths.push(dir.join("core").join("native"));
+            paths.push(dir.join("native"));
+        }
+    }
+
+    paths.push(PathBuf::from("freeassetfilter").join("core").join("native"));
+    paths.push(PathBuf::from("core").join("native"));
+
+    let mut dedup = Vec::new();
+    for p in paths {
+        if !dedup.iter().any(|existing: &PathBuf| existing == &p) {
+            dedup.push(p);
+        }
+    }
+    dedup
+}
+
+fn resolve_tool_path(tool_name: &str) -> Option<PathBuf> {
+    for dir in candidate_native_dir_paths() {
+        let candidate = dir.join(tool_name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn ffprobe_path() -> Result<PathBuf, i32> {
+    resolve_tool_path("ffprobe.exe").ok_or(STATUS_INTERNAL)
+}
+
+fn ffmpeg_path() -> Result<PathBuf, i32> {
+    resolve_tool_path("ffmpeg.exe").ok_or(STATUS_INTERNAL)
+}
+
+fn run_ffprobe_basic_info(path: &str) -> VideoProbeInfo {
+    let ffprobe = match ffprobe_path() {
+        Ok(p) => p,
+        Err(_) => return VideoProbeInfo::default(),
+    };
+
+    let output = Command::new(ffprobe)
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=0")
+        .arg(path)
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return VideoProbeInfo::default(),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut info = VideoProbeInfo::default();
+
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("duration=") {
+            if let Ok(v) = value.trim().parse::<f64>() {
+                if v.is_finite() && v > 0.0 {
+                    info.duration_secs = Some(v);
+                }
+            }
+        }
+    }
+
+    info
+}
+
+fn clamp_seek_time(t: f64, duration: Option<f64>) -> f64 {
+    let mut time = if t.is_finite() { t } else { 0.0 };
+    if time < 0.0 {
+        time = 0.0;
+    }
+    if let Some(d) = duration {
+        if d.is_finite() && d > 0.0 {
+            let upper = (d - 0.05).max(0.0);
+            if time > upper {
+                time = upper;
+            }
+        }
+    }
+    time
+}
+
+fn build_seek_candidates(info: &VideoProbeInfo) -> Vec<f64> {
+    let mut candidates = Vec::new();
+
+    if let Some(duration) = info.duration_secs {
+        if duration.is_finite() && duration > 0.0 {
+            for ratio in [0.20f64, 0.35, 0.50, 0.10, 0.70] {
+                candidates.push(duration * ratio);
+            }
+        }
+    }
+
+    candidates.push(1.0 / 3.0);
+    candidates.push(0.0);
+
+    let mut normalized = Vec::new();
+    for v in candidates {
+        let clamped = clamp_seek_time(v, info.duration_secs);
+        if !normalized
+            .iter()
+            .any(|existing: &f64| (*existing - clamped).abs() < 0.05)
+        {
+            normalized.push(clamped);
+        }
+    }
+    normalized
+}
+
+fn ffmpeg_log_indicates_hw_hit(stderr: &str, hwaccel: &str) -> bool {
+    let log = stderr.to_ascii_lowercase();
+    match hwaccel {
+        "d3d11va" => {
+            (log.contains("d3d11va") && (log.contains("hwaccel") || log.contains("using") || log.contains("decoder")))
+                || log.contains("using auto hwaccel type d3d11va")
+                || log.contains("using hwaccel d3d11va")
+                || log.contains("av_hwdevice_ctx_create")
+        }
+        "dxva2" => {
+            (log.contains("dxva2") && (log.contains("hwaccel") || log.contains("using") || log.contains("decoder")))
+                || log.contains("using auto hwaccel type dxva2")
+                || log.contains("using hwaccel dxva2")
+        }
+        "qsv" => {
+            (log.contains("qsv") && (log.contains("mfx") || log.contains("hwaccel") || log.contains("decoder")))
+                || log.contains("initialized an internal mfx session")
+                || log.contains("using hwaccel qsv")
+        }
+        _ => false,
+    }
+}
+
+fn scale_filter(width: u32, height: u32) -> String {
+    format!(
+        "scale={}:{}:force_original_aspect_ratio=decrease:flags=fast_bilinear",
+        width.max(1),
+        height.max(1)
+    )
+}
+
+fn try_extract_frame_with_ffmpeg(
+    path: &str,
+    seek_time: f64,
+    width: u32,
+    height: u32,
+    hwaccel: Option<&str>,
+    software_fallback: bool,
+) -> Option<FrameExtractResult> {
+    let ffmpeg = ffmpeg_path().ok()?;
+    let seek = format!("{seek_time:.3}");
+
+    {
+        let mut stats = DECODE_STATS.lock().ok()?;
+        stats.record_attempt(hwaccel);
+    }
+
+    let mut command = Command::new(ffmpeg);
+    command.arg("-hide_banner");
+    if hwaccel.is_some() {
+        command.arg("-loglevel").arg("info");
+    } else {
+        command.arg("-loglevel").arg("error");
+    }
+
+    if let Some(accel) = hwaccel {
+        command.arg("-hwaccel").arg(accel);
+        if accel == "qsv" {
+            command.arg("-hwaccel_output_format").arg("qsv");
+        }
+    }
+
+    command.arg("-ss").arg(&seek);
+    command.arg("-i").arg(path);
+    command.arg("-frames:v").arg("1");
+    command.arg("-an");
+    command.arg("-sn");
+    command.arg("-dn");
+    command.arg("-vf").arg(scale_filter(width, height));
+    command.arg("-vcodec").arg("mjpeg");
+    command.arg("-q:v").arg("3");
+    command.arg("-f").arg("image2pipe");
+    command.arg("pipe:1");
+
+    let output = command.output().ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    let verified_hw = if let Some(accel) = hwaccel {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        ffmpeg_log_indicates_hw_hit(&stderr, accel)
+    } else {
+        false
+    };
+
+    {
+        let mut stats = DECODE_STATS.lock().ok()?;
+        if hwaccel.is_none() {
+            stats.record_hit(None);
+            if software_fallback {
+                stats.record_software_fallback();
+            }
+        } else if verified_hw {
+            stats.record_hit(hwaccel);
+        }
+    }
+
+    Some(FrameExtractResult {
+        bytes: output.stdout,
+        mode: hwaccel.map(|s| s.to_string()),
+        verified_hw,
+        software_fallback,
+    })
+}
+
+fn extract_best_video_frame_jpeg(path: &str, width: u32, height: u32) -> Result<FrameExtractResult, i32> {
+    let info = run_ffprobe_basic_info(path);
+    let seek_candidates = build_seek_candidates(&info);
+
+    for seek_time in seek_candidates {
+        let mut had_hw_attempt = false;
+
+        for accel in [Some("d3d11va"), Some("dxva2"), Some("qsv")] {
+            had_hw_attempt = true;
+            if let Some(result) = try_extract_frame_with_ffmpeg(path, seek_time, width, height, accel, false) {
+                if !result.bytes.is_empty() {
+                    eprintln!(
+                        "[thumbnail_generator] decode path file={} mode={} verified_hw={}",
+                        path,
+                        result.mode.as_deref().unwrap_or("software"),
+                        result.verified_hw
+                    );
+                    return Ok(result);
+                }
+            }
+        }
+
+        if let Some(result) = try_extract_frame_with_ffmpeg(path, seek_time, width, height, None, had_hw_attempt) {
+            if !result.bytes.is_empty() {
+                eprintln!(
+                    "[thumbnail_generator] decode path file={} mode={} verified_hw={} software_fallback={}",
+                    path,
+                    result.mode.as_deref().unwrap_or("software"),
+                    result.verified_hw,
+                    result.software_fallback
+                );
+                return Ok(result);
+            }
+        }
+    }
+
+    Err(STATUS_DECODE_FAILED)
+}
+
+fn decode_video_with_ffmpeg(path: &str, width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), i32> {
+    let result = extract_best_video_frame_jpeg(path, width, height)?;
+    decode_image_bytes_to_rgba(&result.bytes)
 }
 
 fn generate_entry(path: &str, width: u32, height: u32) -> Result<CacheEntry, i32> {
@@ -442,7 +565,7 @@ fn generate_entry(path: &str, width: u32, height: u32) -> Result<CacheEntry, i32
     }
 
     let (data, w, h) = if is_video_ext(path) {
-        decode_video_with_opencv(path, width, height)?
+        decode_video_with_ffmpeg(path, width, height)?
     } else {
         decode_with_image_crate(path, width, height)?
     };
@@ -457,8 +580,6 @@ fn generate_entry(path: &str, width: u32, height: u32) -> Result<CacheEntry, i32
     };
 
     let mut engine = ENGINE.lock().map_err(|_| STATUS_INTERNAL)?;
-
-    // 双检：避免并发重复计算后的覆盖写入
     if let Some(entry) = engine.get(&key) {
         return Ok(entry);
     }
@@ -467,10 +588,22 @@ fn generate_entry(path: &str, width: u32, height: u32) -> Result<CacheEntry, i32
     Ok(candidate)
 }
 
+fn generate_jpeg_bytes(path: &str, width: u32, height: u32) -> Result<Vec<u8>, i32> {
+    if is_video_ext(path) {
+        return extract_best_video_frame_jpeg(path, width, height).map(|r| r.bytes);
+    }
+
+    let entry = generate_entry(path, width, height)?;
+    encode_jpeg_bytes(&entry)
+}
+
 static ENGINE: Lazy<Mutex<NativeEngine>> = Lazy::new(|| Mutex::new(NativeEngine::new()));
+static DECODE_STATS: Lazy<Mutex<DecodeStats>> = Lazy::new(|| Mutex::new(DecodeStats::default()));
 
 fn c_message(msg: &str) -> *mut c_char {
-    CString::new(msg).unwrap_or_else(|_| CString::new("invalid message").unwrap()).into_raw()
+    CString::new(msg)
+        .unwrap_or_else(|_| CString::new("invalid message").unwrap())
+        .into_raw()
 }
 
 fn make_result_from_entry(entry: CacheEntry) -> NativeThumbnailResult {
@@ -522,21 +655,16 @@ fn encode_jpeg_bytes(entry: &CacheEntry) -> Result<Vec<u8>, i32> {
     Ok(jpeg_buf)
 }
 
-fn make_jpeg_result_from_entry(entry: CacheEntry) -> NativeThumbnailResult {
-    let jpeg_buf = match encode_jpeg_bytes(&entry) {
-        Ok(b) => b,
-        Err(_) => return make_error_result(STATUS_INTERNAL, "jpeg encode failed"),
-    };
-
-    let mut boxed = jpeg_buf.into_boxed_slice();
+fn make_jpeg_result(bytes: Vec<u8>) -> NativeThumbnailResult {
+    let mut boxed = bytes.into_boxed_slice();
     let len = boxed.len();
     let ptr = boxed.as_mut_ptr();
     std::mem::forget(boxed);
 
     NativeThumbnailResult {
         status: STATUS_OK,
-        width: entry.width,
-        height: entry.height,
+        width: 0,
+        height: 0,
         channels: 3,
         len,
         data: ptr,
@@ -577,20 +705,14 @@ impl ParallelBatchItem {
         }
     }
 
-    fn ok_jpeg_from_entry(entry: CacheEntry) -> Self {
-        let width = entry.width;
-        let height = entry.height;
-        let channels = 3;
-        match encode_jpeg_bytes(&entry) {
-            Ok(data) => Self {
-                status: STATUS_OK,
-                width,
-                height,
-                channels,
-                data,
-                message: "ok".to_string(),
-            },
-            Err(_) => Self::err(STATUS_INTERNAL, "jpeg encode failed"),
+    fn ok_jpeg_bytes(data: Vec<u8>) -> Self {
+        Self {
+            status: STATUS_OK,
+            width: 0,
+            height: 0,
+            channels: 3,
+            data,
+            message: "ok".to_string(),
         }
     }
 
@@ -676,31 +798,15 @@ pub extern "C" fn native_generate_thumbnail_jpeg(path: *const c_char, width: c_i
         return make_error_result(STATUS_NOT_FOUND, "file not found");
     }
 
-    match generate_entry(&path, width as u32, height as u32) {
-        Ok(entry) => make_jpeg_result_from_entry(entry),
+    match generate_jpeg_bytes(&path, width as u32, height as u32) {
+        Ok(bytes) => make_jpeg_result(bytes),
         Err(code) => make_error_result(code, "generate failed"),
     }
 }
 
 #[no_mangle]
 pub extern "C" fn native_generate_thumbnail_jpg(path: *const c_char, width: c_int, height: c_int) -> NativeThumbnailResult {
-    if width <= 0 || height <= 0 {
-        return make_error_result(STATUS_INVALID_ARG, "invalid target size");
-    }
-
-    let path = match ptr_to_string(path) {
-        Ok(p) => p,
-        Err(_) => return make_error_result(STATUS_INVALID_ARG, "invalid path"),
-    };
-
-    if !Path::new(&path).exists() {
-        return make_error_result(STATUS_NOT_FOUND, "file not found");
-    }
-
-    match generate_entry(&path, width as u32, height as u32) {
-        Ok(entry) => make_jpeg_result_from_entry(entry),
-        Err(code) => make_error_result(code, "generate failed"),
-    }
+    native_generate_thumbnail_jpeg(path, width, height)
 }
 
 #[no_mangle]
@@ -798,8 +904,8 @@ pub extern "C" fn native_generate_batch_jpg(
                 return ParallelBatchItem::err(STATUS_NOT_FOUND, "file not found");
             }
 
-            match generate_entry(path, width as u32, height as u32) {
-                Ok(entry) => ParallelBatchItem::ok_jpeg_from_entry(entry),
+            match generate_jpeg_bytes(path, width as u32, height as u32) {
+                Ok(bytes) => ParallelBatchItem::ok_jpeg_bytes(bytes),
                 Err(code) => ParallelBatchItem::err(code, "generate failed"),
             }
         })
@@ -820,6 +926,25 @@ pub extern "C" fn native_generate_batch_jpg(
         count: len,
         results: ptr,
         message: c_message("ok"),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn native_get_decode_stats_json() -> *mut c_char {
+    match DECODE_STATS.lock() {
+        Ok(stats) => c_message(&stats.to_json()),
+        Err(_) => c_message("{}"),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn native_reset_decode_stats() -> c_int {
+    match DECODE_STATS.lock() {
+        Ok(mut stats) => {
+            *stats = DecodeStats::default();
+            STATUS_OK
+        }
+        Err(_) => STATUS_INTERNAL,
     }
 }
 

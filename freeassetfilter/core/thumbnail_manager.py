@@ -155,6 +155,12 @@ class ThumbnailManager:
     # 缩略图质量
     QUALITY = 85
 
+    # Rust 原生批量生成配置
+    NATIVE_BATCH_SIZE_IMAGE = 16
+    NATIVE_BATCH_SIZE_VIDEO = 6
+    NATIVE_BATCH_WORKERS_IMAGE = 3
+    NATIVE_BATCH_WORKERS_VIDEO = 2
+
     # 缩略图缓存格式（优先 JPG，兼容历史 PNG）
     THUMB_EXT_PRIMARY = '.jpg'
     THUMB_EXT_LEGACY = '.png'
@@ -522,13 +528,13 @@ class ThumbnailManager:
         cancel_check: Optional[Callable[[], bool]] = None
     ) -> Tuple[int, int]:
         """
-        批量创建缩略图（异步多队列调度版）
+        批量创建缩略图（异步多队列 + 原生批处理版）
 
         调度目标：
-        1. 进度按“实际完成出队”更新，而不是按提交顺序更新；
-        2. 不同任务类型走不同队列（原生图片 / Python图片 / 视频）；
-        3. 根据各队列积压量、活动数、平均耗时动态补位，尽量兼顾吞吐与 UI 可感知进度；
-        4. 支持取消，取消后返回已完成数量。
+        1. 原生图片/视频优先走 Rust 批量接口，减少 Python<->Rust 往返与进程调度开销；
+        2. Python 专用链路（RAW/PSD/SVG / OpenCV回退）保持单项异步；
+        3. 进度仍按“单文件完成”逐项回调，兼顾 UI 感知；
+        4. 支持取消，取消后不再补位，但已提交批次允许自然完成。
         """
         total_count = len(files_to_generate)
         if total_count == 0:
@@ -537,11 +543,21 @@ class ThumbnailManager:
         success_count = 0
         processed_count = 0
 
+        native_stats_enabled = self._rust_bridge.available
+        if native_stats_enabled:
+            self._rust_bridge.reset_decode_stats()
+
         queue_limits = {
-            "native_image": max(2, min(6, (os.cpu_count() or 4))),
-            "native_video": max(1, min(3, max(1, (os.cpu_count() or 4) // 2))),
+            "native_image": max(1, min(self.NATIVE_BATCH_WORKERS_IMAGE, max(1, (os.cpu_count() or 4) // 2))),
+            "native_video": max(1, min(self.NATIVE_BATCH_WORKERS_VIDEO, max(1, (os.cpu_count() or 4) // 3))),
             "python_image": max(1, min(2, (os.cpu_count() or 4) // 2 or 1)),
             "python_video": max(1, min(3, max(1, (os.cpu_count() or 4) // 2))),
+        }
+        queue_batch_sizes = {
+            "native_image": max(4, self.NATIVE_BATCH_SIZE_IMAGE),
+            "native_video": max(2, self.NATIVE_BATCH_SIZE_VIDEO),
+            "python_image": 1,
+            "python_video": 1,
         }
         queue_order = ["native_video", "python_video", "python_image", "native_image"]
 
@@ -553,13 +569,13 @@ class ThumbnailManager:
         }
         queue_active_counts = {name: 0 for name in task_queues}
         queue_avg_duration = {
-            "native_image": 0.15,
-            "native_video": 1.5,
+            "native_image": 0.35,
+            "native_video": 1.8,
             "python_image": 0.35,
             "python_video": 2.0,
         }
 
-        def _run_task(queue_name: str, item: Dict) -> Tuple[str, Dict, bool, Optional[str], float]:
+        def _run_single_task(queue_name: str, item: Dict) -> Tuple[str, List[Tuple[Dict, bool, Optional[str]]], float]:
             start_time = time.perf_counter()
             file_path = item["file_path"]
             thumbnail_path = item["thumbnail_path"]
@@ -574,9 +590,6 @@ class ThumbnailManager:
                     if result_path is None:
                         result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
                 elif queue_name == "native_video":
-                    # 视频缩略图优先走 Rust 原生链路。
-                    # Rust 侧已在 lib.rs 中通过 decode_video_with_opencv() 支持视频解码与缩略图生成。
-                    # 这里使用“单项原生任务”而不是 batch 接口，确保进度可按实际完成逐项回调到 UI。
                     result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
                     if result_path is None:
                         result_path = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
@@ -592,7 +605,58 @@ class ThumbnailManager:
                 success = False
 
             duration = time.perf_counter() - start_time
-            return queue_name, item, success, result_path, duration
+            return queue_name, [(item, success, result_path)], duration
+
+        def _run_native_batch_task(queue_name: str, items: List[Dict]) -> Tuple[str, List[Tuple[Dict, bool, Optional[str]]], float]:
+            start_time = time.perf_counter()
+            outputs: List[Tuple[Dict, bool, Optional[str]]] = []
+
+            dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
+            file_paths = [item["file_path"] for item in items]
+            batch_jpgs: List[Optional[bytes]] = []
+
+            try:
+                if self._rust_bridge.available:
+                    batch_jpgs = self._rust_bridge.generate_jpg_batch(file_paths, dpi_scaled_size, dpi_scaled_size)
+            except Exception as e:
+                warning(f"[ThumbnailManager] Rust批量缩略图生成失败，将逐项回退: {e}")
+                batch_jpgs = [None for _ in items]
+
+            if len(batch_jpgs) < len(items):
+                batch_jpgs.extend([None] * (len(items) - len(batch_jpgs)))
+
+            for item, jpg_bytes in zip(items, batch_jpgs):
+                file_path = item["file_path"]
+                thumbnail_path = item["thumbnail_path"]
+                legacy_thumbnail_path = item["legacy_thumbnail_path"]
+
+                result_path = None
+                success = False
+
+                try:
+                    if jpg_bytes:
+                        with open(thumbnail_path, "wb") as f:
+                            f.write(jpg_bytes)
+                        result_path = thumbnail_path
+                    else:
+                        result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+                        if result_path is None:
+                            if queue_name == "native_video":
+                                result_path = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
+                            else:
+                                result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+
+                    success = bool(result_path and os.path.exists(result_path))
+                    if success:
+                        self._update_file_access_time(result_path)
+                except Exception:
+                    success = False
+                    result_path = None
+
+                outputs.append((item, success, result_path))
+
+            duration = time.perf_counter() - start_time
+            return queue_name, outputs, duration
 
         for file_data in files_to_generate:
             if cancel_check and cancel_check():
@@ -658,10 +722,9 @@ class ThumbnailManager:
                 backlog = len(task_queues[name])
                 active = queue_active_counts[name]
                 avg_duration = max(queue_avg_duration[name], 0.05)
+                batch_size = max(1, queue_batch_sizes.get(name, 1))
 
-                # 优先积压高、当前活动少、平均耗时长的队列，
-                # 让重任务能更早启动，同时避免单类任务独占所有槽位。
-                score = (backlog / (active + 1)) * (1.0 + min(avg_duration, 5.0))
+                score = ((backlog * batch_size) / (active + 1)) * (1.0 + min(avg_duration, 5.0))
 
                 if candidate_score is None or score > candidate_score:
                     candidate_name = name
@@ -683,8 +746,19 @@ class ThumbnailManager:
                     if not queue_name:
                         break
 
-                    item = task_queues[queue_name].popleft()
-                    future = executor.submit(_run_task, queue_name, item)
+                    batch_size = max(1, queue_batch_sizes.get(queue_name, 1))
+                    batch_items = []
+                    while task_queues[queue_name] and len(batch_items) < batch_size:
+                        batch_items.append(task_queues[queue_name].popleft())
+
+                    if not batch_items:
+                        break
+
+                    if queue_name.startswith("native_") and len(batch_items) > 1:
+                        future = executor.submit(_run_native_batch_task, queue_name, batch_items)
+                    else:
+                        future = executor.submit(_run_single_task, queue_name, batch_items[0])
+
                     future_to_queue[future] = queue_name
                     queue_active_counts[queue_name] += 1
                     dispatched = True
@@ -706,25 +780,22 @@ class ThumbnailManager:
                         queue_active_counts[queue_name] -= 1
 
                     try:
-                        result_queue_name, item, success, result_path, duration = future.result()
+                        result_queue_name, result_items, duration = future.result()
                         prev_avg = queue_avg_duration[result_queue_name]
                         queue_avg_duration[result_queue_name] = prev_avg * 0.7 + duration * 0.3
-                        file_data = item["file_data"]
                     except Exception:
                         result_queue_name = queue_name or "python_image"
-                        file_data = {"path": "", "name": ""}
-                        success = False
+                        result_items = []
                         duration = queue_avg_duration[result_queue_name]
 
-                    if success:
-                        success_count += 1
+                    for item, success, result_path in result_items:
+                        if success:
+                            success_count += 1
 
-                    processed_count += 1
-                    if progress_callback:
-                        progress_callback(processed_count, total_count, file_data, success)
+                        processed_count += 1
+                        if progress_callback:
+                            progress_callback(processed_count, total_count, item["file_data"], success)
 
-            # 如果已经取消，不再继续给等待中的排队任务补位；
-            # 但已提交的任务允许自然完成并计入已处理进度，使 UI 能反映“真实已完成数”。
             while future_to_queue:
                 done, _ = wait(list(future_to_queue.keys()), timeout=0.1, return_when=FIRST_COMPLETED)
                 if not done:
@@ -736,21 +807,50 @@ class ThumbnailManager:
                         queue_active_counts[queue_name] -= 1
 
                     try:
-                        result_queue_name, item, success, result_path, duration = future.result()
+                        result_queue_name, result_items, duration = future.result()
                         prev_avg = queue_avg_duration[result_queue_name]
                         queue_avg_duration[result_queue_name] = prev_avg * 0.7 + duration * 0.3
-                        file_data = item["file_data"]
                     except Exception:
-                        result_queue_name = queue_name or "python_image"
-                        file_data = {"path": "", "name": ""}
-                        success = False
+                        result_items = []
 
-                    if success:
-                        success_count += 1
+                    for item, success, result_path in result_items:
+                        if success:
+                            success_count += 1
 
-                    processed_count += 1
-                    if progress_callback:
-                        progress_callback(processed_count, total_count, file_data, success)
+                        processed_count += 1
+                        if progress_callback:
+                            progress_callback(processed_count, total_count, item["file_data"], success)
+
+        if native_stats_enabled:
+            stats = self._rust_bridge.get_decode_stats()
+            if stats:
+                hw_attempts = (
+                    int(stats.get("d3d11va_attempts", 0))
+                    + int(stats.get("dxva2_attempts", 0))
+                    + int(stats.get("qsv_attempts", 0))
+                )
+                hw_hits = (
+                    int(stats.get("d3d11va_hits", 0))
+                    + int(stats.get("dxva2_hits", 0))
+                    + int(stats.get("qsv_hits", 0))
+                )
+                sw_attempts = int(stats.get("software_attempts", 0))
+                sw_hits = int(stats.get("software_hits", 0))
+                sw_fallbacks = int(stats.get("software_fallbacks", 0))
+                hw_hit_rate = (hw_hits / hw_attempts * 100.0) if hw_attempts > 0 else 0.0
+
+                info(
+                    "[ThumbnailManager] Rust视频解码统计："
+                    f"硬解尝试={hw_attempts}, "
+                    f"硬解命中={hw_hits}, "
+                    f"硬解命中率={hw_hit_rate:.1f}%, "
+                    f"D3D11VA={int(stats.get('d3d11va_hits', 0))}/{int(stats.get('d3d11va_attempts', 0))}, "
+                    f"DXVA2={int(stats.get('dxva2_hits', 0))}/{int(stats.get('dxva2_attempts', 0))}, "
+                    f"QSV={int(stats.get('qsv_hits', 0))}/{int(stats.get('qsv_attempts', 0))}, "
+                    f"软解尝试={sw_attempts}, "
+                    f"软解成功={sw_hits}, "
+                    f"软解回退={sw_fallbacks}"
+                )
 
         return success_count, processed_count
     

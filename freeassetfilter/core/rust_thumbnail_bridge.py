@@ -7,10 +7,12 @@ Rust 缩略图引擎桥接层（ctypes）
 from __future__ import annotations
 
 import ctypes
+import json
 import os
+import sys
 from ctypes import c_char_p, c_int, c_size_t, c_uint8, c_uint32, POINTER, Structure
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from freeassetfilter.utils.app_logger import debug, warning
 
@@ -55,14 +57,19 @@ class RustThumbnailBridge:
     def _native_runtime_dir(self) -> Path:
         return Path(__file__).resolve().parent / "native"
 
+    def _is_frozen_app(self) -> bool:
+        return bool(getattr(sys, "frozen", False))
+
     def _candidate_paths(self) -> List[Path]:
         core_dir = Path(__file__).resolve().parent
-        candidates = [
-            core_dir / "native" / "thumbnail_generator.dll",
-            core_dir / "native" / "thumbnail_rust" / "target" / "release" / "thumbnail_generator.dll",
-            Path.cwd() / "freeassetfilter" / "core" / "native" / "thumbnail_generator.dll",
-        ]
-        return candidates
+        bundled_dll = core_dir / "native" / "thumbnail_generator.dll"
+        dev_release_dll = core_dir / "native" / "thumbnail_rust" / "target" / "release" / "thumbnail_generator.dll"
+        dev_debug_dll = core_dir / "native" / "thumbnail_rust" / "target" / "debug" / "thumbnail_generator.dll"
+
+        if self._is_frozen_app():
+            return [bundled_dll]
+
+        return [dev_release_dll, dev_debug_dll]
 
     def _prepare_local_runtime(self):
         """
@@ -78,21 +85,8 @@ class RustThumbnailBridge:
             except Exception as e:
                 warning(f"[RustThumbnailBridge] 添加本地 DLL 目录失败 {runtime_dir}: {e}")
 
-        runtime_names = [
-            "opencv_world4120.dll",
-            "opencv_videoio_ffmpeg4130_64.dll",
-        ]
-
-        for name in runtime_names:
-            dll_path = runtime_dir / name
-            if not dll_path.exists():
-                continue
-            try:
-                loaded = ctypes.WinDLL(str(dll_path)) if os.name == "nt" else ctypes.CDLL(str(dll_path))
-                self._preloaded_runtime_dlls.append(loaded)
-                debug(f"[RustThumbnailBridge] 已预加载项目内运行时: {dll_path}")
-            except Exception as e:
-                warning(f"[RustThumbnailBridge] 预加载项目内运行时失败 {dll_path}: {e}")
+        # 运行时工具（如 ffmpeg/ffprobe）由 Rust 侧按路径直接调用，
+        # 这里不再预加载任何 OpenCV 相关 DLL，避免误依赖外部环境。
 
     def _load(self):
         self._prepare_local_runtime()
@@ -130,6 +124,12 @@ class RustThumbnailBridge:
 
         dll.native_clear_cache.argtypes = []
         dll.native_clear_cache.restype = c_int
+
+        dll.native_get_decode_stats_json.argtypes = []
+        dll.native_get_decode_stats_json.restype = c_char_p
+
+        dll.native_reset_decode_stats.argtypes = []
+        dll.native_reset_decode_stats.restype = c_int
 
         dll.native_free_buffer.argtypes = [POINTER(c_uint8), c_size_t]
         dll.native_free_buffer.restype = None
@@ -169,6 +169,32 @@ class RustThumbnailBridge:
             return code == 0
         except Exception as e:
             warning(f"[RustThumbnailBridge] clear_cache 失败: {e}")
+            return False
+
+    def get_decode_stats(self) -> Dict[str, int]:
+        if not self.available:
+            return {}
+        try:
+            raw = self._dll.native_get_decode_stats_json()
+            if not raw:
+                return {}
+            if isinstance(raw, bytes):
+                text = raw.decode("utf-8", errors="ignore")
+            else:
+                text = raw
+            return json.loads(text) if text else {}
+        except Exception as e:
+            warning(f"[RustThumbnailBridge] get_decode_stats 失败: {e}")
+            return {}
+
+    def reset_decode_stats(self) -> bool:
+        if not self.available:
+            return False
+        try:
+            code = self._dll.native_reset_decode_stats()
+            return code == 0
+        except Exception as e:
+            warning(f"[RustThumbnailBridge] reset_decode_stats 失败: {e}")
             return False
 
     def generate_rgba(self, file_path: str, width: int, height: int) -> Optional[Tuple[bytes, int, int, int]]:
