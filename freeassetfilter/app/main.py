@@ -18,10 +18,12 @@ FreeAssetFilter 主程序
 # 导入必要的模块用于异常处理
 import sys
 import os
+import json
 import warnings
 import time
 import traceback
 import threading
+import subprocess
 import faulthandler
 
 # 添加父目录到Python路径，确保包能被正确导入
@@ -183,6 +185,80 @@ if not _fault_handler_enabled and log_file_path:
 
 if not _fault_handler_enabled:
     warning("faulthandler未能启用，C++层崩溃信息可能无法被捕获")
+
+
+def debug_exit_threads():
+    """
+    在程序退出前打印当前仍然活跃的线程，便于排查退出卡住问题
+    - 输出线程基础信息
+    - 尝试输出线程类型
+    - 尝试输出当前 Python 栈，尤其用于定位 DummyThread 来源
+    """
+    try:
+        current_frames = sys._current_frames()
+    except Exception as e:
+        current_frames = {}
+        warning(f"获取当前线程栈帧失败: {e}")
+
+    try:
+        for thread in threading.enumerate():
+            try:
+                thread_type = f"{thread.__class__.__module__}.{thread.__class__.__name__}"
+                is_dummy_thread = isinstance(thread, threading._DummyThread)
+                extra_hint = " [外部/native线程代理]" if is_dummy_thread else ""
+                info(
+                    f"活跃线程: {thread.name}, "
+                    f"线程类型: {thread_type}, "
+                    f"是否守护线程: {thread.daemon}, "
+                    f"线程标识: {thread.ident}, "
+                    f"是否存活: {thread.is_alive()}"
+                    f"{extra_hint}"
+                )
+
+                frame = current_frames.get(thread.ident)
+                if frame is None:
+                    info(f"线程 {thread.name} 无可用 Python 栈信息")
+                    continue
+
+                stack_text = "".join(traceback.format_stack(frame)).rstrip()
+                if stack_text:
+                    info(f"线程 {thread.name} 当前调用栈:\n{stack_text}")
+            except Exception as e:
+                warning(f"打印线程信息失败: {e}")
+    except Exception as e:
+        warning(f"枚举活跃线程失败: {e}")
+
+
+def cleanup_fault_handler_tee():
+    """
+    退出前主动关闭 faulthandler 双写通道，促使 FaultHandlerTee 线程自然退出
+    """
+    global _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread
+
+    try:
+        if _fault_handler_output is not None:
+            try:
+                _fault_handler_output.close()
+            except (OSError, ValueError):
+                pass
+            _fault_handler_output = None
+
+        if _fault_handler_tee_thread is not None and _fault_handler_tee_thread.is_alive():
+            _fault_handler_tee_thread.join(timeout=1.0)
+
+        if _fault_handler_file is not None:
+            try:
+                _fault_handler_file.flush()
+            except (OSError, ValueError):
+                pass
+            try:
+                _fault_handler_file.close()
+            except (OSError, ValueError):
+                pass
+            _fault_handler_file = None
+    except Exception as e:
+        warning(f"清理 faulthandler 双写线程失败: {e}")
+
 
 # 定义异常处理函数
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -415,6 +491,8 @@ class FreeAssetFilterApp(QMainWindow):
         """
         主窗口关闭事件，确保先清理预览区域，再保存状态并关闭主程序
         """
+        
+
         # 用户尝试关闭程序时，优先清理预览区域
         self._cleanup_preview_before_close()
 
@@ -448,6 +526,9 @@ class FreeAssetFilterApp(QMainWindow):
         if self._startup_warmup_thread and self._startup_warmup_thread.isRunning():
             self._startup_warmup_thread.quit()
             self._startup_warmup_thread.wait(500)
+
+        cleanup_fault_handler_tee()
+        debug_exit_threads()
 
         # 调用父类的closeEvent
         super().closeEvent(event)
@@ -1764,11 +1845,424 @@ class FreeAssetFilterApp(QMainWindow):
         self.start_restore_backup(backup_data)
 
 
+def _parse_internal_worker_args(argv):
+    """
+    解析内部子进程参数
+
+    Returns:
+        tuple[str | None, dict]:
+            (worker_type, worker_payload)
+    """
+    if len(argv) >= 5 and argv[1] == "--faf-thumbnail-worker":
+        return "thumbnail", {
+            "file_path": argv[2],
+            "dpi_scale": argv[3],
+            "prefer_native": argv[4],
+        }
+
+    return None, {}
+
+
+def _extract_associated_file_path(argv):
+    """
+    提取文件关联传入的文件路径，忽略内部工作进程参数
+    """
+    if len(argv) <= 1:
+        return None
+
+    candidate = argv[1]
+    if isinstance(candidate, str) and candidate.startswith("--faf-"):
+        return None
+
+    return candidate
+
+
+def _get_runtime_info_file_path():
+    """
+    获取运行实例信息文件路径
+    """
+    return os.path.join(get_app_data_path(), "runtime_instance.json")
+
+
+def _write_runtime_instance_info():
+    """
+    写入当前运行实例信息，供单实例冲突时定位残留进程
+    """
+    runtime_info = {
+        "pid": os.getpid(),
+        "started_at": time.time(),
+        "exe_path": os.path.abspath(sys.executable),
+        "argv": list(sys.argv),
+    }
+
+    runtime_file = _get_runtime_info_file_path()
+    os.makedirs(os.path.dirname(runtime_file), exist_ok=True)
+    with open(runtime_file, "w", encoding="utf-8") as f:
+        json.dump(runtime_info, f, indent=2, ensure_ascii=False)
+
+    return runtime_info
+
+
+def _remove_runtime_instance_info(expected_pid=None):
+    """
+    删除运行实例信息文件
+
+    Args:
+        expected_pid (int | None): 仅当文件中的 pid 与该值一致时才删除，避免误删其他实例信息
+    """
+    runtime_file = _get_runtime_info_file_path()
+    if not os.path.exists(runtime_file):
+        return
+
+    try:
+        if expected_pid is not None:
+            with open(runtime_file, "r", encoding="utf-8") as f:
+                runtime_info = json.load(f)
+            file_pid = runtime_info.get("pid")
+            if file_pid != expected_pid:
+                return
+    except (OSError, IOError, ValueError, TypeError):
+        if expected_pid is not None:
+            return
+
+    try:
+        os.remove(runtime_file)
+    except (OSError, IOError, PermissionError, FileNotFoundError):
+        pass
+
+
+def _read_runtime_instance_info():
+    """
+    读取运行实例信息
+    """
+    runtime_file = _get_runtime_info_file_path()
+    if not os.path.exists(runtime_file):
+        return None
+
+    with open(runtime_file, "r", encoding="utf-8") as f:
+        runtime_info = json.load(f)
+
+    if not isinstance(runtime_info, dict):
+        return None
+
+    return runtime_info
+
+
+def _is_process_running(pid):
+    """
+    判断指定 PID 是否仍在运行
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    process_handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not process_handle:
+        return False
+
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(process_handle)
+
+
+def _get_process_image_path(pid):
+    """
+    获取进程可执行文件路径
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+
+    if sys.platform != "win32":
+        return None
+
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    process_handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not process_handle:
+        return None
+
+    try:
+        buffer_length = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(buffer_length.value)
+        success = kernel32.QueryFullProcessImageNameW(
+            process_handle,
+            0,
+            buffer,
+            ctypes.byref(buffer_length)
+        )
+        if not success:
+            return None
+        return os.path.normcase(os.path.normpath(buffer.value))
+    finally:
+        kernel32.CloseHandle(process_handle)
+
+
+def _is_expected_app_process(pid, runtime_info):
+    """
+    保守校验 PID 是否指向 FreeAssetFilter 主程序自身
+    """
+    if not _is_process_running(pid):
+        return False
+
+    process_image_path = _get_process_image_path(pid)
+    if not process_image_path:
+        return False
+
+    expected_paths = set()
+
+    runtime_exe_path = runtime_info.get("exe_path")
+    if isinstance(runtime_exe_path, str) and runtime_exe_path.strip():
+        expected_paths.add(os.path.normcase(os.path.normpath(runtime_exe_path)))
+
+    current_exe_path = os.path.abspath(sys.executable)
+    if current_exe_path:
+        expected_paths.add(os.path.normcase(os.path.normpath(current_exe_path)))
+
+    if process_image_path in expected_paths:
+        return True
+
+    process_name = os.path.basename(process_image_path).lower()
+    return "freeassetfilter" in process_name
+
+
+def _terminate_process(pid):
+    """
+    强制终止指定进程
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return False, "无效的进程 PID"
+
+    if sys.platform != "win32":
+        return False, "仅支持在 Windows 上强制终止实例"
+
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_TERMINATE = 0x0001
+    SYNCHRONIZE = 0x00100000
+    WAIT_OBJECT_0 = 0x00000000
+    WAIT_TIMEOUT = 0x00000102
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    process_handle = kernel32.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, False, pid)
+    if not process_handle:
+        return False, "无法打开目标进程，可能权限不足或进程已退出"
+
+    try:
+        if not kernel32.TerminateProcess(process_handle, 1):
+            return False, "调用强制终止失败"
+
+        wait_result = kernel32.WaitForSingleObject(process_handle, 5000)
+        if wait_result == WAIT_OBJECT_0:
+            return True, ""
+        if wait_result == WAIT_TIMEOUT:
+            return False, "等待目标进程退出超时"
+
+        return False, f"等待目标进程退出失败，结果码: {wait_result}"
+    finally:
+        kernel32.CloseHandle(process_handle)
+
+
+def _restart_current_application():
+    """
+    使用当前启动参数重新启动应用程序
+    """
+    relaunch_args = [sys.executable] + list(sys.argv[1:])
+    subprocess.Popen(relaunch_args, close_fds=True)
+
+
+def _show_already_running_dialog_and_handle_restart(mutex_handle):
+    """
+    显示“程序已在运行”弹窗，并在需要时执行强制终止后重启
+    """
+    from PySide6.QtWidgets import QApplication as _QApplication, QMessageBox
+
+    _temp_app = _QApplication(sys.argv)
+    msg_box = QMessageBox()
+    msg_box.setWindowTitle("FreeAssetFilter")
+    msg_box.setIcon(QMessageBox.Warning)
+    msg_box.setText("程序已经在运行中")
+    msg_box.setInformativeText(
+        "FreeAssetFilter 已经在运行，不能启动多个实例。\n\n"
+        "仅当你已经确认程序窗口已关闭，但这里仍然反复提示程序正在运行时，"
+        "才点击“强制终止后重新启动”。\n"
+        "该操作会强制结束残留后台进程，未保存内容可能丢失。"
+    )
+    ok_button = msg_box.addButton("确定", QMessageBox.AcceptRole)
+    force_restart_button = msg_box.addButton("强制终止后重新启动", QMessageBox.DestructiveRole)
+    msg_box.setDefaultButton(ok_button)
+    msg_box.exec()
+
+    clicked_button = msg_box.clickedButton()
+    if clicked_button is not force_restart_button:
+        return
+
+    try:
+        runtime_info = _read_runtime_instance_info()
+    except (OSError, IOError, ValueError, TypeError) as e:
+        error_box = QMessageBox()
+        error_box.setWindowTitle("强制终止失败")
+        error_box.setIcon(QMessageBox.Critical)
+        error_box.setText("无法读取正在运行实例的信息")
+        error_box.setInformativeText(
+            f"读取运行实例信息失败：{e}\n\n"
+            "仅当你已经确认程序窗口已关闭，但仍然反复弹出本提示时，才应尝试此操作。"
+        )
+        error_box.exec()
+        return
+
+    if not runtime_info:
+        error_box = QMessageBox()
+        error_box.setWindowTitle("强制终止失败")
+        error_box.setIcon(QMessageBox.Critical)
+        error_box.setText("未找到可供终止的运行实例信息")
+        error_box.setInformativeText(
+            "没有找到残留实例记录，无法安全执行强制终止。\n\n"
+            "仅当你已经确认程序窗口已关闭，但仍然反复弹出本提示时，才应尝试此操作。"
+        )
+        error_box.exec()
+        return
+
+    target_pid = runtime_info.get("pid")
+    if not isinstance(target_pid, int) or target_pid <= 0:
+        error_box = QMessageBox()
+        error_box.setWindowTitle("强制终止失败")
+        error_box.setIcon(QMessageBox.Critical)
+        error_box.setText("运行实例信息中的 PID 无效")
+        error_box.setInformativeText("为避免误杀其他进程，已取消本次强制终止。")
+        error_box.exec()
+        return
+
+    if not _is_process_running(target_pid):
+        _remove_runtime_instance_info(expected_pid=target_pid)
+
+        error_box = QMessageBox()
+        error_box.setWindowTitle("未发现残留进程")
+        error_box.setIcon(QMessageBox.Information)
+        error_box.setText("记录中的运行实例已经不存在")
+        error_box.setInformativeText(
+            "程序残留记录已清理，请重新启动程序。\n\n"
+            "仅当你已经确认程序窗口已关闭，但仍然反复弹出本提示时，才应点击该按钮。"
+        )
+        error_box.exec()
+        return
+
+    if not _is_expected_app_process(target_pid, runtime_info):
+        error_box = QMessageBox()
+        error_box.setWindowTitle("强制终止失败")
+        error_box.setIcon(QMessageBox.Critical)
+        error_box.setText("检测到的目标进程与当前程序不匹配")
+        error_box.setInformativeText("为避免误杀其他进程，已取消本次强制终止。")
+        error_box.exec()
+        return
+
+    terminated, terminate_message = _terminate_process(target_pid)
+    if not terminated:
+        error_box = QMessageBox()
+        error_box.setWindowTitle("强制终止失败")
+        error_box.setIcon(QMessageBox.Critical)
+        error_box.setText("无法强制结束残留进程")
+        error_box.setInformativeText(terminate_message)
+        error_box.exec()
+        return
+
+    _remove_runtime_instance_info(expected_pid=target_pid)
+
+    if sys.platform == "win32" and mutex_handle:
+        try:
+            import ctypes
+            ctypes.windll.kernel32.CloseHandle(mutex_handle)
+        except Exception:
+            pass
+
+    try:
+        _restart_current_application()
+    except Exception as e:
+        error_box = QMessageBox()
+        error_box.setWindowTitle("重新启动失败")
+        error_box.setIcon(QMessageBox.Critical)
+        error_box.setText("残留进程已被强制结束，但重新启动失败")
+        error_box.setInformativeText(str(e))
+        error_box.exec()
+        return
+
+    _temp_app.quit()
+    sys.exit(0)
+
+
 def main():
     """
     主程序入口函数
     """
     info("=== FreeAssetFilter 主程序 ===")
+
+    # 内部缩略图子进程模式：
+    # - 必须在单实例检测之前分流
+    # - 避免打包态通过 sys.executable 再次拉起主程序时触发“多实例运行”弹窗
+    worker_type, worker_payload = _parse_internal_worker_args(sys.argv)
+    if worker_type == "thumbnail":
+        try:
+            from freeassetfilter.core.thumbnail_manager import _run_batch_video_thumbnail_subprocess
+
+            file_path = worker_payload.get("file_path", "")
+            dpi_scale = float(worker_payload.get("dpi_scale", 1.0))
+            prefer_native_raw = str(worker_payload.get("prefer_native", "1")).lower()
+            prefer_native = prefer_native_raw in ("1", "true", "yes", "on")
+
+            exit_code = _run_batch_video_thumbnail_subprocess(
+                file_path,
+                dpi_scale,
+                prefer_native,
+            )
+            sys.exit(exit_code)
+        except Exception as e:
+            error(f"[内部缩略图子进程] 执行失败: {e}")
+            sys.exit(1)
 
     # 单实例检测 - 使用Windows互斥锁确保只有一个程序实例运行
     # 防止多个实例同时运行导致JSON文件存取异常
@@ -1794,23 +2288,27 @@ def main():
             if error_code == 183:  # ERROR_ALREADY_EXISTS
                 warning("程序已经在运行中，禁止启动多个实例")
                 try:
-                    from PySide6.QtWidgets import QApplication as _QApplication, QMessageBox
-                    _temp_app = _QApplication(sys.argv)
-                    msg_box = QMessageBox()
-                    msg_box.setWindowTitle("FreeAssetFilter")
-                    msg_box.setIcon(QMessageBox.Information)
-                    msg_box.setText("程序已经在运行中")
-                    msg_box.setInformativeText("FreeAssetFilter 已经在运行，不能启动多个实例。")
-                    msg_box.setStandardButtons(QMessageBox.Ok)
-                    msg_box.exec()
-                except Exception:
-                    pass
+                    _show_already_running_dialog_and_handle_restart(_mutex_handle)
+                except Exception as e:
+                    warning(f"显示多实例提示弹窗失败: {e}")
+                finally:
+                    if _mutex_handle:
+                        try:
+                            kernel32.CloseHandle(_mutex_handle)
+                        except Exception:
+                            pass
                 sys.exit(0)
             else:
                 info("单实例检测通过，程序启动")
 
+    try:
+        _write_runtime_instance_info()
+    except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
+        warning(f"写入运行实例信息失败: {e}")
+
     # 获取通过文件关联传递进来的文件路径（Inno Setup通过命令行参数传递）
-    associated_file_path = sys.argv[1] if len(sys.argv) > 1 else None
+    # 忽略内部工作进程参数，避免将内部参数误识别为文件路径
+    associated_file_path = _extract_associated_file_path(sys.argv)
     if associated_file_path:
         info(f"[文件关联] 接收到关联文件: {associated_file_path}")
 
@@ -1999,9 +2497,6 @@ def main():
 
     # 应用程序退出前记录当前时间
     def on_app_exit():
-        import json
-        import os
-
         exit_time = time.time()
         settings_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'settings.json')
 
@@ -2023,6 +2518,18 @@ def main():
         except (OSError, PermissionError, json.JSONDecodeError, TypeError) as e:
             settings_manager.set_setting("app.last_exit_time", exit_time)
             logger.warning(f"保存退出时间失败: {e}")
+
+        try:
+            _remove_runtime_instance_info(expected_pid=os.getpid())
+        except Exception as e:
+            logger.warning(f"清理运行实例信息失败: {e}")
+
+        if sys.platform == 'win32' and _mutex_handle:
+            try:
+                import ctypes
+                ctypes.windll.kernel32.CloseHandle(_mutex_handle)
+            except Exception as e:
+                logger.debug(f"关闭单实例互斥锁句柄失败: {e}")
 
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)

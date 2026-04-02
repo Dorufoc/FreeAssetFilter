@@ -318,13 +318,11 @@ def collect_hidden_imports() -> List[str]:
         "freeassetfilter.core.cpp_color_extractor",
         "freeassetfilter.core.cpp_lut_preview",
         "freeassetfilter.core.rust_thumbnail_bridge",
-        # 重要包
+        # 重要包（第一轮瘦身：移除 numpy/scipy/skimage/imageio 的强制隐藏导入，
+        # 交给 PyInstaller 按实际导入链分析，避免把整套科学计算/可选插件带进产物）
         "PIL",
         "PIL._imagingtk",
         "PIL._tkinter_finder",
-        "numpy",
-        "skimage",
-        "scipy",
         "psd_tools",
         "rawpy",
         "pymupdf",
@@ -337,7 +335,6 @@ def collect_hidden_imports() -> List[str]:
         "exifread",
         "pillow_heif",
         "aggdraw",
-        "imageio",
         "psutil",
         # PySide6相关（仅保留项目实际使用的模块，避免隐式拉入整套依赖）
         "PySide6.QtCore",
@@ -448,9 +445,11 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
         "--exclude-module", "PySide6.QtXml",
         # 排除 numpy/scipy 的测试和可选依赖模块
         "--exclude-module", "numpy.f2py.tests",
-        "--exclude-module", "numpy._pytesttester",
         "--exclude-module", "scipy._lib.array_api_compat.torch",
         "--exclude-module", "torch",
+        # 排除 OpenCV 及其 imageio 可选插件，避免环境中的 opencv 被意外打包
+        "--exclude-module", "cv2",
+        "--exclude-module", "imageio.plugins.opencv",
     ])
     
     # 添加数据文件
@@ -465,12 +464,11 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
     for imp in hidden_imports:
         cmd.extend(["--hidden-import", imp])
     
-    # 包含所有子包（只对有子模块的包使用 --collect-all）
+    # 包含动态导入较多、运行时资源明确需要的子包
+    # 第一轮瘦身先移除 numpy/scipy/skimage/imageio 的 collect-all，
+    # 改为依赖 PyInstaller 自动分析真实导入链，避免把整套可选模块全部打进包体。
     cmd.extend([
         "--collect-all", "PIL",
-        "--collect-all", "numpy",
-        "--collect-all", "skimage",
-        "--collect-all", "scipy",
         "--collect-all", "psd_tools",
         "--collect-all", "rawpy",
         "--collect-all", "pymupdf",
@@ -480,7 +478,6 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
         "--collect-all", "markdown",
         "--collect-all", "exifread",
         "--collect-all", "pillow_heif",
-        "--collect-all", "imageio",
         "--collect-all", "psutil",
     ])
     

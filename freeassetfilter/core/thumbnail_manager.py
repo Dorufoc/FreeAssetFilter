@@ -1292,6 +1292,39 @@ class ThumbnailManager:
         warning(f"[ThumbnailManager] FFmpeg软解未能生成视频缩略图: {file_path}")
         return None
 
+    def _build_video_thumbnail_subprocess_command(
+        self,
+        file_path: str,
+        prefer_native: bool
+    ) -> List[str]:
+        """
+        构建视频缩略图工作子进程命令。
+
+        - 打包态：直接调用当前 exe，并通过内部参数进入 worker 模式
+        - 开发态：通过 `python -m freeassetfilter.app.main` 进入同一入口
+        """
+        prefer_native_arg = "1" if prefer_native else "0"
+        dpi_scale_arg = str(float(self.dpi_scale))
+
+        if getattr(sys, "frozen", False):
+            return [
+                sys.executable,
+                "--faf-thumbnail-worker",
+                file_path,
+                dpi_scale_arg,
+                prefer_native_arg,
+            ]
+
+        return [
+            sys.executable,
+            "-m",
+            "freeassetfilter.app.main",
+            "--faf-thumbnail-worker",
+            file_path,
+            dpi_scale_arg,
+            prefer_native_arg,
+        ]
+
     def _create_video_thumbnail_batch_safe(
         self,
         file_path: str,
@@ -1310,20 +1343,10 @@ class ThumbnailManager:
         timeout = max(int(self.BATCH_VIDEO_SUBPROCESS_TIMEOUT), int(self.VIDEO_PROCESSING_TIMEOUT) + 5)
         project_root = str(Path(__file__).resolve().parents[2])
 
-        command = [
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "from freeassetfilter.core.thumbnail_manager import _run_batch_video_thumbnail_subprocess; "
-                "sys.exit(_run_batch_video_thumbnail_subprocess("
-                "sys.argv[1], float(sys.argv[2]), sys.argv[3].lower() in ('1', 'true', 'yes')"
-                "))"
-            ),
+        command = self._build_video_thumbnail_subprocess_command(
             file_path,
-            str(float(self.dpi_scale)),
-            "1" if prefer_native else "0",
-        ]
+            prefer_native,
+        )
 
         try:
             completed = subprocess.run(

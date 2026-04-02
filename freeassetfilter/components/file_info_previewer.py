@@ -36,6 +36,7 @@ from freeassetfilter.core.media_probe import (
     get_subprocess_creationflags,
     get_video_stream_info,
 )
+from freeassetfilter.core.py7z_core import get_7z_core
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox,
@@ -72,19 +73,9 @@ except ImportError:
 try:
     import zipfile
     import tarfile
-    import rarfile
-    import py7zr
 except ImportError:
     zipfile = None
     tarfile = None
-    rarfile = None
-    py7zr = None
-
-# 用于处理ISO文件
-try:
-    import pycdlib
-except ImportError:
-    pycdlib = None
 
 # 用于处理图像文件
 try:
@@ -215,6 +206,9 @@ class FileInfoPreviewer(QObject):
         # 音频信息获取任务管理
         self._audio_task_id = 0
         self._current_audio_task = None
+
+        # 统一压缩包读取核心
+        self._7z_core = get_7z_core()
 
         # 获取全局字体和DPI缩放因子
         app = QApplication.instance()
@@ -931,44 +925,26 @@ class FileInfoPreviewer(QObject):
         info["压缩格式"] = file_ext[1:]
 
         try:
-            if file_ext == '.zip' and zipfile:
-                with zipfile.ZipFile(file_path, 'r') as zf:
-                    info["文件数"] = len(zf.infolist())
-                    total_size = sum(file.file_size for file in zf.infolist())
-                    info["总大小"] = self._format_size(total_size)
-                    info["压缩率"] = f"{round((1 - os.path.getsize(file_path) / total_size) * 100, 2)}%" if total_size > 0 else "0%"
-            elif file_ext == '.rar' and rarfile:
-                with rarfile.RarFile(file_path, 'r') as rf:
-                    info["文件数"] = len(rf.infolist())
-                    total_size = sum(file.file_size for file in rf.infolist())
-                    info["总大小"] = self._format_size(total_size)
-                    info["压缩率"] = f"{round((1 - os.path.getsize(file_path) / total_size) * 100, 2)}%" if total_size > 0 else "0%"
-            elif file_ext in ['.tar', '.gz', '.tgz', '.bz2', '.xz'] and tarfile:
-                with tarfile.open(file_path, 'r') as tf:
-                    info["文件数"] = len(tf.getmembers())
-                    total_size = sum(file.size for file in tf.getmembers())
-                    info["总大小"] = self._format_size(total_size)
-                    info["压缩率"] = f"{round((1 - os.path.getsize(file_path) / total_size) * 100, 2)}%" if total_size > 0 else "0%"
-            elif file_ext == '.7z' and py7zr:
-                with py7zr.SevenZipFile(file_path, 'r') as szf:
-                    info["文件数"] = len(szf.getnames())
-                    info["总大小"] = "无法获取"
-                    info["压缩率"] = "无法计算"
-            elif file_ext == '.iso' and pycdlib:
-                # 使用 pycdlib 处理 ISO 文件
-                iso = pycdlib.PyCdlib()
-                iso.open(file_path)
-                try:
-                    file_count = 0
-                    # 使用 walk 方法遍历所有文件
-                    for dirname, dirlist, filelist in iso.walk(iso_path='/'):
-                        file_count += len(filelist)
-                    info["文件数"] = file_count
-                    info["总大小"] = self._format_size(os.path.getsize(file_path))
-                    info["压缩率"] = "N/A"
-                finally:
-                    iso.close()
-        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError) as e:
+            archive_type = self._7z_core.get_archive_type(file_path)
+            if archive_type and archive_type != "unknown":
+                info["压缩格式"] = archive_type
+
+            files = self._7z_core.list_archive(file_path, encoding="utf-8")
+            file_entries = [file for file in files if not file.get("is_dir", False)]
+            total_size = sum(int(file.get("size", 0) or 0) for file in file_entries)
+            archive_size = os.path.getsize(file_path)
+
+            info["文件数"] = len(file_entries)
+            info["总大小"] = self._format_size(total_size) if total_size > 0 else "无法获取"
+
+            if archive_type == "iso":
+                info["压缩率"] = "N/A"
+            elif total_size > 0:
+                ratio = (1 - archive_size / total_size) * 100
+                info["压缩率"] = f"{round(ratio, 2)}%"
+            else:
+                info["压缩率"] = "无法计算"
+        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError, RuntimeError) as e:
             debug(f"获取压缩文件信息失败: {e}")
             info["文件数"] = "无法获取"
             info["总大小"] = "无法获取"
@@ -981,57 +957,22 @@ class FileInfoPreviewer(QObject):
         info = {}
 
         try:
-            file_ext = os.path.splitext(file_path)[1].lower()
+            files = self._7z_core.list_archive(file_path, encoding="utf-8")
             content_list = []
 
-            if file_ext == '.zip' and zipfile:
-                with zipfile.ZipFile(file_path, 'r') as zf:
-                    for file in zf.infolist():
-                        content_list.append({
-                            "名称": file.filename,
-                            "大小": self._format_size(file.file_size),
-                            "修改时间": datetime(*file.date_time).strftime("%Y-%m-%d %H:%M:%S")
-                        })
-            elif file_ext == '.rar' and rarfile:
-                with rarfile.RarFile(file_path, 'r') as rf:
-                    for file in rf.infolist():
-                        content_list.append({
-                            "名称": file.filename,
-                            "大小": self._format_size(file.file_size),
-                            "修改时间": file.mtime.strftime("%Y-%m-%d %H:%M:%S") if file.mtime else "未知"
-                        })
-            elif file_ext in ['.tar', '.gz', '.tgz', '.bz2', '.xz'] and tarfile:
-                with tarfile.open(file_path, 'r') as tf:
-                    for file in tf.getmembers():
-                        content_list.append({
-                            "名称": file.name,
-                            "大小": self._format_size(file.size),
-                            "修改时间": datetime.fromtimestamp(file.mtime).strftime("%Y-%m-%d %H:%M:%S") if file.mtime else "未知"
-                        })
-            elif file_ext == '.iso' and pycdlib:
-                # 使用 pycdlib 处理 ISO 文件
-                iso = pycdlib.PyCdlib()
-                iso.open(file_path)
-                try:
-                    # 使用 walk 方法遍历所有文件
-                    for dirname, dirlist, filelist in iso.walk(iso_path='/'):
-                        # 添加文件到列表
-                        for file_name in filelist:
-                            full_path = f"{dirname}/{file_name}" if dirname != '/' else f"/{file_name}"
-                            content_list.append({
-                                "名称": full_path,
-                                "大小": "未知",  # pycdlib 获取文件大小较复杂
-                                "修改时间": "未知"
-                            })
-                finally:
-                    iso.close()
+            for file in files:
+                content_list.append({
+                    "名称": file.get("path") or file.get("name", ""),
+                    "大小": "" if file.get("is_dir", False) else self._format_size(int(file.get("size", 0) or 0)),
+                    "修改时间": file.get("modified") or "未知"
+                })
 
             if content_list:
                 info["内容列表"] = content_list[:10]
                 if len(content_list) > 10:
                     info["内容列表"].append({"名称": f"... 还有 {len(content_list) - 10} 个文件", "大小": "", "修改时间": ""})
 
-        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError) as e:
+        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError, RuntimeError) as e:
             debug(f"获取压缩文件高级信息失败: {e}")
 
         return info

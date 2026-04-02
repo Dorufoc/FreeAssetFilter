@@ -130,6 +130,7 @@ class SettingsManager:
             self._save_timer = None
             self._save_delay_seconds = 0.35
             self._save_pending = False
+            self._dirty_keys = set()
             self.settings = None
             self._settings_file = settings_file
             self._initialize_settings()
@@ -383,8 +384,21 @@ class SettingsManager:
             debug(f"[{timestamp}] [SettingsManager.save_settings] {msg}")
 
         with self._settings_lock:
-            _debug("开始保存设置")
-            debug(f"设置文件路径: {self._settings_file}")
+            dirty_keys = sorted(self._dirty_keys)
+            pending_before_save = self._save_pending
+            theme_dirty = any(
+                key == "appearance.theme"
+                or key == "appearance.preset_theme"
+                or key.startswith("appearance.colors.")
+                for key in dirty_keys
+            )
+
+            if dirty_keys:
+                _debug(f"开始保存设置，变更项: {', '.join(dirty_keys)}")
+                debug(f"设置文件路径: {self._settings_file}")
+            elif pending_before_save:
+                _debug("开始保存设置")
+                debug(f"设置文件路径: {self._settings_file}")
 
             self._save_pending = False
             if self._save_timer is not None:
@@ -406,7 +420,7 @@ class SettingsManager:
                 else:
                     self.settings["appearance"].pop("preset_theme", None)
 
-            if "appearance" in self.settings and "colors" in self.settings["appearance"]:
+            if theme_dirty and "appearance" in self.settings and "colors" in self.settings["appearance"]:
                 _debug("当前主题颜色设置:")
                 for color_key, color_value in self.settings["appearance"]["colors"].items():
                     _debug(f"  {color_key}: {color_value}")
@@ -429,19 +443,25 @@ class SettingsManager:
 
                 os.replace(temp_path, self._settings_file)
 
-                _debug(f"设置保存成功: {self._settings_file}")
+                if dirty_keys or pending_before_save:
+                    _debug(f"设置保存成功: {self._settings_file}")
+                self._dirty_keys.clear()
                 info(f"设置已保存到: {self._settings_file}")
             except PermissionError as e:
-                _debug(f"设置保存失败，权限不足: {e}")
+                if dirty_keys or pending_before_save:
+                    _debug(f"设置保存失败，权限不足: {e}")
                 error(f"保存设置失败，权限不足: {e}")
             except FileNotFoundError as e:
-                _debug(f"设置保存失败，目录不存在: {e}")
+                if dirty_keys or pending_before_save:
+                    _debug(f"设置保存失败，目录不存在: {e}")
                 error(f"保存设置失败，目录不存在: {e}")
             except TypeError as e:
-                _debug(f"设置保存失败，数据类型错误: {e}")
+                if dirty_keys or pending_before_save:
+                    _debug(f"设置保存失败，数据类型错误: {e}")
                 error(f"保存设置失败，数据类型错误: {e}")
             except IOError as e:
-                _debug(f"设置保存失败，IO错误: {e}")
+                if dirty_keys or pending_before_save:
+                    _debug(f"设置保存失败，IO错误: {e}")
                 error(f"保存设置失败，IO错误: {e}")
             finally:
                 temp_path = locals().get("temp_path")
@@ -480,7 +500,7 @@ class SettingsManager:
                     value = value[key]
                 return value
             except (KeyError, TypeError):
-                if default is not None:
+                if default is not None and not key_path.startswith("appearance.colors."):
                     # 使用auto_save=True确保默认值被持久化
                     self.set_setting(key_path, default, auto_save=True)
                 return default
@@ -501,25 +521,31 @@ class SettingsManager:
             debug(f"[{timestamp}] [SettingsManager.set_setting] {msg}")
 
         with self._settings_lock:
-            if "appearance.colors" in key_path:
-                _debug(f"设置键路径: {key_path} = {value}")
-
             keys = key_path.split(".")
             settings = self.settings
 
             for key in keys[:-1]:
-                if key not in settings:
+                if key not in settings or not isinstance(settings[key], dict):
                     settings[key] = {}
                 settings = settings[key]
 
-            settings[keys[-1]] = value
+            old_value = settings.get(keys[-1])
+            if old_value == value:
+                return False
 
-            if "appearance.colors" in key_path:
-                _debug(f"设置完成: {key_path} = {value}")
+            settings[keys[-1]] = value
+            self._dirty_keys.add(key_path)
+
+            if key_path == "appearance.theme" or key_path == "appearance.preset_theme":
+                _debug(f"设置主题变更: {key_path}: {old_value} -> {value}")
+            elif key_path.startswith("appearance.colors."):
+                _debug(f"设置颜色变更: {key_path}: {old_value} -> {value}")
 
             # 只有显式要求时才自动保存，但使用延迟合并写盘避免高频 I/O
             if auto_save:
                 self.schedule_save()
+
+            return True
     
     def _merge_settings(self, default, loaded):
         base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color", "custom_design_color"]
@@ -568,6 +594,7 @@ class SettingsManager:
     def reset_to_defaults(self):
         with self._settings_lock:
             self.settings = self._create_default_settings_copy()
+            self._dirty_keys.add("__reset_to_defaults__")
             self._save_pending = True
 
     def get_color_from_file(self, color_key, default=None):
