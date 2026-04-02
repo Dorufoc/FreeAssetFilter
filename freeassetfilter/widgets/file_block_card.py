@@ -17,6 +17,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 
 import os
+import weakref
 
 from PySide6.QtWidgets import QWidget, QSizePolicy, QApplication, QLabel
 from PySide6.QtCore import (
@@ -86,6 +87,8 @@ class FileBlockCard(QWidget):
 
     _icon_cache = {}
     _font_family_cache = None
+    _deferred_icon_queue = []
+    _deferred_icon_timer = None
 
     @classmethod
     def _clear_shared_caches(cls, file_path=None):
@@ -122,6 +125,75 @@ class FileBlockCard(QWidget):
 
         cls._font_family_cache = ""
         return cls._font_family_cache
+
+    @classmethod
+    def _ensure_deferred_icon_timer(cls):
+        timer = cls._deferred_icon_timer
+        if timer is not None:
+            return timer
+
+        app = QApplication.instance()
+        if app is None:
+            return None
+
+        timer = QTimer(app)
+        timer.setSingleShot(True)
+        timer.timeout.connect(cls._process_deferred_icon_updates)
+        cls._deferred_icon_timer = timer
+        return timer
+
+    @classmethod
+    def _process_deferred_icon_updates(cls):
+        processed = 0
+        max_batch = 4
+
+        while cls._deferred_icon_queue and processed < max_batch:
+            ref = cls._deferred_icon_queue.pop(0)
+            card = ref() if ref else None
+            if card is None:
+                continue
+            if not card.isVisible():
+                continue
+            try:
+                card._build_deferred_icon_now()
+            except RuntimeError:
+                continue
+            processed += 1
+
+        if cls._deferred_icon_queue:
+            timer = cls._ensure_deferred_icon_timer()
+            if timer is not None:
+                timer.start(0)
+
+    def _schedule_deferred_icon_update(self):
+        timer = self.__class__._ensure_deferred_icon_timer()
+        if timer is None:
+            self._build_deferred_icon_now()
+            return
+
+        self.__class__._deferred_icon_queue.append(weakref.ref(self))
+        if not timer.isActive():
+            timer.start(0)
+
+    def _build_deferred_icon_now(self):
+        cache_key = self._icon_cache_key
+        if cache_key is None:
+            return
+
+        cached = FileBlockCard._icon_cache.get(cache_key)
+        if cached is not None and not cached.isNull():
+            self._icon_pixmap = cached
+            self.update()
+            return
+
+        built_pixmap = self._build_icon_pixmap()
+        if self._icon_cache_key != cache_key:
+            return
+
+        self._icon_pixmap = built_pixmap
+        if not self._icon_pixmap.isNull():
+            FileBlockCard._icon_cache[cache_key] = self._icon_pixmap
+        self.update()
 
     @Property(QColor)
     def anim_bg_color(self):
@@ -767,7 +839,12 @@ class FileBlockCard(QWidget):
         self._is_previewing = False
         self._anim_bg_color = QColor(self._style_colors["normal_bg"])
         self._anim_border_color = QColor(self._style_colors["normal_border"])
-        self.set_file_info(file_info)
+
+        self.file_info = file_info
+        self._icon_cache_key = None
+        self._update_text_cache(force=True)
+        self._update_icon(force=False, defer_build=True)
+
         if flexible_width is not None:
             self.set_flexible_width(flexible_width)
         else:
@@ -1411,16 +1488,32 @@ class FileBlockCard(QWidget):
         fallback.fill(Qt.transparent)
         return fallback
 
-    def _update_icon(self, force=False):
+    def _update_icon(self, force=False, defer_build=False):
         file_path = self.file_info.get("path", "")
         suffix = self.file_info.get("suffix", "").lower()
         icon_size = int(38 * self.dpi_scale)
         device_pixel_ratio = round(self._get_device_pixel_ratio(), 4)
         icon_source_signature = self._build_icon_source_signature()
+
+        source_type = icon_source_signature[0] if icon_source_signature else "empty"
+        if source_type == "file_icon":
+            cache_identity = (
+                source_type,
+                self.file_info.get("is_dir", False),
+                suffix,
+                icon_source_signature,
+            )
+        else:
+            cache_identity = (
+                source_type,
+                os.path.normpath(file_path) if file_path else "",
+                self.file_info.get("is_dir", False),
+                suffix,
+                icon_source_signature,
+            )
+
         cache_key = (
-            file_path,
-            self.file_info.get("is_dir", False),
-            suffix,
+            cache_identity,
             icon_size,
             self.dpi_scale,
             device_pixel_ratio,
@@ -1429,7 +1522,6 @@ class FileBlockCard(QWidget):
             self.normal_color,
             self.accent_color,
             self.secondary_color,
-            icon_source_signature,
         )
 
         if not force and self._icon_cache_key == cache_key and not self._icon_pixmap.isNull():
@@ -1439,6 +1531,12 @@ class FileBlockCard(QWidget):
         cached = FileBlockCard._icon_cache.get(cache_key)
         if cached is not None and not cached.isNull():
             self._icon_pixmap = cached
+            return
+
+        if defer_build:
+            self._icon_pixmap = QPixmap(icon_size, icon_size)
+            self._icon_pixmap.fill(Qt.transparent)
+            self._schedule_deferred_icon_update()
             return
 
         self._icon_pixmap = self._build_icon_pixmap()

@@ -8,13 +8,18 @@ use std::ffi::{CStr, CString};
 use std::fs;
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 
 const DEFAULT_MAX_MEMORY_BYTES: usize = 200 * 1024 * 1024;
 const DEFAULT_K: usize = 2;
+const FFPROBE_TIMEOUT_SECS: u64 = 8;
+const FFMPEG_TIMEOUT_SECS: u64 = 20;
+const MAX_CONCURRENT_HW_VIDEO_DECODES: usize = 1;
 
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARG: i32 = -1;
@@ -236,6 +241,39 @@ struct FrameExtractResult {
     software_fallback: bool,
 }
 
+struct HwDecodePermit {
+    acquired: bool,
+}
+
+impl HwDecodePermit {
+    fn try_acquire() -> Self {
+        loop {
+            let current = HW_VIDEO_DECODE_SLOTS.load(Ordering::Acquire);
+            if current >= MAX_CONCURRENT_HW_VIDEO_DECODES {
+                return Self { acquired: false };
+            }
+            if HW_VIDEO_DECODE_SLOTS
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Self { acquired: true };
+            }
+        }
+    }
+
+    fn acquired(&self) -> bool {
+        self.acquired
+    }
+}
+
+impl Drop for HwDecodePermit {
+    fn drop(&mut self) {
+        if self.acquired {
+            HW_VIDEO_DECODE_SLOTS.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
 fn decode_with_image_crate(path: &str, width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), i32> {
     let input = image::open(path).map_err(|_| STATUS_DECODE_FAILED)?;
     let resized = input.thumbnail(width, height).to_rgba8();
@@ -311,13 +349,34 @@ fn ffmpeg_path() -> Result<PathBuf, i32> {
     resolve_tool_path("ffmpeg.exe").ok_or(STATUS_INTERNAL)
 }
 
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = command.spawn()?;
+    let start = Instant::now();
+
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output();
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            return child.wait_with_output();
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn run_ffprobe_basic_info(path: &str) -> VideoProbeInfo {
     let ffprobe = match ffprobe_path() {
         Ok(p) => p,
         Err(_) => return VideoProbeInfo::default(),
     };
 
-    let output = Command::new(ffprobe)
+    let mut command = Command::new(ffprobe);
+    command
         .arg("-v")
         .arg("error")
         .arg("-select_streams")
@@ -326,10 +385,9 @@ fn run_ffprobe_basic_info(path: &str) -> VideoProbeInfo {
         .arg("format=duration")
         .arg("-of")
         .arg("default=noprint_wrappers=1:nokey=0")
-        .arg(path)
-        .output();
+        .arg(path);
 
-    let output = match output {
+    let output = match run_command_with_timeout(command, Duration::from_secs(FFPROBE_TIMEOUT_SECS)) {
         Ok(o) if o.status.success() => o,
         _ => return VideoProbeInfo::default(),
     };
@@ -468,7 +526,7 @@ fn try_extract_frame_with_ffmpeg(
     command.arg("-f").arg("image2pipe");
     command.arg("pipe:1");
 
-    let output = command.output().ok()?;
+    let output = run_command_with_timeout(command, Duration::from_secs(FFMPEG_TIMEOUT_SECS)).ok()?;
     if !output.status.success() || output.stdout.is_empty() {
         return None;
     }
@@ -503,26 +561,30 @@ fn try_extract_frame_with_ffmpeg(
 fn extract_best_video_frame_jpeg(path: &str, width: u32, height: u32) -> Result<FrameExtractResult, i32> {
     let info = run_ffprobe_basic_info(path);
     let seek_candidates = build_seek_candidates(&info);
+    let hw_permit = HwDecodePermit::try_acquire();
+    let allow_hw = hw_permit.acquired();
 
     for seek_time in seek_candidates {
         let mut had_hw_attempt = false;
 
-        for accel in [Some("d3d11va"), Some("dxva2"), Some("qsv")] {
-            had_hw_attempt = true;
-            if let Some(result) = try_extract_frame_with_ffmpeg(path, seek_time, width, height, accel, false) {
-                if !result.bytes.is_empty() {
-                    eprintln!(
-                        "[thumbnail_generator] decode path file={} mode={} verified_hw={}",
-                        path,
-                        result.mode.as_deref().unwrap_or("software"),
-                        result.verified_hw
-                    );
-                    return Ok(result);
+        if allow_hw {
+            for accel in [Some("d3d11va"), Some("dxva2"), Some("qsv")] {
+                had_hw_attempt = true;
+                if let Some(result) = try_extract_frame_with_ffmpeg(path, seek_time, width, height, accel, false) {
+                    if !result.bytes.is_empty() {
+                        eprintln!(
+                            "[thumbnail_generator] decode path file={} mode={} verified_hw={}",
+                            path,
+                            result.mode.as_deref().unwrap_or("software"),
+                            result.verified_hw
+                        );
+                        return Ok(result);
+                    }
                 }
             }
         }
 
-        if let Some(result) = try_extract_frame_with_ffmpeg(path, seek_time, width, height, None, had_hw_attempt) {
+        if let Some(result) = try_extract_frame_with_ffmpeg(path, seek_time, width, height, None, had_hw_attempt || !allow_hw) {
             if !result.bytes.is_empty() {
                 eprintln!(
                     "[thumbnail_generator] decode path file={} mode={} verified_hw={} software_fallback={}",
@@ -599,6 +661,7 @@ fn generate_jpeg_bytes(path: &str, width: u32, height: u32) -> Result<Vec<u8>, i
 
 static ENGINE: Lazy<Mutex<NativeEngine>> = Lazy::new(|| Mutex::new(NativeEngine::new()));
 static DECODE_STATS: Lazy<Mutex<DecodeStats>> = Lazy::new(|| Mutex::new(DecodeStats::default()));
+static HW_VIDEO_DECODE_SLOTS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
 
 fn c_message(msg: &str) -> *mut c_char {
     CString::new(msg)

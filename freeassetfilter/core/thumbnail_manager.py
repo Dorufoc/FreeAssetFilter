@@ -17,7 +17,10 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 
 import os
+import sys
+import subprocess
 import hashlib
+import json
 import threading
 import time
 from collections import deque
@@ -173,6 +176,9 @@ class ThumbnailManager:
     
     # 视频处理超时时间（秒）
     VIDEO_PROCESSING_TIMEOUT = 30
+    BATCH_VIDEO_SUBPROCESS_TIMEOUT = 45
+    FFPROBE_TIMEOUT = 8
+    FFMPEG_SOFT_TIMEOUT = 12
 
     # 缩略图磁盘缓存限制
     MAX_THUMB_CACHE_SIZE = 500 * 1024 * 1024  # 500MB
@@ -239,8 +245,10 @@ class ThumbnailManager:
         self._processing_videos: Set[str] = set()
         self._processing_lock = threading.Lock()
         
-        # 并发控制信号量
-        self._video_semaphore = threading.Semaphore(3)
+        # 进程内直连视频解码限流：
+        # 批量模式下的视频任务已经通过“1条硬解队列 + 2条软解队列 + 子进程隔离”调度，
+        # 这里仅限制非批量直连路径，避免同一进程内过多软解任务争抢资源。
+        self._video_semaphore = threading.Semaphore(1)
         
         debug(f"[ThumbnailManager] 初始化完成，缩略图目录: {self._thumb_dir}")
     
@@ -505,9 +513,9 @@ class ThumbnailManager:
             # 回退到 Python 实现
             if result is None:
                 if self.is_image_file(file_path):
-                    result = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
+                    result = self._create_image_thumbnail(file_path, thumbnail_path)
                 elif self.is_video_file(file_path):
-                    result = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
+                    result = self._create_video_thumbnail(file_path, thumbnail_path)
                 else:
                     result = None
 
@@ -549,13 +557,15 @@ class ThumbnailManager:
 
         queue_limits = {
             "native_image": max(1, min(self.NATIVE_BATCH_WORKERS_IMAGE, max(1, (os.cpu_count() or 4) // 2))),
-            "native_video": max(1, min(self.NATIVE_BATCH_WORKERS_VIDEO, max(1, (os.cpu_count() or 4) // 3))),
+            # 视频任务改为 1 条原生队列（硬解优先）+ 2 条 FFmpeg 软解 worker。
+            "native_video": 1,
             "python_image": max(1, min(2, (os.cpu_count() or 4) // 2 or 1)),
-            "python_video": max(1, min(3, max(1, (os.cpu_count() or 4) // 2))),
+            "python_video": 2,
         }
         queue_batch_sizes = {
             "native_image": max(4, self.NATIVE_BATCH_SIZE_IMAGE),
-            "native_video": max(2, self.NATIVE_BATCH_SIZE_VIDEO),
+            # 视频任务保持单文件粒度，确保单个坏文件可被独立超时并跳过。
+            "native_video": 1,
             "python_image": 1,
             "python_video": 1,
         }
@@ -590,13 +600,15 @@ class ThumbnailManager:
                     if result_path is None:
                         result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
                 elif queue_name == "native_video":
-                    result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
-                    if result_path is None:
-                        result_path = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
+                    result_path = self._create_video_thumbnail_batch_safe(
+                        file_path, thumbnail_path, legacy_thumbnail_path, prefer_native=True
+                    )
                 elif queue_name == "python_image":
                     result_path = self._create_image_thumbnail(file_path, thumbnail_path)
                 elif queue_name == "python_video":
-                    result_path = self._create_video_thumbnail(file_path, thumbnail_path)
+                    result_path = self._create_video_thumbnail_batch_safe(
+                        file_path, thumbnail_path, legacy_thumbnail_path, prefer_native=False
+                    )
 
                 success = bool(result_path and os.path.exists(result_path))
                 if success:
@@ -642,7 +654,7 @@ class ThumbnailManager:
                         result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
                         if result_path is None:
                             if queue_name == "native_video":
-                                result_path = self._create_video_thumbnail(file_path, legacy_thumbnail_path)
+                                result_path = self._create_video_thumbnail_ffmpeg(file_path, thumbnail_path)
                             else:
                                 result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
 
@@ -658,6 +670,7 @@ class ThumbnailManager:
             duration = time.perf_counter() - start_time
             return queue_name, outputs, duration
 
+        info(f"[ThumbnailManager] 开始批量生成缩略图，总任务数: {total_count}")
         for file_data in files_to_generate:
             if cancel_check and cancel_check():
                 break
@@ -698,7 +711,12 @@ class ThumbnailManager:
 
             if is_video_file:
                 if self._rust_bridge.available:
-                    task_queues["native_video"].append(item)
+                    native_load = len(task_queues["native_video"]) / max(1, queue_limits["native_video"])
+                    python_load = len(task_queues["python_video"]) / max(1, queue_limits["python_video"])
+                    if native_load <= python_load:
+                        task_queues["native_video"].append(item)
+                    else:
+                        task_queues["python_video"].append(item)
                 else:
                     task_queues["python_video"].append(item)
             elif self._rust_bridge.available and not use_python_dedicated:
@@ -726,18 +744,56 @@ class ThumbnailManager:
 
                 score = ((backlog * batch_size) / (active + 1)) * (1.0 + min(avg_duration, 5.0))
 
+                if name in ("native_video", "python_video"):
+                    score *= 1.25
+
                 if candidate_score is None or score > candidate_score:
                     candidate_name = name
                     candidate_score = score
 
             return candidate_name
 
+        info(
+            "[ThumbnailManager] 批量任务队列统计："
+            f"native_video={len(task_queues['native_video'])}, "
+            f"python_video={len(task_queues['python_video'])}, "
+            f"native_image={len(task_queues['native_image'])}, "
+            f"python_image={len(task_queues['python_image'])}, "
+            "video_mode=1_hw_queue+2_sw_workers"
+        )
+
         max_workers = sum(queue_limits.values())
         future_to_queue = {}
+        cancelled = False
 
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="thumb_batch") as executor:
+        def _consume_completed_futures(done_futures) -> None:
+            nonlocal success_count, processed_count
+
+            for future in done_futures:
+                queue_name = future_to_queue.pop(future, None)
+                if queue_name is not None and queue_active_counts[queue_name] > 0:
+                    queue_active_counts[queue_name] -= 1
+
+                try:
+                    result_queue_name, result_items, duration = future.result()
+                    prev_avg = queue_avg_duration[result_queue_name]
+                    queue_avg_duration[result_queue_name] = prev_avg * 0.7 + duration * 0.3
+                except Exception:
+                    result_items = []
+
+                for item, success, result_path in result_items:
+                    if success:
+                        success_count += 1
+
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(processed_count, total_count, item["file_data"], success)
+
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="thumb_batch")
+        try:
             while True:
                 if cancel_check and cancel_check():
+                    cancelled = True
                     break
 
                 dispatched = False
@@ -755,8 +811,10 @@ class ThumbnailManager:
                         break
 
                     if queue_name.startswith("native_") and len(batch_items) > 1:
+                        debug(f"[ThumbnailManager] 提交原生批量任务: queue={queue_name}, batch_size={len(batch_items)}")
                         future = executor.submit(_run_native_batch_task, queue_name, batch_items)
                     else:
+                        debug(f"[ThumbnailManager] 提交单项任务: queue={queue_name}, file={batch_items[0]['file_path']}")
                         future = executor.submit(_run_single_task, queue_name, batch_items[0])
 
                     future_to_queue[future] = queue_name
@@ -774,52 +832,29 @@ class ThumbnailManager:
                 if not done:
                     continue
 
-                for future in done:
-                    queue_name = future_to_queue.pop(future, None)
-                    if queue_name is not None and queue_active_counts[queue_name] > 0:
-                        queue_active_counts[queue_name] -= 1
+                _consume_completed_futures(done)
 
-                    try:
-                        result_queue_name, result_items, duration = future.result()
-                        prev_avg = queue_avg_duration[result_queue_name]
-                        queue_avg_duration[result_queue_name] = prev_avg * 0.7 + duration * 0.3
-                    except Exception:
-                        result_queue_name = queue_name or "python_image"
-                        result_items = []
-                        duration = queue_avg_duration[result_queue_name]
+            if not cancelled:
+                while future_to_queue:
+                    done, _ = wait(list(future_to_queue.keys()), timeout=0.1, return_when=FIRST_COMPLETED)
+                    if not done:
+                        continue
+                    _consume_completed_futures(done)
+            else:
+                done_now = [future for future in list(future_to_queue.keys()) if future.done()]
+                if done_now:
+                    _consume_completed_futures(done_now)
+        finally:
+            if cancelled:
+                for future in list(future_to_queue.keys()):
+                    future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+            else:
+                executor.shutdown(wait=True)
 
-                    for item, success, result_path in result_items:
-                        if success:
-                            success_count += 1
-
-                        processed_count += 1
-                        if progress_callback:
-                            progress_callback(processed_count, total_count, item["file_data"], success)
-
-            while future_to_queue:
-                done, _ = wait(list(future_to_queue.keys()), timeout=0.1, return_when=FIRST_COMPLETED)
-                if not done:
-                    continue
-
-                for future in done:
-                    queue_name = future_to_queue.pop(future, None)
-                    if queue_name is not None and queue_active_counts[queue_name] > 0:
-                        queue_active_counts[queue_name] -= 1
-
-                    try:
-                        result_queue_name, result_items, duration = future.result()
-                        prev_avg = queue_avg_duration[result_queue_name]
-                        queue_avg_duration[result_queue_name] = prev_avg * 0.7 + duration * 0.3
-                    except Exception:
-                        result_items = []
-
-                    for item, success, result_path in result_items:
-                        if success:
-                            success_count += 1
-
-                        processed_count += 1
-                        if progress_callback:
-                            progress_callback(processed_count, total_count, item["file_data"], success)
+        info(
+            f"[ThumbnailManager] 批量缩略图生成结束: success={success_count}, processed={processed_count}, cancelled={cancelled}"
+        )
 
         if native_stats_enabled:
             stats = self._rust_bridge.get_decode_stats()
@@ -1096,139 +1131,373 @@ class ThumbnailManager:
     
     def _create_video_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """
-        为视频文件创建缩略图（优化版本）
-        
-        优化点：
-        1. 帧缓存机制 - 避免重复解码相同位置
-        2. 关键帧优先定位 - 提高定位速度
-        3. 限制重试次数 - 避免无限循环
-        4. 并发控制 - 限制同时处理的视频数量
-        5. 请求去重 - 避免同时处理同一个视频
-        
-        Args:
-            file_path: 视频文件路径
-            thumbnail_path: 缩略图保存路径
-            
-        Returns:
-            Optional[str]: 缩略图路径，失败返回None
+        为视频文件创建缩略图
+
+        优先使用 FFmpeg 软解抽帧生成缩略图，以获得更稳定的超时控制和更高的解码性能；
+        若 FFmpeg 不可用或抽帧失败，则回退到 OpenCV 兼容链路。
         """
-        if not CV2_AVAILABLE:
-            warning("[ThumbnailManager] OpenCV库未安装，无法生成视频缩略图")
-            return None
-        
-        if not PIL_AVAILABLE:
-            warning("[ThumbnailManager] PIL库未安装，无法生成视频缩略图")
-            return None
-        
         # 请求去重：检查是否已有相同视频正在处理
         if not self._try_acquire_video_lock(file_path):
             debug(f"[ThumbnailManager] 视频正在处理中，跳过重复请求: {file_path}")
             return None
-        
+
         try:
-            # 并发控制
             with self._video_semaphore:
-                return self._create_video_thumbnail_internal(file_path, thumbnail_path)
+                result = self._create_video_thumbnail_ffmpeg(file_path, thumbnail_path)
+                if result is not None:
+                    return result
+
+                if CV2_AVAILABLE and PIL_AVAILABLE:
+                    return self._create_video_thumbnail_internal(file_path, thumbnail_path)
+
+                if not CV2_AVAILABLE:
+                    warning("[ThumbnailManager] FFmpeg软解失败且OpenCV库未安装，无法回退生成视频缩略图")
+                elif not PIL_AVAILABLE:
+                    warning("[ThumbnailManager] FFmpeg软解失败且PIL库未安装，无法回退生成视频缩略图")
+                return None
         finally:
             self._release_video_lock(file_path)
-    
-    def _create_video_thumbnail_internal(self, file_path: str, thumbnail_path: str) -> Optional[str]:
-        """内部视频缩略图生成逻辑（带超时控制）"""
-        import concurrent.futures
 
-        def _process_video() -> Optional[str]:
-            cap = None
-            try:
-                cap = cv2.VideoCapture(file_path)
-                if not cap.isOpened():
-                    warning(f"[ThumbnailManager] 无法打开视频文件: {file_path}")
-                    return None
+    def _get_subprocess_creationflags(self) -> int:
+        """获取适用于当前平台的子进程创建标志"""
+        return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
-                # 获取视频信息
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                fps = cap.get(cv2.CAP_PROP_FPS)
+    def _get_video_duration_ffprobe(self, file_path: str) -> Optional[float]:
+        """使用 ffprobe 获取视频时长（秒）"""
+        command = [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "format=duration:stream=codec_type,duration",
+            "-show_streams",
+            file_path,
+        ]
 
-                # 获取帧缓存
-                frame_cache = self._get_or_create_frame_cache(file_path)
-
-                frame = None
-                cached_positions = []
-
-                # 定义读取策略（按优先级排序）
-                strategies = []
-
-                # 策略1: 优先读取第240帧（跳过可能损坏的开头）
-                if total_frames > 240:
-                    strategies.append(('frame', 240))
-
-                # 策略2: 读取50%相对位置
-                if total_frames > 0:
-                    strategies.append(('ratio', 0.5))
-
-                # 策略3: 读取第2帧
-                strategies.append(('frame', 2))
-
-                # 策略4: 读取第1帧
-                strategies.append(('frame', 1))
-
-                # 策略5: 尝试其他相对位置
-                for ratio in [0.03, 0.1, 0.7, 0.9]:
-                    strategies.append(('ratio', ratio))
-
-                # 执行策略
-                for strategy_type, position in strategies:
-                    # 检查缓存
-                    cache_key = int(position * 1000) if strategy_type == 'ratio' else position
-                    cached_frame = frame_cache.get(cache_key)
-                    if cached_frame is not None:
-                        frame = cached_frame
-                        cached_positions.append(cache_key)
-                        debug(f"[ThumbnailManager] 使用缓存帧 (位置: {position})")
-                        break
-
-                    # 读取新帧
-                    if strategy_type == 'ratio':
-                        frame = self._read_frame_with_retry(cap, position, use_keyframe=False)
-                    else:
-                        frame = self._read_frame_with_retry(cap, position, use_keyframe=True)
-
-                    if frame is not None:
-                        # 缓存成功读取的帧
-                        frame_cache.put(cache_key, frame)
-                        break
-
-                if frame is None:
-                    warning(f"[ThumbnailManager] 无法从视频中读取有效帧: {file_path}")
-                    return None
-
-                # 处理并保存帧
-                return self._process_and_save_video_frame(frame, thumbnail_path)
-
-            except Exception as e:
-                error(f"[ThumbnailManager] 生成视频缩略图失败: {file_path}, 错误: {e}")
-                return None
-            finally:
-                # 确保VideoCapture对象被释放
-                if cap is not None:
-                    try:
-                        cap.release()
-                    except Exception:
-                        pass
-                # 强制垃圾回收以释放内存
-                import gc
-                gc.collect()
-
-        # 使用超时控制执行视频处理
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_process_video)
-                return future.result(timeout=self.VIDEO_PROCESSING_TIMEOUT)
-        except concurrent.futures.TimeoutError:
-            warning(f"[ThumbnailManager] 视频处理超时 ({self.VIDEO_PROCESSING_TIMEOUT}秒): {file_path}")
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.FFPROBE_TIMEOUT,
+                creationflags=self._get_subprocess_creationflags(),
+            )
+        except FileNotFoundError:
+            warning("[ThumbnailManager] 未找到 ffprobe，可用性受限")
+            return None
+        except subprocess.TimeoutExpired:
+            debug(f"[ThumbnailManager] ffprobe 获取视频时长超时: {file_path}")
             return None
         except Exception as e:
-            error(f"[ThumbnailManager] 视频处理异常: {file_path}, 错误: {e}")
+            debug(f"[ThumbnailManager] ffprobe 获取视频时长失败: {file_path}, 错误: {e}")
             return None
+
+        if completed.returncode != 0:
+            stderr_text = (completed.stderr or "").strip()
+            if stderr_text:
+                debug(f"[ThumbnailManager] ffprobe 异常输出: {stderr_text}")
+            return None
+
+        try:
+            payload = json.loads(completed.stdout or "{}")
+        except Exception:
+            return None
+
+        duration_candidates: List[float] = []
+
+        format_info = payload.get("format") or {}
+        format_duration = format_info.get("duration")
+        if format_duration is not None:
+            try:
+                duration_candidates.append(float(format_duration))
+            except (TypeError, ValueError):
+                pass
+
+        for stream in payload.get("streams") or []:
+            if stream.get("codec_type") != "video":
+                continue
+            stream_duration = stream.get("duration")
+            if stream_duration is None:
+                continue
+            try:
+                duration_candidates.append(float(stream_duration))
+            except (TypeError, ValueError):
+                continue
+
+        duration_candidates = [value for value in duration_candidates if value > 0]
+        if not duration_candidates:
+            return None
+
+        return max(duration_candidates)
+
+    def _get_ffmpeg_seek_candidates(self, file_path: str) -> List[float]:
+        """生成 FFmpeg 抽帧的候选时间点（秒）"""
+        duration = self._get_video_duration_ffprobe(file_path)
+        if duration is None or duration <= 0:
+            return [0.0]
+
+        base_ratios = [0.15, 0.5, 0.03, 0.75, 0.9, 0.0]
+        candidates: List[float] = []
+        max_seek = max(0.0, duration - 0.05)
+
+        for ratio in base_ratios:
+            seek_seconds = duration * ratio
+            seek_seconds = min(max(seek_seconds, 0.0), max_seek)
+            seek_seconds = round(seek_seconds, 3)
+
+            if any(abs(existing - seek_seconds) < 0.05 for existing in candidates):
+                continue
+            candidates.append(seek_seconds)
+
+        if not candidates:
+            return [0.0]
+        return candidates
+
+    def _create_video_thumbnail_ffmpeg(self, file_path: str, thumbnail_path: str) -> Optional[str]:
+        """使用 FFmpeg 软解抽帧生成视频缩略图"""
+        dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
+        temp_output_path = f"{thumbnail_path}.ffmpeg.tmp.jpg"
+        scale_filter = f"scale={dpi_scaled_size}:{dpi_scaled_size}:force_original_aspect_ratio=decrease:flags=lanczos"
+
+        seek_candidates = self._get_ffmpeg_seek_candidates(file_path)
+
+        for seek_seconds in seek_candidates:
+            try:
+                if os.path.exists(temp_output_path):
+                    os.remove(temp_output_path)
+            except Exception:
+                pass
+
+            command = [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-threads",
+                "0",
+            ]
+
+            if seek_seconds > 0:
+                command.extend(["-ss", f"{seek_seconds:.3f}"])
+
+            command.extend([
+                "-i",
+                file_path,
+                "-map",
+                "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
+                "-frames:v",
+                "1",
+                "-vf",
+                scale_filter,
+                "-q:v",
+                "4",
+                temp_output_path,
+            ])
+
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.FFMPEG_SOFT_TIMEOUT,
+                    creationflags=self._get_subprocess_creationflags(),
+                )
+            except FileNotFoundError:
+                warning("[ThumbnailManager] 未找到 ffmpeg，无法执行软解缩略图生成")
+                return None
+            except subprocess.TimeoutExpired:
+                debug(
+                    f"[ThumbnailManager] FFmpeg软解抽帧超时: {file_path}, "
+                    f"seek={seek_seconds:.3f}s"
+                )
+                continue
+            except Exception as e:
+                debug(
+                    f"[ThumbnailManager] FFmpeg软解抽帧失败: {file_path}, "
+                    f"seek={seek_seconds:.3f}s, 错误: {e}"
+                )
+                continue
+
+            if completed.returncode == 0 and os.path.exists(temp_output_path) and os.path.getsize(temp_output_path) > 0:
+                try:
+                    os.replace(temp_output_path, thumbnail_path)
+                    debug(
+                        f"[ThumbnailManager] FFmpeg软解缩略图生成成功: {thumbnail_path}, "
+                        f"seek={seek_seconds:.3f}s"
+                    )
+                    return thumbnail_path
+                except Exception as e:
+                    debug(f"[ThumbnailManager] FFmpeg缩略图落盘失败: {thumbnail_path}, 错误: {e}")
+            else:
+                stderr_text = (completed.stderr or "").strip()
+                if stderr_text:
+                    debug(
+                        f"[ThumbnailManager] FFmpeg软解尝试失败: {file_path}, "
+                        f"seek={seek_seconds:.3f}s, stderr={stderr_text}"
+                    )
+
+        try:
+            if os.path.exists(temp_output_path):
+                os.remove(temp_output_path)
+        except Exception:
+            pass
+
+        warning(f"[ThumbnailManager] FFmpeg软解未能生成视频缩略图: {file_path}")
+        return None
+
+    def _create_video_thumbnail_batch_safe(
+        self,
+        file_path: str,
+        thumbnail_path: str,
+        legacy_thumbnail_path: str,
+        prefer_native: bool = True
+    ) -> Optional[str]:
+        """批量模式下的视频缩略图生成入口
+
+        通过独立子进程隔离底层阻塞风险：
+        - 硬解队列：子进程内走 Rust 原生链路，失败后回退 FFmpeg 软解；
+        - 软解队列：子进程内强制走 FFmpeg 软解；
+        - 父进程使用真实超时控制；
+        - 超时后直接跳过当前文件，避免整个批量任务被卡死。
+        """
+        timeout = max(int(self.BATCH_VIDEO_SUBPROCESS_TIMEOUT), int(self.VIDEO_PROCESSING_TIMEOUT) + 5)
+        project_root = str(Path(__file__).resolve().parents[2])
+
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "from freeassetfilter.core.thumbnail_manager import _run_batch_video_thumbnail_subprocess; "
+                "sys.exit(_run_batch_video_thumbnail_subprocess("
+                "sys.argv[1], float(sys.argv[2]), sys.argv[3].lower() in ('1', 'true', 'yes')"
+                "))"
+            ),
+            file_path,
+            str(float(self.dpi_scale)),
+            "1" if prefer_native else "0",
+        ]
+
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=project_root,
+                creationflags=self._get_subprocess_creationflags(),
+            )
+        except subprocess.TimeoutExpired:
+            warning(f"[ThumbnailManager] 视频缩略图生成超时，已跳过: {file_path}")
+            return None
+        except Exception as e:
+            warning(f"[ThumbnailManager] 启动视频缩略图子进程失败，已跳过: {file_path}, 错误: {e}")
+            return None
+
+        if completed.returncode == 0:
+            if os.path.exists(thumbnail_path):
+                return thumbnail_path
+            if os.path.exists(legacy_thumbnail_path):
+                return legacy_thumbnail_path
+
+        stderr_text = (completed.stderr or "").strip()
+        if stderr_text:
+            debug(f"[ThumbnailManager] 视频缩略图子进程异常输出: {stderr_text}")
+
+        return None
+    
+    def _create_video_thumbnail_internal(self, file_path: str, thumbnail_path: str) -> Optional[str]:
+        """内部视频缩略图生成逻辑
+
+        说明：
+        这里不再使用嵌套 ThreadPoolExecutor + future.result(timeout) 作为“超时控制”。
+        因为一旦 OpenCV 底层调用阻塞，future 超时后 executor 退出时仍会等待内部线程结束，
+        实际上无法真正打断阻塞，反而会把外层批处理线程一起卡住。
+        """
+        cap = None
+        try:
+            cap = cv2.VideoCapture(file_path)
+            if not cap.isOpened():
+                warning(f"[ThumbnailManager] 无法打开视频文件: {file_path}")
+                return None
+
+            # 获取视频信息
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            # 获取帧缓存
+            frame_cache = self._get_or_create_frame_cache(file_path)
+
+            frame = None
+
+            # 定义读取策略（按优先级排序）
+            strategies = []
+
+            # 策略1: 优先读取第240帧（跳过可能损坏的开头）
+            if total_frames > 240:
+                strategies.append(('frame', 240))
+
+            # 策略2: 读取50%相对位置
+            if total_frames > 0:
+                strategies.append(('ratio', 0.5))
+
+            # 策略3: 读取第2帧
+            strategies.append(('frame', 2))
+
+            # 策略4: 读取第1帧
+            strategies.append(('frame', 1))
+
+            # 策略5: 尝试其他相对位置
+            for ratio in [0.03, 0.1, 0.7, 0.9]:
+                strategies.append(('ratio', ratio))
+
+            # 执行策略
+            for strategy_type, position in strategies:
+                # 检查缓存
+                cache_key = int(position * 1000) if strategy_type == 'ratio' else position
+                cached_frame = frame_cache.get(cache_key)
+                if cached_frame is not None:
+                    frame = cached_frame
+                    debug(f"[ThumbnailManager] 使用缓存帧 (位置: {position})")
+                    break
+
+                # 读取新帧
+                if strategy_type == 'ratio':
+                    frame = self._read_frame_with_retry(cap, position, use_keyframe=False)
+                else:
+                    frame = self._read_frame_with_retry(cap, position, use_keyframe=True)
+
+                if frame is not None:
+                    # 缓存成功读取的帧
+                    frame_cache.put(cache_key, frame)
+                    break
+
+            if frame is None:
+                warning(f"[ThumbnailManager] 无法从视频中读取有效帧: {file_path}")
+                return None
+
+            # 处理并保存帧
+            return self._process_and_save_video_frame(frame, thumbnail_path)
+
+        except Exception as e:
+            error(f"[ThumbnailManager] 生成视频缩略图失败: {file_path}, 错误: {e}")
+            return None
+        finally:
+            # 确保VideoCapture对象被释放
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            # 强制垃圾回收以释放内存
+            import gc
+            gc.collect()
     
     def _process_and_save_video_frame(self, frame, thumbnail_path: str) -> Optional[str]:
         """
@@ -1797,6 +2066,27 @@ class ThumbnailManager:
             "oldest_file_time": oldest_time,
             "newest_file_time": newest_time,
         }
+
+
+def _run_batch_video_thumbnail_subprocess(file_path: str, dpi_scale: float, prefer_native: bool = True) -> int:
+    """批量视频缩略图子进程入口"""
+    try:
+        manager = get_thumbnail_manager(dpi_scale)
+        thumbnail_path = manager.get_thumbnail_path(file_path)
+        legacy_thumbnail_path = manager.get_legacy_thumbnail_path(file_path)
+
+        result = None
+        if prefer_native:
+            result = manager._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+
+        if result is None:
+            result = manager._create_video_thumbnail_ffmpeg(file_path, thumbnail_path)
+
+        if result and os.path.exists(result):
+            return 0
+        return 2
+    except Exception:
+        return 1
 
 
 # 全局缩略图管理器实例

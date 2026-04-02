@@ -19,6 +19,7 @@ import sys
 import os
 import re
 import json
+from collections import deque
 from datetime import datetime
 
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
@@ -192,6 +193,7 @@ class CustomFileSelector(QWidget):
         self._fixed_max_cols = 2
         self._fixed_card_width = None
         self._current_render_range = (0, 0)
+        self._is_loading = False
 
         self._viewport_update_timer = QTimer(self)
         self._viewport_update_timer.setSingleShot(True)
@@ -202,6 +204,13 @@ class CustomFileSelector(QWidget):
         self._scrollbar_check_timer.setSingleShot(True)
         self._scrollbar_check_timer.setInterval(80)
         self._scrollbar_check_timer.timeout.connect(self._run_scrollbar_check)
+
+        self._background_prewarm_queue = deque()
+        self._background_prewarm_timer = QTimer(self)
+        self._background_prewarm_timer.setSingleShot(True)
+        self._background_prewarm_timer.setInterval(120)
+        self._background_prewarm_timer.timeout.connect(self._process_background_prewarm)
+        self._background_prewarm_card = None
         
         # 首次显示标志位，用于避免初始化时卡片重叠
         self._first_show = True
@@ -766,7 +775,6 @@ class CustomFileSelector(QWidget):
             is_canceled = True
             if hasattr(self, '_thumbnail_thread') and self._thumbnail_thread.isRunning():
                 self._thumbnail_thread.cancel()
-                self._thumbnail_thread.wait()
             progress_msg.close()
 
         progress_msg.buttonClicked.connect(on_cancel_clicked)
@@ -1804,39 +1812,46 @@ class CustomFileSelector(QWidget):
             callback (callable, optional): 文件卡片生成完成后的回调函数
             scroll_to_top (bool, optional): 是否滚动到顶端，默认为True
         """
-        self.path_edit.setText(self.current_path)
-        self._update_drive_selector()
-        self._clear_files_layout()
+        self._is_loading = True
+        try:
+            self.path_edit.setText(self.current_path)
+            self._update_drive_selector()
+            self._clear_files_layout()
 
-        files = self._get_files()
-        files = self._sort_files(files)
-        files = self._filter_files(files)
+            files = self._get_files()
+            files = self._sort_files(files)
+            files = self._filter_files(files)
 
-        self._virtual_files = files
-        self._all_files_count = len(files)
-        self._file_index_map = {
-            os.path.normpath(file_info["path"]): index
-            for index, file_info in enumerate(files)
-        }
-        self._refresh_callback = callback
-        self._fixed_max_cols = self._calculate_max_columns()
-        self._fixed_card_width = self._calculate_card_width()
+            self._virtual_files = files
+            self._all_files_count = len(files)
+            self._file_index_map = {
+                os.path.normpath(file_info["path"]): index
+                for index, file_info in enumerate(files)
+            }
+            self._refresh_callback = callback
+            self._fixed_max_cols = self._calculate_max_columns()
+            self._fixed_card_width = self._calculate_card_width()
 
-        total_height = self._get_total_content_height()
-        self.files_container.setMinimumHeight(total_height)
-        self.files_container.resize(max(self.files_container.width(), 1), total_height)
+            total_height = self._get_total_content_height()
+            self.files_container.setMinimumHeight(total_height)
+            self.files_container.resize(max(self.files_container.width(), 1), total_height)
 
-        if scroll_to_top and hasattr(self, 'files_scroll_area'):
-            scroll_area = self.files_scroll_area
-            if scroll_area:
-                scrollbar = scroll_area.verticalScrollBar()
-                scrollbar.setValue(0)
+            if scroll_to_top and hasattr(self, 'files_scroll_area'):
+                scroll_area = self.files_scroll_area
+                if scroll_area:
+                    scrollbar = scroll_area.verticalScrollBar()
+                    scrollbar.setValue(0)
 
-        self._update_virtual_viewport(force=True)
+            self._update_virtual_viewport(force=True)
+            self._trigger_scrollbar_check()
+            self._rebuild_background_prewarm_queue()
+            self._schedule_background_prewarm()
 
-        if callback:
-            callback()
-            self._refresh_callback = None
+            if callback:
+                callback()
+                self._refresh_callback = None
+        finally:
+            self._is_loading = False
 
     def _refresh_file_list(self):
         """
@@ -1865,9 +1880,10 @@ class CustomFileSelector(QWidget):
                 immediate_update_needed = target_start < current_start or target_end > current_end
 
         if immediate_update_needed:
+            self._viewport_update_timer.stop()
             self._update_virtual_viewport()
-
-        self._viewport_update_timer.start()
+        else:
+            self._viewport_update_timer.start()
 
     def _load_remaining_on_scroll(self):
         self._update_virtual_viewport()
@@ -1878,6 +1894,8 @@ class CustomFileSelector(QWidget):
         """
         self.resize_timer.stop()
         self._viewport_update_timer.stop()
+        self._background_prewarm_timer.stop()
+        self._background_prewarm_queue.clear()
 
         for index in list(self._visible_cards.keys()):
             self._release_card(index)
@@ -1923,6 +1941,77 @@ class CustomFileSelector(QWidget):
         scrollbar = scroll_area.verticalScrollBar()
         if isinstance(scrollbar, D_ScrollBar):
             scrollbar._check_and_update_width()
+
+    def _get_background_prewarm_card(self):
+        if self._background_prewarm_card is None:
+            warmup_file_info = {
+                "name": "",
+                "path": "",
+                "is_dir": False,
+                "size": 0,
+                "created": "",
+                "suffix": "",
+            }
+            self._background_prewarm_card = FileBlockCard(warmup_file_info, dpi_scale=self.dpi_scale, parent=None)
+            self._background_prewarm_card.hide()
+        return self._background_prewarm_card
+
+    def _rebuild_background_prewarm_queue(self):
+        self._background_prewarm_queue.clear()
+
+        if self._all_files_count <= 0:
+            return
+
+        start_index, end_index = self._current_render_range
+        left_index = start_index - 1
+        right_index = end_index
+
+        while right_index < self._all_files_count or left_index >= 0:
+            if right_index < self._all_files_count:
+                self._background_prewarm_queue.append(right_index)
+                right_index += 1
+            if left_index >= 0:
+                self._background_prewarm_queue.append(left_index)
+                left_index -= 1
+
+    def _schedule_background_prewarm(self):
+        if not self.isVisible():
+            return
+        if not self._background_prewarm_queue:
+            return
+        if not self._background_prewarm_timer.isActive():
+            self._background_prewarm_timer.start()
+
+    def _process_background_prewarm(self):
+        if not self.isVisible():
+            return
+
+        if not self._virtual_files or not self._background_prewarm_queue:
+            return
+
+        start_index, end_index = self._current_render_range
+        prewarm_card = self._get_background_prewarm_card()
+        processed = 0
+        max_per_tick = 1
+
+        while self._background_prewarm_queue and processed < max_per_tick:
+            index = self._background_prewarm_queue.popleft()
+            if start_index <= index < end_index:
+                continue
+            if index < 0 or index >= len(self._virtual_files):
+                continue
+
+            file_info = self._virtual_files[index]
+            try:
+                prewarm_card.set_file_info(file_info)
+            except RuntimeError:
+                self._background_prewarm_card = None
+                prewarm_card = self._get_background_prewarm_card()
+                prewarm_card.set_file_info(file_info)
+            processed += 1
+
+        if self._background_prewarm_queue:
+            self._background_prewarm_timer.start()
     
     def _get_files(self):
         """
@@ -2291,11 +2380,26 @@ class CustomFileSelector(QWidget):
 
         needed_indexes = set(range(start_index, end_index))
         current_indexes = set(self._visible_cards.keys())
+        indexes_to_release = current_indexes - needed_indexes
+        indexes_to_add = needed_indexes - current_indexes
 
-        for index in current_indexes - needed_indexes:
+        layout_changed = (
+            force
+            or getattr(self, "_last_container_width", None) != viewport.width()
+            or getattr(self, "_last_max_cols", None) != self._fixed_max_cols
+            or getattr(self, "_last_card_width", None) != card_width
+        )
+
+        if not indexes_to_release and not indexes_to_add and not layout_changed:
+            self._current_render_range = (start_index, end_index)
+            return
+
+        for index in indexes_to_release:
             self._release_card(index)
 
-        for index in sorted(needed_indexes):
+        indexes_to_process = sorted(needed_indexes) if layout_changed else sorted(indexes_to_add)
+
+        for index in indexes_to_process:
             file_info = self._virtual_files[index]
             card = self._visible_cards.get(index)
             if card is None:
@@ -2312,7 +2416,9 @@ class CustomFileSelector(QWidget):
         self._last_max_cols = self._fixed_max_cols
         self._last_card_width = card_width
         self._layout_dirty = False
-        self._trigger_scrollbar_check()
+
+        if force:
+            self._trigger_scrollbar_check()
     
     def _on_resize_timeout(self):
         """
@@ -2382,17 +2488,14 @@ class CustomFileSelector(QWidget):
         if self.previewing_file_path and file_path_norm == self.previewing_file_path:
             card.set_previewing(True)
         
-        if file_info["is_dir"]:
-            card.clicked.connect(lambda f, p=file_path: self._on_folder_clicked(p))
-        else:
-            card.clicked.connect(lambda f: self.file_selected.emit(f))
-        card.right_clicked.connect(lambda f: self._on_card_right_clicked(f, file_path))
-        card.double_clicked.connect(lambda f: self._on_card_double_clicked(f, file_path))
-        card.selection_changed.connect(lambda f, s: self._on_card_selection_changed(f, s, file_path))
+        card.clicked.connect(self._handle_card_clicked_signal)
+        card.right_clicked.connect(self._handle_card_right_clicked_signal)
+        card.double_clicked.connect(self._handle_card_double_clicked_signal)
+        card.selection_changed.connect(self._handle_card_selection_changed_signal)
         
         # 连接拖拽信号
-        card.drag_started.connect(lambda f: self._on_card_drag_started(f))
-        card.drag_ended.connect(lambda f, t: self._on_card_drag_ended(f, t))
+        card.drag_started.connect(self._on_card_drag_started)
+        card.drag_ended.connect(self._on_card_drag_ended)
         
         self.hover_tooltip.set_target_widget(card)
         
@@ -2440,17 +2543,14 @@ class CustomFileSelector(QWidget):
         if self.previewing_file_path and file_path_norm == self.previewing_file_path:
             card.set_previewing(True)
         
-        if file_info["is_dir"]:
-            card.clicked.connect(lambda f, p=file_path: self._on_folder_clicked(p))
-        else:
-            card.clicked.connect(lambda f: self.file_selected.emit(f))
-        card.right_clicked.connect(lambda f: self._on_card_right_clicked(f, file_path))
-        card.double_clicked.connect(lambda f: self._on_card_double_clicked(f, file_path))
-        card.selection_changed.connect(lambda f, s: self._on_card_selection_changed(f, s, file_path))
+        card.clicked.connect(self._handle_card_clicked_signal)
+        card.right_clicked.connect(self._handle_card_right_clicked_signal)
+        card.double_clicked.connect(self._handle_card_double_clicked_signal)
+        card.selection_changed.connect(self._handle_card_selection_changed_signal)
         
         # 连接拖拽信号
-        card.drag_started.connect(lambda f: self._on_card_drag_started(f))
-        card.drag_ended.connect(lambda f, t: self._on_card_drag_ended(f, t))
+        card.drag_started.connect(self._on_card_drag_started)
+        card.drag_ended.connect(self._on_card_drag_ended)
         
         self.hover_tooltip.set_target_widget(card)
         
@@ -2525,67 +2625,55 @@ class CustomFileSelector(QWidget):
             #debug(f"未放置到有效区域")
             pass
     
-    def _on_card_clicked(self, file_info, file_path):
-        """处理卡片左键点击"""
-        self.file_selected.emit(file_info)
+    def _handle_card_clicked_signal(self, file_info):
+        """处理卡片左键点击，始终基于信号携带的当前 file_info。"""
+        if file_info.get("is_dir"):
+            self._on_folder_clicked(file_info["path"])
+        else:
+            self.file_selected.emit(file_info)
     
     def _on_folder_clicked(self, file_path):
         """处理文件夹左键点击 - 直接进入目录"""
         self.path_edit.setText(file_path)
         self.go_to_path()
     
-    def _on_card_right_clicked(self, file_info, file_path):
-        """处理卡片右键点击 - 切换选中状态"""
+    def _handle_card_right_clicked_signal(self, file_info):
+        """处理卡片右键点击，始终基于信号携带的当前 file_info。"""
         self.file_right_clicked.emit(file_info)
     
-    def _on_card_selection_changed(self, file_info, is_selected, file_path):
+    def _handle_card_selection_changed_signal(self, file_info, is_selected):
         """
         处理卡片选中状态变化
+        使用信号传入的实时 file_info，避免虚拟化复用后仍使用旧闭包中的 file_path/file_info。
         
         Args:
             file_info (dict): 文件信息
             is_selected (bool): 是否选中
-            file_path (str): 文件路径
         """
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            #print(f"[{timestamp}] [CustomFileSelector._on_card_selection_changed] {msg}")
-            pass
-        
+        file_path = file_info.get("path", "")
         file_path_norm = os.path.normpath(file_path)
         file_dir_norm = os.path.normpath(os.path.dirname(file_path))
-        #debug(f"文件选择状态变化: 路径={file_path_norm}, 目录={file_dir_norm}, 选中={is_selected}")
         
         if is_selected:
             if file_dir_norm not in self.selected_files:
                 self.selected_files[file_dir_norm] = set()
-            # 检查文件是否已经被选中，如果是则不重复发出信号
             if file_path_norm not in self.selected_files[file_dir_norm]:
                 self.selected_files[file_dir_norm].add(file_path_norm)
                 self._selected_file_paths.add(file_path_norm)
-                #debug(f"添加文件到选中集合，发出选择变化信号")
                 self.file_selection_changed.emit(file_info, is_selected)
-            else:
-                #debug(f"文件已在选中集合中，跳过信号")
-                pass
         else:
             if file_dir_norm in self.selected_files and file_path_norm in self.selected_files[file_dir_norm]:
                 self.selected_files[file_dir_norm].discard(file_path_norm)
                 self._selected_file_paths.discard(file_path_norm)
-                #debug(f"从选中集合移除文件，发出选择变化信号")
                 self.file_selection_changed.emit(file_info, is_selected)
-            else:
-                #debug(f"文件不在选中集合中，无需处理")
-                pass
     
-    def _on_card_double_clicked(self, file_info, file_path):
-        """处理卡片双击"""
-        if file_info["is_dir"]:
+    def _handle_card_double_clicked_signal(self, file_info):
+        """处理卡片双击，始终基于信号携带的当前 file_info。"""
+        if file_info.get("is_dir"):
             self.path_edit.setText(file_info["path"])
             self.go_to_path()
         else:
-            self._open_file_by_path(file_path)
+            self._open_file_by_path(file_info["path"])
     
     def _set_file_icon(self, file_info):
         """
