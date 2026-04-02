@@ -816,17 +816,6 @@ class UnifiedPreviewer(QWidget):
                     if widget is not None:
                         widget.deleteLater()
         
-        # 重置临时PDF文件路径，但不删除缓存文件
-        debug("=== 进入_clear_preview方法 ===")
-        debug(f"hasattr(temp_pdf_path): {hasattr(self, 'temp_pdf_path')}")
-        if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path:
-            debug(f"temp_pdf_path值: {self.temp_pdf_path}")
-            debug(f"temp_pdf_path存在: {os.path.exists(self.temp_pdf_path) if self.temp_pdf_path else False}")
-            # 只重置路径，不删除缓存文件，以便下次预览时可以复用
-            self.temp_pdf_path = None
-            debug("已重置temp_pdf_path为None")
-        debug("=== 退出_clear_preview方法 ===")
-        
         # 只有当播放器未分离时才重置当前预览组件和类型
         if not is_detached_video_player:
             # 重置当前预览组件和类型
@@ -851,18 +840,8 @@ class UnifiedPreviewer(QWidget):
             return
         
         try:
-            # 如果是文档类型预览，只重置路径，不删除缓存文件
+            # 如果是文档类型预览，需要重新转换
             if preview_type == "document":
-                # 清理旧的临时PDF文件
-                if hasattr(self, 'temp_pdf_path') and self.temp_pdf_path:
-                    try:
-                        # 只重置路径，不删除缓存文件，以便下次预览时可以复用
-                        debug(f"重置临时PDF路径: {self.temp_pdf_path}")
-                    except Exception as e:
-                        error(f"处理临时PDF文件失败: {e}")
-                    finally:
-                        self.temp_pdf_path = None
-                # 对于文档类型，需要重新转换
                 # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
                 self._clear_preview(emit_signal=False)
                 self._show_preview()
