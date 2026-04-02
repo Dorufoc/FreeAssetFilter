@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.core.media_probe import get_video_duration_seconds
 
 from PySide6.QtCore import (
     Qt, QDateTime, QThread, Signal
@@ -136,23 +137,9 @@ def get_video_duration(file_path):
             if isinstance(cached_duration, (int, float)) and cached_duration > 0:
                 return float(cached_duration)
 
-    duration = None
-
-    try:
-        import cv2
-        cap = cv2.VideoCapture(file_path)
-        try:
-            if cap.isOpened():
-                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                if frame_count > 0 and fps > 0:
-                    duration = frame_count / fps
-        finally:
-            cap.release()
-    except Exception as e:
-        debug(f"OpenCV 获取视频时长失败 {file_path}: {e}")
-
+    duration = get_video_duration_seconds(file_path)
     if duration is None or duration <= 0:
+        debug(f"ffprobe 获取视频时长失败或结果无效，使用默认时长: {file_path}")
         duration = default_duration
 
     with _DURATION_CACHE_LOCK:

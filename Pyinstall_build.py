@@ -35,24 +35,17 @@ UPX_PATH = r"C:\upx\upx.exe"  # UPX可执行文件路径
 
 # Qt6 DLL白名单（必须保留）
 QT6_KEEP_DLLS = {
+    # 项目实际直接使用 / 高概率依赖的最小 Qt DLL 集合
     "Qt6Core.dll",
     "Qt6Gui.dll",
     "Qt6Widgets.dll",
     "Qt6Svg.dll",
     "Qt6SvgWidgets.dll",
-    "Qt6Network.dll",
-    "Qt6Qml.dll",
-    "Qt6Quick.dll",
-    "Qt6QuickWidgets.dll",
     "Qt6OpenGL.dll",
     "Qt6OpenGLWidgets.dll",
-    "Qt6Multimedia.dll",
-    "Qt6MultimediaWidgets.dll",
     "Qt6Pdf.dll",
-    "Qt6PdfWidgets.dll",
+    # 部分图像/字体/平台插件可能间接依赖
     "Qt6PrintSupport.dll",
-    "Qt6DBus.dll",
-    "Qt6Xml.dll",
 }
 
 # Qt6 DLL黑名单（可以排除）
@@ -177,14 +170,17 @@ def collect_data_files() -> List[Tuple[str, str]]:
     project_root = get_project_root()
     data_files = []
     
-    # 1. 收集图标文件
+    # 1. 收集图标与字体资源（仅包含运行时真正需要的资源后缀）
     icons_dir = project_root / "freeassetfilter" / "icons"
+    icon_extensions = {".svg", ".png", ".ico", ".ttf", ".otf", ".woff", ".woff2"}
     if icons_dir.exists():
+        icon_count = 0
         for file in icons_dir.rglob("*"):
-            if file.is_file():
+            if file.is_file() and file.suffix.lower() in icon_extensions:
                 rel_path = file.relative_to(project_root)
                 data_files.append((str(file), str(rel_path.parent)))
-        print_info(f"收集到 {len(list(icons_dir.rglob('*')))} 个图标文件")
+                icon_count += 1
+        print_info(f"收集到 {icon_count} 个图标/字体资源文件")
     
     # 2. 收集语法高亮JSON文件
     syntax_dir = project_root / "freeassetfilter" / "utils" / "syntax"
@@ -199,14 +195,6 @@ def collect_data_files() -> List[Tuple[str, str]]:
     if color_schemes.exists():
         data_files.append((str(color_schemes), "freeassetfilter/utils"))
         print_info("收集到 color_schemes.json")
-    
-    # 4. 收集MPV头文件
-    mpv_include_dir = project_root / "freeassetfilter" / "core" / "include" / "mpv"
-    if mpv_include_dir.exists():
-        for file in mpv_include_dir.glob("*.h"):
-            rel_path = file.relative_to(project_root)
-            data_files.append((str(file), str(rel_path.parent)))
-        print_info(f"收集到 {len(list(mpv_include_dir.glob('*.h')))} 个MPV头文件")
     
     print_success(f"共收集到 {len(data_files)} 个数据文件")
     return data_files
@@ -230,7 +218,29 @@ def collect_binaries() -> List[Tuple[str, str]]:
     else:
         print_warning("未找到 libmpv-2.dll")
     
-    # 2. cpp_color_extractor DLLs
+    # 2. 7z 运行时文件
+    seven_zip_dir = project_root / "freeassetfilter" / "core" / "7z"
+    if seven_zip_dir.exists():
+        for file_name in ["7z.exe", "7z.dll"]:
+            file_path = seven_zip_dir / file_name
+            if file_path.exists():
+                binaries.append((str(file_path), "freeassetfilter/core/7z"))
+                print_info(f"收集到 {file_name}")
+            else:
+                print_warning(f"未找到 {file_name}")
+
+    # 3. ffmpeg/ffprobe（Rust 缩略图引擎的视频缩略图链路依赖）
+    native_dir = project_root / "freeassetfilter" / "core" / "native"
+    if native_dir.exists():
+        for file_name in ["ffmpeg.exe", "ffprobe.exe"]:
+            file_path = native_dir / file_name
+            if file_path.exists():
+                binaries.append((str(file_path), "freeassetfilter/core/native"))
+                print_info(f"收集到 {file_name}")
+            else:
+                print_warning(f"未找到 {file_name}")
+
+    # 4. cpp_color_extractor DLLs
     cpp_color_dir = project_root / "freeassetfilter" / "core" / "cpp_color_extractor"
     if cpp_color_dir.exists():
         for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
@@ -239,7 +249,7 @@ def collect_binaries() -> List[Tuple[str, str]]:
                 binaries.append((str(dll_path), "freeassetfilter/core/cpp_color_extractor"))
         print_info(f"收集到 cpp_color_extractor DLLs")
     
-    # 3. cpp_lut_preview DLLs
+    # 5. cpp_lut_preview DLLs
     cpp_lut_dir = project_root / "freeassetfilter" / "core" / "cpp_lut_preview"
     if cpp_lut_dir.exists():
         for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
@@ -248,7 +258,7 @@ def collect_binaries() -> List[Tuple[str, str]]:
                 binaries.append((str(dll_path), "freeassetfilter/core/cpp_lut_preview"))
         print_info(f"收集到 cpp_lut_preview DLLs")
     
-    # 4. Rust 原生缩略图引擎 DLL（统一使用源码正式编译产物）
+    # 6. Rust 原生缩略图引擎 DLL（统一使用源码正式编译产物）
     rust_thumb_dll = (
         project_root
         / "freeassetfilter"
@@ -265,7 +275,7 @@ def collect_binaries() -> List[Tuple[str, str]]:
     else:
         print_warning("未找到 thumbnail_rust/target/release/thumbnail_generator.dll（将使用Python回退缩略图链路）")
 
-    # 5. Rust 颜色提取 DLL（统一使用源码正式编译产物）
+    # 7. Rust 颜色提取 DLL（统一使用源码正式编译产物）
     rust_color_dll = (
         project_root
         / "freeassetfilter"
@@ -282,7 +292,7 @@ def collect_binaries() -> List[Tuple[str, str]]:
     else:
         print_warning("未找到 color_extractor_rust/target/release/rust_color_extractor_native.dll")
 
-    # 6. 收集Python扩展模块(.pyd文件)
+    # 8. 收集Python扩展模块(.pyd文件)
     # cpp_color_extractor
     if cpp_color_dir.exists():
         for pyd_file in cpp_color_dir.glob("*.pyd"):
@@ -313,7 +323,6 @@ def collect_hidden_imports() -> List[str]:
         "PIL._imagingtk",
         "PIL._tkinter_finder",
         "numpy",
-        "cv2",
         "skimage",
         "scipy",
         "psd_tools",
@@ -330,17 +339,14 @@ def collect_hidden_imports() -> List[str]:
         "aggdraw",
         "imageio",
         "psutil",
-        # PySide6相关
-        "PySide6",
+        # PySide6相关（仅保留项目实际使用的模块，避免隐式拉入整套依赖）
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtWidgets",
         "PySide6.QtSvg",
-        "PySide6.QtNetwork",
-        "PySide6.QtWebEngineCore",
-        "PySide6.QtWebEngineWidgets",
-        "PySide6.QtMultimedia",
-        "PySide6.QtOpenGL",
+        "PySide6.QtSvgWidgets",
+        "PySide6.QtOpenGLWidgets",
+        "PySide6.QtPdf",
         "shiboken6",
     ]
     
@@ -393,11 +399,53 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
         "--exclude-module", "unittest",
         "--exclude-module", "test",
         "--exclude-module", "tests",
-        # 排除 Qt WebEngine（体积太大，项目不需要）
+        # 排除未使用的 PySide6/Qt 模块，避免带入整套 Qt 运行库
+        "--exclude-module", "PySide6.Qt3DAnimation",
+        "--exclude-module", "PySide6.Qt3DCore",
+        "--exclude-module", "PySide6.Qt3DExtras",
+        "--exclude-module", "PySide6.Qt3DInput",
+        "--exclude-module", "PySide6.Qt3DLogic",
+        "--exclude-module", "PySide6.Qt3DRender",
+        "--exclude-module", "PySide6.QtBluetooth",
+        "--exclude-module", "PySide6.QtCharts",
+        "--exclude-module", "PySide6.QtConcurrent",
+        "--exclude-module", "PySide6.QtDBus",
+        "--exclude-module", "PySide6.QtDesigner",
+        "--exclude-module", "PySide6.QtGraphs",
+        "--exclude-module", "PySide6.QtHelp",
+        "--exclude-module", "PySide6.QtHttpServer",
+        "--exclude-module", "PySide6.QtLocation",
+        "--exclude-module", "PySide6.QtMultimedia",
+        "--exclude-module", "PySide6.QtMultimediaWidgets",
+        "--exclude-module", "PySide6.QtNetwork",
+        "--exclude-module", "PySide6.QtNetworkAuth",
+        "--exclude-module", "PySide6.QtNfc",
+        "--exclude-module", "PySide6.QtOpenGL",
+        "--exclude-module", "PySide6.QtPdfWidgets",
+        "--exclude-module", "PySide6.QtPositioning",
+        "--exclude-module", "PySide6.QtPositioningQuick",
+        "--exclude-module", "PySide6.QtQml",
+        "--exclude-module", "PySide6.QtQuick",
+        "--exclude-module", "PySide6.QtQuick3D",
+        "--exclude-module", "PySide6.QtQuickControls2",
+        "--exclude-module", "PySide6.QtQuickWidgets",
+        "--exclude-module", "PySide6.QtRemoteObjects",
+        "--exclude-module", "PySide6.QtScxml",
+        "--exclude-module", "PySide6.QtSensors",
+        "--exclude-module", "PySide6.QtSerialBus",
+        "--exclude-module", "PySide6.QtSerialPort",
+        "--exclude-module", "PySide6.QtSql",
+        "--exclude-module", "PySide6.QtStateMachine",
+        "--exclude-module", "PySide6.QtTest",
+        "--exclude-module", "PySide6.QtTextToSpeech",
+        "--exclude-module", "PySide6.QtUiTools",
+        "--exclude-module", "PySide6.QtWebChannel",
         "--exclude-module", "PySide6.QtWebEngineCore",
         "--exclude-module", "PySide6.QtWebEngineWidgets",
         "--exclude-module", "PySide6.QtWebEngineQuick",
-        "--exclude-module", "PySide6.QtWebChannel",
+        "--exclude-module", "PySide6.QtWebSockets",
+        "--exclude-module", "PySide6.QtWebView",
+        "--exclude-module", "PySide6.QtXml",
         # 排除 numpy/scipy 的测试和可选依赖模块
         "--exclude-module", "numpy.f2py.tests",
         "--exclude-module", "numpy._pytesttester",
@@ -419,10 +467,8 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
     
     # 包含所有子包（只对有子模块的包使用 --collect-all）
     cmd.extend([
-        "--collect-all", "freeassetfilter",
         "--collect-all", "PIL",
         "--collect-all", "numpy",
-        "--collect-all", "cv2",
         "--collect-all", "skimage",
         "--collect-all", "scipy",
         "--collect-all", "psd_tools",
@@ -569,7 +615,41 @@ def clean_qt6_dlls() -> Tuple[int, int]:
                     except Exception as e:
                         print_warning(f"无法移除 {file_path.name}: {e}")
     
-    # 5. 清理 translations 目录（多语言翻译文件，如不需要可节省空间）
+    # 5. 清理不需要的 Qt 插件目录
+    plugin_dirs_to_remove = {
+        "assetimporters",
+        "audio",
+        "geometryloaders",
+        "geoservices",
+        "multimedia",
+        "networkinformation",
+        "position",
+        "qmltooling",
+        "renderers",
+        "renderplugins",
+        "sceneparsers",
+        "scxmldatamodel",
+        "sensorgestures",
+        "sensors",
+        "sqldrivers",
+        "texttospeech",
+        "tls",
+        "webview",
+    }
+
+    for search_dir in search_dirs:
+        for plugin_dir in search_dir.rglob("*"):
+            if plugin_dir.is_dir() and plugin_dir.name in plugin_dirs_to_remove:
+                dir_size = sum(f.stat().st_size for f in plugin_dir.rglob('*') if f.is_file())
+                try:
+                    shutil.rmtree(plugin_dir)
+                    removed_count += 1
+                    saved_space += dir_size
+                    print_info(f"移除 Qt 插件目录: {plugin_dir} ({dir_size / 1024 / 1024:.2f} MB)")
+                except Exception as e:
+                    print_warning(f"无法移除插件目录 {plugin_dir}: {e}")
+
+    # 6. 清理 translations 目录（多语言翻译文件，如不需要可节省空间）
     translations_dirs = []
     for search_dir in search_dirs:
         translations_dirs.extend(list(search_dir.rglob("translations")))
@@ -596,34 +676,52 @@ def clean_qt6_dlls() -> Tuple[int, int]:
 
 
 def clean_native_sources_from_dist():
-    """清理打包产物中不需要的Rust源码/构建中间目录，只保留DLL"""
+    """清理打包产物中不需要的原生源码/构建中间目录，只保留运行时文件"""
     print_header("清理打包目录中的原生源码残留")
 
     project_root = get_project_root()
-    dist_root = project_root / OUTPUT_DIR / PROJECT_NAME / "_internal" / "freeassetfilter" / "core" / "native"
+    dist_root = project_root / OUTPUT_DIR / PROJECT_NAME / "_internal" / "freeassetfilter" / "core"
 
     if not dist_root.exists():
-        print_info("未发现 native 目录，跳过")
+        print_info("未发现 core 目录，跳过")
         return
 
-    # 删除整个 thumbnail_rust 源码目录（保留同级 thumbnail_generator.dll）
-    rust_src_dir = dist_root / "thumbnail_rust"
-    if rust_src_dir.exists():
-        try:
-            shutil.rmtree(rust_src_dir)
-            print_success(f"已移除打包残留目录: {rust_src_dir}")
-        except Exception as e:
-            print_warning(f"无法删除 {rust_src_dir}: {e}")
+    removable_dirs = [
+        dist_root / "native" / "thumbnail_rust",
+        dist_root / "native" / "color_extractor_rust",
+        dist_root / "cpp_lut_preview" / "build",
+    ]
 
-    # 兜底删除可能散落的构建描述文件
-    for extra in ["Cargo.toml", "Cargo.lock"]:
-        p = dist_root / extra
-        if p.exists():
+    for removable_dir in removable_dirs:
+        if removable_dir.exists():
             try:
-                p.unlink()
-                print_success(f"已移除文件: {p}")
+                shutil.rmtree(removable_dir)
+                print_success(f"已移除打包残留目录: {removable_dir}")
             except Exception as e:
-                print_warning(f"无法删除 {p}: {e}")
+                print_warning(f"无法删除 {removable_dir}: {e}")
+
+    removable_patterns = [
+        "native/Cargo.toml",
+        "native/Cargo.lock",
+        "cpp_lut_preview/setup.py",
+        "cpp_lut_preview/setup_mingw.py",
+        "cpp_lut_preview/*.cpp",
+        "**/*.pdb",
+        "**/*.exp",
+        "**/*.lib",
+        "**/*.a",
+        "**/*.d",
+        "update.log",
+    ]
+
+    for pattern in removable_patterns:
+        for p in dist_root.glob(pattern):
+            if p.exists() and p.is_file():
+                try:
+                    p.unlink()
+                    print_success(f"已移除文件: {p}")
+                except Exception as e:
+                    print_warning(f"无法删除 {p}: {e}")
 
 
 def verify_output() -> bool:

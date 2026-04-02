@@ -1855,13 +1855,6 @@ def main():
     # 将关联文件路径存储到app对象，供其他组件访问
     app.associated_file_path = associated_file_path
 
-    # 预导入 cv2，避免多线程环境下的导入竞态条件
-    # cv2 的初始化涉及复杂的类型系统，必须在主线程中完成
-    try:
-        import cv2
-    except ImportError as e:
-        logger.debug(f"cv2 模块未安装: {e}")
-
     # 设置全局DPI缩放因子为系统缩放的1.4倍
     from PySide6.QtGui import QCursor, QFontDatabase, QFont
     cursor_pos = QCursor.pos()
