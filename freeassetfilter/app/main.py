@@ -922,7 +922,7 @@ class FreeAssetFilterApp(QMainWindow):
         status_layout.addStretch()
 
         # 状态标签
-        self.status_label = QLabel("FreeAssetFilter 1.0.0-alpha.3 | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
+        self.status_label = QLabel("FreeAssetFilter 1.0.0-alpha.4 | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
         self.status_label.setAlignment(Qt.AlignCenter)
         # 使用小一号的字体
         status_font = QFont(self.global_font)
@@ -2113,7 +2113,11 @@ def _restart_current_application():
     使用当前启动参数重新启动应用程序
     """
     relaunch_args = [sys.executable] + list(sys.argv[1:])
-    subprocess.Popen(relaunch_args, close_fds=True)
+    subprocess.Popen(
+        relaunch_args,
+        close_fds=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
 
 
 def _show_already_running_dialog_and_handle_restart(mutex_handle):

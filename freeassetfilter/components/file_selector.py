@@ -1533,7 +1533,13 @@ class CustomFileSelector(QWidget):
                 # 使用net use命令作为备选方案
                 try:
                     import subprocess
-                    result = subprocess.run(['net', 'use'], capture_output=True, text=True, encoding='gbk')
+                    result = subprocess.run(
+                        ['net', 'use'],
+                        capture_output=True,
+                        text=True,
+                        encoding='gbk',
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    )
                     if result.returncode == 0:
                         lines = result.stdout.strip().split('\n')
                         for line in lines[6:]:  # 跳过前6行标题和分隔线

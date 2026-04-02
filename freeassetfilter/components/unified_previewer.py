@@ -1713,6 +1713,7 @@ class UnifiedPreviewer(QWidget):
                         encoding="utf-8",
                         errors="replace",
                         timeout=300,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
                     
                     # 输出LibreOffice的执行结果，便于调试

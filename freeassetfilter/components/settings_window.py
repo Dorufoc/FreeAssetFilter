@@ -2343,7 +2343,10 @@ class ModernSettingsWindow(QDialog):
         # settings_window.py 位于 freeassetfilter/components/，需要向上两级到 freeassetfilter/，然后进入 app/
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         script_path = os.path.join(project_root, "app", "main.py")
-        subprocess.Popen([python_executable, script_path])
+        subprocess.Popen(
+            [python_executable, script_path],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
         
         sys.exit(0)
 

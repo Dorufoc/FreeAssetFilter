@@ -52,6 +52,23 @@ class Py7zCore:
         self._command_timeout = command_timeout or self.DEFAULT_COMMAND_TIMEOUT
         self._find_7z_exe()
 
+    def _get_subprocess_kwargs(self) -> Dict:
+        """
+        获取适用于当前平台的 subprocess 参数
+        在 Windows GUI 打包模式下隐藏控制台窗口，避免调用 7z.exe 时黑框闪烁
+        """
+        kwargs = {}
+
+        if os.name == "nt":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+
+            kwargs["startupinfo"] = startupinfo
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        return kwargs
+
     def _find_7z_exe(self) -> str:
         """
         查找 7z.exe 的路径
@@ -105,7 +122,8 @@ class Py7zCore:
                 ["where", "7z.exe"],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=5,
+                **self._get_subprocess_kwargs()
             )
             if result.returncode == 0 and result.stdout.strip():
                 path = result.stdout.strip().split('\n')[0].strip()
@@ -142,13 +160,16 @@ class Py7zCore:
         # 使用指定的超时时间或实例默认值
         actual_timeout = timeout if timeout is not None else self._command_timeout
 
+        subprocess_kwargs = self._get_subprocess_kwargs()
+
         try:
             # 对于 UTF-16 编码，不使用 text=True，而是手动解码
             if encoding.lower() in ['utf-16', 'utf-16le', 'utf-16be']:
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
-                    timeout=actual_timeout
+                    timeout=actual_timeout,
+                    **subprocess_kwargs
                 )
                 # 手动处理 UTF-16 解码
                 try:
@@ -173,7 +194,8 @@ class Py7zCore:
                     text=True,
                     encoding=encoding,
                     errors="replace",
-                    timeout=actual_timeout
+                    timeout=actual_timeout,
+                    **subprocess_kwargs
                 )
                 return result.returncode, result.stdout, result.stderr
         except subprocess.TimeoutExpired:
