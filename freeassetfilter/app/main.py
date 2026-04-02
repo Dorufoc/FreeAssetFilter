@@ -30,11 +30,24 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 # 导入日志模块（必须在其他导入之前，确保日志功能可用）
 from freeassetfilter.utils.app_logger import (
     get_logger, info, debug, warning, error, critical,
-    log_exception
+    log_exception, install_console_capture
 )
 
 # 初始化日志系统
 logger = get_logger()
+
+# 尽早安装 stdout/stderr 双写捕获：
+# - 保留原控制台输出（如果存在）
+# - 将 print/sys.stdout.write/sys.stderr.write/traceback.print_exc 等同步写入日志文件
+try:
+    if install_console_capture(logger.get_log_file_path()):
+        info(f"已启用控制台输出捕获，标准输出/错误将同步写入日志: {logger.get_log_file_path()}")
+    else:
+        warning("控制台输出捕获未能启用，部分直接控制台输出可能不会写入日志")
+except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+    warning(f"启用控制台输出捕获失败 - 文件操作错误: {e}")
+except (ValueError, TypeError) as e:
+    warning(f"启用控制台输出捕获失败 - 数据转换错误: {e}")
 
 
 def _get_available_stderr_stream():
@@ -189,8 +202,25 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     # 使用日志模块记录异常
     log_exception(exc_type, exc_value, exc_traceback)
 
+def handle_thread_exception(args):
+    """
+    处理 Python 子线程中的未捕获异常
+
+    Args:
+        args: threading.ExceptHookArgs
+    """
+    try:
+        if issubclass(args.exc_type, KeyboardInterrupt):
+            return
+    except TypeError:
+        pass
+
+    log_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
+
 # 将系统异常钩子绑定到自定义处理函数
 sys.excepthook = handle_exception
+threading.excepthook = handle_thread_exception
 
 # 忽略sipPyTypeDict相关的弃用警告
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="PySide6")
@@ -1824,13 +1854,6 @@ def main():
 
     # 将关联文件路径存储到app对象，供其他组件访问
     app.associated_file_path = associated_file_path
-
-    # 预导入 cv2，避免多线程环境下的导入竞态条件
-    # cv2 的初始化涉及复杂的类型系统，必须在主线程中完成
-    try:
-        import cv2
-    except ImportError as e:
-        logger.debug(f"cv2 模块未安装: {e}")
 
     # 设置全局DPI缩放因子为系统缩放的1.4倍
     from PySide6.QtGui import QCursor, QFontDatabase, QFont

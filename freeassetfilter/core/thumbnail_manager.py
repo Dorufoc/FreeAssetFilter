@@ -28,6 +28,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Optional, Tuple, Callable, Dict, Set, List
 from pathlib import Path
 from dataclasses import dataclass
+from freeassetfilter.core.media_probe import get_ffmpeg_path, get_ffprobe_path
 from freeassetfilter.core.rust_thumbnail_bridge import RustThumbnailBridge
 
 # 导入日志模块
@@ -41,15 +42,6 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     warning("PIL库未安装，缩略图功能将受限")
-
-# 尝试导入OpenCV
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except ImportError:
-    CV2_AVAILABLE = False
-    warning("OpenCV库未安装，视频缩略图功能将不可用")
-
 
 @dataclass
 class FrameCacheEntry:
@@ -1080,61 +1072,11 @@ class ThumbnailManager:
         with self._processing_lock:
             self._processing_videos.discard(file_path)
     
-    def _read_frame_with_retry(self, cap, position: int, use_keyframe: bool = True, max_retries: int = None) -> Optional:
-        """
-        带重试机制的帧读取
-        
-        Args:
-            cap: OpenCV视频捕获对象
-            position: 帧位置（帧索引或0-1之间的比例）
-            use_keyframe: 是否优先使用关键帧定位
-            max_retries: 最大重试次数，默认使用类配置
-            
-        Returns:
-            Optional: 视频帧，失败返回None
-        """
-        if max_retries is None:
-            max_retries = self.MAX_FRAME_READ_RETRIES
-        
-        for attempt in range(max_retries):
-            try:
-                # 根据类型设置位置
-                if isinstance(position, float) and 0 <= position <= 1:
-                    # 比例位置
-                    cap.set(cv2.CAP_PROP_POS_AVI_RATIO, position)
-                else:
-                    # 帧索引位置
-                    if use_keyframe and attempt == 0:
-                        # 首次尝试：使用关键帧定位（更快）
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, int(position))
-                        # 读取关键帧
-                        ret, frame = cap.read()
-                        if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
-                            return frame
-                        # 关键帧读取失败，继续尝试
-                        continue
-                    else:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, int(position))
-                
-                ret, frame = cap.read()
-                if ret and frame is not None and frame.shape[0] > 0 and frame.shape[1] > 0:
-                    return frame
-                    
-            except Exception as e:
-                debug(f"读取视频帧失败 (位置: {position}, 尝试: {attempt + 1}): {e}")
-            
-            # 短暂延迟后重试
-            if attempt < max_retries - 1:
-                time.sleep(0.01 * (attempt + 1))
-        
-        return None
-    
     def _create_video_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """
         为视频文件创建缩略图
 
-        优先使用 FFmpeg 软解抽帧生成缩略图，以获得更稳定的超时控制和更高的解码性能；
-        若 FFmpeg 不可用或抽帧失败，则回退到 OpenCV 兼容链路。
+        仅使用 Rust 原生链路 / FFmpeg 软解链路，不再依赖 OpenCV。
         """
         # 请求去重：检查是否已有相同视频正在处理
         if not self._try_acquire_video_lock(file_path):
@@ -1147,13 +1089,7 @@ class ThumbnailManager:
                 if result is not None:
                     return result
 
-                if CV2_AVAILABLE and PIL_AVAILABLE:
-                    return self._create_video_thumbnail_internal(file_path, thumbnail_path)
-
-                if not CV2_AVAILABLE:
-                    warning("[ThumbnailManager] FFmpeg软解失败且OpenCV库未安装，无法回退生成视频缩略图")
-                elif not PIL_AVAILABLE:
-                    warning("[ThumbnailManager] FFmpeg软解失败且PIL库未安装，无法回退生成视频缩略图")
+                warning("[ThumbnailManager] FFmpeg软解失败，无法生成视频缩略图")
                 return None
         finally:
             self._release_video_lock(file_path)
@@ -1165,7 +1101,7 @@ class ThumbnailManager:
     def _get_video_duration_ffprobe(self, file_path: str) -> Optional[float]:
         """使用 ffprobe 获取视频时长（秒）"""
         command = [
-            "ffprobe",
+            get_ffprobe_path(),
             "-v",
             "quiet",
             "-print_format",
@@ -1181,6 +1117,8 @@ class ThumbnailManager:
                 command,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.FFPROBE_TIMEOUT,
                 creationflags=self._get_subprocess_creationflags(),
             )
@@ -1271,7 +1209,7 @@ class ThumbnailManager:
                 pass
 
             command = [
-                "ffmpeg",
+                get_ffmpeg_path(),
                 "-y",
                 "-hide_banner",
                 "-loglevel",
@@ -1306,6 +1244,8 @@ class ThumbnailManager:
                     command,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=self.FFMPEG_SOFT_TIMEOUT,
                     creationflags=self._get_subprocess_creationflags(),
                 )
@@ -1390,6 +1330,8 @@ class ThumbnailManager:
                 command,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 cwd=project_root,
                 creationflags=self._get_subprocess_creationflags(),
@@ -1412,206 +1354,6 @@ class ThumbnailManager:
             debug(f"[ThumbnailManager] 视频缩略图子进程异常输出: {stderr_text}")
 
         return None
-    
-    def _create_video_thumbnail_internal(self, file_path: str, thumbnail_path: str) -> Optional[str]:
-        """内部视频缩略图生成逻辑
-
-        说明：
-        这里不再使用嵌套 ThreadPoolExecutor + future.result(timeout) 作为“超时控制”。
-        因为一旦 OpenCV 底层调用阻塞，future 超时后 executor 退出时仍会等待内部线程结束，
-        实际上无法真正打断阻塞，反而会把外层批处理线程一起卡住。
-        """
-        cap = None
-        try:
-            cap = cv2.VideoCapture(file_path)
-            if not cap.isOpened():
-                warning(f"[ThumbnailManager] 无法打开视频文件: {file_path}")
-                return None
-
-            # 获取视频信息
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-            # 获取帧缓存
-            frame_cache = self._get_or_create_frame_cache(file_path)
-
-            frame = None
-
-            # 定义读取策略（按优先级排序）
-            strategies = []
-
-            # 策略1: 优先读取第240帧（跳过可能损坏的开头）
-            if total_frames > 240:
-                strategies.append(('frame', 240))
-
-            # 策略2: 读取50%相对位置
-            if total_frames > 0:
-                strategies.append(('ratio', 0.5))
-
-            # 策略3: 读取第2帧
-            strategies.append(('frame', 2))
-
-            # 策略4: 读取第1帧
-            strategies.append(('frame', 1))
-
-            # 策略5: 尝试其他相对位置
-            for ratio in [0.03, 0.1, 0.7, 0.9]:
-                strategies.append(('ratio', ratio))
-
-            # 执行策略
-            for strategy_type, position in strategies:
-                # 检查缓存
-                cache_key = int(position * 1000) if strategy_type == 'ratio' else position
-                cached_frame = frame_cache.get(cache_key)
-                if cached_frame is not None:
-                    frame = cached_frame
-                    debug(f"[ThumbnailManager] 使用缓存帧 (位置: {position})")
-                    break
-
-                # 读取新帧
-                if strategy_type == 'ratio':
-                    frame = self._read_frame_with_retry(cap, position, use_keyframe=False)
-                else:
-                    frame = self._read_frame_with_retry(cap, position, use_keyframe=True)
-
-                if frame is not None:
-                    # 缓存成功读取的帧
-                    frame_cache.put(cache_key, frame)
-                    break
-
-            if frame is None:
-                warning(f"[ThumbnailManager] 无法从视频中读取有效帧: {file_path}")
-                return None
-
-            # 处理并保存帧
-            return self._process_and_save_video_frame(frame, thumbnail_path)
-
-        except Exception as e:
-            error(f"[ThumbnailManager] 生成视频缩略图失败: {file_path}, 错误: {e}")
-            return None
-        finally:
-            # 确保VideoCapture对象被释放
-            if cap is not None:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-            # 强制垃圾回收以释放内存
-            import gc
-            gc.collect()
-    
-    def _process_and_save_video_frame(self, frame, thumbnail_path: str) -> Optional[str]:
-        """
-        处理视频帧并保存为缩略图
-        
-        Args:
-            frame: 视频帧
-            thumbnail_path: 缩略图保存路径
-            
-        Returns:
-            Optional[str]: 缩略图路径，失败返回None
-        """
-        frame_pil = None
-        thumbnail = None
-        downsampled_frame = None
-        
-        try:
-            # 计算原始宽高比
-            original_height, original_width = frame.shape[:2]
-            aspect_ratio = original_width / original_height
-            
-            # 检查帧尺寸限制
-            if original_width > self.MAX_IMAGE_DIMENSION or original_height > self.MAX_IMAGE_DIMENSION:
-                warning(f"[ThumbnailManager] 视频帧尺寸超出限制: {original_width}x{original_height}")
-                return None
-            
-            # 检查像素总数限制
-            total_pixels = original_width * original_height
-            if total_pixels > self.MAX_IMAGE_PIXELS:
-                warning(f"[ThumbnailManager] 视频帧像素数超出限制: {total_pixels} > {self.MAX_IMAGE_PIXELS}")
-                return None
-            
-            # 计算新尺寸
-            dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
-            
-            if aspect_ratio > 1:
-                new_width = dpi_scaled_size
-                new_height = int(new_width / aspect_ratio)
-            else:
-                new_height = dpi_scaled_size
-                new_width = int(new_height * aspect_ratio)
-            
-            # 对于超大视频帧，先进行适度下采样
-            resized_frame = None
-            
-            if total_pixels > 10000000:
-                min_downsample_width = max(new_width * 2, 1024)
-                min_downsample_height = max(new_height * 2, 1024)
-                
-                downsample_ratio = min(
-                    original_width / min_downsample_width,
-                    original_height / min_downsample_height
-                )
-                
-                if downsample_ratio > 1:
-                    downsampled_width = int(original_width / downsample_ratio)
-                    downsampled_height = int(original_height / downsample_ratio)
-                    downsampled_frame = cv2.resize(
-                        frame,
-                        (downsampled_width, downsampled_height),
-                        interpolation=cv2.INTER_LANCZOS4
-                    )
-                    resized_frame = cv2.resize(
-                        downsampled_frame,
-                        (new_width, new_height),
-                        interpolation=cv2.INTER_LANCZOS4
-                    )
-                else:
-                    resized_frame = cv2.resize(
-                        frame,
-                        (new_width, new_height),
-                        interpolation=cv2.INTER_LANCZOS4
-                    )
-            else:
-                resized_frame = cv2.resize(
-                    frame,
-                    (new_width, new_height),
-                    interpolation=cv2.INTER_LANCZOS4
-                )
-            
-            # 转换为PIL图像
-            frame_pil = Image.fromarray(cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB))
-            
-            # 检查PIL图像尺寸限制
-            if not self._check_image_size_limit(frame_pil):
-                return None
-
-            # 直接输出保持原始比例的视频帧缩略图，避免补白后在 JPEG 中显示为白边
-            thumbnail = frame_pil
-            thumbnail.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
-            
-            debug(f"[ThumbnailManager] 视频缩略图生成成功: {thumbnail_path}")
-            return thumbnail_path
-            
-        except Exception as e:
-            error(f"[ThumbnailManager] 处理视频帧失败: {e}")
-            return None
-        finally:
-            # 确保所有Image对象都被关闭
-            if frame_pil is not None:
-                try:
-                    frame_pil.close()
-                except Exception:
-                    pass
-            if thumbnail is not None:
-                try:
-                    thumbnail.close()
-                except Exception:
-                    pass
-            # 清理临时变量
-            downsampled_frame = None
-            resized_frame = None
-            import gc
-            gc.collect()
     
     def _load_image(self, file_path: str, suffix: str) -> Tuple[Optional[Image.Image], bool]:
         """

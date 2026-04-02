@@ -19,6 +19,8 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import sys
 import os
 import re
+import io
+import atexit
 import logging
 import traceback
 from datetime import datetime
@@ -302,6 +304,134 @@ def classify_exception(error: Exception) -> type:
     return Exception
 
 
+class TeeStream(io.TextIOBase):
+    """
+    将文本同时写入原始控制台流和日志文件的简单双写流。
+    用于捕获 print/sys.stdout.write/sys.stderr.write/traceback.print_exc 等输出。
+    """
+
+    def __init__(self, original_stream, log_file_path: str, encoding: str = 'utf-8'):
+        self.original_stream = original_stream
+        self.log_file_path = log_file_path
+        self.encoding_name = encoding or 'utf-8'
+        self._log_stream = None
+        self._closed = False
+
+        try:
+            log_dir = os.path.dirname(log_file_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            self._log_stream = open(log_file_path, 'a', encoding=self.encoding_name, buffering=1)
+        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
+            self._log_stream = None
+
+    @property
+    def encoding(self):
+        return getattr(self.original_stream, 'encoding', None) or self.encoding_name
+
+    @property
+    def closed(self):
+        original_closed = False
+        try:
+            original_closed = bool(getattr(self.original_stream, 'closed', False))
+        except (AttributeError, ValueError):
+            original_closed = False
+        return self._closed or original_closed
+
+    def writable(self):
+        return True
+
+    def isatty(self):
+        try:
+            return bool(self.original_stream and self.original_stream.isatty())
+        except (AttributeError, OSError, ValueError):
+            return False
+
+    def fileno(self):
+        if self.original_stream is None:
+            raise OSError("Underlying stream is unavailable")
+        return self.original_stream.fileno()
+
+    def write(self, s):
+        if s is None:
+            return 0
+
+        if not isinstance(s, str):
+            s = str(s)
+
+        written = 0
+
+        if self.original_stream is not None:
+            try:
+                written = self.original_stream.write(s)
+            except (OSError, IOError, ValueError, TypeError):
+                written = 0
+
+        if self._log_stream is not None:
+            try:
+                self._log_stream.write(s)
+            except (OSError, IOError, ValueError, TypeError):
+                pass
+
+        return written if written is not None else len(s)
+
+    def flush(self):
+        if self.original_stream is not None:
+            try:
+                self.original_stream.flush()
+            except (OSError, IOError, ValueError, TypeError):
+                pass
+
+        if self._log_stream is not None:
+            try:
+                self._log_stream.flush()
+            except (OSError, IOError, ValueError, TypeError):
+                pass
+
+    def close(self):
+        if self._closed:
+            return
+
+        self.flush()
+
+        if self._log_stream is not None:
+            try:
+                self._log_stream.close()
+            except (OSError, IOError, ValueError, TypeError):
+                pass
+
+        self._closed = True
+
+    def __getattr__(self, item):
+        if self.original_stream is not None:
+            return getattr(self.original_stream, item)
+        raise AttributeError(item)
+
+
+def _get_original_console_stream(stream_name: str):
+    """
+    获取原始控制台流，优先使用 sys.__stdout__/sys.__stderr__，
+    避免 logger 的控制台 handler 被 stdout/stderr tee 再次写入日志文件。
+    """
+    original_name = f"__{stream_name}__"
+    original_stream = getattr(sys, original_name, None)
+    current_stream = getattr(sys, stream_name, None)
+
+    for stream in (original_stream, current_stream):
+        if stream is None:
+            continue
+
+        try:
+            if stream.closed:
+                continue
+        except (AttributeError, ValueError):
+            pass
+
+        return stream
+
+    return None
+
+
 class AppLogger:
     """
     应用程序日志管理器
@@ -394,9 +524,9 @@ class AppLogger:
     
     def _add_console_handler(self):
         """添加控制台日志处理器（仅在控制台可用时）"""
-        # 检查 stdout 和 stderr 是否可用
-        if sys.stdout is not None and sys.stderr is not None:
-            console_handler = logging.StreamHandler(sys.stdout)
+        console_stream = _get_original_console_stream('stdout')
+        if console_stream is not None:
+            console_handler = logging.StreamHandler(console_stream)
             console_handler.setLevel(logging.DEBUG)
             console_handler.setFormatter(self.formatter)
             self.logger.addHandler(console_handler)
@@ -470,28 +600,68 @@ def get_logger():
     return _app_logger
 
 
+def install_console_capture(log_file_path: Optional[str] = None) -> bool:
+    """
+    将 sys.stdout / sys.stderr 替换为双写流：
+    - 有控制台时保留原始控制台输出
+    - 同时把所有标准输出和标准错误写入日志文件
+
+    Args:
+        log_file_path: 日志文件路径，未提供时使用当前 logger 的日志文件
+
+    Returns:
+        bool: 是否至少成功安装了一个 tee 流
+    """
+    logger = get_logger()
+
+    if not log_file_path:
+        try:
+            log_file_path = logger.get_log_file_path()
+        except (AttributeError, OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
+            return False
+
+    installed = False
+
+    original_stdout = _get_original_console_stream('stdout')
+    if not isinstance(sys.stdout, TeeStream):
+        try:
+            sys.stdout = TeeStream(original_stdout, log_file_path)
+            installed = True
+        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
+            pass
+
+    original_stderr = _get_original_console_stream('stderr')
+    if not isinstance(sys.stderr, TeeStream):
+        try:
+            sys.stderr = TeeStream(original_stderr, log_file_path)
+            installed = True
+        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
+            pass
+
+    if installed:
+        def _cleanup_stream(stream):
+            if isinstance(stream, TeeStream):
+                try:
+                    stream.flush()
+                except (OSError, IOError, ValueError, TypeError):
+                    pass
+
+        atexit.register(lambda: _cleanup_stream(sys.stdout))
+        atexit.register(lambda: _cleanup_stream(sys.stderr))
+
+    return installed
+
+
 def log_print(msg, level='info'):
     """
     兼容 print 的日志输出函数
-    
+
     Args:
         msg: 日志消息
         level: 日志级别，可选 'debug', 'info', 'warning', 'error', 'critical'
     """
     logger = get_logger()
-    
-    # 同时尝试 print（如果控制台可用）
-    if sys.stdout is not None:
-        try:
-            print(msg)
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            # 控制台输出失败，静默处理（已在日志中记录）
-            pass
-        except (ValueError, TypeError) as e:
-            # 控制台输出失败，静默处理（已在日志中记录）
-            pass
-    
-    # 写入日志文件
+
     level_map = {
         'debug': logger.debug,
         'info': logger.info,
@@ -499,7 +669,7 @@ def log_print(msg, level='info'):
         'error': logger.error,
         'critical': logger.critical
     }
-    
+
     log_func = level_map.get(level, logger.info)
     log_func(msg)
 
@@ -532,19 +702,9 @@ def log_exception(exc_type, exc_value, exc_traceback):
     error_msg += safe_stack_trace
     error_msg += "==========================\n"
     
-    # 记录到日志
+    # 记录到日志。
+    # 不再主动调用 sys.__excepthook__，避免在 stderr 已经被双写到日志文件时产生重复记录。
     logger.error(error_msg)
-    
-    # 同时尝试输出到控制台（如果可用）
-    if sys.stderr is not None:
-        try:
-            sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            # 控制台异常输出失败，静默处理（已在日志中记录）
-            pass
-        except (ValueError, TypeError) as e:
-            # 控制台异常输出失败，静默处理（已在日志中记录）
-            pass
 
 
 # 便捷的日志函数

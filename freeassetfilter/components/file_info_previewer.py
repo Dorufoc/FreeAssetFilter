@@ -31,6 +31,11 @@ from typing import Dict, Any, Optional, List
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.core.media_probe import (
+    get_ffprobe_path,
+    get_subprocess_creationflags,
+    get_video_stream_info,
+)
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox,
@@ -134,8 +139,21 @@ class AudioInfoTask(QRunnable):
         if not info:
             try:
                 result = subprocess.run(
-                    ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", self.file_path],
-                    capture_output=True, text=True, check=True
+                    [
+                        get_ffprobe_path(),
+                        "-v",
+                        "quiet",
+                        "-print_format",
+                        "json",
+                        "-show_format",
+                        self.file_path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=True,
+                    creationflags=get_subprocess_creationflags(),
                 )
                 ffprobe_data = json.loads(result.stdout)
                 if "format" in ffprobe_data:
@@ -747,8 +765,21 @@ class FileInfoPreviewer(QObject):
         if not info or "时长" not in info:
             try:
                 result = subprocess.run(
-                    ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
-                    capture_output=True, text=True, check=True
+                    [
+                        get_ffprobe_path(),
+                        "-v",
+                        "quiet",
+                        "-print_format",
+                        "json",
+                        "-show_format",
+                        file_path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=True,
+                    creationflags=get_subprocess_creationflags(),
                 )
                 ffprobe_data = json.loads(result.stdout)
                 if "format" in ffprobe_data:
@@ -770,97 +801,41 @@ class FileInfoPreviewer(QObject):
         info["文件大小"] = self._format_size(os.path.getsize(file_path))
 
         try:
-            import cv2
-            cap = cv2.VideoCapture(file_path)
-            if cap.isOpened():
-                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                if frame_count > 0 and fps > 0:
-                    info["时长"] = self._format_duration(frame_count / fps)
+            video_info = get_video_stream_info(file_path)
+            duration = video_info.get("duration_seconds")
+            width = video_info.get("width")
+            height = video_info.get("height")
+            fps = video_info.get("fps")
 
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                if width > 0 and height > 0:
-                    info["分辨率"] = f"{width} x {height}"
+            if isinstance(duration, (int, float)) and duration > 0:
+                info["时长"] = self._format_duration(float(duration))
 
-                if fps > 0:
-                    info["帧率"] = f"{fps:.2f} fps"
+            if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+                info["分辨率"] = f"{width} x {height}"
 
-                cap.release()
-                return info
-            cap.release()
-        except (ImportError, OSError, ValueError, AttributeError) as e:
-            debug(f"获取视频信息失败 (opencv): {e}")
+            if isinstance(fps, (int, float)) and fps > 0:
+                info["帧率"] = f"{float(fps):.2f} fps"
+        except Exception as e:
+            debug(f"获取视频信息失败 (ffprobe): {e}")
 
         return info
 
     def _get_video_advanced_info(self, file_path: str) -> Dict[str, Any]:
         """获取视频文件高级信息"""
-        info = {}
-        info["码率"] = "无法获取"
+        info = {"码率": "无法获取"}
 
-        # 尝试使用opencv获取编解码器信息
         try:
-            import cv2
-            cap = cv2.VideoCapture(file_path)
-            if cap.isOpened():
-                fourcc = cap.get(cv2.CAP_PROP_FOURCC)
-                try:
-                    fourcc_int = int(fourcc)
-                    codec_chars = []
-                    for i in range(4):
-                        char = chr((fourcc_int >> (8 * i)) & 0xFF)
-                        if char.isprintable() and char != '\x00':
-                            codec_chars.append(char)
+            video_info = get_video_stream_info(file_path)
 
-                    if codec_chars:
-                        codec_str = ''.join(codec_chars)
-                        info["视频编解码器"] = codec_str
-                except (ValueError, TypeError) as e:
-                    debug(f"解析视频编解码器失败: {e}")
+            codec = video_info.get("codec")
+            if codec:
+                info["视频编解码器"] = str(codec)
 
-                cap.release()
-        except (ImportError, OSError, ValueError, AttributeError) as e:
-            debug(f"获取视频编解码器信息失败 (opencv): {e}")
-
-        # 尝试计算码率
-        try:
-            duration = 0
-            try:
-                import cv2
-                cap = cv2.VideoCapture(file_path)
-                if cap.isOpened():
-                    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                    fps = cap.get(cv2.CAP_PROP_FPS)
-                    if frame_count > 0 and fps > 0:
-                        duration = frame_count / fps
-                    cap.release()
-            except (ImportError, OSError, ValueError, AttributeError) as e:
-                debug(f"获取视频时长失败 (opencv): {e}")
-
-            if duration > 0:
-                file_size = os.path.getsize(file_path)
-                bitrate = int((file_size * 8) / duration)
+            bitrate = video_info.get("bitrate")
+            if isinstance(bitrate, int) and bitrate > 0:
                 info["码率"] = self._format_bitrate(bitrate)
-        except (OSError, ValueError, TypeError) as e:
-            debug(f"计算视频码率失败: {e}")
-
-        # 尝试使用ffprobe获取更准确的码率
-        try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", file_path],
-                capture_output=True, text=True, check=True
-            )
-            ffprobe_data = json.loads(result.stdout)
-            if "streams" in ffprobe_data:
-                for stream in ffprobe_data["streams"]:
-                    if stream.get("codec_type") == "video":
-                        bit_rate = stream.get("bit_rate")
-                        if bit_rate:
-                            info["码率"] = self._format_bitrate(int(bit_rate))
-                            break
-        except (OSError, ValueError, TypeError, subprocess.SubprocessError) as e:
-            debug(f"获取视频码率失败 (ffprobe): {e}")
+        except Exception as e:
+            debug(f"获取视频高级信息失败 (ffprobe): {e}")
 
         return info
 
