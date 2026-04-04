@@ -314,6 +314,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
 )
 from PySide6.QtCore import Qt, QUrl, QEvent, QTimer, QThread
+from freeassetfilter.components.update_controller import UpdateController
 from PySide6.QtGui import QFont, QIcon
 
 
@@ -420,6 +421,9 @@ class FreeAssetFilterApp(QMainWindow):
         self._restore_success_count = 0
         self._restore_batch_size = 20
         self._startup_warmup_thread = None
+
+        # 更新控制器
+        self.update_controller = UpdateController(self)
 
         # 获取全局字体
         global_font = getattr(app, 'global_font', QFont())
@@ -935,6 +939,12 @@ class FreeAssetFilterApp(QMainWindow):
         # 添加右侧占位符，将全局设置按钮推到右侧
         status_layout.addStretch()
 
+        # 创建更新按钮，显示在设置按钮左侧
+        update_icon_path = get_resource_path('freeassetfilter/icons/update.svg')
+        self.update_button = CustomButton(update_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="检查更新")
+        self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        status_layout.addWidget(self.update_button)
+
         # 创建全局设置按钮，使用svg图标
         setting_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
         self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
@@ -942,6 +952,9 @@ class FreeAssetFilterApp(QMainWindow):
         # 连接到全局设置函数
         self.global_settings_button.clicked.connect(self._open_global_settings)
         status_layout.addWidget(self.global_settings_button)
+
+        if hasattr(self, "update_controller") and self.update_controller:
+            self.update_controller.bind_button(self.update_button)
 
         # 将水平布局添加到容器的垂直布局中
         status_container_layout.addLayout(status_layout)
@@ -952,8 +965,9 @@ class FreeAssetFilterApp(QMainWindow):
         # 初始化自定义悬浮提示
         from freeassetfilter.widgets.hover_tooltip import HoverTooltip
         self.hover_tooltip = HoverTooltip(self)
-        # 将GitHub按钮和全局设置按钮添加为目标控件
+        # 将底部按钮添加为目标控件
         self.hover_tooltip.set_target_widget(self.github_button)
+        self.hover_tooltip.set_target_widget(self.update_button)
         self.hover_tooltip.set_target_widget(self.global_settings_button)
 
         # 应用主题设置
@@ -1332,11 +1346,19 @@ class FreeAssetFilterApp(QMainWindow):
 
         status_layout.addStretch()
 
+        update_icon_path = get_resource_path('freeassetfilter/icons/update.svg')
+        self.update_button = CustomButton(update_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="检查更新")
+        self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        status_layout.addWidget(self.update_button)
+
         setting_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
         self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
         self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.global_settings_button.clicked.connect(self._open_global_settings)
         status_layout.addWidget(self.global_settings_button)
+
+        if hasattr(self, "update_controller") and self.update_controller:
+            self.update_controller.bind_button(self.update_button)
 
         status_container_layout.addLayout(status_layout)
         main_layout.addWidget(status_container)
@@ -1366,6 +1388,7 @@ class FreeAssetFilterApp(QMainWindow):
         from freeassetfilter.widgets.hover_tooltip import HoverTooltip
         self.hover_tooltip = HoverTooltip(self)
         self.hover_tooltip.set_target_widget(self.github_button)
+        self.hover_tooltip.set_target_widget(self.update_button)
         self.hover_tooltip.set_target_widget(self.global_settings_button)
 
         self._restore_ui_state()
@@ -1860,7 +1883,81 @@ def _parse_internal_worker_args(argv):
             "prefer_native": argv[4],
         }
 
+    if len(argv) >= 5 and argv[1] == "--faf-run-installer":
+        return "run-installer", {
+            "installer_path": argv[2],
+            "expected_sha256": argv[3],
+            "parent_pid": argv[4],
+        }
+
     return None, {}
+
+
+def _wait_for_process_exit(pid, timeout_seconds=30):
+    """
+    等待指定进程退出
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return
+
+    deadline = time.time() + max(1, timeout_seconds)
+    while time.time() < deadline:
+        if not _is_process_running(pid):
+            return
+        time.sleep(0.3)
+
+    time.sleep(1.0)
+
+
+def _run_installer_after_parent_exit(installer_path, expected_sha256, parent_pid):
+    """
+    内部 helper：
+    - 等待主程序退出
+    - 再次校验安装包
+    - 拉起安装程序
+    """
+    from freeassetfilter.core.update_manager import verify_installer_file
+
+    if not installer_path or not expected_sha256:
+        error("[安装 helper] 缺少安装包路径或 SHA256")
+        return 1
+
+    installer_path = os.path.abspath(installer_path)
+    if not os.path.exists(installer_path):
+        error(f"[安装 helper] 安装包不存在: {installer_path}")
+        return 1
+
+    _wait_for_process_exit(parent_pid, timeout_seconds=30)
+
+    if not verify_installer_file(installer_path, expected_sha256):
+        error(f"[安装 helper] 安装包校验失败: {installer_path}")
+        return 1
+
+    try:
+        if sys.platform == "win32" and hasattr(os, "startfile"):
+            os.startfile(installer_path)
+        else:
+            subprocess.Popen(
+                [installer_path],
+                close_fds=True,
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+        info(f"[安装 helper] 已启动安装包: {installer_path}")
+        return 0
+    except Exception as first_error:
+        try:
+            subprocess.Popen(
+                [installer_path],
+                close_fds=True,
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            )
+            info(f"[安装 helper] 已通过回退方式启动安装包: {installer_path}")
+            return 0
+        except Exception as second_error:
+            error(f"[安装 helper] 启动安装包失败: {first_error}; 回退失败: {second_error}")
+            return 1
 
 
 def _extract_associated_file_path(argv):
@@ -2266,6 +2363,18 @@ def main():
             sys.exit(exit_code)
         except Exception as e:
             error(f"[内部缩略图子进程] 执行失败: {e}")
+            sys.exit(1)
+
+    if worker_type == "run-installer":
+        try:
+            exit_code = _run_installer_after_parent_exit(
+                worker_payload.get("installer_path", ""),
+                worker_payload.get("expected_sha256", ""),
+                worker_payload.get("parent_pid", "0"),
+            )
+            sys.exit(exit_code)
+        except Exception as e:
+            error(f"[内部安装 helper] 执行失败: {e}")
             sys.exit(1)
 
     # 单实例检测 - 使用Windows互斥锁确保只有一个程序实例运行

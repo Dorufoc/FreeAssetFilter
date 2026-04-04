@@ -1,452 +1,939 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-项目远程更新管理模块
-负责检查、下载和更新项目到最新版本
+FreeAssetFilter 更新管理模块
+
+功能：
+- 读取本地 FAFVERSION
+- 获取 GitHub Releases 发布信息
+- 比较构建日期与版本号
+- 自动选择 exe 安装包
+- 自动发现并解析 SHA256 校验信息
+- 管理 data/download 安装包缓存
 """
 
 import os
-import sys
 import re
-import logging
-import tempfile
-import shutil
-import zipfile
-import requests
+import json
+import html
+import random
+import hashlib
 from datetime import datetime
+from xml.etree import ElementTree
 
-# 配置日志
-log_file = os.path.join(os.path.dirname(__file__), 'update.log')
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
+from urllib import request, error as urllib_error
 
-# 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, warning, error
+from freeassetfilter.utils.path_utils import get_app_data_path
 
-# GitHub项目配置
+
 GITHUB_USER = "Dorufoc"
 GITHUB_REPO = "FreeAssetFilter"
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}"
-GITHUB_RELEASES_URL = f"{GITHUB_API_URL}/releases/latest"
-GITHUB_ZIP_URL = f"https://github.com/{GITHUB_USER}/{GITHUB_REPO}/archive/refs/heads/main.zip"
+GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/releases"
+GITHUB_RELEASES_LATEST_URL = f"https://github.com/{GITHUB_USER}/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_ATOM_URL = f"https://github.com/{GITHUB_USER}/{GITHUB_REPO}/releases.atom"
+GITHUB_RELEASES_EXPANDED_ASSETS_URL = f"https://github.com/{GITHUB_USER}/{GITHUB_REPO}/releases/expanded_assets"
+CHROME_MAJOR_VERSIONS = [132, 133, 134, 135, 136]
+EDGE_MAJOR_VERSIONS = [132, 133, 134, 135, 136]
+FIREFOX_MAJOR_VERSIONS = [133, 134, 135, 136, 137]
 
-# 忽略更新的文件列表
-IGNORE_FILES = [
-    ".git",
-    ".gitignore",
-    "update.log",
-    "update_manager.py",
-    "config.json",
-    "user_data",
-    "data"
-]
+REQUEST_ACCEPT_HEADER = "application/vnd.github+json"
 
-# 版本号正则表达式
-VERSION_PATTERN = r"v?([0-9]+(?:\.[0-9]+)*)"
+FAFVERSION_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "FAFVERSION",
+)
 
-# 下载文件大小限制（100MB）
-MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024
-# 最小文件大小（1KB，防止空文件或错误响应）
-MIN_DOWNLOAD_SIZE = 1024
+CACHE_DIR_NAME = "download"
+CACHE_METADATA_FILE = "update_cache.json"
+
+TAG_PATTERN = re.compile(
+    r"^(v)(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]+)(?:\.(\d+))?)?$"
+)
+
+CHECKSUM_ASSET_PATTERNS = (
+    ".exe.sha256",
+    ".sha256",
+    ".sha256.txt",
+    "sha256sums",
+    "checksums",
+)
+
+CHECKSUM_LINE_PATTERNS = (
+    re.compile(r"^\s*([a-fA-F0-9]{64})\s+[* ]?(.+?)\s*$"),
+    re.compile(r"^\s*(.+?)\s*[:=]\s*([a-fA-F0-9]{64})\s*$"),
+)
+
+ASSET_DIGEST_PATTERN = re.compile(r"^sha256:([a-fA-F0-9]{64})$")
+ASSET_ROW_PATTERN = re.compile(
+    r'<a href="(?P<href>/Dorufoc/FreeAssetFilter/releases/download/[^"]+\.exe)"[^>]*>.*?'
+    r'<span[^>]*class="Truncate-text text-bold"[^>]*>(?P<name>[^<]+)</span>.*?'
+    r'sha256:(?P<sha256>[a-fA-F0-9]{64}).*?'
+    r'(?P<size>\d+(?:\.\d+)?)\s*(?P<size_unit>KB|MB|GB|TB)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+STAGE_ORDER = {
+    "alpha": 0,
+    "beta": 1,
+    "rc": 2,
+    "release": 3,
+}
 
 
-def safe_extract(zip_ref, extract_dir):
+class UpdateError(Exception):
     """
-    安全解压zip文件，防止Zip Slip路径遍历漏洞
-    
-    Args:
-        zip_ref: zipfile.ZipFile对象
-        extract_dir: 解压目标目录
-        
+    更新流程错误
+    """
+
+
+def get_cache_dir():
+    """
+    获取安装包缓存目录
+    """
+    cache_dir = os.path.join(get_app_data_path(), CACHE_DIR_NAME)
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def get_cache_metadata_path():
+    """
+    获取缓存元数据文件路径
+    """
+    return os.path.join(get_cache_dir(), CACHE_METADATA_FILE)
+
+
+def load_local_version_info():
+    """
+    读取本地 FAFVERSION
+
     Returns:
-        bool: 解压是否成功
-        
-    Raises:
-        ValueError: 当检测到恶意路径时抛出
+        dict: {
+            tag_name,
+            build_date,
+            build_date_obj,
+            version_tuple,
+        }
     """
-    for member in zip_ref.namelist():
-        member_path = os.path.join(extract_dir, member)
-        abs_member_path = os.path.abspath(member_path)
-        abs_extract_dir = os.path.abspath(extract_dir)
-        
-        if not abs_member_path.startswith(abs_extract_dir + os.sep) and abs_member_path != abs_extract_dir:
-            logger.error(f"检测到Zip Slip攻击尝试: {member}")
-            raise ValueError(f"检测到恶意路径: {member}")
-        
-        if member.startswith('/') or '..' in member.split('/'):
-            logger.error(f"检测到可疑路径: {member}")
-            raise ValueError(f"拒绝解压可疑路径: {member}")
-    
-    zip_ref.extractall(extract_dir)
-    logger.info(f"安全解压完成: {extract_dir}")
-    return True
+    if not os.path.exists(FAFVERSION_FILE):
+        raise UpdateError(f"未找到版本文件：{FAFVERSION_FILE}")
 
-
-def get_local_version():
-    """
-    从主程序文件中提取当前本地版本号
-    
-    Returns:
-        str: 本地版本号，如 "1.0"
-    """
     try:
-        main_file = os.path.join(os.path.dirname(__file__), "main.py")
-        with open(main_file, "r", encoding="utf-8") as f:
-            content = f.read()
-        
-        # 从文件内容中提取版本号
-        match = re.search(r"FreeAssetFilter v([0-9.]+)", content)
-        if match:
-            local_version = match.group(1)
-            logger.info(f"获取到本地版本: {local_version}")
-            return local_version
-        else:
-            logger.warning("无法从main.py中提取版本号，使用默认版本0.0.0")
-            return "0.0.0"
-    except FileNotFoundError as e:
-        logger.error(f"主程序文件不存在: {e}")
-        return "0.0.0"
-    except PermissionError as e:
-        logger.error(f"读取主程序文件权限不足: {e}")
-        return "0.0.0"
+        with open(FAFVERSION_FILE, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f.readlines() if line.strip()]
     except OSError as e:
-        logger.error(f"读取本地版本时发生系统错误: {e}")
-        return "0.0.0"
+        raise UpdateError(f"读取版本文件失败：{e}") from e
+
+    if len(lines) < 2:
+        raise UpdateError("FAFVERSION 格式无效，应包含版本号和构建日期两行")
+
+    tag_name = lines[0]
+    build_date = lines[1]
+    build_date_obj = parse_date(build_date)
+    version_tuple = parse_tag_version(tag_name)
+
+    return {
+        "tag_name": tag_name,
+        "build_date": build_date,
+        "build_date_obj": build_date_obj,
+        "version_tuple": version_tuple,
+    }
 
 
-def get_latest_version():
+def parse_date(date_text):
     """
-    从GitHub API获取最新版本号
-    
-    Returns:
-        tuple: (最新版本号, 下载URL)
+    解析 YYYY-MM-DD 日期
     """
+    if not isinstance(date_text, str) or not date_text.strip():
+        raise UpdateError("日期内容为空")
+
     try:
-        logger.info("正在从GitHub获取最新版本信息...")
-        response = requests.get(GITHUB_RELEASES_URL, timeout=10)
-        response.raise_for_status()
-        
-        release_info = response.json()
-        latest_version = release_info.get("tag_name", "v0.0.0")
-        # 提取纯版本号（去除v前缀）
-        match = re.match(VERSION_PATTERN, latest_version)
-        if match:
-            latest_version = match.group(1)
-        
-        # 获取最新代码zip包URL
-        download_url = GITHUB_ZIP_URL
-        logger.info(f"获取到最新版本: {latest_version}, 下载URL: {download_url}")
-        return latest_version, download_url
-    except requests.exceptions.Timeout:
-        logger.error("连接GitHub超时，请检查网络连接")
-        return None, None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"请求GitHub API失败: {e}")
-        return None, None
-    except (KeyError, ValueError) as e:
-        logger.error(f"解析GitHub API响应失败: {e}")
-        return None, None
-
-
-def version_compare(version1, version2):
-    """
-    比较两个版本号
-    
-    Args:
-        version1: 版本号1
-        version2: 版本号2
-        
-    Returns:
-        int: 1(version1>version2), 0(相等), -1(version1<version2)
-    """
-    try:
-        # 将版本号分割为数字列表
-        v1 = list(map(int, version1.split(".")))
-        v2 = list(map(int, version2.split(".")))
-        
-        # 补全长度
-        max_len = max(len(v1), len(v2))
-        v1 += [0] * (max_len - len(v1))
-        v2 += [0] * (max_len - len(v2))
-        
-        # 逐位比较
-        for i in range(max_len):
-            if v1[i] > v2[i]:
-                return 1
-            elif v1[i] < v2[i]:
-                return -1
-        return 0
+        return datetime.strptime(date_text.strip(), "%Y-%m-%d").date()
     except ValueError as e:
-        logger.error(f"版本号格式错误，无法比较: {e}")
+        raise UpdateError(f"日期格式无效：{date_text}") from e
+
+
+def parse_tag_version(tag_name):
+    """
+    解析版本号，支持：
+    - v1.0.0
+    - v1.0.0-alpha.4
+    - v1.0.0-beta.2
+
+    Returns:
+        tuple: (major, minor, patch, stage_rank, stage_number)
+    """
+    if not isinstance(tag_name, str) or not tag_name.strip():
+        raise UpdateError("版本号为空")
+
+    match = TAG_PATTERN.match(tag_name.strip())
+    if not match:
+        raise UpdateError(f"无法解析版本号：{tag_name}")
+
+    _, major, minor, patch, stage_name, stage_number = match.groups()
+
+    normalized_stage = "release"
+    if stage_name:
+        normalized_stage = stage_name.lower()
+
+    stage_rank = STAGE_ORDER.get(normalized_stage)
+    if stage_rank is None:
+        # 未知预发布标识，按 alpha 之前处理，保证稳定版优先级最高
+        stage_rank = -1
+
+    stage_number_value = int(stage_number) if stage_number is not None else 0
+
+    return (
+        int(major),
+        int(minor),
+        int(patch),
+        stage_rank,
+        stage_number_value,
+    )
+
+
+def compare_version_tuples(version_a, version_b):
+    """
+    比较两个版本元组
+
+    Returns:
+        int: 1(a>b), 0(a=b), -1(a<b)
+    """
+    if version_a > version_b:
+        return 1
+    if version_a < version_b:
+        return -1
+    return 0
+
+
+def compare_release_with_local(local_info, release_info):
+    """
+    先比较日期，再比较版本号
+
+    Returns:
+        int: 1(release更新), 0(相同), -1(local更新)
+    """
+    local_date = local_info["build_date_obj"]
+    release_date = release_info["published_date_obj"]
+
+    if release_date > local_date:
+        return 1
+    if release_date < local_date:
+        return -1
+
+    return compare_version_tuples(
+        release_info["version_tuple"],
+        local_info["version_tuple"],
+    )
+
+
+def generate_random_browser_user_agent():
+    """
+    生成随机的现代浏览器 UA
+    """
+    browser_family = random.choice(["chrome", "edge", "firefox"])
+
+    if browser_family == "chrome":
+        major = random.choice(CHROME_MAJOR_VERSIONS)
+        build = random.randint(1000, 6999)
+        patch = random.randint(10, 220)
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{major}.0.{build}.{patch} Safari/537.36"
+        )
+
+    if browser_family == "edge":
+        chrome_major = random.choice(CHROME_MAJOR_VERSIONS)
+        edge_major = random.choice(EDGE_MAJOR_VERSIONS)
+        chrome_build = random.randint(1000, 6999)
+        chrome_patch = random.randint(10, 220)
+        edge_build = random.randint(1000, 6999)
+        edge_patch = random.randint(10, 220)
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{chrome_major}.0.{chrome_build}.{chrome_patch} "
+            f"Safari/537.36 Edg/{edge_major}.0.{edge_build}.{edge_patch}"
+        )
+
+    major = random.choice(FIREFOX_MAJOR_VERSIONS)
+    gecko_date = random.choice(["20100101", "20200101"])
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:"
+        f"{major}.0) Gecko/{gecko_date} Firefox/{major}.0"
+    )
+
+
+def build_request_headers(accept_header=REQUEST_ACCEPT_HEADER):
+    """
+    为每次请求构造新的随机浏览器请求头
+    """
+    return {
+        "Accept": accept_header,
+        "User-Agent": generate_random_browser_user_agent(),
+    }
+
+
+def _http_get_text(url, timeout=30):
+    """
+    通过标准库执行 HTTP GET，请求文本内容
+    """
+    req = request.Request(url, headers=build_request_headers(), method="GET")
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return response.read().decode(charset, errors="replace")
+    except urllib_error.URLError as e:
+        raise UpdateError(f"网络请求失败：{e}") from e
+    except OSError as e:
+        raise UpdateError(f"网络请求失败：{e}") from e
+
+
+def fetch_github_releases():
+    """
+    保留旧接口，兼容历史调用。
+    当前优先使用网页源避免 GitHub API rate limit。
+    """
+    raw_text = _http_get_text(GITHUB_RELEASES_API_URL, timeout=30)
+
+    try:
+        releases = json.loads(raw_text)
+    except ValueError as e:
+        raise UpdateError("GitHub Releases 返回了无效 JSON") from e
+
+    if not isinstance(releases, list):
+        raise UpdateError("GitHub Releases 响应格式无效")
+
+    return releases
+
+
+def select_latest_release(releases):
+    """
+    保留旧接口，兼容历史调用。
+    当前主流程已改为网页源抓取。
+    """
+    candidates = []
+
+    for release in releases:
+        if not isinstance(release, dict):
+            continue
+
+        if release.get("draft"):
+            continue
+
+        tag_name = release.get("tag_name")
+        published_at = release.get("published_at") or release.get("created_at")
+        assets = release.get("assets") or []
+
+        if not tag_name or not published_at:
+            continue
+
+        try:
+            version_tuple = parse_tag_version(tag_name)
+            published_date_obj, published_date = parse_github_date(published_at)
+        except UpdateError:
+            continue
+
+        installer_asset = select_installer_asset(assets)
+        if installer_asset is None:
+            continue
+
+        installer_sha256 = extract_sha256_from_asset_digest(installer_asset)
+
+        checksum_asset_name = ""
+        checksum_download_url = ""
+
+        if not installer_sha256:
+            checksum_asset = select_checksum_asset(assets)
+            if checksum_asset is None:
+                continue
+
+            installer_sha256 = fetch_installer_sha256(
+                checksum_download_url=checksum_asset["browser_download_url"],
+                installer_name=installer_asset["name"],
+            )
+            if not installer_sha256:
+                continue
+
+            checksum_asset_name = checksum_asset["name"]
+            checksum_download_url = checksum_asset["browser_download_url"]
+
+        candidates.append(
+            {
+                "release_id": release.get("id"),
+                "tag_name": tag_name,
+                "version_tuple": version_tuple,
+                "published_at": published_at,
+                "published_date": published_date,
+                "published_date_obj": published_date_obj,
+                "html_url": release.get("html_url", ""),
+                "release_body": release.get("body", "") or "",
+                "installer_name": installer_asset["name"],
+                "installer_size": installer_asset.get("size", 0),
+                "installer_download_url": installer_asset["browser_download_url"],
+                "installer_sha256": installer_sha256.lower(),
+                "checksum_asset_name": checksum_asset_name,
+                "checksum_download_url": checksum_download_url,
+                "is_prerelease": bool(release.get("prerelease", False)),
+            }
+        )
+
+    if not candidates:
+        raise UpdateError("未找到包含 exe 安装包且可校验 SHA256 的有效发布版本")
+
+    candidates.sort(
+        key=lambda item: (
+            item["published_date_obj"],
+            item["version_tuple"],
+        ),
+        reverse=True,
+    )
+    return candidates[0]
+
+
+def _extract_latest_tag_from_redirect():
+    """
+    通过 releases/latest 跳转获取最新 tag
+    """
+    req = request.Request(
+        GITHUB_RELEASES_LATEST_URL,
+        headers=build_request_headers("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+        method="GET",
+    )
+
+    try:
+        with request.urlopen(req, timeout=30) as response:
+            final_url = response.geturl()
+    except urllib_error.URLError as e:
+        raise UpdateError(f"获取最新发布跳转失败：{e}") from e
+    except OSError as e:
+        raise UpdateError(f"获取最新发布跳转失败：{e}") from e
+
+    match = re.search(r"/releases/tag/([^/?#]+)", final_url)
+    if not match:
+        raise UpdateError("无法从 latest 跳转地址解析最新版本标签")
+
+    return match.group(1)
+
+
+def _parse_size_to_bytes(size_text, size_unit):
+    """
+    将 GitHub 网页中的大小文本转为字节数
+    """
+    try:
+        value = float(size_text)
+    except (TypeError, ValueError):
         return 0
 
+    unit = str(size_unit).upper()
+    factors = {
+        "KB": 1024,
+        "MB": 1024 ** 2,
+        "GB": 1024 ** 3,
+        "TB": 1024 ** 4,
+    }
+    factor = factors.get(unit, 1)
+    return int(value * factor)
 
-def check_update_available():
+
+def _fetch_release_metadata_from_atom(tag_name):
     """
-    检查是否有更新可用
-    
-    Returns:
-        tuple: (是否有更新, 本地版本, 最新版本, 下载URL)
+    从 releases.atom 中获取指定 tag 的发布时间和更新日志
     """
-    local_version = get_local_version()
-    latest_version, download_url = get_latest_version()
-    
-    if not latest_version:
-        return False, local_version, None, None
-    
-    compare_result = version_compare(latest_version, local_version)
-    if compare_result > 0:
-        logger.info(f"发现新版本: {latest_version} (当前版本: {local_version})")
-        return True, local_version, latest_version, download_url
+    atom_text = _http_get_text(GITHUB_RELEASES_ATOM_URL, timeout=30)
+
+    try:
+        root = ElementTree.fromstring(atom_text)
+    except ElementTree.ParseError as e:
+        raise UpdateError("解析 releases.atom 失败") from e
+
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+
+    for entry in root.findall("atom:entry", namespace):
+        title_node = entry.find("atom:title", namespace)
+        if title_node is None:
+            continue
+
+        entry_tag = (title_node.text or "").strip()
+        if entry_tag != tag_name:
+            continue
+
+        updated_node = entry.find("atom:updated", namespace)
+        content_node = entry.find("atom:content", namespace)
+        link_node = entry.find("atom:link[@rel='alternate']", namespace)
+
+        published_at = (updated_node.text or "").strip() if updated_node is not None else ""
+        if not published_at:
+            raise UpdateError(f"在 atom 中未找到 {tag_name} 的发布时间")
+
+        published_date_obj, published_date = parse_github_date(published_at)
+        release_body_html = (content_node.text or "") if content_node is not None else ""
+        release_body = html.unescape(release_body_html)
+        release_body = re.sub(r"<br\s*/?>", "\n", release_body, flags=re.IGNORECASE)
+        release_body = re.sub(r"</p\s*>", "\n\n", release_body, flags=re.IGNORECASE)
+        release_body = re.sub(r"</h[1-6]\s*>", "\n", release_body, flags=re.IGNORECASE)
+        release_body = re.sub(r"<[^>]+>", "", release_body)
+        release_body = re.sub(r"\n{3,}", "\n\n", release_body).strip()
+
+        html_url = ""
+        if link_node is not None:
+            html_url = link_node.attrib.get("href", "")
+
+        return {
+            "tag_name": tag_name,
+            "published_at": published_at,
+            "published_date": published_date,
+            "published_date_obj": published_date_obj,
+            "html_url": html_url,
+            "release_body": release_body,
+        }
+
+    raise UpdateError(f"在 releases.atom 中未找到版本 {tag_name}")
+
+
+def _fetch_installer_info_from_expanded_assets(tag_name):
+    """
+    从 expanded_assets 页面获取 exe、sha256 和大小
+    """
+    html_text = _http_get_text(
+        f"{GITHUB_RELEASES_EXPANDED_ASSETS_URL}/{tag_name}",
+        timeout=30,
+    )
+
+    match = ASSET_ROW_PATTERN.search(html_text)
+    if not match:
+        raise UpdateError("未能从 expanded_assets 页面解析安装包信息")
+
+    installer_href = html.unescape(match.group("href"))
+    installer_name = html.unescape(match.group("name")).strip()
+    installer_sha256 = match.group("sha256").lower()
+    installer_size = _parse_size_to_bytes(match.group("size"), match.group("size_unit"))
+
+    if installer_href.startswith("/"):
+        installer_download_url = f"https://github.com{installer_href}"
     else:
-        logger.info(f"当前已是最新版本: {local_version}")
-        return False, local_version, latest_version, None
+        installer_download_url = installer_href
+
+    return {
+        "installer_name": installer_name,
+        "installer_sha256": installer_sha256,
+        "installer_size": installer_size,
+        "installer_download_url": installer_download_url,
+        "checksum_asset_name": "",
+        "checksum_download_url": "",
+    }
 
 
-def download_file(url, save_path):
+def fetch_latest_release_via_web():
     """
-    下载文件并显示进度
-    
-    Args:
-        url: 文件下载URL
-        save_path: 保存路径
-        
-    Returns:
-        bool: 下载是否成功
+    使用 GitHub 网页源获取最新发布，避免 API rate limit
     """
-    try:
-        logger.info(f"开始下载文件: {url} 到 {save_path}")
-        
-        with requests.get(url, stream=True, timeout=30) as response:
-            response.raise_for_status()
-            
-            total_size = int(response.headers.get('content-length', 0))
-            
-            if total_size > MAX_DOWNLOAD_SIZE:
-                logger.error(f"文件大小超过限制: {total_size} bytes (最大: {MAX_DOWNLOAD_SIZE} bytes)")
-                return False
-            
-            if total_size > 0 and total_size < MIN_DOWNLOAD_SIZE:
-                logger.error(f"文件大小异常偏小: {total_size} bytes (最小: {MIN_DOWNLOAD_SIZE} bytes)")
-                return False
-            
-            if total_size > 0:
-                logger.info(f"文件大小: {total_size} bytes ({total_size / 1024 / 1024:.2f} MB)")
-            
-            downloaded_size = 0
-            
-            with open(save_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-                        
-                        if downloaded_size > MAX_DOWNLOAD_SIZE:
-                            logger.error(f"下载文件大小超过限制: {downloaded_size} bytes")
-                            return False
-                        
-                        if total_size > 0:
-                            progress = (downloaded_size / total_size) * 100
-                            sys.stdout.write(f"\r下载进度: {progress:.1f}% ({downloaded_size}/{total_size} bytes)")
-                            sys.stdout.flush()
-        
-        sys.stdout.write("\n")
-        logger.info(f"文件下载成功: {save_path}")
-        return True
-    except requests.exceptions.Timeout:
-        logger.error("文件下载超时")
-        return False
-    except requests.exceptions.RequestException as e:
-        logger.error(f"文件下载失败: {e}")
-        return False
-    except OSError as e:
-        logger.error(f"文件写入失败: {e}")
-        return False
+    tag_name = _extract_latest_tag_from_redirect()
+    version_tuple = parse_tag_version(tag_name)
+
+    metadata = _fetch_release_metadata_from_atom(tag_name)
+    installer_info = _fetch_installer_info_from_expanded_assets(tag_name)
+
+    return {
+        "release_id": None,
+        "tag_name": tag_name,
+        "version_tuple": version_tuple,
+        "published_at": metadata["published_at"],
+        "published_date": metadata["published_date"],
+        "published_date_obj": metadata["published_date_obj"],
+        "html_url": metadata["html_url"],
+        "release_body": metadata["release_body"],
+        "installer_name": installer_info["installer_name"],
+        "installer_size": installer_info["installer_size"],
+        "installer_download_url": installer_info["installer_download_url"],
+        "installer_sha256": installer_info["installer_sha256"],
+        "checksum_asset_name": installer_info["checksum_asset_name"],
+        "checksum_download_url": installer_info["checksum_download_url"],
+        "is_prerelease": "-" in tag_name,
+    }
 
 
-def is_ignore_file(file_path):
+def extract_sha256_from_asset_digest(asset):
     """
-    判断文件是否需要忽略更新
-    
-    Args:
-        file_path: 文件路径
-        
-    Returns:
-        bool: 是否忽略
+    从 GitHub release asset 的 digest 字段提取 sha256
     """
-    for ignore in IGNORE_FILES:
-        if file_path == ignore or file_path.startswith(f"{ignore}/"):
-            return True
-    return False
+    if not isinstance(asset, dict):
+        return None
+
+    digest_value = str(asset.get("digest", "")).strip()
+    if not digest_value:
+        return None
+
+    match = ASSET_DIGEST_PATTERN.match(digest_value)
+    if not match:
+        return None
+
+    return match.group(1).lower()
 
 
-def update_files(source_dir, target_dir):
+def parse_github_date(date_text):
     """
-    将源目录中的文件更新到目标目录
-    
-    Args:
-        source_dir: 源目录（解压后的最新代码）
-        target_dir: 目标目录（当前项目目录）
-        
-    Returns:
-        bool: 更新是否成功
+    解析 GitHub ISO 时间，输出 date 对象和 YYYY-MM-DD
     """
     try:
-        # 遍历源目录
-        for root, dirs, files in os.walk(source_dir):
-            # 计算相对路径
-            relative_path = os.path.relpath(root, source_dir)
-            if relative_path == ".":
-                relative_path = ""
-            
-            # 跳过根目录下的.git目录
-            if relative_path.startswith(".git"):
+        dt = datetime.strptime(date_text, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as e:
+        raise UpdateError(f"发布日期格式无效：{date_text}") from e
+
+    release_date = dt.date()
+    return release_date, release_date.strftime("%Y-%m-%d")
+
+
+def select_installer_asset(assets):
+    """
+    选择 exe 安装包资产
+    """
+    if not isinstance(assets, list):
+        return None
+
+    exe_assets = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+
+        name = asset.get("name", "")
+        url = asset.get("browser_download_url", "")
+        if not name or not url:
+            continue
+
+        if name.lower().endswith(".exe"):
+            exe_assets.append(asset)
+
+    if not exe_assets:
+        return None
+
+    exe_assets.sort(
+        key=lambda item: (
+            item.get("size", 0),
+            item.get("name", ""),
+        ),
+        reverse=True,
+    )
+    return exe_assets[0]
+
+
+def select_checksum_asset(assets):
+    """
+    选择校验文件资产
+    """
+    if not isinstance(assets, list):
+        return None
+
+    checksum_candidates = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+
+        name = asset.get("name", "")
+        url = asset.get("browser_download_url", "")
+        if not name or not url:
+            continue
+
+        lower_name = name.lower()
+        if any(pattern in lower_name for pattern in CHECKSUM_ASSET_PATTERNS):
+            checksum_candidates.append(asset)
+
+    if not checksum_candidates:
+        return None
+
+    checksum_candidates.sort(
+        key=lambda item: (
+            item.get("size", 0),
+            item.get("name", ""),
+        ),
+        reverse=True,
+    )
+    return checksum_candidates[0]
+
+
+def fetch_installer_sha256(checksum_download_url, installer_name):
+    """
+    下载并解析 checksum 文件，提取目标 exe 的 sha256
+    """
+    try:
+        text = _http_get_text(checksum_download_url, timeout=30)
+    except UpdateError as e:
+        warning(f"获取校验文件失败: {e}")
+        return None
+
+    return parse_sha256_from_text(text, installer_name)
+
+
+def parse_sha256_from_text(text, installer_name):
+    """
+    从 checksum 文本中解析指定安装包的 sha256
+    """
+    if not isinstance(text, str) or not isinstance(installer_name, str):
+        return None
+
+    target_name = installer_name.strip().lower()
+    if not target_name:
+        return None
+
+    fallback_hash = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        for pattern in CHECKSUM_LINE_PATTERNS:
+            match = pattern.match(line)
+            if not match:
                 continue
-            
-            # 创建目标目录
-            target_root = os.path.join(target_dir, relative_path)
-            if not os.path.exists(target_root):
-                os.makedirs(target_root)
-            
-            # 处理文件
-            for file in files:
-                source_file = os.path.join(root, file)
-                # 计算相对文件路径
-                relative_file_path = os.path.join(relative_path, file) if relative_path else file
-                
-                # 检查是否需要忽略
-                if is_ignore_file(relative_file_path):
-                    logger.info(f"忽略文件: {relative_file_path}")
-                    continue
-                
-                # 目标文件路径
-                target_file = os.path.join(target_dir, relative_file_path)
-                
-                # 备份旧文件
-                backup_file = f"{target_file}.bak"
-                if os.path.exists(target_file):
-                    shutil.copy2(target_file, backup_file)
-                    logger.info(f"已备份文件: {target_file} -> {backup_file}")
-                
-                # 复制新文件
-                shutil.copy2(source_file, target_file)
-                logger.info(f"已更新文件: {target_file}")
 
-        return True
-    except PermissionError as e:
-        logger.error(f"更新文件时权限不足: {e}")
-        return False
-    except OSError as e:
-        logger.error(f"更新文件时发生系统错误: {e}")
-        return False
+            if pattern is CHECKSUM_LINE_PATTERNS[0]:
+                sha256_value = match.group(1).strip().lower()
+                file_name = os.path.basename(match.group(2).strip()).lower()
+            else:
+                file_name = os.path.basename(match.group(1).strip()).lower()
+                sha256_value = match.group(2).strip().lower()
+
+            if file_name == target_name:
+                return sha256_value
+
+            if file_name.endswith(".exe") and fallback_hash is None:
+                fallback_hash = (file_name, sha256_value)
+
+    if fallback_hash and fallback_hash[0] == target_name:
+        return fallback_hash[1]
+
+    # 兼容某些只有单行哈希的情况
+    stripped = text.strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", stripped):
+        return stripped
+
+    return None
 
 
-def clean_backup_files(target_dir):
+def calculate_sha256(file_path, chunk_size=1024 * 1024):
     """
-    清理备份文件
-    
-    Args:
-        target_dir: 目标目录
+    计算文件 sha256
     """
+    sha256_hash = hashlib.sha256()
+
     try:
-        for root, dirs, files in os.walk(target_dir):
-            for file in files:
-                if file.endswith(".bak"):
-                    backup_file = os.path.join(root, file)
-                    os.remove(backup_file)
-                    logger.info(f"已清理备份文件: {backup_file}")
-    except PermissionError as e:
-        logger.warning(f"清理备份文件时权限不足: {e}")
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                sha256_hash.update(chunk)
     except OSError as e:
-        logger.warning(f"清理备份文件时发生系统错误: {e}")
+        raise UpdateError(f"读取文件计算 SHA256 失败：{e}") from e
+
+    return sha256_hash.hexdigest().lower()
 
 
-def run_update():
+def verify_installer_file(file_path, expected_sha256):
     """
-    执行完整的更新流程
-    
+    校验安装包 sha256
+    """
+    if not file_path or not expected_sha256:
+        return False
+
+    if not os.path.exists(file_path):
+        return False
+
+    try:
+        actual_sha256 = calculate_sha256(file_path)
+    except UpdateError:
+        return False
+
+    return actual_sha256 == expected_sha256.lower()
+
+
+def load_cache_metadata():
+    """
+    读取缓存元数据
+    """
+    metadata_path = get_cache_metadata_path()
+    if not os.path.exists(metadata_path):
+        return None
+
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    return data
+
+
+def save_cache_metadata(metadata):
+    """
+    保存缓存元数据
+    """
+    metadata_path = get_cache_metadata_path()
+    try:
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        raise UpdateError(f"写入缓存元数据失败：{e}") from e
+
+
+def clear_invalid_cache(installer_path=None):
+    """
+    清理无效缓存
+    """
+    if installer_path and os.path.exists(installer_path):
+        try:
+            os.remove(installer_path)
+        except OSError:
+            pass
+
+    metadata_path = get_cache_metadata_path()
+    if os.path.exists(metadata_path):
+        try:
+            os.remove(metadata_path)
+        except OSError:
+            pass
+
+
+def prepare_cached_installer(release_info, installer_path):
+    """
+    将本地已准备好的安装包写入缓存元数据
+    """
+    if not os.path.exists(installer_path):
+        raise UpdateError("安装包不存在，无法写入缓存")
+
+    if not verify_installer_file(installer_path, release_info["installer_sha256"]):
+        raise UpdateError("安装包 SHA256 校验失败，无法写入缓存")
+
+    metadata = {
+        "release_id": release_info.get("release_id"),
+        "tag_name": release_info.get("tag_name"),
+        "published_date": release_info.get("published_date"),
+        "installer_name": release_info.get("installer_name"),
+        "installer_download_url": release_info.get("installer_download_url"),
+        "installer_sha256": release_info.get("installer_sha256"),
+        "installer_path": installer_path,
+        "saved_at": int(datetime.utcnow().timestamp()),
+    }
+    save_cache_metadata(metadata)
+
+    result = dict(metadata)
+    result["is_ready"] = True
+    return result
+
+
+def get_cached_installer_if_valid(release_info):
+    """
+    如果本地已有可复用缓存，则返回缓存信息
+    """
+    metadata = load_cache_metadata()
+    if not metadata:
+        return {
+            "is_ready": False,
+            "reason": "未找到缓存元数据",
+        }
+
+    installer_path = metadata.get("installer_path")
+    expected_sha256 = metadata.get("installer_sha256")
+    tag_name = metadata.get("tag_name")
+    published_date = metadata.get("published_date")
+
+    if (
+        tag_name != release_info.get("tag_name")
+        or published_date != release_info.get("published_date")
+        or expected_sha256 != release_info.get("installer_sha256")
+    ):
+        return {
+            "is_ready": False,
+            "reason": "缓存版本与最新发布不匹配",
+        }
+
+    if not installer_path or not os.path.exists(installer_path):
+        clear_invalid_cache()
+        return {
+            "is_ready": False,
+            "reason": "缓存安装包不存在",
+        }
+
+    if not verify_installer_file(installer_path, expected_sha256):
+        clear_invalid_cache(installer_path)
+        return {
+            "is_ready": False,
+            "reason": "缓存安装包校验失败",
+        }
+
+    return {
+        "is_ready": True,
+        "installer_path": installer_path,
+        "installer_sha256": expected_sha256,
+        "installer_name": metadata.get("installer_name"),
+        "tag_name": tag_name,
+        "published_date": published_date,
+    }
+
+
+def check_for_updates():
+    """
+    检查更新
+
     Returns:
-        bool: 更新是否成功
+        dict:
+        {
+            update_available,
+            local_info,
+            latest_release,
+            cache_result,
+            comparison_result,
+        }
     """
-    logger.info("="*60)
-    logger.info("开始执行FreeAssetFilter更新流程")
-    logger.info(f"更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("="*60)
-    
+    local_info = load_local_version_info()
+
+    latest_release = None
+    api_error = None
+
     try:
-        update_available, local_version, latest_version, download_url = check_update_available()
-        
-        if not update_available:
-            logger.info("当前已是最新版本，无需更新")
-            return True
-        
-        logger.info(f"发现新版本: {latest_version}，当前版本: {local_version}")
-        
-        with tempfile.TemporaryDirectory() as temp_dir:
-            logger.info(f"创建临时目录: {temp_dir}")
-            
-            zip_file = os.path.join(temp_dir, f"{GITHUB_REPO}-main.zip")
-            if not download_file(download_url, zip_file):
-                logger.error("下载最新代码失败")
-                return False
-            
-            extract_dir = os.path.join(temp_dir, "extract")
-            os.makedirs(extract_dir, exist_ok=True)
-            
-            try:
-                with zipfile.ZipFile(zip_file, "r") as zip_ref:
-                    safe_extract(zip_ref, extract_dir)
-            except ValueError as e:
-                logger.error(f"解压文件时检测到安全问题: {e}")
-                return False
-            
-            extracted_folders = os.listdir(extract_dir)
-            if not extracted_folders:
-                logger.error("解压后的目录为空")
-                return False
-            
-            source_dir = os.path.join(extract_dir, extracted_folders[0])
-            logger.info(f"找到源代码目录: {source_dir}")
-            
-            target_dir = os.path.dirname(__file__)
-            if not update_files(source_dir, target_dir):
-                logger.error("更新文件失败")
-                return False
-            
-            logger.info("="*60)
-            logger.info("更新完成！")
-            logger.info(f"当前版本已更新至: {latest_version}")
-            logger.info("="*60)
+        latest_release = fetch_latest_release_via_web()
+    except UpdateError as web_error:
+        warning(f"网页源检查更新失败，回退 API：{web_error}")
+        try:
+            releases = fetch_github_releases()
+            latest_release = select_latest_release(releases)
+        except UpdateError as fallback_error:
+            api_error = fallback_error
 
-            return True
-    except zipfile.BadZipFile as e:
-        logger.error(f"下载的压缩包损坏: {e}")
-        return False
-    except OSError as e:
-        logger.error(f"更新过程中发生系统错误: {e}")
-        return False
+    if latest_release is None:
+        if api_error is not None:
+            raise api_error
+        raise UpdateError("无法获取最新发布信息")
 
+    comparison_result = compare_release_with_local(local_info, latest_release)
+    update_available = comparison_result > 0
 
-if __name__ == "__main__":
-    """
-    主程序入口，直接运行时执行更新流程
-    """
-    logger.info("\n\n启动FreeAssetFilter更新管理器")
-    logger.info("="*60)
-    
-    success = run_update()
-    
-    if success:
-        info("\n更新成功！")
-        info("请重新启动程序以应用更新。")
-    else:
-        error("\n更新失败，请查看update.log获取详细信息。")
-    
-    input("\n按Enter键退出...")
+    cache_result = {
+        "is_ready": False,
+        "reason": "当前无需缓存",
+    }
+
+    if update_available:
+        cache_result = get_cached_installer_if_valid(latest_release)
+
+    result = {
+        "update_available": update_available,
+        "comparison_result": comparison_result,
+        "local_info": local_info,
+        "latest_release": latest_release,
+        "cache_result": cache_result,
+    }
+
+    info(
+        "更新检查完成: "
+        f"本地={local_info['tag_name']}({local_info['build_date']}), "
+        f"远程={latest_release['tag_name']}({latest_release['published_date']}), "
+        f"update_available={update_available}"
+    )
+
+    return result
