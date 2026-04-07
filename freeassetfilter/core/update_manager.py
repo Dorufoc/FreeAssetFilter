@@ -24,7 +24,7 @@ from xml.etree import ElementTree
 from urllib import request, error as urllib_error
 
 from freeassetfilter.utils.app_logger import info, warning, error
-from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.utils.path_utils import get_app_data_path, get_resource_path
 
 
 GITHUB_USER = "Dorufoc"
@@ -39,10 +39,7 @@ FIREFOX_MAJOR_VERSIONS = [133, 134, 135, 136, 137]
 
 REQUEST_ACCEPT_HEADER = "application/vnd.github+json"
 
-FAFVERSION_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "FAFVERSION",
-)
+FAFVERSION_FILE = get_resource_path("FAFVERSION")
 
 CACHE_DIR_NAME = "download"
 CACHE_METADATA_FILE = "update_cache.json"

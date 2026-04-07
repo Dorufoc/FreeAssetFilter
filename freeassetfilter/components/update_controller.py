@@ -120,6 +120,7 @@ class UpdateDownloadWorker(QThread):
                             break
 
                         f.write(chunk)
+                        f.flush()
                         downloaded_size += len(chunk)
                         self.progress_changed.emit(
                             downloaded_size,
@@ -203,9 +204,20 @@ class UpdateController(QObject):
         self._download_worker = None
         self._current_dialog = None
         self._current_progress_bar = None
+        self._current_progress_info_label = None
         self._current_release_info = None
         self._current_ready_package = None
         self._check_cancelled = False
+        self._current_download_total_size = 0
+        self._download_progress_timer = QTimer(self)
+        self._download_progress_timer.setInterval(1000)
+        self._download_progress_timer.timeout.connect(self._poll_download_progress_from_file)
+        self._current_download_temp_path = None
+        self._current_download_final_path = None
+        self._latest_downloaded_size = 0
+        self._last_speed_check_time = None
+        self._last_speed_check_size = 0
+        self._current_download_speed_text = "0 B/s"
 
     def bind_button(self, button):
         """
@@ -321,20 +333,31 @@ class UpdateController(QObject):
             title="检查更新失败",
             text=message,
             buttons=["确定"],
-            button_types=["warning"],
+            button_types=["primary"],
         )
 
     def _on_update_available_dialog_clicked(self, index):
         if index != 0 or not self._current_release_info:
             return
 
-        progress_max = int(self._current_release_info.get("installer_size", 0) or 0)
-        if progress_max <= 0:
-            progress_max = 1000
+        self._current_download_total_size = int(self._current_release_info.get("installer_size", 0) or 0)
+        self._latest_downloaded_size = 0
+        self._last_speed_check_time = time.time()
+        self._last_speed_check_size = 0
+        self._current_download_speed_text = "0 B/s"
+        installer_name = self._current_release_info.get("installer_name", "")
+        if installer_name:
+            self._current_download_final_path = os.path.join(get_cache_dir(), installer_name)
+            self._current_download_temp_path = f"{self._current_download_final_path}.download"
+        else:
+            self._current_download_final_path = None
+            self._current_download_temp_path = None
+
+        progress_max = self._current_download_total_size if self._current_download_total_size > 0 else 1000
 
         self._show_progress_dialog(
             title="下载更新",
-            text="正在下载更新…",
+            text="正在下载更新… 0.0%",
             progress_min=0,
             progress_max=progress_max,
             progress_value=0,
@@ -344,12 +367,20 @@ class UpdateController(QObject):
             allow_close=False,
         )
 
+        if self._current_download_total_size > 0:
+            self._set_progress_info_text(
+                f"{self._format_size(0)} / {self._format_size(self._current_download_total_size)} | {self._current_download_speed_text}"
+            )
+        else:
+            self._set_progress_info_text(f"{self._format_size(0)} | {self._current_download_speed_text}")
+
         self._download_worker = UpdateDownloadWorker(self._current_release_info, self)
         self._download_worker.progress_changed.connect(self._on_download_progress_changed)
         self._download_worker.success.connect(self._on_download_success)
         self._download_worker.failure.connect(self._on_download_failure)
         self._download_worker.cancelled.connect(self._on_download_cancelled)
         self._download_worker.start()
+        self._download_progress_timer.start()
 
     def _on_download_dialog_clicked(self, index):
         if index != 0:
@@ -360,25 +391,27 @@ class UpdateController(QObject):
             self._download_worker.cancel()
 
     def _on_download_progress_changed(self, downloaded_size, total_size, text):
-        self._set_dialog_text(text)
+        """
+        下载线程进度信号：
+        - 记录线程侧已下载大小，作为文件系统大小轮询的兜底值
+        - 同步总大小
+        """
+        self._latest_downloaded_size = max(self._latest_downloaded_size, int(downloaded_size or 0))
 
-        if self._current_progress_bar is None:
-            return
-
-        if total_size > 0:
-            self._current_progress_bar.setRange(0, total_size)
-            self._current_progress_bar.setValue(downloaded_size, use_animation=False)
-        else:
-            fallback_total = int((self._current_release_info or {}).get("installer_size", 0) or 0)
-            if fallback_total > 0:
-                self._current_progress_bar.setRange(0, fallback_total)
-                self._current_progress_bar.setValue(min(downloaded_size, fallback_total), use_animation=False)
-            else:
-                self._current_progress_bar.setRange(0, 0)
-                self._current_progress_bar.setValue(0, use_animation=False)
+        effective_total = int(total_size or 0)
+        if effective_total > 0:
+            self._current_download_total_size = effective_total
 
     def _on_download_success(self, cache_result):
+        self._download_progress_timer.stop()
         self._download_worker = None
+        self._current_download_total_size = 0
+        self._current_download_temp_path = None
+        self._current_download_final_path = None
+        self._latest_downloaded_size = 0
+        self._last_speed_check_time = None
+        self._last_speed_check_size = 0
+        self._current_download_speed_text = "0 B/s"
         self._current_ready_package = cache_result
 
         self._show_install_ready_dialog(
@@ -390,22 +423,103 @@ class UpdateController(QObject):
         )
 
     def _on_download_failure(self, message):
+        self._download_progress_timer.stop()
         self._download_worker = None
+        self._current_download_total_size = 0
+        self._current_download_temp_path = None
+        self._current_download_final_path = None
+        self._latest_downloaded_size = 0
+        self._last_speed_check_time = None
+        self._last_speed_check_size = 0
+        self._current_download_speed_text = "0 B/s"
         self._show_message_dialog(
             title="下载更新失败",
             text=message,
             buttons=["确定"],
-            button_types=["warning"],
+            button_types=["primary"],
         )
 
     def _on_download_cancelled(self):
+        self._download_progress_timer.stop()
         self._download_worker = None
+        self._current_download_total_size = 0
+        self._current_download_temp_path = None
+        self._current_download_final_path = None
+        self._latest_downloaded_size = 0
+        self._last_speed_check_time = None
+        self._last_speed_check_size = 0
+        self._current_download_speed_text = "0 B/s"
         self._show_message_dialog(
             title="下载已取消",
             text="更新下载已取消，本次未保留未完成的临时文件。",
             buttons=["确定"],
             button_types=["primary"],
         )
+
+    def _poll_download_progress_from_file(self):
+        """
+        每秒检查一次本地下载文件大小，并据此刷新下载百分比与进度条
+        """
+        if self._current_progress_bar is None:
+            return
+
+        effective_total = int(self._current_download_total_size or 0)
+        if effective_total <= 0:
+            effective_total = int((self._current_release_info or {}).get("installer_size", 0) or 0)
+
+        file_size = 0
+        for candidate in (self._current_download_temp_path, self._current_download_final_path):
+            if candidate and os.path.exists(candidate):
+                try:
+                    file_size = os.path.getsize(candidate)
+                    break
+                except OSError:
+                    continue
+
+        current_size = max(file_size, int(self._latest_downloaded_size or 0))
+
+        now = time.time()
+        if self._last_speed_check_time is None:
+            self._last_speed_check_time = now
+            self._last_speed_check_size = current_size
+            self._current_download_speed_text = "0 B/s"
+        else:
+            delta_time = max(0.001, now - self._last_speed_check_time)
+            delta_size = max(0, current_size - self._last_speed_check_size)
+            speed_bytes_per_sec = delta_size / delta_time
+            self._current_download_speed_text = self._format_speed(speed_bytes_per_sec)
+            self._last_speed_check_time = now
+            self._last_speed_check_size = current_size
+
+        if effective_total > 0:
+            percent = (current_size * 100.0) / effective_total
+            percent = max(0.0, min(100.0, percent))
+
+            self._set_dialog_text(f"正在下载更新… {percent:.1f}%")
+            self._set_progress_info_text(
+                f"{self._format_size(current_size)} / {self._format_size(effective_total)} | {self._current_download_speed_text}"
+            )
+            self._current_progress_bar.setRange(0, effective_total)
+            self._current_progress_bar.setValue(min(current_size, effective_total), use_animation=False)
+        else:
+            self._set_dialog_text("正在下载更新…")
+            self._set_progress_info_text(f"{self._format_size(current_size)} | {self._current_download_speed_text}")
+            self._current_progress_bar.setRange(0, 0)
+            self._current_progress_bar.setValue(0, use_animation=False)
+
+        self._current_progress_bar.update()
+        if self._current_progress_info_label is not None:
+            self._current_progress_info_label.update()
+        QApplication.processEvents()
+
+    @staticmethod
+    def _format_speed(bytes_per_sec):
+        value = float(bytes_per_sec or 0.0)
+        if value >= 1024 * 1024:
+            return f"{value / (1024 * 1024):.2f} MB/s"
+        if value >= 1024:
+            return f"{value / 1024:.2f} KB/s"
+        return f"{value:.0f} B/s"
 
     @staticmethod
     def _format_size(size):
@@ -541,23 +655,26 @@ class UpdateController(QObject):
         dialog.list_widget.show()
 
         buttons = ["立即安装", "取消"] if installer_ready else ["下载更新", "取消"]
-        button_types = ["warning", "normal"] if installer_ready else ["primary", "normal"]
+        button_types = ["primary", "normal"] if installer_ready else ["primary", "normal"]
         callback = self._on_install_ready_dialog_clicked if installer_ready else self._on_update_available_dialog_clicked
         dialog.set_buttons(buttons, Qt.Horizontal, button_types)
         dialog.buttonClicked.connect(callback)
 
         self._current_dialog = dialog
         self._current_progress_bar = None
+        self._current_progress_info_label = None
         dialog.exec()
-        self._current_dialog = None
-        self._current_progress_bar = None
+        if self._current_dialog is dialog:
+            self._current_dialog = None
+            self._current_progress_bar = None
+            self._current_progress_info_label = None
 
     def _show_install_ready_dialog(self, title, text):
         self._show_message_dialog(
             title=title,
             text=text,
             buttons=["立即安装", "取消"],
-            button_types=["warning", "normal"],
+            button_types=["primary", "normal"],
             callback=self._on_install_ready_dialog_clicked,
         )
 
@@ -570,7 +687,7 @@ class UpdateController(QObject):
                 title="安装失败",
                 text="未找到可用的安装包信息。",
                 buttons=["确定"],
-                button_types=["warning"],
+                button_types=["primary"],
             )
             return
 
@@ -582,7 +699,7 @@ class UpdateController(QObject):
                 title="安装失败",
                 text="安装包信息不完整，无法继续安装。",
                 buttons=["确定"],
-                button_types=["warning"],
+                button_types=["primary"],
             )
             return
 
@@ -591,7 +708,7 @@ class UpdateController(QObject):
                 title="安装失败",
                 text="本地安装包不存在，请重新检查更新后再试。",
                 buttons=["确定"],
-                button_types=["warning"],
+                button_types=["primary"],
             )
             return
 
@@ -612,7 +729,7 @@ class UpdateController(QObject):
                 title="安装失败",
                 text="本地安装包校验失败，缓存已清理，请重新下载。",
                 buttons=["确定"],
-                button_types=["warning"],
+                button_types=["primary"],
             )
             return
 
@@ -623,7 +740,7 @@ class UpdateController(QObject):
                 title="安装失败",
                 text=f"启动安装程序失败：{e}",
                 buttons=["确定"],
-                button_types=["warning"],
+                button_types=["primary"],
             )
             return
 
@@ -685,11 +802,33 @@ class UpdateController(QObject):
         dialog.set_title(title)
         dialog.set_text(text)
 
+        progress_container = QWidget()
+        progress_container_layout = QVBoxLayout(progress_container)
+        progress_container_layout.setContentsMargins(0, 0, 0, 0)
+        progress_container_layout.setSpacing(8)
+
         progress_bar = D_ProgressBar(is_interactive=False)
         progress_bar.setInteractive(False)
         progress_bar.setRange(progress_min, progress_max)
         progress_bar.setValue(progress_value, use_animation=False)
-        dialog.set_progress(progress_bar)
+
+        progress_info_label = QLabel("")
+        progress_info_label.setAlignment(Qt.AlignCenter)
+        theme_colors = self._get_theme_colors()
+        progress_info_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {theme_colors["secondary"]};
+                background-color: transparent;
+                padding: 0px;
+                margin: 0px;
+            }}
+            """
+        )
+
+        progress_container_layout.addWidget(progress_bar)
+        progress_container_layout.addWidget(progress_info_label)
+        dialog.set_progress(progress_container)
 
         if buttons:
             dialog.set_buttons(buttons, Qt.Horizontal, button_types or ["primary"] * len(buttons))
@@ -701,6 +840,7 @@ class UpdateController(QObject):
 
         self._current_dialog = dialog
         self._current_progress_bar = progress_bar
+        self._current_progress_info_label = progress_info_label
         dialog.show()
 
     def _show_message_dialog(self, title, text, buttons, button_types, callback=None):
@@ -716,13 +856,20 @@ class UpdateController(QObject):
 
         self._current_dialog = dialog
         self._current_progress_bar = None
+        self._current_progress_info_label = None
         dialog.exec()
-        self._current_dialog = None
-        self._current_progress_bar = None
+        if self._current_dialog is dialog:
+            self._current_dialog = None
+            self._current_progress_bar = None
+            self._current_progress_info_label = None
 
     def _set_dialog_text(self, text):
         if self._current_dialog is not None:
             self._current_dialog.set_text(text)
+
+    def _set_progress_info_text(self, text):
+        if self._current_progress_info_label is not None:
+            self._current_progress_info_label.setText(text)
 
     def _set_dialog_buttons(self, buttons, button_types=None, callback=None):
         if self._current_dialog is None:
@@ -741,5 +888,10 @@ class UpdateController(QObject):
                 self._current_dialog.close()
             except Exception:
                 pass
+        self._download_progress_timer.stop()
+        self._last_speed_check_time = None
+        self._last_speed_check_size = 0
+        self._current_download_speed_text = "0 B/s"
         self._current_dialog = None
         self._current_progress_bar = None
+        self._current_progress_info_label = None

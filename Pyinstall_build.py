@@ -195,6 +195,14 @@ def collect_data_files() -> List[Tuple[str, str]]:
     if color_schemes.exists():
         data_files.append((str(color_schemes), "freeassetfilter/utils"))
         print_info("收集到 color_schemes.json")
+
+    # 4. 收集 FAFVERSION（更新检查依赖）
+    fafversion_file = project_root / "FAFVERSION"
+    if fafversion_file.exists():
+        data_files.append((str(fafversion_file), "."))
+        print_info("收集到 FAFVERSION")
+    else:
+        print_warning("未找到 FAFVERSION")
     
     print_success(f"共收集到 {len(data_files)} 个数据文件")
     return data_files
@@ -749,6 +757,7 @@ def verify_output() -> bool:
     
     # 检查资源文件
     resources_to_check = [
+        "FAFVERSION",
         "freeassetfilter/icons/FAF-main.ico",
         "freeassetfilter/utils/color_schemes.json",
     ]

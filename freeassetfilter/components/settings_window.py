@@ -1605,16 +1605,22 @@ class ModernSettingsWindow(QDialog):
         logo_font = QFont(self.global_font)
         logo_font.setPointSize(int(self.global_font.pointSize() * 2.0))
         logo_font.setWeight(QFont.Weight.Bold)
+
+        title_font_family = self._get_about_title_font_family()
+        if title_font_family:
+            logo_font.setFamily(title_font_family)
+
+        accent_color = self._get_current_setting_value("appearance.colors.accent_color", "#007AFF")
         logo_label.setFont(logo_font)
-        logo_label.setStyleSheet("""
-            QLabel {
-                color: #007AFF;
+        logo_label.setStyleSheet(f"""
+            QLabel {{
+                color: {accent_color};
                 margin: 10px 0;
-            }
+            }}
         """)
         about_layout.addWidget(logo_label)
 
-        version_info = QLabel("版本 1.0.0")
+        version_info = QLabel(f"版本 {self._get_app_version()}")
         version_info.setAlignment(Qt.AlignCenter)
         version_info.setFont(self.global_font)
         version_info.setStyleSheet("""
@@ -1650,6 +1656,73 @@ class ModernSettingsWindow(QDialog):
 
         self.scroll_layout.addWidget(about_group)
 
+        version_check_group = QGroupBox("版本检查")
+        version_check_group.setStyleSheet(self.group_box_style)
+        version_check_layout = QVBoxLayout(version_check_group)
+        version_check_layout.setSpacing(int(8 * dpi_scale))
+
+        self.manual_update_check_item = CustomSettingItem(
+            text="手动检查更新",
+            secondary_text="点击按钮后执行与主页面右下角相同的检查更新流程",
+            interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
+            buttons=[{"text": "检查更新", "type": "primary"}]
+        )
+        self.manual_update_check_item.button_clicked.connect(self._on_manual_update_check_clicked)
+        version_check_layout.addWidget(self.manual_update_check_item)
+
+        self.scroll_layout.addWidget(version_check_group)
+
+    def _get_about_title_font_family(self):
+        """
+        获取“关于”页标题使用的庞门正道字体
+
+        Returns:
+            str: 字体族名称，失败时返回空字符串
+        """
+        try:
+            font_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "icons",
+                "庞门正道标题体.ttf"
+            )
+
+            if not os.path.exists(font_path):
+                return ""
+
+            from PySide6.QtGui import QFontDatabase
+
+            font_id = QFontDatabase.addApplicationFont(font_path)
+            if font_id == -1:
+                return ""
+
+            font_families = QFontDatabase.applicationFontFamilies(font_id)
+            if font_families:
+                return font_families[0]
+        except Exception as e:
+            warning(f"加载关于页标题字体失败: {e}")
+
+        return ""
+
+    def _get_app_version(self):
+        """
+        从 FAFVERSION 文件读取版本号
+
+        Returns:
+            str: 版本号字符串
+        """
+        try:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            version_file_path = os.path.join(project_root, "FAFVERSION")
+
+            with open(version_file_path, "r", encoding="utf-8") as version_file:
+                first_line = version_file.readline().strip()
+                if first_line:
+                    return first_line
+        except Exception as e:
+            warning(f"读取 FAFVERSION 失败: {e}")
+
+        return "未知版本"
+
     def _open_link(self, url):
         """
         打开链接
@@ -1659,6 +1732,88 @@ class ModernSettingsWindow(QDialog):
         """
         import webbrowser
         webbrowser.open(url)
+
+    def _find_update_controller(self):
+        """
+        查找可复用的更新控制器
+
+        Returns:
+            object | None: 更新控制器实例
+        """
+        visited = set()
+
+        def _extract_controller(widget):
+            if widget is None:
+                return None
+
+            try:
+                widget_id = id(widget)
+                if widget_id in visited:
+                    return None
+                visited.add(widget_id)
+
+                update_controller = getattr(widget, "update_controller", None)
+                if update_controller is not None:
+                    return update_controller
+
+                main_window = getattr(widget, "main_window", None)
+                if main_window is not None and main_window is not widget:
+                    update_controller = getattr(main_window, "update_controller", None)
+                    if update_controller is not None:
+                        return update_controller
+            except (RuntimeError, AttributeError):
+                return None
+
+            return None
+
+        parent = self.parent()
+        while parent is not None:
+            update_controller = _extract_controller(parent)
+            if update_controller is not None:
+                return update_controller
+
+            try:
+                parent = parent.parent()
+            except (RuntimeError, AttributeError):
+                break
+
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                active_window = app.activeWindow()
+                update_controller = _extract_controller(active_window)
+                if update_controller is not None:
+                    return update_controller
+            except (RuntimeError, AttributeError):
+                pass
+
+            try:
+                for widget in app.topLevelWidgets():
+                    update_controller = _extract_controller(widget)
+                    if update_controller is not None:
+                        return update_controller
+            except (RuntimeError, AttributeError):
+                pass
+
+        return None
+
+    def _on_manual_update_check_clicked(self, button_index):
+        """
+        手动检查更新按钮点击事件
+        """
+        if button_index != 0:
+            return
+
+        update_controller = self._find_update_controller()
+        if update_controller is None:
+            msg_box = CustomMessageBox(self)
+            msg_box.set_title("检查更新")
+            msg_box.set_text("未找到更新控制器，暂时无法执行检查更新。")
+            msg_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            msg_box.exec()
+            return
+
+        update_controller.on_check_updates_clicked()
 
     def _on_experimental_feature_toggled(self, value):
         """

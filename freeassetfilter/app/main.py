@@ -52,6 +52,27 @@ except (ValueError, TypeError) as e:
     warning(f"启用控制台输出捕获失败 - 数据转换错误: {e}")
 
 
+def _get_app_version():
+    """
+    从 FAFVERSION 文件读取版本号
+
+    Returns:
+        str: 版本号字符串
+    """
+    try:
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        version_file_path = os.path.join(project_root, "FAFVERSION")
+
+        with open(version_file_path, "r", encoding="utf-8") as version_file:
+            first_line = version_file.readline().strip()
+            if first_line:
+                return first_line
+    except Exception as e:
+        warning(f"读取 FAFVERSION 失败: {e}")
+
+    return "未知版本"
+
+
 def _get_available_stderr_stream():
     """
     获取可用于 faulthandler 的 stderr 流
@@ -926,7 +947,9 @@ class FreeAssetFilterApp(QMainWindow):
         status_layout.addStretch()
 
         # 状态标签
-        self.status_label = QLabel("FreeAssetFilter 1.0.0-alpha.4 | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
+        self.status_label = QLabel(
+            f"FreeAssetFilter {_get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
+        )
         self.status_label.setAlignment(Qt.AlignCenter)
         # 使用小一号的字体
         status_font = QFont(self.global_font)
@@ -1336,7 +1359,9 @@ class FreeAssetFilterApp(QMainWindow):
 
         status_layout.addStretch()
 
-        self.status_label = QLabel("FreeAssetFilter Alpha | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源")
+        self.status_label = QLabel(
+            f"FreeAssetFilter {_get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
+        )
         self.status_label.setAlignment(Qt.AlignCenter)
         status_font = QFont(self.global_font)
         status_font.setPointSize(int(self.global_font.pointSize() * 0.85))
