@@ -307,7 +307,8 @@ try:
 except ImportError as e:
     logger.debug(f"pillow_avif 模块未安装: {e}")
 
-from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path, get_app_version
+from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
+from freeassetfilter.core.update_manager import get_app_version
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,

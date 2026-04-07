@@ -137,6 +137,25 @@ def load_local_version_info():
     }
 
 
+def get_app_version(default="未知版本"):
+    """
+    获取当前应用版本号。
+
+    版本信息统一由更新管理器提供，避免在其他模块重复读取 FAFVERSION。
+
+    Args:
+        default: 读取失败时返回的默认值
+
+    Returns:
+        str: 当前版本号
+    """
+    try:
+        return load_local_version_info()["tag_name"]
+    except UpdateError as e:
+        warning(f"读取应用版本失败：{e}")
+        return default
+
+
 def parse_date(date_text):
     """
     解析 YYYY-MM-DD 日期

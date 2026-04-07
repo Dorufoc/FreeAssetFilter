@@ -36,7 +36,7 @@ import sys
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
-from freeassetfilter.utils.path_utils import get_app_version
+from freeassetfilter.core.update_manager import get_app_version
 
 # 字体缓存，避免重复获取系统字体
 _cached_font_families = None
