@@ -469,6 +469,33 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def get_app_version(default: str = "未知版本") -> str:
+    """
+    统一读取应用版本号，兼容开发环境与打包环境
+
+    Args:
+        default: 读取失败时返回的默认版本号
+
+    Returns:
+        str: FAFVERSION 第一行中的版本号，失败时返回 default
+    """
+    try:
+        version_file_path = get_resource_path("FAFVERSION")
+
+        with open(version_file_path, "r", encoding="utf-8") as version_file:
+            first_line = version_file.readline().strip()
+            if first_line:
+                return first_line
+    except Exception as e:
+        try:
+            from freeassetfilter.utils.app_logger import warning
+            warning(f"读取 FAFVERSION 失败: {e}")
+        except Exception:
+            pass
+
+    return default
+
+
 def get_app_data_path():
     """获取应用程序数据目录（用于存储配置、数据等）"""
     if getattr(sys, 'frozen', False):

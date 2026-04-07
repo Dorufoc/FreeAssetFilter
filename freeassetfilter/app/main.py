@@ -52,27 +52,6 @@ except (ValueError, TypeError) as e:
     warning(f"启用控制台输出捕获失败 - 数据转换错误: {e}")
 
 
-def _get_app_version():
-    """
-    从 FAFVERSION 文件读取版本号
-
-    Returns:
-        str: 版本号字符串
-    """
-    try:
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        version_file_path = os.path.join(project_root, "FAFVERSION")
-
-        with open(version_file_path, "r", encoding="utf-8") as version_file:
-            first_line = version_file.readline().strip()
-            if first_line:
-                return first_line
-    except Exception as e:
-        warning(f"读取 FAFVERSION 失败: {e}")
-
-    return "未知版本"
-
-
 def _get_available_stderr_stream():
     """
     获取可用于 faulthandler 的 stderr 流
@@ -328,7 +307,7 @@ try:
 except ImportError as e:
     logger.debug(f"pillow_avif 模块未安装: {e}")
 
-from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
+from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path, get_app_version
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -948,7 +927,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 状态标签
         self.status_label = QLabel(
-            f"FreeAssetFilter {_get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
+            f"FreeAssetFilter {get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
         )
         self.status_label.setAlignment(Qt.AlignCenter)
         # 使用小一号的字体
@@ -1360,7 +1339,7 @@ class FreeAssetFilterApp(QMainWindow):
         status_layout.addStretch()
 
         self.status_label = QLabel(
-            f"FreeAssetFilter {_get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
+            f"FreeAssetFilter {get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
         )
         self.status_label.setAlignment(Qt.AlignCenter)
         status_font = QFont(self.global_font)

@@ -36,6 +36,7 @@ import sys
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.path_utils import get_app_version
 
 # 字体缓存，避免重复获取系统字体
 _cached_font_families = None
@@ -1620,7 +1621,7 @@ class ModernSettingsWindow(QDialog):
         """)
         about_layout.addWidget(logo_label)
 
-        version_info = QLabel(f"版本 {self._get_app_version()}")
+        version_info = QLabel(f"版本 {get_app_version()}")
         version_info.setAlignment(Qt.AlignCenter)
         version_info.setFont(self.global_font)
         version_info.setStyleSheet("""
@@ -1702,26 +1703,6 @@ class ModernSettingsWindow(QDialog):
             warning(f"加载关于页标题字体失败: {e}")
 
         return ""
-
-    def _get_app_version(self):
-        """
-        从 FAFVERSION 文件读取版本号
-
-        Returns:
-            str: 版本号字符串
-        """
-        try:
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            version_file_path = os.path.join(project_root, "FAFVERSION")
-
-            with open(version_file_path, "r", encoding="utf-8") as version_file:
-                first_line = version_file.readline().strip()
-                if first_line:
-                    return first_line
-        except Exception as e:
-            warning(f"读取 FAFVERSION 失败: {e}")
-
-        return "未知版本"
 
     def _open_link(self, url):
         """
