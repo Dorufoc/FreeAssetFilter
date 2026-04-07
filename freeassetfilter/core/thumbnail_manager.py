@@ -21,6 +21,7 @@ import sys
 import subprocess
 import hashlib
 import json
+import re
 import threading
 import time
 from collections import deque
@@ -43,6 +44,7 @@ try:
 except ImportError:
     warning("PIL库未安装，缩略图功能将受限")
 
+
 @dataclass
 class FrameCacheEntry:
     """帧缓存条目"""
@@ -60,7 +62,7 @@ class VideoFrameCache:
     cache: Dict[int, FrameCacheEntry] = None
     last_accessed: float = 0
     current_bytes: int = 0
-    
+
     def __post_init__(self):
         if self.cache is None:
             self.cache = {}
@@ -90,7 +92,7 @@ class VideoFrameCache:
         self.current_bytes = max(0, self.current_bytes - int(oldest_entry.estimated_bytes or 0))
         if oldest_entry.frame is not None:
             oldest_entry.frame = None
-    
+
     def get(self, position: int) -> Optional:
         """获取缓存的帧"""
         self.last_accessed = time.time()
@@ -98,7 +100,7 @@ class VideoFrameCache:
             self.cache[position].timestamp = time.time()
             return self.cache[position].frame
         return None
-    
+
     def put(self, position: int, frame):
         """缓存帧"""
         self.last_accessed = time.time()
@@ -119,7 +121,7 @@ class VideoFrameCache:
 
         while len(self.cache) > self.max_entries or self.current_bytes > self.max_bytes:
             self._evict_oldest()
-    
+
     def clear(self):
         """清空缓存，显式释放帧数据"""
         for entry in self.cache.values():
@@ -134,7 +136,7 @@ class ThumbnailManager:
     缩略图管理器
     统一管理缩略图的生成、缓存和清理
     """
-    
+
     # 支持的图片格式
     IMAGE_FORMATS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.svg', '.avif', '.heic']
     # 支持的RAW格式
@@ -143,29 +145,30 @@ class ThumbnailManager:
     PSD_FORMATS = ['.psd', '.psb']
     # 支持的视频格式
     VIDEO_FORMATS = ['.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm', '.m4v', '.mpeg', '.mpg', '.mxf']
-    
+
     # 缩略图基础尺寸
     BASE_SIZE = 128
-    
+
     # 缩略图质量
     QUALITY = 85
 
     # Rust 原生批量生成配置
     NATIVE_BATCH_SIZE_IMAGE = 16
     NATIVE_BATCH_SIZE_VIDEO = 6
-    NATIVE_BATCH_WORKERS_IMAGE = 3
-    NATIVE_BATCH_WORKERS_VIDEO = 2
+    DEFAULT_NATIVE_BATCH_WORKERS_IMAGE = 3
+    DEFAULT_NATIVE_BATCH_WORKERS_VIDEO = 1
+    DEFAULT_PYTHON_BATCH_WORKERS_VIDEO = 2
 
     # 缩略图缓存格式（优先 JPG，兼容历史 PNG）
     THUMB_EXT_PRIMARY = '.jpg'
     THUMB_EXT_LEGACY = '.png'
-    
+
     # 视频帧读取最大重试次数
     MAX_FRAME_READ_RETRIES = 3
-    
+
     # 视频帧缓存过期时间（秒）
     FRAME_CACHE_EXPIRY = 60
-    
+
     # 视频处理超时时间（秒）
     VIDEO_PROCESSING_TIMEOUT = 30
     BATCH_VIDEO_SUBPROCESS_TIMEOUT = 45
@@ -185,24 +188,24 @@ class ThumbnailManager:
 
     # SVG 渲染缓存限制
     MAX_SVG_CACHE_ENTRIES = 64
-    
+
     # 最大图像尺寸限制（防止内存溢出）
     MAX_IMAGE_DIMENSION = 8192
     MAX_IMAGE_PIXELS = MAX_IMAGE_DIMENSION * MAX_IMAGE_DIMENSION
-    
+
     _instance = None
     _initialized = False
-    
+
     def __new__(cls, *args, **kwargs):
         """单例模式"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self, dpi_scale: float = 1.0):
         """
         初始化缩略图管理器
-        
+
         Args:
             dpi_scale: DPI缩放因子，默认为1.0
         """
@@ -210,14 +213,14 @@ class ThumbnailManager:
             # 更新DPI缩放因子
             self.dpi_scale = dpi_scale
             return
-        
+
         ThumbnailManager._initialized = True
         self.dpi_scale = dpi_scale
-        
+
         # 缩略图缓存目录
         self._thumb_dir = os.path.join(get_app_data_path(), 'thumbnails')
         os.makedirs(self._thumb_dir, exist_ok=True)
-        
+
         # 视频帧缓存：文件路径 -> VideoFrameCache
         self._frame_caches: Dict[str, VideoFrameCache] = {}
         self._frame_cache_lock = threading.Lock()
@@ -225,43 +228,183 @@ class ThumbnailManager:
         # Rust 原生缩略图引擎（统一承担高性能生成、调度与缓存）
         self._rust_bridge = RustThumbnailBridge()
         self._native_cache_limit = 200 * 1024 * 1024
+        self._available_hwaccels: List[str] = []
+        self._native_batch_workers_image = self._get_native_batch_workers_image()
+        self._native_batch_workers_video = self._get_native_batch_workers_video()
+        self._python_batch_workers_video = self._get_python_batch_workers_video()
         if self._rust_bridge.available:
             self._rust_bridge.set_cache_limit(self._native_cache_limit)
+            self._available_hwaccels = self._rust_bridge.get_available_hwaccels()
+            self._rust_bridge.set_max_concurrent_hw_video_decodes(self._native_batch_workers_video)
+
+        # 父进程聚合子进程 stderr 中的解码路径日志，
+        # 解决“批量视频在子进程执行而父进程内 Rust decode_stats 为 0”的统计缺口。
+        self._subprocess_decode_stats_lock = threading.Lock()
+        self._subprocess_decode_stats = self._make_empty_subprocess_decode_stats()
 
         # SVG 渲染缓存：(file_path, mtime) -> PIL.Image
         self._svg_render_cache: Dict[Tuple[str, float], Image.Image] = {}
         self._svg_cache_access_order: deque = deque()
         self._svg_cache_lock = threading.Lock()
-        
+
         # 正在处理的视频文件集合（用于请求去重）
         self._processing_videos: Set[str] = set()
         self._processing_lock = threading.Lock()
-        
+
         # 进程内直连视频解码限流：
         # 批量模式下的视频任务已经通过“1条硬解队列 + 2条软解队列 + 子进程隔离”调度，
         # 这里仅限制非批量直连路径，避免同一进程内过多软解任务争抢资源。
         self._video_semaphore = threading.Semaphore(1)
-        
-        debug(f"[ThumbnailManager] 初始化完成，缩略图目录: {self._thumb_dir}")
-    
+
+        debug(
+            "[ThumbnailManager] 初始化完成，"
+            f"缩略图目录: {self._thumb_dir}, "
+            f"native_image_workers={self._native_batch_workers_image}, "
+            f"native_video_workers={self._native_batch_workers_video}, "
+            f"python_video_workers={self._python_batch_workers_video}, "
+            f"available_hwaccels={self._available_hwaccels}"
+        )
+
+    def _get_cpu_count_safe(self) -> int:
+        """安全获取 CPU 核心数"""
+        return max(1, int(os.cpu_count() or 1))
+
+    def _get_native_batch_workers_image(self) -> int:
+        """按 CPU 核心数动态计算原生图片批处理并发数"""
+        cpu_count = self._get_cpu_count_safe()
+        return max(1, cpu_count)
+
+    def _get_native_batch_workers_video(self) -> int:
+        """按硬解后端数量做更积极的启发式估算，避免仅按后端类型数导致硬件利用率偏低"""
+        cpu_count = self._get_cpu_count_safe()
+        if not self._rust_bridge.available:
+            return self.DEFAULT_NATIVE_BATCH_WORKERS_VIDEO
+
+        try:
+            hwaccels = self._rust_bridge.get_available_hwaccels()
+        except Exception:
+            hwaccels = []
+
+        detected_count = len([name for name in hwaccels if name])
+        if detected_count <= 0:
+            return self.DEFAULT_NATIVE_BATCH_WORKERS_VIDEO
+
+        # “可用硬解后端数”通常小于“可承载的并行硬解会话数”，
+        # 因此这里使用更积极的估算：以后端数 * 2 作为基础并发，
+        # 再受 CPU 核数与安全上限共同约束，避免保守到吃不满硬件。
+        estimated_workers = detected_count * 2
+        cpu_cap = max(1, cpu_count - 1)
+        safe_cap = 8
+        return max(1, min(estimated_workers, cpu_cap, safe_cap))
+
+    def _get_python_batch_workers_video(self) -> int:
+        """按 CPU 核心数减 1 计算软解并发数，为主线程保留一个核心"""
+        cpu_count = self._get_cpu_count_safe()
+        return max(1, cpu_count - 1)
+
+    def _make_empty_subprocess_decode_stats(self) -> Dict[str, int]:
+        """创建父进程侧的子进程视频解码路径聚合统计结构"""
+        return {
+            "submitted": 0,
+            "decode_path_lines": 0,
+            "hw_verified": 0,
+            "hw_unverified": 0,
+            "software": 0,
+            "software_fallback": 0,
+            "d3d11va": 0,
+            "dxva2": 0,
+            "qsv": 0,
+            "unknown_hw_mode": 0,
+        }
+
+    def _reset_subprocess_decode_stats(self) -> None:
+        """重置父进程聚合的子进程视频解码路径统计"""
+        with self._subprocess_decode_stats_lock:
+            self._subprocess_decode_stats = self._make_empty_subprocess_decode_stats()
+
+    def _get_subprocess_decode_stats(self) -> Dict[str, int]:
+        """获取父进程聚合的子进程视频解码路径统计快照"""
+        with self._subprocess_decode_stats_lock:
+            return dict(self._subprocess_decode_stats)
+
+    def _record_subprocess_decode_stats(self, stderr_text: str) -> str:
+        """解析子进程 stderr 中的 decode path 日志并累加统计。
+
+        Returns:
+            str: 过滤掉 decode path 行后的剩余 stderr 文本
+        """
+        if not stderr_text:
+            return ""
+
+        remaining_lines: List[str] = []
+        decode_path_detected = False
+
+        for raw_line in stderr_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            if "[thumbnail_generator] decode path " not in line:
+                remaining_lines.append(raw_line)
+                continue
+
+            decode_path_detected = True
+
+            mode_match = re.search(r"\bmode=([^\s]+)", line)
+            verified_match = re.search(r"\bverified_hw=([^\s]+)", line)
+            fallback_match = re.search(r"\bsoftware_fallback=([^\s]+)", line)
+
+            mode = mode_match.group(1).strip().lower() if mode_match else "software"
+            verified_hw = verified_match.group(1).strip().lower() == "true" if verified_match else False
+            software_fallback = fallback_match.group(1).strip().lower() == "true" if fallback_match else False
+
+            with self._subprocess_decode_stats_lock:
+                self._subprocess_decode_stats["decode_path_lines"] += 1
+
+                if software_fallback:
+                    self._subprocess_decode_stats["software_fallback"] += 1
+
+                if mode == "software":
+                    self._subprocess_decode_stats["software"] += 1
+                    continue
+
+                if verified_hw:
+                    self._subprocess_decode_stats["hw_verified"] += 1
+                else:
+                    self._subprocess_decode_stats["hw_unverified"] += 1
+
+                if mode == "d3d11va":
+                    self._subprocess_decode_stats["d3d11va"] += 1
+                elif mode == "dxva2":
+                    self._subprocess_decode_stats["dxva2"] += 1
+                elif mode == "qsv":
+                    self._subprocess_decode_stats["qsv"] += 1
+                else:
+                    self._subprocess_decode_stats["unknown_hw_mode"] += 1
+
+        if decode_path_detected:
+            return "\n".join(line for line in remaining_lines if line.strip())
+
+        return stderr_text
+
     def set_dpi_scale(self, dpi_scale: float):
         """
         设置DPI缩放因子
-        
+
         Args:
             dpi_scale: DPI缩放因子
         """
         self.dpi_scale = dpi_scale
-    
+
     def get_thumbnail_dir(self) -> str:
         """
         获取缩略图缓存目录路径
-        
+
         Returns:
             str: 缩略图目录路径
         """
         return self._thumb_dir
-    
+
     def _get_thumbnail_hash(self, file_path: str) -> str:
         """
         获取文件路径对应的缩略图哈希名
@@ -272,10 +415,10 @@ class ThumbnailManager:
     def get_thumbnail_path(self, file_path: str) -> str:
         """
         获取文件的主缩略图路径（优先格式）
-        
+
         Args:
             file_path: 原始文件路径
-            
+
         Returns:
             str: 缩略图文件路径
         """
@@ -303,14 +446,14 @@ class ThumbnailManager:
             return legacy_path
 
         return None
-    
+
     def has_thumbnail(self, file_path: str) -> bool:
         """
         检查文件是否已有缩略图
-        
+
         Args:
             file_path: 原始文件路径
-            
+
         Returns:
             bool: 是否存在缩略图
         """
@@ -325,14 +468,14 @@ class ThumbnailManager:
             os.utime(file_path, (now, now))
         except Exception:
             pass
-    
+
     def is_media_file(self, file_path: str) -> bool:
         """
         判断文件是否为媒体文件（图片或视频）
-        
+
         Args:
             file_path: 文件路径
-            
+
         Returns:
             bool: 是否为媒体文件
         """
@@ -343,40 +486,40 @@ class ThumbnailManager:
             or suffix in self.PSD_FORMATS
             or suffix in self.VIDEO_FORMATS
         )
-    
+
     def is_image_file(self, file_path: str) -> bool:
         """
         判断文件是否为图片文件
-        
+
         Args:
             file_path: 文件路径
-            
+
         Returns:
             bool: 是否为图片文件
         """
         suffix = os.path.splitext(file_path)[1].lower()
         return suffix in self.IMAGE_FORMATS or suffix in self.RAW_FORMATS or suffix in self.PSD_FORMATS
-    
+
     def is_video_file(self, file_path: str) -> bool:
         """
         判断文件是否为视频文件
-        
+
         Args:
             file_path: 文件路径
-            
+
         Returns:
             bool: 是否为视频文件
         """
         suffix = os.path.splitext(file_path)[1].lower()
         return suffix in self.VIDEO_FORMATS
-    
+
     def _check_image_size_limit(self, img: Image.Image) -> bool:
         """
         检查图像尺寸是否在限制范围内
-        
+
         Args:
             img: PIL Image对象
-            
+
         Returns:
             bool: 是否在限制范围内
         """
@@ -388,7 +531,7 @@ class ThumbnailManager:
             warning(f"[ThumbnailManager] 图像像素数超出限制: {width * height} > {self.MAX_IMAGE_PIXELS}")
             return False
         return True
-    
+
     def _check_and_enforce_limits_before_create(self):
         """
         在创建新缩略图前检查并强制执行缓存限制
@@ -453,7 +596,7 @@ class ThumbnailManager:
 
         except Exception as e:
             warning(f"[ThumbnailManager] 检查缓存限制时出错: {e}")
-    
+
     def create_thumbnail(self, file_path: str, force_regenerate: bool = False) -> Optional[str]:
         """
         为文件创建缩略图
@@ -544,15 +687,19 @@ class ThumbnailManager:
         processed_count = 0
 
         native_stats_enabled = self._rust_bridge.available
+        video_decode_submitted_count = 0
+        self._reset_subprocess_decode_stats()
         if native_stats_enabled:
             self._rust_bridge.reset_decode_stats()
 
         queue_limits = {
-            "native_image": max(1, min(self.NATIVE_BATCH_WORKERS_IMAGE, max(1, (os.cpu_count() or 4) // 2))),
-            # 视频任务改为 1 条原生队列（硬解优先）+ 2 条 FFmpeg 软解 worker。
-            "native_video": 1,
-            "python_image": max(1, min(2, (os.cpu_count() or 4) // 2 or 1)),
-            "python_video": 2,
+            "native_image": self._native_batch_workers_image,
+            # 视频任务并发基于已探测到的可用硬解后端数量做启发式估算，
+            # 并同步下发到 Rust 原生层的硬解槽位限制中，避免过度保守。
+            "native_video": self._native_batch_workers_video,
+            "python_image": max(1, min(2, self._get_cpu_count_safe() // 2 or 1)),
+            # 软解并发按 CPU 核心数 - 1，为 UI / 主线程保留一个核心。
+            "python_video": self._python_batch_workers_video,
         }
         queue_batch_sizes = {
             "native_image": max(4, self.NATIVE_BATCH_SIZE_IMAGE),
@@ -702,6 +849,7 @@ class ThumbnailManager:
             }
 
             if is_video_file:
+                video_decode_submitted_count += 1
                 if self._rust_bridge.available:
                     native_load = len(task_queues["native_video"]) / max(1, queue_limits["native_video"])
                     python_load = len(task_queues["python_video"]) / max(1, queue_limits["python_video"])
@@ -716,20 +864,70 @@ class ThumbnailManager:
             else:
                 task_queues["python_image"].append(item)
 
+        max_workers = sum(queue_limits.values())
+
         def _has_pending_tasks() -> bool:
             return any(task_queues[name] for name in task_queues)
+
+        def _get_effective_queue_limit(queue_name: str) -> int:
+            """获取队列当前可用的动态上限。
+
+            - native_video 保持硬上限，避免突破 Rust 原生硬解槽位；
+            - 其他队列可借用“当前无待处理任务”的空闲队列额度，
+              避免高效队列等待低效队列释放基础配额。
+            """
+            base_limit = max(1, queue_limits[queue_name])
+
+            if queue_name == "native_video":
+                return base_limit
+
+            borrowed_capacity = 0
+            for other_name in queue_limits:
+                if other_name == queue_name:
+                    continue
+                if task_queues[other_name]:
+                    continue
+                idle_slots = max(0, queue_limits[other_name] - queue_active_counts[other_name])
+                borrowed_capacity += idle_slots
+
+            return max(1, min(max_workers, base_limit + borrowed_capacity))
+
+        def _get_dispatch_backlog(queue_name: str) -> int:
+            """获取调度视角下的有效 backlog。
+
+            - python_video 可接管 native_video 的积压任务，避免软解线程空转；
+            - native_video 在自身空闲时，也可接管 python_video 的待处理任务，
+              避免硬解线程提前跑空后闲置。
+            """
+            backlog = len(task_queues[queue_name])
+
+            if queue_name == "python_video" and backlog == 0:
+                native_video_backlog = len(task_queues["native_video"])
+                native_video_capacity = max(1, queue_limits["native_video"])
+                native_video_overflow = max(0, native_video_backlog - native_video_capacity)
+                backlog += native_video_overflow
+
+            if queue_name == "native_video" and backlog == 0:
+                backlog += len(task_queues["python_video"])
+
+            return backlog
 
         def _select_queue_for_dispatch() -> Optional[str]:
             candidate_name = None
             candidate_score = None
+            total_active = sum(queue_active_counts.values())
 
             for name in queue_order:
-                if not task_queues[name]:
-                    continue
-                if queue_active_counts[name] >= queue_limits[name]:
+                backlog = _get_dispatch_backlog(name)
+                if backlog <= 0:
                     continue
 
-                backlog = len(task_queues[name])
+                effective_limit = _get_effective_queue_limit(name)
+                if queue_active_counts[name] >= effective_limit:
+                    continue
+                if total_active >= max_workers:
+                    continue
+
                 active = queue_active_counts[name]
                 avg_duration = max(queue_avg_duration[name], 0.05)
                 batch_size = max(1, queue_batch_sizes.get(name, 1))
@@ -739,11 +937,49 @@ class ThumbnailManager:
                 if name in ("native_video", "python_video"):
                     score *= 1.25
 
+                # 对能够借用空闲额度的队列给予轻微倾斜，减少“快队列等待慢队列”。
+                if effective_limit > queue_limits[name]:
+                    score *= 1.1
+
+                # 当 python_video 正在接管 native_video 积压任务时，进一步提升其优先级，
+                # 避免出现“软解线程空闲但仍等待硬解队列慢速消费”的情况。
+                if name == "python_video" and not task_queues["python_video"] and len(task_queues["native_video"]) > queue_limits["native_video"]:
+                    score *= 1.2
+
+                # 当 native_video 自身已空，但 python_video 仍有积压时，
+                # 允许硬解线程主动继续吃任务，避免“硬解先完成后空闲”。
+                if name == "native_video" and not task_queues["native_video"] and task_queues["python_video"]:
+                    score *= 1.15
+
                 if candidate_score is None or score > candidate_score:
                     candidate_name = name
                     candidate_score = score
 
             return candidate_name
+
+        def _pop_batch_items_for_queue(queue_name: str, batch_size: int) -> List[Dict]:
+            """按调度策略为目标队列取出待执行任务。"""
+            batch_items: List[Dict] = []
+
+            while task_queues[queue_name] and len(batch_items) < batch_size:
+                batch_items.append(task_queues[queue_name].popleft())
+
+            # python_video 允许从 native_video 中接管超出硬解并发能力的积压任务
+            if queue_name == "python_video" and len(batch_items) < batch_size:
+                native_video_capacity = max(1, queue_limits["native_video"])
+                while (
+                    len(batch_items) < batch_size
+                    and len(task_queues["native_video"]) > native_video_capacity
+                ):
+                    batch_items.append(task_queues["native_video"].popleft())
+
+            # native_video 在自身队列耗尽时，允许继续接管 python_video 的待处理任务，
+            # 避免硬解线程提前空闲。
+            if queue_name == "native_video" and len(batch_items) < batch_size:
+                while task_queues["python_video"] and len(batch_items) < batch_size:
+                    batch_items.append(task_queues["python_video"].popleft())
+
+            return batch_items
 
         info(
             "[ThumbnailManager] 批量任务队列统计："
@@ -751,10 +987,10 @@ class ThumbnailManager:
             f"python_video={len(task_queues['python_video'])}, "
             f"native_image={len(task_queues['native_image'])}, "
             f"python_image={len(task_queues['python_image'])}, "
-            "video_mode=1_hw_queue+2_sw_workers"
+            f"video_mode={queue_limits['native_video']}_hw_queues+{queue_limits['python_video']}_sw_workers, "
+            f"available_hwaccels={self._available_hwaccels}"
         )
 
-        max_workers = sum(queue_limits.values())
         future_to_queue = {}
         cancelled = False
 
@@ -795,9 +1031,7 @@ class ThumbnailManager:
                         break
 
                     batch_size = max(1, queue_batch_sizes.get(queue_name, 1))
-                    batch_items = []
-                    while task_queues[queue_name] and len(batch_items) < batch_size:
-                        batch_items.append(task_queues[queue_name].popleft())
+                    batch_items = _pop_batch_items_for_queue(queue_name, batch_size)
 
                     if not batch_items:
                         break
@@ -848,47 +1082,90 @@ class ThumbnailManager:
             f"[ThumbnailManager] 批量缩略图生成结束: success={success_count}, processed={processed_count}, cancelled={cancelled}"
         )
 
-        if native_stats_enabled:
-            stats = self._rust_bridge.get_decode_stats()
-            if stats:
-                hw_attempts = (
-                    int(stats.get("d3d11va_attempts", 0))
-                    + int(stats.get("dxva2_attempts", 0))
-                    + int(stats.get("qsv_attempts", 0))
-                )
-                hw_hits = (
-                    int(stats.get("d3d11va_hits", 0))
-                    + int(stats.get("dxva2_hits", 0))
-                    + int(stats.get("qsv_hits", 0))
-                )
-                sw_attempts = int(stats.get("software_attempts", 0))
-                sw_hits = int(stats.get("software_hits", 0))
-                sw_fallbacks = int(stats.get("software_fallbacks", 0))
-                hw_hit_rate = (hw_hits / hw_attempts * 100.0) if hw_attempts > 0 else 0.0
+        subprocess_stats = self._get_subprocess_decode_stats()
+        subprocess_stats["submitted"] = int(video_decode_submitted_count)
 
+        if video_decode_submitted_count > 0:
+            total_hw_modes = (
+                int(subprocess_stats.get("d3d11va", 0))
+                + int(subprocess_stats.get("dxva2", 0))
+                + int(subprocess_stats.get("qsv", 0))
+                + int(subprocess_stats.get("unknown_hw_mode", 0))
+            )
+            total_soft_modes = int(subprocess_stats.get("software", 0))
+            total_decode_path_lines = int(subprocess_stats.get("decode_path_lines", 0))
+            total_decode_events = total_hw_modes + total_soft_modes
+            verified_hw = int(subprocess_stats.get("hw_verified", 0))
+            fallback_count = int(subprocess_stats.get("software_fallback", 0))
+            subprocess_hw_hit_rate = (verified_hw / total_decode_events * 100.0) if total_decode_events > 0 else 0.0
+
+            info(
+                "[ThumbnailManager] 子进程视频解码路径汇总："
+                f"提交视频任务={video_decode_submitted_count}, "
+                f"decode_path日志数={total_decode_path_lines}, "
+                f"硬解命中={verified_hw}, "
+                f"硬解命中率={subprocess_hw_hit_rate:.1f}%, "
+                f"D3D11VA={int(subprocess_stats.get('d3d11va', 0))}, "
+                f"DXVA2={int(subprocess_stats.get('dxva2', 0))}, "
+                f"QSV={int(subprocess_stats.get('qsv', 0))}, "
+                f"未验证硬解={int(subprocess_stats.get('hw_unverified', 0))}, "
+                f"软解={total_soft_modes}, "
+                f"软解回退={fallback_count}"
+            )
+
+            if total_decode_path_lines == 0:
                 info(
-                    "[ThumbnailManager] Rust视频解码统计："
-                    f"硬解尝试={hw_attempts}, "
-                    f"硬解命中={hw_hits}, "
-                    f"硬解命中率={hw_hit_rate:.1f}%, "
-                    f"D3D11VA={int(stats.get('d3d11va_hits', 0))}/{int(stats.get('d3d11va_attempts', 0))}, "
-                    f"DXVA2={int(stats.get('dxva2_hits', 0))}/{int(stats.get('dxva2_attempts', 0))}, "
-                    f"QSV={int(stats.get('qsv_hits', 0))}/{int(stats.get('qsv_attempts', 0))}, "
-                    f"软解尝试={sw_attempts}, "
-                    f"软解成功={sw_hits}, "
-                    f"软解回退={sw_fallbacks}"
+                    "[ThumbnailManager] 说明：本轮已提交视频子进程任务，但父进程未采集到 decode path 日志；"
+                    "这通常表示当前任务未经过 Rust 视频解码路径，或相关日志未从子进程回传。"
+                )
+
+        if native_stats_enabled:
+            stats = self._rust_bridge.get_decode_stats() or {}
+            hw_attempts = (
+                int(stats.get("d3d11va_attempts", 0))
+                + int(stats.get("dxva2_attempts", 0))
+                + int(stats.get("qsv_attempts", 0))
+            )
+            hw_hits = (
+                int(stats.get("d3d11va_hits", 0))
+                + int(stats.get("dxva2_hits", 0))
+                + int(stats.get("qsv_hits", 0))
+            )
+            sw_attempts = int(stats.get("software_attempts", 0))
+            sw_hits = int(stats.get("software_hits", 0))
+            sw_fallbacks = int(stats.get("software_fallbacks", 0))
+            hw_hit_rate = (hw_hits / hw_attempts * 100.0) if hw_attempts > 0 else 0.0
+
+            info(
+                "[ThumbnailManager] 父进程内Rust视频解码统计："
+                f"硬解尝试={hw_attempts}, "
+                f"硬解命中={hw_hits}, "
+                f"硬解命中率={hw_hit_rate:.1f}%, "
+                f"D3D11VA={int(stats.get('d3d11va_hits', 0))}/{int(stats.get('d3d11va_attempts', 0))}, "
+                f"DXVA2={int(stats.get('dxva2_hits', 0))}/{int(stats.get('dxva2_attempts', 0))}, "
+                f"QSV={int(stats.get('qsv_hits', 0))}/{int(stats.get('qsv_attempts', 0))}, "
+                f"软解尝试={sw_attempts}, "
+                f"软解成功={sw_hits}, "
+                f"软解回退={sw_fallbacks}"
+            )
+
+            if video_decode_submitted_count > 0 and hw_attempts == 0 and sw_attempts == 0:
+                info(
+                    "[ThumbnailManager] 说明：批量视频缩略图在独立子进程中执行，"
+                    "父进程内 Rust 解码统计为 0 属于正常现象，"
+                    "实际硬解/软解路径请以上面的“子进程视频解码路径汇总”为准。"
                 )
 
         return success_count, processed_count
-    
+
     def _create_native_thumbnail(self, file_path: str, thumbnail_path: str, legacy_thumbnail_path: str) -> Optional[str]:
         """
         使用 Rust 原生引擎生成缩略图
-        
+
         Args:
             file_path: 文件路径
             thumbnail_path: 缩略图保存路径
-            
+
         Returns:
             Optional[str]: 成功返回缩略图路径，失败返回None
         """
@@ -946,37 +1223,37 @@ class ThumbnailManager:
     def _create_image_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """
         为图片文件创建缩略图
-        
+
         Args:
             file_path: 图片文件路径
             thumbnail_path: 缩略图保存路径
-            
+
         Returns:
             Optional[str]: 缩略图路径，失败返回None
         """
         if not PIL_AVAILABLE:
             warning("[ThumbnailManager] PIL库未安装，无法生成图片缩略图")
             return None
-        
+
         img = None
         thumbnail = None
         img_converted = None
-        
+
         try:
             suffix = os.path.splitext(file_path)[1].lower()
-            
+
             # 加载图像
             img, success = self._load_image(file_path, suffix)
             if not success or img is None:
                 return None
-            
+
             # 检查图像尺寸限制
             if not self._check_image_size_limit(img):
                 return None
-            
+
             # 计算缩略图尺寸
             dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
-            
+
             # 使用thumbnail方法生成缩略图，保持宽高比
             img.thumbnail((dpi_scaled_size, dpi_scaled_size), Image.Resampling.LANCZOS)
 
@@ -990,10 +1267,10 @@ class ThumbnailManager:
                 thumbnail = img.convert("RGB")
 
             thumbnail.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
-            
+
             debug(f"[ThumbnailManager] 图片缩略图生成成功: {thumbnail_path}")
             return thumbnail_path
-            
+
         except Exception as e:
             warning(f"[ThumbnailManager] 生成图片缩略图失败: {file_path}, 错误: {e}")
             return None
@@ -1014,7 +1291,7 @@ class ThumbnailManager:
                     thumbnail.close()
                 except Exception:
                     pass
-    
+
     def _get_total_frame_cache_bytes(self) -> int:
         """获取所有视频帧缓存的总内存占用"""
         return sum(cache.current_bytes for cache in self._frame_caches.values())
@@ -1058,7 +1335,7 @@ class ThumbnailManager:
 
             self._enforce_global_frame_cache_limit()
             return self._frame_caches[file_path]
-    
+
     def _try_acquire_video_lock(self, file_path: str) -> bool:
         """尝试获取视频处理锁（请求去重）"""
         with self._processing_lock:
@@ -1066,12 +1343,12 @@ class ThumbnailManager:
                 return False
             self._processing_videos.add(file_path)
             return True
-    
+
     def _release_video_lock(self, file_path: str):
         """释放视频处理锁"""
         with self._processing_lock:
             self._processing_videos.discard(file_path)
-    
+
     def _create_video_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """
         为视频文件创建缩略图
@@ -1366,18 +1643,23 @@ class ThumbnailManager:
             warning(f"[ThumbnailManager] 启动视频缩略图子进程失败，已跳过: {file_path}, 错误: {e}")
             return None
 
+        stderr_text = (completed.stderr or "").strip()
+        filtered_stderr_text = self._record_subprocess_decode_stats(stderr_text)
+
         if completed.returncode == 0:
+            if filtered_stderr_text:
+                debug(f"[ThumbnailManager] 视频缩略图子进程输出: {filtered_stderr_text}")
             if os.path.exists(thumbnail_path):
                 return thumbnail_path
             if os.path.exists(legacy_thumbnail_path):
                 return legacy_thumbnail_path
+            return None
 
-        stderr_text = (completed.stderr or "").strip()
-        if stderr_text:
-            debug(f"[ThumbnailManager] 视频缩略图子进程异常输出: {stderr_text}")
+        if filtered_stderr_text:
+            debug(f"[ThumbnailManager] 视频缩略图子进程异常输出: {filtered_stderr_text}")
 
         return None
-    
+
     def _load_image(self, file_path: str, suffix: str) -> Tuple[Optional[Image.Image], bool]:
         """
         加载图像文件（带尺寸限制和下采样）
@@ -1502,14 +1784,14 @@ class ThumbnailManager:
             img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
         return img
-    
+
     def _load_svg_image(self, file_path: str) -> Tuple[Optional[Image.Image], bool]:
         """
         加载SVG图像
-        
+
         Args:
             file_path: SVG文件路径
-            
+
         Returns:
             Tuple[Optional[Image.Image], bool]: (图像对象, 是否成功)
         """
@@ -1518,7 +1800,7 @@ class ThumbnailManager:
         painter = None
         renderer = None
         cache_key = None
-        
+
         try:
             from PySide6.QtSvg import QSvgRenderer
             from PySide6.QtGui import QImage, QPainter
@@ -1530,17 +1812,17 @@ class ThumbnailManager:
                 cached_img = self._svg_render_cache.get(cache_key)
                 if cached_img is not None:
                     return cached_img.copy(), True
-            
+
             # 直接使用QSvgRenderer渲染SVG，不经过SvgRenderer的复杂处理
             renderer = QSvgRenderer(file_path)
-            
+
             if not renderer.isValid():
                 warning(f"[ThumbnailManager] 无效的SVG文件: {file_path}")
                 return None, False
-            
+
             # 获取SVG的默认尺寸
             default_size = renderer.defaultSize()
-            
+
             # 如果SVG没有设置尺寸，使用默认尺寸 256x256
             if default_size.width() <= 0 or default_size.height() <= 0:
                 render_width, render_height = 256, 256
@@ -1550,48 +1832,48 @@ class ThumbnailManager:
                 scale = min(max_size / default_size.width(), max_size / default_size.height())
                 render_width = int(default_size.width() * scale)
                 render_height = int(default_size.height() * scale)
-                
+
                 # 确保最小尺寸为1
                 render_width = max(1, render_width)
                 render_height = max(1, render_height)
-            
+
             # 检查尺寸限制
             if render_width > self.MAX_IMAGE_DIMENSION or render_height > self.MAX_IMAGE_DIMENSION:
                 warning(f"[ThumbnailManager] SVG渲染尺寸超出限制: {render_width}x{render_height}")
                 return None, False
-            
+
             # 检查像素总数限制
             render_pixels = render_width * render_height
             if render_pixels > self.MAX_IMAGE_PIXELS:
                 warning(f"[ThumbnailManager] SVG渲染像素数超出限制: {render_pixels} > {self.MAX_IMAGE_PIXELS}")
                 return None, False
-            
+
             # 创建QImage用于渲染 - 直接使用计算好的保持比例的尺寸
             qimage = QImage(render_width, render_height, QImage.Format_ARGB32_Premultiplied)
             qimage.fill(Qt.transparent)
-            
+
             # 创建画家并渲染
             painter = QPainter(qimage)
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            
+
             # 计算缩放因子 - 保持原始宽高比
             if default_size.width() > 0 and default_size.height() > 0:
                 scale_x = render_width / default_size.width()
                 scale_y = render_height / default_size.height()
                 painter.scale(scale_x, scale_y)
-            
+
             renderer.render(painter)
-            
+
             # 转换为RGBA8888格式
             if qimage.format() != QImage.Format_RGBA8888:
                 qimage = qimage.convertToFormat(QImage.Format_RGBA8888)
-            
+
             # 获取图像数据
             width = qimage.width()
             height = qimage.height()
             ptr = qimage.constBits()
-            
+
             # 处理不同版本的PySide6
             if hasattr(ptr, 'tobytes'):
                 img_data = ptr.tobytes()
@@ -1599,13 +1881,13 @@ class ThumbnailManager:
                 img_data = ptr.asstring()
             else:
                 img_data = bytes(ptr)
-            
+
             # 验证数据长度
             expected_len = width * height * 4  # RGBA = 4 bytes per pixel
             if len(img_data) < expected_len:
                 warning(f"[ThumbnailManager] SVG图像数据长度不足: {len(img_data)} < {expected_len}")
                 return None, False
-            
+
             # 创建PIL图像
             img = Image.frombytes("RGBA", (width, height), img_data)
 
@@ -1626,9 +1908,9 @@ class ThumbnailManager:
                                 pass
                 except Exception:
                     pass
-            
+
             return img, True
-            
+
         except Exception as e:
             warning(f"[ThumbnailManager] 加载SVG失败: {file_path}, 错误: {e}")
             return None, False
@@ -1644,24 +1926,24 @@ class ThumbnailManager:
             # 强制垃圾回收
             import gc
             gc.collect()
-    
+
     def clear_all_thumbnails(self) -> int:
         """
         清理所有缩略图缓存
-        
+
         Returns:
             int: 删除的文件数量
         """
         try:
             import glob
-            
+
             if not os.path.exists(self._thumb_dir):
                 return 0
-            
+
             thumbnail_files = glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_PRIMARY}"))
             thumbnail_files.extend(glob.glob(os.path.join(self._thumb_dir, f"*{self.THUMB_EXT_LEGACY}")))
             deleted_count = 0
-            
+
             for file_path in thumbnail_files:
                 if os.path.isfile(file_path):
                     try:
@@ -1686,18 +1968,18 @@ class ThumbnailManager:
 
             if self._rust_bridge.available:
                 self._rust_bridge.clear_cache()
-            
+
             info(f"[ThumbnailManager] 已清理 {deleted_count} 个缩略图缓存文件")
             return deleted_count
-            
+
         except Exception as e:
             error(f"[ThumbnailManager] 清理缩略图缓存失败: {e}")
             return 0
-    
+
     def get_thumbnail_count(self) -> int:
         """
         获取当前缩略图数量
-        
+
         Returns:
             int: 缩略图文件数量
         """
@@ -1861,10 +2143,10 @@ _thumbnail_manager = None
 def get_thumbnail_manager(dpi_scale: float = 1.0) -> ThumbnailManager:
     """
     获取全局缩略图管理器实例
-    
+
     Args:
         dpi_scale: DPI缩放因子
-        
+
     Returns:
         ThumbnailManager: 缩略图管理器实例
     """
@@ -1879,12 +2161,12 @@ def get_thumbnail_manager(dpi_scale: float = 1.0) -> ThumbnailManager:
 def create_thumbnail(file_path: str, dpi_scale: float = 1.0, force_regenerate: bool = False) -> Optional[str]:
     """
     便捷函数：为文件创建缩略图
-    
+
     Args:
         file_path: 文件路径
         dpi_scale: DPI缩放因子
         force_regenerate: 是否强制重新生成
-        
+
     Returns:
         Optional[str]: 缩略图路径，失败返回None
     """
@@ -1895,10 +2177,10 @@ def create_thumbnail(file_path: str, dpi_scale: float = 1.0, force_regenerate: b
 def get_thumbnail_path(file_path: str) -> str:
     """
     便捷函数：获取文件主缩略图路径
-    
+
     Args:
         file_path: 文件路径
-        
+
     Returns:
         str: 主缩略图路径
     """
@@ -1918,10 +2200,10 @@ def get_existing_thumbnail_path(file_path: str) -> Optional[str]:
 def has_thumbnail(file_path: str) -> bool:
     """
     便捷函数：检查文件是否已有缩略图
-    
+
     Args:
         file_path: 文件路径
-        
+
     Returns:
         bool: 是否存在缩略图
     """
@@ -1932,10 +2214,10 @@ def has_thumbnail(file_path: str) -> bool:
 def is_media_file(file_path: str) -> bool:
     """
     便捷函数：判断文件是否为媒体文件
-    
+
     Args:
         file_path: 文件路径
-        
+
     Returns:
         bool: 是否为媒体文件
     """
@@ -1946,10 +2228,10 @@ def is_media_file(file_path: str) -> bool:
 def is_image_file(file_path: str) -> bool:
     """
     便捷函数：判断文件是否为图片文件
-    
+
     Args:
         file_path: 文件路径
-        
+
     Returns:
         bool: 是否为图片文件
     """
@@ -1960,10 +2242,10 @@ def is_image_file(file_path: str) -> bool:
 def is_video_file(file_path: str) -> bool:
     """
     便捷函数：判断文件是否为视频文件
-    
+
     Args:
         file_path: 文件路径
-        
+
     Returns:
         bool: 是否为视频文件
     """
@@ -1974,7 +2256,7 @@ def is_video_file(file_path: str) -> bool:
 def clear_all_thumbnails() -> int:
     """
     便捷函数：清理所有缩略图缓存
-    
+
     Returns:
         int: 删除的文件数量
     """

@@ -131,6 +131,12 @@ class RustThumbnailBridge:
         dll.native_reset_decode_stats.argtypes = []
         dll.native_reset_decode_stats.restype = c_int
 
+        dll.native_get_available_hwaccels_json.argtypes = []
+        dll.native_get_available_hwaccels_json.restype = c_char_p
+
+        dll.native_set_max_concurrent_hw_video_decodes.argtypes = [c_size_t]
+        dll.native_set_max_concurrent_hw_video_decodes.restype = c_int
+
         dll.native_free_buffer.argtypes = [POINTER(c_uint8), c_size_t]
         dll.native_free_buffer.restype = None
 
@@ -195,6 +201,35 @@ class RustThumbnailBridge:
             return code == 0
         except Exception as e:
             warning(f"[RustThumbnailBridge] reset_decode_stats 失败: {e}")
+            return False
+
+    def get_available_hwaccels(self) -> List[str]:
+        if not self.available:
+            return []
+        try:
+            raw = self._dll.native_get_available_hwaccels_json()
+            if not raw:
+                return []
+            if isinstance(raw, bytes):
+                text = raw.decode("utf-8", errors="ignore")
+            else:
+                text = raw
+            parsed = json.loads(text) if text else []
+            if not isinstance(parsed, list):
+                return []
+            return [str(item).strip().lower() for item in parsed if str(item).strip()]
+        except Exception as e:
+            warning(f"[RustThumbnailBridge] get_available_hwaccels 失败: {e}")
+            return []
+
+    def set_max_concurrent_hw_video_decodes(self, max_slots: int) -> bool:
+        if not self.available:
+            return False
+        try:
+            code = self._dll.native_set_max_concurrent_hw_video_decodes(max(1, int(max_slots)))
+            return code == 0
+        except Exception as e:
+            warning(f"[RustThumbnailBridge] set_max_concurrent_hw_video_decodes 失败: {e}")
             return False
 
     def generate_rgba(self, file_path: str, width: int, height: int) -> Optional[Tuple[bytes, int, int, int]]:

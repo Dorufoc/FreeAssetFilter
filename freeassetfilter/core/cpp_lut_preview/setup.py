@@ -16,6 +16,8 @@ import subprocess
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import setup
 
+from freeassetfilter.utils.app_logger import info
+
 def detect_compiler():
     """检测可用的 C++ 编译器"""
     try:
@@ -35,7 +37,7 @@ def detect_compiler():
     return None
 
 COMPILER = detect_compiler()
-print(f"[Setup] 检测到编译器: {COMPILER}")
+info(f"[Setup] 检测到编译器: {COMPILER}")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -51,7 +53,7 @@ ext_modules = [
 
 if platform.system() == "Windows":
     if COMPILER == "mingw":
-        print("[Setup] 使用 MinGW 编译器")
+        info("[Setup] 使用 MinGW 编译器")
         for ext in ext_modules:
             ext.extra_compile_args = [
                 "-O3",
@@ -65,7 +67,7 @@ if platform.system() == "Windows":
             ]
             ext.extra_link_args = ["-fopenmp", "-static-libgcc", "-static-libstdc++"]
     else:
-        print("[Setup] 使用 MSVC 编译器")
+        info("[Setup] 使用 MSVC 编译器")
         for ext in ext_modules:
             ext.extra_compile_args = [
                 "/O2",

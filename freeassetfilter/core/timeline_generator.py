@@ -27,7 +27,7 @@ from itertools import groupby
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 from freeassetfilter.core.media_probe import get_video_duration_seconds
 
 from PySide6.QtCore import (
@@ -284,15 +284,11 @@ class FolderScanner(QThread):
                             # 收集视频文件信息
                             video_files.append((file, file_path, subfolder_name, mod_time))
                         except OSError as e:
-                            error(f"    获取文件信息出错 {file_path}: {e}")
-                            import traceback
-                            traceback.print_exc()
+                            exception_details(f"[TimelineGenerator] 获取文件信息出错: {file_path}", e)
                     else:
                         debug(f"    不是视频文件（扩展名不匹配）")
         except Exception as e:
-            error(f"扫描过程中出错: {e}")
-            import traceback
-            traceback.print_exc()
+            exception_details("[TimelineGenerator] 扫描过程中出错", e)
 
         video_count = len(video_files)
         debug(f"\n=== 扫描完成，开始并发处理视频文件 ===")
@@ -323,9 +319,7 @@ class FolderScanner(QThread):
                         warning(f"处理视频文件 {file_name} 被取消: {e}")
                     except Exception as e:
                         file_name, file_path, *_ = video_info
-                        error(f"处理视频文件 {file_name} 时出错: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        exception_details(f"[TimelineGenerator] 处理视频文件时出错: {file_name}", e)
 
                     # 更新进度
                     processed_count += 1
@@ -412,9 +406,7 @@ class FolderScanner(QThread):
 
             return event
         except (OSError, ValueError) as e:
-            error(f"    处理文件 {file_name} 时出错: {e}")
-            import traceback
-            traceback.print_exc()
+            exception_details(f"[TimelineGenerator] 处理文件时出错: {file_name}", e)
             return None
     
     def _generate_json(self, main_folder_name, video_count, subfolder_set, events):

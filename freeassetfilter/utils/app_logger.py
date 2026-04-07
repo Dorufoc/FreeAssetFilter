@@ -432,6 +432,34 @@ def _get_original_console_stream(stream_name: str):
     return None
 
 
+def _write_bootstrap_fallback(message: str) -> None:
+    """
+    在日志系统尚未可用时，使用最小能力写入原始 stderr。
+
+    注意：
+    - 该函数仅允许在统一日志组件内部使用
+    - 项目其他模块不得直接 print / sys.stderr.write 输出日志
+    """
+    if message is None:
+        return
+
+    if not isinstance(message, str):
+        message = str(message)
+
+    safe_message = sanitize_path(message)
+    safe_message = sanitize_sensitive_info(safe_message)
+
+    fallback_stream = getattr(sys, "__stderr__", None) or getattr(sys, "stderr", None)
+    if fallback_stream is None:
+        return
+
+    try:
+        fallback_stream.write(f"{safe_message}\n")
+        fallback_stream.flush()
+    except (OSError, IOError, ValueError, TypeError, AttributeError):
+        pass
+
+
 class AppLogger:
     """
     应用程序日志管理器
@@ -516,11 +544,11 @@ class AppLogger:
             file_handler.setFormatter(self.formatter)
             self.logger.addHandler(file_handler)
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            # 如果文件日志创建失败，使用备用方案
-            print(f"[警告] 创建日志文件失败 - 文件操作错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+            # 如果文件日志创建失败，使用统一日志组件内部兜底方案
+            _write_bootstrap_fallback(f"[警告] 创建日志文件失败 - 文件操作错误: {e}")
         except (ValueError, TypeError) as e:
-            # 如果文件日志创建失败，使用备用方案
-            print(f"[警告] 创建日志文件失败 - 数据转换错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+            # 如果文件日志创建失败，使用统一日志组件内部兜底方案
+            _write_bootstrap_fallback(f"[警告] 创建日志文件失败 - 数据转换错误: {e}")
     
     def _add_console_handler(self):
         """添加控制台日志处理器（仅在控制台可用时）"""
@@ -548,11 +576,11 @@ class AppLogger:
                 try:
                     os.remove(os.path.join(self.log_dir, old_file))
                 except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-                    print(f"[警告] 删除旧日志文件失败 - 文件操作错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+                    _write_bootstrap_fallback(f"[警告] 删除旧日志文件失败 - 文件操作错误: {e}")
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            print(f"[警告] 清理旧日志文件失败 - 文件操作错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+            _write_bootstrap_fallback(f"[警告] 清理旧日志文件失败 - 文件操作错误: {e}")
         except (ValueError, TypeError) as e:
-            print(f"[警告] 清理旧日志文件失败 - 数据转换错误: {e}", file=sys.__stderr__ if sys.__stderr__ else None)
+            _write_bootstrap_fallback(f"[警告] 清理旧日志文件失败 - 数据转换错误: {e}")
     
     def debug(self, msg):
         """输出调试日志"""
@@ -674,6 +702,55 @@ def log_print(msg, level='info'):
     log_func(msg)
 
 
+def log_exception_details(message: str, exc: Optional[BaseException] = None, level: str = 'error'):
+    """
+    通过统一日志组件记录异常详情和堆栈，替代 traceback.print_exc() / logging.exception()。
+
+    Args:
+        message: 上下文消息
+        exc: 异常对象；未提供时尝试读取当前异常上下文
+        level: 日志级别，可选 'debug', 'info', 'warning', 'error', 'critical'
+    """
+    logger = get_logger()
+
+    safe_message = sanitize_path(str(message))
+    safe_message = sanitize_sensitive_info(safe_message)
+
+    active_exc = exc
+    if active_exc is None:
+        active_exc = sys.exc_info()[1]
+
+    if active_exc is None:
+        log_print(safe_message, level=level)
+        return
+
+    safe_exc_text = sanitize_path(str(active_exc))
+    safe_exc_text = sanitize_sensitive_info(safe_exc_text)
+
+    trace_text = ''.join(
+        traceback.format_exception(type(active_exc), active_exc, active_exc.__traceback__)
+    )
+    safe_trace_text = sanitize_path(trace_text)
+    safe_trace_text = sanitize_sensitive_info(safe_trace_text)
+
+    full_message = (
+        f"{safe_message}\n"
+        f"异常类型: {type(active_exc).__name__}\n"
+        f"异常信息: {safe_exc_text}\n"
+        f"异常堆栈:\n{safe_trace_text}"
+    )
+
+    level_map = {
+        'debug': logger.debug,
+        'info': logger.info,
+        'warning': logger.warning,
+        'error': logger.error,
+        'critical': logger.critical
+    }
+    log_func = level_map.get(level, logger.error)
+    log_func(full_message)
+
+
 def log_exception(exc_type, exc_value, exc_traceback):
     """
     记录未捕获的异常
@@ -731,3 +808,8 @@ def error(msg):
 def critical(msg):
     """输出严重错误日志"""
     get_logger().critical(msg)
+
+
+def exception_details(message: str, exc: Optional[BaseException] = None, level: str = 'error'):
+    """便捷函数：通过统一日志组件记录异常详情和堆栈。"""
+    log_exception_details(message, exc=exc, level=level)

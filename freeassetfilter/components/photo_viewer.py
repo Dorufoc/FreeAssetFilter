@@ -19,7 +19,7 @@ import sys
 import os
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -141,9 +141,7 @@ class IcoProcessor(QThread):
             error(f"加载ICO文件时文件错误: {e}")
             self.processing_failed.emit(f"加载ICO文件时文件错误: {e}")
         except Exception as e:
-            error(f"加载ICO文件时未知错误: {e}")
-            import traceback
-            traceback.print_exc()
+            exception_details("[PhotoViewer.IcoProcessor] 加载ICO文件时未知错误", e)
             self.processing_failed.emit(f"加载ICO文件时未知错误: {e}")
 
     def _load_with_pil(self):
@@ -367,9 +365,7 @@ class HeifAvifProcessor(QThread):
             error(f"加载HEIC/AVIF图片时文件错误: {e}")
             self.processing_failed.emit(f"加载HEIC/AVIF图片时文件错误: {e}")
         except Exception as e:
-            error(f"加载HEIC/AVIF图片时未知错误: {e}")
-            import traceback
-            traceback.print_exc()
+            exception_details("[PhotoViewer.HeifAvifProcessor] 加载HEIC/AVIF图片时未知错误", e)
             self.processing_failed.emit(f"加载HEIC/AVIF图片时未知错误: {e}")
 
 
@@ -452,9 +448,7 @@ class PSDProcessor(QThread):
             error(f"加载PSD文件时文件错误: {e}")
             self.processing_failed.emit(f"加载PSD文件时文件错误: {e}")
         except Exception as e:
-            error(f"加载PSD文件时未知错误: {e}")
-            import traceback
-            traceback.print_exc()
+            exception_details("[PhotoViewer.PSDProcessor] 加载PSD文件时未知错误", e)
             self.processing_failed.emit(f"加载PSD文件时未知错误: {e}")
 
 

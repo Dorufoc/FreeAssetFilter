@@ -31,8 +31,7 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    import logging
-    logging.warning("警告: PIL/Pillow未安装，LUT预览功能将受限")
+    warning("PIL/Pillow未安装，LUT预览功能将受限")
 
 from freeassetfilter.utils.lut_utils import CubeLUTParser, get_lut_preview_dir
 

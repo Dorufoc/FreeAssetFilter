@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,9 @@ from freeassetfilter.utils.app_logger import debug, warning
 
 FFPROBE_TIMEOUT = 8
 FFMPEG_TIMEOUT = 15
+
+_FFMPEG_WARMUP_LOCK = threading.Lock()
+_FFMPEG_WARMUP_RESULT: Optional[Dict[str, bool]] = None
 
 
 def _native_dir() -> Path:
@@ -45,6 +49,79 @@ def get_ffmpeg_path() -> str:
 
 def get_subprocess_creationflags() -> int:
     return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _run_warmup_command(command: List[str], *, label: str, timeout: int) -> bool:
+    """
+    执行轻量级预热命令，提前拉起 ffmpeg / ffprobe 相关运行时。
+    """
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1, int(timeout)),
+            creationflags=get_subprocess_creationflags(),
+        )
+    except FileNotFoundError:
+        debug(f"[media_probe] 预热跳过，未找到命令: {label}")
+        return False
+    except subprocess.TimeoutExpired:
+        debug(f"[media_probe] 预热命令超时: {label}")
+        return False
+    except Exception as e:
+        debug(f"[media_probe] 预热命令执行失败: {label}, 错误: {e}")
+        return False
+
+    if completed.returncode != 0:
+        stderr_text = (completed.stderr or "").strip()
+        if stderr_text:
+            debug(f"[media_probe] 预热命令返回非0: {label}, stderr={stderr_text}")
+        return False
+
+    return True
+
+
+def warmup_ffmpeg_tools(force: bool = False) -> Dict[str, bool]:
+    """
+    后台预热 ffmpeg / ffprobe 相关模块，降低首次媒体探测和软解启动延迟。
+
+    预热内容：
+    - ffprobe 版本查询：提前拉起探测进程与依赖
+    - ffmpeg 版本查询：提前拉起 ffmpeg 主体
+    - ffmpeg -hwaccels：提前触发硬解能力枚举相关初始化
+    """
+    global _FFMPEG_WARMUP_RESULT
+
+    with _FFMPEG_WARMUP_LOCK:
+        if _FFMPEG_WARMUP_RESULT is not None and not force:
+            return dict(_FFMPEG_WARMUP_RESULT)
+
+        ffprobe_path = get_ffprobe_path()
+        ffmpeg_path = get_ffmpeg_path()
+
+        result = {
+            "ffprobe_version": _run_warmup_command(
+                [ffprobe_path, "-version"],
+                label="ffprobe -version",
+                timeout=min(5, FFPROBE_TIMEOUT),
+            ),
+            "ffmpeg_version": _run_warmup_command(
+                [ffmpeg_path, "-hide_banner", "-version"],
+                label="ffmpeg -version",
+                timeout=min(5, FFMPEG_TIMEOUT),
+            ),
+            "ffmpeg_hwaccels": _run_warmup_command(
+                [ffmpeg_path, "-hide_banner", "-hwaccels"],
+                label="ffmpeg -hwaccels",
+                timeout=min(5, FFMPEG_TIMEOUT),
+            ),
+        }
+
+        _FFMPEG_WARMUP_RESULT = dict(result)
+        return dict(result)
 
 
 def run_ffprobe_json(

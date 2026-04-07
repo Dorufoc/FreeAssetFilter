@@ -28,7 +28,7 @@ from enum import IntEnum
 from PySide6.QtCore import QObject, Signal, QThread, Qt, QTimer, QMetaObject, Slot
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error, get_safe_error_for_ui, sanitize_path
+from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details, get_safe_error_for_ui, sanitize_path
 from freeassetfilter.utils.path_utils import validate_dll_path, get_safe_dll_paths
 
 
@@ -525,14 +525,10 @@ class MPVPlayerCore(QObject):
 
                 except (RuntimeError, AttributeError, OSError) as e:
                     if not self._stop_event.is_set():
-                        error(f"[MPVWorker] 主循环错误: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        exception_details("[MPVPlayerCore] MPV工作线程主循环错误", e)
 
         except (RuntimeError, OSError) as e:
-            error(f"[MPVWorker] 致命错误: {e}")
-            import traceback
-            traceback.print_exc()
+            exception_details("[MPVPlayerCore] MPV工作线程致命错误", e)
         finally:
             self._cleanup_mpv_handle(mpv_handle)
 

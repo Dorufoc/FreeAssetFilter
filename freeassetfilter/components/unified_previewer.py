@@ -22,7 +22,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
@@ -62,7 +62,6 @@ class UnifiedPreviewer(QWidget):
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(app, 'global_font', QFont())
-        #print(f"[DEBUG] UnifiedPreviewer获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -208,9 +207,7 @@ class UnifiedPreviewer(QWidget):
             self.is_loading_preview = False
             
         except Exception as e:
-            import traceback
-            error(f"[ERROR] 停止预览组件失败: {str(e)}")
-            traceback.print_exc()
+            exception_details("[UnifiedPreviewer] 停止预览组件失败", e)
     
     def init_ui(self):
         """
@@ -484,9 +481,7 @@ class UnifiedPreviewer(QWidget):
             try:
                 self._preview_thread = self.PreviewLoaderThread(file_path, preview_type, self)
             except Exception as e:
-                import traceback
-                error(f"[ERROR] 创建 PreviewLoaderThread 失败: {e}")
-                traceback.print_exc()
+                exception_details("[UnifiedPreviewer] 创建 PreviewLoaderThread 失败", e)
                 self.is_loading_preview = False
                 self._on_file_read_finished()
                 return
@@ -502,9 +497,7 @@ class UnifiedPreviewer(QWidget):
             try:
                 self._preview_thread.start()
             except Exception as e:
-                import traceback
-                error(f"[ERROR] 启动 PreviewLoaderThread 失败: {e}")
-                traceback.print_exc()
+                exception_details("[UnifiedPreviewer] 启动 PreviewLoaderThread 失败", e)
                 self.is_loading_preview = False
                 self._on_file_read_finished()
                 return
@@ -1066,9 +1059,7 @@ class UnifiedPreviewer(QWidget):
             
             debug(f"[DEBUG] 视频预览组件已创建并开始播放: {file_path}")
         except Exception as e:
-            import traceback
-            error(f"[ERROR] 视频预览失败: {str(e)}")
-            traceback.print_exc()
+            exception_details("[UnifiedPreviewer] 视频预览失败", e)
             error_message = f"视频预览失败: {str(e)}"
             self._show_error_with_copy_button(error_message)
         finally:
@@ -1365,8 +1356,7 @@ class UnifiedPreviewer(QWidget):
                 self.current_preview_widget = created_widget
             
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            exception_details("[UnifiedPreviewer] 创建预览组件失败", e)
             # 创建错误信息容器
             error_container = QWidget()
             error_container.setStyleSheet("background-color: transparent;")
@@ -1515,8 +1505,7 @@ class UnifiedPreviewer(QWidget):
                     self.preview_error.emit("不支持的预览类型")
 
             except Exception as e:
-                import traceback
-                traceback.print_exc()
+                exception_details("[UnifiedPreviewer.PreviewLoaderThread] 后台预览线程执行失败", e)
                 self.preview_error.emit(str(e))
 
         def cancel(self):
@@ -1912,9 +1901,7 @@ class UnifiedPreviewer(QWidget):
         except (RuntimeError, AttributeError):
             self._current_settings_window = None
         except Exception as e:
-            import traceback
-            error(f"[ERROR] 打开设置窗口失败: {str(e)}")
-            traceback.print_exc()
+            exception_details("[UnifiedPreviewer] 打开设置窗口失败", e)
             self._current_settings_window = None
     
     def _on_settings_window_closed(self, result):

@@ -21,7 +21,7 @@ import os
 import sys
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
     QSizePolicy, QSpacerItem, QApplication, QFrame
@@ -604,9 +604,7 @@ class PDFPreviewer(QWidget):
             self.current_zoom = previous_user_zoom
 
         except Exception as e:
-            warning(f"[PDFPreviewer] 计算适合显示缩放失败: {e}")
-            import traceback
-            traceback.print_exc()
+            exception_details("[PDFPreviewer] 计算适合显示缩放失败", e, level="warning")
             # 使用默认100%（缩放因子1.0）
             self.fit_to_width_zoom = 1.0
             self.current_zoom = 100

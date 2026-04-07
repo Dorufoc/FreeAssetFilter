@@ -32,7 +32,6 @@ import os
 import sys
 import time
 import threading
-import traceback
 from enum import Enum, IntEnum
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Dict, Any, List, Union, Tuple
@@ -52,7 +51,7 @@ from freeassetfilter.core.mpv_player_core import (
 )
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 
 
 class MPVOperationType(Enum):
@@ -132,7 +131,7 @@ class MPVManagerLogger:
         self.max_history = 1000
 
     def log(self, level: str, message: str, **kwargs):
-        """记录日志"""
+        """记录日志，并统一转发到应用日志组件"""
         if not self.enabled:
             return
 
@@ -149,8 +148,21 @@ class MPVManagerLogger:
         if len(self.log_history) > self.max_history:
             self.log_history = self.log_history[-self.max_history:]
 
-        # 打印到控制台
-        #print(f"[MPVManager][{level}] {message}")
+        # 所有实际日志输出统一交给 app_logger
+        normalized_level = str(level).upper()
+        full_message = f"[MPVManager][{normalized_level}] {message}"
+
+        if kwargs:
+            full_message = f"{full_message} | metadata={kwargs}"
+
+        level_map = {
+            "DEBUG": debug,
+            "INFO": info,
+            "WARNING": warning,
+            "ERROR": error,
+        }
+        log_func = level_map.get(normalized_level, info)
+        log_func(full_message)
 
     def debug(self, message: str, **kwargs):
         """记录调试日志"""
@@ -376,8 +388,7 @@ class MPVManager(QObject):
                 # 队列为空，继续循环
                 continue
             except RuntimeError as e:
-                error(f"处理操作时运行时错误: {e}")
-                traceback.print_exc()
+                exception_details("[MPVManager] 处理操作时运行时错误", e)
                 # 设置Future异常，避免调用方永久阻塞
                 if operation and operation.future and not operation.future.done():
                     operation.future.set_exception(e)
@@ -499,8 +510,7 @@ class MPVManager(QObject):
                     raise ValueError(f"未知操作类型: {operation_type}")
 
         except RuntimeError as e:
-            error(f"执行操作 {operation_type.value} 运行时错误: {e}")
-            traceback.print_exc()
+            exception_details(f"[MPVManager] 执行操作 {operation_type.value} 运行时错误", e)
 
             # 设置错误状态
             with self._state_lock:
@@ -902,9 +912,7 @@ class MPVManager(QObject):
                 return False
 
         except (OSError, ValueError, TypeError) as e:
-            error(f"加载LUT失败: {e}")
-            import traceback
-            traceback.print_exc()
+            exception_details("[MPVManager] 加载LUT失败", e)
             return False
 
     def _do_unload_lut(self) -> bool:

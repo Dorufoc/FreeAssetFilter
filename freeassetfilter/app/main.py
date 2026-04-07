@@ -322,10 +322,26 @@ from PySide6.QtGui import QFont, QIcon
 class StartupWarmupThread(QThread):
     """
     启动后后台预热线程
-    避免 LUT/C++ 相关初始化阻塞主线程首屏展示
+    避免 LUT/C++ 与 FFmpeg 相关初始化阻塞主线程首屏展示
     """
 
     def run(self):
+        try:
+            from freeassetfilter.core.media_probe import warmup_ffmpeg_tools
+
+            info("[预热] 开始后台预热 FFmpeg / ffprobe 模块...")
+            ffmpeg_warmup_result = warmup_ffmpeg_tools()
+            debug(f"[预热] FFmpeg 预热结果: {ffmpeg_warmup_result}")
+            info("[预热] FFmpeg / ffprobe 后台预热完成")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"[预热] FFmpeg / ffprobe 后台预热失败 - 文件操作错误: {e}")
+        except (ValueError, TypeError) as e:
+            error(f"[预热] FFmpeg / ffprobe 后台预热失败 - 数据转换错误: {e}")
+        except (ImportError, ModuleNotFoundError) as e:
+            error(f"[预热] FFmpeg / ffprobe 后台预热失败 - 模块导入错误: {e}")
+        except Exception as e:
+            error(f"[预热] FFmpeg / ffprobe 后台预热失败 - 未知错误: {e}")
+
         try:
             from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
             info("[预热] 开始后台预热 LUT 预览 C++ 模块...")

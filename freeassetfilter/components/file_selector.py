@@ -128,7 +128,6 @@ class CustomFileSelector(QWidget):
         
         # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
-        #print(f"[DEBUG] CustomFileSelector获取到的全局字体: {self.global_font.family()}")
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -2572,7 +2571,6 @@ class CustomFileSelector(QWidget):
         import datetime
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            #print(f"[{timestamp}] [CustomFileSelector._on_card_drag_started] {msg}")
             pass
         
         #debug(f"卡片拖拽开始: {file_info.get('name', '')}")
@@ -3060,7 +3058,6 @@ class CustomFileSelector(QWidget):
                 self.dropEvent(event)
                 return True
         elif event.type() == QEvent.Resize:
-            #print(f"[DEBUG] resize事件触发 from {obj.objectName() if hasattr(obj, 'objectName') else str(obj)}")
             target_width = 0
             if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
                 target_width = self.files_scroll_area.viewport().width()

@@ -8,8 +8,8 @@ FreeAssetFilter 按钮类自定义控件
 import os
 import threading
 
-from PySide6.QtCore import Qt, QRectF, QSize, QTimer, Property, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QColor, QPainter, QFont, QPen, QFontMetrics
+from PySide6.QtCore import Qt, QRectF, QSize, QTimer, Property, QVariantAnimation, QEasingCurve, QEvent
+from PySide6.QtGui import QColor, QPainter, QFont, QPen, QFontMetrics, QCursor
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QPushButton, QSizePolicy, QApplication
 
@@ -159,6 +159,7 @@ class CustomButton(QPushButton):
             self._target_colors = self._copy_color_map(self._target_colors)
         self._anim_progress = 1.0
         self.update()
+        QTimer.singleShot(0, self._sync_visual_state)
 
     def _get_interpolated_colors(self):
         if not self._start_colors or not self._target_colors:
@@ -191,11 +192,62 @@ class CustomButton(QPushButton):
         self._anim_progress = 1.0
         self.update()
 
+    def _is_cursor_inside(self):
+        if not self.isVisible():
+            return False
+
+        if self.underMouse():
+            return True
+
+        try:
+            global_pos = QCursor.pos()
+            local_pos = self.mapFromGlobal(global_pos)
+            return self.rect().contains(local_pos)
+        except RuntimeError:
+            return False
+
+    def _has_blocking_popup(self):
+        active_popup = QApplication.activePopupWidget()
+        if active_popup is not None and active_popup is not self and not self.isAncestorOf(active_popup):
+            return True
+
+        active_modal = QApplication.activeModalWidget()
+        if active_modal is not None and active_modal is not self and not self.isAncestorOf(active_modal):
+            return True
+
+        return False
+
+    def _sync_visual_state(self, animated=True):
+        if not self.isEnabled():
+            self._set_visual_state("normal", animated=False)
+            return
+
+        if self.isHidden() or self._has_blocking_popup():
+            self._set_visual_state("normal", animated=animated)
+            return
+
+        is_cursor_inside = self._is_cursor_inside()
+        if self.isDown() and is_cursor_inside:
+            self._set_visual_state("pressed", animated=animated)
+        elif is_cursor_inside:
+            self._set_visual_state("hover", animated=animated)
+        else:
+            self._set_visual_state("normal", animated=animated)
+
     def _set_visual_state(self, state, animated=True):
         if state not in self._style_colors:
             state = "normal"
 
         target = self._style_colors[state]
+
+        if (
+            state == self._state
+            and self._target_colors is not None
+            and self._current_colors is not None
+            and self._state_animation.state() != QVariantAnimation.Running
+        ):
+            return
+
         self._state = state
 
         if not self._animations_initialized or not animated:
@@ -554,10 +606,7 @@ class CustomButton(QPushButton):
         if not self.isEnabled():
             return
 
-        if self.rect().contains(event.pos()):
-            self._set_visual_state("hover", animated=True)
-        else:
-            self._set_visual_state("normal", animated=True)
+        self._sync_visual_state(animated=True)
 
     def resizeEvent(self, event):
         if event is not None:
@@ -570,6 +619,21 @@ class CustomButton(QPushButton):
 
         if self._display_mode == "icon":
             self._render_icon(force=False)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.EnabledChange:
+            QTimer.singleShot(0, self._sync_visual_state)
+        elif event.type() == QEvent.ActivationChange:
+            window = self.window()
+            if window is not None and not window.isActiveWindow():
+                self._set_visual_state("normal", animated=False)
+        elif event.type() == QEvent.WindowStateChange and self.isHidden():
+            self._set_visual_state("normal", animated=False)
+
+    def hideEvent(self, event):
+        self._set_visual_state("normal", animated=False)
+        super().hideEvent(event)
 
     def keyPressEvent(self, event):
         """

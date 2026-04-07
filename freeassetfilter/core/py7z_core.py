@@ -24,7 +24,7 @@ from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 from freeassetfilter.utils.path_utils import validate_safe_path, contains_injection_chars
 
 
@@ -687,37 +687,35 @@ def get_archive_type(archive_path: str) -> str:
 
 if __name__ == "__main__":
     # 测试代码
-    print("7z Core Module Test")
-    print("=" * 50)
+    info("7z Core Module Test")
+    info("=" * 50)
 
     try:
         core = Py7zCore()
-        print(f"7z.exe 路径: {core._7z_exe_path}")
+        info(f"7z.exe 路径: {core._7z_exe_path}")
 
         # 测试列出当前目录下的压缩包
         test_dir = os.path.dirname(os.path.abspath(__file__))
-        print(f"\n测试目录: {test_dir}")
+        info(f"\n测试目录: {test_dir}")
 
         # 查找测试用的压缩包
         for filename in os.listdir(test_dir):
             if filename.endswith(('.zip', '.rar', '.7z', '.tar', '.gz')):
                 archive_path = os.path.join(test_dir, filename)
-                print(f"\n测试压缩包: {filename}")
-                print(f"类型: {core.get_archive_type(archive_path)}")
-                print(f"加密: {core.is_encrypted(archive_path)}")
+                info(f"\n测试压缩包: {filename}")
+                info(f"类型: {core.get_archive_type(archive_path)}")
+                info(f"加密: {core.is_encrypted(archive_path)}")
 
                 files = core.list_archive(archive_path)
-                print(f"文件数量: {len(files)}")
+                info(f"文件数量: {len(files)}")
                 for f in files[:5]:  # 只显示前5个
                     type_str = "[DIR]" if f["is_dir"] else "[FILE]"
-                    print(f"  {type_str} {f['name']}")
+                    info(f"  {type_str} {f['name']}")
                 if len(files) > 5:
-                    print(f"  ... 还有 {len(files) - 5} 个文件")
+                    info(f"  ... 还有 {len(files) - 5} 个文件")
                 break
         else:
-            print("未找到测试用的压缩包")
+            warning("未找到测试用的压缩包")
 
     except Exception as e:
-        print(f"错误: {e}")
-        import traceback
-        traceback.print_exc()
+        exception_details("[Py7zCore] 测试代码执行失败", e)

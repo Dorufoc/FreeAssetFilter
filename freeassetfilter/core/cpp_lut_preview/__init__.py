@@ -7,12 +7,11 @@ C++ LUT 预览生成器 Python 包装器
 如果 C++ 模块编译失败或未安装，自动降级到纯 Python 实现。
 """
 
-import logging
 from pathlib import Path
 from typing import Optional, Tuple
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from freeassetfilter.utils.app_logger import info, warning
 
 CPP_LUT_PREVIEW_AVAILABLE = False
 _cpp_module = None
@@ -26,7 +25,7 @@ def _try_import_cpp_module():
         from . import lut_preview_cpp
         _cpp_module = lut_preview_cpp.generate_preview_from_data
         CPP_LUT_PREVIEW_AVAILABLE = True
-        logger.info("[LUTPreviewCPP] C++ 扩展模块加载成功（相对导入）")
+        info("[LUTPreviewCPP] C++ 扩展模块加载成功（相对导入）")
         return True
     except ImportError as e1:
         # 回退到绝对导入（开发环境）
@@ -39,10 +38,10 @@ def _try_import_cpp_module():
             from lut_preview_cpp import generate_preview_from_data as _cpp_generate_preview
             _cpp_module = _cpp_generate_preview
             CPP_LUT_PREVIEW_AVAILABLE = True
-            logger.info("[LUTPreviewCPP] C++ 扩展模块加载成功（绝对导入）")
+            info("[LUTPreviewCPP] C++ 扩展模块加载成功（绝对导入）")
             return True
         except ImportError as e2:
-            logger.warning(f"[LUTPreviewCPP] C++ 扩展模块加载失败: {e1}, {e2}")
+            warning(f"[LUTPreviewCPP] C++ 扩展模块加载失败: {e1}, {e2}")
             return False
 
 
@@ -70,9 +69,9 @@ LUT_3D_SIZE 2
 '''
             dummy_image = np.zeros((8, 8, 3), dtype=np.uint8)
             _cpp_module(dummy_lut, dummy_image, 8, 8)
-            logger.info("[LUTPreviewCPP] 预热完成")
+            info("[LUTPreviewCPP] 预热完成")
         except Exception as e:
-            logger.warning(f"[LUTPreviewCPP] 预热失败: {e}")
+            warning(f"[LUTPreviewCPP] 预热失败: {e}")
 
 
 def generate_preview(lut_content: str, image_array: np.ndarray, 

@@ -19,7 +19,7 @@ const DEFAULT_MAX_MEMORY_BYTES: usize = 200 * 1024 * 1024;
 const DEFAULT_K: usize = 2;
 const FFPROBE_TIMEOUT_SECS: u64 = 8;
 const FFMPEG_TIMEOUT_SECS: u64 = 20;
-const MAX_CONCURRENT_HW_VIDEO_DECODES: usize = 1;
+const DEFAULT_MAX_CONCURRENT_HW_VIDEO_DECODES: usize = 1;
 
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARG: i32 = -1;
@@ -248,8 +248,11 @@ struct HwDecodePermit {
 impl HwDecodePermit {
     fn try_acquire() -> Self {
         loop {
+            let max_slots = MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT
+                .load(Ordering::Acquire)
+                .max(1);
             let current = HW_VIDEO_DECODE_SLOTS.load(Ordering::Acquire);
-            if current >= MAX_CONCURRENT_HW_VIDEO_DECODES {
+            if current >= max_slots {
                 return Self { acquired: false };
             }
             if HW_VIDEO_DECODE_SLOTS
@@ -347,6 +350,43 @@ fn ffprobe_path() -> Result<PathBuf, i32> {
 
 fn ffmpeg_path() -> Result<PathBuf, i32> {
     resolve_tool_path("ffmpeg.exe").ok_or(STATUS_INTERNAL)
+}
+
+fn available_hwaccels_from_ffmpeg() -> Vec<String> {
+    let ffmpeg = match ffmpeg_path() {
+        Ok(path) => path,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut command = Command::new(ffmpeg);
+    command.arg("-hide_banner").arg("-loglevel").arg("quiet").arg("-hwaccels");
+
+    let output = match run_command_with_timeout(command, Duration::from_secs(5)) {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+
+    let mut detected = Vec::new();
+    let combined_output = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for line in combined_output.lines() {
+        let normalized = line.trim().to_ascii_lowercase();
+        if normalized.is_empty() || normalized == "hardware acceleration methods:" {
+            continue;
+        }
+
+        if matches!(normalized.as_str(), "d3d11va" | "dxva2" | "qsv")
+            && !detected.iter().any(|existing| existing == &normalized)
+        {
+            detected.push(normalized);
+        }
+    }
+
+    detected
 }
 
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Output> {
@@ -662,6 +702,8 @@ fn generate_jpeg_bytes(path: &str, width: u32, height: u32) -> Result<Vec<u8>, i
 static ENGINE: Lazy<Mutex<NativeEngine>> = Lazy::new(|| Mutex::new(NativeEngine::new()));
 static DECODE_STATS: Lazy<Mutex<DecodeStats>> = Lazy::new(|| Mutex::new(DecodeStats::default()));
 static HW_VIDEO_DECODE_SLOTS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
+static MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT: Lazy<AtomicUsize> =
+    Lazy::new(|| AtomicUsize::new(DEFAULT_MAX_CONCURRENT_HW_VIDEO_DECODES));
 
 fn c_message(msg: &str) -> *mut c_char {
     CString::new(msg)
@@ -1009,6 +1051,19 @@ pub extern "C" fn native_reset_decode_stats() -> c_int {
         }
         Err(_) => STATUS_INTERNAL,
     }
+}
+
+#[no_mangle]
+pub extern "C" fn native_get_available_hwaccels_json() -> *mut c_char {
+    let hwaccels = available_hwaccels_from_ffmpeg();
+    let json = serde_json::to_string(&hwaccels).unwrap_or_else(|_| "[]".to_string());
+    c_message(&json)
+}
+
+#[no_mangle]
+pub extern "C" fn native_set_max_concurrent_hw_video_decodes(max_slots: usize) -> c_int {
+    MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT.store(max_slots.max(1), Ordering::Release);
+    STATUS_OK
 }
 
 #[no_mangle]

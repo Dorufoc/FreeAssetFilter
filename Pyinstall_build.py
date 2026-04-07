@@ -24,6 +24,8 @@ import glob
 from pathlib import Path
 from typing import List, Dict, Set, Tuple
 
+from freeassetfilter.utils.app_logger import info, warning, error
+
 # 配置
 PROJECT_NAME = "FreeAssetFilter"
 ENTRY_POINT = "freeassetfilter/app/main.py"
@@ -100,29 +102,29 @@ QT6_QUICK3D_PATTERNS = ["Qt6Quick3D", "Qt63D"]
 
 def print_header(text: str):
     """打印标题"""
-    print("\n" + "=" * 60)
-    print(f"  {text}")
-    print("=" * 60)
+    info("\n" + "=" * 60)
+    info(f"  {text}")
+    info("=" * 60)
 
 
 def print_info(text: str):
     """打印信息"""
-    print(f"[INFO] {text}")
+    info(text)
 
 
 def print_warning(text: str):
     """打印警告"""
-    print(f"[WARN] {text}")
+    warning(text)
 
 
 def print_error(text: str):
     """打印错误"""
-    print(f"[ERROR] {text}")
+    error(text)
 
 
 def print_success(text: str):
     """打印成功信息"""
-    print(f"[SUCCESS] {text}")
+    info(f"[SUCCESS] {text}")
 
 
 def check_pyinstaller() -> bool:
@@ -796,7 +798,7 @@ def analyze_output_size():
                 rel_path = f.relative_to(output_dir)
                 files.append((str(rel_path), size))
             except (OSError, IOError) as e:
-                print(f"警告: 获取文件信息失败 {f}: {e}")
+                warning(f"获取文件信息失败 {f}: {e}")
     
     # 按大小降序排序
     files.sort(key=lambda x: x[1], reverse=True)
@@ -804,7 +806,7 @@ def analyze_output_size():
     # 显示最大的20个文件
     print_info("最大的20个文件:")
     for i, (path, size) in enumerate(files[:20], 1):
-        print(f"  {i}. {path}: {size / 1024 / 1024:.2f} MB")
+        info(f"  {i}. {path}: {size / 1024 / 1024:.2f} MB")
     
     # 按类型统计
     type_sizes = {}
@@ -817,7 +819,7 @@ def analyze_output_size():
     print_info("\n按文件类型统计:")
     sorted_types = sorted(type_sizes.items(), key=lambda x: x[1], reverse=True)
     for ext, size in sorted_types[:10]:
-        print(f"  {ext or '(no ext)'}: {size / 1024 / 1024:.2f} MB")
+        info(f"  {ext or '(no ext)'}: {size / 1024 / 1024:.2f} MB")
     
     # 统计特定目录
     dir_sizes = {}
@@ -832,7 +834,7 @@ def analyze_output_size():
     print_info("\n按顶级目录统计:")
     sorted_dirs = sorted(dir_sizes.items(), key=lambda x: x[1], reverse=True)
     for dir_name, size in sorted_dirs[:10]:
-        print(f"  {dir_name}/: {size / 1024 / 1024:.2f} MB")
+        info(f"  {dir_name}/: {size / 1024 / 1024:.2f} MB")
 
 
 def generate_report(removed_dlls: int, saved_space: int):
@@ -846,12 +848,12 @@ def generate_report(removed_dlls: int, saved_space: int):
         total_size = sum(f.stat().st_size for f in output_dir.rglob('*') if f.is_file())
         file_count = len(list(output_dir.rglob('*')))
         
-        print(f"输出目录: {output_dir}")
-        print(f"可执行文件: {PROJECT_NAME}.exe")
-        print(f"总文件数: {file_count}")
-        print(f"总大小: {total_size / 1024 / 1024:.2f} MB")
-        print(f"移除Qt6 DLL: {removed_dlls} 个")
-        print(f"节省空间: {saved_space / 1024 / 1024:.2f} MB")
+        info(f"输出目录: {output_dir}")
+        info(f"可执行文件: {PROJECT_NAME}.exe")
+        info(f"总文件数: {file_count}")
+        info(f"总大小: {total_size / 1024 / 1024:.2f} MB")
+        info(f"移除Qt6 DLL: {removed_dlls} 个")
+        info(f"节省空间: {saved_space / 1024 / 1024:.2f} MB")
         
         # 分析大小
         analyze_output_size()
@@ -892,7 +894,7 @@ def check_upx() -> bool:
             print_success(f"UPX已找到: {result.stdout.strip()}")
             return True
     except (subprocess.SubprocessError, FileNotFoundError) as e:
-        print(f"调试: 从PATH查找UPX失败: {e}")
+        warning(f"从PATH查找UPX失败: {e}")
     
     print_warning("未找到UPX，跳过压缩步骤")
     print_info(r"如需使用UPX压缩，请下载并安装UPX到 C:\upx\ 或添加到PATH")
@@ -1012,10 +1014,10 @@ def main():
     args = parser.parse_args()
     
     print_header("FreeAssetFilter PyInstaller打包脚本")
-    print(f"项目: {PROJECT_NAME}")
-    print(f"入口: {ENTRY_POINT}")
-    print(f"输出: {OUTPUT_DIR}")
-    print(f"UPX压缩: {'禁用' if args.no_upx else '启用'}")
+    info(f"项目: {PROJECT_NAME}")
+    info(f"入口: {ENTRY_POINT}")
+    info(f"输出: {OUTPUT_DIR}")
+    info(f"UPX压缩: {'禁用' if args.no_upx else '启用'}")
     
     # 仅执行UPX压缩
     if args.upx_only:
