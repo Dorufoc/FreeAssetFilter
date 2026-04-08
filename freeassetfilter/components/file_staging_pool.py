@@ -18,6 +18,8 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import os
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -40,7 +42,7 @@ from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PySide6.QtCore import (
-    Qt, Signal, QFileInfo, QThread, QMetaObject, Q_ARG, QObject, QRunnable, QTimer
+    Qt, Signal, Slot, QFileInfo, QThread, QMetaObject, Q_ARG, QObject, QRunnable, QTimer
 )
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QAction
 
@@ -82,7 +84,12 @@ class FileStagingPool(QWidget):
         # 初始化数据
         self.items = []  # 存储所有添加的文件/文件夹项目
         self.previewing_file_path = None  # 当前处于预览态的文件路径
-        self._active_size_calculators = []  # 跟踪活动的文件夹大小计算线程
+        self._active_size_calculators = {}  # 跟踪活动的文件夹大小计算任务 {folder_path: Future}
+        self._size_calculator_cancel_events = {}  # 文件夹大小计算取消标记
+        self._size_calculator_executor = ThreadPoolExecutor(
+            max_workers=min(4, os.cpu_count() or 2),
+            thread_name_prefix="FolderSizeCalculator"
+        )
         self._suspend_backup_save = False  # 启动恢复期间暂停频繁保存备份
         self._pending_backup_last_path = 'All'
         self._backup_save_delay_ms = 1500
@@ -2014,47 +2021,131 @@ class FileStagingPool(QWidget):
 
     def _calculate_folder_size(self, folder_path):
         """
-        计算文件夹体积的线程函数
-        使用 QThread 替代 Python 原生 threading，确保与 PyQt 的线程安全兼容
+        将文件夹体积计算任务提交到受限线程池
 
         Args:
             folder_path (str): 文件夹路径
         """
-        # 清理已完成的线程
         self._cleanup_finished_calculators()
 
-        # 创建并启动文件夹大小计算线程
-        calculator = FolderSizeCalculator(folder_path, self.items, self)
-        calculator.folder_size_calculated.connect(self._on_folder_size_calculated)
+        if folder_path in self._active_size_calculators:
+            future = self._active_size_calculators.get(folder_path)
+            if future and not future.done():
+                return
 
-        # 跟踪活动线程
-        self._active_size_calculators.append(calculator)
+        cancel_event = threading.Event()
+        self._size_calculator_cancel_events[folder_path] = cancel_event
 
-        # 线程完成时自动清理
-        calculator.finished.connect(lambda: self._cleanup_finished_calculators())
+        future = self._size_calculator_executor.submit(
+            self._calculate_folder_size_worker,
+            folder_path,
+            cancel_event
+        )
+        self._active_size_calculators[folder_path] = future
 
-        calculator.start()
+        def _on_future_done(completed_future, path=folder_path):
+            try:
+                if completed_future.cancelled():
+                    return
+
+                result = completed_future.result()
+                if result is not None:
+                    QMetaObject.invokeMethod(
+                        self,
+                        "_emit_folder_size_result",
+                        Qt.QueuedConnection,
+                        Q_ARG(dict, result)
+                    )
+            except Exception as e:
+                warning(f"文件夹大小计算失败: {path}, 错误: {e}")
+            finally:
+                self._active_size_calculators.pop(path, None)
+                self._size_calculator_cancel_events.pop(path, None)
+
+        future.add_done_callback(_on_future_done)
 
     def _cleanup_finished_calculators(self):
         """
-        清理已完成的计算线程
-        从活动线程列表中移除已经完成的线程
+        清理已完成的计算任务
         """
-        self._active_size_calculators = [
-            calc for calc in self._active_size_calculators
-            if calc.isRunning()
+        finished_paths = [
+            path for path, future in self._active_size_calculators.items()
+            if future.done()
         ]
+        for path in finished_paths:
+            self._active_size_calculators.pop(path, None)
+            self._size_calculator_cancel_events.pop(path, None)
 
     def stop_all_size_calculators(self):
         """
-        停止所有活动的文件夹大小计算线程
+        停止所有活动的文件夹大小计算任务
         在组件销毁或程序退出时调用
         """
-        for calculator in self._active_size_calculators:
-            if calculator.isRunning():
-                calculator.cancel()
-                calculator.wait(500)
+        for cancel_event in self._size_calculator_cancel_events.values():
+            cancel_event.set()
+
+        for future in self._active_size_calculators.values():
+            future.cancel()
+
         self._active_size_calculators.clear()
+        self._size_calculator_cancel_events.clear()
+
+        if hasattr(self, "_size_calculator_executor") and self._size_calculator_executor:
+            self._size_calculator_executor.shutdown(wait=False, cancel_futures=True)
+            self._size_calculator_executor = ThreadPoolExecutor(
+                max_workers=min(4, os.cpu_count() or 2),
+                thread_name_prefix="FolderSizeCalculator"
+            )
+
+    @staticmethod
+    def _calculate_folder_size_worker(folder_path, cancel_event):
+        """
+        在线程池中计算文件夹大小
+
+        Args:
+            folder_path (str): 文件夹路径
+            cancel_event (threading.Event): 取消标记
+
+        Returns:
+            dict | None: 计算结果
+        """
+        total_size = 0
+
+        try:
+            for root, dirs, files in os.walk(folder_path):
+                if cancel_event.is_set():
+                    return None
+
+                for file in files:
+                    if cancel_event.is_set():
+                        return None
+
+                    file_path = os.path.join(root, file)
+                    try:
+                        if os.path.exists(file_path):
+                            stat_result = os.stat(file_path)
+                            total_size += stat_result.st_size
+                    except (OSError, PermissionError, FileNotFoundError):
+                        pass
+                    except Exception:
+                        pass
+        except (OSError, PermissionError, FileNotFoundError):
+            pass
+        except Exception:
+            pass
+
+        if cancel_event.is_set():
+            return None
+
+        return {
+            "path": folder_path,
+            "size": total_size
+        }
+
+    @Slot(dict)
+    def _emit_folder_size_result(self, result):
+        """在线程安全的上下文中转发文件夹大小计算结果"""
+        self._on_folder_size_calculated(result)
 
     def _on_folder_size_calculated(self, result):
         """
@@ -2643,82 +2734,6 @@ class FileStagingPool(QWidget):
         for card, _ in self.cards:
             if hasattr(card, 'set_previewing'):
                 card.set_previewing(False)
-
-
-class FolderSizeCalculator(QThread):
-    """
-    文件夹大小计算线程
-    使用 QThread 确保与 PyQt 的线程安全兼容，避免与主线程的文件操作冲突
-    """
-    folder_size_calculated = Signal(dict)  # 计算完成信号，传递结果字典
-
-    def __init__(self, folder_path, items, parent=None):
-        """
-        初始化文件夹大小计算线程
-
-        Args:
-            folder_path (str): 要计算大小的文件夹路径
-            items (list): 文件信息列表，用于查找对应的文件信息项
-            parent (QObject, optional): 父对象，默认为 None
-        """
-        super().__init__(parent)
-        self.folder_path = folder_path
-        self.items = items
-        self._is_cancelled = False
-
-    def run(self):
-        """
-        线程执行逻辑
-        在后台线程中安全地计算文件夹大小
-        """
-        total_size = 0
-
-        try:
-            # 使用 os.walk 遍历文件夹，添加异常处理防止访问冲突
-            for root, dirs, files in os.walk(self.folder_path):
-                if self._is_cancelled:
-                    return
-
-                for file in files:
-                    if self._is_cancelled:
-                        return
-
-                    file_path = os.path.join(root, file)
-                    try:
-                        # 使用 try-except 包裹每个文件操作，防止单个文件错误影响整体
-                        if os.path.exists(file_path):
-                            # 使用 os.stat 替代 os.path.getsize，更底层且稳定
-                            stat_result = os.stat(file_path)
-                            total_size += stat_result.st_size
-                    except (OSError, PermissionError, FileNotFoundError):
-                        # 忽略无法访问的文件
-                        pass
-                    except Exception as e:
-                        # 捕获所有其他异常，确保线程不会崩溃
-                        debug(f"计算文件大小时发生错误: {e}")
-                        pass
-        except (OSError, PermissionError, FileNotFoundError):
-            # 文件夹无法访问
-            pass
-        except Exception as e:
-            # 捕获所有其他异常
-            debug(f"遍历文件夹时发生错误: {e}")
-            pass
-
-        # 发送计算结果（通过信号，线程安全）
-        if not self._is_cancelled:
-            result = {
-                "path": self.folder_path,
-                "size": total_size
-            }
-            self.folder_size_calculated.emit(result)
-
-    def cancel(self):
-        """
-        取消计算
-        设置取消标志，线程会在下一个检查点退出
-        """
-        self._is_cancelled = True
 
 
 # 测试代码

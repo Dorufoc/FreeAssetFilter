@@ -234,14 +234,15 @@ class CustomButton(QPushButton):
         else:
             self._set_visual_state("normal", animated=animated)
 
-    def _set_visual_state(self, state, animated=True):
+    def _set_visual_state(self, state, animated=True, force=False):
         if state not in self._style_colors:
             state = "normal"
 
         target = self._style_colors[state]
 
         if (
-            state == self._state
+            not force
+            and state == self._state
             and self._target_colors is not None
             and self._current_colors is not None
             and self._state_animation.state() != QVariantAnimation.Running
@@ -528,7 +529,7 @@ class CustomButton(QPushButton):
             self._target_colors = self._copy_color_map(self._style_colors["normal"])
             self._anim_progress = 1.0
         else:
-            self._set_visual_state("normal", animated=False)
+            self._set_visual_state("normal", animated=False, force=theme_changed)
 
         self.update()
 

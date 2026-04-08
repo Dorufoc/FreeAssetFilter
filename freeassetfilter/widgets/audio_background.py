@@ -2127,4 +2127,4 @@ class AudioBackground(QWidget):
         self._fluid_buffer_size = (0, 0)
         self._invalidate_blur_scaled_cache()
         self._hide_fluid_gl_layer()
-        self.update()
+        self.update()

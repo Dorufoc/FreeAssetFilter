@@ -529,29 +529,21 @@ class CustomFileHorizontalCard(QWidget):
         self._update_card_surface()
 
     def _apply_text_palette(self):
+        normal_text_style = f"background: transparent; border: none; color: {self.secondary_color};"
+        missing_text_style = f"background: transparent; border: none; color: {self.normal_color};"
+
         if self._path_exists:
-            if self._drag_visual_active:
-                self.name_label.setPalette(self._label_normal_palette)
-                self.info_label.setPalette(self._label_normal_palette)
-                self.name_label.setStyleSheet("background: transparent; border: none;")
-                self.info_label.setStyleSheet("background: transparent; border: none;")
-            elif self._is_selected or self._is_previewing:
-                self.name_label.setPalette(self._label_normal_palette)
-                self.info_label.setPalette(self._label_normal_palette)
-                self.name_label.setStyleSheet("background: transparent; border: none;")
-                self.info_label.setStyleSheet("background: transparent; border: none;")
-            else:
-                self.name_label.setPalette(self._label_dim_palette)
-                self.info_label.setPalette(self._label_normal_palette)
-                self.name_label.setStyleSheet("background: transparent; border: none;")
-                self.info_label.setStyleSheet("background: transparent; border: none;")
+            self.name_label.setPalette(self._label_normal_palette)
+            self.info_label.setPalette(self._label_normal_palette)
+            self.name_label.setStyleSheet(normal_text_style)
+            self.info_label.setStyleSheet(normal_text_style)
         else:
             self.name_label.setPalette(self._label_missing_palette)
             self.info_label.setPalette(self._label_missing_palette)
             self.name_label.setStyleSheet(
-                "background: transparent; border: none; text-decoration: line-through;"
+                f"{missing_text_style} text-decoration: line-through;"
             )
-            self.info_label.setStyleSheet("background: transparent; border: none;")
+            self.info_label.setStyleSheet(missing_text_style)
 
     def _init_animations(self):
         normal_bg = QColor(self._style_colors["normal_bg"])

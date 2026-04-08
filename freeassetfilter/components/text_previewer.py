@@ -1042,6 +1042,12 @@ class TextPreviewWidget(QWidget):
         """初始化工具栏"""
         toolbar = QWidget()
         toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        app = QApplication.instance()
+        toolbar_auxiliary_color = "#f1f3f5"
+        if hasattr(app, 'settings_manager'):
+            toolbar_auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+        toolbar.setStyleSheet(f"background-color: {toolbar_auxiliary_color};")
         
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(10, 5, 10, 5)
@@ -1256,6 +1262,12 @@ class TextPreviewWidget(QWidget):
         """初始化搜索栏"""
         self.search_bar = QWidget()
         self.search_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        app = QApplication.instance()
+        search_bar_auxiliary_color = "#f1f3f5"
+        if hasattr(app, 'settings_manager'):
+            search_bar_auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+        self.search_bar.setStyleSheet(f"background-color: {search_bar_auxiliary_color};")
         
         search_layout = QHBoxLayout(self.search_bar)
         search_layout.setContentsMargins(10, 5, 10, 5)
@@ -1344,6 +1356,16 @@ class TextPreviewWidget(QWidget):
         self.setStyleSheet(f"""
             background-color: {bg_color};
         """)
+
+        if hasattr(self, 'search_button') and self.search_button:
+            toolbar_widget = self.search_button.parentWidget()
+            if toolbar_widget is not None:
+                toolbar_widget.setStyleSheet(f"background-color: {bg_color if False else app.settings_manager.get_setting('appearance.colors.auxiliary_color', '#f1f3f5')};")
+
+        if hasattr(self, 'search_bar') and self.search_bar:
+            self.search_bar.setStyleSheet(
+                f"background-color: {app.settings_manager.get_setting('appearance.colors.auxiliary_color', '#f1f3f5')};"
+            )
 
         self.text_edit.setStyleSheet(f"""
             QTextEdit {{

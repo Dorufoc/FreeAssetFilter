@@ -213,6 +213,7 @@ class CustomFileSelector(QWidget):
         
         # 首次显示标志位，用于避免初始化时卡片重叠
         self._first_show = True
+        self._thumbnail_thread = None
         
         # 初始化悬浮详细信息组件
         self.hover_tooltip = HoverTooltip(self)
@@ -706,6 +707,16 @@ class CustomFileSelector(QWidget):
         同时也为文件存储池中的照片和视频生成缩略图
         使用后台线程处理，避免阻塞UI
         """
+        if self._thumbnail_thread and self._thumbnail_thread.isRunning():
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
+            info_msg = CustomMessageBox(self)
+            info_msg.set_title("提示")
+            info_msg.set_text("已有缩略图生成任务正在进行，请等待当前任务完成。")
+            info_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+            info_msg.buttonClicked.connect(info_msg.close)
+            info_msg.exec()
+            return
+
         # 获取缩略图管理器
         thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
 
@@ -772,7 +783,8 @@ class CustomFileSelector(QWidget):
         def on_cancel_clicked():
             nonlocal is_canceled
             is_canceled = True
-            if hasattr(self, '_thumbnail_thread') and self._thumbnail_thread.isRunning():
+            self.generate_thumbnails_btn.setEnabled(True)
+            if self._thumbnail_thread and self._thumbnail_thread.isRunning():
                 self._thumbnail_thread.cancel()
             progress_msg.close()
 
@@ -780,6 +792,7 @@ class CustomFileSelector(QWidget):
 
         progress_msg.show()
 
+        self.generate_thumbnails_btn.setEnabled(False)
         self._thumbnail_thread = ThumbnailGeneratorThread(thumbnail_manager, files_to_generate)
 
         def on_progress_updated(current, total, file_data):
@@ -797,6 +810,12 @@ class CustomFileSelector(QWidget):
             warning(f"生成缩略图失败: {file_path}, 错误: {error}")
 
         def on_finished(success_count, total_count):
+            finished_thread = self._thumbnail_thread
+            self.generate_thumbnails_btn.setEnabled(True)
+            self._thumbnail_thread = None
+            if finished_thread:
+                finished_thread.deleteLater()
+
             # 用户取消后不再弹完成提示
             if is_canceled:
                 return

@@ -2488,4 +2488,4 @@ class ModernSettingsWindow(QDialog):
 
 
 # 更新 __init__.py 文件，导出新控件
-# 注意：在实际使用时，需要手动更新 custom_widgets.py 文件，将新控件添加到导入和导出列表中
+# 注意：在实际使用时，需要手动更新 custom_widgets.py 文件，将新控件添加到导入和导出列表中

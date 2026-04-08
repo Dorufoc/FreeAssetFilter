@@ -250,8 +250,9 @@ class HoverTooltip(QWidget):
 
             settings_manager = SettingsManager()
 
-        current_colors = settings_manager.get_setting("appearance.colors", {})
-        secondary_color = current_colors.get("secondary_color", "#333333")
+        secondary_color = settings_manager.get_setting(
+            "appearance.colors.secondary_color", "#333333"
+        )
 
         self.setStyleSheet(
             f"""

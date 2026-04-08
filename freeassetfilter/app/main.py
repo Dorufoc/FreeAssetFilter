@@ -688,6 +688,72 @@ class FreeAssetFilterApp(QMainWindow):
 
         return auxiliary_color, normal_color, base_color
 
+    def _capture_preview_state_for_theme_update(self):
+        """
+        记录主题切换前当前预览文件信息，用于刷新后恢复预览组件。
+        """
+        preview_file_info = None
+
+        try:
+            unified_previewer = getattr(self, "unified_previewer", None)
+            current_file_info = getattr(unified_previewer, "current_file_info", None) if unified_previewer else None
+            if isinstance(current_file_info, dict) and current_file_info:
+                preview_file_info = dict(current_file_info)
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"备份预览状态失败: {e}")
+
+        return preview_file_info
+
+    def _clear_preview_for_theme_update(self):
+        """
+        在主题刷新前主动清空当前预览区域，避免旧预览组件残留旧样式。
+        """
+        unified_previewer = getattr(self, "unified_previewer", None)
+        if not unified_previewer:
+            return
+
+        try:
+            if hasattr(unified_previewer, "_clear_preview"):
+                unified_previewer._clear_preview(emit_signal=False)
+            elif hasattr(unified_previewer, "stop_preview"):
+                unified_previewer.stop_preview()
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"主题刷新前清空预览失败: {e}")
+
+        try:
+            unified_previewer.current_file_info = None
+            if hasattr(unified_previewer, "default_label") and unified_previewer.default_label:
+                unified_previewer.default_label.show()
+            if hasattr(unified_previewer, "clear_preview_button"):
+                unified_previewer.clear_preview_button.hide()
+            if hasattr(unified_previewer, "open_with_system_button"):
+                unified_previewer.open_with_system_button.hide()
+            if hasattr(unified_previewer, "copy_to_clipboard_button"):
+                unified_previewer.copy_to_clipboard_button.hide()
+            if hasattr(unified_previewer, "locate_in_selector_button"):
+                unified_previewer.locate_in_selector_button.hide()
+        except (RuntimeError, AttributeError, TypeError) as e:
+            logger.debug(f"重置预览显示状态失败: {e}")
+
+    def _restore_preview_for_theme_update(self, preview_file_info):
+        """
+        主题刷新后恢复之前正在预览的文件。
+        """
+        if not isinstance(preview_file_info, dict) or not preview_file_info:
+            return
+
+        unified_previewer = getattr(self, "unified_previewer", None)
+        if not unified_previewer or not hasattr(unified_previewer, "set_file"):
+            return
+
+        def _restore():
+            try:
+                unified_previewer.set_file(dict(preview_file_info))
+            except (RuntimeError, AttributeError, TypeError) as e:
+                logger.debug(f"恢复预览状态失败: {e}")
+
+        QTimer.singleShot(0, _restore)
+
     def _refresh_widget_self_only(self, widget):
         """
         仅刷新单个控件自身样式，不递归处理子控件
@@ -787,6 +853,7 @@ class FreeAssetFilterApp(QMainWindow):
             getattr(self, "file_staging_pool", None),
             getattr(self, "unified_previewer", None),
             getattr(self, "github_button", None),
+            getattr(self, "update_button", None),
             getattr(self, "global_settings_button", None),
             getattr(self, "hover_tooltip", None),
         ]
@@ -1438,24 +1505,11 @@ class FreeAssetFilterApp(QMainWindow):
 
         return True
 
-    def update_theme(self, delayed=False):
+    def _perform_theme_update_refresh(self, preview_file_info=None):
         """
-        更新应用主题：
-        - 启动阶段窗口尚未显示时，使用轻量样式刷新
-        - 窗口显示后，优先直接重建主布局，避免对整棵旧控件树做高成本增量刷新
-
-        Args:
-            delayed: 是否延迟执行，用于防止在窗口关闭时调用
+        第二阶段：执行主窗口主题刷新。
+        刷新完成后，再异步进入第三阶段恢复预览。
         """
-        if not delayed and self._update_theme_in_progress:
-            if not self._theme_update_queued:
-                self._theme_update_queued = True
-                QTimer.singleShot(50, lambda: self.update_theme(delayed=True))
-            return
-
-        self._update_theme_in_progress = True
-        self._theme_update_queued = False
-
         previous_updates_enabled = self.updatesEnabled()
         self.setUpdatesEnabled(False)
 
@@ -1487,6 +1541,37 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 更新窗口标题栏主题
         self._apply_title_bar_theme()
+
+        if preview_file_info:
+            QTimer.singleShot(0, lambda: self._restore_preview_for_theme_update(preview_file_info))
+
+    def update_theme(self, delayed=False):
+        """
+        更新应用主题：
+        - 启动阶段窗口尚未显示时，使用轻量样式刷新
+        - 窗口显示后，优先直接重建主布局，避免对整棵旧控件树做高成本增量刷新
+        - 预览区域采用“清空 → 刷新 → 恢复”的分阶段异步流程，降低切换卡顿
+
+        Args:
+            delayed: 是否延迟执行，用于防止在窗口关闭时调用
+        """
+        if not delayed and self._update_theme_in_progress:
+            if not self._theme_update_queued:
+                self._theme_update_queued = True
+                QTimer.singleShot(50, lambda: self.update_theme(delayed=True))
+            return
+
+        self._update_theme_in_progress = True
+        self._theme_update_queued = False
+
+        preview_file_info = self._capture_preview_state_for_theme_update()
+
+        # 第一阶段：先清空旧预览，让旧组件先退出显示树
+        if preview_file_info:
+            self._clear_preview_for_theme_update()
+
+        # 第二阶段：下一轮事件循环再执行主窗口主题刷新
+        QTimer.singleShot(0, lambda: self._perform_theme_update_refresh(preview_file_info))
 
     def schedule_startup_tasks(self):
         """

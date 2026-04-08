@@ -35,7 +35,7 @@ import threading
 from enum import Enum, IntEnum
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Dict, Any, List, Union, Tuple
-from queue import Queue, Empty
+from queue import PriorityQueue, Empty
 from threading import Lock, RLock, Event
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 
@@ -270,8 +270,9 @@ class MPVManager(QObject):
         self._is_busy = False
 
         # 操作队列
-        self._operation_queue: Queue = Queue()
+        self._operation_queue: PriorityQueue = PriorityQueue()
         self._queue_lock = Lock()
+        self._operation_sequence = 0
         self._pending_operation_lock = RLock()
         self._pending_latest_operations: Dict[Tuple[str, str], MPVOperation] = {}
         self._coalescible_operations = {
@@ -296,6 +297,14 @@ class MPVManager(QObject):
         self._cleanup_event = Event()
         self._cleanup_event.set()  # 初始状态为已完成
         self._async_cleanup_thread: Optional[threading.Thread] = None
+
+        # 状态信号节流（默认最多 60fps）
+        self._state_emit_interval_ms = 16
+        self._last_state_emit_time = 0.0
+        self._state_emit_pending = False
+        self._state_emit_timer = QTimer(self)
+        self._state_emit_timer.setSingleShot(True)
+        self._state_emit_timer.timeout.connect(self._flush_state_changed)
 
         self._logger.info("MPV管理器初始化完成")
 
@@ -327,7 +336,9 @@ class MPVManager(QObject):
         # 清空操作队列
         while not self._operation_queue.empty():
             try:
-                self._operation_queue.get_nowait()
+                _, _, operation = self._operation_queue.get_nowait()
+                if operation and operation.future and not operation.future.done():
+                    operation.future.set_result(False)
             except Empty:
                 debug("清空操作队列: 队列为空")
                 break
@@ -353,7 +364,7 @@ class MPVManager(QObject):
             operation = None
             try:
                 # 从队列获取操作，超时1秒
-                operation = self._operation_queue.get(timeout=1.0)
+                _, _, operation = self._operation_queue.get(timeout=1.0)
 
                 if operation is None:
                     continue
@@ -576,11 +587,14 @@ class MPVManager(QObject):
                     self._pending_latest_operations[pending_key] = operation
                 if previous_operation and previous_operation.future and not previous_operation.future.done():
                     previous_operation.future.set_result(False)
-            self._operation_queue.put(operation)
+
+            self._operation_sequence += 1
+            queue_item = (priority, self._operation_sequence, operation)
+            self._operation_queue.put(queue_item)
 
         self._logger.debug(
             f"操作已提交: {operation_type.value}, "
-            f"组件: {component_id}"
+            f"组件: {component_id}, 优先级: {priority}, 序号: {self._operation_sequence}"
         )
 
         return future
@@ -1131,6 +1145,41 @@ class MPVManager(QObject):
 
     # ==================== 信号处理回调 ====================
 
+    def _request_state_changed_emit(self):
+        """请求发射节流后的状态变化信号"""
+        QMetaObject.invokeMethod(
+            self,
+            "_schedule_state_changed_emit",
+            Qt.QueuedConnection
+        )
+
+    @Slot()
+    def _schedule_state_changed_emit(self):
+        """按节流策略调度状态变化信号"""
+        now = time.monotonic()
+        elapsed_ms = (now - self._last_state_emit_time) * 1000
+
+        if elapsed_ms >= self._state_emit_interval_ms and not self._state_emit_timer.isActive():
+            self._emit_state_changed_now()
+            return
+
+        self._state_emit_pending = True
+        remaining_ms = max(1, int(self._state_emit_interval_ms - elapsed_ms))
+        if not self._state_emit_timer.isActive():
+            self._state_emit_timer.start(remaining_ms)
+
+    @Slot()
+    def _flush_state_changed(self):
+        """定时器触发后发射最新状态"""
+        if self._state_emit_pending:
+            self._emit_state_changed_now()
+
+    def _emit_state_changed_now(self):
+        """立即发射最新状态快照"""
+        self._state_emit_pending = False
+        self._last_state_emit_time = time.monotonic()
+        self.stateChanged.emit(self.get_state())
+
     def _on_state_changed(self, is_playing: bool):
         """播放状态变化回调"""
         with self._state_lock:
@@ -1139,7 +1188,7 @@ class MPVManager(QObject):
                 self._current_state.is_paused = False
             self._current_state.last_update = time.time()
 
-        self.stateChanged.emit(self._current_state)
+        self._request_state_changed_emit()
 
     def _on_position_changed(self, position: float, duration: float):
         """位置变化回调"""

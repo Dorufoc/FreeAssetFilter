@@ -223,17 +223,17 @@ class FileInfoPreviewer(QObject):
     def _load_theme_colors(self):
         """加载主题颜色"""
         app = QApplication.instance()
-        self.background_color = "#2D2D2D"
+        self.background_color = "#f1f3f5"
         self.base_color = "#212121"
-        self.auxiliary_color = "#313131"
+        self.auxiliary_color = "#f1f3f5"
         self.normal_color = "#717171"
         self.secondary_color = "#FFFFFF"
         self.accent_color = "#F0C54D"
 
         if hasattr(app, 'settings_manager'):
-            self.background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+            self.background_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
             self.base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
-            self.auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
+            self.auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
             self.normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
             self.secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
             self.accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
@@ -1332,7 +1332,7 @@ class FileInfoPreviewer(QObject):
                     background-color: {self.background_color};
                 }}
                 QScrollArea > QWidget > QWidget {{
-                    background-color: {self.base_color};
+                    background-color: {self.auxiliary_color};
                 }}
             """)
             if hasattr(self.scroll_area, "verticalScrollBar") and self.scroll_area.verticalScrollBar():

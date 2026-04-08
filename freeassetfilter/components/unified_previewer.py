@@ -102,14 +102,14 @@ class UnifiedPreviewer(QWidget):
         """
         app = QApplication.instance()
         colors = {
-            "window_background": "#2D2D2D",
+            "window_background": "#f1f3f5",
             "base_color": "#212121",
             "normal_color": "#717171",
             "secondary_color": "#FFFFFF",
         }
 
         if hasattr(app, "settings_manager"):
-            colors["window_background"] = app.settings_manager.get_setting("appearance.colors.window_background", colors["window_background"])
+            colors["window_background"] = app.settings_manager.get_setting("appearance.colors.auxiliary_color", colors["window_background"])
             colors["base_color"] = app.settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
             colors["normal_color"] = app.settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
             colors["secondary_color"] = app.settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
@@ -222,11 +222,11 @@ class UnifiedPreviewer(QWidget):
         # 创建主布局 - 使用QSplitter实现可拖拽调整
         main_layout = QVBoxLayout(self)
         app = QApplication.instance()
-        background_color = "#2D2D2D"
+        background_color = "#f1f3f5"
         base_color = "#212121"
         normal_color = "#717171"
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+            background_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
             base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
             normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
         self.setStyleSheet(f"background-color: {background_color}; border: none;")

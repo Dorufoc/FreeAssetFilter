@@ -137,14 +137,19 @@ class ArchiveBrowser(QWidget):
         panel = QGroupBox()
         app = QApplication.instance()
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        # 隐藏边框，与文件选择器保持一致的样式
-        panel.setStyleSheet("QGroupBox { border: 20dx; }")
         if hasattr(app, 'settings_manager'):
             settings_manager = app.settings_manager
         else:
             from freeassetfilter.core.settings_manager import SettingsManager
             settings_manager = SettingsManager()
-        base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        # 控制栏背景使用主题 auxiliary_color，隐藏边框
+        panel.setStyleSheet(f"""
+            QGroupBox {{
+                background-color: {auxiliary_color};
+                border: none;
+            }}
+        """)
         # 使用垂直布局
         main_layout = QVBoxLayout(panel)
         scaled_spacing = int(5 * self.dpi_scale)

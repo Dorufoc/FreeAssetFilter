@@ -18,6 +18,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import os
 import weakref
+from collections import OrderedDict
 
 from PySide6.QtWidgets import QWidget, QSizePolicy, QApplication, QLabel
 from PySide6.QtCore import (
@@ -85,10 +86,31 @@ class FileBlockCard(QWidget):
     drag_started = Signal(dict)
     drag_ended = Signal(dict, str)
 
-    _icon_cache = {}
+    _ICON_CACHE_MAX_ENTRIES = 256
+    _icon_cache = OrderedDict()
     _font_family_cache = None
     _deferred_icon_queue = []
     _deferred_icon_timer = None
+
+    @classmethod
+    def _get_cached_icon(cls, cache_key):
+        cached = cls._icon_cache.get(cache_key)
+        if cached is None:
+            return None
+
+        cls._icon_cache.move_to_end(cache_key)
+        return cached
+
+    @classmethod
+    def _store_cached_icon(cls, cache_key, pixmap):
+        if cache_key is None or pixmap is None or pixmap.isNull():
+            return
+
+        cls._icon_cache[cache_key] = pixmap
+        cls._icon_cache.move_to_end(cache_key)
+
+        while len(cls._icon_cache) > cls._ICON_CACHE_MAX_ENTRIES:
+            cls._icon_cache.popitem(last=False)
 
     @classmethod
     def _clear_shared_caches(cls, file_path=None):
@@ -97,11 +119,25 @@ class FileBlockCard(QWidget):
             return
 
         normalized_path = os.path.normpath(file_path)
-        keys_to_remove = [
-            cache_key
-            for cache_key in cls._icon_cache.keys()
-            if cache_key and len(cache_key) > 0 and os.path.normpath(str(cache_key[0])) == normalized_path
-        ]
+        keys_to_remove = []
+
+        for cache_key in cls._icon_cache.keys():
+            if not cache_key or len(cache_key) == 0:
+                continue
+
+            cache_identity = cache_key[0]
+            if not isinstance(cache_identity, tuple) or len(cache_identity) < 2:
+                continue
+
+            source_type = cache_identity[0]
+            source_path = cache_identity[1]
+
+            if source_type == "file_icon":
+                continue
+
+            if source_path and os.path.normpath(str(source_path)) == normalized_path:
+                keys_to_remove.append(cache_key)
+
         for cache_key in keys_to_remove:
             cls._icon_cache.pop(cache_key, None)
 
@@ -180,7 +216,7 @@ class FileBlockCard(QWidget):
         if cache_key is None:
             return
 
-        cached = FileBlockCard._icon_cache.get(cache_key)
+        cached = FileBlockCard._get_cached_icon(cache_key)
         if cached is not None and not cached.isNull():
             self._icon_pixmap = cached
             self.update()
@@ -192,7 +228,7 @@ class FileBlockCard(QWidget):
 
         self._icon_pixmap = built_pixmap
         if not self._icon_pixmap.isNull():
-            FileBlockCard._icon_cache[cache_key] = self._icon_pixmap
+            FileBlockCard._store_cached_icon(cache_key, self._icon_pixmap)
         self.update()
 
     @Property(QColor)
@@ -1528,7 +1564,7 @@ class FileBlockCard(QWidget):
             return
 
         self._icon_cache_key = cache_key
-        cached = FileBlockCard._icon_cache.get(cache_key)
+        cached = FileBlockCard._get_cached_icon(cache_key)
         if cached is not None and not cached.isNull():
             self._icon_pixmap = cached
             return
@@ -1541,7 +1577,7 @@ class FileBlockCard(QWidget):
 
         self._icon_pixmap = self._build_icon_pixmap()
         if not self._icon_pixmap.isNull():
-            FileBlockCard._icon_cache[cache_key] = self._icon_pixmap
+            FileBlockCard._store_cached_icon(cache_key, self._icon_pixmap)
 
     def _get_paint_colors(self, for_drag_preview=False):
         if self._drag_visual_active and not for_drag_preview:
