@@ -18,6 +18,7 @@ from .input_widgets import CustomInputBox
 from .button_widgets import CustomButton
 from .progress_widgets import D_ProgressBar
 from .switch_widgets import CustomSwitch
+from .hover_tooltip import HoverTooltip
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
@@ -88,14 +89,21 @@ class CustomSettingItem(QWidget):
         self.interaction_type = interaction_type
         self._tooltip_text = tooltip_text  # 悬浮提示文本
         self.kwargs = kwargs
+        self._hover_tooltip = None
 
         # 初始化UI
         self.init_ui()
 
-        # 使用Qt原生的tooltip功能，避免创建大量独立窗口
+        # 使用自定义 HoverTooltip
         if self._tooltip_text:
-            self.setToolTip(self._tooltip_text)
+            self._ensure_hover_tooltip()
         
+    def _ensure_hover_tooltip(self):
+        """确保当前设置项已接入自定义 HoverTooltip"""
+        if self._hover_tooltip is None:
+            self._hover_tooltip = HoverTooltip(self)
+            self._hover_tooltip.set_target_widget(self)
+
     def init_ui(self):
         """初始化UI组件"""
         # 设置主布局
@@ -568,7 +576,8 @@ class CustomSettingItem(QWidget):
             text: 提示文本内容
         """
         self._tooltip_text = text
-        self.setToolTip(text)
+        if text:
+            self._ensure_hover_tooltip()
 
     def get_tooltip_text(self):
         """

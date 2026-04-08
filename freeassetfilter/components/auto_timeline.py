@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.table_widgets import CustomMatrixTable
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from PySide6.QtCore import (
     Qt, Signal, QDateTime, QThread, QRectF, QPoint, QTimer
 )
@@ -75,6 +76,8 @@ class TimelineWidget(QWidget):
         self.mouse_pos = QPoint()  # 鼠标位置，用于提示
         self.current_mouse_pos = QPoint()  # 当前鼠标位置，用于绘制时间竖线
         self.setMouseTracking(True)  # 启用鼠标跟踪，确保即使没有按下鼠标按钮，也能捕获到鼠标移动事件
+        self.hover_tooltip = HoverTooltip(self)
+        self.hover_tooltip.set_target_widget(self)
         # 选中状态跟踪
         self.selected_event = None  # 存储当前选中的事件信息：(row_idx, start, end)
         
@@ -444,6 +447,7 @@ class TimelineWidget(QWidget):
     def leaveEvent(self, event):
         """鼠标离开组件时隐藏时间竖线"""
         self.current_mouse_pos = QPoint()  # 清空鼠标位置
+        self.hover_tooltip.hide_tooltip()
         self.update()
         super().leaveEvent(event)
     
@@ -518,14 +522,14 @@ class TimelineWidget(QWidget):
                             tooltip_text += f"开始时间: {start.toString('yyyy-MM-dd HH:mm:ss')}\n"
                             tooltip_text += f"结束时间: {end.toString('yyyy-MM-dd HH:mm:ss')}\n"
                             tooltip_text += f"视频数量: {len(vids)}"
-                            QToolTip.showText(event.globalPos(), tooltip_text, self)
+                            self.hover_tooltip.show_text_at(tooltip_text, event.globalPos())
                             self.update()  # 触发重绘以更新时间竖线
                             return
             
             # 如果不在任何事件块上，显示当前时间
             current_time = self.x_to_time(event.x())
             tooltip_text = current_time.toString('yyyy-MM-dd HH:mm:ss')
-            QToolTip.showText(event.globalPos(), tooltip_text, self)
+            self.hover_tooltip.show_text_at(tooltip_text, event.globalPos())
         
         self.update()  # 触发重绘以更新时间竖线
     

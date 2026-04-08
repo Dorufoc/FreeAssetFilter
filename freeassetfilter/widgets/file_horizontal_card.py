@@ -50,7 +50,6 @@ from PySide6.QtWidgets import (
 )
 
 from .button_widgets import CustomButton
-from .hover_tooltip import HoverTooltip
 
 # 添加项目根目录到Python路径
 sys.path.insert(
@@ -239,9 +238,6 @@ class CustomFileHorizontalCard(QWidget):
         self._init_animations()
         self._apply_text_palette()
         self._update_card_surface()
-
-        self.hover_tooltip = HoverTooltip(self)
-        self.hover_tooltip.set_target_widget(self.card_container)
 
         if file_path:
             self.set_file_path(file_path, display_name)

@@ -632,6 +632,80 @@ class HoverTooltip(QWidget):
     # --------------------------
     # Tooltip 显示与文本获取
     # --------------------------
+    def _show_text_at_global_pos(self, text, global_pos, animated=True):
+        """在指定全局坐标显示指定文本"""
+        if not self._is_usable() or not text:
+            return
+
+        self.label.setText(text)
+
+        self.label.adjustSize()
+        margin = int(4 * self.dpi_scale)
+        self.resize(self.label.width() + margin, self.label.height() + margin)
+
+        label_x = (self.width() - self.label.width()) // 2
+        label_y = (self.height() - self.label.height()) // 2
+        self.label.move(label_x, label_y)
+
+        pos = QPoint(global_pos)
+        pos.setY(pos.y() + int(5 * self.dpi_scale))
+
+        screen = QApplication.primaryScreen()
+        current_screen = self.screen()
+        screen_rect = screen.geometry() if screen else (current_screen.geometry() if current_screen else QRect())
+        margin = int(2.5 * self.dpi_scale)
+
+        if screen_rect.isValid():
+            if pos.x() + self.width() > screen_rect.width():
+                pos.setX(screen_rect.width() - self.width() - margin)
+            if pos.y() + self.height() > screen_rect.height():
+                pos.setY(screen_rect.height() - self.height() - margin)
+
+        self.move(pos)
+
+        if animated and not self.isVisible():
+            self._fade_in()
+        else:
+            try:
+                self._fade_animation.stop()
+                self._scale_animation.stop()
+            except RuntimeError:
+                pass
+
+            try:
+                self._is_animating = False
+                self._opacity_value = 1.0
+                self._scale_value = 1.0
+                self.setWindowOpacity(1.0)
+                super().show()
+                self.update()
+            except RuntimeError:
+                pass
+
+    def show_text_at(self, text, global_pos):
+        """立即在指定位置显示文本，用于替代 Qt 原生 QToolTip.showText"""
+        if not self._is_usable() or self._safe_mode or not text:
+            return
+
+        try:
+            self.timer.stop()
+        except RuntimeError:
+            pass
+
+        self._show_text_at_global_pos(text, global_pos, animated=False)
+
+    def hide_tooltip(self):
+        """隐藏 tooltip，用于替代 Qt 原生 QToolTip.hideText"""
+        if not self._is_usable():
+            return
+
+        try:
+            self.timer.stop()
+        except RuntimeError:
+            pass
+
+        self._fade_out()
+
     def show_tooltip(self):
         """显示悬浮提示框"""
         if not self._is_usable() or self._safe_mode:
@@ -696,32 +770,7 @@ class HoverTooltip(QWidget):
         if not text:
             return
 
-        self.label.setText(text)
-
-        self.label.adjustSize()
-        margin = int(4 * self.dpi_scale)
-        self.resize(self.label.width() + margin, self.label.height() + margin)
-
-        label_x = (self.width() - self.label.width()) // 2
-        label_y = (self.height() - self.label.height()) // 2
-        self.label.move(label_x, label_y)
-
-        pos = QPoint(self.last_mouse_pos)
-        pos.setY(pos.y() + int(5 * self.dpi_scale))
-
-        screen = QApplication.primaryScreen()
-        current_screen = self.screen()
-        screen_rect = screen.geometry() if screen else (current_screen.geometry() if current_screen else QRect())
-        margin = int(2.5 * self.dpi_scale)
-
-        if screen_rect.isValid():
-            if pos.x() + self.width() > screen_rect.width():
-                pos.setX(screen_rect.width() - self.width() - margin)
-            if pos.y() + self.height() > screen_rect.height():
-                pos.setY(screen_rect.height() - self.height() - margin)
-
-        self.move(pos)
-        self._fade_in()
+        self._show_text_at_global_pos(text, self.last_mouse_pos, animated=True)
 
     def get_text_at_position(self, widget=None):
         """获取鼠标位置的文本内容"""
@@ -733,6 +782,69 @@ class HoverTooltip(QWidget):
         except RuntimeError:
             return ""
 
+    def _build_horizontal_card_tooltip(self, card):
+        """构建横向卡片的统一 tooltip 文本"""
+        file_path = card.file_path
+        if card._display_name:
+            file_name = card._display_name
+        else:
+            import os
+
+            file_name = os.path.basename(file_path)
+
+        from PySide6.QtCore import QFileInfo
+
+        file_info = QFileInfo(file_path)
+        is_dir = file_info.isDir()
+
+        if is_dir:
+            size_str = "文件夹"
+        else:
+            file_size = file_info.size()
+            if file_size < 1024:
+                size_str = f"{file_size} B"
+            elif file_size < 1024 * 1024:
+                size_str = f"{file_size / 1024:.2f} KB"
+            elif file_size < 1024 * 1024 * 1024:
+                size_str = f"{file_size / (1024 * 1024):.2f} MB"
+            else:
+                size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
+
+        file_type = "文件夹" if is_dir else f".{file_info.suffix()}"
+        abs_path = file_info.absoluteFilePath()
+
+        if file_info.exists():
+            if is_dir:
+                created_time = "文件夹"
+                modified_time = (
+                    file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                    if file_info.lastModified().isValid()
+                    else "未知"
+                )
+            else:
+                created_time = (
+                    file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
+                    if file_info.birthTime().isValid()
+                    else "未知"
+                )
+                modified_time = (
+                    file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                    if file_info.lastModified().isValid()
+                    else "未知"
+                )
+        else:
+            created_time = "文件不存在"
+            modified_time = "文件不存在"
+
+        tooltip_text = f"名称: {file_name}\n"
+        tooltip_text += f"路径: {abs_path}\n"
+        tooltip_text += f"类型: {file_type}\n"
+        tooltip_text += f"大小: {size_str}\n"
+        tooltip_text += f"修改时间: {modified_time}\n"
+        tooltip_text += f"创建时间: {created_time}"
+
+        return tooltip_text
+
     def _get_text_at_position_internal(self, widget=None):
         """获取鼠标位置的文本内容（内部实现）"""
         direct_widget = QApplication.widgetAt(self.last_mouse_pos)
@@ -741,6 +853,14 @@ class HoverTooltip(QWidget):
                 _ = direct_widget.objectName()
             except RuntimeError:
                 return ""
+
+            from .file_horizontal_card import CustomFileHorizontalCard
+
+            current_widget = direct_widget
+            while current_widget:
+                if isinstance(current_widget, CustomFileHorizontalCard):
+                    return self._build_horizontal_card_tooltip(current_widget)
+                current_widget = current_widget.parent()
 
             from .button_widgets import CustomButton
 
@@ -794,74 +914,6 @@ class HoverTooltip(QWidget):
                 if tooltip_parts:
                     return "\n".join(tooltip_parts)
                 return ""
-
-            from .file_horizontal_card import CustomFileHorizontalCard
-
-            if isinstance(direct_widget, CustomFileHorizontalCard) or isinstance(
-                direct_widget.parent(), CustomFileHorizontalCard
-            ):
-                card = direct_widget if isinstance(direct_widget, CustomFileHorizontalCard) else direct_widget.parent()
-                file_path = card.file_path
-                if card._display_name:
-                    file_name = card._display_name
-                else:
-                    import os
-
-                    file_name = os.path.basename(file_path)
-
-                import os
-                from PySide6.QtCore import QFileInfo
-
-                file_info = QFileInfo(file_path)
-                is_dir = file_info.isDir()
-
-                if is_dir:
-                    size_str = "文件夹"
-                else:
-                    file_size = file_info.size()
-                    if file_size < 1024:
-                        size_str = f"{file_size} B"
-                    elif file_size < 1024 * 1024:
-                        size_str = f"{file_size / 1024:.2f} KB"
-                    elif file_size < 1024 * 1024 * 1024:
-                        size_str = f"{file_size / (1024 * 1024):.2f} MB"
-                    else:
-                        size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
-
-                file_type = "文件夹" if is_dir else f".{file_info.suffix()}"
-                abs_path = file_info.absoluteFilePath()
-
-                if file_info.exists():
-                    if is_dir:
-                        created_time = "文件夹"
-                        modified_time = (
-                            file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
-                            if file_info.lastModified().isValid()
-                            else "未知"
-                        )
-                    else:
-                        created_time = (
-                            file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
-                            if file_info.birthTime().isValid()
-                            else "未知"
-                        )
-                        modified_time = (
-                            file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
-                            if file_info.lastModified().isValid()
-                            else "未知"
-                        )
-                else:
-                    created_time = "文件不存在"
-                    modified_time = "文件不存在"
-
-                tooltip_text = f"名称: {file_name}\n"
-                tooltip_text += f"路径: {abs_path}\n"
-                tooltip_text += f"类型: {file_type}\n"
-                tooltip_text += f"大小: {size_str}\n"
-                tooltip_text += f"修改时间: {modified_time}\n"
-                tooltip_text += f"创建时间: {created_time}"
-
-                return tooltip_text
 
             if direct_widget.objectName() == "FileBlockCard" or (
                 hasattr(direct_widget.parent(), "objectName")
@@ -1017,66 +1069,6 @@ class HoverTooltip(QWidget):
         if direct_widget:
             parent = direct_widget.parent()
             while parent:
-                from .file_horizontal_card import CustomFileHorizontalCard
-
-                if isinstance(parent, CustomFileHorizontalCard):
-                    file_path = parent.file_path
-                    if parent._display_name:
-                        file_name = parent._display_name
-                    else:
-                        import os
-
-                        file_name = os.path.basename(file_path)
-
-                    from PySide6.QtCore import QFileInfo
-
-                    file_info = QFileInfo(file_path)
-                    is_dir = file_info.isDir()
-
-                    if is_dir:
-                        size_str = "文件夹"
-                    else:
-                        file_size = file_info.size()
-                        if file_size < 1024:
-                            size_str = f"{file_size} B"
-                        elif file_size < 1024 * 1024:
-                            size_str = f"{file_size / 1024:.2f} KB"
-                        elif file_size < 1024 * 1024 * 1024:
-                            size_str = f"{file_size / (1024 * 1024):.2f} MB"
-                        else:
-                            size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
-
-                    file_type = "文件夹" if is_dir else f".{file_info.suffix()}"
-                    abs_path = file_info.absoluteFilePath()
-
-                    if file_info.exists():
-                        if is_dir:
-                            created_time = "文件夹"
-                            modified_time = (
-                                file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
-                                if file_info.lastModified().isValid()
-                                else "未知"
-                            )
-                        else:
-                            created_time = (
-                                file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
-                                if file_info.birthTime().isValid()
-                                else "未知"
-                            )
-                            modified_time = (
-                                file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
-                                if file_info.lastModified().isValid()
-                                else "未知"
-                            )
-                    else:
-                        created_time = "文件不存在"
-                        modified_time = "文件不存在"
-
-                    return (
-                        f"名称: {file_name}\n路径: {abs_path}\n类型: {file_type}\n大小: {size_str}\n"
-                        f"修改时间: {modified_time}\n创建时间: {created_time}"
-                    )
-
                 if hasattr(parent, "text"):
                     text_attr = parent.text
                     if callable(text_attr):

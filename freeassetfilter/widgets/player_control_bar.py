@@ -31,6 +31,7 @@ from .button_widgets import CustomButton
 from .D_volume_control import DVolumeControl
 from .dropdown_menu import CustomDropdownMenu
 from .lut_manager_dialog import LutManagerDialog
+from .hover_tooltip import HoverTooltip
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
@@ -123,6 +124,9 @@ class PlayerControlBar(QWidget):
         self._pending_volume = None
 
         self._init_ui()
+        self._hover_tooltip = HoverTooltip(self)
+        self._connect_hover_tooltips()
+
         self._connect_signals()
         self._update_style()
 
@@ -349,6 +353,27 @@ class PlayerControlBar(QWidget):
 
         return button
     
+    def _connect_hover_tooltips(self):
+        """连接自定义悬浮提示"""
+        for button_name in (
+            "_play_button",
+            "_speed_button",
+            "_subtitle_button",
+            "_audio_button",
+            "_lut_button",
+            "_detach_button",
+        ):
+            button = getattr(self, button_name, None)
+            if button is not None:
+                self._hover_tooltip.set_target_widget(button)
+
+        if self._show_volume_button and hasattr(self, '_volume_control'):
+            try:
+                if hasattr(self._volume_control, '_volume_button'):
+                    self._hover_tooltip.set_target_widget(self._volume_control._volume_button)
+            except Exception:
+                pass
+
     def _connect_signals(self):
         """连接信号槽"""
         self._play_button.clicked.connect(self._on_play_button_clicked)
@@ -840,7 +865,7 @@ class PlayerControlBar(QWidget):
         
         icon_path = os.path.join(icon_dir, icon_name)
         self._detach_button._icon_path = icon_path
-        self._detach_button.setToolTip(tooltip_text)
+        self._detach_button._tooltip_text = tooltip_text
         self._detach_button._icon_render_signature = None
         self._detach_button._render_icon(force=True)
         self._detach_button.update()
