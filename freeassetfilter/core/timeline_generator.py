@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 from freeassetfilter.core.media_probe import get_video_duration_seconds
+from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 
 from PySide6.QtCore import (
     Qt, QDateTime, QThread, Signal
@@ -120,37 +121,43 @@ def get_video_duration(file_path):
     Returns:
         float - 视频时长（秒），如果无法获取则返回默认值60秒
     """
-    default_duration = 60.0
-    _ensure_duration_cache_loaded()
+    with track_perf("timeline.get_video_duration"):
+        default_duration = 60.0
+        _ensure_duration_cache_loaded()
 
-    try:
-        stat_result = os.stat(file_path)
-    except OSError as e:
-        debug(f"获取视频文件状态失败 {file_path}: {e}")
-        return default_duration
+        try:
+            stat_result = os.stat(file_path)
+        except OSError as e:
+            increment_perf_counter("timeline.get_video_duration", "stat_failure")
+            debug(f"获取视频文件状态失败 {file_path}: {e}")
+            return default_duration
 
-    cache_key = _make_duration_cache_key(file_path, stat_result)
-    with _DURATION_CACHE_LOCK:
-        cached_payload = _DURATION_CACHE.get(cache_key)
-        if isinstance(cached_payload, dict):
-            cached_duration = cached_payload.get('duration')
-            if isinstance(cached_duration, (int, float)) and cached_duration > 0:
-                return float(cached_duration)
+        cache_key = _make_duration_cache_key(file_path, stat_result)
+        with _DURATION_CACHE_LOCK:
+            cached_payload = _DURATION_CACHE.get(cache_key)
+            if isinstance(cached_payload, dict):
+                cached_duration = cached_payload.get('duration')
+                if isinstance(cached_duration, (int, float)) and cached_duration > 0:
+                    increment_perf_counter("timeline.get_video_duration", "cache_hit")
+                    return float(cached_duration)
 
-    duration = get_video_duration_seconds(file_path)
-    if duration is None or duration <= 0:
-        debug(f"ffprobe 获取视频时长失败或结果无效，使用默认时长: {file_path}")
-        duration = default_duration
+        increment_perf_counter("timeline.get_video_duration", "cache_miss")
+        duration = get_video_duration_seconds(file_path)
+        if duration is None or duration <= 0:
+            increment_perf_counter("timeline.get_video_duration", "default_duration_fallback")
+            debug(f"ffprobe 获取视频时长失败或结果无效，使用默认时长: {file_path}")
+            duration = default_duration
 
-    with _DURATION_CACHE_LOCK:
-        _DURATION_CACHE[cache_key] = {
-            'path': os.path.abspath(file_path),
-            'mtime': int(stat_result.st_mtime),
-            'size': stat_result.st_size,
-            'duration': float(duration)
-        }
+        with _DURATION_CACHE_LOCK:
+            _DURATION_CACHE[cache_key] = {
+                'path': os.path.abspath(file_path),
+                'mtime': int(stat_result.st_mtime),
+                'size': stat_result.st_size,
+                'duration': float(duration)
+            }
 
-    return float(duration)
+        increment_perf_counter("timeline.get_video_duration", "success")
+        return float(duration)
 
 class TimelineEvent:
     """
@@ -237,107 +244,107 @@ class FolderScanner(QThread):
     
     def run(self):
         """扫描文件夹，生成TimelineEvent列表，并创建CSV和JSON记录"""
-        results = []
-        video_files = []  # 存储所有需要处理的视频文件信息
-        subfolder_set = set()  # 跟踪所有子文件夹名称
-        main_folder_name = os.path.basename(self.path)
+        with track_perf("timeline.folder_scanner.run"):
+            results = []
+            video_files = []  # 存储所有需要处理的视频文件信息
+            subfolder_set = set()  # 跟踪所有子文件夹名称
+            main_folder_name = os.path.basename(self.path)
         
         # 增加详细日志
-        debug(f"=== 开始扫描文件夹: {self.path} ===")
-        debug(f"文件夹存在: {os.path.exists(self.path)}")
-        debug(f"文件夹可访问: {os.access(self.path, os.R_OK)}")
+            set_perf_metadata("timeline.folder_scanner.run", "last_scan_path", self.path)
+            debug(f"=== 开始扫描文件夹: {self.path} ===")
+            debug(f"文件夹存在: {os.path.exists(self.path)}")
+            debug(f"文件夹可访问: {os.access(self.path, os.R_OK)}")
 
         # 1. 首先扫描所有视频文件，收集信息
-        try:
-            for root, dirs, files in os.walk(self.path):
-                debug(f"\n  正在扫描目录: {root}")
-                debug(f"  子目录数量: {len(dirs)}")
-                debug(f"  文件数量: {len(files)}")
-                debug(f"  文件列表: {files}")
+            try:
+                for root, dirs, files in os.walk(self.path):
+                    debug(f"\n  正在扫描目录: {root}")
+                    debug(f"  子目录数量: {len(dirs)}")
+                    debug(f"  文件数量: {len(files)}")
+                    debug(f"  文件列表: {files}")
 
-                # 确定当前子文件夹名称
-                if root == self.path:
-                    subfolder_name = main_folder_name  # 直接在主文件夹下的视频
-                else:
-                    subfolder_name = os.path.basename(root)
-
-                # 记录子文件夹名称
-                subfolder_set.add(subfolder_name)
-
-                for file in files:
-                    debug(f"\n    检查文件: {file}")
-
-                    # 检查文件扩展名（不区分大小写）
-                    file_lower = file.lower()
-                    if file_lower.endswith(('.mp4', '.avi', '.mov', '.wmv', '.mkv', '.flv', '.webm', '.mpg', '.mpeg', '.mxf')):
-                        debug(f"    匹配视频文件: {file}")
-                        file_path = os.path.join(root, file)
-                        debug(f"    文件路径: {file_path}")
-                        debug(f"    文件存在: {os.path.exists(file_path)}")
-                        debug(f"    文件可访问: {os.access(file_path, os.R_OK)}")
-
-                        try:
-                            # 获取文件元数据
-                            stat = os.stat(file_path)
-                            mod_time = int(stat.st_mtime)
-
-                            # 收集视频文件信息
-                            video_files.append((file, file_path, subfolder_name, mod_time))
-                        except OSError as e:
-                            exception_details(f"[TimelineGenerator] 获取文件信息出错: {file_path}", e)
+                    # 确定当前子文件夹名称
+                    if root == self.path:
+                        subfolder_name = main_folder_name  # 直接在主文件夹下的视频
                     else:
-                        debug(f"    不是视频文件（扩展名不匹配）")
-        except Exception as e:
-            exception_details("[TimelineGenerator] 扫描过程中出错", e)
+                        subfolder_name = os.path.basename(root)
 
-        video_count = len(video_files)
-        debug(f"\n=== 扫描完成，开始并发处理视频文件 ===")
-        debug(f"找到的视频文件数量: {video_count}")
-        
-        # 2. 使用多线程并发处理视频时长计算
-        if video_count > 0:
-            # 定义线程池大小（根据CPU核心数或固定数量）
-            max_workers = min(8, os.cpu_count() or 4)
-            
-            processed_count = 0
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # 提交所有视频处理任务
-                future_to_video = {
-                    executor.submit(self._process_single_video, file_info): file_info 
-                    for file_info in video_files
-                }
-                
-                # 处理完成的任务
-                for future in concurrent.futures.as_completed(future_to_video):
-                    video_info = future_to_video[future]
-                    try:
-                        event = future.result()
-                        if event:
-                            results.append(event)
-                    except concurrent.futures.CancelledError as e:
-                        file_name, file_path, *_ = video_info
-                        warning(f"处理视频文件 {file_name} 被取消: {e}")
-                    except Exception as e:
-                        file_name, file_path, *_ = video_info
-                        exception_details(f"[TimelineGenerator] 处理视频文件时出错: {file_name}", e)
+                    # 记录子文件夹名称
+                    subfolder_set.add(subfolder_name)
 
-                    # 更新进度
-                    processed_count += 1
-                    self.progress.emit(processed_count, video_count)
+                    for file in files:
+                        debug(f"\n    检查文件: {file}")
 
-        debug(f"\n=== 所有视频文件处理完成 ===")
-        debug(f"成功处理的视频文件数量: {len(results)}")
-        debug(f"子文件夹数量: {len(subfolder_set)}")
-        debug(f"子文件夹列表: {list(subfolder_set)}")
+                        # 检查文件扩展名（不区分大小写）
+                        file_lower = file.lower()
+                        if file_lower.endswith(('.mp4', '.avi', '.mov', '.wmv', '.mkv', '.flv', '.webm', '.mpg', '.mpeg', '.mxf')):
+                            increment_perf_counter("timeline.folder_scanner.run", "video_candidates")
+                            debug(f"    匹配视频文件: {file}")
+                            file_path = os.path.join(root, file)
+                            debug(f"    文件路径: {file_path}")
+                            debug(f"    文件存在: {os.path.exists(file_path)}")
+                            debug(f"    文件可访问: {os.access(file_path, os.R_OK)}")
+
+                            try:
+                                stat = os.stat(file_path)
+                                mod_time = int(stat.st_mtime)
+                                video_files.append((file, file_path, subfolder_name, mod_time))
+                            except OSError as e:
+                                increment_perf_counter("timeline.folder_scanner.run", "stat_failure")
+                                exception_details(f"[TimelineGenerator] 获取文件信息出错: {file_path}", e)
+                        else:
+                            debug(f"    不是视频文件（扩展名不匹配）")
+            except Exception as e:
+                increment_perf_counter("timeline.folder_scanner.run", "scan_failure")
+                exception_details("[TimelineGenerator] 扫描过程中出错", e)
+
+            video_count = len(video_files)
+            set_perf_metadata("timeline.folder_scanner.run", "last_video_count", video_count)
+            debug(f"\n=== 扫描完成，开始并发处理视频文件 ===")
+            debug(f"找到的视频文件数量: {video_count}")
         
-        # 生成CSV文件
-        csv_path = self._generate_csv(results, main_folder_name)
-        
-        # 生成JSON记录
-        json_path = self._generate_json(main_folder_name, video_count, subfolder_set, results)
-        
-        save_duration_cache()
-        self.scan_finished.emit(results, csv_path, json_path)
+            if video_count > 0:
+                max_workers = min(8, os.cpu_count() or 4)
+                set_perf_metadata("timeline.folder_scanner.run", "last_max_workers", max_workers)
+
+                processed_count = 0
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_video = {
+                        executor.submit(self._process_single_video, file_info): file_info
+                        for file_info in video_files
+                    }
+
+                    for future in concurrent.futures.as_completed(future_to_video):
+                        video_info = future_to_video[future]
+                        try:
+                            event = future.result()
+                            if event:
+                                increment_perf_counter("timeline.folder_scanner.run", "event_created")
+                                results.append(event)
+                        except concurrent.futures.CancelledError as e:
+                            increment_perf_counter("timeline.folder_scanner.run", "cancelled")
+                            file_name, file_path, *_ = video_info
+                            warning(f"处理视频文件 {file_name} 被取消: {e}")
+                        except Exception as e:
+                            increment_perf_counter("timeline.folder_scanner.run", "processing_failure")
+                            file_name, file_path, *_ = video_info
+                            exception_details(f"[TimelineGenerator] 处理视频文件时出错: {file_name}", e)
+
+                        processed_count += 1
+                        self.progress.emit(processed_count, video_count)
+
+            debug(f"\n=== 所有视频文件处理完成 ===")
+            debug(f"成功处理的视频文件数量: {len(results)}")
+            debug(f"子文件夹数量: {len(subfolder_set)}")
+            debug(f"子文件夹列表: {list(subfolder_set)}")
+
+            csv_path = self._generate_csv(results, main_folder_name)
+            json_path = self._generate_json(main_folder_name, video_count, subfolder_set, results)
+
+            save_duration_cache()
+            increment_perf_counter("timeline.folder_scanner.run", "success")
+            self.scan_finished.emit(results, csv_path, json_path)
         
     def _generate_csv(self, events, main_folder_name):
         """
@@ -379,35 +386,35 @@ class FolderScanner(QThread):
         Returns:
             TimelineEvent or None - 处理成功返回事件对象，失败返回None
         """
-        file_name, file_path, subfolder_name, mod_time = video_info
-        
-        try:
-            # 获取视频真实时长
-            duration = get_video_duration(file_path)
-            
-            # 创建时间对象
-            start_time = QDateTime.fromSecsSinceEpoch(mod_time)
-            end_time = QDateTime.fromSecsSinceEpoch(mod_time + int(duration))
-            
-            # 为每个视频创建一个TimelineEvent
-            event = TimelineEvent(
-                name=file_name,  # 使用文件名作为事件名称
-                device=subfolder_name,  # 使用子文件夹名称作为设备
-                start_time=start_time,
-                end_time=end_time,
-                videos=[file_path]
-            )
-            
-            debug(f"    成功创建视频事件: {file_name}")
-            debug(f"    事件设备: {subfolder_name}")
-            debug(f"    事件开始时间: {start_time.toString()}")
-            debug(f"    事件结束时间: {end_time.toString()}")
-            debug(f"    视频时长: {duration:.2f} 秒")
+        with track_perf("timeline.process_single_video"):
+            file_name, file_path, subfolder_name, mod_time = video_info
 
-            return event
-        except (OSError, ValueError) as e:
-            exception_details(f"[TimelineGenerator] 处理文件时出错: {file_name}", e)
-            return None
+            try:
+                duration = get_video_duration(file_path)
+
+                start_time = QDateTime.fromSecsSinceEpoch(mod_time)
+                end_time = QDateTime.fromSecsSinceEpoch(mod_time + int(duration))
+
+                event = TimelineEvent(
+                    name=file_name,
+                    device=subfolder_name,
+                    start_time=start_time,
+                    end_time=end_time,
+                    videos=[file_path]
+                )
+
+                increment_perf_counter("timeline.process_single_video", "success")
+                debug(f"    成功创建视频事件: {file_name}")
+                debug(f"    事件设备: {subfolder_name}")
+                debug(f"    事件开始时间: {start_time.toString()}")
+                debug(f"    事件结束时间: {end_time.toString()}")
+                debug(f"    视频时长: {duration:.2f} 秒")
+
+                return event
+            except (OSError, ValueError) as e:
+                increment_perf_counter("timeline.process_single_video", "failure")
+                exception_details(f"[TimelineGenerator] 处理文件时出错: {file_name}", e)
+                return None
     
     def _generate_json(self, main_folder_name, video_count, subfolder_set, events):
         """

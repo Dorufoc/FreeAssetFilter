@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 
 
 FFPROBE_TIMEOUT = 8
@@ -135,63 +136,76 @@ def run_ffprobe_json(
     """
     运行 ffprobe 并返回 JSON 结果
     """
-    command = [
-        get_ffprobe_path(),
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-    ]
+    with track_perf("media_probe.run_ffprobe_json"):
+        set_perf_metadata("media_probe.run_ffprobe_json", "last_timeout", timeout)
+        set_perf_metadata("media_probe.run_ffprobe_json", "last_show_format", show_format)
+        set_perf_metadata("media_probe.run_ffprobe_json", "last_show_streams", show_streams)
 
-    show_entries: List[str] = []
-    if show_format:
-        show_entries.append("format")
-    if show_streams:
-        show_entries.append("stream")
-    if extra_entries:
-        show_entries.extend(extra_entries)
+        command = [
+            get_ffprobe_path(),
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+        ]
 
-    if show_entries:
-        command.extend(["-show_entries", ":".join(show_entries)])
+        show_entries: List[str] = []
+        if show_format:
+            show_entries.append("format")
+        if show_streams:
+            show_entries.append("stream")
+        if extra_entries:
+            show_entries.extend(extra_entries)
 
-    if show_streams:
-        command.append("-show_streams")
-    if show_format:
-        command.append("-show_format")
+        if show_entries:
+            command.extend(["-show_entries", ":".join(show_entries)])
 
-    command.append(file_path)
+        if show_streams:
+            command.append("-show_streams")
+        if show_format:
+            command.append("-show_format")
 
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=get_subprocess_creationflags(),
-        )
-    except FileNotFoundError:
-        warning("[media_probe] 未找到 ffprobe")
-        return None
-    except subprocess.TimeoutExpired:
-        debug(f"[media_probe] ffprobe 超时: {file_path}")
-        return None
-    except Exception as e:
-        debug(f"[media_probe] ffprobe 执行失败: {file_path}, 错误: {e}")
-        return None
+        command.append(file_path)
+        increment_perf_counter("media_probe.run_ffprobe_json", "invocations")
 
-    if completed.returncode != 0:
-        stderr_text = (completed.stderr or "").strip()
-        if stderr_text:
-            debug(f"[media_probe] ffprobe 异常输出: {stderr_text}")
-        return None
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                creationflags=get_subprocess_creationflags(),
+            )
+        except FileNotFoundError:
+            increment_perf_counter("media_probe.run_ffprobe_json", "ffprobe_missing")
+            warning("[media_probe] 未找到 ffprobe")
+            return None
+        except subprocess.TimeoutExpired:
+            increment_perf_counter("media_probe.run_ffprobe_json", "timeout")
+            debug(f"[media_probe] ffprobe 超时: {file_path}")
+            return None
+        except Exception as e:
+            increment_perf_counter("media_probe.run_ffprobe_json", "subprocess_error")
+            debug(f"[media_probe] ffprobe 执行失败: {file_path}, 错误: {e}")
+            return None
 
-    try:
-        return json.loads(completed.stdout or "{}")
-    except Exception as e:
-        debug(f"[media_probe] 解析 ffprobe JSON 失败: {file_path}, 错误: {e}")
-        return None
+        if completed.returncode != 0:
+            increment_perf_counter("media_probe.run_ffprobe_json", "nonzero_exit")
+            stderr_text = (completed.stderr or "").strip()
+            if stderr_text:
+                debug(f"[media_probe] ffprobe 异常输出: {stderr_text}")
+            return None
+
+        try:
+            payload = json.loads(completed.stdout or "{}")
+            increment_perf_counter("media_probe.run_ffprobe_json", "success")
+            return payload
+        except Exception as e:
+            increment_perf_counter("media_probe.run_ffprobe_json", "json_parse_failure")
+            debug(f"[media_probe] 解析 ffprobe JSON 失败: {file_path}, 错误: {e}")
+            return None
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -303,6 +317,11 @@ def get_video_stream_info(file_path: str) -> Dict[str, Any]:
 
 
 def get_video_duration_seconds(file_path: str) -> Optional[float]:
-    info = get_video_stream_info(file_path)
-    duration = info.get("duration_seconds")
-    return float(duration) if isinstance(duration, (int, float)) and duration > 0 else None
+    with track_perf("media_probe.get_video_duration_seconds"):
+        info = get_video_stream_info(file_path)
+        duration = info.get("duration_seconds")
+        if isinstance(duration, (int, float)) and duration > 0:
+            increment_perf_counter("media_probe.get_video_duration_seconds", "success")
+            return float(duration)
+        increment_perf_counter("media_probe.get_video_duration_seconds", "missing_duration")
+        return None

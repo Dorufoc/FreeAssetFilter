@@ -1234,6 +1234,20 @@ class CustomFileHorizontalCard(QWidget):
         except (OSError, IOError, PermissionError, FileNotFoundError, RuntimeError, TypeError, ValueError):
             return None
 
+    def _is_restore_safe_mode_enabled(self):
+        try:
+            app = QApplication.instance()
+            if app is not None and bool(getattr(app, "_faf_restore_safe_mode", False)):
+                return True
+
+            window = self.window()
+            if window is not None and bool(getattr(window, "_restore_safe_mode", False)):
+                return True
+        except (RuntimeError, AttributeError, TypeError):
+            return False
+
+        return False
+
     def _get_file_icon_path(self, suffix, is_dir=False):
         icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
 
@@ -1516,13 +1530,14 @@ class CustomFileHorizontalCard(QWidget):
             file_info = QFileInfo(file_path)
             is_dir = file_info.isDir()
             suffix = file_info.suffix().lower()
+            restore_safe_mode = self._is_restore_safe_mode_enabled()
 
             if not self._path_exists:
                 icon_path = self._get_file_icon_path("", False)
                 if icon_path and os.path.exists(icon_path):
                     return self._build_unknown_icon_pixmap(icon_path, "?", icon_size)
 
-            if not is_dir and suffix in ["lnk", "exe", "url"]:
+            if not restore_safe_mode and not is_dir and suffix in ["lnk", "exe", "url"]:
                 try:
                     from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
                     from PySide6.QtGui import QGuiApplication
@@ -1539,16 +1554,18 @@ class CustomFileHorizontalCard(QWidget):
                 except (ValueError, TypeError, RuntimeError) as e:
                     debug(f"提取横向卡片系统图标失败 - 数据或运行时错误: {e}")
 
-            thumbnail_path = get_existing_thumbnail_path(file_path)
-            if not thumbnail_path:
-                thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
-                thumbnail_path = thumbnail_manager.get_thumbnail_path(file_path)
-
+            thumbnail_path = None
             is_photo = suffix in [
                 "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "avif",
                 "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb", "svg",
             ]
             is_video = suffix in ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"]
+
+            if not restore_safe_mode:
+                thumbnail_path = get_existing_thumbnail_path(file_path)
+                if not thumbnail_path:
+                    thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
+                    thumbnail_path = thumbnail_manager.get_thumbnail_path(file_path)
 
             if (is_photo or is_video) and thumbnail_path and os.path.exists(thumbnail_path):
                 pixmap = QPixmap(thumbnail_path)

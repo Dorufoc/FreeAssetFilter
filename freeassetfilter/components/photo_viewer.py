@@ -41,6 +41,7 @@ from PySide6.QtCore import (
 # PIL支持已移除以提高性能
 
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+from freeassetfilter.core.image_color_utils import load_raw_rgb_array
 
 
 class RawProcessor(QThread):
@@ -56,37 +57,22 @@ class RawProcessor(QThread):
     
     def run(self):
         try:
-            import rawpy
-            import numpy as np
-            
             file_size = os.path.getsize(self.image_path)
             large_file_threshold = 10 * 1024 * 1024
-            
-            if file_size > large_file_threshold:
-                with rawpy.imread(self.image_path) as raw:
-                    rgb = raw.postprocess(
-                        half_size=True,
-                        output_bps=8,
-                        no_auto_bright=True,
-                        use_camera_wb=True,
-                        gamma=(2.222, 4.5)
-                    )
-            else:
-                with rawpy.imread(self.image_path) as raw:
-                    rgb = raw.postprocess(
-                        output_bps=8,
-                        use_camera_wb=True
-                    )
-            
+
+            rgb = load_raw_rgb_array(
+                self.image_path,
+                half_size=file_size > large_file_threshold,
+                use_camera_wb=True,
+                no_auto_bright=True,
+                output_bps=8,
+            )
+
             height, width, channel = rgb.shape
             bytes_per_line = 3 * width
-            bgr = np.zeros((height, width, 3), dtype=np.uint8)
-            bgr[:, :, 0] = rgb[:, :, 2]
-            bgr[:, :, 1] = rgb[:, :, 1]
-            bgr[:, :, 2] = rgb[:, :, 0]
-            
+
             # 使用 .copy() 确保数据安全，防止 numpy 数组被释放后 QImage 访问无效内存
-            qimage = QImage(bgr.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
+            qimage = QImage(rgb.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
             self.processing_complete.emit(qimage, self.image_path)
         except (ImportError, ModuleNotFoundError) as e:
             error(f"加载RAW图片时缺少依赖库: {e}")

@@ -64,6 +64,7 @@ class FileStagingPool(QWidget):
     update_progress = Signal(int)  # 更新进度条信号
     export_finished = Signal(int, int, list)  # 导出完成信号
     folder_size_calculated = Signal(dict)  # 文件夹体积计算完成信号
+    folder_size_result_ready = Signal(object)  # 线程完成后的文件夹大小结果投递信号
     navigate_to_path = Signal(str, dict)  # 当需要导航到某个路径时发出，第二个参数是可选的文件信息
 
     def __init__(self, parent=None):
@@ -90,6 +91,7 @@ class FileStagingPool(QWidget):
             max_workers=min(4, os.cpu_count() or 2),
             thread_name_prefix="FolderSizeCalculator"
         )
+        self._is_closing = False
         self._suspend_backup_save = False  # 启动恢复期间暂停频繁保存备份
         self._pending_backup_last_path = 'All'
         self._backup_save_delay_ms = 1500
@@ -115,6 +117,7 @@ class FileStagingPool(QWidget):
         self.update_progress.connect(self.on_update_progress)
         self.export_finished.connect(self.on_export_finished)
         self.folder_size_calculated.connect(self.on_folder_size_calculated)
+        self.folder_size_result_ready.connect(self._on_folder_size_calculated)
 
     def _save_backup_if_needed(self, last_path='All'):
         """
@@ -518,6 +521,9 @@ class FileStagingPool(QWidget):
         Args:
             file_info (dict): 文件或文件夹信息字典
         """
+        if self._is_closing:
+            return
+
         file_path = os.path.normpath(file_info["path"])
         for item in self.items:
             if os.path.normpath(item["path"]) == file_path:
@@ -2050,12 +2056,7 @@ class FileStagingPool(QWidget):
 
                 result = completed_future.result()
                 if result is not None:
-                    QMetaObject.invokeMethod(
-                        self,
-                        "_emit_folder_size_result",
-                        Qt.QueuedConnection,
-                        Q_ARG(dict, result)
-                    )
+                    self.folder_size_result_ready.emit(result)
             except Exception as e:
                 warning(f"文件夹大小计算失败: {path}, 错误: {e}")
             finally:
@@ -2092,10 +2093,29 @@ class FileStagingPool(QWidget):
 
         if hasattr(self, "_size_calculator_executor") and self._size_calculator_executor:
             self._size_calculator_executor.shutdown(wait=False, cancel_futures=True)
-            self._size_calculator_executor = ThreadPoolExecutor(
-                max_workers=min(4, os.cpu_count() or 2),
-                thread_name_prefix="FolderSizeCalculator"
-            )
+            self._size_calculator_executor = None
+
+    def cleanup(self):
+        """
+        组件关闭前的统一清理入口，避免后台线程/定时器在窗口销毁后继续运行。
+        """
+        self._is_closing = True
+
+        try:
+            if hasattr(self, "_backup_save_timer") and self._backup_save_timer.isActive():
+                self._backup_save_timer.stop()
+        except RuntimeError:
+            pass
+
+        try:
+            self.stop_all_size_calculators()
+        except Exception as e:
+            warning(f"停止文件夹大小计算器失败: {e}")
+
+        try:
+            self.blockSignals(True)
+        except RuntimeError:
+            pass
 
     @staticmethod
     def _calculate_folder_size_worker(folder_path, cancel_event):
@@ -2142,11 +2162,7 @@ class FileStagingPool(QWidget):
             "size": total_size
         }
 
-    @Slot(dict)
-    def _emit_folder_size_result(self, result):
-        """在线程安全的上下文中转发文件夹大小计算结果"""
-        self._on_folder_size_calculated(result)
-
+    @Slot(object)
     def _on_folder_size_calculated(self, result):
         """
         处理文件夹大小计算完成的回调
@@ -2154,6 +2170,9 @@ class FileStagingPool(QWidget):
         Args:
             result (dict): 包含 folder_path 和 total_size 的字典
         """
+        if self._is_closing:
+            return
+
         folder_path = result.get("path")
         total_size = result.get("size")
 
@@ -2250,6 +2269,9 @@ class FileStagingPool(QWidget):
             file_path (str): 原文件路径
             card (CustomFileHorizontalCard): 需要刷新的卡片对象
         """
+        if self._is_closing:
+            return
+
         debug(f"[FileStagingPool] 缩略图生成完成: {thumb_path}")
         if card and hasattr(card, 'refresh_thumbnail'):
             from PySide6.QtCore import QMetaObject, Qt
@@ -2690,6 +2712,21 @@ class FileStagingPool(QWidget):
             new_name = f"{name_base}_{timestamp}"
         return os.path.join(target_dir, new_name)
 
+    def refresh_all_card_icons(self):
+        """
+        刷新当前存储池中所有卡片的图标/缩略图。
+        用于启动恢复阶段结束后，从安全降级图标恢复为正常图标。
+        """
+        if self._is_closing:
+            return
+
+        for card, _ in self.cards:
+            try:
+                if hasattr(card, 'refresh_thumbnail'):
+                    card.refresh_thumbnail()
+            except (RuntimeError, AttributeError, TypeError) as e:
+                error(f"刷新存储池卡片图标失败: {e}")
+
     def set_previewing_file(self, file_path):
         """
         设置当前正在预览的文件，更新对应卡片的预览态
@@ -2734,6 +2771,13 @@ class FileStagingPool(QWidget):
         for card, _ in self.cards:
             if hasattr(card, 'set_previewing'):
                 card.set_previewing(False)
+
+    def closeEvent(self, event):
+        """
+        关闭时清理后台任务，避免线程池残留导致进程无法退出。
+        """
+        self.cleanup()
+        super().closeEvent(event)
 
 
 # 测试代码

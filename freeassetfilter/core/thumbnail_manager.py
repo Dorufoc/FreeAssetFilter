@@ -31,10 +31,16 @@ from pathlib import Path
 from dataclasses import dataclass
 from freeassetfilter.core.media_probe import get_ffmpeg_path, get_ffprobe_path
 from freeassetfilter.core.rust_thumbnail_bridge import RustThumbnailBridge
+from freeassetfilter.core.image_color_utils import load_raw_image, normalize_pil_image
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.utils.perf_metrics import (
+    increment_perf_counter,
+    set_perf_metadata,
+    track_perf,
+)
 
 # 尝试导入PIL库
 PIL_AVAILABLE = False
@@ -437,15 +443,19 @@ class ThumbnailManager:
         获取当前实际存在的缩略图路径。
         优先返回主格式 JPG；若不存在则回退到历史/兼容 PNG。
         """
-        thumbnail_path = self.get_thumbnail_path(file_path)
-        if os.path.exists(thumbnail_path):
-            return thumbnail_path
+        with track_perf("thumbnail.get_existing_thumbnail_path"):
+            thumbnail_path = self.get_thumbnail_path(file_path)
+            if os.path.exists(thumbnail_path):
+                increment_perf_counter("thumbnail.get_existing_thumbnail_path", "cache_hit")
+                return thumbnail_path
 
-        legacy_path = self.get_legacy_thumbnail_path(file_path)
-        if os.path.exists(legacy_path):
-            return legacy_path
+            legacy_path = self.get_legacy_thumbnail_path(file_path)
+            if os.path.exists(legacy_path):
+                increment_perf_counter("thumbnail.get_existing_thumbnail_path", "cache_hit")
+                return legacy_path
 
-        return None
+            increment_perf_counter("thumbnail.get_existing_thumbnail_path", "cache_miss")
+            return None
 
     def has_thumbnail(self, file_path: str) -> bool:
         """
@@ -457,7 +467,13 @@ class ThumbnailManager:
         Returns:
             bool: 是否存在缩略图
         """
-        return self.get_existing_thumbnail_path(file_path) is not None
+        with track_perf("thumbnail.has_thumbnail"):
+            exists = self.get_existing_thumbnail_path(file_path) is not None
+            increment_perf_counter(
+                "thumbnail.has_thumbnail",
+                "cache_hit" if exists else "cache_miss",
+            )
+            return exists
 
     def _update_file_access_time(self, file_path: str):
         """
@@ -608,61 +624,73 @@ class ThumbnailManager:
         Returns:
             Optional[str]: 缩略图路径，生成失败返回None
         """
-        if not os.path.exists(file_path):
-            warning(f"[ThumbnailManager] 文件不存在: {file_path}")
-            return None
+        with track_perf("thumbnail.create_thumbnail"):
+            if not os.path.exists(file_path):
+                increment_perf_counter("thumbnail.create_thumbnail", "missing_source")
+                warning(f"[ThumbnailManager] 文件不存在: {file_path}")
+                return None
 
-        thumbnail_path = self.get_thumbnail_path(file_path)
-        legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
+            thumbnail_path = self.get_thumbnail_path(file_path)
+            legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
 
-        # 如果缩略图已存在且不强制重新生成，优先返回 JPG，其次兼容历史 PNG
-        if not force_regenerate:
-            if os.path.exists(thumbnail_path):
-                self._update_file_access_time(thumbnail_path)
-                return thumbnail_path
-            if os.path.exists(legacy_thumbnail_path):
-                self._update_file_access_time(legacy_thumbnail_path)
-                return legacy_thumbnail_path
+            # 如果缩略图已存在且不强制重新生成，优先返回 JPG，其次兼容历史 PNG
+            if not force_regenerate:
+                if os.path.exists(thumbnail_path):
+                    increment_perf_counter("thumbnail.create_thumbnail", "cache_hit")
+                    self._update_file_access_time(thumbnail_path)
+                    return thumbnail_path
+                if os.path.exists(legacy_thumbnail_path):
+                    increment_perf_counter("thumbnail.create_thumbnail", "cache_hit")
+                    self._update_file_access_time(legacy_thumbnail_path)
+                    return legacy_thumbnail_path
 
-        # 检查是否为媒体文件
-        if not self.is_media_file(file_path):
-            return None
+            increment_perf_counter("thumbnail.create_thumbnail", "cache_miss")
 
-        # 在创建新缩略图前检查缓存限制
-        self._check_and_enforce_limits_before_create()
+            # 检查是否为媒体文件
+            if not self.is_media_file(file_path):
+                increment_perf_counter("thumbnail.create_thumbnail", "non_media_skipped")
+                return None
 
-        # 生成缩略图
-        try:
-            suffix = os.path.splitext(file_path)[1].lower()
-            use_python_dedicated = (
-                suffix in self.RAW_FORMATS
-                or suffix in self.PSD_FORMATS
-                or suffix == '.svg'
-            )
+            # 在创建新缩略图前检查缓存限制
+            self._check_and_enforce_limits_before_create()
 
-            # 优先使用 Rust 原生引擎（RAW/PSD/SVG 保留 Python 专用链路）
-            result = None
-            if not use_python_dedicated:
-                result = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+            # 生成缩略图
+            try:
+                suffix = os.path.splitext(file_path)[1].lower()
+                use_python_dedicated = (
+                    suffix in self.RAW_FORMATS
+                    or suffix in self.PSD_FORMATS
+                    or suffix == '.svg'
+                )
 
-            # 回退到 Python 实现
-            if result is None:
-                if self.is_image_file(file_path):
-                    result = self._create_image_thumbnail(file_path, thumbnail_path)
-                elif self.is_video_file(file_path):
-                    result = self._create_video_thumbnail(file_path, thumbnail_path)
+                # 优先使用 Rust 原生引擎（RAW/PSD/SVG 保留 Python 专用链路）
+                result = None
+                if not use_python_dedicated:
+                    result = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
+
+                # 回退到 Python 实现
+                if result is None:
+                    increment_perf_counter("thumbnail.create_thumbnail", "python_fallback")
+                    if self.is_image_file(file_path):
+                        result = self._create_image_thumbnail(file_path, thumbnail_path)
+                    elif self.is_video_file(file_path):
+                        result = self._create_video_thumbnail(file_path, thumbnail_path)
+                    else:
+                        result = None
+
+                # 如果成功生成，更新访问时间
+                if result and os.path.exists(result):
+                    increment_perf_counter("thumbnail.create_thumbnail", "success")
+                    self._update_file_access_time(result)
                 else:
-                    result = None
+                    increment_perf_counter("thumbnail.create_thumbnail", "failure")
 
-            # 如果成功生成，更新访问时间
-            if result and os.path.exists(result):
-                self._update_file_access_time(result)
+                return result
+            except Exception as e:
+                increment_perf_counter("thumbnail.create_thumbnail", "failure")
+                error(f"[ThumbnailManager] 生成缩略图失败: {file_path}, 错误: {e}")
 
-            return result
-        except Exception as e:
-            error(f"[ThumbnailManager] 生成缩略图失败: {file_path}, 错误: {e}")
-
-        return None
+            return None
 
     def create_thumbnails_batch(
         self,
@@ -682,6 +710,9 @@ class ThumbnailManager:
         total_count = len(files_to_generate)
         if total_count == 0:
             return 0, 0
+
+        set_perf_metadata("thumbnail.create_thumbnails_batch", "native_bridge_available", self._rust_bridge.available)
+        increment_perf_counter("thumbnail.create_thumbnails_batch", "batch_invocations")
 
         success_count = 0
         processed_count = 0
@@ -810,59 +841,70 @@ class ThumbnailManager:
             return queue_name, outputs, duration
 
         info(f"[ThumbnailManager] 开始批量生成缩略图，总任务数: {total_count}")
-        for file_data in files_to_generate:
-            if cancel_check and cancel_check():
-                break
+        with track_perf("thumbnail.create_thumbnails_batch"):
+            for file_data in files_to_generate:
+                if cancel_check and cancel_check():
+                    break
 
-            file_path = file_data.get("path", "")
-            if not file_path or not os.path.exists(file_path):
-                processed_count += 1
-                if progress_callback:
-                    progress_callback(processed_count, total_count, file_data, False)
-                continue
+                file_path = file_data.get("path", "")
+                if not file_path or not os.path.exists(file_path):
+                    increment_perf_counter("thumbnail.create_thumbnails_batch", "missing_source")
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(processed_count, total_count, file_data, False)
+                    continue
 
-            thumbnail_path = self.get_thumbnail_path(file_path)
-            legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
+                thumbnail_path = self.get_thumbnail_path(file_path)
+                legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
 
-            if os.path.exists(thumbnail_path) or os.path.exists(legacy_thumbnail_path):
-                existing = thumbnail_path if os.path.exists(thumbnail_path) else legacy_thumbnail_path
-                self._update_file_access_time(existing)
-                success_count += 1
-                processed_count += 1
-                if progress_callback:
-                    progress_callback(processed_count, total_count, file_data, True)
-                continue
+                if os.path.exists(thumbnail_path) or os.path.exists(legacy_thumbnail_path):
+                    increment_perf_counter("thumbnail.create_thumbnails_batch", "cache_hit")
+                    existing = thumbnail_path if os.path.exists(thumbnail_path) else legacy_thumbnail_path
+                    self._update_file_access_time(existing)
+                    success_count += 1
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(processed_count, total_count, file_data, True)
+                    continue
 
-            suffix = os.path.splitext(file_path)[1].lower()
-            is_video_file = suffix in self.VIDEO_FORMATS
-            use_python_dedicated = (
-                suffix in self.RAW_FORMATS
-                or suffix in self.PSD_FORMATS
-                or suffix == '.svg'
-            )
+                increment_perf_counter("thumbnail.create_thumbnails_batch", "cache_miss")
 
-            item = {
-                "file_data": file_data,
-                "file_path": file_path,
-                "thumbnail_path": thumbnail_path,
-                "legacy_thumbnail_path": legacy_thumbnail_path,
-            }
+                suffix = os.path.splitext(file_path)[1].lower()
+                is_video_file = suffix in self.VIDEO_FORMATS
+                use_python_dedicated = (
+                    suffix in self.RAW_FORMATS
+                    or suffix in self.PSD_FORMATS
+                    or suffix == '.svg'
+                )
 
-            if is_video_file:
-                video_decode_submitted_count += 1
-                if self._rust_bridge.available:
-                    native_load = len(task_queues["native_video"]) / max(1, queue_limits["native_video"])
-                    python_load = len(task_queues["python_video"]) / max(1, queue_limits["python_video"])
-                    if native_load <= python_load:
-                        task_queues["native_video"].append(item)
+                item = {
+                    "file_data": file_data,
+                    "file_path": file_path,
+                    "thumbnail_path": thumbnail_path,
+                    "legacy_thumbnail_path": legacy_thumbnail_path,
+                }
+
+                if is_video_file:
+                    increment_perf_counter("thumbnail.create_thumbnails_batch", "video_submitted")
+                    video_decode_submitted_count += 1
+                    if self._rust_bridge.available:
+                        native_load = len(task_queues["native_video"]) / max(1, queue_limits["native_video"])
+                        python_load = len(task_queues["python_video"]) / max(1, queue_limits["python_video"])
+                        if native_load <= python_load:
+                            increment_perf_counter("thumbnail.create_thumbnails_batch", "queue_native_video")
+                            task_queues["native_video"].append(item)
+                        else:
+                            increment_perf_counter("thumbnail.create_thumbnails_batch", "queue_python_video")
+                            task_queues["python_video"].append(item)
                     else:
+                        increment_perf_counter("thumbnail.create_thumbnails_batch", "queue_python_video")
                         task_queues["python_video"].append(item)
+                elif self._rust_bridge.available and not use_python_dedicated:
+                    increment_perf_counter("thumbnail.create_thumbnails_batch", "queue_native_image")
+                    task_queues["native_image"].append(item)
                 else:
-                    task_queues["python_video"].append(item)
-            elif self._rust_bridge.available and not use_python_dedicated:
-                task_queues["native_image"].append(item)
-            else:
-                task_queues["python_image"].append(item)
+                    increment_perf_counter("thumbnail.create_thumbnails_batch", "queue_python_image")
+                    task_queues["python_image"].append(item)
 
         max_workers = sum(queue_limits.values())
 
@@ -1078,6 +1120,15 @@ class ThumbnailManager:
             else:
                 executor.shutdown(wait=True)
 
+        increment_perf_counter("thumbnail.create_thumbnails_batch", "processed", processed_count)
+        increment_perf_counter("thumbnail.create_thumbnails_batch", "success", success_count)
+        increment_perf_counter("thumbnail.create_thumbnails_batch", "failure", max(0, processed_count - success_count))
+        if cancelled:
+            increment_perf_counter("thumbnail.create_thumbnails_batch", "cancelled")
+        set_perf_metadata("thumbnail.create_thumbnails_batch", "last_total_count", total_count)
+        set_perf_metadata("thumbnail.create_thumbnails_batch", "last_processed_count", processed_count)
+        set_perf_metadata("thumbnail.create_thumbnails_batch", "last_success_count", success_count)
+
         info(
             f"[ThumbnailManager] 批量缩略图生成结束: success={success_count}, processed={processed_count}, cancelled={cancelled}"
         )
@@ -1169,56 +1220,65 @@ class ThumbnailManager:
         Returns:
             Optional[str]: 成功返回缩略图路径，失败返回None
         """
-        if not self._rust_bridge.available:
-            return None
-
-        try:
-            dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
-
-            # 优先使用 Rust 直接 JPG 输出，降低磁盘 IO 与批量预览开销
-            jpg_bytes = self._rust_bridge.generate_jpg(file_path, dpi_scaled_size, dpi_scaled_size)
-            if jpg_bytes:
-                with open(thumbnail_path, "wb") as f:
-                    f.write(jpg_bytes)
-                debug(f"[ThumbnailManager] Rust(JPG直出)缩略图生成成功: {thumbnail_path}")
-                return thumbnail_path
-
-            # 回退到 Rust JPEG 输出（兼容别名接口）
-            jpeg_bytes = self._rust_bridge.generate_jpeg(file_path, dpi_scaled_size, dpi_scaled_size)
-            if jpeg_bytes:
-                with open(thumbnail_path, "wb") as f:
-                    f.write(jpeg_bytes)
-                debug(f"[ThumbnailManager] Rust(JPEG直出)缩略图生成成功: {thumbnail_path}")
-                return thumbnail_path
-
-            # 回退到 RGBA 路径
-            if not PIL_AVAILABLE:
+        with track_perf("thumbnail.create_native_thumbnail"):
+            if not self._rust_bridge.available:
+                increment_perf_counter("thumbnail.create_native_thumbnail", "bridge_unavailable")
                 return None
 
-            generated = self._rust_bridge.generate_rgba(file_path, dpi_scaled_size, dpi_scaled_size)
-            if not generated:
-                return None
-
-            raw, width, height, channels = generated
-            if channels not in (3, 4):
-                return None
-
-            mode = "RGBA" if channels == 4 else "RGB"
-            img = Image.frombytes(mode, (width, height), raw)
-            if mode == "RGB":
-                img = img.convert("RGBA")
-            img = img.convert("RGB")
-            img.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
             try:
-                img.close()
-            except Exception:
-                pass
+                dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
 
-            debug(f"[ThumbnailManager] Rust(RGBA回退)缩略图生成成功: {thumbnail_path}")
-            return thumbnail_path
-        except Exception as e:
-            warning(f"[ThumbnailManager] Rust缩略图生成失败，回退Python: {file_path}, 错误: {e}")
-            return None
+                # 优先使用 Rust 直接 JPG 输出，降低磁盘 IO 与批量预览开销
+                jpg_bytes = self._rust_bridge.generate_jpg(file_path, dpi_scaled_size, dpi_scaled_size)
+                if jpg_bytes:
+                    increment_perf_counter("thumbnail.create_native_thumbnail", "jpg_direct")
+                    with open(thumbnail_path, "wb") as f:
+                        f.write(jpg_bytes)
+                    debug(f"[ThumbnailManager] Rust(JPG直出)缩略图生成成功: {thumbnail_path}")
+                    return thumbnail_path
+
+                # 回退到 Rust JPEG 输出（兼容别名接口）
+                jpeg_bytes = self._rust_bridge.generate_jpeg(file_path, dpi_scaled_size, dpi_scaled_size)
+                if jpeg_bytes:
+                    increment_perf_counter("thumbnail.create_native_thumbnail", "jpeg_direct")
+                    with open(thumbnail_path, "wb") as f:
+                        f.write(jpeg_bytes)
+                    debug(f"[ThumbnailManager] Rust(JPEG直出)缩略图生成成功: {thumbnail_path}")
+                    return thumbnail_path
+
+                # 回退到 RGBA 路径
+                if not PIL_AVAILABLE:
+                    increment_perf_counter("thumbnail.create_native_thumbnail", "pil_unavailable")
+                    return None
+
+                generated = self._rust_bridge.generate_rgba(file_path, dpi_scaled_size, dpi_scaled_size)
+                if not generated:
+                    increment_perf_counter("thumbnail.create_native_thumbnail", "rgba_fallback_miss")
+                    return None
+
+                raw, width, height, channels = generated
+                if channels not in (3, 4):
+                    increment_perf_counter("thumbnail.create_native_thumbnail", "invalid_channels")
+                    return None
+
+                increment_perf_counter("thumbnail.create_native_thumbnail", "rgba_fallback")
+                mode = "RGBA" if channels == 4 else "RGB"
+                img = Image.frombytes(mode, (width, height), raw)
+                if mode == "RGB":
+                    img = img.convert("RGBA")
+                img = img.convert("RGB")
+                img.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
+                try:
+                    img.close()
+                except Exception:
+                    pass
+
+                debug(f"[ThumbnailManager] Rust(RGBA回退)缩略图生成成功: {thumbnail_path}")
+                return thumbnail_path
+            except Exception as e:
+                increment_perf_counter("thumbnail.create_native_thumbnail", "failure")
+                warning(f"[ThumbnailManager] Rust缩略图生成失败，回退Python: {file_path}, 错误: {e}")
+                return None
 
     def _create_image_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """
@@ -1472,102 +1532,111 @@ class ThumbnailManager:
 
     def _create_video_thumbnail_ffmpeg(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """使用 FFmpeg 软解抽帧生成视频缩略图"""
-        dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
-        temp_output_path = f"{thumbnail_path}.ffmpeg.tmp.jpg"
-        scale_filter = f"scale={dpi_scaled_size}:{dpi_scaled_size}:force_original_aspect_ratio=decrease:flags=lanczos"
+        with track_perf("thumbnail.create_video_thumbnail_ffmpeg"):
+            dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
+            temp_output_path = f"{thumbnail_path}.ffmpeg.tmp.jpg"
+            scale_filter = f"scale={dpi_scaled_size}:{dpi_scaled_size}:force_original_aspect_ratio=decrease:flags=lanczos"
 
-        seek_candidates = self._get_ffmpeg_seek_candidates(file_path)
+            seek_candidates = self._get_ffmpeg_seek_candidates(file_path)
+            increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "seek_candidates", len(seek_candidates))
 
-        for seek_seconds in seek_candidates:
+            for seek_seconds in seek_candidates:
+                try:
+                    if os.path.exists(temp_output_path):
+                        os.remove(temp_output_path)
+                except Exception:
+                    pass
+
+                command = [
+                    get_ffmpeg_path(),
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-nostdin",
+                    "-threads",
+                    "0",
+                ]
+
+                if seek_seconds > 0:
+                    command.extend(["-ss", f"{seek_seconds:.3f}"])
+
+                command.extend([
+                    "-i",
+                    file_path,
+                    "-map",
+                    "0:v:0",
+                    "-an",
+                    "-sn",
+                    "-dn",
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    scale_filter,
+                    "-q:v",
+                    "4",
+                    temp_output_path,
+                ])
+
+                try:
+                    completed = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=self.FFMPEG_SOFT_TIMEOUT,
+                        creationflags=self._get_subprocess_creationflags(),
+                    )
+                except FileNotFoundError:
+                    increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "ffmpeg_missing")
+                    warning("[ThumbnailManager] 未找到 ffmpeg，无法执行软解缩略图生成")
+                    return None
+                except subprocess.TimeoutExpired:
+                    increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "timeout")
+                    debug(
+                        f"[ThumbnailManager] FFmpeg软解抽帧超时: {file_path}, "
+                        f"seek={seek_seconds:.3f}s"
+                    )
+                    continue
+                except Exception as e:
+                    increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "subprocess_error")
+                    debug(
+                        f"[ThumbnailManager] FFmpeg软解抽帧失败: {file_path}, "
+                        f"seek={seek_seconds:.3f}s, 错误: {e}"
+                    )
+                    continue
+
+                if completed.returncode == 0 and os.path.exists(temp_output_path) and os.path.getsize(temp_output_path) > 0:
+                    try:
+                        os.replace(temp_output_path, thumbnail_path)
+                        increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "success")
+                        debug(
+                            f"[ThumbnailManager] FFmpeg软解缩略图生成成功: {thumbnail_path}, "
+                            f"seek={seek_seconds:.3f}s"
+                        )
+                        return thumbnail_path
+                    except Exception as e:
+                        increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "replace_error")
+                        debug(f"[ThumbnailManager] FFmpeg缩略图落盘失败: {thumbnail_path}, 错误: {e}")
+                else:
+                    increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "attempt_failed")
+                    stderr_text = (completed.stderr or "").strip()
+                    if stderr_text:
+                        debug(
+                            f"[ThumbnailManager] FFmpeg软解尝试失败: {file_path}, "
+                            f"seek={seek_seconds:.3f}s, stderr={stderr_text}"
+                        )
+
             try:
                 if os.path.exists(temp_output_path):
                     os.remove(temp_output_path)
             except Exception:
                 pass
 
-            command = [
-                get_ffmpeg_path(),
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-threads",
-                "0",
-            ]
-
-            if seek_seconds > 0:
-                command.extend(["-ss", f"{seek_seconds:.3f}"])
-
-            command.extend([
-                "-i",
-                file_path,
-                "-map",
-                "0:v:0",
-                "-an",
-                "-sn",
-                "-dn",
-                "-frames:v",
-                "1",
-                "-vf",
-                scale_filter,
-                "-q:v",
-                "4",
-                temp_output_path,
-            ])
-
-            try:
-                completed = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=self.FFMPEG_SOFT_TIMEOUT,
-                    creationflags=self._get_subprocess_creationflags(),
-                )
-            except FileNotFoundError:
-                warning("[ThumbnailManager] 未找到 ffmpeg，无法执行软解缩略图生成")
-                return None
-            except subprocess.TimeoutExpired:
-                debug(
-                    f"[ThumbnailManager] FFmpeg软解抽帧超时: {file_path}, "
-                    f"seek={seek_seconds:.3f}s"
-                )
-                continue
-            except Exception as e:
-                debug(
-                    f"[ThumbnailManager] FFmpeg软解抽帧失败: {file_path}, "
-                    f"seek={seek_seconds:.3f}s, 错误: {e}"
-                )
-                continue
-
-            if completed.returncode == 0 and os.path.exists(temp_output_path) and os.path.getsize(temp_output_path) > 0:
-                try:
-                    os.replace(temp_output_path, thumbnail_path)
-                    debug(
-                        f"[ThumbnailManager] FFmpeg软解缩略图生成成功: {thumbnail_path}, "
-                        f"seek={seek_seconds:.3f}s"
-                    )
-                    return thumbnail_path
-                except Exception as e:
-                    debug(f"[ThumbnailManager] FFmpeg缩略图落盘失败: {thumbnail_path}, 错误: {e}")
-            else:
-                stderr_text = (completed.stderr or "").strip()
-                if stderr_text:
-                    debug(
-                        f"[ThumbnailManager] FFmpeg软解尝试失败: {file_path}, "
-                        f"seek={seek_seconds:.3f}s, stderr={stderr_text}"
-                    )
-
-        try:
-            if os.path.exists(temp_output_path):
-                os.remove(temp_output_path)
-        except Exception:
-            pass
-
-        warning(f"[ThumbnailManager] FFmpeg软解未能生成视频缩略图: {file_path}")
-        return None
+            increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "failure")
+            warning(f"[ThumbnailManager] FFmpeg软解未能生成视频缩略图: {file_path}")
+            return None
 
     def _build_video_thumbnail_subprocess_command(
         self,
@@ -1617,48 +1686,58 @@ class ThumbnailManager:
         - 父进程使用真实超时控制；
         - 超时后直接跳过当前文件，避免整个批量任务被卡死。
         """
-        timeout = max(int(self.BATCH_VIDEO_SUBPROCESS_TIMEOUT), int(self.VIDEO_PROCESSING_TIMEOUT) + 5)
-        project_root = str(Path(__file__).resolve().parents[2])
-
-        command = self._build_video_thumbnail_subprocess_command(
-            file_path,
-            prefer_native,
-        )
-
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                cwd=project_root,
-                creationflags=self._get_subprocess_creationflags(),
+        with track_perf("thumbnail.create_video_thumbnail_batch_safe"):
+            increment_perf_counter(
+                "thumbnail.create_video_thumbnail_batch_safe",
+                "prefer_native" if prefer_native else "prefer_python",
             )
-        except subprocess.TimeoutExpired:
-            warning(f"[ThumbnailManager] 视频缩略图生成超时，已跳过: {file_path}")
-            return None
-        except Exception as e:
-            warning(f"[ThumbnailManager] 启动视频缩略图子进程失败，已跳过: {file_path}, 错误: {e}")
-            return None
+            timeout = max(int(self.BATCH_VIDEO_SUBPROCESS_TIMEOUT), int(self.VIDEO_PROCESSING_TIMEOUT) + 5)
+            project_root = str(Path(__file__).resolve().parents[2])
 
-        stderr_text = (completed.stderr or "").strip()
-        filtered_stderr_text = self._record_subprocess_decode_stats(stderr_text)
+            command = self._build_video_thumbnail_subprocess_command(
+                file_path,
+                prefer_native,
+            )
 
-        if completed.returncode == 0:
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                    cwd=project_root,
+                    creationflags=self._get_subprocess_creationflags(),
+                )
+            except subprocess.TimeoutExpired:
+                increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "timeout")
+                warning(f"[ThumbnailManager] 视频缩略图生成超时，已跳过: {file_path}")
+                return None
+            except Exception as e:
+                increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "subprocess_error")
+                warning(f"[ThumbnailManager] 启动视频缩略图子进程失败，已跳过: {file_path}, 错误: {e}")
+                return None
+
+            stderr_text = (completed.stderr or "").strip()
+            filtered_stderr_text = self._record_subprocess_decode_stats(stderr_text)
+
+            if completed.returncode == 0:
+                increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "success")
+                if filtered_stderr_text:
+                    debug(f"[ThumbnailManager] 视频缩略图子进程输出: {filtered_stderr_text}")
+                if os.path.exists(thumbnail_path):
+                    return thumbnail_path
+                if os.path.exists(legacy_thumbnail_path):
+                    return legacy_thumbnail_path
+                increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "missing_output")
+                return None
+
+            increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "failure")
             if filtered_stderr_text:
-                debug(f"[ThumbnailManager] 视频缩略图子进程输出: {filtered_stderr_text}")
-            if os.path.exists(thumbnail_path):
-                return thumbnail_path
-            if os.path.exists(legacy_thumbnail_path):
-                return legacy_thumbnail_path
+                debug(f"[ThumbnailManager] 视频缩略图子进程异常输出: {filtered_stderr_text}")
+
             return None
-
-        if filtered_stderr_text:
-            debug(f"[ThumbnailManager] 视频缩略图子进程异常输出: {filtered_stderr_text}")
-
-        return None
 
     def _load_image(self, file_path: str, suffix: str) -> Tuple[Optional[Image.Image], bool]:
         """
@@ -1675,16 +1754,18 @@ class ThumbnailManager:
             return None, False
 
         img = None
-        raw = None
 
         try:
             if suffix in self.RAW_FORMATS:
                 # RAW格式
                 try:
-                    import rawpy
-                    raw = rawpy.imread(file_path)
-                    rgb = raw.postprocess()
-                    img = Image.fromarray(rgb)
+                    img = load_raw_image(
+                        file_path,
+                        half_size=False,
+                        use_camera_wb=True,
+                        no_auto_bright=True,
+                        output_bps=8,
+                    )
                 except ImportError:
                     warning(f"[ThumbnailManager] rawpy库未安装，无法加载RAW文件: {file_path}")
                     return None, False
@@ -1699,14 +1780,14 @@ class ThumbnailManager:
                     pillow_heif.register_heif_opener()
                 except ImportError:
                     pass
-                img = Image.open(file_path)
+                img = normalize_pil_image(Image.open(file_path))
             elif suffix in self.PSD_FORMATS:
                 # PSD格式
                 psd = None
                 try:
                     from psd_tools import PSDImage
                     psd = PSDImage.open(file_path)
-                    img = psd.composite()
+                    img = normalize_pil_image(psd.composite())
                 except ImportError:
                     warning(f"[ThumbnailManager] psd-tools库未安装，无法加载PSD文件: {file_path}")
                     return None, False
@@ -1721,7 +1802,7 @@ class ThumbnailManager:
                 return self._load_svg_image(file_path)
             else:
                 # 普通图像格式
-                img = Image.open(file_path)
+                img = normalize_pil_image(Image.open(file_path))
 
             # 检查图像尺寸并应用下采样
             img = self._apply_image_size_limit(img, file_path)
@@ -1736,13 +1817,6 @@ class ThumbnailManager:
                 except Exception:
                     pass
             return None, False
-        finally:
-            # 确保raw对象被关闭
-            if raw is not None:
-                try:
-                    raw.close()
-                except Exception:
-                    pass
 
     def _apply_image_size_limit(self, img: Image.Image, file_path: str) -> Image.Image:
         """

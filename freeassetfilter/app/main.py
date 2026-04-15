@@ -437,7 +437,9 @@ class FreeAssetFilterApp(QMainWindow):
         self._restore_total_count = 0
         self._restore_success_count = 0
         self._restore_batch_size = 20
+        self._restore_safe_mode = False
         self._startup_warmup_thread = None
+        self._is_closing = False
 
         # 更新控制器
         self.update_controller = UpdateController(self)
@@ -512,7 +514,14 @@ class FreeAssetFilterApp(QMainWindow):
         """
         主窗口关闭事件，确保先清理预览区域，再保存状态并关闭主程序
         """
-        
+        self._is_closing = True
+        self._pending_restore_items = []
+        self._pending_restore_unlinked_files = []
+        self._restore_safe_mode = False
+
+        app = QApplication.instance()
+        if app is not None:
+            setattr(app, "_faf_restore_safe_mode", False)
 
         # 用户尝试关闭程序时，优先清理预览区域
         self._cleanup_preview_before_close()
@@ -529,7 +538,15 @@ class FreeAssetFilterApp(QMainWindow):
             last_path = self.file_selector_a.current_path
         # 保存文件存储池状态，传递文件选择器的当前路径
         if hasattr(self, 'file_staging_pool'):
-            self.file_staging_pool.save_backup(last_path)
+            try:
+                if hasattr(self.file_staging_pool, 'cleanup'):
+                    self.file_staging_pool.cleanup()
+                if hasattr(self.file_staging_pool, 'flush_backup_save_now'):
+                    self.file_staging_pool.flush_backup_save_now(last_path)
+                else:
+                    self.file_staging_pool.save_backup(last_path)
+            except Exception as e:
+                logger.warning(f"关闭主窗口时清理文件存储池失败: {e}")
 
         # 统一清理：删除整个temp文件夹
         import shutil
@@ -1278,10 +1295,6 @@ class FreeAssetFilterApp(QMainWindow):
         previous_updates_enabled = self.updatesEnabled()
         self.setUpdatesEnabled(False)
         
-        # 保存应用实例的更新状态
-        app_previous_updates_enabled = app.updatesEnabled()
-        app.setUpdatesEnabled(False)
-        
         # 启用 HoverTooltip 安全模式，防止在重建过程中意外显示
         if hasattr(self, 'hover_tooltip') and self.hover_tooltip:
             try:
@@ -1481,12 +1494,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         self._restore_ui_state()
         
-        # 恢复应用实例和主窗口的更新状态
-        try:
-            app.setUpdatesEnabled(app_previous_updates_enabled)
-        except (RuntimeError, AttributeError):
-            pass
-        
+        # 恢复主窗口更新状态
         try:
             self.setUpdatesEnabled(previous_updates_enabled)
         except (RuntimeError, AttributeError):
@@ -1905,6 +1913,11 @@ class FreeAssetFilterApp(QMainWindow):
         self._pending_restore_unlinked_files = []
         self._restore_total_count = len(items)
         self._restore_success_count = 0
+        self._restore_safe_mode = True
+
+        app = QApplication.instance()
+        if app is not None:
+            setattr(app, "_faf_restore_safe_mode", True)
 
         if hasattr(self, 'file_staging_pool'):
             setattr(self.file_staging_pool, "_suspend_backup_save", True)
@@ -1915,7 +1928,7 @@ class FreeAssetFilterApp(QMainWindow):
         """
         分批恢复备份项，每批处理少量数据，将控制权交还事件循环
         """
-        if not hasattr(self, 'file_staging_pool'):
+        if self._is_closing or not hasattr(self, 'file_staging_pool'):
             return
 
         batch = self._pending_restore_items[:self._restore_batch_size]
@@ -1948,6 +1961,11 @@ class FreeAssetFilterApp(QMainWindow):
         """
         完成恢复流程，统一保存备份并处理未链接文件
         """
+        self._restore_safe_mode = False
+        app = QApplication.instance()
+        if app is not None:
+            setattr(app, "_faf_restore_safe_mode", False)
+
         if hasattr(self, 'file_staging_pool'):
             setattr(self.file_staging_pool, "_suspend_backup_save", False)
             try:
@@ -1956,7 +1974,10 @@ class FreeAssetFilterApp(QMainWindow):
             except Exception as e:
                 warning(f"恢复完成后统一保存备份失败: {e}")
 
-
+            try:
+                QTimer.singleShot(0, self.file_staging_pool.refresh_all_card_icons)
+            except Exception as e:
+                warning(f"恢复完成后刷新存储池图标失败: {e}")
 
         if self._pending_restore_unlinked_files:
             QTimer.singleShot(
