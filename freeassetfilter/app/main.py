@@ -440,6 +440,7 @@ class FreeAssetFilterApp(QMainWindow):
         self._restore_safe_mode = False
         self._startup_warmup_thread = None
         self._is_closing = False
+        self._is_startup_phase = True  # 启动阶段标志，防止启动时重建UI
 
         # 更新控制器
         self.update_controller = UpdateController(self)
@@ -564,6 +565,13 @@ class FreeAssetFilterApp(QMainWindow):
         if self._startup_warmup_thread and self._startup_warmup_thread.isRunning():
             self._startup_warmup_thread.quit()
             self._startup_warmup_thread.wait(500)
+
+        # 停止所有全局鼠标监控器，卸载 Windows 钩子，清理 _DummyThread
+        try:
+            from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
+            GlobalMouseMonitor.stop_all()
+        except (ImportError, RuntimeError, AttributeError) as e:
+            logger.debug(f"停止全局鼠标监控器失败: {e}")
 
         cleanup_fault_handler_tee()
         debug_exit_threads()
@@ -1073,9 +1081,6 @@ class FreeAssetFilterApp(QMainWindow):
         self.hover_tooltip.set_target_widget(self.update_button)
         self.hover_tooltip.set_target_widget(self.global_settings_button)
 
-        # 应用主题设置
-        self.update_theme()
-
     def _open_github(self):
         """打开GitHub项目主页"""
         import webbrowser
@@ -1558,11 +1563,17 @@ class FreeAssetFilterApp(QMainWindow):
         更新应用主题：
         - 启动阶段窗口尚未显示时，使用轻量样式刷新
         - 窗口显示后，优先直接重建主布局，避免对整棵旧控件树做高成本增量刷新
-        - 预览区域采用“清空 → 刷新 → 恢复”的分阶段异步流程，降低切换卡顿
+        - 预览区域采用"清空 → 刷新 → 恢复"的分阶段异步流程，降低切换卡顿
 
         Args:
             delayed: 是否延迟执行，用于防止在窗口关闭时调用
         """
+        # 启动阶段只使用轻量级主题刷新，绝不重建UI
+        if self._is_startup_phase:
+            if hasattr(self, "central_widget") and self.central_widget:
+                self._apply_theme_to_existing_widgets()
+            return
+
         if not delayed and self._update_theme_in_progress:
             if not self._theme_update_queued:
                 self._theme_update_queued = True
@@ -2728,10 +2739,13 @@ def main():
     app.setStyleSheet(scrollbar_style)
 
     window = FreeAssetFilterApp()
-    # 应用主题设置
-    window.update_theme()
+    # 先轻量级应用一次主题设置（不重建UI）
+    if hasattr(window, "central_widget") and window.central_widget:
+        window._apply_theme_to_existing_widgets()
     # 窗口启动时窗口化显示
     window.show()
+    # 窗口显示后清除启动阶段标志，允许后续主题更新重建UI
+    window._is_startup_phase = False
     # 首屏显示后再分阶段执行恢复/预热/清理，避免阻塞启动
     window.schedule_startup_tasks()
 
@@ -2774,7 +2788,21 @@ def main():
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
 
-    sys.exit(app.exec())
+    exit_code = app.exec()
+
+    # 安全退出机制：如果正常退出后仍有非守护线程阻塞，超时后强制退出
+    import threading
+    non_daemon_alive = [
+        t for t in threading.enumerate()
+        if t.is_alive() and not t.daemon and t is not threading.main_thread()
+    ]
+    if non_daemon_alive:
+        thread_names = ", ".join(t.name for t in non_daemon_alive)
+        info(f"检测到非守护线程仍存活: {thread_names}，等待最多3秒后强制退出")
+        for t in non_daemon_alive:
+            t.join(timeout=3.0)
+
+    sys.exit(exit_code)
 
 
 # 主程序入口

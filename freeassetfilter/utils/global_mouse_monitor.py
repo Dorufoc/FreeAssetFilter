@@ -28,11 +28,11 @@ Date: 2025
 """
 
 import ctypes
+import threading
 import time
 from ctypes import wintypes
 from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
-# 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
@@ -50,17 +50,59 @@ class GlobalMouseMonitor(QObject):
         timeout_reached (Signal): 空闲超时信号
     """
 
+    _active_instances_lock = threading.Lock()
+    _active_instances = set()
+
     mouse_moved = Signal()
-    """鼠标移动信号 - 当检测到鼠标位置变化时触发"""
-
     mouse_clicked = Signal()
-    """鼠标点击信号 - 当检测到鼠标点击（按下）时触发"""
-
     mouse_scrolled = Signal()
-    """鼠标滚轮信号 - 当检测到鼠标滚轮滚动时触发"""
-
     timeout_reached = Signal()
-    """空闲超时信号"""
+
+    @classmethod
+    def stop_all(cls):
+        """
+        停止所有活跃的 GlobalMouseMonitor 实例
+
+        在应用程序退出前调用，确保所有 Windows 钩子被卸载，
+        避免底层 native 线程（_DummyThread）阻止进程干净退出。
+        """
+        with cls._active_instances_lock:
+            instances = list(cls._active_instances)
+
+        for monitor in instances:
+            try:
+                monitor._disposed = True
+                monitor.stop()
+            except (RuntimeError, AttributeError, OSError) as e:
+                debug(f"[GlobalMouseMonitor] 停止监控器实例时出错: {e}")
+
+        with cls._active_instances_lock:
+            cls._active_instances.clear()
+
+        cls._cleanup_dummy_threads()
+
+    @classmethod
+    def _cleanup_dummy_threads(cls):
+        """
+        清理 threading._active 中残留的 _DummyThread 对象
+
+        当 Windows 钩子回调被 native 线程调用时，Python 会自动创建
+        _DummyThread 代理并注册到 threading._active。卸载钩子后，
+        这些 _DummyThread 对象不会自动移除，需要手动清理。
+        """
+        try:
+            with threading._active_limbo_lock:
+                to_remove = [
+                    ident for ident, thread in threading._active.items()
+                    if isinstance(thread, threading._DummyThread)
+                ]
+                for ident in to_remove:
+                    try:
+                        del threading._active[ident]
+                    except KeyError:
+                        pass
+        except (AttributeError, RuntimeError) as e:
+            debug(f"[GlobalMouseMonitor] 清理 _DummyThread 失败: {e}")
 
     def __init__(self, parent=None, timeout=3000):
         """
@@ -230,6 +272,9 @@ class GlobalMouseMonitor(QObject):
             self._signal_timer.start()
             self._hide_timer.start(self._timeout)
 
+            with GlobalMouseMonitor._active_instances_lock:
+                GlobalMouseMonitor._active_instances.add(self)
+
             return True
 
         except OSError as e:
@@ -270,6 +315,9 @@ class GlobalMouseMonitor(QObject):
             self._pending_scroll = False
             self._last_hook_emit_time = 0
             self._last_move_emit_time = 0
+
+            with GlobalMouseMonitor._active_instances_lock:
+                GlobalMouseMonitor._active_instances.discard(self)
         finally:
             self._stopping = False
 
