@@ -112,6 +112,7 @@ def get_lnk_target(lnk_path):
     """
     解析Windows快捷方式(.lnk)文件，获取其指向的目标文件路径
     """
+    debug(f"解析LNK文件: {lnk_path}")
     try:
         # 定义必要的结构和常量
         class LNK_DATA(ctypes.Structure):
@@ -174,11 +175,13 @@ def get_lnk_target(lnk_path):
                 
                 target_path = ''.join(target_path)
                 if target_path:
+                    debug(f"LNK目标解析成功: {target_path}")
                     return target_path
-        
+
+        debug(f"LNK文件无有效目标路径: {lnk_path}")
         return None
     except (OSError, struct.error, ValueError) as e:
-        debug(f"解析LNK文件失败 [{lnk_path}]: {e}")
+        debug(f"解析LNK文件失败: {lnk_path}, 错误: {e}")
         return None
 
 # 定义ExtractIconEx函数
@@ -189,20 +192,22 @@ ExtractIconExW.restype = UINT
 def get_all_icons_from_exe(file_path):
     """
     从EXE文件中提取所有可用的图标
-    
+
     参数:
         file_path: str - EXE文件路径
-    
+
     返回:
         list - 包含所有图标信息的列表，每个元素是(dict):
             {"hicon": HICON, "index": int, "width": int, "height": int}
     """
+    debug(f"提取EXE图标: {file_path}")
     icons = []
-    
+
     try:
         # 获取图标数量
         icon_count = ExtractIconExW(file_path, -1, None, None, 0)
-        
+        debug(f"EXE文件包含图标数量: {icon_count}")
+
         if icon_count > 0:
             # 为图标信息获取定义必要的结构
             class ICONINFO(ctypes.Structure):
@@ -292,8 +297,8 @@ def get_all_icons_from_exe(file_path):
                             # 如果无法获取尺寸信息，释放图标
                             DestroyIcon(hicon)
             except (OSError, ctypes.WinError, AttributeError) as e:
-                warning(f"SHDefExtractIcon提取图标失败 [{file_path}]: {e}")
-            
+                warning(f"SHDefExtractIcon提取图标失败: {file_path}, 错误: {e}")
+
             # 如果SHDefExtractIcon失败或返回空，使用ExtractIconEx作为备用
             if not icons:
                 for i in range(icon_count):
@@ -355,8 +360,9 @@ def get_all_icons_from_exe(file_path):
                             DestroyIcon(small_icons[0])
 
     except (OSError, ctypes.WinError) as e:
-        warning(f"提取所有图标时出错 [{file_path}]: {e}")
-    
+        warning(f"提取EXE图标失败: {file_path}, 错误: {e}")
+
+    debug(f"提取到图标数量: {len(icons)}")
     return icons
 
 
@@ -372,6 +378,7 @@ def get_highest_resolution_icon(file_path, desired_size=256):
     返回:
         HICON - 图标句柄，如果获取失败则返回None
     """
+    debug(f"获取高分辨率图标: {file_path}, 期望尺寸: {desired_size}")
     try:
         # 检查文件类型
         _, ext = os.path.splitext(file_path)
@@ -391,16 +398,19 @@ def get_highest_resolution_icon(file_path, desired_size=256):
         # 传入较大的尺寸（512）以获取最高分辨率
         hicon = get_icon_from_shell_item_image_factory(file_path, 512)
         if hicon:
+            debug(f"通过IShellItemImageFactory获取图标成功: {file_path}")
             return hicon
 
         # 对于exe文件，使用get_all_icons_from_exe获取所有可用图标，然后选择最高分辨率的
         if ext == '.exe':
+            debug(f"从EXE提取所有图标: {file_path}")
             # 获取所有可用图标
             all_icons = get_all_icons_from_exe(file_path)
 
             if all_icons:
                 # 选择分辨率最高的图标
                 best_icon = max(all_icons, key=lambda icon: icon["width"] * icon["height"])
+                debug(f"选择最高分辨率图标: {best_icon['width']}x{best_icon['height']}")
 
                 # 释放其他图标的句柄
                 for icon in all_icons:
@@ -408,6 +418,7 @@ def get_highest_resolution_icon(file_path, desired_size=256):
                         DestroyIcon(icon["hicon"])
 
                 return best_icon["hicon"]
+            debug(f"EXE文件未提取到图标: {file_path}")
 
         # 使用SHGetFileInfo获取其他类型文件的图标
         # 创建SHFILEINFO结构
@@ -437,11 +448,13 @@ def get_highest_resolution_icon(file_path, desired_size=256):
             )
 
             if result == 0 or shfi.hIcon is None:
+                debug(f"SHGetFileInfo获取图标失败: {file_path}")
                 return None
 
+        debug(f"通过SHGetFileInfo获取图标成功: {file_path}")
         return shfi.hIcon
     except (OSError, ctypes.WinError) as e:
-        debug(f"获取高分辨率图标失败 [{file_path}]: {e}")
+        debug(f"获取高分辨率图标失败: {file_path}, 错误: {e}")
         return None
 
 def get_icon_from_shell_item_image_factory(file_path, size=256):
@@ -456,6 +469,7 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
     返回:
         HICON - 图标句柄，如果获取失败则返回None
     """
+    debug(f"使用IShellItemImageFactory获取图标: {file_path}, 尺寸: {size}")
     try:
         # 定义必要的 COM 接口
         class IShellItemImageFactoryVtbl(ctypes.Structure):
@@ -522,6 +536,7 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
             )
 
             if hr != 0 or not hbitmap:
+                debug(f"IShellItemImageFactory.GetImage失败: {file_path}, hr={hr}")
                 return None
 
             # 将 HBITMAP 转换为 HICON
@@ -558,6 +573,7 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
 
             bmp = BITMAP()
             if GetObject(hbitmap, ctypes.sizeof(bmp), byref(bmp)) == 0:
+                debug(f"获取位图信息失败: {file_path}")
                 windll.gdi32.DeleteObject(hbitmap)
                 return None
 
@@ -582,7 +598,9 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
             windll.gdi32.DeleteObject(hbm_mask)
 
             if hicon:
+                debug(f"IShellItemImageFactory获取图标成功: {file_path}")
                 return hicon
+            debug(f"CreateIconIndirect创建图标失败: {file_path}")
 
         finally:
             # 释放 ShellItem
@@ -596,11 +614,11 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
                     Release(shell_item_ptr)
 
     except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        debug(f"IShellItemImageFactory 获取图标失败 - 文件操作错误 [{file_path}]: {e}")
+        debug(f"IShellItemImageFactory获取图标失败(文件错误): {file_path}, 错误: {e}")
     except (ValueError, TypeError) as e:
-        debug(f"IShellItemImageFactory 获取图标失败 - 数据转换错误 [{file_path}]: {e}")
+        debug(f"IShellItemImageFactory获取图标失败(数据错误): {file_path}, 错误: {e}")
     except RuntimeError as e:
-        debug(f"IShellItemImageFactory 获取图标失败 - Qt运行时错误 [{file_path}]: {e}")
+        debug(f"IShellItemImageFactory获取图标失败(运行时错误): {file_path}, 错误: {e}")
 
     return None
 
@@ -618,6 +636,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
     返回:
         QPixmap - 如果转换成功则返回Pixmap，否则返回None
     """
+    debug(f"HICON转QPixmap: size={size}, keep_original={keep_original_size}")
     try:
         from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QTransform, QGuiApplication
         from PySide6.QtCore import Qt, QPoint
@@ -683,15 +702,18 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
         # 获取图标信息
         icon_info = ICONINFO()
         if not GetIconInfo(hicon, byref(icon_info)):
+            debug("GetIconInfo获取图标信息失败")
             return None
 
         try:
             # 获取彩色位图信息
             bmp = BITMAP()
             if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) == 0:
+                debug("GetObjectW获取位图信息失败")
                 return None
 
             width, height = bmp.bmWidth, bmp.bmHeight
+            debug(f"图标原始尺寸: {width}x{height}")
 
             # 为DIB创建BITMAPINFOHEADER
             class BITMAPINFOHEADER(ctypes.Structure):
@@ -724,6 +746,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
             # 获取设备上下文
             dc = CreateCompatibleDC(None)
             if not dc:
+                debug("CreateCompatibleDC创建设备上下文失败")
                 return None
 
             try:
@@ -734,6 +757,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
                 )
 
                 if bits_copied == 0:
+                    debug("GetDIBits获取像素数据失败")
                     return None
 
                 # 创建QImage - 使用原始位图数据，保持原始分辨率
@@ -810,6 +834,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
             if icon_info.hbmColor:
                 DeleteObject(icon_info.hbmColor)
 
+        debug("HICON转QPixmap主流程失败")
         return None
     except (ImportError, OSError, IOError) as e:
         # 如果PIL处理失败，回退到Qt的处理方式
@@ -890,6 +915,7 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
                     pixmap = QPixmap.fromImage(scaled_qimage)
                     pixmap.setDevicePixelRatio(device_pixel_ratio)
                     
+                    debug("Qt回退方式处理图标成功")
                     return pixmap
                 finally:
                     DeleteDC(dc)

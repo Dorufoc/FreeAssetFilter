@@ -65,13 +65,13 @@ def get_icon_path(icon_name, icon_dir=None):
         settings_manager = SettingsManager()
         icon_style = settings_manager.get_setting("appearance.icon_style", 0)
     except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        warning(f"获取图标样式设置失败 - 文件操作错误: {e}，使用默认样式")
+        warning(f"读取图标样式失败: {e}")
         icon_style = 0
     except (ValueError, TypeError) as e:
-        warning(f"获取图标样式设置失败 - 数据转换错误: {e}，使用默认样式")
+        warning(f"图标样式值无效: {e}")
         icon_style = 0
     except RuntimeError as e:
-        warning(f"获取图标样式设置失败 - Qt运行时错误: {e}，使用默认样式")
+        warning(f"图标样式设置异常: {e}")
         icon_style = 0
     
     # 确保样式值有效
@@ -88,10 +88,11 @@ def get_icon_path(icon_name, icon_dir=None):
         # 如果带样式的图标存在，返回它
         if os.path.exists(styled_icon_path):
             return styled_icon_path
-        
+
         # 如果带样式的图标不存在，回退到默认图标（样式0）
         default_icon_path = os.path.join(icon_dir, f"{icon_name}.svg")
         if os.path.exists(default_icon_path):
+            debug(f"图标回退: {styled_icon_name} -> {icon_name}.svg")
             return default_icon_path
     
     # 对于不支持样式切换的图标，直接返回默认路径

@@ -66,6 +66,7 @@ class TimelineWidget(QWidget):
     
     def __init__(self, params):
         super().__init__()
+        debug("初始化 TimelineWidget")
         self.params = params
         self.data = []
         self.setMinimumHeight(600)
@@ -96,6 +97,7 @@ class TimelineWidget(QWidget):
     
     def set_data(self, data):
         """设置时间线数据"""
+        debug(f"设置时间线数据: {len(data) if data else 0} 条事件")
         self.data = data
         if data:
             # 计算全局时间范围
@@ -113,6 +115,7 @@ class TimelineWidget(QWidget):
     
     def paintEvent(self, event):
         """绘制时间线"""
+        # 绘制时间线
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
@@ -409,6 +412,7 @@ class TimelineWidget(QWidget):
         """处理鼠标滚轮事件，实现缩放"""
         # Ctrl + 滚轮实现缩放
         if event.modifiers() & Qt.ControlModifier:
+            # 处理缩放事件
             delta = event.angleDelta().y()
             current_scale = self.params.px_per_second
             
@@ -456,7 +460,7 @@ class TimelineWidget(QWidget):
         self.mouse_pos = event.pos()
         self.current_mouse_pos = event.pos()
         
-        # 如果正在拖动，更新拖动结束位置并计算选中的时间条
+        # 处理拖动选择
         if self.is_dragging:
             self.drag_end_x = event.x()
             
@@ -703,6 +707,7 @@ class AutoTimeline(QWidget):
     
     def __init__(self, initial_path=None):
         super().__init__()
+        debug("初始化 AutoTimeline")
         
         # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
@@ -748,6 +753,7 @@ class AutoTimeline(QWidget):
     
     def init_ui(self):
         """初始化用户界面"""
+        debug("初始化 AutoTimeline UI")
         # 创建主布局
         main_layout = QVBoxLayout(self)
         
@@ -963,9 +969,10 @@ class AutoTimeline(QWidget):
     def load_path(self, folder_path):
         """加载指定路径，生成时间线"""
         if not folder_path or not os.path.exists(folder_path):
+            warning(f"文件夹路径无效: {folder_path}")
             return
         
-        info(f"正在加载文件夹: {folder_path}")
+        info(f"加载文件夹: {folder_path}")
         
         # 显示进度条
         self.progress_bar.setVisible(True)
@@ -976,7 +983,7 @@ class AutoTimeline(QWidget):
         self.scanner.scan_finished.connect(self.on_scan_finished)
         self.scanner.progress.connect(self.on_progress_update)
         self.scanner.start()
-        info(f"扫描线程已启动")
+        info("扫描线程已启动")
     
     def import_csv(self, file_path=None):
         """
@@ -990,6 +997,8 @@ class AutoTimeline(QWidget):
         
         if not file_path:
             return
+        
+        info(f"导入CSV: {file_path}")
         
         # 显示进度条
         self.progress_bar.setVisible(True)
@@ -1010,13 +1019,13 @@ class AutoTimeline(QWidget):
     def on_scan_finished(self, events, csv_path, json_path):
         """文件夹扫描完成"""
         if not events:
+            warning("扫描完成但没有找到事件")
             return
         
         # 隐藏进度条
         self.progress_bar.setVisible(False)
         
-        info(f"扫描完成，已生成CSV文件: {csv_path}")
-        info(f"扫描完成，已生成JSON记录: {json_path}")
+        info(f"扫描完成，CSV: {csv_path}, JSON: {json_path}")
         
         # 保存生成的文件路径
         self.generated_csv_path = csv_path
@@ -1043,6 +1052,7 @@ class AutoTimeline(QWidget):
         # 隐藏进度条
         self.progress_bar.setVisible(False)
         
+        debug(f"CSV解析完成: {len(events) if events else 0} 条事件")
         self.raw_events = events
         self.process_events()
         
@@ -1052,10 +1062,13 @@ class AutoTimeline(QWidget):
     def process_events(self):
         """处理事件，执行合并算法"""
         if not self.raw_events:
+            warning("没有原始事件数据可处理")
             return
         
+        debug(f"处理事件: {len(self.raw_events)} 条原始事件")
         # 执行合并算法
         self.merged_events = merge_logic(self.raw_events, self.params.gap_threshold_seconds)
+        debug(f"合并完成: {len(self.merged_events)} 条合并事件")
         
         # 更新左侧表格
         self.update_left_table()
@@ -1077,7 +1090,7 @@ class AutoTimeline(QWidget):
     
     def on_table_row_clicked(self, row_idx):
         """处理表格行点击事件"""
-        debug(f"表格行点击: {row_idx}")
+        # debug(f"表格行点击: {row_idx}")
         # 这里可以添加行点击后的处理逻辑，比如高亮对应的时间线
     
     def on_timeline_clicked(self, x, y, event_info):
@@ -1134,13 +1147,13 @@ class AutoTimeline(QWidget):
             self.json_result_ready.emit(json_str)
             
             # 打印JSON结果（用于调试）
-            debug("点击事件的JSON结果:")
-            debug(json_str)
+            # debug("点击事件的JSON结果:")
+            # debug(json_str)
         else:
             # 点击了空白区域，清空显示
             self.json_text_edit.setText("")
             self.file_list_table.setRowCount(0)
-            debug("点击了时间线空白区域")
+            # debug("点击了时间线空白区域")
     
     def adjust_timeline_width(self):
         """调整时间线宽度"""

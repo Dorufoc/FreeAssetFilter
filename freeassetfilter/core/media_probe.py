@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.utils.app_logger import debug, info, warning
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 
 
@@ -67,19 +67,19 @@ def _run_warmup_command(command: List[str], *, label: str, timeout: int) -> bool
             creationflags=get_subprocess_creationflags(),
         )
     except FileNotFoundError:
-        debug(f"[media_probe] 预热跳过，未找到命令: {label}")
+        debug(f"预热跳过，未找到命令: {label}")
         return False
     except subprocess.TimeoutExpired:
-        debug(f"[media_probe] 预热命令超时: {label}")
+        debug(f"预热超时: {label}")
         return False
     except Exception as e:
-        debug(f"[media_probe] 预热命令执行失败: {label}, 错误: {e}")
+        debug(f"预热失败: {label}, 错误: {e}")
         return False
 
     if completed.returncode != 0:
         stderr_text = (completed.stderr or "").strip()
         if stderr_text:
-            debug(f"[media_probe] 预热命令返回非0: {label}, stderr={stderr_text}")
+            debug(f"预热返回非0: {label}, stderr={stderr_text}")
         return False
 
     return True
@@ -98,6 +98,7 @@ def warmup_ffmpeg_tools(force: bool = False) -> Dict[str, bool]:
 
     with _FFMPEG_WARMUP_LOCK:
         if _FFMPEG_WARMUP_RESULT is not None and not force:
+            debug("使用缓存的预热结果")
             return dict(_FFMPEG_WARMUP_RESULT)
 
         ffprobe_path = get_ffprobe_path()
@@ -122,6 +123,7 @@ def warmup_ffmpeg_tools(force: bool = False) -> Dict[str, bool]:
         }
 
         _FFMPEG_WARMUP_RESULT = dict(result)
+        debug(f"预热完成: ffprobe={result['ffprobe_version']}, ffmpeg={result['ffmpeg_version']}")
         return dict(result)
 
 
@@ -136,6 +138,7 @@ def run_ffprobe_json(
     """
     运行 ffprobe 并返回 JSON 结果
     """
+    debug(f"开始探测媒体: {file_path}")
     with track_perf("media_probe.run_ffprobe_json"):
         set_perf_metadata("media_probe.run_ffprobe_json", "last_timeout", timeout)
         set_perf_metadata("media_probe.run_ffprobe_json", "last_show_format", show_format)
@@ -180,31 +183,32 @@ def run_ffprobe_json(
             )
         except FileNotFoundError:
             increment_perf_counter("media_probe.run_ffprobe_json", "ffprobe_missing")
-            warning("[media_probe] 未找到 ffprobe")
+            warning("未找到 ffprobe")
             return None
         except subprocess.TimeoutExpired:
             increment_perf_counter("media_probe.run_ffprobe_json", "timeout")
-            debug(f"[media_probe] ffprobe 超时: {file_path}")
+            debug(f"ffprobe 超时: {file_path}")
             return None
         except Exception as e:
             increment_perf_counter("media_probe.run_ffprobe_json", "subprocess_error")
-            debug(f"[media_probe] ffprobe 执行失败: {file_path}, 错误: {e}")
+            debug(f"ffprobe 执行失败: {file_path}, 错误: {e}")
             return None
 
         if completed.returncode != 0:
             increment_perf_counter("media_probe.run_ffprobe_json", "nonzero_exit")
             stderr_text = (completed.stderr or "").strip()
             if stderr_text:
-                debug(f"[media_probe] ffprobe 异常输出: {stderr_text}")
+                debug(f"ffprobe 异常输出: {stderr_text}")
             return None
 
         try:
             payload = json.loads(completed.stdout or "{}")
             increment_perf_counter("media_probe.run_ffprobe_json", "success")
+            debug(f"媒体探测成功: {file_path}")
             return payload
         except Exception as e:
             increment_perf_counter("media_probe.run_ffprobe_json", "json_parse_failure")
-            debug(f"[media_probe] 解析 ffprobe JSON 失败: {file_path}, 错误: {e}")
+            debug(f"解析 ffprobe JSON 失败: {file_path}, 错误: {e}")
             return None
 
 
@@ -263,8 +267,10 @@ def get_video_stream_info(file_path: str) -> Dict[str, Any]:
     - bitrate
     - codec
     """
+    debug(f"获取视频流信息: {file_path}")
     payload = run_ffprobe_json(file_path, show_format=True, show_streams=True)
     if not payload:
+        debug(f"获取视频流信息失败: {file_path}")
         return {}
 
     result: Dict[str, Any] = {}
@@ -313,15 +319,19 @@ def get_video_stream_info(file_path: str) -> Dict[str, Any]:
         if format_bitrate and format_bitrate > 0:
             result["bitrate"] = format_bitrate
 
+    debug(f"视频流信息获取成功: {file_path}, 字段={list(result.keys())}")
     return result
 
 
 def get_video_duration_seconds(file_path: str) -> Optional[float]:
+    debug(f"获取视频时长: {file_path}")
     with track_perf("media_probe.get_video_duration_seconds"):
         info = get_video_stream_info(file_path)
         duration = info.get("duration_seconds")
         if isinstance(duration, (int, float)) and duration > 0:
             increment_perf_counter("media_probe.get_video_duration_seconds", "success")
+            debug(f"获取视频时长成功: {file_path}, duration={duration}")
             return float(duration)
         increment_perf_counter("media_probe.get_video_duration_seconds", "missing_duration")
+        debug(f"获取视频时长失败，无有效时长: {file_path}")
         return None

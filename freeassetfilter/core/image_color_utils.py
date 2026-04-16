@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.utils.app_logger import debug, info, warning
 
 try:
     from PIL import Image, ImageCms, ImageOps
@@ -35,7 +35,7 @@ def apply_exif_orientation(image: "Image.Image") -> "Image.Image":
     try:
         return ImageOps.exif_transpose(image)
     except Exception as e:
-        debug(f"[ImageColorUtils] EXIF方向校正失败，保留原图: {e}")
+        debug(f"EXIF方向校正失败: {e}")
         return image
 
 
@@ -54,10 +54,10 @@ def convert_pil_to_srgb(image: "Image.Image") -> "Image.Image":
         src_profile = ImageCms.ImageCmsProfile(icc_profile)
         dst_profile = ImageCms.createProfile("sRGB")
         converted = ImageCms.profileToProfile(image, src_profile, dst_profile, outputMode=image.mode)
-        debug("[ImageColorUtils] 已将图像从嵌入ICC配置转换到sRGB")
+        debug("ICC配置转换为sRGB完成")
         return converted
     except Exception as e:
-        warning(f"[ImageColorUtils] ICC转sRGB失败，保留原图: {e}")
+        warning(f"ICC转sRGB失败: {e}")
         return image
 
 
@@ -89,6 +89,7 @@ def load_raw_image(
     - 默认关闭 auto bright，尽量保证不同入口颜色一致；
     - 默认使用相机白平衡，避免 Canon/Nikon 等机型 RAW 偏色。
     """
+    debug(f"开始解码RAW图像: {file_path}")
     try:
         import rawpy
         import numpy as np
@@ -111,6 +112,7 @@ def load_raw_image(
     if not PIL_AVAILABLE:
         raise RuntimeError("PIL 不可用，无法构建 RAW 图像对象")
 
+    debug("RAW图像解码完成")
     return Image.fromarray(rgb, mode="RGB")
 
 
@@ -125,6 +127,7 @@ def load_raw_rgb_array(
     """
     使用统一参数解码 RAW 图像，输出连续内存的 RGB numpy 数组。
     """
+    debug(f"开始解码RAW图像为RGB数组: {file_path}")
     try:
         import rawpy
         import numpy as np

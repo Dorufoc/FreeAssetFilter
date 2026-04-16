@@ -23,11 +23,252 @@ import io
 import atexit
 import logging
 import traceback
+import inspect
+import platform
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from freeassetfilter.utils.path_utils import get_app_data_path
+
+
+# ==================== 系统信息收集 ====================
+
+def _get_wmi_info() -> Dict[str, Any]:
+    """
+    通过 WMI 获取系统硬件信息（Windows）
+    
+    Returns:
+        Dict[str, Any]: 包含 CPU、显卡、内存等信息的字典
+    """
+    info = {}
+    try:
+        import ctypes
+        from ctypes import wintypes
+        
+        class SWbemLocator(ctypes.Structure):
+            pass
+        
+        class ISWbemServices(ctypes.Structure):
+            pass
+        
+        try:
+            import win32com.client
+            wmi = win32com.client.GetObject("winmgmts:")
+            
+            cpu_info = wmi.ExecQuery("SELECT Name, Manufacturer FROM Win32_Processor")
+            if cpu_info:
+                cpu = cpu_info[0]
+                info['cpu'] = f"{cpu.Manufacturer} {cpu.Name}"
+            
+            gpu_info = wmi.ExecQuery("SELECT Name, DriverVersion FROM Win32_VideoController")
+            if gpu_info:
+                gpus = []
+                for gpu in gpu_info:
+                    gpus.append(f"{gpu.Name} (驱动: {gpu.DriverVersion})")
+                info['gpu'] = ", ".join(gpus)
+            
+            mem_info = wmi.ExecQuery("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem")
+            if mem_info:
+                total_mem = int(mem_info[0].TotalPhysicalMemory)
+                info['memory'] = f"{total_mem / (1024**3):.2f} GB"
+            
+            os_info = wmi.ExecQuery("SELECT Caption, Version, BuildNumber FROM Win32_OperatingSystem")
+            if os_info:
+                os_data = os_info[0]
+                info['os'] = f"{os_data.Caption} (版本 {os_data.Version}, 构建 {os_data.BuildNumber})"
+        
+        except ImportError:
+            try:
+                import wmi
+                c = wmi.WMI()
+                
+                for cpu in c.Win32_Processor():
+                    info['cpu'] = f"{cpu.Manufacturer} {cpu.Name}"
+                    break
+                
+                gpus = []
+                for gpu in c.Win32_VideoController():
+                    gpus.append(f"{gpu.Name} (驱动: {gpu.DriverVersion})")
+                if gpus:
+                    info['gpu'] = ", ".join(gpus)
+                
+                for cs in c.Win32_ComputerSystem():
+                    total_mem = int(cs.TotalPhysicalMemory)
+                    info['memory'] = f"{total_mem / (1024**3):.2f} GB"
+                    break
+                
+                for os_data in c.Win32_OperatingSystem():
+                    info['os'] = f"{os_data.Caption} (版本 {os_data.Version}, 构建 {os_data.BuildNumber})"
+                    break
+            except ImportError:
+                pass
+    except Exception:
+        pass
+    
+    return info
+
+
+def _get_system_info() -> Dict[str, Any]:
+    """
+    获取系统信息的综合函数
+    
+    Returns:
+        Dict[str, Any]: 包含所有系统信息的字典
+    """
+    info = {}
+    
+    try:
+        info['python_version'] = platform.python_version()
+        info['python_implementation'] = platform.python_implementation()
+        info['architecture'] = platform.architecture()[0]
+    except Exception:
+        pass
+    
+    try:
+        wmi_info = _get_wmi_info()
+        info.update(wmi_info)
+    except Exception:
+        pass
+    
+    if 'os' not in info:
+        try:
+            info['os'] = f"{platform.system()} {platform.release()}"
+        except Exception:
+            info['os'] = "未知"
+    
+    if 'cpu' not in info:
+        try:
+            info['cpu'] = platform.processor() or "未知"
+        except Exception:
+            info['cpu'] = "未知"
+    
+    return info
+
+
+def _get_app_info() -> Dict[str, Any]:
+    """
+    获取应用程序信息（版本、安装路径等）
+    
+    Returns:
+        Dict[str, Any]: 应用程序信息字典
+    """
+    info = {}
+    
+    try:
+        if getattr(sys, 'frozen', False):
+            install_path = os.path.dirname(sys.executable)
+        else:
+            current_file = os.path.abspath(__file__)
+            install_path = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+        info['install_path'] = install_path
+    except Exception:
+        try:
+            info['install_path'] = os.path.abspath(".")
+        except Exception:
+            info['install_path'] = "未知路径"
+    
+    try:
+        version_file = os.path.join(info['install_path'], 'FAFVERSION')
+        if os.path.exists(version_file):
+            with open(version_file, 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+            if lines:
+                info['version'] = lines[0]
+            else:
+                info['version'] = "未知版本"
+        else:
+            info['version'] = "未知版本"
+    except Exception:
+        info['version'] = "未知版本"
+    
+    return info
+
+
+# ==================== 组件来源追踪 ====================
+
+# 标记是否正在输出启动信息
+_in_startup_log = False
+
+def _get_caller_filename() -> str:
+    """
+    获取调用日志函数的文件名
+    
+    Returns:
+        str: 调用者文件名（不含路径）
+    """
+    global _in_startup_log
+    
+    if _in_startup_log:
+        return 'app_logger'
+    
+    try:
+        # 获取当前调用栈
+        stack = inspect.stack()
+        
+        # 跳过的文件名模式列表
+        skip_patterns = ['app_logger.py', '__init__.py']
+        
+        # 查找第一个不在跳过列表中的调用者
+        for frame_info in stack:
+            filename = frame_info.filename
+            basename = os.path.basename(filename)
+            
+            # 检查是否需要跳过该文件
+            should_skip = False
+            for pattern in skip_patterns:
+                if pattern in basename:
+                    should_skip = True
+                    break
+            
+            if not should_skip:
+                # 获取文件名（不含扩展名）
+                name, _ = os.path.splitext(basename)
+                return name
+    except (IndexError, AttributeError):
+        pass
+    return 'unknown'
+
+
+class ComponentSourceFilter(logging.Filter):
+    """
+    日志过滤器，自动添加组件来源信息到日志记录中
+    """
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        在日志记录中添加组件来源信息
+        
+        Args:
+            record: 日志记录对象
+            
+        Returns:
+            bool: 始终返回True，表示继续处理日志
+        """
+        # 获取调用者文件名
+        record.source_file = _get_caller_filename()
+        return True
+
+
+class ComponentSourceFormatter(logging.Formatter):
+    """
+    自定义日志格式化器，支持组件来源信息
+    """
+    
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        格式化日志记录，包含组件来源信息
+        
+        Args:
+            record: 日志记录对象
+            
+        Returns:
+            str: 格式化后的日志字符串
+        """
+        # 如果没有source_file属性，添加一个默认值
+        if not hasattr(record, 'source_file'):
+            record.source_file = 'unknown'
+        return super().format(record)
 
 
 # ==================== 异常类型分类 ====================
@@ -505,11 +746,14 @@ class AppLogger:
         # 创建日志文件路径
         self.log_file = self._create_log_file()
         
-        # 设置日志格式
-        self.formatter = logging.Formatter(
-            '[%(asctime)s] [%(levelname)s] %(message)s',
+        # 设置日志格式 - 包含组件来源信息
+        self.formatter = ComponentSourceFormatter(
+            '[%(asctime)s] [%(levelname)s] [%(source_file)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
+        
+        # 创建组件来源过滤器
+        self.component_filter = ComponentSourceFilter()
         
         # 添加文件处理器
         self._add_file_handler()
@@ -522,10 +766,20 @@ class AppLogger:
         
         AppLogger._initialized = True
         
+        # 输出初始化信息
+        self._log_startup_info()
+        
     def _get_log_dir(self):
         """获取日志目录路径"""
-        app_data_path = get_app_data_path()
-        return os.path.join(app_data_path, 'logs')
+        try:
+            if getattr(sys, 'frozen', False):
+                app_dir = os.path.dirname(sys.executable)
+                data_dir = os.path.join(app_dir, 'data')
+            else:
+                data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
+            return os.path.join(data_dir, 'logs')
+        except Exception:
+            return os.path.join(os.path.abspath('.'), 'data', 'logs')
     
     def _create_log_file(self):
         """创建日志文件路径，使用时间戳命名"""
@@ -542,6 +796,8 @@ class AppLogger:
             )
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(self.formatter)
+            # 添加组件来源过滤器
+            file_handler.addFilter(self.component_filter)
             self.logger.addHandler(file_handler)
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             # 如果文件日志创建失败，使用统一日志组件内部兜底方案
@@ -557,6 +813,8 @@ class AppLogger:
             console_handler = logging.StreamHandler(console_stream)
             console_handler.setLevel(logging.DEBUG)
             console_handler.setFormatter(self.formatter)
+            # 添加组件来源过滤器
+            console_handler.addFilter(self.component_filter)
             self.logger.addHandler(console_handler)
     
     def _cleanup_old_logs(self):
@@ -609,6 +867,43 @@ class AppLogger:
     def get_log_file_path(self):
         """获取当前日志文件路径"""
         return self.log_file
+    
+    def _log_startup_info(self):
+        """输出启动信息到日志"""
+        global _in_startup_log
+        try:
+            app_info = _get_app_info()
+            system_info = _get_system_info()
+            
+            # 标记为启动日志
+            _in_startup_log = True
+            
+            self.info("=" * 60)
+            self.info("FreeAssetFilter 启动")
+            self.info("=" * 60)
+            
+            self.info(f"应用版本: {app_info.get('version', '未知')}")
+            self.info(f"安装路径: {app_info.get('install_path', '未知')}")
+            self.info(f"日志文件: {self.log_file}")
+            
+            self.info("-" * 60)
+            self.info("系统信息:")
+            self.info(f"  操作系统: {system_info.get('os', '未知')}")
+            self.info(f"  CPU: {system_info.get('cpu', '未知')}")
+            self.info(f"  显卡: {system_info.get('gpu', '未知')}")
+            self.info(f"  内存: {system_info.get('memory', '未知')}")
+            self.info(f"  架构: {system_info.get('architecture', '未知')}")
+            self.info(f"  Python: {system_info.get('python_version', '未知')} ({system_info.get('python_implementation', '未知')})")
+            
+            self.info("=" * 60)
+        except Exception as e:
+            try:
+                self.warning(f"输出启动信息失败: {e}")
+            except Exception:
+                pass
+        finally:
+            # 恢复正常状态
+            _in_startup_log = False
 
 
 # 全局日志实例

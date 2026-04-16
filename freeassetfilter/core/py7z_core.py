@@ -112,7 +112,7 @@ class Py7zCore:
             try:
                 if os.path.exists(path):
                     self._7z_exe_path = path
-                    debug(f"找到 7z.exe: {path}")
+                    debug(f"7z.exe 路径: {path}")
                     return path
             except Exception:
                 continue
@@ -130,10 +130,10 @@ class Py7zCore:
                 path = result.stdout.strip().split('\n')[0].strip()
                 if os.path.exists(path):
                     self._7z_exe_path = path
-                    debug(f"通过 where 命令找到 7z.exe: {path}")
+                    debug(f"7z.exe 路径(where): {path}")
                     return path
-        except Exception as e:
-            debug(f"使用 where 命令查找 7z.exe 失败: {e}")
+        except Exception:
+            pass
 
         error("找不到 7z.exe，请确保 7-Zip 已安装或在项目 core/7z 目录中")
         raise FileNotFoundError("找不到 7z.exe，请确保 7-Zip 已安装")
@@ -155,11 +155,11 @@ class Py7zCore:
             for arg in args:
                 if contains_injection_chars(arg):
                     increment_perf_counter("py7z.run_command", "injection_blocked")
-                    error(f"检测到命令注入风险，拒绝执行: {arg}")
+                    error(f"命令注入风险: {arg}")
                     return -1, "", "检测到命令注入风险"
 
             cmd = [self._7z_exe_path] + args
-            debug(f"执行 7z 命令: {' '.join(cmd)}")
+            debug(f"7z 命令: {' '.join(cmd)}")
 
             # 使用指定的超时时间或实例默认值
             actual_timeout = timeout if timeout is not None else self._command_timeout
@@ -185,9 +185,8 @@ class Py7zCore:
                         else:  # utf-16be
                             stdout = result.stdout.decode('utf-16be', errors='replace')
                             stderr = result.stderr.decode('utf-16be', errors='replace')
-                    except Exception as decode_err:
+                    except Exception:
                         increment_perf_counter("py7z.run_command", "decode_fallback")
-                        debug(f"UTF-16 解码失败，尝试使用默认编码: {decode_err}")
                         stdout = result.stdout.decode('utf-8', errors='replace')
                         stderr = result.stderr.decode('utf-8', errors='replace')
 
@@ -213,11 +212,11 @@ class Py7zCore:
                     return result.returncode, result.stdout, result.stderr
             except subprocess.TimeoutExpired:
                 increment_perf_counter("py7z.run_command", "timeout")
-                error(f"7z 命令执行超时（{actual_timeout}秒）")
+                error(f"7z 命令超时({actual_timeout}s)")
                 return -1, "", f"命令执行超时（{actual_timeout}秒）"
             except Exception as e:
                 increment_perf_counter("py7z.run_command", "failure")
-                error(f"执行 7z 命令失败: {e}")
+                error(f"7z 命令失败: {e}")
                 return -1, "", str(e)
 
     def _detect_encoding_from_output(self, output: str, requested_encoding: str) -> str:
@@ -245,7 +244,7 @@ class Py7zCore:
 
         # 如果有替换字符，说明 UTF-8 解码失败，尝试 GBK
         if replacement_count > 0:
-            debug(f"检测到 {replacement_count} 个乱码字符，尝试使用 GBK 编码")
+            debug(f"乱码字符数: {replacement_count}, 切换 GBK")
             return "gbk"
 
         return "utf-8"
@@ -293,7 +292,7 @@ class Py7zCore:
             # 检查嵌套深度限制
             if nested_depth >= self.MAX_NESTED_DEPTH:
                 increment_perf_counter("py7z.list_archive", "depth_limited")
-                warning(f"嵌套压缩包深度超过限制 ({self.MAX_NESTED_DEPTH}层)，跳过: {archive_path}")
+                warning(f"嵌套深度超限({self.MAX_NESTED_DEPTH}层): {archive_path}")
                 return []
 
             args = ["l", "-slt", archive_path]
@@ -301,24 +300,24 @@ class Py7zCore:
 
             if returncode != 0:
                 increment_perf_counter("py7z.list_archive", "command_failure")
-                error(f"列出压缩包内容失败: {stderr}")
+                error(f"列出压缩包失败: {stderr}")
                 return []
 
             detected_encoding = self._detect_encoding_from_output(stdout, encoding)
             if detected_encoding != encoding:
                 increment_perf_counter("py7z.list_archive", "encoding_retry")
-                debug(f"检测到编码问题，重新使用 {detected_encoding} 编码")
+                debug(f"编码切换: {encoding} -> {detected_encoding}")
                 returncode, stdout, stderr = self._run_7z_command(args, detected_encoding)
                 if returncode != 0:
                     increment_perf_counter("py7z.list_archive", "command_failure")
-                    error(f"列出压缩包内容失败: {stderr}")
+                    error(f"列出压缩包失败: {stderr}")
                     return []
 
             files = self._parse_list_output(stdout, current_path, archive_path)
 
             if len(files) > self.MAX_ARCHIVE_FILES:
                 increment_perf_counter("py7z.list_archive", "result_truncated")
-                warning(f"压缩包内文件数量 ({len(files)}) 超过限制 ({self.MAX_ARCHIVE_FILES})，截断处理: {archive_path}")
+                warning(f"文件数超限({len(files)}/{self.MAX_ARCHIVE_FILES}): {archive_path}")
                 files = files[:self.MAX_ARCHIVE_FILES]
 
             increment_perf_counter("py7z.list_archive", "success")
@@ -354,7 +353,7 @@ class Py7zCore:
 
                 if len(files) >= self.MAX_ARCHIVE_FILES:
                     increment_perf_counter("py7z.parse_list_output", "max_files_reached")
-                    debug(f"已达到文件数量限制 ({self.MAX_ARCHIVE_FILES})，停止解析")
+                    debug(f"文件数达上限({self.MAX_ARCHIVE_FILES}),停止解析")
                     break
 
                 file_info = self._parse_file_block(block)
@@ -704,34 +703,31 @@ def get_archive_type(archive_path: str) -> str:
 if __name__ == "__main__":
     # 测试代码
     info("7z Core Module Test")
-    info("=" * 50)
 
     try:
         core = Py7zCore()
-        info(f"7z.exe 路径: {core._7z_exe_path}")
+        info(f"7z.exe: {core._7z_exe_path}")
 
-        # 测试列出当前目录下的压缩包
         test_dir = os.path.dirname(os.path.abspath(__file__))
-        info(f"\n测试目录: {test_dir}")
+        debug(f"测试目录: {test_dir}")
 
-        # 查找测试用的压缩包
         for filename in os.listdir(test_dir):
             if filename.endswith(('.zip', '.rar', '.7z', '.tar', '.gz')):
                 archive_path = os.path.join(test_dir, filename)
-                info(f"\n测试压缩包: {filename}")
-                info(f"类型: {core.get_archive_type(archive_path)}")
-                info(f"加密: {core.is_encrypted(archive_path)}")
+                info(f"测试: {filename}")
+                debug(f"类型: {core.get_archive_type(archive_path)}")
+                debug(f"加密: {core.is_encrypted(archive_path)}")
 
                 files = core.list_archive(archive_path)
-                info(f"文件数量: {len(files)}")
-                for f in files[:5]:  # 只显示前5个
+                info(f"文件数: {len(files)}")
+                for f in files[:5]:
                     type_str = "[DIR]" if f["is_dir"] else "[FILE]"
-                    info(f"  {type_str} {f['name']}")
+                    debug(f"  {type_str} {f['name']}")
                 if len(files) > 5:
-                    info(f"  ... 还有 {len(files) - 5} 个文件")
+                    debug(f"  ... 还有 {len(files) - 5} 个文件")
                 break
         else:
-            warning("未找到测试用的压缩包")
+            warning("未找到测试压缩包")
 
     except Exception as e:
-        exception_details("[Py7zCore] 测试代码执行失败", e)
+        exception_details("测试失败", e)

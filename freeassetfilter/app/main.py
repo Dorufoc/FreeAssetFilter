@@ -38,18 +38,16 @@ from freeassetfilter.utils.app_logger import (
 # 初始化日志系统
 logger = get_logger()
 
-# 尽早安装 stdout/stderr 双写捕获：
-# - 保留原控制台输出（如果存在）
-# - 将 print/sys.stdout.write/sys.stderr.write/traceback.print_exc 等同步写入日志文件
+# 尽早安装 stdout/stderr 双写捕获
 try:
     if install_console_capture(logger.get_log_file_path()):
-        info(f"已启用控制台输出捕获，标准输出/错误将同步写入日志: {logger.get_log_file_path()}")
+        debug("控制台输出捕获已启用")
     else:
-        warning("控制台输出捕获未能启用，部分直接控制台输出可能不会写入日志")
+        warning("控制台输出捕获未启用")
 except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-    warning(f"启用控制台输出捕获失败 - 文件操作错误: {e}")
+    warning(f"控制台捕获启用失败: {e}")
 except (ValueError, TypeError) as e:
-    warning(f"启用控制台输出捕获失败 - 数据转换错误: {e}")
+    warning(f"控制台捕获启用失败: {e}")
 
 
 def _get_available_stderr_stream():
@@ -155,50 +153,47 @@ if fault_stream is not None and log_file_path:
             fault_stream, log_file_path
         )
         faulthandler.enable(file=_fault_handler_output, all_threads=True)
-        info(f"faulthandler已启用，崩溃信息将同时输出到stderr和日志: {log_file_path}")
+        debug("faulthandler 已启用")
         _fault_handler_enabled = True
     except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        warning(f"启用faulthandler双写输出失败 - 文件操作错误: {e}")
+        warning(f"faulthandler 启用失败: {e}")
     except (ValueError, TypeError) as e:
-        warning(f"启用faulthandler双写输出失败 - 数据转换错误: {e}")
+        warning(f"faulthandler 启用失败: {e}")
 
 if not _fault_handler_enabled and fault_stream is not None:
     try:
         faulthandler.enable(file=fault_stream, all_threads=True)
-        info("faulthandler已启用，崩溃信息将输出到stderr")
+        debug("faulthandler 已启用 (stderr)")
         _fault_handler_enabled = True
     except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        warning(f"启用faulthandler到stderr失败 - 文件操作错误: {e}")
+        warning(f"faulthandler 启用失败: {e}")
     except (ValueError, TypeError) as e:
-        warning(f"启用faulthandler到stderr失败 - 数据转换错误: {e}")
+        warning(f"faulthandler 启用失败: {e}")
 
 if not _fault_handler_enabled and log_file_path:
     try:
         _fault_handler_file = open(log_file_path, "a", encoding="utf-8")
         faulthandler.enable(file=_fault_handler_file, all_threads=True)
-        info(f"faulthandler已启用，C++层崩溃信息将写入日志: {log_file_path}")
+        debug("faulthandler 已启用 (日志)")
         _fault_handler_enabled = True
     except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        warning(f"启用faulthandler到日志文件失败 - 文件操作错误: {e}")
+        warning(f"faulthandler 启用失败: {e}")
     except (ValueError, TypeError) as e:
-        warning(f"启用faulthandler到日志文件失败 - 数据转换错误: {e}")
+        warning(f"faulthandler 启用失败: {e}")
 
 if not _fault_handler_enabled:
-    warning("faulthandler未能启用，C++层崩溃信息可能无法被捕获")
+    warning("faulthandler 未启用")
 
 
 def debug_exit_threads():
     """
     在程序退出前打印当前仍然活跃的线程，便于排查退出卡住问题
-    - 输出线程基础信息
-    - 尝试输出线程类型
-    - 尝试输出当前 Python 栈，尤其用于定位 DummyThread 来源
     """
     try:
         current_frames = sys._current_frames()
     except Exception as e:
         current_frames = {}
-        warning(f"获取当前线程栈帧失败: {e}")
+        debug(f"获取线程栈帧失败: {e}")
 
     try:
         for thread in threading.enumerate():
@@ -206,27 +201,17 @@ def debug_exit_threads():
                 thread_type = f"{thread.__class__.__module__}.{thread.__class__.__name__}"
                 is_dummy_thread = isinstance(thread, threading._DummyThread)
                 extra_hint = " [外部/native线程代理]" if is_dummy_thread else ""
-                info(
-                    f"活跃线程: {thread.name}, "
-                    f"线程类型: {thread_type}, "
-                    f"是否守护线程: {thread.daemon}, "
-                    f"线程标识: {thread.ident}, "
-                    f"是否存活: {thread.is_alive()}"
-                    f"{extra_hint}"
-                )
+                debug(f"活跃线程: {thread.name}, 类型: {thread_type}, 守护: {thread.daemon}{extra_hint}")
 
                 frame = current_frames.get(thread.ident)
-                if frame is None:
-                    info(f"线程 {thread.name} 无可用 Python 栈信息")
-                    continue
-
-                stack_text = "".join(traceback.format_stack(frame)).rstrip()
-                if stack_text:
-                    info(f"线程 {thread.name} 当前调用栈:\n{stack_text}")
+                if frame:
+                    stack_text = "".join(traceback.format_stack(frame)).rstrip()
+                    if stack_text:
+                        debug(f"线程 {thread.name} 调用栈:\n{stack_text}")
             except Exception as e:
-                warning(f"打印线程信息失败: {e}")
+                debug(f"打印线程信息失败: {e}")
     except Exception as e:
-        warning(f"枚举活跃线程失败: {e}")
+        debug(f"枚举活跃线程失败: {e}")
 
 
 def cleanup_fault_handler_tee():
@@ -257,7 +242,7 @@ def cleanup_fault_handler_tee():
                 pass
             _fault_handler_file = None
     except Exception as e:
-        warning(f"清理 faulthandler 双写线程失败: {e}")
+        debug(f"清理 faulthandler 双写线程失败: {e}")
 
 
 # 定义异常处理函数
@@ -304,8 +289,8 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyT
 
 try:
     import pillow_avif
-except ImportError as e:
-    logger.debug(f"pillow_avif 模块未安装: {e}")
+except ImportError:
+    pass
 
 from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
 from freeassetfilter.core.update_manager import get_app_version
@@ -329,36 +314,34 @@ class StartupWarmupThread(QThread):
         try:
             from freeassetfilter.core.media_probe import warmup_ffmpeg_tools
 
-            info("[预热] 开始后台预热 FFmpeg / ffprobe 模块...")
-            ffmpeg_warmup_result = warmup_ffmpeg_tools()
-            debug(f"[预热] FFmpeg 预热结果: {ffmpeg_warmup_result}")
-            info("[预热] FFmpeg / ffprobe 后台预热完成")
+            debug("FFmpeg 模块预热开始")
+            warmup_ffmpeg_tools()
+            debug("FFmpeg 模块预热完成")
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            error(f"[预热] FFmpeg / ffprobe 后台预热失败 - 文件操作错误: {e}")
+            error(f"FFmpeg 预热失败: {e}")
         except (ValueError, TypeError) as e:
-            error(f"[预热] FFmpeg / ffprobe 后台预热失败 - 数据转换错误: {e}")
+            error(f"FFmpeg 预热失败: {e}")
         except (ImportError, ModuleNotFoundError) as e:
-            error(f"[预热] FFmpeg / ffprobe 后台预热失败 - 模块导入错误: {e}")
+            error(f"FFmpeg 预热失败: {e}")
         except Exception as e:
-            error(f"[预热] FFmpeg / ffprobe 后台预热失败 - 未知错误: {e}")
+            error(f"FFmpeg 预热失败: {e}")
 
         try:
             from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
-            info("[预热] 开始后台预热 LUT 预览 C++ 模块...")
+            debug("LUT C++ 模块预热开始")
             lut_cpp_warmup()
 
             from freeassetfilter.core.lut_preview_generator import get_preview_generator
-            info("[预热] 开始后台预加载 LUT 生成器...")
             get_preview_generator()
-            info("[预热] LUT 预览后台预热完成")
+            debug("LUT 模块预热完成")
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            error(f"[预热] LUT 预览后台预热失败 - 文件操作错误: {e}")
+            error(f"LUT 预热失败: {e}")
         except (ValueError, TypeError) as e:
-            error(f"[预热] LUT 预览后台预热失败 - 数据转换错误: {e}")
+            error(f"LUT 预热失败: {e}")
         except (ImportError, ModuleNotFoundError) as e:
-            error(f"[预热] LUT 预览后台预热失败 - 模块导入错误: {e}")
+            error(f"LUT 预热失败: {e}")
         except Exception as e:
-            error(f"[预热] LUT 预览后台预热失败 - 未知错误: {e}")
+            error(f"LUT 预热失败: {e}")
 
 
 class FreeAssetFilterApp(QMainWindow):
@@ -570,8 +553,12 @@ class FreeAssetFilterApp(QMainWindow):
         try:
             from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
             GlobalMouseMonitor.stop_all()
-        except (ImportError, RuntimeError, AttributeError) as e:
-            logger.debug(f"停止全局鼠标监控器失败: {e}")
+        except ImportError:
+            pass  # 模块不存在，忽略
+        except (RuntimeError, AttributeError) as e:
+            logger.debug(f"停止全局鼠标监控器失败（正常情况）: {e}")
+        except OSError as e:
+            logger.error(f"停止全局鼠标监控器时系统错误: {e}")
 
         cleanup_fault_handler_tee()
         debug_exit_threads()
@@ -1714,26 +1701,13 @@ class FreeAssetFilterApp(QMainWindow):
             file_info (dict): 文件信息
             is_selected (bool): 是否被选中
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [handle_file_selection_changed] {msg}")
-
         file_path = os.path.normpath(file_info['path'])
-        debug(f"文件选择状态变化: 路径={file_path}, 选中={is_selected}")
 
         if is_selected:
             existing_paths = [os.path.normpath(item['path']) for item in self.file_staging_pool.items]
-            debug(f"储存池现有路径: {existing_paths}")
             if file_path not in existing_paths:
-                debug(f"文件不在储存池中，准备添加")
                 self.file_staging_pool.add_file(file_info)
-            else:
-                debug(f"文件已在储存池中，跳过添加")
         else:
-            debug(f"取消选中，准备从储存池移除")
             self.file_staging_pool.remove_file(file_path)
 
     def handle_remove_from_selector(self, file_info):
@@ -1743,32 +1717,18 @@ class FreeAssetFilterApp(QMainWindow):
         Args:
             file_info (dict): 文件信息
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [handle_remove_from_selector] {msg}")
-
         file_path = os.path.normpath(file_info['path'])
         file_dir = os.path.normpath(os.path.dirname(file_path))
-        debug(f"从选择器移除文件: 路径={file_path}, 目录={file_dir}")
-        debug(f"移除前的selected_files: {self.file_selector_a.selected_files}")
 
         if file_dir in self.file_selector_a.selected_files:
             self.file_selector_a.selected_files[file_dir].discard(file_path)
-            debug(f"从集合中移除文件，剩余文件: {self.file_selector_a.selected_files[file_dir]}")
 
             if not self.file_selector_a.selected_files[file_dir]:
                 del self.file_selector_a.selected_files[file_dir]
-                debug(f"目录集合为空，删除目录条目")
 
         if hasattr(self.file_selector_a, '_selected_file_paths'):
             self.file_selector_a._selected_file_paths.discard(file_path)
-            debug(f"移除后的扁平选中集合: {self.file_selector_a._selected_file_paths}")
 
-        debug(f"移除后的selected_files: {self.file_selector_a.selected_files}")
-        debug(f"调用_update_file_selection_state")
         self.file_selector_a._update_file_selection_state()
 
     def handle_navigate_to_path(self, path, file_info=None):
@@ -1831,7 +1791,6 @@ class FreeAssetFilterApp(QMainWindow):
             file_info (dict): 文件信息
         """
         file_path = file_info.get('path', '')
-        debug(f"[Main] handle_preview_started called with path: {file_path}")
         if not file_path:
             return
 
@@ -1841,7 +1800,6 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 更新文件存储池中的卡片预览态
         if hasattr(self, 'file_staging_pool') and self.file_staging_pool:
-            debug(f"[Main] Calling file_staging_pool.set_previewing_file: {file_path}")
             self.file_staging_pool.set_previewing_file(file_path)
 
     def handle_preview_cleared(self):
@@ -2059,18 +2017,18 @@ def _run_installer_after_parent_exit(installer_path, expected_sha256, parent_pid
     from freeassetfilter.core.update_manager import verify_installer_file
 
     if not installer_path or not expected_sha256:
-        error("[安装 helper] 缺少安装包路径或 SHA256")
+        error("安装 helper: 缺少安装包路径或 SHA256")
         return 1
 
     installer_path = os.path.abspath(installer_path)
     if not os.path.exists(installer_path):
-        error(f"[安装 helper] 安装包不存在: {installer_path}")
+        error(f"安装 helper: 安装包不存在: {installer_path}")
         return 1
 
     _wait_for_process_exit(parent_pid, timeout_seconds=30)
 
     if not verify_installer_file(installer_path, expected_sha256):
-        error(f"[安装 helper] 安装包校验失败: {installer_path}")
+        error(f"安装 helper: 安装包校验失败: {installer_path}")
         return 1
 
     try:
@@ -2082,19 +2040,19 @@ def _run_installer_after_parent_exit(installer_path, expected_sha256, parent_pid
                 close_fds=True,
                 creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             )
-        info(f"[安装 helper] 已启动安装包: {installer_path}")
+        debug(f"安装 helper: 已启动安装包: {installer_path}")
         return 0
-    except Exception as first_error:
+    except Exception:
         try:
             subprocess.Popen(
                 [installer_path],
                 close_fds=True,
                 creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             )
-            info(f"[安装 helper] 已通过回退方式启动安装包: {installer_path}")
+            debug(f"安装 helper: 已启动安装包 (回退): {installer_path}")
             return 0
-        except Exception as second_error:
-            error(f"[安装 helper] 启动安装包失败: {first_error}; 回退失败: {second_error}")
+        except Exception:
+            error(f"安装 helper: 启动安装包失败: {installer_path}")
             return 1
 
 
@@ -2478,11 +2436,9 @@ def main():
     """
     主程序入口函数
     """
-    info("=== FreeAssetFilter 主程序 ===")
+    info("程序启动")
 
-    # 内部缩略图子进程模式：
-    # - 必须在单实例检测之前分流
-    # - 避免打包态通过 sys.executable 再次拉起主程序时触发“多实例运行”弹窗
+    # 内部缩略图子进程模式
     worker_type, worker_payload = _parse_internal_worker_args(sys.argv)
     if worker_type == "thumbnail":
         try:
@@ -2500,7 +2456,7 @@ def main():
             )
             sys.exit(exit_code)
         except Exception as e:
-            error(f"[内部缩略图子进程] 执行失败: {e}")
+            error(f"缩略图子进程执行失败: {e}")
             sys.exit(1)
 
     if worker_type == "run-installer":
@@ -2512,36 +2468,31 @@ def main():
             )
             sys.exit(exit_code)
         except Exception as e:
-            error(f"[内部安装 helper] 执行失败: {e}")
+            error(f"安装程序执行失败: {e}")
             sys.exit(1)
 
-    # 单实例检测 - 使用Windows互斥锁确保只有一个程序实例运行
-    # 防止多个实例同时运行导致JSON文件存取异常
+    # 单实例检测
     _mutex_handle = None
     if sys.platform == 'win32':
         import ctypes
         from ctypes import wintypes
 
-        # 创建命名互斥锁
         mutex_name = "FreeAssetFilter_SingleInstance_Mutex"
         kernel32 = ctypes.windll.kernel32
 
-        # CreateMutexW 参数类型设置
         kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
         kernel32.CreateMutexW.restype = wintypes.HANDLE
 
-        # 尝试创建互斥锁
         _mutex_handle = kernel32.CreateMutexW(None, False, mutex_name)
 
         if _mutex_handle:
-            # 检查错误码，ERROR_ALREADY_EXISTS = 183
             error_code = kernel32.GetLastError()
             if error_code == 183:  # ERROR_ALREADY_EXISTS
-                warning("程序已经在运行中，禁止启动多个实例")
+                warning("程序已在运行中")
                 try:
                     _show_already_running_dialog_and_handle_restart(_mutex_handle)
                 except Exception as e:
-                    warning(f"显示多实例提示弹窗失败: {e}")
+                    warning(f"多实例提示失败: {e}")
                 finally:
                     if _mutex_handle:
                         try:
@@ -2550,18 +2501,17 @@ def main():
                             pass
                 sys.exit(0)
             else:
-                info("单实例检测通过，程序启动")
+                debug("单实例检测通过")
 
     try:
         _write_runtime_instance_info()
     except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
         warning(f"写入运行实例信息失败: {e}")
 
-    # 获取通过文件关联传递进来的文件路径（Inno Setup通过命令行参数传递）
-    # 忽略内部工作进程参数，避免将内部参数误识别为文件路径
+    # 获取通过文件关联传递的文件路径
     associated_file_path = _extract_associated_file_path(sys.argv)
     if associated_file_path:
-        info(f"[文件关联] 接收到关联文件: {associated_file_path}")
+        debug(f"接收到关联文件: {associated_file_path}")
 
     # 修改sys.argv[0]以确保Windows任务栏显示正确图标
     sys.argv[0] = os.path.abspath(__file__)
@@ -2586,18 +2536,14 @@ def main():
                 SetProcessDpiAwareness.argtypes = [ctypes.c_int]
                 PROCESS_PER_MONITOR_DPI_AWARE = 2
                 SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
-                logger.debug("设置为每显示器DPI感知模式")
-            else:
-                logger.debug("设置为每显示器DPI感知v2模式")
-        except (AttributeError, OSError) as e:
+        except (AttributeError, OSError):
             try:
                 user32 = ctypes.windll.user32
                 SetProcessDPIAware = user32.SetProcessDPIAware
                 SetProcessDPIAware.restype = ctypes.c_bool
                 SetProcessDPIAware()
-                logger.debug("设置为系统DPI感知模式")
-            except (AttributeError, OSError) as e2:
-                logger.debug(f"设置DPI感知失败: {e2}")
+            except (AttributeError, OSError):
+                pass
 
     app = QApplication(sys.argv)
 
@@ -2771,26 +2717,26 @@ def main():
 
         except (OSError, PermissionError, json.JSONDecodeError, TypeError) as e:
             settings_manager.set_setting("app.last_exit_time", exit_time)
-            logger.warning(f"保存退出时间失败: {e}")
+            debug(f"保存退出时间失败: {e}")
 
         try:
             _remove_runtime_instance_info(expected_pid=os.getpid())
         except Exception as e:
-            logger.warning(f"清理运行实例信息失败: {e}")
+            debug(f"清理运行实例信息失败: {e}")
 
         if sys.platform == 'win32' and _mutex_handle:
             try:
                 import ctypes
                 ctypes.windll.kernel32.CloseHandle(_mutex_handle)
-            except Exception as e:
-                logger.debug(f"关闭单实例互斥锁句柄失败: {e}")
+            except Exception:
+                pass
 
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
 
     exit_code = app.exec()
 
-    # 安全退出机制：如果正常退出后仍有非守护线程阻塞，超时后强制退出
+    # 安全退出机制
     import threading
     non_daemon_alive = [
         t for t in threading.enumerate()
@@ -2798,7 +2744,7 @@ def main():
     ]
     if non_daemon_alive:
         thread_names = ", ".join(t.name for t in non_daemon_alive)
-        info(f"检测到非守护线程仍存活: {thread_names}，等待最多3秒后强制退出")
+        debug(f"非守护线程存活: {thread_names}")
         for t in non_daemon_alive:
             t.join(timeout=3.0)
 

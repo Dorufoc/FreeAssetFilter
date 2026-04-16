@@ -79,41 +79,36 @@ class DetachedVideoWindow(QWidget):
             parent: 父窗口
         """
         super().__init__(parent)
-        
+
         self._video_player = None
-        
+
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(app, 'global_font', QFont())
-        
-        # 设置无边框窗口
+
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
-        
-        # 设置焦点策略，确保窗口可以接收键盘事件
         self.setFocusPolicy(Qt.StrongFocus)
-        
+
         self._init_ui()
         self.setWindowTitle("视频播放器 - FreeAssetFilter")
-        self.showFullScreen()  # 显示为全屏窗口
+        self.showFullScreen()
 
         self._cursor_hidden = False
 
-        # 窗口显示后主动获取焦点
         self.activateWindow()
         self.setFocus()
     
     def showEvent(self, event):
         """窗口显示事件"""
         super().showEvent(event)
-        # 窗口显示时获取焦点
         self._force_focus()
+        debug("独立窗口显示")
     
     def _force_focus(self):
         """强制获取焦点"""
         self.raise_()
         self.activateWindow()
         self.setFocus()
-        # 使用定时器延迟再次获取焦点，确保在窗口完全显示后焦点仍然在此
         QTimer.singleShot(100, self._delayed_focus)
     
     def _delayed_focus(self):
@@ -122,9 +117,11 @@ class DetachedVideoWindow(QWidget):
             self.raise_()
             self.activateWindow()
             self.setFocus()
+            debug("独立窗口焦点已确认")
     
     def _init_ui(self):
         """初始化UI"""
+        debug("DetachedVideoWindow UI初始化")
         self._main_layout = QVBoxLayout(self)
         self._main_layout.setContentsMargins(0, 0, 0, 0)
         self._main_layout.setSpacing(0)
@@ -192,6 +189,7 @@ class DetachedVideoWindow(QWidget):
         self._video_player = video_player
         if self._main_layout:
             self._main_layout.addWidget(video_player)
+            debug("视频播放器已设置到独立窗口")
     
     def focusInEvent(self, event):
         """窗口获得焦点事件"""
@@ -355,6 +353,7 @@ class DetachedVideoWindow(QWidget):
 
     def closeEvent(self, event):
         """窗口关闭事件"""
+        debug("独立窗口关闭")
         self._hide_osd()
         self.closed.emit()
         super().closeEvent(event)
@@ -601,13 +600,13 @@ class VideoPlayer(QWidget):
             if not self._cursor_activity_monitor.is_monitoring():
                 self._cursor_activity_monitor.start()
             self._cursor_activity_monitor.reset_timer()
-            debug(f"[VideoPlayer] 鼠标指针自动隐藏监控已启动，超时: {self._cursor_activity_monitor.timeout}ms")
+            debug(f"鼠标指针自动隐藏监控已启动，超时: {self._cursor_activity_monitor.timeout}ms")
 
     def _stop_cursor_auto_hide_monitor(self):
         """停止分离窗口鼠标指针自动隐藏监控"""
         if self._cursor_activity_monitor and self._cursor_activity_monitor.is_monitoring():
             self._cursor_activity_monitor.stop()
-            debug(f"[VideoPlayer] 鼠标指针自动隐藏监控已停止")
+            debug("鼠标指针自动隐藏监控已停止")
 
         if self._detached_window:
             self._detached_window.show_cursor()
@@ -640,14 +639,14 @@ class VideoPlayer(QWidget):
             return
 
         self._detached_window.hide_cursor()
-        debug(f"[VideoPlayer] 鼠标指针超时自动隐藏")
+        debug("鼠标指针超时自动隐藏")
 
     def _switch_to_floating_mode(self):
         """切换到浮动控制栏模式"""
         if self._is_floating_mode:
             return
         
-        debug(f"[VideoPlayer] 切换到浮动控制栏模式")
+        debug("切换到浮动控制栏模式")
         self._is_floating_mode = True
         
         # 从原布局中移除控制栏
@@ -696,7 +695,7 @@ class VideoPlayer(QWidget):
             screen_geometry = screen.geometry()
             # 设置目标矩形为整个屏幕（控制栏会显示在底部）
             self._floating_control_bar.set_target_rect(screen_geometry)
-            debug(f"[VideoPlayer] 使用屏幕尺寸设置控制栏位置: {screen_geometry.width()}x{screen_geometry.height()}")
+            debug(f"使用屏幕尺寸设置控制栏位置: {screen_geometry.width()}x{screen_geometry.height()}")
         elif hasattr(self, '_video_surface'):
             # 备用方案：使用视频渲染区域
             self._floating_control_bar.set_target_widget(self._video_surface)
@@ -714,7 +713,7 @@ class VideoPlayer(QWidget):
         if not self._is_floating_mode:
             return
         
-        debug(f"[VideoPlayer] 切换到固定控制栏模式")
+        debug("切换到固定控制栏模式")
         self._is_floating_mode = False
         
         # 隐藏浮动控制栏
@@ -785,16 +784,13 @@ class VideoPlayer(QWidget):
         销毁MPV管理器引用
         注意：由于是单例模式，这里只是断开信号并注销组件，不会真正销毁管理器
         """
-        debug(f"[VideoPlayer] 开始清理MPV管理器...")
         if self._mpv_manager:
-            # 断开所有信号连接
             self._disconnect_manager_signals()
-            # 注销组件
             self._mpv_manager.unregister_component(self._component_id)
             self._mpv_manager = None
-            debug(f"[VideoPlayer] MPV管理器引用已清理")
+            debug("MPV管理器引用已清理")
         else:
-            debug(f"[VideoPlayer] MPV管理器不存在，无需清理")
+            debug("MPV管理器不存在，无需清理")
 
     def _connect_signals(self):
         """连接信号和槽"""
@@ -830,35 +826,35 @@ class VideoPlayer(QWidget):
             try:
                 self._mpv_manager.stateChanged.disconnect(self._on_manager_state_changed)
             except (RuntimeError, TypeError) as e:
-                debug(f"[VideoPlayer] 断开 stateChanged 信号时出错: {e}")
+                debug(f"断开 stateChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.positionChanged.disconnect(self._on_manager_position_changed)
             except (RuntimeError, TypeError) as e:
-                debug(f"[VideoPlayer] 断开 positionChanged 信号时出错: {e}")
+                debug(f"断开 positionChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.volumeChanged.disconnect(self._on_manager_volume_changed)
             except (RuntimeError, TypeError) as e:
-                debug(f"[VideoPlayer] 断开 volumeChanged 信号时出错: {e}")
+                debug(f"断开 volumeChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.mutedChanged.disconnect(self._on_manager_muted_changed)
             except (RuntimeError, TypeError) as e:
-                debug(f"[VideoPlayer] 断开 mutedChanged 信号时出错: {e}")
+                debug(f"断开 mutedChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.speedChanged.disconnect(self._on_manager_speed_changed)
             except (RuntimeError, TypeError) as e:
-                debug(f"[VideoPlayer] 断开 speedChanged 信号时出错: {e}")
+                debug(f"断开 speedChanged 信号时出错: {e}")
             try:
                 self._mpv_manager.fileLoaded.disconnect(self._on_manager_file_loaded)
             except (RuntimeError, TypeError) as e:
-                debug(f"[VideoPlayer] 断开 fileLoaded 信号时出错: {e}")
+                debug(f"断开 fileLoaded 信号时出错: {e}")
             try:
                 self._mpv_manager.fileEnded.disconnect(self._on_manager_file_ended)
             except (RuntimeError, TypeError) as e:
-                debug(f"[VideoPlayer] 断开 fileEnded 信号时出错: {e}")
+                debug(f"断开 fileEnded 信号时出错: {e}")
             try:
                 self._mpv_manager.errorOccurred.disconnect(self._on_manager_error)
             except (RuntimeError, TypeError) as e:
-                debug(f"[VideoPlayer] 断开 errorOccurred 信号时出错: {e}")
+                debug(f"断开 errorOccurred 信号时出错: {e}")
     
     def _apply_player_settings(self):
         """
@@ -899,7 +895,7 @@ class VideoPlayer(QWidget):
         
         # 获取窗口ID
         win_id = int(self._video_surface.winId())
-        debug(f"[VideoPlayer] 视频渲染窗口ID: {win_id}")
+        debug(f"视频渲染窗口ID: {win_id}")
         
         if self._mpv_manager.set_window_id(win_id, component_id=self._component_id):
             self._is_mpv_embedded = True
@@ -917,7 +913,7 @@ class VideoPlayer(QWidget):
         if not self._mpv_manager:
             return
         
-        debug(f"[VideoPlayer] 重新连接MPV窗口")
+        debug("重新连接MPV窗口")
         
         # 确保视频渲染区域有正确的窗口属性
         self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
@@ -929,11 +925,11 @@ class VideoPlayer(QWidget):
         
         # 重新获取窗口ID
         win_id = int(self._video_surface.winId())
-        debug(f"[VideoPlayer] 新视频渲染窗口ID: {win_id}")
+        debug(f"新视频渲染窗口ID: {win_id}")
         
         # 重新设置窗口ID
         if self._mpv_manager.set_window_id(win_id, component_id=self._component_id):
-            debug(f"[VideoPlayer] MPV窗口重新连接成功")
+            debug("MPV窗口重新连接成功")
             # 同步几何尺寸
             self._sync_mpv_geometry()
     
@@ -996,7 +992,7 @@ class VideoPlayer(QWidget):
         Args:
             state: 新的MPV状态
         """
-        debug(f"[VideoPlayer] MPV状态变化: playing={state.is_playing}, paused={state.is_paused}")
+        debug(f"MPV状态变化: playing={state.is_playing}, paused={state.is_paused}")
 
         is_actually_playing = self._get_authoritative_playing_state()
 
@@ -1152,7 +1148,7 @@ class VideoPlayer(QWidget):
 
         except Exception as e:
             # 同步失败时不影响播放，仅记录日志
-            warning(f"[VideoPlayer] 同步进度时出错: {e}")
+            warning(f"同步进度时出错: {e}")
 
     def _flush_pending_seek(self):
         """提交最后一次待处理的 seek，避免拖动进度条时高频请求堆积"""
@@ -1197,11 +1193,11 @@ class VideoPlayer(QWidget):
 
             if duration is not None and duration > 0:
                 self._control_bar.set_position(position or 0, duration)
-                debug(f"[VideoPlayer] 初始化进度显示: position={position}, duration={duration}")
+                debug(f"初始化进度显示: position={position}, duration={duration}")
             else:
                 QTimer.singleShot(200, self._initialize_progress_display)
         except Exception as e:
-            warning(f"[VideoPlayer] 初始化进度显示失败: {e}")
+            warning(f"初始化进度显示失败: {e}")
 
     def _get_empty_subtitle_state(self) -> Dict[str, Any]:
         """获取默认的空字幕状态"""
@@ -1413,7 +1409,7 @@ class VideoPlayer(QWidget):
             candidates.sort()
             return candidates[0]
         except Exception as e:
-            warning(f"[VideoPlayer] 自动匹配外挂字幕失败: {e}")
+            warning(f"自动匹配外挂字幕失败: {e}")
             return None
 
     def _load_subtitle_path(self, subtitle_path: str, show_osd: bool = True, emit_error: bool = True) -> bool:
@@ -1427,13 +1423,13 @@ class VideoPlayer(QWidget):
         )
 
         if success:
-            info(f"[VideoPlayer] 外部字幕加载成功: {subtitle_path}")
+            info(f"外部字幕加载成功: {subtitle_path}")
             self._refresh_subtitle_state()
             QTimer.singleShot(100, self._refresh_subtitle_state)
             if show_osd and self._detached_window:
                 self._detached_window.show_osd("字幕已加载")
         else:
-            error(f"[VideoPlayer] 外部字幕加载失败: {subtitle_path}")
+            error(f"外部字幕加载失败: {subtitle_path}")
             if emit_error:
                 self.errorOccurred.emit("字幕加载失败")
 
@@ -1461,7 +1457,7 @@ class VideoPlayer(QWidget):
             emit_error=False
         )
         if success:
-            info(f"[VideoPlayer] 已自动加载同名外挂字幕: {matched_subtitle}")
+            info(f"已自动加载同名外挂字幕: {matched_subtitle}")
 
     def _open_external_subtitle_picker(self) -> bool:
         """打开外部字幕文件选择器并加载字幕"""
@@ -1522,14 +1518,14 @@ class VideoPlayer(QWidget):
             ) if self._mpv_manager else False
 
             if success:
-                info(f"[VideoPlayer] 切换字幕轨成功: {track_id}")
+                info(f"切换字幕轨成功: {track_id}")
                 self._refresh_subtitle_state()
                 QTimer.singleShot(100, self._refresh_subtitle_state)
                 if self._detached_window:
                     self._detached_window.show_osd("字幕已切换")
                 dialog.close()
             else:
-                error(f"[VideoPlayer] 切换字幕轨失败: {track_id}")
+                error(f"切换字幕轨失败: {track_id}")
                 self.errorOccurred.emit("切换字幕失败")
 
         def on_dialog_button_clicked(button_index: int):
@@ -1596,14 +1592,14 @@ class VideoPlayer(QWidget):
             ) if self._mpv_manager else False
 
             if success:
-                info(f"[VideoPlayer] 切换音轨成功: {track_id}")
+                info(f"切换音轨成功: {track_id}")
                 self._refresh_audio_state()
                 QTimer.singleShot(100, self._refresh_audio_state)
                 if self._detached_window:
                     self._detached_window.show_osd("音轨已切换")
                 dialog.close()
             else:
-                error(f"[VideoPlayer] 切换音轨失败: {track_id}")
+                error(f"切换音轨失败: {track_id}")
                 self.errorOccurred.emit("切换音轨失败")
 
         def on_dialog_button_clicked(button_index: int):
@@ -1649,7 +1645,7 @@ class VideoPlayer(QWidget):
         Args:
             file_path: 加载的文件路径
         """
-        info(f"[VideoPlayer] 文件加载完成: {file_path}")
+        info(f"文件加载完成: {file_path}")
 
         if not self._sync_timer.isActive():
             self._sync_timer.start()
@@ -1686,7 +1682,7 @@ class VideoPlayer(QWidget):
         Args:
             reason: 结束原因代码
         """
-        info(f"[VideoPlayer] 文件播放结束，原因: {reason}")
+        info(f"文件播放结束，原因: {reason}")
         self._control_bar.set_playing(False)
         # 停止进度同步定时器
         if self._sync_timer.isActive():
@@ -1700,7 +1696,7 @@ class VideoPlayer(QWidget):
             error_code: 错误代码
             error_message: 错误信息
         """
-        error(f"[VideoPlayer] MPV错误 [{error_code}]: {error_message}")
+        error(f"MPV错误 [{error_code}]: {error_message}")
         self.errorOccurred.emit(f"播放器错误: {error_message}")
 
     def _on_speed_changed(self, speed: float):
@@ -1723,11 +1719,11 @@ class VideoPlayer(QWidget):
         Args:
             lut_path: 选中的LUT文件路径
         """
-        debug(f"[VideoPlayer] 收到LUT选择信号: {lut_path}")
+        debug(f"收到LUT选择信号: {lut_path}")
         if self._mpv_manager:
-            debug(f"[VideoPlayer] MPV管理器存在，调用load_lut")
+            debug("MPV管理器存在，调用load_lut")
             success = self._mpv_manager.load_lut(lut_path, component_id=self._component_id)
-            debug(f"[VideoPlayer] load_lut结果: {success}")
+            debug(f"load_lut结果: {success}")
             if success:
                 self._control_bar.set_lut_loaded(True)
             else:
@@ -1758,13 +1754,13 @@ class VideoPlayer(QWidget):
         if is_subtitle_loaded:
             success = self._mpv_manager.hide_subtitle(component_id=self._component_id)
             if success:
-                info("[VideoPlayer] 当前字幕已隐藏")
+                info("当前字幕已隐藏")
                 self._refresh_subtitle_state()
                 QTimer.singleShot(100, self._refresh_subtitle_state)
                 if self._detached_window:
                     self._detached_window.show_osd("字幕已隐藏")
             else:
-                error("[VideoPlayer] 隐藏字幕失败")
+                error("隐藏字幕失败")
                 self.errorOccurred.emit("隐藏字幕失败")
             return
 
@@ -1909,14 +1905,14 @@ class VideoPlayer(QWidget):
         浮动控制栏显示时的处理
         鼠标指针显隐由独立计时器控制，此处仅保留日志
         """
-        debug(f"[VideoPlayer] 控制栏显示")
+        debug("控制栏显示")
 
     def _on_control_bar_hidden(self):
         """
         浮动控制栏隐藏时的处理
         鼠标指针显隐由独立计时器控制，此处仅保留日志
         """
-        debug(f"[VideoPlayer] 控制栏隐藏")
+        debug("控制栏隐藏")
 
     def _save_playback_state(self):
         """
@@ -1986,7 +1982,7 @@ class VideoPlayer(QWidget):
         """
         将视频播放器分离到独立窗口
         """
-        debug(f"[VideoPlayer] 开始分离窗口")
+        debug("开始分离窗口")
 
         # 保存原始父窗口和布局
         self._original_parent = self.parent()
@@ -2037,9 +2033,8 @@ class VideoPlayer(QWidget):
         # 分离窗口模式下独立控制鼠标指针显隐，不再依赖控制栏显示状态
         self._start_cursor_auto_hide_monitor()
 
-        # 下一轮事件循环中完成几何同步和MPV重连，避免长时间等待导致控制栏晚切换
         def finalize_detach():
-            debug(f"[VideoPlayer] 完成分离窗口初始化")
+            debug("完成分离窗口初始化")
             if not self._detached_window:
                 return
 
@@ -2073,7 +2068,7 @@ class VideoPlayer(QWidget):
 
         QTimer.singleShot(0, finalize_detach)
 
-        debug(f"[VideoPlayer] 窗口分离完成")
+        debug("窗口分离完成")
     
     def _on_detached_window_focus_changed(self, has_focus: bool):
         """
@@ -2091,7 +2086,7 @@ class VideoPlayer(QWidget):
         """
         将视频播放器恢复到原父窗口
         """
-        debug(f"[VideoPlayer] 开始恢复窗口")
+        debug("开始恢复窗口")
 
         # 恢复前先停止分离窗口鼠标指针自动隐藏逻辑
         self._stop_cursor_auto_hide_monitor()
@@ -2106,7 +2101,7 @@ class VideoPlayer(QWidget):
                 self._detached_window.closed.disconnect(self._reattach_to_parent)
                 self._detached_window.focusChanged.disconnect(self._on_detached_window_focus_changed)
             except (RuntimeError, TypeError) as e:
-                warning(f"[VideoPlayer] 断开信号连接时出错: {e}")
+                warning(f"断开信号连接时出错: {e}")
             
             # 先将播放器从独立窗口中移除
             if self._detached_window.layout():
@@ -2126,13 +2121,13 @@ class VideoPlayer(QWidget):
         
         # 延迟执行，重新连接MPV窗口
         def delayed_reconnect():
-            debug(f"[VideoPlayer] 延迟重新连接MPV窗口")
+            debug("延迟重新连接MPV窗口")
             # 只重新连接MPV窗口到新的渲染区域
             self._reconnect_mpv_window()
         
         QTimer.singleShot(100, delayed_reconnect)
         
-        debug(f"[VideoPlayer] 窗口恢复完成")
+        debug("窗口恢复完成")
     
 
 
@@ -2335,7 +2330,7 @@ class VideoPlayer(QWidget):
             return None
 
         except Exception as e:
-            warning(f"[VideoPlayer] 提取音频封面失败: {e}")
+            warning(f"提取音频封面失败: {e}")
             return None
     
     def load_file(self, file_path: str, is_audio: bool = False) -> bool:
@@ -2703,7 +2698,7 @@ class VideoPlayer(QWidget):
             if success:
                 self._speed = speed
                 self._control_bar.set_speed(speed)
-                debug(f"[VideoPlayer] 设置播放倍速为 {speed}x")
+                debug(f"设置播放倍速为 {speed}x")
                 if self._detached_window:
                     self._detached_window.show_osd(f"{speed}x")
             return success
@@ -2780,7 +2775,7 @@ class VideoPlayer(QWidget):
         Args:
             async_mode: 是否异步关闭（默认True，不阻塞UI）
         """
-        debug(f"[VideoPlayer] ========== 开始清理资源 (async={async_mode}) ==========")
+        debug(f"开始清理资源 (async={async_mode})")
 
         self._close_subtitle_track_dialog()
         self._close_audio_track_dialog()
@@ -2790,49 +2785,40 @@ class VideoPlayer(QWidget):
             self._seek_debounce_timer.stop()
         self._pending_seek_value = None
 
-        # 停止进度同步定时器
-        debug(f"[VideoPlayer] 停止进度同步定时器...")
         if self._sync_timer.isActive():
             self._sync_timer.stop()
-            debug(f"[VideoPlayer] 进度同步定时器已停止")
+            debug("进度同步定时器已停止")
 
-        # 停止播放（预清理的一部分）
-        debug(f"[VideoPlayer] 停止播放...")
         if self._mpv_manager:
             try:
                 self._mpv_manager.stop(component_id=self._component_id)
-                debug(f"[VideoPlayer] 播放已停止")
+                debug("播放已停止")
             except Exception as e:
-                warning(f"[VideoPlayer] 停止播放时出错: {e}")
+                warning(f"停止播放时出错: {e}")
 
-        # 卸载音频背景（仅音频模式有）
-        debug(f"[VideoPlayer] 卸载音频背景...")
         if hasattr(self, '_audio_background') and self._audio_background is not None:
             try:
                 self._audio_background.unload()
-                debug(f"[VideoPlayer] 音频背景已卸载")
+                debug("音频背景已卸载")
             except Exception as e:
-                warning(f"[VideoPlayer] 卸载音频背景时出错: {e}")
+                warning(f"卸载音频背景时出错: {e}")
 
-        # 关闭MPV管理器（使用异步模式，不阻塞UI）
-        debug(f"[VideoPlayer] 关闭MPV管理器 (async={async_mode})...")
         if self._mpv_manager:
             try:
                 self._mpv_manager.close(async_mode=async_mode, timeout=2.0)
                 if async_mode:
-                    debug(f"[VideoPlayer] MPV管理器异步关闭已启动")
+                    debug("MPV管理器异步关闭已启动")
                 else:
-                    debug(f"[VideoPlayer] MPV管理器已关闭")
+                    debug("MPV管理器已关闭")
             except Exception as e:
-                warning(f"[VideoPlayer] 关闭MPV管理器时出错: {e}")
+                warning(f"关闭MPV管理器时出错: {e}")
             finally:
                 # 异步模式下不立即置空，让后台线程完成清理
                 if not async_mode:
                     self._mpv_manager = None
 
-        # 标记为未嵌入状态
         self._is_mpv_embedded = False
-        debug(f"[VideoPlayer] ========== 资源清理完成 ==========")
+        debug("资源清理完成")
     
     def wait_for_cleanup(self, timeout: float = 5.0) -> bool:
         """

@@ -249,21 +249,13 @@ class FolderScanner(QThread):
             video_files = []  # 存储所有需要处理的视频文件信息
             subfolder_set = set()  # 跟踪所有子文件夹名称
             main_folder_name = os.path.basename(self.path)
-        
-        # 增加详细日志
-            set_perf_metadata("timeline.folder_scanner.run", "last_scan_path", self.path)
-            debug(f"=== 开始扫描文件夹: {self.path} ===")
-            debug(f"文件夹存在: {os.path.exists(self.path)}")
-            debug(f"文件夹可访问: {os.access(self.path, os.R_OK)}")
 
-        # 1. 首先扫描所有视频文件，收集信息
+            set_perf_metadata("timeline.folder_scanner.run", "last_scan_path", self.path)
+            debug(f"开始扫描文件夹: {self.path}")
+
+            # 1. 首先扫描所有视频文件，收集信息
             try:
                 for root, dirs, files in os.walk(self.path):
-                    debug(f"\n  正在扫描目录: {root}")
-                    debug(f"  子目录数量: {len(dirs)}")
-                    debug(f"  文件数量: {len(files)}")
-                    debug(f"  文件列表: {files}")
-
                     # 确定当前子文件夹名称
                     if root == self.path:
                         subfolder_name = main_folder_name  # 直接在主文件夹下的视频
@@ -274,17 +266,11 @@ class FolderScanner(QThread):
                     subfolder_set.add(subfolder_name)
 
                     for file in files:
-                        debug(f"\n    检查文件: {file}")
-
                         # 检查文件扩展名（不区分大小写）
                         file_lower = file.lower()
                         if file_lower.endswith(('.mp4', '.avi', '.mov', '.wmv', '.mkv', '.flv', '.webm', '.mpg', '.mpeg', '.mxf')):
                             increment_perf_counter("timeline.folder_scanner.run", "video_candidates")
-                            debug(f"    匹配视频文件: {file}")
                             file_path = os.path.join(root, file)
-                            debug(f"    文件路径: {file_path}")
-                            debug(f"    文件存在: {os.path.exists(file_path)}")
-                            debug(f"    文件可访问: {os.access(file_path, os.R_OK)}")
 
                             try:
                                 stat = os.stat(file_path)
@@ -293,17 +279,14 @@ class FolderScanner(QThread):
                             except OSError as e:
                                 increment_perf_counter("timeline.folder_scanner.run", "stat_failure")
                                 exception_details(f"[TimelineGenerator] 获取文件信息出错: {file_path}", e)
-                        else:
-                            debug(f"    不是视频文件（扩展名不匹配）")
             except Exception as e:
                 increment_perf_counter("timeline.folder_scanner.run", "scan_failure")
                 exception_details("[TimelineGenerator] 扫描过程中出错", e)
 
             video_count = len(video_files)
             set_perf_metadata("timeline.folder_scanner.run", "last_video_count", video_count)
-            debug(f"\n=== 扫描完成，开始并发处理视频文件 ===")
-            debug(f"找到的视频文件数量: {video_count}")
-        
+            debug(f"扫描完成，找到 {video_count} 个视频文件，开始并发处理")
+
             if video_count > 0:
                 max_workers = min(8, os.cpu_count() or 4)
                 set_perf_metadata("timeline.folder_scanner.run", "last_max_workers", max_workers)
@@ -334,10 +317,7 @@ class FolderScanner(QThread):
                         processed_count += 1
                         self.progress.emit(processed_count, video_count)
 
-            debug(f"\n=== 所有视频文件处理完成 ===")
-            debug(f"成功处理的视频文件数量: {len(results)}")
-            debug(f"子文件夹数量: {len(subfolder_set)}")
-            debug(f"子文件夹列表: {list(subfolder_set)}")
+            debug(f"视频处理完成: {len(results)}/{video_count} 成功, 子文件夹: {len(subfolder_set)}")
 
             csv_path = self._generate_csv(results, main_folder_name)
             json_path = self._generate_json(main_folder_name, video_count, subfolder_set, results)
@@ -379,10 +359,10 @@ class FolderScanner(QThread):
     def _process_single_video(self, video_info):
         """
         处理单个视频文件，计算时长并创建TimelineEvent
-        
+
         Args:
             video_info: tuple - (file_name, file_path, subfolder_name, mod_time)
-            
+
         Returns:
             TimelineEvent or None - 处理成功返回事件对象，失败返回None
         """
@@ -404,12 +384,6 @@ class FolderScanner(QThread):
                 )
 
                 increment_perf_counter("timeline.process_single_video", "success")
-                debug(f"    成功创建视频事件: {file_name}")
-                debug(f"    事件设备: {subfolder_name}")
-                debug(f"    事件开始时间: {start_time.toString()}")
-                debug(f"    事件结束时间: {end_time.toString()}")
-                debug(f"    视频时长: {duration:.2f} 秒")
-
                 return event
             except (OSError, ValueError) as e:
                 increment_perf_counter("timeline.process_single_video", "failure")

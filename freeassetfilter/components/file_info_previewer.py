@@ -124,8 +124,9 @@ class AudioInfoTask(QRunnable):
                         info["声道数"] = audio.info.channels
                     if hasattr(audio.info, 'sample_rate'):
                         info["采样率"] = f"{audio.info.sample_rate} Hz"
-            except (OSError, ValueError, AttributeError) as e:
-                debug(f"获取音频信息失败 (mutagen): {e}")
+            except (OSError, ValueError, AttributeError):
+                # debug(f"获取音频信息失败 (mutagen): {e}")
+                pass
 
         if not info:
             try:
@@ -151,8 +152,8 @@ class AudioInfoTask(QRunnable):
                     format_info = ffprobe_data["format"]
                     info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
                     info["比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
-            except (OSError, ValueError, TypeError, subprocess.SubprocessError) as e:
-                debug(f"获取音频信息失败 (ffprobe): {e}")
+            except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+                # debug(f"获取音频信息失败 (ffprobe): {e}")
                 info["时长"] = "无法获取"
                 info["比特率"] = "无法获取"
 
@@ -517,6 +518,8 @@ class FileInfoPreviewer(QObject):
         Args:
             file_info (Dict[str, Any]): 文件信息字典
         """
+        debug(f"设置预览文件: {file_info.get('path', 'unknown')}")
+
         # 清除之前动态创建的校验码字段
         hash_keys = ["MD5", "SHA1", "SHA256"]
         for key in hash_keys:
@@ -525,26 +528,26 @@ class FileInfoPreviewer(QObject):
                 widget_pair = self.basic_info_widgets[key]
                 label_widget = widget_pair["label"]
                 value_widget = widget_pair["value"]
-                
+
                 label_widget.hide()
                 value_widget.hide()
                 label_widget.deleteLater()
                 value_widget.deleteLater()
-                
+
                 # 从字典中移除
                 del self.basic_info_widgets[key]
                 if key in self.basic_info_labels:
                     del self.basic_info_labels[key]
-        
+
         self.current_file = file_info
         self.extract_file_info()
-        
+
         # 显示"更多信息"按钮
         if hasattr(self, 'more_info_btn'):
             self.more_info_btn.show()
-        
+
         self.update_ui()
-        
+
         # 滚动到顶部，确保每次加载新文件时显示最顶端的内容
         if hasattr(self, 'scroll_area'):
             self.scroll_area.verticalScrollBar().setValue(0)
@@ -584,8 +587,9 @@ class FileInfoPreviewer(QObject):
         """
         try:
             stat = os.stat(file_path)
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            debug(f"获取文件状态失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError):
+            # debug(f"获取文件状态失败: {e}")
+            pass
             return {
                 "文件名": os.path.basename(file_path),
                 "文件路径": file_path,
@@ -627,8 +631,9 @@ class FileInfoPreviewer(QObject):
                 for chunk in iter(lambda: f.read(4096), b''):
                     hasher.update(chunk)
             return hasher.hexdigest()
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            debug(f"计算文件哈希失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError):
+            # debug(f"计算文件哈希失败: {e}")
+            pass
             return "无法计算"
 
     def _get_directory_info(self, dir_path: str) -> Dict[str, Any]:
@@ -650,8 +655,9 @@ class FileInfoPreviewer(QObject):
                 "子目录数": len(dirs),
                 "文件数": len(files),
             }
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            debug(f"获取目录信息失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError):
+            # debug(f"获取目录信息失败: {e}")
+            pass
             return {
                 "子目录数": "无法访问",
                 "文件数": "无法访问",
@@ -753,8 +759,9 @@ class FileInfoPreviewer(QObject):
                         info["声道数"] = audio.info.channels
                     if hasattr(audio.info, 'sample_rate'):
                         info["采样率"] = f"{audio.info.sample_rate} Hz"
-            except (OSError, ValueError, AttributeError) as e:
-                debug(f"获取音频信息失败 (mutagen): {e}")
+            except (OSError, ValueError, AttributeError):
+                # debug(f"获取音频信息失败 (mutagen): {e}")
+                pass
 
         if not info or "时长" not in info:
             try:
@@ -780,8 +787,9 @@ class FileInfoPreviewer(QObject):
                     format_info = ffprobe_data["format"]
                     info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
                     info["比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
-            except (OSError, ValueError, TypeError, subprocess.SubprocessError) as e:
-                debug(f"获取音频信息失败 (ffprobe): {e}")
+            except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+                # debug(f"获取音频信息失败 (ffprobe): {e}")
+                pass
                 if "时长" not in info:
                     info["时长"] = "无法获取"
                 if "比特率" not in info:
@@ -809,8 +817,9 @@ class FileInfoPreviewer(QObject):
 
             if isinstance(fps, (int, float)) and fps > 0:
                 info["帧率"] = f"{float(fps):.2f} fps"
-        except Exception as e:
-            debug(f"获取视频信息失败 (ffprobe): {e}")
+        except Exception:
+            # debug(f"获取视频信息失败 (ffprobe): {e}")
+            pass
 
         return info
 
@@ -828,8 +837,9 @@ class FileInfoPreviewer(QObject):
             bitrate = video_info.get("bitrate")
             if isinstance(bitrate, int) and bitrate > 0:
                 info["码率"] = self._format_bitrate(bitrate)
-        except Exception as e:
-            debug(f"获取视频高级信息失败 (ffprobe): {e}")
+        except Exception:
+            # debug(f"获取视频高级信息失败 (ffprobe): {e}")
+            pass
 
         return info
 
@@ -843,8 +853,9 @@ class FileInfoPreviewer(QObject):
                 info["尺寸"] = f"{width} x {height}"
                 info["格式"] = img.format
                 info["模式"] = img.mode
-        except (OSError, IOError, ValueError, AttributeError) as e:
-            debug(f"获取图像信息失败: {e}")
+        except (OSError, IOError, ValueError, AttributeError):
+            # debug(f"获取图像信息失败: {e}")
+            pass
             info["尺寸"] = "无法获取"
             info["格式"] = "无法获取"
             info["模式"] = "无法获取"
@@ -865,8 +876,9 @@ class FileInfoPreviewer(QObject):
                             tag_name = tag.split(':')[-1]
                             exif_info[tag_name] = str(value)
                         info["EXIF信息"] = exif_info
-            except (OSError, IOError, ValueError, AttributeError) as e:
-                debug(f"获取图像EXIF信息失败: {e}")
+            except (OSError, IOError, ValueError, AttributeError):
+                # debug(f"获取图像EXIF信息失败: {e}")
+                pass
 
         return info
 
@@ -880,8 +892,9 @@ class FileInfoPreviewer(QObject):
                 raw_data = f.read(1024)
                 result = chardet.detect(raw_data)
                 info["编码格式"] = result['encoding']
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            debug(f"检测文本编码失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError):
+            # debug(f"检测文本编码失败: {e}")
+            pass
             info["编码格式"] = "无法检测"
 
         # 统计字数
@@ -892,8 +905,9 @@ class FileInfoPreviewer(QObject):
                 info["字符数（不含空格）"] = len(content.replace(' ', ''))
                 info["行数"] = content.count('\n') + 1
                 info["单词数"] = len(content.split())
-        except (OSError, IOError, PermissionError, FileNotFoundError, UnicodeDecodeError, LookupError) as e:
-            debug(f"统计文本字数失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError, UnicodeDecodeError, LookupError):
+            # debug(f"统计文本字数失败: {e}")
+            pass
             info["字符数"] = "无法统计"
             info["字符数（不含空格）"] = "无法统计"
             info["行数"] = "无法统计"
@@ -912,8 +926,9 @@ class FileInfoPreviewer(QObject):
 
                 magic_instance = magic.Magic()
                 info["详细类型"] = magic_instance.from_file(file_path)
-            except (OSError, IOError, ValueError, AttributeError) as e:
-                debug(f"获取文本文件MIME类型失败: {e}")
+            except (OSError, IOError, ValueError, AttributeError):
+                # debug(f"获取文本文件MIME类型失败: {e}")
+                pass
 
         return info
 
@@ -944,8 +959,9 @@ class FileInfoPreviewer(QObject):
                 info["压缩率"] = f"{round(ratio, 2)}%"
             else:
                 info["压缩率"] = "无法计算"
-        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError, RuntimeError) as e:
-            debug(f"获取压缩文件信息失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError, RuntimeError):
+            # debug(f"获取压缩文件信息失败: {e}")
+            pass
             info["文件数"] = "无法获取"
             info["总大小"] = "无法获取"
             info["压缩率"] = "无法计算"
@@ -972,8 +988,9 @@ class FileInfoPreviewer(QObject):
                 if len(content_list) > 10:
                     info["内容列表"].append({"名称": f"... 还有 {len(content_list) - 10} 个文件", "大小": "", "修改时间": ""})
 
-        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError, RuntimeError) as e:
-            debug(f"获取压缩文件高级信息失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError, RuntimeError):
+            # debug(f"获取压缩文件高级信息失败: {e}")
+            pass
 
         return info
 
@@ -1016,8 +1033,9 @@ class FileInfoPreviewer(QObject):
                             except UnicodeDecodeError:
                                 info[name_desc] = record.string.decode('latin-1')
                             break
-        except (ImportError, OSError, IOError, KeyError, AttributeError, UnicodeDecodeError) as e:
-            debug(f"获取字体基本信息失败: {e}")
+        except (ImportError, OSError, IOError, KeyError, AttributeError, UnicodeDecodeError):
+            # debug(f"获取字体基本信息失败: {e}")
+            pass
 
         return info
 
@@ -1040,8 +1058,9 @@ class FileInfoPreviewer(QObject):
                     info["上升"] = hhea.ascent
                     info["下降"] = hhea.descent
                     info["行间距"] = hhea.lineGap
-        except (ImportError, OSError, IOError, KeyError, AttributeError) as e:
-            debug(f"获取字体高级信息失败: {e}")
+        except (ImportError, OSError, IOError, KeyError, AttributeError):
+            # debug(f"获取字体高级信息失败: {e}")
+            pass
 
         return info
 
@@ -1150,8 +1169,9 @@ class FileInfoPreviewer(QObject):
                             details.update(self.parent._get_font_advanced_info(self.file_path))
 
                     self.finished.emit({"basic": basic_info, "details": details})
-                except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError, AttributeError, KeyError) as e:
-                    debug(f"加载详细信息失败: {e}")
+                except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError, AttributeError, KeyError):
+                    # debug(f"加载详细信息失败: {e}")
+                    pass
                     self.error.emit(str(e))
 
         # 创建并启动线程
@@ -1222,6 +1242,8 @@ class FileInfoPreviewer(QObject):
 
     def _on_loading_error(self, error_msg):
         """加载出错时的处理"""
+        error(f"加载详细信息失败: {error_msg}")
+
         if hasattr(self, 'loading_dialog'):
             self.loading_dialog.close()
 
@@ -1250,8 +1272,9 @@ class FileInfoPreviewer(QObject):
 
             if file_path in cache_data:
                 return cache_data[file_path]
-        except (OSError, IOError, PermissionError, FileNotFoundError, json.JSONDecodeError) as e:
-            debug(f"读取缓存失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError, json.JSONDecodeError):
+            # debug(f"读取缓存失败: {e}")
+            pass
 
         return None
 
@@ -1281,8 +1304,9 @@ class FileInfoPreviewer(QObject):
 
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
-        except (OSError, IOError, PermissionError, FileNotFoundError, TypeError, ValueError) as e:
-            error(f"保存缓存失败: {e}")
+        except (OSError, IOError, PermissionError, FileNotFoundError, TypeError, ValueError):
+            # error(f"保存缓存失败: {e}")
+            pass
 
     def _format_size(self, size: int) -> str:
         """格式化文件大小"""

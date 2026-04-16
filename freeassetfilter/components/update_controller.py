@@ -28,7 +28,7 @@ from freeassetfilter.core.update_manager import (
     get_cache_metadata_path,
     verify_installer_file,
 )
-from freeassetfilter.utils.app_logger import info, warning, error
+from freeassetfilter.utils.app_logger import info, warning, error, debug
 from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
@@ -43,10 +43,13 @@ class UpdateCheckWorker(QThread):
     failure = Signal(str)
 
     def run(self):
+        debug("UpdateCheckWorker: 开始检查更新")
         try:
             result = check_for_updates()
+            debug("UpdateCheckWorker: 检查更新成功")
             self.success.emit(result)
         except UpdateError as e:
+            warning(f"检查更新失败: {e}")
             self.failure.emit(str(e))
         except Exception as e:
             error(f"检查更新失败: {e}")
@@ -69,16 +72,19 @@ class UpdateDownloadWorker(QThread):
         self._cancel_requested = False
 
     def cancel(self):
+        debug("UpdateDownloadWorker: 收到取消请求")
         self._cancel_requested = True
 
     def run(self):
         temp_path = None
+        debug("UpdateDownloadWorker: 开始下载更新")
         try:
             os.makedirs(get_cache_dir(), exist_ok=True)
 
             installer_name = self.release_info["installer_name"]
             final_path = os.path.join(get_cache_dir(), installer_name)
             temp_path = f"{final_path}.download"
+            debug(f"UpdateDownloadWorker: 下载目标路径: {final_path}")
 
             if os.path.exists(temp_path):
                 try:
@@ -99,10 +105,12 @@ class UpdateDownloadWorker(QThread):
                 if total_size <= 0:
                     total_size = int(self.release_info.get("installer_size", 0) or 0)
                 downloaded_size = 0
+                debug(f"UpdateDownloadWorker: 文件总大小: {total_size} bytes")
 
                 with open(temp_path, "wb") as f:
                     while True:
                         if self._cancel_requested:
+                            debug("UpdateDownloadWorker: 下载已取消，清理临时文件")
                             try:
                                 f.close()
                             except Exception:
@@ -130,20 +138,25 @@ class UpdateDownloadWorker(QThread):
 
             try:
                 os.replace(temp_path, final_path)
+                debug(f"UpdateDownloadWorker: 临时文件重命名成功: {final_path}")
             except OSError as e:
                 raise UpdateError(f"写入安装包失败：{e}") from e
 
             is_valid = verify_installer_file(final_path, self.release_info["installer_sha256"])
             if not is_valid:
+                warning("UpdateDownloadWorker: SHA256 校验失败")
                 try:
                     os.remove(final_path)
                 except OSError:
                     pass
                 raise UpdateError("下载完成，但 SHA256 校验失败")
 
+            debug("UpdateDownloadWorker: SHA256 校验通过")
             cache_result = prepare_cached_installer(self.release_info, final_path)
+            info("UpdateDownloadWorker: 更新下载完成")
             self.success.emit(cache_result)
         except UpdateError as e:
+            warning(f"UpdateDownloadWorker: 下载失败: {e}")
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -151,6 +164,7 @@ class UpdateDownloadWorker(QThread):
                     pass
             self.failure.emit(str(e))
         except (urllib_error.URLError, OSError) as e:
+            error(f"UpdateDownloadWorker: 网络或文件错误: {e}")
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -158,12 +172,12 @@ class UpdateDownloadWorker(QThread):
                     pass
             self.failure.emit(f"下载更新失败：{e}")
         except Exception as e:
+            error(f"UpdateDownloadWorker: 下载异常: {e}")
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                 except OSError:
                     pass
-            error(f"下载更新失败: {e}")
             self.failure.emit(f"下载更新失败：{e}")
 
     @staticmethod
@@ -235,15 +249,19 @@ class UpdateController(QObject):
         self.update_button = button
         if self.update_button is not None:
             self.update_button.clicked.connect(self.on_check_updates_clicked)
+            debug("UpdateController: 更新按钮绑定成功")
 
     def on_check_updates_clicked(self):
         """
-        点击“检查更新”
+        点击"检查更新"
         """
+        debug("UpdateController: 用户点击检查更新")
         if self._check_worker and self._check_worker.isRunning():
+            debug("UpdateController: 检查更新已在进行中，忽略重复请求")
             return
 
         if self._download_worker and self._download_worker.isRunning():
+            debug("UpdateController: 下载更新已在进行中，忽略检查请求")
             return
 
         self._current_release_info = None
@@ -266,19 +284,23 @@ class UpdateController(QObject):
         self._check_worker.success.connect(self._on_check_success)
         self._check_worker.failure.connect(self._on_check_failure)
         self._check_worker.start()
+        debug("UpdateController: 检查更新任务已启动")
 
     def _on_check_dialog_clicked(self, index):
         if index != 0:
             return
 
         if self._check_worker and self._check_worker.isRunning():
+            debug("UpdateController: 用户取消检查更新")
             self._check_cancelled = True
             self._close_current_dialog()
 
     def _on_check_success(self, result):
+        debug("UpdateController: 检查更新成功，处理结果")
         self._check_worker = None
 
         if self._check_cancelled:
+            debug("UpdateController: 检查已被取消，忽略结果")
             self._check_cancelled = False
             return
 
@@ -291,6 +313,7 @@ class UpdateController(QObject):
             local_tag = local_info.get("tag_name") or "未知版本"
             local_date = local_info.get("build_date") or "未知日期"
 
+            info(f"当前已是最新版本: {local_tag} ({local_date})")
             self._show_message_dialog(
                 title="检查更新",
                 text=(
@@ -307,6 +330,7 @@ class UpdateController(QObject):
 
         release_info = result["latest_release"]
         self._current_release_info = release_info
+        info(f"发现新版本: {release_info.get('tag_name', 'unknown')}")
 
         local_info = result.get("local_info", {})
 
@@ -315,6 +339,8 @@ class UpdateController(QObject):
         installer_ready = bool(cache_result.get("is_ready")) and bool(installer_path)
 
         self._current_ready_package = cache_result if installer_ready else None
+        if installer_ready:
+            debug("UpdateController: 本地已存在可用安装包")
 
         self._show_update_available_detail_dialog(
             local_info=local_info,
@@ -323,6 +349,7 @@ class UpdateController(QObject):
         )
 
     def _on_check_failure(self, message):
+        warning(f"检查更新失败: {message}")
         self._check_worker = None
 
         if self._check_cancelled:
@@ -340,6 +367,7 @@ class UpdateController(QObject):
         if index != 0 or not self._current_release_info:
             return
 
+        debug("UpdateController: 用户确认下载更新")
         self._current_download_total_size = int(self._current_release_info.get("installer_size", 0) or 0)
         self._latest_downloaded_size = 0
         self._last_speed_check_time = time.time()
@@ -381,11 +409,13 @@ class UpdateController(QObject):
         self._download_worker.cancelled.connect(self._on_download_cancelled)
         self._download_worker.start()
         self._download_progress_timer.start()
+        info("UpdateController: 下载任务已启动")
 
     def _on_download_dialog_clicked(self, index):
         if index != 0:
             return
         if self._download_worker and self._download_worker.isRunning():
+            debug("UpdateController: 用户请求取消下载")
             self._set_dialog_text("正在取消下载，请稍候…")
             self._set_dialog_buttons([])
             self._download_worker.cancel()
@@ -403,6 +433,7 @@ class UpdateController(QObject):
             self._current_download_total_size = effective_total
 
     def _on_download_success(self, cache_result):
+        info("UpdateController: 下载完成，SHA256校验通过")
         self._download_progress_timer.stop()
         self._download_worker = None
         self._current_download_total_size = 0
@@ -423,6 +454,7 @@ class UpdateController(QObject):
         )
 
     def _on_download_failure(self, message):
+        error(f"UpdateController: 下载失败: {message}")
         self._download_progress_timer.stop()
         self._download_worker = None
         self._current_download_total_size = 0
@@ -440,6 +472,7 @@ class UpdateController(QObject):
         )
 
     def _on_download_cancelled(self):
+        info("UpdateController: 下载已取消")
         self._download_progress_timer.stop()
         self._download_worker = None
         self._current_download_total_size = 0
@@ -682,7 +715,9 @@ class UpdateController(QObject):
         if index != 0:
             return
 
+        debug("UpdateController: 用户确认安装更新")
         if not self._current_ready_package:
+            warning("UpdateController: 安装失败，未找到安装包信息")
             self._show_message_dialog(
                 title="安装失败",
                 text="未找到可用的安装包信息。",
@@ -695,6 +730,7 @@ class UpdateController(QObject):
         expected_sha256 = self._current_ready_package.get("installer_sha256")
 
         if not installer_path or not expected_sha256:
+            warning("UpdateController: 安装失败，安装包信息不完整")
             self._show_message_dialog(
                 title="安装失败",
                 text="安装包信息不完整，无法继续安装。",
@@ -704,6 +740,7 @@ class UpdateController(QObject):
             return
 
         if not os.path.exists(installer_path):
+            warning(f"UpdateController: 安装失败，安装包不存在: {installer_path}")
             self._show_message_dialog(
                 title="安装失败",
                 text="本地安装包不存在，请重新检查更新后再试。",
@@ -713,6 +750,7 @@ class UpdateController(QObject):
             return
 
         if not verify_installer_file(installer_path, expected_sha256):
+            warning("UpdateController: 安装失败，本地安装包校验失败")
             try:
                 os.remove(installer_path)
             except OSError:
@@ -736,6 +774,7 @@ class UpdateController(QObject):
         try:
             self._launch_installer_helper(installer_path, expected_sha256)
         except Exception as e:
+            error(f"UpdateController: 启动安装程序失败: {e}")
             self._show_message_dialog(
                 title="安装失败",
                 text=f"启动安装程序失败：{e}",

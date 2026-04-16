@@ -58,7 +58,7 @@ class SvgRenderer:
                 }
                 SvgRenderer._color_cache_valid = True
             except (OSError, ValueError, TypeError) as e:
-                warning(f"获取颜色设置失败: {e}")
+                warning(f"颜色设置获取失败: {e}")
                 SvgRenderer._cached_colors = {
                     "accent_color": "#007AFF",
                     "base_color": "#f1f3f5",
@@ -160,7 +160,7 @@ class SvgRenderer:
                 return processed_svg
             except (OSError, ValueError) as e:
                 increment_perf_counter("svg.replace_colors", "failure")
-                warning(f"替换SVG颜色失败: {e}")
+                warning(f"SVG颜色替换失败: {e}")
                 return svg_content
 
     @staticmethod
@@ -255,6 +255,7 @@ class SvgRenderer:
         replace_colors=True,
         device_pixel_ratio=None,
     ):
+        #debug(f"渲染SVG到Pixmap: {icon_path}, 尺寸: {icon_width}x{icon_height}")
         with track_perf("svg.render_exact_pixmap"):
             target_width = max(1, int(icon_width))
             target_height = max(1, int(icon_height))
@@ -314,23 +315,24 @@ class SvgRenderer:
                 return pixmap
             except (OSError, ValueError, TypeError, RuntimeError) as e:
                 increment_perf_counter("svg.render_exact_pixmap", "failure")
-                warning(f"按目标分辨率渲染SVG失败: {icon_path}, 错误: {e}")
+                warning(f"SVG渲染失败: {icon_path}, {e}")
                 return SvgRenderer._create_transparent_pixmap(target_width, target_height, resolved_dpr)
 
     @staticmethod
     def render_svg_to_widget(icon_path, icon_size=120, dpi_scale=1.0, replace_colors=True):
         """
         将SVG文件渲染为QSvgWidget，这是最可靠的方式
-        
+
         Args:
             icon_path (str): SVG文件路径
             icon_size (int): 输出图标大小，默认120x120（当SVG不是1:1比例时，按原始比例缩放）
             dpi_scale (float): DPI缩放因子，默认1.0
             replace_colors (bool): 是否启用颜色替换功能，默认True
-            
+
         Returns:
             QWidget: 渲染后的QSvgWidget或QLabel对象，确保控件本身完全不可见
         """
+        debug(f"渲染SVG到Widget: {icon_path}, 尺寸: {icon_size}")
         # 使用逻辑像素大小，不再应用DPI缩放因子
         scaled_icon_size = icon_size
         if not icon_path or not os.path.exists(icon_path):
@@ -444,8 +446,8 @@ class SvgRenderer:
             
             return container
         except (OSError, ValueError, TypeError) as e:
-            warning(f"使用QSvgWidget加载SVG图标失败: {e}")
-            # 如果QSvgWidget失败，回退到使用超分辨率渲染的位图
+            warning(f"SVG加载失败: {e}")
+            # QSvgWidget失败，回退到超分辨率渲染
             pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale, replace_colors=replace_colors)
             
             # 将pixmap显示在完全透明的QLabel中
@@ -866,14 +868,15 @@ class SvgRenderer:
     def render_svg_string_to_pixmap(svg_string, icon_size=24):
         """
         将SVG字符串渲染为QPixmap，支持透明背景和高质量渲染
-        
+
         Args:
             svg_string (str): SVG内容字符串
             icon_size (int): 输出图标大小，默认24x24
-            
+
         Returns:
             QPixmap: 渲染后的QPixmap对象，如果渲染失败返回透明像素图
         """
+        debug(f"渲染SVG字符串到Pixmap, 尺寸: {icon_size}")
         if not svg_string:
             # 如果SVG字符串为空，返回透明像素图
             pixmap = QPixmap(icon_size, icon_size)
@@ -965,8 +968,8 @@ class SvgRenderer:
             if not final_pixmap.isNull():
                 return final_pixmap
         except (ValueError, TypeError) as e:
-            warning(f"渲染SVG字符串失败, 错误: {e}")
-            # 如果渲染失败，返回透明像素图
+            warning(f"SVG字符串渲染失败: {e}")
+            # 渲染失败，返回透明像素图
         pixmap = QPixmap(icon_size, icon_size)
         pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         pixmap.fill(Qt.transparent)

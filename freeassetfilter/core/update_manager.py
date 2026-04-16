@@ -90,6 +90,7 @@ def get_cache_dir():
     """
     cache_dir = os.path.join(get_app_data_path(), CACHE_DIR_NAME)
     os.makedirs(cache_dir, exist_ok=True)
+    info(f"缓存目录: {cache_dir}")
     return cache_dir
 
 
@@ -112,22 +113,29 @@ def load_local_version_info():
             version_tuple,
         }
     """
+    info("读取本地版本信息")
+
     if not os.path.exists(FAFVERSION_FILE):
+        error(f"版本文件不存在: {FAFVERSION_FILE}")
         raise UpdateError(f"未找到版本文件：{FAFVERSION_FILE}")
 
     try:
         with open(FAFVERSION_FILE, "r", encoding="utf-8") as f:
             lines = [line.strip() for line in f.readlines() if line.strip()]
     except OSError as e:
+        error(f"读取版本文件失败: {e}")
         raise UpdateError(f"读取版本文件失败：{e}") from e
 
     if len(lines) < 2:
+        error("FAFVERSION 格式无效")
         raise UpdateError("FAFVERSION 格式无效，应包含版本号和构建日期两行")
 
     tag_name = lines[0]
     build_date = lines[1]
     build_date_obj = parse_date(build_date)
     version_tuple = parse_tag_version(tag_name)
+
+    info(f"本地版本: {tag_name}, 构建日期: {build_date}")
 
     return {
         "tag_name": tag_name,
@@ -150,9 +158,10 @@ def get_app_version(default="未知版本"):
         str: 当前版本号
     """
     try:
-        return load_local_version_info()["tag_name"]
+        version = load_local_version_info()["tag_name"]
+        return version
     except UpdateError as e:
-        warning(f"读取应用版本失败：{e}")
+        warning(f"读取应用版本失败: {e}")
         return default
 
 
@@ -161,11 +170,14 @@ def parse_date(date_text):
     解析 YYYY-MM-DD 日期
     """
     if not isinstance(date_text, str) or not date_text.strip():
+        error("日期内容为空")
         raise UpdateError("日期内容为空")
 
     try:
-        return datetime.strptime(date_text.strip(), "%Y-%m-%d").date()
+        result = datetime.strptime(date_text.strip(), "%Y-%m-%d").date()
+        return result
     except ValueError as e:
+        error(f"日期格式无效: {date_text}")
         raise UpdateError(f"日期格式无效：{date_text}") from e
 
 
@@ -180,10 +192,12 @@ def parse_tag_version(tag_name):
         tuple: (major, minor, patch, stage_rank, stage_number)
     """
     if not isinstance(tag_name, str) or not tag_name.strip():
+        error("版本号为空")
         raise UpdateError("版本号为空")
 
     match = TAG_PATTERN.match(tag_name.strip())
     if not match:
+        error(f"无法解析版本号: {tag_name}")
         raise UpdateError(f"无法解析版本号：{tag_name}")
 
     _, major, minor, patch, stage_name, stage_number = match.groups()
@@ -299,10 +313,13 @@ def _http_get_text(url, timeout=30):
     try:
         with request.urlopen(req, timeout=timeout) as response:
             charset = response.headers.get_content_charset() or "utf-8"
-            return response.read().decode(charset, errors="replace")
+            result = response.read().decode(charset, errors="replace")
+            return result
     except urllib_error.URLError as e:
+        error(f"网络请求失败: {e}")
         raise UpdateError(f"网络请求失败：{e}") from e
     except OSError as e:
+        error(f"网络请求失败: {e}")
         raise UpdateError(f"网络请求失败：{e}") from e
 
 
@@ -311,16 +328,21 @@ def fetch_github_releases():
     保留旧接口，兼容历史调用。
     当前优先使用网页源避免 GitHub API rate limit。
     """
+    info("获取 GitHub Releases (API)")
+
     raw_text = _http_get_text(GITHUB_RELEASES_API_URL, timeout=30)
 
     try:
         releases = json.loads(raw_text)
     except ValueError as e:
+        error("GitHub Releases 返回无效 JSON")
         raise UpdateError("GitHub Releases 返回了无效 JSON") from e
 
     if not isinstance(releases, list):
+        error("GitHub Releases 响应格式无效")
         raise UpdateError("GitHub Releases 响应格式无效")
 
+    info(f"获取到 {len(releases)} 个 Release")
     return releases
 
 
@@ -329,6 +351,8 @@ def select_latest_release(releases):
     保留旧接口，兼容历史调用。
     当前主流程已改为网页源抓取。
     """
+    info("筛选最新 Release")
+
     candidates = []
 
     for release in releases:
@@ -396,6 +420,7 @@ def select_latest_release(releases):
         )
 
     if not candidates:
+        error("未找到有效发布版本")
         raise UpdateError("未找到包含 exe 安装包且可校验 SHA256 的有效发布版本")
 
     candidates.sort(
@@ -405,13 +430,18 @@ def select_latest_release(releases):
         ),
         reverse=True,
     )
-    return candidates[0]
+
+    latest = candidates[0]
+    info(f"最新版本: {latest['tag_name']}, 发布日期: {latest['published_date']}")
+    return latest
 
 
 def _extract_latest_tag_from_redirect():
     """
     通过 releases/latest 跳转获取最新 tag
     """
+    info("获取最新版本标签")
+
     req = request.Request(
         GITHUB_RELEASES_LATEST_URL,
         headers=build_request_headers("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
@@ -422,15 +452,20 @@ def _extract_latest_tag_from_redirect():
         with request.urlopen(req, timeout=30) as response:
             final_url = response.geturl()
     except urllib_error.URLError as e:
+        error(f"获取最新发布跳转失败: {e}")
         raise UpdateError(f"获取最新发布跳转失败：{e}") from e
     except OSError as e:
+        error(f"获取最新发布跳转失败: {e}")
         raise UpdateError(f"获取最新发布跳转失败：{e}") from e
 
     match = re.search(r"/releases/tag/([^/?#]+)", final_url)
     if not match:
+        error("无法从跳转地址解析版本标签")
         raise UpdateError("无法从 latest 跳转地址解析最新版本标签")
 
-    return match.group(1)
+    tag = match.group(1)
+    info(f"最新版本标签: {tag}")
+    return tag
 
 
 def _parse_size_to_bytes(size_text, size_unit):
@@ -457,11 +492,14 @@ def _fetch_release_metadata_from_atom(tag_name):
     """
     从 releases.atom 中获取指定 tag 的发布时间和更新日志
     """
+    info(f"获取版本元数据: {tag_name}")
+
     atom_text = _http_get_text(GITHUB_RELEASES_ATOM_URL, timeout=30)
 
     try:
         root = ElementTree.fromstring(atom_text)
     except ElementTree.ParseError as e:
+        error("解析 releases.atom 失败")
         raise UpdateError("解析 releases.atom 失败") from e
 
     namespace = {"atom": "http://www.w3.org/2005/Atom"}
@@ -481,6 +519,7 @@ def _fetch_release_metadata_from_atom(tag_name):
 
         published_at = (updated_node.text or "").strip() if updated_node is not None else ""
         if not published_at:
+            error(f"未找到 {tag_name} 的发布时间")
             raise UpdateError(f"在 atom 中未找到 {tag_name} 的发布时间")
 
         published_date_obj, published_date = parse_github_date(published_at)
@@ -496,6 +535,7 @@ def _fetch_release_metadata_from_atom(tag_name):
         if link_node is not None:
             html_url = link_node.attrib.get("href", "")
 
+        info(f"获取到元数据: 发布日期={published_date}")
         return {
             "tag_name": tag_name,
             "published_at": published_at,
@@ -505,6 +545,7 @@ def _fetch_release_metadata_from_atom(tag_name):
             "release_body": release_body,
         }
 
+    error(f"在 releases.atom 中未找到版本: {tag_name}")
     raise UpdateError(f"在 releases.atom 中未找到版本 {tag_name}")
 
 
@@ -512,6 +553,8 @@ def _fetch_installer_info_from_expanded_assets(tag_name):
     """
     从 expanded_assets 页面获取 exe、sha256 和大小
     """
+    info(f"获取安装包信息: {tag_name}")
+
     html_text = _http_get_text(
         f"{GITHUB_RELEASES_EXPANDED_ASSETS_URL}/{tag_name}",
         timeout=30,
@@ -519,6 +562,7 @@ def _fetch_installer_info_from_expanded_assets(tag_name):
 
     match = ASSET_ROW_PATTERN.search(html_text)
     if not match:
+        error("解析 expanded_assets 页面失败")
         raise UpdateError("未能从 expanded_assets 页面解析安装包信息")
 
     installer_href = html.unescape(match.group("href"))
@@ -531,6 +575,7 @@ def _fetch_installer_info_from_expanded_assets(tag_name):
     else:
         installer_download_url = installer_href
 
+    info(f"安装包: {installer_name}, 大小: {installer_size} bytes")
     return {
         "installer_name": installer_name,
         "installer_sha256": installer_sha256,
@@ -545,12 +590,15 @@ def fetch_latest_release_via_web():
     """
     使用 GitHub 网页源获取最新发布，避免 API rate limit
     """
+    info("获取最新 Release (网页源)")
+
     tag_name = _extract_latest_tag_from_redirect()
     version_tuple = parse_tag_version(tag_name)
 
     metadata = _fetch_release_metadata_from_atom(tag_name)
     installer_info = _fetch_installer_info_from_expanded_assets(tag_name)
 
+    info(f"获取成功: {tag_name}")
     return {
         "release_id": None,
         "tag_name": tag_name,
@@ -672,13 +720,20 @@ def fetch_installer_sha256(checksum_download_url, installer_name):
     """
     下载并解析 checksum 文件，提取目标 exe 的 sha256
     """
+    info(f"获取校验文件: {installer_name}")
+
     try:
         text = _http_get_text(checksum_download_url, timeout=30)
     except UpdateError as e:
         warning(f"获取校验文件失败: {e}")
         return None
 
-    return parse_sha256_from_text(text, installer_name)
+    sha256 = parse_sha256_from_text(text, installer_name)
+    if sha256:
+        info(f"校验值获取成功")
+    else:
+        warning("校验值解析失败")
+    return sha256
 
 
 def parse_sha256_from_text(text, installer_name):
@@ -732,6 +787,8 @@ def calculate_sha256(file_path, chunk_size=1024 * 1024):
     """
     计算文件 sha256
     """
+    info(f"计算文件 SHA256: {os.path.basename(file_path)}")
+
     sha256_hash = hashlib.sha256()
 
     try:
@@ -742,9 +799,12 @@ def calculate_sha256(file_path, chunk_size=1024 * 1024):
                     break
                 sha256_hash.update(chunk)
     except OSError as e:
+        error(f"读取文件计算 SHA256 失败: {e}")
         raise UpdateError(f"读取文件计算 SHA256 失败：{e}") from e
 
-    return sha256_hash.hexdigest().lower()
+    result = sha256_hash.hexdigest().lower()
+    info("SHA256 计算完成")
+    return result
 
 
 def verify_installer_file(file_path, expected_sha256):
@@ -752,17 +812,27 @@ def verify_installer_file(file_path, expected_sha256):
     校验安装包 sha256
     """
     if not file_path or not expected_sha256:
+        warning("校验参数无效")
         return False
 
     if not os.path.exists(file_path):
+        warning("安装包不存在")
         return False
+
+    info(f"校验安装包: {os.path.basename(file_path)}")
 
     try:
         actual_sha256 = calculate_sha256(file_path)
     except UpdateError:
+        error("SHA256 计算失败")
         return False
 
-    return actual_sha256 == expected_sha256.lower()
+    is_valid = actual_sha256 == expected_sha256.lower()
+    if is_valid:
+        info("安装包校验通过")
+    else:
+        error("安装包校验失败")
+    return is_valid
 
 
 def load_cache_metadata():
@@ -776,12 +846,15 @@ def load_cache_metadata():
     try:
         with open(metadata_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError) as e:
+        warning(f"读取缓存元数据失败: {e}")
         return None
 
     if not isinstance(data, dict):
+        warning("缓存元数据格式无效")
         return None
 
+    info("缓存元数据加载成功")
     return data
 
 
@@ -790,10 +863,14 @@ def save_cache_metadata(metadata):
     保存缓存元数据
     """
     metadata_path = get_cache_metadata_path()
+    info(f"保存缓存元数据: {metadata_path}")
+
     try:
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
+        info("缓存元数据保存成功")
     except OSError as e:
+        error(f"写入缓存元数据失败: {e}")
         raise UpdateError(f"写入缓存元数据失败：{e}") from e
 
 
@@ -801,28 +878,36 @@ def clear_invalid_cache(installer_path=None):
     """
     清理无效缓存
     """
+    info("清理无效缓存")
+
     if installer_path and os.path.exists(installer_path):
         try:
             os.remove(installer_path)
-        except OSError:
-            pass
+            info(f"删除安装包: {os.path.basename(installer_path)}")
+        except OSError as e:
+            warning(f"删除安装包失败: {e}")
 
     metadata_path = get_cache_metadata_path()
     if os.path.exists(metadata_path):
         try:
             os.remove(metadata_path)
-        except OSError:
-            pass
+            info("删除缓存元数据")
+        except OSError as e:
+            warning(f"删除缓存元数据失败: {e}")
 
 
 def prepare_cached_installer(release_info, installer_path):
     """
     将本地已准备好的安装包写入缓存元数据
     """
+    info(f"准备缓存安装包: {os.path.basename(installer_path)}")
+
     if not os.path.exists(installer_path):
+        error("安装包不存在")
         raise UpdateError("安装包不存在，无法写入缓存")
 
     if not verify_installer_file(installer_path, release_info["installer_sha256"]):
+        error("安装包校验失败")
         raise UpdateError("安装包 SHA256 校验失败，无法写入缓存")
 
     metadata = {
@@ -839,6 +924,7 @@ def prepare_cached_installer(release_info, installer_path):
 
     result = dict(metadata)
     result["is_ready"] = True
+    info("安装包缓存准备完成")
     return result
 
 
@@ -846,8 +932,11 @@ def get_cached_installer_if_valid(release_info):
     """
     如果本地已有可复用缓存，则返回缓存信息
     """
+    info("检查缓存安装包")
+
     metadata = load_cache_metadata()
     if not metadata:
+        info("未找到缓存元数据")
         return {
             "is_ready": False,
             "reason": "未找到缓存元数据",
@@ -863,12 +952,14 @@ def get_cached_installer_if_valid(release_info):
         or published_date != release_info.get("published_date")
         or expected_sha256 != release_info.get("installer_sha256")
     ):
+        info("缓存版本与最新发布不匹配")
         return {
             "is_ready": False,
             "reason": "缓存版本与最新发布不匹配",
         }
 
     if not installer_path or not os.path.exists(installer_path):
+        warning("缓存安装包不存在")
         clear_invalid_cache()
         return {
             "is_ready": False,
@@ -876,12 +967,14 @@ def get_cached_installer_if_valid(release_info):
         }
 
     if not verify_installer_file(installer_path, expected_sha256):
+        warning("缓存安装包校验失败")
         clear_invalid_cache(installer_path)
         return {
             "is_ready": False,
             "reason": "缓存安装包校验失败",
         }
 
+    info("缓存安装包有效")
     return {
         "is_ready": True,
         "installer_path": installer_path,
@@ -906,6 +999,8 @@ def check_for_updates():
             comparison_result,
         }
     """
+    info("开始检查更新")
+
     local_info = load_local_version_info()
 
     latest_release = None
@@ -914,7 +1009,7 @@ def check_for_updates():
     try:
         latest_release = fetch_latest_release_via_web()
     except UpdateError as web_error:
-        warning(f"网页源检查更新失败，回退 API：{web_error}")
+        warning(f"网页源检查更新失败，回退 API: {web_error}")
         try:
             releases = fetch_github_releases()
             latest_release = select_latest_release(releases)
@@ -946,10 +1041,9 @@ def check_for_updates():
     }
 
     info(
-        "更新检查完成: "
-        f"本地={local_info['tag_name']}({local_info['build_date']}), "
-        f"远程={latest_release['tag_name']}({latest_release['published_date']}), "
-        f"update_available={update_available}"
+        f"更新检查完成: 本地={local_info['tag_name']}, "
+        f"远程={latest_release['tag_name']}, "
+        f"有更新={update_available}"
     )
 
     return result

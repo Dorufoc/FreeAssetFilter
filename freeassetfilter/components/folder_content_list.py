@@ -56,29 +56,31 @@ class FolderContentList(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+        debug("文件夹内容列表组件初始化")
+
         # 获取应用实例和DPI缩放因子
         from PySide6.QtWidgets import QApplication
         from PySide6.QtGui import QFont
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+
         # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
         # 设置组件字体
         self.setFont(self.global_font)
-        
+
         # 初始化配置
         self.current_path = os.path.expanduser("~")  # 默认路径为用户主目录
-        
+
         # 创建文件图标提供者
         self.icon_provider = QFileIconProvider()
-        
+
         # 初始化UI
         self.init_ui()
-        
+
         # 加载初始路径内容
         self.load_folder_content()
+        debug("文件夹内容列表组件初始化完成")
     
     def init_ui(self):
         """
@@ -241,6 +243,7 @@ class FolderContentList(QWidget):
             path (str): 要设置的路径
         """
         if os.path.exists(path) and os.path.isdir(path):
+            debug(f"设置文件夹路径: {path}")
             self.current_path = path
             self.path_edit.set_text(self.current_path)
             self.load_folder_content()
@@ -251,6 +254,7 @@ class FolderContentList(QWidget):
         发出信号请求主应用程序在文件选择器中打开当前路径
         """
         if self.current_path and os.path.exists(self.current_path):
+            debug("请求在文件选择器中打开文件夹")
             # 创建文件信息字典，与 unified_previewer 格式保持一致
             file_info = {"path": self.current_path, "is_directory": True}
             self.open_in_selector_requested.emit(self.current_path, file_info)
@@ -265,6 +269,7 @@ class FolderContentList(QWidget):
         try:
             # 获取当前路径下的所有文件和文件夹
             entries = os.listdir(self.current_path)
+            debug(f"加载文件夹内容，条目数: {len(entries)}")
 
             # 排序：文件夹在前，文件在后，按名称排序
             entries.sort(key=lambda x: (not os.path.isdir(os.path.join(self.current_path, x)), x.lower()))
@@ -293,9 +298,9 @@ class FolderContentList(QWidget):
                 item.setIcon(icon)
                 self.content_list.addItem(item)
         except PermissionError as e:
-            debug(f"加载文件夹内容时权限不足: {self.current_path}, 错误: {e}")
+            warning(f"权限不足: {e}")
         except OSError as e:
-            warning(f"加载文件夹内容时发生系统错误: {self.current_path}, 错误: {e}")
+            warning(f"系统错误: {e}")
     
 
     

@@ -13,7 +13,7 @@ from ctypes import c_char_p, c_float, c_int, c_size_t, c_uint8, POINTER, Structu
 from pathlib import Path
 from typing import List, Tuple
 
-from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.utils.app_logger import debug, error
 
 
 class LabResult(Structure):
@@ -57,6 +57,7 @@ class RustColorExtractorBridge:
         return [dev_release_dll, dev_debug_dll]
 
     def _load(self):
+        debug("开始加载 Rust DLL")
         for path in self._candidate_paths():
             if not path.exists():
                 continue
@@ -66,14 +67,14 @@ class RustColorExtractorBridge:
                 self._bind(dll)
                 self._dll = dll
                 self._available = True
-                debug(f"[RustColorExtractor] 已加载 Rust DLL: {path}")
+                debug(f"Rust DLL 加载成功: {path}")
                 return
             except Exception as e:
-                warning(f"[RustColorExtractor] 加载 DLL 失败 {path}: {e}")
+                error(f"加载 DLL 失败 {path}: {e}")
 
         self._dll = None
         self._available = False
-        warning("[RustColorExtractor] 未找到可用的 rust_color_extractor_native.dll")
+        error("未找到可用的 rust_color_extractor_native.dll")
 
     def _bind(self, dll):
         dll.color_extractor_get_version.argtypes = []

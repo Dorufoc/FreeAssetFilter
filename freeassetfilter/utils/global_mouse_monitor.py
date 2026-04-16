@@ -74,7 +74,7 @@ class GlobalMouseMonitor(QObject):
                 monitor._disposed = True
                 monitor.stop()
             except (RuntimeError, AttributeError, OSError) as e:
-                debug(f"[GlobalMouseMonitor] 停止监控器实例时出错: {e}")
+                debug("停止监控器实例时出错: %s", e)
 
         with cls._active_instances_lock:
             cls._active_instances.clear()
@@ -102,7 +102,7 @@ class GlobalMouseMonitor(QObject):
                     except KeyError:
                         pass
         except (AttributeError, RuntimeError) as e:
-            debug(f"[GlobalMouseMonitor] 清理 _DummyThread 失败: {e}")
+            debug("清理 _DummyThread 失败: %s", e)
 
     def __init__(self, parent=None, timeout=3000):
         """
@@ -211,10 +211,14 @@ class GlobalMouseMonitor(QObject):
         Returns:
             bool: 是否成功启动监控
         """
+        #debug("开始启动鼠标监控")
+
         if self._disposed:
+            warning("监控器已销毁，无法启动")
             return False
 
         if self._is_monitoring:
+            #debug("监控已在运行中")
             return True
 
         try:
@@ -253,7 +257,7 @@ class GlobalMouseMonitor(QObject):
                             self._pending_scroll = True
 
                 except (AttributeError, TypeError, OSError) as e:
-                    debug(f"[GlobalMouseMonitor] 鼠标回调处理异常: {e}")
+                    debug("鼠标回调处理异常: %s", e)
 
                 return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
@@ -264,7 +268,7 @@ class GlobalMouseMonitor(QObject):
             self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, mouse_proc_func, None, 0)
             if not self._mouse_hook:
                 error_code = ctypes.get_last_error()
-                error(f"[GlobalMouseMonitor] 安装鼠标钩子失败，错误码: {error_code}")
+                error("安装鼠标钩子失败，错误码: %s", error_code)
                 return False
 
             self._mouse_proc_func = mouse_proc_func
@@ -275,16 +279,19 @@ class GlobalMouseMonitor(QObject):
             with GlobalMouseMonitor._active_instances_lock:
                 GlobalMouseMonitor._active_instances.add(self)
 
+            #info("鼠标监控启动成功")
             return True
 
         except OSError as e:
-            error(f"[GlobalMouseMonitor] 启动监控失败 (系统错误): {e}")
+            error("启动监控失败 (系统错误): %s", e)
             return False
 
     def stop(self):
         """
         停止监控鼠标活动
         """
+        #debug("停止鼠标监控")
+
         if self._stopping:
             return
 
@@ -304,7 +311,7 @@ class GlobalMouseMonitor(QObject):
                 try:
                     ctypes.windll.user32.UnhookWindowsHookEx(self._mouse_hook)
                 except OSError as e:
-                    error(f"[GlobalMouseMonitor] 卸载鼠标钩子失败: {e}")
+                    error("卸载鼠标钩子失败: %s", e)
 
             self._mouse_hook = None
             self._mouse_proc_func = None
@@ -318,6 +325,8 @@ class GlobalMouseMonitor(QObject):
 
             with GlobalMouseMonitor._active_instances_lock:
                 GlobalMouseMonitor._active_instances.discard(self)
+
+            #info("鼠标监控已停止")
         finally:
             self._stopping = False
 
@@ -335,7 +344,7 @@ class GlobalMouseMonitor(QObject):
             try:
                 self._activity_callback()
             except Exception as e:
-                error(f"[GlobalMouseMonitor] 活动回调函数执行失败: {e}")
+                error("活动回调函数执行失败: %s", e)
 
         if self._is_monitoring:
             self._hide_timer.stop()
@@ -383,7 +392,7 @@ class GlobalMouseMonitor(QObject):
             try:
                 self._timeout_callback()
             except Exception as e:
-                error(f"[GlobalMouseMonitor] 超时回调函数执行失败: {e}")
+                error("超时回调函数执行失败: %s", e)
 
     def __del__(self):
         """析构函数，确保清理资源"""

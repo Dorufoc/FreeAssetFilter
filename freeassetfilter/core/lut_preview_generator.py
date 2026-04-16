@@ -62,12 +62,14 @@ class LUTPreviewGenerator:
     
     def preload(self):
         """预加载参考图像和相关资源"""
+        debug("预加载参考图像")
         self.load_reference_image()
         if self._reference_image is not None:
             for size in [(256, 256), (512, 512)]:
                 self._reference_image_scaled[size] = np.array(
                     self._reference_image.resize(size, Image.Resampling.LANCZOS)
                 )
+            debug(f"参考图像预缩放完成，尺寸: {list(self._reference_image_scaled.keys())}")
     
     def load_reference_image(self) -> bool:
         """
@@ -88,27 +90,28 @@ class LUTPreviewGenerator:
                     self._reference_image = self._reference_image.convert('RGB')
             return True
         except (IOError, OSError) as e:
-            error(f"加载参考图像失败 (IO/OS错误): {e}")
+            error(f"加载参考图像失败: {e}")
             return False
         except Exception as e:
-            error(f"加载参考图像失败 (未知错误): {e}")
+            error(f"加载参考图像失败: {e}")
             return False
     
-    def generate_preview(self, lut_file_path: str, 
+    def generate_preview(self, lut_file_path: str,
                         output_size: Tuple[int, int] = (256, 256),
                         cache_path: Optional[str] = None) -> Optional[QPixmap]:
         """
         生成LUT预览图
-        
+
         Args:
             lut_file_path: LUT文件路径
             output_size: 输出图像尺寸 (宽, 高)
             cache_path: 缓存文件路径，如提供则保存到该路径
-            
+
         Returns:
             Optional[QPixmap]: 预览图像，失败返回None
         """
         if not PIL_AVAILABLE:
+            warning("PIL不可用，无法生成LUT预览")
             return None
         
         # 检查缓存
@@ -129,37 +132,36 @@ class LUTPreviewGenerator:
                              output_size: Tuple[int, int],
                              cache_path: Optional[str]) -> Optional[QPixmap]:
         """使用 C++ 实现生成预览"""
-        import time
-        _t0 = time.perf_counter()
-        
+        # _t0 = time.perf_counter()
+
         try:
             # 加载参考图像
             if self._reference_image is None:
-                _t1 = time.perf_counter()
-                debug(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 参考图像未加载，开始加载")
+                # _t1 = time.perf_counter()
+                # debug(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 参考图像未加载，开始加载")
                 if not self.load_reference_image():
                     return None
-                _t2 = time.perf_counter()
-                debug(f"[LUT生成] {(_t2-_t1)*1000:.1f}ms - 参考图像加载完成")
-            
+                # _t2 = time.perf_counter()
+                # debug(f"[LUT生成] {(_t2-_t1)*1000:.1f}ms - 参考图像加载完成")
+
             # 使用预缩放的图像缓存
             size_key = output_size
             if size_key not in self._reference_image_scaled:
-                _t1 = time.perf_counter()
-                debug(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 创建缩放缓存 {size_key}")
+                # _t1 = time.perf_counter()
+                # debug(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 创建缩放缓存 {size_key}")
                 self._reference_image_scaled[size_key] = np.array(
                     self._reference_image.resize(size_key, Image.Resampling.LANCZOS)
                 )
             img_array = self._reference_image_scaled[size_key]
-            _t1 = time.perf_counter()
-            debug(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 图像准备完成")
-            
+            # _t1 = time.perf_counter()
+            # debug(f"[LUT生成] {(_t1-_t0)*1000:.1f}ms - 图像准备完成")
+
             # 读取 LUT 文件内容（解决中文路径问题）
             with open(lut_file_path, 'r', encoding='utf-8') as f:
                 lut_content = f.read()
-            _t2 = time.perf_counter()
-            debug(f"[LUT生成] {(_t2-_t0)*1000:.1f}ms - LUT文件读取完成，大小={len(lut_content)}")
-            
+            # _t2 = time.perf_counter()
+            # debug(f"[LUT生成] {(_t2-_t0)*1000:.1f}ms - LUT文件读取完成，大小={len(lut_content)}")
+
             # 调用 C++ 模块生成预览
             png_data = cpp_generate_preview(
                 lut_content,
@@ -167,45 +169,47 @@ class LUTPreviewGenerator:
                 output_size[0],
                 output_size[1]
             )
-            _t3 = time.perf_counter()
-            debug(f"[LUT生成] {(_t3-_t0)*1000:.1f}ms - C++ 处理完成，PNG大小={len(png_data)}")
-            
+            # _t3 = time.perf_counter()
+            # debug(f"[LUT生成] {(_t3-_t0)*1000:.1f}ms - C++ 处理完成，PNG大小={len(png_data)}")
+
             # 将 PNG 数据转换为 QPixmap
-            from io import BytesIO
             qimage = QImage.fromData(png_data)
             pixmap = QPixmap.fromImage(qimage)
-            
+
             # 保存缓存
             if cache_path and not pixmap.isNull():
                 pixmap.save(cache_path, 'PNG')
-            
-            _t4 = time.perf_counter()
-            debug(f"[LUT生成] {(_t4-_t0)*1000:.1f}ms - 全部完成")
-            
+
+            # _t4 = time.perf_counter()
+            # debug(f"[LUT生成] {(_t4-_t0)*1000:.1f}ms - 全部完成")
+
             return pixmap
-            
+
         except (IOError, OSError) as e:
-            warning(f"C++ 预览生成失败 (文件IO错误): {e}，回退到Python")
+            warning(f"C++预览生成失败，回退Python: {e}")
             return self._generate_preview_python(lut_file_path, output_size, cache_path)
         except ValueError as e:
-            warning(f"C++ 预览生成失败 (数据错误): {e}，回退到Python")
+            warning(f"C++预览生成失败，回退Python: {e}")
             return self._generate_preview_python(lut_file_path, output_size, cache_path)
         except Exception as e:
-            warning(f"C++ 预览生成失败 (未知错误): {e}，回退到Python")
+            warning(f"C++预览生成失败，回退Python: {e}")
             return self._generate_preview_python(lut_file_path, output_size, cache_path)
     
-    def _generate_preview_python(self, lut_file_path: str, 
+    def _generate_preview_python(self, lut_file_path: str,
                                 output_size: Tuple[int, int],
                                 cache_path: Optional[str]) -> Optional[QPixmap]:
         """使用 Python 实现生成预览"""
+        debug("使用Python生成LUT预览")
+
         # 加载参考图像
         if self._reference_image is None:
             if not self.load_reference_image():
                 return None
-        
+
         # 解析LUT文件
         parser = CubeLUTParser(lut_file_path)
         if not parser.parse():
+            warning(f"LUT文件解析失败: {lut_file_path}")
             return None
         
         try:
@@ -244,16 +248,16 @@ class LUTPreviewGenerator:
             return self._pil_image_to_qpixmap(preview_image)
             
         except (IOError, OSError) as e:
-            error(f"生成LUT预览失败 (文件IO错误): {e}")
+            error(f"生成LUT预览失败: {e}")
             return None
         except ValueError as e:
-            error(f"生成LUT预览失败 (数据错误): {e}")
+            error(f"生成LUT预览失败: {e}")
             return None
         except MemoryError as e:
-            error(f"生成LUT预览失败 (内存不足): {e}")
+            error(f"生成LUT预览失败: {e}")
             return None
         except Exception as e:
-            error(f"生成LUT预览失败 (未知错误): {e}")
+            error(f"生成LUT预览失败: {e}")
             return None
     
     def _pil_image_to_qpixmap(self, pil_image) -> QPixmap:
@@ -308,22 +312,22 @@ class LUTPreviewGenerator:
                 try:
                     os.remove(cache_path)
                 except (IOError, OSError) as e:
-                    error(f"清除缓存失败 (IO/OS错误): {e}")
+                    error(f"清除缓存失败: {e}")
                 except PermissionError as e:
-                    error(f"清除缓存失败 (权限不足): {e}")
+                    error(f"清除缓存失败: {e}")
                 except Exception as e:
-                    error(f"清除缓存失败 (未知错误): {e}")
+                    error(f"清除缓存失败: {e}")
         else:
             # 清除所有缓存
             try:
                 for file in Path(preview_dir).glob("*_preview.png"):
                     file.unlink()
             except (IOError, OSError) as e:
-                error(f"清除所有缓存失败 (IO/OS错误): {e}")
+                error(f"清除所有缓存失败: {e}")
             except PermissionError as e:
-                error(f"清除所有缓存失败 (权限不足): {e}")
+                error(f"清除所有缓存失败: {e}")
             except Exception as e:
-                error(f"清除所有缓存失败 (未知错误): {e}")
+                error(f"清除所有缓存失败: {e}")
 
 
 # 全局预览生成器实例
@@ -334,6 +338,7 @@ def get_preview_generator() -> LUTPreviewGenerator:
     """获取全局预览生成器实例"""
     global _preview_generator
     if _preview_generator is None:
+        debug("创建LUT预览生成器实例")
         _preview_generator = LUTPreviewGenerator()
         _preview_generator.preload()
     return _preview_generator
@@ -421,11 +426,11 @@ def create_default_reference_image(output_path: Optional[str] = None) -> bool:
         return True
         
     except (IOError, OSError) as e:
-        error(f"创建默认参考图像失败 (IO/OS错误): {e}")
+        error(f"创建默认参考图像失败: {e}")
         return False
     except MemoryError as e:
-        error(f"创建默认参考图像失败 (内存不足): {e}")
+        error(f"创建默认参考图像失败: {e}")
         return False
     except Exception as e:
-        error(f"创建默认参考图像失败 (未知错误): {e}")
+        error(f"创建默认参考图像失败: {e}")
         return False

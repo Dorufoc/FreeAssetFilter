@@ -22,6 +22,20 @@ import re
 from pathlib import Path
 from typing import List, Optional, Set
 
+# 延迟导入logger，避免循环依赖
+_logger = None
+
+def _get_logger():
+    """获取logger实例（延迟导入）"""
+    global _logger
+    if _logger is None:
+        try:
+            from freeassetfilter.utils.app_logger import get_logger
+            _logger = get_logger()
+        except Exception:
+            _logger = None
+    return _logger
+
 
 # Windows保留文件名（不能用作文件名）
 WINDOWS_RESERVED_NAMES: Set[str] = {
@@ -81,13 +95,24 @@ def _get_project_root() -> str:
     try:
         # PyInstaller打包环境
         if getattr(sys, 'frozen', False):
-            return os.path.dirname(sys.executable)
+            project_root = os.path.dirname(sys.executable)
+            logger = _get_logger()
+            if logger:
+                logger.debug(f"打包环境项目根目录: {project_root}")
+            return project_root
         else:
             # 开发环境
             current_file = os.path.abspath(__file__)
             # 从utils/path_utils.py向上3级到项目根目录
-            return os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
-    except Exception:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+            logger = _get_logger()
+            if logger:
+                logger.debug(f"开发环境项目根目录: {project_root}")
+            return project_root
+    except Exception as e:
+        logger = _get_logger()
+        if logger:
+            logger.warning(f"获取项目根目录失败: {e}")
         return os.path.abspath(".")
 
 
@@ -96,6 +121,10 @@ def _init_allowed_paths():
     global _ALLOWED_BASE_PATHS
     if _ALLOWED_BASE_PATHS:
         return
+    
+    logger = _get_logger()
+    if logger:
+        logger.debug("初始化路径白名单")
     
     project_root = _get_project_root()
     
@@ -147,6 +176,9 @@ def _init_allowed_paths():
     
     # 规范化所有路径
     _ALLOWED_BASE_PATHS = [os.path.normpath(p) for p in _ALLOWED_BASE_PATHS if os.path.exists(p)]
+    
+    if logger:
+        logger.debug(f"路径白名单初始化完成，共 {len(_ALLOWED_BASE_PATHS)} 个路径")
 
 
 def is_sensitive_path(path: str) -> bool:
@@ -230,6 +262,10 @@ def is_path_allowed(path: str, strict: bool = False) -> bool:
             if parent_dir and not is_sensitive_path(parent_dir):
                 return True
     
+    logger = _get_logger()
+    if logger:
+        logger.warning(f"路径访问被拒绝: {path}")
+    
     return False
 
 
@@ -308,7 +344,14 @@ def validate_dll_path(dll_path: str) -> bool:
     
     # 检查是否为敏感路径（排除已检查的系统目录）
     if is_sensitive_path(normalized_path):
+        logger = _get_logger()
+        if logger:
+            logger.warning(f"DLL路径为敏感路径: {dll_path}")
         return False
+    
+    logger = _get_logger()
+    if logger:
+        logger.warning(f"DLL路径验证失败: {dll_path}")
     
     return False
 
@@ -421,6 +464,9 @@ def validate_safe_path(path: str, base_path: str = None) -> str:
             base_path_resolved += os.sep
         
         if not resolved_path.startswith(base_path_resolved) and resolved_path != base_path_resolved.rstrip(os.sep):
+            logger = _get_logger()
+            if logger:
+                logger.error(f"路径遍历攻击检测: {path} 不在允许的目录 {base_path} 下")
             raise ValueError(f"路径遍历攻击检测: {path} 不在允许的目录 {base_path} 下")
     
     return resolved_path
@@ -480,8 +526,17 @@ def get_app_data_path():
         data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
     
     # 确保目录存在
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(os.path.join(data_dir, 'thumbnails'), exist_ok=True)
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(os.path.join(data_dir, 'thumbnails'), exist_ok=True)
+        logger = _get_logger()
+        if logger:
+            logger.debug(f"应用数据目录: {data_dir}")
+    except Exception as e:
+        logger = _get_logger()
+        if logger:
+            logger.error(f"创建应用数据目录失败: {e}")
+        raise
     
     return data_dir
 
@@ -497,7 +552,16 @@ def get_config_path():
         config_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'config')
     
     # 确保目录存在
-    os.makedirs(config_dir, exist_ok=True)
+    try:
+        os.makedirs(config_dir, exist_ok=True)
+        logger = _get_logger()
+        if logger:
+            logger.debug(f"配置目录: {config_dir}")
+    except Exception as e:
+        logger = _get_logger()
+        if logger:
+            logger.error(f"创建配置目录失败: {e}")
+        raise
     
     return config_dir
 

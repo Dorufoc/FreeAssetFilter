@@ -118,6 +118,8 @@ class ModernSettingsWindow(QDialog):
         
         # 初始化UI
         self.init_modern_ui()
+        
+        debug("设置窗口初始化完成")
     
     def init_modern_ui(self):
         """
@@ -598,6 +600,7 @@ class ModernSettingsWindow(QDialog):
         nav_ids = ["general", "file_selector", "file_staging", "player", "text_preview", "developer", "about"]
         
         if 0 <= index < len(nav_ids):
+            debug(f"切换导航: {nav_ids[index]}")
             for i, button in enumerate(self.navigation_buttons):
                 if i == index:
                     button.button_type = "primary"
@@ -1144,6 +1147,7 @@ class ModernSettingsWindow(QDialog):
         )
         def on_theme_toggled(value):
             theme_value = "dark" if value else "default"
+            debug(f"主题切换: {theme_value}")
             self.current_settings.update({"appearance.theme": theme_value})
 
             current_accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
@@ -1712,6 +1716,7 @@ class ModernSettingsWindow(QDialog):
             url (str): 要打开的链接
         """
         import webbrowser
+        debug(f"打开链接: {url}")
         webbrowser.open(url)
 
     def _find_update_controller(self):
@@ -1804,6 +1809,7 @@ class ModernSettingsWindow(QDialog):
         Args:
             value (bool): 开关状态
         """
+        debug(f"实验性功能开关: {value}")
         if value:
             # 开启时弹出警告提示窗口
             self._show_experimental_warning()
@@ -1865,6 +1871,7 @@ class ModernSettingsWindow(QDialog):
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             "data", "settings.json"
         )
+        debug("打开设置文件")
 
         # 确保文件存在
         if not os.path.exists(settings_file_path):
@@ -2074,6 +2081,7 @@ class ModernSettingsWindow(QDialog):
         """
         加载当前设置
         """
+        debug("开始加载设置")
         self.current_settings = {
             "appearance.theme": self.settings_manager.get_setting("appearance.theme", "default"),
             "appearance.colors.base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF"),
@@ -2124,6 +2132,7 @@ class ModernSettingsWindow(QDialog):
         """
         保存设置
         """
+        debug("开始保存设置")
         font_changed = self._check_font_changed()
         theme_changed = self._check_theme_changed()
         colors_changed = self._check_colors_changed()
@@ -2133,6 +2142,7 @@ class ModernSettingsWindow(QDialog):
             self.settings_manager.set_setting(key, value)
 
         self.settings_manager.save_settings()
+        info("设置已保存")
 
         app = self.parent() if self.parent() else None
 
@@ -2144,9 +2154,11 @@ class ModernSettingsWindow(QDialog):
         if theme_changed or colors_changed:
             SvgRenderer._invalidate_color_cache()
             self._apply_theme_if_needed()
+            info("主题已更新")
 
         if font_changed:
             self._show_font_change_reminder()
+            info("字体设置已变更")
 
         self.settings_saved.emit(self.current_settings)
 
@@ -2258,6 +2270,7 @@ class ModernSettingsWindow(QDialog):
         重置设置为默认值
         将当前设置恢复为默认值，并立即更新UI显示
         """
+        debug("用户请求重置设置")
         # 询问用户是否确认重置
         confirm_box = CustomMessageBox(self)
         confirm_box.set_title("确认重置")
@@ -2274,6 +2287,8 @@ class ModernSettingsWindow(QDialog):
 
                     # 保存默认设置到文件
                     self.settings_manager.save_settings()
+                    
+                    info("设置已重置为默认值")
 
                     # 显示带有关闭提示的成功消息
                     self.show_reset_success_and_exit()
@@ -2294,6 +2309,7 @@ class ModernSettingsWindow(QDialog):
         """
         显示重置成功消息并退出程序
         """
+        debug("显示重置成功消息")
         success_box = CustomMessageBox(self)
         success_box.set_title("重置成功")
 
@@ -2313,6 +2329,7 @@ class ModernSettingsWindow(QDialog):
         success_box.exec()
 
         # 消息框关闭后，终止主程序
+        debug("退出程序")
         QApplication.instance().quit()
 
     def _update_ui_to_defaults(self):

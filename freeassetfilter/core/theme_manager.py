@@ -31,28 +31,33 @@ class ThemeManager(QObject):
     def __init__(self, settings_manager=None):
         """
         初始化主题管理器
-        
+
         参数：
             settings_manager: 设置管理器实例，如果不提供则创建新实例
         """
         super().__init__()  # 调用QObject的初始化函数
+        debug("ThemeManager 初始化开始")
+
         self.settings_manager = settings_manager or SettingsManager()
-        
+
         # 主题颜色字典
         self.theme_colors = {}
-        
+
         # 辅助色加深版本
         self.auxiliary_color_darker_2 = ""
         self.auxiliary_color_darker_5 = ""
-        
+
         # 加载当前主题颜色
         self._load_theme_colors()
+        info("ThemeManager 初始化完成")
     
     def _load_theme_colors(self):
         """
         加载主题颜色设置
         使用use_file_for_colors=True直接从JSON文件读取，绕过内存缓存
         """
+        debug("加载主题颜色")
+
         self.theme_colors = {
             "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF", use_file_for_colors=True),
             "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333", use_file_for_colors=True),
@@ -64,6 +69,8 @@ class ThemeManager(QObject):
         # 计算辅助色加深2%和5%的颜色
         self.auxiliary_color_darker_2 = self._darken_color(self.theme_colors["auxiliary_color"], 2)
         self.auxiliary_color_darker_5 = self._darken_color(self.theme_colors["auxiliary_color"], 5)
+
+        debug(f"主题颜色加载完成: {self.theme_colors}")
     
     def _darken_color(self, color_hex, percent):
         """
@@ -107,17 +114,19 @@ class ThemeManager(QObject):
     def toggle_theme(self, is_dark):
         """
         切换主题模式（深色/浅色）
-        
+
         参数：
             is_dark (bool): True为深色主题，False为浅色主题
-            
+
         返回：
             dict: 更新后的主题颜色字典
         """
-        # 更新主题模式设置
         theme_value = "dark" if is_dark else "default"
+        debug(f"切换主题模式: {theme_value}")
+
+        # 更新主题模式设置
         self.settings_manager.set_setting("appearance.theme", theme_value)
-        
+
         # 根据主题模式更新所有相关颜色
         if is_dark:  # 深色主题
             dark_colors = {
@@ -133,21 +142,22 @@ class ThemeManager(QObject):
                 "normal_color": "#808080",        # 浅色模式下普通色
                 "auxiliary_color": "#E6E6E6"      # 浅色模式下辅助色
             }
-        
+
         # 更新当前设置中的所有颜色
         for color_key, color_value in dark_colors.items():
             self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
-        
+
         # 重新加载主题颜色
         self._load_theme_colors()
-        
+
         # 保存设置
         self.settings_manager.save_settings()
-        
+
         # 发出信号
         self.theme_changed.emit(theme_value)
         self.colors_updated.emit(self.theme_colors)
-        
+
+        info(f"主题切换完成: {theme_value}")
         return self.theme_colors
     
     def get_theme_colors(self):
@@ -173,25 +183,31 @@ class ThemeManager(QObject):
     def update_color(self, color_key, color_value):
         """
         更新单个颜色值
-        
+
         参数：
             color_key (str): 颜色键名
             color_value (str): 颜色值（十六进制格式）
         """
-        if color_key in self.theme_colors:
-            self.theme_colors[color_key] = color_value
-            self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
-            
-            # 如果更新的是辅助色，重新计算加深版本
-            if color_key == "auxiliary_color":
-                self.auxiliary_color_darker_2 = self._darken_color(color_value, 2)
-                self.auxiliary_color_darker_5 = self._darken_color(color_value, 5)
-            
-            # 保存设置
-            self.settings_manager.save_settings()
-            
-            # 发出信号
-            self.colors_updated.emit(self.theme_colors)
+        if color_key not in self.theme_colors:
+            warning(f"无效的颜色键: {color_key}")
+            return
+
+        debug(f"更新颜色: {color_key} = {color_value}")
+
+        self.theme_colors[color_key] = color_value
+        self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
+
+        # 如果更新的是辅助色，重新计算加深版本
+        if color_key == "auxiliary_color":
+            self.auxiliary_color_darker_2 = self._darken_color(color_value, 2)
+            self.auxiliary_color_darker_5 = self._darken_color(color_value, 5)
+
+        # 保存设置
+        self.settings_manager.save_settings()
+
+        # 发出信号
+        self.colors_updated.emit(self.theme_colors)
+        debug(f"颜色更新完成: {color_key}")
     
     def is_dark_theme(self):
         """

@@ -938,20 +938,20 @@ class CustomFileSelector(QWidget):
                         try:
                             self.refresh_files()
                         except RuntimeError as e:
-                            debug(f"[DEBUG] 刷新文件列表失败: {e}")
+                            debug(f"刷新文件列表失败: {e}")
 
                     staging_pool = None
                     if self and hasattr(self, '_get_staging_pool'):
                         try:
                             staging_pool = self._get_staging_pool()
                         except RuntimeError as e:
-                            debug(f"[DEBUG] 获取暂存池失败: {e}")
+                            debug(f"获取暂存池失败: {e}")
 
                     if staging_pool and hasattr(staging_pool, 'cards'):
                         try:
                             self._refresh_staging_pool_thumbnails(staging_pool)
                         except RuntimeError as e:
-                            debug(f"[DEBUG] 刷新暂存池缩略图失败: {e}")
+                            debug(f"刷新暂存池缩略图失败: {e}")
 
                     if self and hasattr(self, 'isVisible') and self.isVisible():
                         success_msg = CustomMessageBox(self)
@@ -1473,6 +1473,44 @@ class CustomFileSelector(QWidget):
         self.load_last_path()
         self.refresh_files()
     
+    def _is_drive_available(self, drive_path):
+        """
+        检测盘符是否可用（可以正常访问）
+        
+        Args:
+            drive_path: 盘符路径，如 "C:\\" 或 "D:"
+            
+        Returns:
+            bool: 如果盘符可用返回True，否则返回False
+        """
+        try:
+            # 确保路径格式正确
+            if not drive_path.endswith(('\\', '/')):
+                drive_path = drive_path + '\\'
+            
+            # 方法1: 尝试获取盘符信息
+            import os
+            if not os.path.exists(drive_path):
+                debug(f"盘符 {drive_path} 不存在")
+                return False
+            
+            # 方法2: 尝试列出根目录内容，这是最可靠的检测方式
+            try:
+                # 快速检查，只列出第一个条目
+                with os.scandir(drive_path) as it:
+                    next(it, None)
+                return True
+            except (OSError, PermissionError) as e:
+                debug(f"检测盘符 {drive_path} 可用性时出错: {e}")
+                return False
+            except StopIteration:
+                # 目录存在但是空的，这也算可用
+                return True
+                
+        except Exception as e:
+            debug(f"检测盘符 {drive_path} 可用性时发生异常: {e}")
+            return False
+    
     def _update_drive_list(self):
         """
         动态获取当前系统存在的盘符列表和网络位置并更新到下拉框
@@ -1480,11 +1518,16 @@ class CustomFileSelector(QWidget):
         local_drives = []
         network_locations = []
         if sys.platform == 'win32':
-            # Windows系统：遍历A-Z，检查存在的盘符
+            # Windows系统：遍历A-Z，检查存在且可用的盘符
             for drive in range(65, 91):  # A-Z
                 drive_letter = chr(drive) + ':/'
                 if os.path.exists(drive_letter):
-                    local_drives.append(drive_letter[:-1])  # 显示为 "C:" 而不是 "C:/"
+                    drive_name = drive_letter[:-1]  # 显示为 "C:" 而不是 "C:/"
+                    # 检测盘符可用性
+                    if self._is_drive_available(drive_name):
+                        local_drives.append(drive_name)
+                    else:
+                        debug(f"跳过不可用的盘符: {drive_name}")
             
             # 获取网络映射驱动器
             try:
@@ -1535,10 +1578,13 @@ class CustomFileSelector(QWidget):
                         for i in range(count.value):
                             res = ptr[i]
                             if res.lpLocalName and res.lpRemoteName:
-                                # 添加网络映射驱动器
+                                # 添加网络映射驱动器（先检测可用性）
                                 local_name = ctypes.wstring_at(res.lpLocalName)
                                 if local_name and local_name not in local_drives:
-                                    local_drives.append(local_name)  # 如 "Z:"
+                                    if self._is_drive_available(local_name):
+                                        local_drives.append(local_name)  # 如 "Z:"
+                                    else:
+                                        debug(f"跳过不可用的网络驱动器: {local_name}")
                                 # 直接添加网络位置（UNC路径）
                                 remote_name = ctypes.wstring_at(res.lpRemoteName)
                                 if remote_name and remote_name not in network_locations:
@@ -1571,7 +1617,10 @@ class CustomFileSelector(QWidget):
                                 local_name = parts[0]
                                 remote_name = parts[1]
                                 if local_name and local_name not in local_drives:
-                                    local_drives.append(local_name)
+                                    if self._is_drive_available(local_name):
+                                        local_drives.append(local_name)
+                                    else:
+                                        debug(f"跳过不可用的网络驱动器: {local_name}")
                                 if remote_name and remote_name not in network_locations:
                                     network_locations.append(remote_name)
                 except Exception as e:
@@ -2057,16 +2106,21 @@ class CustomFileSelector(QWidget):
                             drive_name = chr(65 + drive) + ':'
                             drive_path = drive_name + '\\'
                             
+                            # 首先检测盘符是否可用
+                            if not self._is_drive_available(drive_name):
+                                debug(f"跳过不可用的盘符: {drive_name}")
+                                continue
+                            
                             # 使用 os.scandir 获取驱动器信息，避免 QFileInfo 阻塞
                             try:
                                 stat = os.stat(drive_path)
                                 modified = QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate)
                                 created = QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate)
                             except OSError as e:
-                                debug(f"[DEBUG] 获取驱动器 {drive_path} 信息失败: {e}")
+                                debug(f"获取驱动器 {drive_path} 信息失败: {e}")
                                 modified = ""
                                 created = ""
-                            
+
                             file_dict = {
                                 "name": drive_name,
                                 "path": drive_path,
@@ -2078,7 +2132,7 @@ class CustomFileSelector(QWidget):
                             }
                             files.append(file_dict)
                 except Exception as e:
-                    error(f"[ERROR] 获取驱动器列表失败: {e}")
+                    error(f"获取驱动器列表失败: {e}")
             else:
                 # Linux/macOS系统：显示根目录
                 root_path = "/"
@@ -2087,10 +2141,10 @@ class CustomFileSelector(QWidget):
                     modified = QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate)
                     created = QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate)
                 except OSError as e:
-                    debug(f"[DEBUG] 获取根目录 {root_path} 信息失败: {e}")
+                    debug(f"获取根目录 {root_path} 信息失败: {e}")
                     modified = ""
                     created = ""
-                
+
                 file_dict = {
                     "name": root_path,
                     "path": root_path,
@@ -2130,9 +2184,9 @@ class CustomFileSelector(QWidget):
                         except (OSError, PermissionError):
                             # 跳过无法访问的文件
                             continue
-                            
+
             except Exception as e:
-                error(f"[ERROR] CustomFileSelector - _get_files: 读取目录失败: {e}")
+                error(f"读取目录失败: {e}")
                 from freeassetfilter.widgets.D_widgets import CustomMessageBox
                 error_msg = CustomMessageBox(self)
                 error_msg.set_title("错误")
@@ -2479,18 +2533,17 @@ class CustomFileSelector(QWidget):
         """
         创建单个文件卡片（使用FileBlockCard）
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [CustomFileSelector._create_file_card] {msg}")
-        
+        # from freeassetfilter.utils.app_logger import debug as logger_debug
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     logger_debug(f"[{timestamp}] [CustomFileSelector._create_file_card] {msg}")
+
         file_path = file_info["path"]
         file_dir = os.path.normpath(os.path.dirname(file_path))
-        
-        #debug(f"创建文件卡片: {file_path}")
-        #debug(f"文件目录（规范化后）: {file_dir}")
-        #debug(f"selected_files: {self.selected_files}")
+
+        # debug(f"创建文件卡片: {file_path}")
+        # debug(f"文件目录（规范化后）: {file_dir}")
+        # debug(f"selected_files: {self.selected_files}")
         
         file_dict = {
             "name": file_info["name"],
@@ -2529,16 +2582,16 @@ class CustomFileSelector(QWidget):
         """
         创建单个文件卡片，并预先设置固定宽度
         优化版本：避免加载过程中的宽度抖动
-        
+
         Args:
             file_info: 文件信息字典
             card_width: 预设的卡片宽度
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [CustomFileSelector._create_file_card_with_width] {msg}")
+        # import datetime
+        # from freeassetfilter.utils.app_logger import debug as logger_debug
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     logger_debug(f"[{timestamp}] [CustomFileSelector._create_file_card_with_width] {msg}")
         
         file_path = file_info["path"]
         file_dir = os.path.normpath(os.path.dirname(file_path))
@@ -2587,42 +2640,42 @@ class CustomFileSelector(QWidget):
         Args:
             file_info (dict): 文件信息
         """
-        import datetime
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            pass
-        
-        #debug(f"卡片拖拽开始: {file_info.get('name', '')}")
+        # import datetime
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     pass
+
+        # debug(f"卡片拖拽开始: {file_info.get('name', '')}")
     
     def _on_card_drag_ended(self, file_info, drop_target):
         """
         处理卡片拖拽结束
         根据放置目标执行相应操作
-        
+
         Args:
             file_info (dict): 文件信息
             drop_target (str): 放置目标类型 ('staging_pool', 'previewer', 'none')
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [CustomFileSelector._on_card_drag_ended] {msg}")
-        
+        # import datetime
+        # from freeassetfilter.utils.app_logger import debug as logger_debug
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     logger_debug(f"[{timestamp}] [CustomFileSelector._on_card_drag_ended] {msg}")
+
         file_path = file_info.get('path', '')
         file_path_norm = os.path.normpath(file_path)
         file_dir_norm = os.path.normpath(os.path.dirname(file_path))
-        
-        #debug(f"卡片拖拽结束: {file_info.get('name', '')}, 目标: {drop_target}")
-        
+
+        # debug(f"卡片拖拽结束: {file_info.get('name', '')}, 目标: {drop_target}")
+
         if drop_target == 'staging_pool':
             # 拖拽到存储池，选中文件
-            #debug(f"拖拽到存储池，选中文件: {file_path_norm}")
-            
+            # debug(f"拖拽到存储池，选中文件: {file_path_norm}")
+
             # 设置卡片选中状态
             if file_dir_norm not in self.selected_files:
                 self.selected_files[file_dir_norm] = set()
-            
+
             if file_path_norm not in self.selected_files[file_dir_norm]:
                 self.selected_files[file_dir_norm].add(file_path_norm)
                 self._selected_file_paths.add(file_path_norm)
@@ -2630,23 +2683,20 @@ class CustomFileSelector(QWidget):
                 self._update_file_selection_state()
                 # 发出选择变化信号，将文件添加到存储池
                 self.file_selection_changed.emit(file_info, True)
-                #debug(f"文件已添加到存储池")
-                pass
-            else:
-                #debug(f"文件已在存储池中，跳过")
-                pass
-                
+                # debug(f"文件已添加到存储池")
+            # else:
+                # debug(f"文件已在存储池中，跳过")
+
         elif drop_target == 'previewer':
             # 拖拽到预览器，预览文件
-            #debug(f"拖拽到预览器，预览文件: {file_path_norm}")
+            # debug(f"拖拽到预览器，预览文件: {file_path_norm}")
             # 发出文件选中信号，启动预览
             self.file_selected.emit(file_info)
-            #debug(f"预览信号已发出")
-            
-        else:
+            # debug(f"预览信号已发出")
+
+        # else:
             # 未放置到有效区域
-            #debug(f"未放置到有效区域")
-            pass
+            # debug(f"未放置到有效区域")
     
     def _handle_card_clicked_signal(self, file_info):
         """处理卡片左键点击，始终基于信号携带的当前 file_info。"""
@@ -2734,7 +2784,7 @@ class CustomFileSelector(QWidget):
                             label.setPixmap(pixmap)
                             return label
                 except (ImportError, OSError, AttributeError) as e:
-                    debug(f"[DEBUG] 获取文件图标失败 {file_path}: {e}")
+                    debug(f"获取文件图标失败 {file_path}: {e}")
                 
                 # 备用方案：使用QFileIconProvider来获取文件图标
                 from PySide6.QtWidgets import QFileIconProvider
@@ -3129,49 +3179,47 @@ class CustomFileSelector(QWidget):
         """
         打开文件
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [CustomFileSelector] {msg}")
-        
+        # import datetime
+        # from freeassetfilter.utils.app_logger import debug as logger_debug
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     logger_debug(f"[{timestamp}] [CustomFileSelector] {msg}")
+
         file_path = card.file_info["path"]
-        #debug(f"打开文件: {file_path}, 是否为目录: {card.file_info['is_dir']}")
-        
+        # debug(f"打开文件: {file_path}, 是否为目录: {card.file_info['is_dir']}")
+
         if os.path.exists(file_path):
             if card.file_info["is_dir"]:
-                #debug(f"打开目录，进入新路径: {file_path}")
+                # debug(f"打开目录，进入新路径: {file_path}")
                 self.current_path = file_path
                 self.refresh_files()
-            else:
-                #debug(f"打开文件，文件信息: {card.file_info}")
-                pass
-    
+            # else:
+                # debug(f"打开文件，文件信息: {card.file_info}")
+
     def _open_file_by_path(self, file_path):
         """
         通过文件路径打开文件或文件夹
-        
+
         Args:
             file_path: 文件或文件夹路径
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [CustomFileSelector] {msg}")
-        
+        # import datetime
+        # from freeassetfilter.utils.app_logger import debug as logger_debug
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     logger_debug(f"[{timestamp}] [CustomFileSelector] {msg}")
+
         is_dir = os.path.isdir(file_path)
-        #debug(f"打开文件: {file_path}, 是否为目录: {is_dir}")
-        
+        # debug(f"打开文件: {file_path}, 是否为目录: {is_dir}")
+
         if os.path.exists(file_path):
             if is_dir:
-                #debug(f"打开目录，进入新路径: {file_path}")
+                # debug(f"打开目录，进入新路径: {file_path}")
                 self.current_path = file_path
                 self.path_edit.setText(file_path)
                 self.refresh_files()
-            else:
-                #debug(f"打开文件: {file_path}")
-                pass
+            # else:
+                # debug(f"打开文件: {file_path}")
     
     def _show_properties(self, card):
         """
@@ -3282,44 +3330,43 @@ class CustomFileSelector(QWidget):
     def dropEvent(self, event):
         """
         处理拖拽释放事件
-        
+
         Args:
             event (QDropEvent): 拖拽释放事件
         """
-        # 生成带时间戳的debug信息
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [CustomFileSelector.dropEvent] {msg}")
-        
-        #debug("=== DROP EVENT START ===")
-        
+        # import datetime
+        # from freeassetfilter.utils.app_logger import debug as logger_debug
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     logger_debug(f"[{timestamp}] [CustomFileSelector.dropEvent] {msg}")
+
+        # debug("=== DROP EVENT START ===")
+
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
-            #debug(f"拖拽的URL数量: {len(urls)}")
-            
+            # debug(f"拖拽的URL数量: {len(urls)}")
+
             for url in urls:
                 file_path = url.toLocalFile()
-                #debug(f"处理拖拽的文件路径（原始）: {file_path}")
-                
+                # debug(f"处理拖拽的文件路径（原始）: {file_path}")
+
                 # 规范化文件路径，确保路径分隔符一致
                 normalized_file_path = os.path.normpath(file_path)
-                #debug(f"处理拖拽的文件路径（规范化后）: {normalized_file_path}")
-                
+                # debug(f"处理拖拽的文件路径（规范化后）: {normalized_file_path}")
+
                 if os.path.isfile(normalized_file_path):
                     # 单个文件：自动导航至该文件所在的目录路径，并在文件选择器中高亮选中该文件
-                    #debug(f"文件类型: 文件")
+                    # debug(f"文件类型: 文件")
                     file_dir = os.path.normpath(os.path.dirname(normalized_file_path))
-                    #debug(f"文件所在目录（规范化后）: {file_dir}")
-                    
+                    # debug(f"文件所在目录（规范化后）: {file_dir}")
+
                     # 将文件选择器当前路径设置为文件所在目录
                     self.current_path = file_dir
-                    #debug(f"设置当前路径为: {file_dir}")
-                    
+                    # debug(f"设置当前路径为: {file_dir}")
+
                     # 保存文件路径，用于回调函数
                     dropped_file_path = normalized_file_path
-                    
+
                     # 立即创建文件信息并更新选中状态，确保卡片创建时能正确显示选中状态
                     try:
                         file_name = os.path.basename(dropped_file_path)
@@ -3333,156 +3380,157 @@ class CustomFileSelector(QWidget):
                             "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
                             "suffix": os.path.splitext(file_name)[1].lower()[1:] if os.path.splitext(file_name)[1] else ""
                         }
-                        
+
                         # 选中该文件（如果尚未选中）
-                        debug(f"检查目录 {file_dir} 是否在selected_files中")
+                        # debug(f"检查目录 {file_dir} 是否在selected_files中")
                         if file_dir not in self.selected_files:
-                            debug(f"目录 {file_dir} 不存在于selected_files中，创建新条目")
+                            # debug(f"目录 {file_dir} 不存在于selected_files中，创建新条目")
                             self.selected_files[file_dir] = set()
-                            debug(f"创建后的selected_files: {self.selected_files}")
-                        else:
-                            debug(f"目录已存在，当前selected_files[{file_dir}]: {self.selected_files[file_dir]}")
-                        
+                            # debug(f"创建后的selected_files: {self.selected_files}")
+                            pass
+                        # else:
+                            # debug(f"目录已存在，当前selected_files[{file_dir}]: {self.selected_files[file_dir]}")
+
                         file_already_selected = dropped_file_path in self._selected_file_paths
-                        debug(f"文件是否已选中: {file_already_selected}")
-                        
+                        # debug(f"文件是否已选中: {file_already_selected}")
+
                         if not file_already_selected:
-                            debug(f"添加文件到选中列表")
+                            # debug(f"添加文件到选中列表")
                             self.selected_files[file_dir].add(dropped_file_path)
                             self._selected_file_paths.add(dropped_file_path)
-                            debug(f"添加后的selected_files[{file_dir}]: {self.selected_files[file_dir]}")
-                            debug(f"完整的selected_files: {self.selected_files}")
-                            
+                            # debug(f"添加后的selected_files[{file_dir}]: {self.selected_files[file_dir]}")
+                            # debug(f"完整的selected_files: {self.selected_files}")
+
                             # 发出文件选择信号用于预览（立即发出，确保预览器能及时响应）
-                            debug(f"发出file_selected信号，启动统一预览器")
+                            # debug(f"发出file_selected信号，启动统一预览器")
                             self.file_selected.emit(file_info)
-                        else:
-                            debug(f"文件已在选中列表中，跳过重复添加")
-                            debug(f"当前selected_files[{file_dir}]: {self.selected_files[file_dir]}")
+                        # else:
+                            # debug(f"文件已在选中列表中，跳过重复添加")
+                            # debug(f"当前selected_files[{file_dir}]: {self.selected_files[file_dir]}")
                     except Exception as e:
-                        debug(f"处理文件信息时出错: {e}")
+                        # debug(f"处理文件信息时出错: {e}")
+                        warning(f"处理拖拽文件信息失败: {e}")
                         return
-                    
+
                     # 使用回调函数确保在文件卡片生成完成并更新UI选中状态后，再通知储存池
                     # 使用默认参数将变量绑定到函数，避免闭包作用域问题
                     def on_files_refreshed(file_info=file_info, file_already_selected=file_already_selected):
-                        debug("文件卡片生成完成，更新UI选中状态")
+                        # debug("文件卡片生成完成，更新UI选中状态")
                         self._update_file_selection_state()
-                        
+
                         # 只有在文件尚未选中的情况下才发出file_selection_changed信号
                         # 这样可以确保UI状态刷新后，储存池才添加文件
                         if not file_already_selected:
-                            debug(f"UI状态刷新完成，发出file_selection_changed信号到储存池")
+                            # debug(f"UI状态刷新完成，发出file_selection_changed信号到储存池")
                             self.file_selection_changed.emit(file_info, True)
-                        
+
                         self._update_file_selection_state()
-                    
+
                     # 刷新文件列表，显示文件所在目录的内容
-                    debug(f"调用refresh_files刷新文件列表，完成后调用回调函数")
+                    # debug(f"调用refresh_files刷新文件列表，完成后调用回调函数")
                     self.refresh_files(callback=on_files_refreshed)
-            
+
             event.acceptProposedAction()
-            debug(f"接受拖拽提议的操作")
+            # debug(f"接受拖拽提议的操作")
         else:
             event.ignore()
-        
+
         # 以下代码已被注释，因为根据用户需求，从外部拖入文件到文件选择器时不执行任何操作
-        if False and event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            debug(f"拖拽的URL数量: {len(urls)}")
-            
-            if len(urls) == 1:
-                # 单个文件或文件夹
-                url = urls[0]
-                file_path = url.toLocalFile()
-                debug(f"拖拽的文件路径: {file_path}")
-                
-                if os.path.isfile(file_path):
-                    # 单个文件：自动导航至该文件所在的目录路径，并在文件选择器中高亮选中该文件
-                    debug(f"文件类型: 文件")
-                    file_dir = os.path.normpath(os.path.dirname(file_path))
-                    debug(f"文件所在目录: {file_dir}")
-                    
-                    self.current_path = file_dir
-                    debug(f"设置当前路径为: {file_dir}")
-                    
-                    # 保存文件路径，用于回调函数
-                    dropped_file_path = file_path
-                    
-                    # 使用回调函数确保在文件卡片生成完成后再进行后续操作
-                    def on_files_refreshed():
-                        debug("文件卡片生成完成，开始后续操作")
-                        # 选中该文件
-                        if file_dir in self.selected_files:
-                            debug(f"目录 {file_dir} 已存在于selected_files中")
-                            self.selected_files[file_dir].add(dropped_file_path)
-                        else:
-                            debug(f"目录 {file_dir} 不存在于selected_files中，创建新条目")
-                            self.selected_files[file_dir] = {dropped_file_path}
-                        
-                        debug(f"selected_files内容: {self.selected_files}")
-                        
-                        # 更新UI显示选中状态
-                        self._update_file_selection_state()
-                        debug(f"调用_update_file_selection_state更新选中状态")
-                        
-                        # 创建文件信息字典
-                        try:
-                            file_stat = os.stat(dropped_file_path)
-                            file_name = os.path.basename(dropped_file_path)
-                            file_info = {
-                                "name": file_name,
-                                "path": dropped_file_path,
-                                "is_dir": os.path.isdir(dropped_file_path),
-                                "size": file_stat.st_size,
-                                "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                                "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
-                                "suffix": os.path.splitext(file_name)[1].lower()[1:] if os.path.splitext(file_name)[1] else ""
-                            }
-                            
-                            # 发出文件选择信号用于预览
-                            debug(f"发出file_selected信号，启动统一预览器")
-                            self.file_selected.emit(file_info)
-                        except Exception as e:
-                            debug(f"创建文件信息失败: {e}")
-                    
-                    self.refresh_files(callback=on_files_refreshed)
-                    debug(f"调用refresh_files刷新文件列表，完成后调用回调函数")
-                elif os.path.isdir(file_path):
-                    # 单个文件夹：自动导航并展开至该文件夹内部路径
-                    debug(f"文件类型: 文件夹")
-                    self.current_path = file_path
-                    debug(f"设置当前路径为: {file_path}")
-                    self.refresh_files()
-                    debug(f"调用refresh_files刷新文件列表")
-            
-            event.acceptProposedAction()
-            debug(f"接受拖拽提议的操作")
+        # if False and event.mimeData().hasUrls():
+        #     urls = event.mimeData().urls()
+        #     debug(f"拖拽的URL数量: {len(urls)}")
+        #
+        #     if len(urls) == 1:
+        #         # 单个文件或文件夹
+        #         url = urls[0]
+        #         file_path = url.toLocalFile()
+        #         debug(f"拖拽的文件路径: {file_path}")
+        #
+        #         if os.path.isfile(file_path):
+        #             # 单个文件：自动导航至该文件所在的目录路径，并在文件选择器中高亮选中该文件
+        #             debug(f"文件类型: 文件")
+        #             file_dir = os.path.normpath(os.path.dirname(file_path))
+        #             debug(f"文件所在目录: {file_dir}")
+        #
+        #             self.current_path = file_dir
+        #             debug(f"设置当前路径为: {file_dir}")
+        #
+        #             # 保存文件路径，用于回调函数
+        #             dropped_file_path = file_path
+        #
+        #             # 使用回调函数确保在文件卡片生成完成后再进行后续操作
+        #             def on_files_refreshed():
+        #                 debug("文件卡片生成完成，开始后续操作")
+        #                 # 选中该文件
+        #                 if file_dir in self.selected_files:
+        #                     debug(f"目录 {file_dir} 已存在于selected_files中")
+        #                     self.selected_files[file_dir].add(dropped_file_path)
+        #                 else:
+        #                     debug(f"目录 {file_dir} 不存在于selected_files中，创建新条目")
+        #                     self.selected_files[file_dir] = {dropped_file_path}
+        #
+        #                 debug(f"selected_files内容: {self.selected_files}")
+        #
+        #                 # 更新UI显示选中状态
+        #                 self._update_file_selection_state()
+        #                 debug(f"调用_update_file_selection_state更新选中状态")
+        #
+        #                 # 创建文件信息字典
+        #                 try:
+        #                     file_stat = os.stat(dropped_file_path)
+        #                     file_name = os.path.basename(dropped_file_path)
+        #                     file_info = {
+        #                         "name": file_name,
+        #                         "path": dropped_file_path,
+        #                         "is_dir": os.path.isdir(dropped_file_path),
+        #                         "size": file_stat.st_size,
+        #                         "modified": datetime.datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        #                         "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
+        #                         "suffix": os.path.splitext(file_name)[1].lower()[1:] if os.path.splitext(file_name)[1] else ""
+        #                     }
+        #
+        #                     # 发出文件选择信号用于预览
+        #                     debug(f"发出file_selected信号，启动统一预览器")
+        #                     self.file_selected.emit(file_info)
+        #                 except Exception as e:
+        #                     debug(f"创建文件信息失败: {e}")
+        #
+        #             self.refresh_files(callback=on_files_refreshed)
+        #             debug(f"调用refresh_files刷新文件列表，完成后调用回调函数")
+        #         elif os.path.isdir(file_path):
+        #             # 单个文件夹：自动导航并展开至该文件夹内部路径
+        #             debug(f"文件类型: 文件夹")
+        #             self.current_path = file_path
+        #             debug(f"设置当前路径为: {file_path}")
+        #             self.refresh_files()
+        #             debug(f"调用refresh_files刷新文件列表")
+        #
+        #     event.acceptProposedAction()
+        #     debug(f"接受拖拽提议的操作")
     
     def _handle_dropped_file(self, file_path):
         """
         处理拖拽的文件，同时实现两个功能：
         1. 将文件添加到存储池
         2. 模拟右键选择行为
-        
+
         Args:
             file_path (str): 文件路径
         """
-        # 生成带时间戳的debug信息
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [CustomFileSelector._handle_dropped_file] {msg}")
-        
-        #debug(f"开始处理拖拽的文件: {file_path}")
-        
+        # import datetime
+        # from freeassetfilter.utils.app_logger import debug as logger_debug
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     logger_debug(f"[{timestamp}] [CustomFileSelector._handle_dropped_file] {msg}")
+
+        # debug(f"开始处理拖拽的文件: {file_path}")
+
         # 直接创建文件信息，而不是在files_layout中查找
         try:
             file_stat = os.stat(file_path)
             file_name = os.path.basename(file_path)
             file_dir = os.path.dirname(file_path)
-            
+
             # 创建文件信息字典
             file_info = {
                 "name": file_name,
@@ -3493,50 +3541,51 @@ class CustomFileSelector(QWidget):
                 "created": datetime.datetime.fromtimestamp(file_stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
                 "suffix": os.path.splitext(file_name)[1].lower()[1:] if os.path.splitext(file_name)[1] else ""
             }
-            
-            debug(f"创建的文件信息: {file_info}")
-            
+
+            # debug(f"创建的文件信息: {file_info}")
+
             # 1. 更新文件选择器内部的选中状态，避免重复添加
-            debug(f"更新文件选择器内部的选中状态")
+            # debug(f"更新文件选择器内部的选中状态")
             if file_dir not in self.selected_files:
                 self.selected_files[file_dir] = set()
             file_path_norm = os.path.normpath(file_path)
             # 检查文件是否已经被选中，如果是则跳过
             if file_path_norm in self._selected_file_paths:
-                debug(f"文件 {file_path} 已经被选中，跳过处理")
+                # debug(f"文件 {file_path} 已经被选中，跳过处理")
                 return
             # 添加到选中文件列表
             self.selected_files[file_dir].add(file_path_norm)
             self._selected_file_paths.add(file_path_norm)
-            
+
             # 2. 发出文件选择状态变化信号，将文件添加到存储池
-            debug(f"发出file_selection_changed信号，将文件添加到存储池")
+            # debug(f"发出file_selection_changed信号，将文件添加到存储池")
             self.file_selection_changed.emit(file_info, True)
-            
+
             # 3. 发出文件右键点击信号，模拟右键选择行为
-            debug(f"发出file_right_clicked信号，模拟右键选择")
+            # debug(f"发出file_right_clicked信号，模拟右键选择")
             self.file_right_clicked.emit(file_info)
-            
+
             # 4. 更新UI显示选中状态
-            debug(f"更新UI显示选中状态")
+            # debug(f"更新UI显示选中状态")
             self._update_file_selection_state()
-            
-            debug(f"成功处理拖拽的文件: {file_path}")
+
+            # debug(f"成功处理拖拽的文件: {file_path}")
         except Exception as e:
-            debug(f"处理文件时出错: {e}")
-        
-        debug(f"完成处理拖拽的文件: {file_path}")
+            # debug(f"处理文件时出错: {e}")
+            warning(f"处理拖拽文件失败: {e}")
+
+        # debug(f"完成处理拖拽的文件: {file_path}")
     
     def _update_file_selection_state(self):
         """
         更新文件选择状态，确保UI显示正确的选中状态
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [CustomFileSelector._update_file_selection_state] {msg}")
-        
+        # import datetime
+        # from freeassetfilter.utils.app_logger import debug as logger_debug
+        # def debug(msg):
+        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        #     logger_debug(f"[{timestamp}] [CustomFileSelector._update_file_selection_state] {msg}")
+
         for widget in self._iter_visible_cards():
             if widget is not None and hasattr(widget, 'file_info'):
                 file_path = widget.file_info['path']

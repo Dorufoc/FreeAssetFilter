@@ -30,10 +30,10 @@ try:
     from .native import rust_color_extractor
     _RUST_AVAILABLE = True
     _RUST_MODULE = rust_color_extractor
-    info("[ColorExtractor] Rust DLL 扩展模块加载成功，将使用高性能实现")
+    info("Rust DLL 扩展模块加载成功")
 except ImportError as e:
-    warning(f"[ColorExtractor] Rust DLL 扩展模块加载失败: {e}")
-    info("[ColorExtractor] 将使用纯 Python 实现（性能较低）")
+    warning(f"Rust DLL 扩展模块加载失败: {e}")
+    info("使用纯 Python 实现")
 
 # 用于处理音频文件元数据
 try:
@@ -70,7 +70,7 @@ def _prepare_image_data_for_rust(cover_data: bytes) -> bytes:
         header = struct.pack('ii', width, height)
         return header + pixels
     except (OSError, IOError, ValueError) as e:
-        error(f"[ColorExtractor] 图像数据准备失败: {e}")
+        error(f"图像数据准备失败: {e}")
         raise ValueError(f"图像解码失败: {e}")
 
 
@@ -90,7 +90,7 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
         提取的主色调列表（QColor对象）
     """
     if not cover_data:
-        warning("[ColorExtractor] 封面数据为空")
+        warning("封面数据为空")
         return []
     
     # 优先使用 Rust DLL 实现
@@ -114,15 +114,13 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
             
             # 转换为 QColor 列表
             result = [QColor(r, g, b) for r, g, b in colors_rgb]
-            
-            debug(f"[ColorExtractor] Rust 提取到 {len(result)} 个颜色，耗时 {elapsed:.2f}ms")
-            for i, c in enumerate(result):
-                debug(f"  颜色{i+1}: RGB({c.red()}, {c.green()}, {c.blue()})")
+
+            debug(f"Rust 提取 {len(result)} 个颜色，耗时 {elapsed:.2f}ms")
 
             return result
 
         except (OSError, IOError, ValueError, TypeError) as e:
-            error(f"[ColorExtractor] Rust 提取失败: {e}，降级到 Python 实现")
+            error(f"Rust 提取失败: {e}，降级到 Python 实现")
     
     # 降级到 Python 实现
     return _extract_cover_colors_python(cover_data, num_colors, min_distance)
@@ -136,7 +134,7 @@ def _extract_cover_colors_python(cover_data: bytes, num_colors: int = 5,
     try:
         image = Image.open(io.BytesIO(cover_data))
     except (OSError, IOError) as e:
-        error(f"[ColorExtractor] 打开封面图像失败: {e}")
+        error(f"打开封面图像失败: {e}")
         return []
     
     try:
@@ -167,16 +165,14 @@ def _extract_cover_colors_python(cover_data: bytes, num_colors: int = 5,
         
         while len(colors) < num_colors:
             colors.append(QColor(128, 128, 128))
-        
+
         result = colors[:num_colors]
-        debug(f"[ColorExtractor] Python 提取到 {len(result)} 个颜色")
-        for i, c in enumerate(result):
-            debug(f"  颜色{i+1}: RGB({c.red()}, {c.green()}, {c.blue()})")
+        debug(f"Python 提取 {len(result)} 个颜色")
 
         return result
 
     except (OSError, IOError, ValueError, TypeError) as e:
-        error(f"[ColorExtractor] 处理封面图像失败: {e}")
+        error(f"处理封面图像失败: {e}")
         return []
 
 
@@ -198,13 +194,13 @@ def extract_cover_colors_from_path(image_path: str, num_colors: int = 5,
             cover_data = f.read()
         return extract_cover_colors(cover_data, num_colors, min_distance)
     except FileNotFoundError as e:
-        error(f"[ColorExtractor] 封面文件不存在: {e}")
+        error(f"封面文件不存在: {e}")
         return []
     except PermissionError as e:
-        error(f"[ColorExtractor] 无权限读取封面文件: {e}")
+        error(f"无权限读取封面文件: {e}")
         return []
     except (OSError, IOError) as e:
-        error(f"[ColorExtractor] 从文件读取封面失败: {e}")
+        error(f"从文件读取封面失败: {e}")
         return []
 
 
@@ -331,8 +327,7 @@ def extract_cover_from_audio(file_path: str) -> Optional[bytes]:
                 try:
                     Image.open(io.BytesIO(picture_data))
                     return picture_data
-                except (OSError, IOError) as e:
-                    debug(f"[ColorExtractor] OGG图片数据解析失败: {e}")
+                except (OSError, IOError):
                     pass
         
         # MP4/M4A文件
@@ -361,7 +356,7 @@ def extract_cover_from_audio(file_path: str) -> Optional[bytes]:
         return None
 
     except (OSError, IOError, ValueError, TypeError) as e:
-        error(f"[ColorExtractor] 提取封面失败: {e}")
+        error(f"提取封面失败: {e}")
         return None
 
 
@@ -382,7 +377,7 @@ def generate_colors_from_accent(accent_hex: str = "#B036EE") -> List[QColor]:
         if not accent_color.isValid():
             accent_color = QColor("#B036EE")
     except (ValueError, TypeError) as e:
-        error(f"[ColorExtractor] 解析强调色失败 '{accent_hex}': {e}")
+        error(f"解析强调色失败 '{accent_hex}': {e}")
         accent_color = QColor("#B036EE")
     
     h, s, v, a = accent_color.getHsv()
@@ -425,17 +420,17 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
     """
     # 验证文件路径
     if not file_path or not os.path.exists(file_path):
-        warning(f"[ColorExtractor] 音频文件不存在: {file_path}")
+        warning(f"音频文件不存在: {file_path}")
         return generate_colors_from_accent(accent_hex)
 
     # 检查文件大小（避免处理过大的文件）
     try:
         file_size = os.path.getsize(file_path)
         if file_size > 100 * 1024 * 1024:  # 100MB
-            warning(f"[ColorExtractor] 音频文件过大，跳过封面提取: {file_size / 1024 / 1024:.1f}MB")
+            warning(f"音频文件过大，跳过封面提取: {file_size / 1024 / 1024:.1f}MB")
             return generate_colors_from_accent(accent_hex)
     except (OSError, IOError) as e:
-        error(f"[ColorExtractor] 检查文件大小失败: {e}")
+        error(f"检查文件大小失败: {e}")
     
     try:
         # 尝试从音频文件提取封面
@@ -444,7 +439,7 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
         if cover_data:
             # 检查封面数据大小
             if len(cover_data) > 10 * 1024 * 1024:  # 10MB
-                warning(f"[ColorExtractor] 封面图像过大，跳过: {len(cover_data) / 1024 / 1024:.1f}MB")
+                warning(f"封面图像过大，跳过: {len(cover_data) / 1024 / 1024:.1f}MB")
                 return generate_colors_from_accent(accent_hex)
 
             # 从封面提取颜色（增大min_distance确保颜色区分度）
@@ -463,20 +458,20 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
                 avg_distance = total_distance / count if count > 0 else 0
 
                 if avg_distance >= 40.0:  # 平均距离阈值
-                    debug(f"[ColorExtractor] 从封面提取到 {len(colors)} 种颜色，平均距离: {avg_distance:.1f}")
+                    debug(f"从封面提取 {len(colors)} 种颜色，平均距离: {avg_distance:.1f}")
                     return colors
                 else:
-                    debug(f"[ColorExtractor] 封面颜色区分度不足({avg_distance:.1f})，使用强调色")
+                    debug(f"封面颜色区分度不足({avg_distance:.1f})，使用强调色")
             else:
-                debug(f"[ColorExtractor] 封面提取颜色数量不足: {len(colors) if colors else 0}")
+                debug(f"封面提取颜色数量不足: {len(colors) if colors else 0}")
         else:
-            debug(f"[ColorExtractor] 音频文件无封面: {os.path.basename(file_path)}")
+            debug(f"音频文件无封面: {os.path.basename(file_path)}")
 
     except (OSError, IOError, ValueError, TypeError) as e:
-        error(f"[ColorExtractor] 提取主题色时发生异常: {e}")
+        error(f"提取主题色时发生异常: {e}")
 
     # 降级：基于强调色生成
-    debug(f"[ColorExtractor] 使用强调色生成主题色: {accent_hex}")
+    debug(f"使用强调色生成主题色: {accent_hex}")
     return generate_colors_from_accent(accent_hex)
 
 

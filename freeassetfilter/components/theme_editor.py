@@ -28,6 +28,8 @@ class ThemeEditor(QScrollArea):
         """初始化主题编辑器"""
         super().__init__(parent)
         
+        debug("初始化主题编辑器")
+        
         self.app = QApplication.instance()
         self.settings_manager = getattr(self.app, 'settings_manager', None)
         self.dpi_scale = getattr(self.app, 'dpi_scale_factor', 1.0)
@@ -63,6 +65,8 @@ class ThemeEditor(QScrollArea):
         self.init_ui()
         
         QTimer.singleShot(0, self._on_layout_initialized)
+        
+        debug("主题编辑器初始化完成")
     
     def _get_theme_colors(self, accent_color):
         """
@@ -100,7 +104,9 @@ class ThemeEditor(QScrollArea):
         """
         default_color = "#27BE24"
         if self.settings_manager:
-            return self.settings_manager.get_setting("appearance.colors.custom_design_color", default_color)
+            color = self.settings_manager.get_setting("appearance.colors.custom_design_color", default_color)
+            debug(f"加载自定义颜色: {color}")
+            return color
         return default_color
     
     def _save_slider_color(self, color):
@@ -112,6 +118,7 @@ class ThemeEditor(QScrollArea):
         """
         if self.settings_manager:
             self.settings_manager.set_setting("appearance.colors.custom_design_color", color)
+            debug(f"保存自定义颜色: {color}")
     
     def _check_current_theme_match(self):
         """
@@ -129,6 +136,7 @@ class ThemeEditor(QScrollArea):
                     "name": theme["name"],
                     "colors": full_colors
                 }
+                debug(f"匹配到预设主题: {theme['name']}")
                 return
         
         for theme in self.custom_themes:
@@ -138,6 +146,7 @@ class ThemeEditor(QScrollArea):
                     "name": theme["name"],
                     "colors": full_colors
                 }
+                debug(f"匹配到自定义主题: {theme['name']}")
                 return
         
         if self._slider_color == current_accent:
@@ -146,6 +155,7 @@ class ThemeEditor(QScrollArea):
                 "name": "自定义设计1",
                 "colors": full_colors
             }
+            debug("匹配到滑条自定义颜色")
         elif not self.selected_theme:
             full_colors = self._get_theme_colors(self._slider_color)
             self.selected_theme = {
@@ -534,6 +544,8 @@ class ThemeEditor(QScrollArea):
             "colors": theme_colors
         }
         
+        debug(f"选中主题: {card.theme_name}")
+        
         # 发送主题选中信号
         self.theme_selected.emit(self.selected_theme)
     
@@ -555,6 +567,8 @@ class ThemeEditor(QScrollArea):
         重置按钮点击事件
         重置所有颜色设置为默认值
         """
+        debug("重置主题颜色为默认值")
+        
         # 默认强调色设置 - 活力蓝
         default_accent_color = "#007AFF"
         
@@ -577,56 +591,42 @@ class ThemeEditor(QScrollArea):
             
             # 重新初始化UI
             self.init_ui()
+            
+            debug("主题颜色重置完成")
     
     def on_apply_clicked(self):
         """
         应用按钮点击事件
         应用选中的主题颜色
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [ThemeEditor.on_apply_clicked] {msg}")
-        
         debug("开始应用选中的主题颜色")
         
         if self.selected_theme and "colors" in self.selected_theme:
-            debug(f"选中的主题: {self.selected_theme['name']}")
-            debug(f"主题颜色列表: {self.selected_theme['colors']}")
+            debug(f"选中的主题: {self.selected_theme['name']}, 颜色: {self.selected_theme['colors']}")
             
             # 发送主题选择信号
-            debug("发送主题选择信号")
             self.theme_selected.emit(self.selected_theme)
             
             # 直接保存设置，确保配置被保存到文件
             if self.settings_manager:
-                debug("使用设置管理器保存主题颜色")
-                
                 # 只保存强调色，其他颜色通过深色模式自动获取
                 accent_color = self.selected_theme["colors"][0]
-                setting_path = "appearance.colors.accent_color"
-                debug(f"设置颜色: accent_color = {accent_color} (路径: {setting_path})")
-                self.settings_manager.set_setting(setting_path, accent_color)
+                self.settings_manager.set_setting("appearance.colors.accent_color", accent_color)
 
                 # 保存预设主题名称
                 theme_name = self.selected_theme.get("name", "")
-                if theme_name:
-                    self.settings_manager.set_setting("appearance.preset_theme", theme_name)
-                else:
-                    self.settings_manager.set_setting("appearance.preset_theme", "")
+                self.settings_manager.set_setting("appearance.preset_theme", theme_name if theme_name else "")
 
                 # 保存设置到文件
-                debug("保存所有设置到配置文件")
                 self.settings_manager.save_settings()
                 debug("主题颜色保存完成")
+                
                 # 发送主题应用完成信号
-                debug("发送主题应用完成信号")
                 self.theme_applied.emit()
             else:
-                debug("警告: 没有找到设置管理器，无法保存主题颜色")
+                warning("未找到设置管理器，无法保存主题颜色")
         else:
-            debug("错误: 没有选中有效的主题或主题缺少颜色信息")
+            error("未选中有效的主题或主题缺少颜色信息")
 
 # 测试代码
 if __name__ == "__main__":

@@ -525,6 +525,7 @@ class FileStagingPool(QWidget):
             return
 
         file_path = os.path.normpath(file_info["path"])
+        debug(f"添加文件到存储池: {file_info.get('name', 'unknown')}")
         for item in self.items:
             if os.path.normpath(item["path"]) == file_path:
                 return
@@ -595,6 +596,7 @@ class FileStagingPool(QWidget):
             file_path (str): 文件路径
         """
         file_path = os.path.normpath(file_path)
+        debug(f"从存储池移除文件: {file_path}")
         for i, (card, file_info) in enumerate(self.cards):
             if os.path.normpath(file_info["path"]) == file_path:
                 removed_file = file_info
@@ -621,6 +623,7 @@ class FileStagingPool(QWidget):
         """
         清空所有项目
         """
+        debug(f"清空存储池所有项目，当前共 {len(self.items)} 项")
         # 确认对话框
         confirm_msg = CustomMessageBox(self)
         confirm_msg.set_title("确认清空")
@@ -831,23 +834,16 @@ class FileStagingPool(QWidget):
             file_info (dict): 文件信息字典
             drop_target (str): 放置目标类型 ('file_selector', 'previewer', 'none')
         """
-        import datetime
-        from freeassetfilter.utils.app_logger import debug as logger_debug
-
-        def debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            logger_debug(f"[{timestamp}] [FileStagingPool.on_card_drag_ended] {msg}")
-
-        debug(f"拖拽结束，文件: {file_info.get('name', 'unknown')}, 目标: {drop_target}")
+        # debug(f"拖拽结束: {file_info.get('name', 'unknown')} -> {drop_target}")
 
         if drop_target == 'file_selector':
-            debug(f"拖拽到文件选择器，移除文件: {file_info.get('path', '')}")
+            # debug(f"拖拽到文件选择器，移除文件: {file_info.get('path', '')}")
             self.remove_file(file_info['path'])
         elif drop_target == 'previewer':
-            debug(f"拖拽到预览器，触发预览: {file_info.get('path', '')}")
+            # debug(f"拖拽到预览器，触发预览: {file_info.get('path', '')}")
             self.item_left_clicked.emit(file_info)
-        else:
-            debug(f"未放置到有效区域")
+        # else:
+        #     debug(f"未放置到有效区域")
 
     def rename_file(self, file_info, widget=None):
         """
@@ -978,6 +974,7 @@ class FileStagingPool(QWidget):
         导出所有文件到指定目录
         显示导出模式选择弹窗，支持直接导出和分类导出
         """
+        debug(f"开始导出文件，共 {len(self.items)} 项")
         # 检查是否有文件可以导出
         if not self.items:
             info_msg = CustomMessageBox(self)
@@ -1252,7 +1249,7 @@ class FileStagingPool(QWidget):
             }
             with open(self.backup_file, 'w', encoding='utf-8') as f:
                 json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            debug(f"[DEBUG] 保存备份成功，路径: {self.backup_file}, 项目数: {len(self.items)}, 最后路径: {last_path}")
+            # debug(f"保存备份成功: {len(self.items)} 项, 路径: {last_path}")
         except (IOError, OSError) as e:
             warning(f"保存文件列表备份失败: {e}")
 
@@ -1296,6 +1293,7 @@ class FileStagingPool(QWidget):
         Args:
             dialog (QDialog): 父对话框
         """
+        debug("开始导入数据")
         from PySide6.QtWidgets import QFileDialog
         import json
 
@@ -1756,6 +1754,7 @@ class FileStagingPool(QWidget):
         Args:
             dialog (QDialog): 父对话框
         """
+        debug(f"开始导出数据，共 {len(self.items)} 项")
         from PySide6.QtWidgets import QFileDialog
         import json
 
@@ -2099,6 +2098,7 @@ class FileStagingPool(QWidget):
         """
         组件关闭前的统一清理入口，避免后台线程/定时器在窗口销毁后继续运行。
         """
+        debug("存储池组件开始清理")
         self._is_closing = True
 
         try:
@@ -2116,6 +2116,7 @@ class FileStagingPool(QWidget):
             self.blockSignals(True)
         except RuntimeError:
             pass
+        debug("存储池组件清理完成")
 
     @staticmethod
     def _calculate_folder_size_worker(folder_path, cancel_event):
@@ -2272,7 +2273,7 @@ class FileStagingPool(QWidget):
         if self._is_closing:
             return
 
-        debug(f"[FileStagingPool] 缩略图生成完成: {thumb_path}")
+        # debug(f"缩略图生成完成: {thumb_path}")
         if card and hasattr(card, 'refresh_thumbnail'):
             from PySide6.QtCore import QMetaObject, Qt
             QMetaObject.invokeMethod(
@@ -2280,7 +2281,7 @@ class FileStagingPool(QWidget):
                 "refresh_thumbnail",
                 Qt.QueuedConnection
             )
-            debug(f"[FileStagingPool] 已触发存储池卡片缩略图刷新")
+            # debug(f"已触发存储池卡片缩略图刷新")
 
         self._refresh_selector_card(file_path)
 
@@ -2755,13 +2756,7 @@ class FileStagingPool(QWidget):
                 found = True
                 break
 
-        # 调试输出
-        debug(f"[FileStagingPool] set_previewing_file: {file_path}")
-        debug(f"[FileStagingPool] normalized path: {file_path_norm}")
-        debug(f"[FileStagingPool] found={found}, total_cards={len(self.cards)}")
-        if self.cards:
-            first_card_path = os.path.normcase(os.path.normpath(self.cards[0][1].get('path', '')))
-            debug(f"[FileStagingPool] first card path: {first_card_path}")
+        # debug(f"设置预览文件: {file_path}, 找到={found}, 卡片数={len(self.cards)}")
 
     def clear_previewing_state(self):
         """

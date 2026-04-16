@@ -48,7 +48,7 @@ try:
     from PIL import Image, ImageDraw
     PIL_AVAILABLE = True
 except ImportError:
-    warning("PIL库未安装，缩略图功能将受限")
+    warning("PIL库未安装，缩略图功能受限")
 
 
 @dataclass
@@ -263,12 +263,10 @@ class ThumbnailManager:
         self._video_semaphore = threading.Semaphore(1)
 
         debug(
-            "[ThumbnailManager] 初始化完成，"
-            f"缩略图目录: {self._thumb_dir}, "
-            f"native_image_workers={self._native_batch_workers_image}, "
-            f"native_video_workers={self._native_batch_workers_video}, "
-            f"python_video_workers={self._python_batch_workers_video}, "
-            f"available_hwaccels={self._available_hwaccels}"
+            f"初始化完成: thumb_dir={self._thumb_dir}, "
+            f"img_workers={self._native_batch_workers_image}, "
+            f"video_workers={self._native_batch_workers_video}, "
+            f"hwaccels={self._available_hwaccels}"
         )
 
     def _get_cpu_count_safe(self) -> int:
@@ -541,10 +539,10 @@ class ThumbnailManager:
         """
         width, height = img.size
         if width > self.MAX_IMAGE_DIMENSION or height > self.MAX_IMAGE_DIMENSION:
-            warning(f"[ThumbnailManager] 图像尺寸超出限制: {width}x{height} > {self.MAX_IMAGE_DIMENSION}x{self.MAX_IMAGE_DIMENSION}")
+            warning(f"图像尺寸超限: {width}x{height}")
             return False
         if width * height > self.MAX_IMAGE_PIXELS:
-            warning(f"[ThumbnailManager] 图像像素数超出限制: {width * height} > {self.MAX_IMAGE_PIXELS}")
+            warning(f"图像像素超限: {width * height}")
             return False
         return True
 
@@ -601,17 +599,13 @@ class ThumbnailManager:
                     remaining_size -= file_size
                     remaining_count -= 1
                 except (OSError, IOError) as e:
-                    debug(f"[ThumbnailManager] 删除缓存文件失败 {file_path}: {e}")
+                    debug(f"删除缓存文件失败 {file_path}: {e}")
 
             if deleted_count > 0:
-                debug(
-                    "[ThumbnailManager] 缓存限制检查："
-                    f"已清理 {deleted_count} 个旧缩略图，"
-                    f"剩余 {max(remaining_count, 0)} 个文件 / {max(remaining_size, 0)} 字节"
-                )
+                debug(f"缓存清理: 删除{deleted_count}个, 剩余{max(remaining_count, 0)}个")
 
         except Exception as e:
-            warning(f"[ThumbnailManager] 检查缓存限制时出错: {e}")
+            warning(f"检查缓存限制失败: {e}")
 
     def create_thumbnail(self, file_path: str, force_regenerate: bool = False) -> Optional[str]:
         """
@@ -627,7 +621,7 @@ class ThumbnailManager:
         with track_perf("thumbnail.create_thumbnail"):
             if not os.path.exists(file_path):
                 increment_perf_counter("thumbnail.create_thumbnail", "missing_source")
-                warning(f"[ThumbnailManager] 文件不存在: {file_path}")
+                warning(f"文件不存在: {file_path}")
                 return None
 
             thumbnail_path = self.get_thumbnail_path(file_path)
@@ -801,7 +795,7 @@ class ThumbnailManager:
                 if self._rust_bridge.available:
                     batch_jpgs = self._rust_bridge.generate_jpg_batch(file_paths, dpi_scaled_size, dpi_scaled_size)
             except Exception as e:
-                warning(f"[ThumbnailManager] Rust批量缩略图生成失败，将逐项回退: {e}")
+                warning(f"Rust批量生成失败，逐项回退: {e}")
                 batch_jpgs = [None for _ in items]
 
             if len(batch_jpgs) < len(items):
@@ -840,7 +834,7 @@ class ThumbnailManager:
             duration = time.perf_counter() - start_time
             return queue_name, outputs, duration
 
-        info(f"[ThumbnailManager] 开始批量生成缩略图，总任务数: {total_count}")
+        info(f"开始批量生成缩略图: total={total_count}")
         with track_perf("thumbnail.create_thumbnails_batch"):
             for file_data in files_to_generate:
                 if cancel_check and cancel_check():
@@ -1024,13 +1018,10 @@ class ThumbnailManager:
             return batch_items
 
         info(
-            "[ThumbnailManager] 批量任务队列统计："
-            f"native_video={len(task_queues['native_video'])}, "
+            f"队列统计: native_video={len(task_queues['native_video'])}, "
             f"python_video={len(task_queues['python_video'])}, "
             f"native_image={len(task_queues['native_image'])}, "
-            f"python_image={len(task_queues['python_image'])}, "
-            f"video_mode={queue_limits['native_video']}_hw_queues+{queue_limits['python_video']}_sw_workers, "
-            f"available_hwaccels={self._available_hwaccels}"
+            f"python_image={len(task_queues['python_image'])}"
         )
 
         future_to_queue = {}
@@ -1079,10 +1070,10 @@ class ThumbnailManager:
                         break
 
                     if queue_name.startswith("native_") and len(batch_items) > 1:
-                        debug(f"[ThumbnailManager] 提交原生批量任务: queue={queue_name}, batch_size={len(batch_items)}")
+                        # debug(f"提交原生批量任务: queue={queue_name}, batch_size={len(batch_items)}")
                         future = executor.submit(_run_native_batch_task, queue_name, batch_items)
                     else:
-                        debug(f"[ThumbnailManager] 提交单项任务: queue={queue_name}, file={batch_items[0]['file_path']}")
+                        # debug(f"提交单项任务: queue={queue_name}, file={batch_items[0]['file_path']}")
                         future = executor.submit(_run_single_task, queue_name, batch_items[0])
 
                     future_to_queue[future] = queue_name
@@ -1129,9 +1120,7 @@ class ThumbnailManager:
         set_perf_metadata("thumbnail.create_thumbnails_batch", "last_processed_count", processed_count)
         set_perf_metadata("thumbnail.create_thumbnails_batch", "last_success_count", success_count)
 
-        info(
-            f"[ThumbnailManager] 批量缩略图生成结束: success={success_count}, processed={processed_count}, cancelled={cancelled}"
-        )
+        info(f"批量生成结束: success={success_count}, processed={processed_count}")
 
         subprocess_stats = self._get_subprocess_decode_stats()
         subprocess_stats["submitted"] = int(video_decode_submitted_count)
@@ -1151,24 +1140,13 @@ class ThumbnailManager:
             subprocess_hw_hit_rate = (verified_hw / total_decode_events * 100.0) if total_decode_events > 0 else 0.0
 
             info(
-                "[ThumbnailManager] 子进程视频解码路径汇总："
-                f"提交视频任务={video_decode_submitted_count}, "
-                f"decode_path日志数={total_decode_path_lines}, "
-                f"硬解命中={verified_hw}, "
-                f"硬解命中率={subprocess_hw_hit_rate:.1f}%, "
-                f"D3D11VA={int(subprocess_stats.get('d3d11va', 0))}, "
-                f"DXVA2={int(subprocess_stats.get('dxva2', 0))}, "
-                f"QSV={int(subprocess_stats.get('qsv', 0))}, "
-                f"未验证硬解={int(subprocess_stats.get('hw_unverified', 0))}, "
-                f"软解={total_soft_modes}, "
-                f"软解回退={fallback_count}"
+                f"子进程解码统计: hw={verified_hw}, "
+                f"hw_rate={subprocess_hw_hit_rate:.1f}%, "
+                f"sw={total_soft_modes}, fallback={fallback_count}"
             )
 
             if total_decode_path_lines == 0:
-                info(
-                    "[ThumbnailManager] 说明：本轮已提交视频子进程任务，但父进程未采集到 decode path 日志；"
-                    "这通常表示当前任务未经过 Rust 视频解码路径，或相关日志未从子进程回传。"
-                )
+                info("子进程未采集到decode path日志")
 
         if native_stats_enabled:
             stats = self._rust_bridge.get_decode_stats() or {}
@@ -1188,24 +1166,12 @@ class ThumbnailManager:
             hw_hit_rate = (hw_hits / hw_attempts * 100.0) if hw_attempts > 0 else 0.0
 
             info(
-                "[ThumbnailManager] 父进程内Rust视频解码统计："
-                f"硬解尝试={hw_attempts}, "
-                f"硬解命中={hw_hits}, "
-                f"硬解命中率={hw_hit_rate:.1f}%, "
-                f"D3D11VA={int(stats.get('d3d11va_hits', 0))}/{int(stats.get('d3d11va_attempts', 0))}, "
-                f"DXVA2={int(stats.get('dxva2_hits', 0))}/{int(stats.get('dxva2_attempts', 0))}, "
-                f"QSV={int(stats.get('qsv_hits', 0))}/{int(stats.get('qsv_attempts', 0))}, "
-                f"软解尝试={sw_attempts}, "
-                f"软解成功={sw_hits}, "
-                f"软解回退={sw_fallbacks}"
+                f"Rust解码统计: hw={hw_hits}/{hw_attempts}, "
+                f"hw_rate={hw_hit_rate:.1f}%, sw={sw_hits}/{sw_attempts}, fallback={sw_fallbacks}"
             )
 
             if video_decode_submitted_count > 0 and hw_attempts == 0 and sw_attempts == 0:
-                info(
-                    "[ThumbnailManager] 说明：批量视频缩略图在独立子进程中执行，"
-                    "父进程内 Rust 解码统计为 0 属于正常现象，"
-                    "实际硬解/软解路径请以上面的“子进程视频解码路径汇总”为准。"
-                )
+                info("批量视频在子进程执行，父进程Rust统计为0")
 
         return success_count, processed_count
 
@@ -1234,7 +1200,7 @@ class ThumbnailManager:
                     increment_perf_counter("thumbnail.create_native_thumbnail", "jpg_direct")
                     with open(thumbnail_path, "wb") as f:
                         f.write(jpg_bytes)
-                    debug(f"[ThumbnailManager] Rust(JPG直出)缩略图生成成功: {thumbnail_path}")
+                    # debug(f"Rust(JPG)生成成功: {thumbnail_path}")
                     return thumbnail_path
 
                 # 回退到 Rust JPEG 输出（兼容别名接口）
@@ -1243,7 +1209,7 @@ class ThumbnailManager:
                     increment_perf_counter("thumbnail.create_native_thumbnail", "jpeg_direct")
                     with open(thumbnail_path, "wb") as f:
                         f.write(jpeg_bytes)
-                    debug(f"[ThumbnailManager] Rust(JPEG直出)缩略图生成成功: {thumbnail_path}")
+                    # debug(f"Rust(JPEG)生成成功: {thumbnail_path}")
                     return thumbnail_path
 
                 # 回退到 RGBA 路径
@@ -1273,11 +1239,11 @@ class ThumbnailManager:
                 except Exception:
                     pass
 
-                debug(f"[ThumbnailManager] Rust(RGBA回退)缩略图生成成功: {thumbnail_path}")
+                # debug(f"Rust(RGBA)生成成功: {thumbnail_path}")
                 return thumbnail_path
             except Exception as e:
                 increment_perf_counter("thumbnail.create_native_thumbnail", "failure")
-                warning(f"[ThumbnailManager] Rust缩略图生成失败，回退Python: {file_path}, 错误: {e}")
+                warning(f"Rust生成失败，回退Python: {file_path}, {e}")
                 return None
 
     def _create_image_thumbnail(self, file_path: str, thumbnail_path: str) -> Optional[str]:
@@ -1292,7 +1258,7 @@ class ThumbnailManager:
             Optional[str]: 缩略图路径，失败返回None
         """
         if not PIL_AVAILABLE:
-            warning("[ThumbnailManager] PIL库未安装，无法生成图片缩略图")
+            warning("PIL未安装，无法生成图片缩略图")
             return None
 
         img = None
@@ -1328,11 +1294,11 @@ class ThumbnailManager:
 
             thumbnail.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
 
-            debug(f"[ThumbnailManager] 图片缩略图生成成功: {thumbnail_path}")
+            # debug(f"图片缩略图生成成功: {thumbnail_path}")
             return thumbnail_path
 
         except Exception as e:
-            warning(f"[ThumbnailManager] 生成图片缩略图失败: {file_path}, 错误: {e}")
+            warning(f"生成图片缩略图失败: {file_path}, {e}")
             return None
         finally:
             # 确保所有Image对象都被关闭
@@ -1417,7 +1383,7 @@ class ThumbnailManager:
         """
         # 请求去重：检查是否已有相同视频正在处理
         if not self._try_acquire_video_lock(file_path):
-            debug(f"[ThumbnailManager] 视频正在处理中，跳过重复请求: {file_path}")
+            # debug(f"视频正在处理中，跳过重复请求: {file_path}")
             return None
 
         try:
@@ -1426,7 +1392,7 @@ class ThumbnailManager:
                 if result is not None:
                     return result
 
-                warning("[ThumbnailManager] FFmpeg软解失败，无法生成视频缩略图")
+                warning("FFmpeg软解失败，无法生成视频缩略图")
                 return None
         finally:
             self._release_video_lock(file_path)
@@ -1460,19 +1426,19 @@ class ThumbnailManager:
                 creationflags=self._get_subprocess_creationflags(),
             )
         except FileNotFoundError:
-            warning("[ThumbnailManager] 未找到 ffprobe，可用性受限")
+            warning("ffprobe未找到")
             return None
         except subprocess.TimeoutExpired:
-            debug(f"[ThumbnailManager] ffprobe 获取视频时长超时: {file_path}")
+            # debug(f"ffprobe超时: {file_path}")
             return None
         except Exception as e:
-            debug(f"[ThumbnailManager] ffprobe 获取视频时长失败: {file_path}, 错误: {e}")
+            # debug(f"ffprobe失败: {file_path}, {e}")
             return None
 
         if completed.returncode != 0:
-            stderr_text = (completed.stderr or "").strip()
-            if stderr_text:
-                debug(f"[ThumbnailManager] ffprobe 异常输出: {stderr_text}")
+            # stderr_text = (completed.stderr or "").strip()
+            # if stderr_text:
+            #     debug(f"ffprobe异常: {stderr_text}")
             return None
 
         try:
@@ -1590,43 +1556,31 @@ class ThumbnailManager:
                     )
                 except FileNotFoundError:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "ffmpeg_missing")
-                    warning("[ThumbnailManager] 未找到 ffmpeg，无法执行软解缩略图生成")
+                    warning("ffmpeg未找到")
                     return None
                 except subprocess.TimeoutExpired:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "timeout")
-                    debug(
-                        f"[ThumbnailManager] FFmpeg软解抽帧超时: {file_path}, "
-                        f"seek={seek_seconds:.3f}s"
-                    )
+                    # debug(f"FFmpeg超时: {file_path}, seek={seek_seconds:.3f}s")
                     continue
                 except Exception as e:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "subprocess_error")
-                    debug(
-                        f"[ThumbnailManager] FFmpeg软解抽帧失败: {file_path}, "
-                        f"seek={seek_seconds:.3f}s, 错误: {e}"
-                    )
+                    # debug(f"FFmpeg失败: {file_path}, seek={seek_seconds:.3f}s, {e}")
                     continue
 
                 if completed.returncode == 0 and os.path.exists(temp_output_path) and os.path.getsize(temp_output_path) > 0:
                     try:
                         os.replace(temp_output_path, thumbnail_path)
                         increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "success")
-                        debug(
-                            f"[ThumbnailManager] FFmpeg软解缩略图生成成功: {thumbnail_path}, "
-                            f"seek={seek_seconds:.3f}s"
-                        )
+                        # debug(f"FFmpeg生成成功: {thumbnail_path}, seek={seek_seconds:.3f}s")
                         return thumbnail_path
                     except Exception as e:
                         increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "replace_error")
-                        debug(f"[ThumbnailManager] FFmpeg缩略图落盘失败: {thumbnail_path}, 错误: {e}")
+                        # debug(f"FFmpeg落盘失败: {thumbnail_path}, {e}")
                 else:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "attempt_failed")
-                    stderr_text = (completed.stderr or "").strip()
-                    if stderr_text:
-                        debug(
-                            f"[ThumbnailManager] FFmpeg软解尝试失败: {file_path}, "
-                            f"seek={seek_seconds:.3f}s, stderr={stderr_text}"
-                        )
+                    # stderr_text = (completed.stderr or "").strip()
+                    # if stderr_text:
+                    #     debug(f"FFmpeg尝试失败: {file_path}, seek={seek_seconds:.3f}s")
 
             try:
                 if os.path.exists(temp_output_path):
@@ -1635,7 +1589,7 @@ class ThumbnailManager:
                 pass
 
             increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "failure")
-            warning(f"[ThumbnailManager] FFmpeg软解未能生成视频缩略图: {file_path}")
+            warning(f"FFmpeg未能生成视频缩略图: {file_path}")
             return None
 
     def _build_video_thumbnail_subprocess_command(
@@ -1712,11 +1666,11 @@ class ThumbnailManager:
                 )
             except subprocess.TimeoutExpired:
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "timeout")
-                warning(f"[ThumbnailManager] 视频缩略图生成超时，已跳过: {file_path}")
+                warning(f"视频缩略图生成超时，已跳过: {file_path}")
                 return None
             except Exception as e:
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "subprocess_error")
-                warning(f"[ThumbnailManager] 启动视频缩略图子进程失败，已跳过: {file_path}, 错误: {e}")
+                warning(f"启动视频缩略图子进程失败，已跳过: {file_path}, {e}")
                 return None
 
             stderr_text = (completed.stderr or "").strip()
@@ -1725,7 +1679,7 @@ class ThumbnailManager:
             if completed.returncode == 0:
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "success")
                 if filtered_stderr_text:
-                    debug(f"[ThumbnailManager] 视频缩略图子进程输出: {filtered_stderr_text}")
+                    debug(f"视频缩略图子进程输出: {filtered_stderr_text}")
                 if os.path.exists(thumbnail_path):
                     return thumbnail_path
                 if os.path.exists(legacy_thumbnail_path):
@@ -1735,7 +1689,7 @@ class ThumbnailManager:
 
             increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "failure")
             if filtered_stderr_text:
-                debug(f"[ThumbnailManager] 视频缩略图子进程异常输出: {filtered_stderr_text}")
+                debug(f"视频缩略图子进程异常输出: {filtered_stderr_text}")
 
             return None
 
@@ -1767,7 +1721,7 @@ class ThumbnailManager:
                         output_bps=8,
                     )
                 except ImportError:
-                    warning(f"[ThumbnailManager] rawpy库未安装，无法加载RAW文件: {file_path}")
+                    warning(f"rawpy未安装，无法加载RAW: {file_path}")
                     return None, False
             elif suffix in ['.avif', '.heic']:
                 # AVIF和HEIC格式
@@ -1789,7 +1743,7 @@ class ThumbnailManager:
                     psd = PSDImage.open(file_path)
                     img = normalize_pil_image(psd.composite())
                 except ImportError:
-                    warning(f"[ThumbnailManager] psd-tools库未安装，无法加载PSD文件: {file_path}")
+                    warning(f"psd-tools未安装，无法加载PSD: {file_path}")
                     return None, False
                 finally:
                     if psd is not None:
@@ -1810,7 +1764,7 @@ class ThumbnailManager:
             return img, True
 
         except Exception as e:
-            warning(f"[ThumbnailManager] 加载图像失败: {file_path}, 错误: {e}")
+            warning(f"加载图像失败: {file_path}, {e}")
             if img is not None:
                 try:
                     img.close()
@@ -1837,7 +1791,7 @@ class ThumbnailManager:
             scale = (self.MAX_IMAGE_PIXELS / total_pixels) ** 0.5
             new_width = int(width * scale)
             new_height = int(height * scale)
-            debug(f"[ThumbnailManager] 图像像素数超限 ({total_pixels})，下采样至 {new_width}x{new_height}: {file_path}")
+            # debug(f"图像像素超限 ({total_pixels})，下采样至 {new_width}x{new_height}: {file_path}")
             img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
             width, height = new_width, new_height
 
@@ -1852,7 +1806,7 @@ class ThumbnailManager:
             new_width = int(width * scale)
             new_height = int(height * scale)
 
-            debug(f"[ThumbnailManager] 图像尺寸超限 ({width}x{height})，下采样至 {new_width}x{new_height}: {file_path}")
+            # debug(f"图像尺寸超限 ({width}x{height})，下采样至 {new_width}x{new_height}: {file_path}")
 
             # 使用LANCZOS重采样（高质量）
             img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
@@ -1891,7 +1845,7 @@ class ThumbnailManager:
             renderer = QSvgRenderer(file_path)
 
             if not renderer.isValid():
-                warning(f"[ThumbnailManager] 无效的SVG文件: {file_path}")
+                warning(f"无效SVG文件: {file_path}")
                 return None, False
 
             # 获取SVG的默认尺寸
@@ -1913,13 +1867,13 @@ class ThumbnailManager:
 
             # 检查尺寸限制
             if render_width > self.MAX_IMAGE_DIMENSION or render_height > self.MAX_IMAGE_DIMENSION:
-                warning(f"[ThumbnailManager] SVG渲染尺寸超出限制: {render_width}x{render_height}")
+                warning(f"SVG尺寸超限: {render_width}x{render_height}")
                 return None, False
 
             # 检查像素总数限制
             render_pixels = render_width * render_height
             if render_pixels > self.MAX_IMAGE_PIXELS:
-                warning(f"[ThumbnailManager] SVG渲染像素数超出限制: {render_pixels} > {self.MAX_IMAGE_PIXELS}")
+                warning(f"SVG像素超限: {render_pixels}")
                 return None, False
 
             # 创建QImage用于渲染 - 直接使用计算好的保持比例的尺寸
@@ -1959,7 +1913,7 @@ class ThumbnailManager:
             # 验证数据长度
             expected_len = width * height * 4  # RGBA = 4 bytes per pixel
             if len(img_data) < expected_len:
-                warning(f"[ThumbnailManager] SVG图像数据长度不足: {len(img_data)} < {expected_len}")
+                warning(f"SVG数据长度不足: {len(img_data)} < {expected_len}")
                 return None, False
 
             # 创建PIL图像
@@ -1986,7 +1940,7 @@ class ThumbnailManager:
             return img, True
 
         except Exception as e:
-            warning(f"[ThumbnailManager] 加载SVG失败: {file_path}, 错误: {e}")
+            warning(f"加载SVG失败: {file_path}, {e}")
             return None, False
         finally:
             # 清理Qt资源
@@ -2043,11 +1997,11 @@ class ThumbnailManager:
             if self._rust_bridge.available:
                 self._rust_bridge.clear_cache()
 
-            info(f"[ThumbnailManager] 已清理 {deleted_count} 个缩略图缓存文件")
+            info(f"已清理 {deleted_count} 个缩略图缓存")
             return deleted_count
 
         except Exception as e:
-            error(f"[ThumbnailManager] 清理缩略图缓存失败: {e}")
+            error(f"清理缩略图缓存失败: {e}")
             return 0
 
     def get_thumbnail_count(self) -> int:
@@ -2068,7 +2022,7 @@ class ThumbnailManager:
             return len(thumbnail_files)
 
         except Exception as e:
-            debug(f"获取缩略图数量失败: {e}")
+            # debug(f"获取缩略图数量失败: {e}")
             return 0
 
     def _get_all_thumbnail_files(self) -> List[Tuple[str, float]]:
@@ -2093,11 +2047,12 @@ class ThumbnailManager:
                         try:
                             file_time = os.path.getmtime(file_path)
                         except (OSError, IOError) as e:
-                            debug(f"[ThumbnailManager] 获取文件时间失败 {file_path}: {e}")
+                            # debug(f"获取文件时间失败 {file_path}: {e}")
                             continue
                     thumbnail_files.append((file_path, file_time))
         except (OSError, IOError) as e:
-            debug(f"[ThumbnailManager] 访问缩略图目录失败 {self._thumb_dir}: {e}")
+            # debug(f"访问缩略图目录失败 {self._thumb_dir}: {e}")
+            pass
 
         return thumbnail_files
 
@@ -2137,7 +2092,8 @@ class ThumbnailManager:
                     os.remove(file_path)
                     deleted_count += 1
             except (OSError, IOError) as e:
-                debug(f"[ThumbnailManager] 删除缓存文件失败 {file_path}: {e}")
+                # debug(f"删除缓存文件失败 {file_path}: {e}")
+                pass
 
         return deleted_count, total_files - deleted_count
 

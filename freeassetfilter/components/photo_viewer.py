@@ -75,13 +75,13 @@ class RawProcessor(QThread):
             qimage = QImage(rgb.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
             self.processing_complete.emit(qimage, self.image_path)
         except (ImportError, ModuleNotFoundError) as e:
-            error(f"加载RAW图片时缺少依赖库: {e}")
+            error(f"RAW加载缺少依赖: {e}")
             self.processing_failed.emit(f"加载RAW图片时缺少依赖库: {e}")
         except (OSError, IOError) as e:
-            error(f"加载RAW图片时文件错误: {e}")
+            error(f"RAW文件错误: {e}")
             self.processing_failed.emit(f"加载RAW图片时文件错误: {e}")
         except Exception as e:
-            error(f"加载RAW图片时未知错误: {e}")
+            exception_details("[RawProcessor] RAW加载失败", e)
             self.processing_failed.emit(f"加载RAW图片时未知错误: {e}")
 
 
@@ -109,8 +109,8 @@ class IcoProcessor(QThread):
                 if image and not image.isNull():
                     self.processing_complete.emit(image, self.image_path)
                     return
-            except ImportError as e:
-                debug(f"PIL不可用，使用Windows API备用方案: {e}")
+            except ImportError:
+                debug("PIL不可用，使用Windows API备用方案")
 
             # 使用Windows API加载ICO文件
             image = self._load_with_windows_api()
@@ -121,13 +121,13 @@ class IcoProcessor(QThread):
             raise Exception("无法从ICO文件创建图像")
 
         except (ImportError, ModuleNotFoundError) as e:
-            error(f"加载ICO文件时缺少依赖库: {e}")
+            error(f"ICO加载缺少依赖: {e}")
             self.processing_failed.emit(f"加载ICO文件时缺少依赖库: {e}")
         except (OSError, IOError) as e:
-            error(f"加载ICO文件时文件错误: {e}")
+            error(f"ICO文件错误: {e}")
             self.processing_failed.emit(f"加载ICO文件时文件错误: {e}")
         except Exception as e:
-            exception_details("[PhotoViewer.IcoProcessor] 加载ICO文件时未知错误", e)
+            exception_details("[IcoProcessor] ICO加载失败", e)
             self.processing_failed.emit(f"加载ICO文件时未知错误: {e}")
 
     def _load_with_pil(self):
@@ -345,13 +345,13 @@ class HeifAvifProcessor(QThread):
             
             self.processing_complete.emit(qimage, self.image_path)
         except (ImportError, ModuleNotFoundError) as e:
-            error(f"加载HEIC/AVIF图片时缺少依赖库: {e}")
+            error(f"HEIC/AVIF加载缺少依赖: {e}")
             self.processing_failed.emit(f"加载HEIC/AVIF图片时缺少依赖库: {e}")
         except (OSError, IOError) as e:
-            error(f"加载HEIC/AVIF图片时文件错误: {e}")
+            error(f"HEIC/AVIF文件错误: {e}")
             self.processing_failed.emit(f"加载HEIC/AVIF图片时文件错误: {e}")
         except Exception as e:
-            exception_details("[PhotoViewer.HeifAvifProcessor] 加载HEIC/AVIF图片时未知错误", e)
+            exception_details("[HeifAvifProcessor] HEIC/AVIF加载失败", e)
             self.processing_failed.emit(f"加载HEIC/AVIF图片时未知错误: {e}")
 
 
@@ -391,21 +391,21 @@ class PSDProcessor(QThread):
             width = psd.width
             height = psd.height
 
-            self.processing_progress.emit(10, f"PSD文件打开成功 {width}x{height}...")
+            self.processing_progress.emit(10, f"PSD已打开 {width}x{height}")
 
-            self.processing_progress.emit(30, "正在合成所有图层和效果...")
+            self.processing_progress.emit(30, "正在合成图层...")
 
             if self._cancelled:
                 return
 
             composited = psd.composite()
 
-            self.processing_progress.emit(70, "图层合成完成...")
+            self.processing_progress.emit(70, "图层合成完成")
 
             if self._cancelled:
                 return
 
-            self.processing_progress.emit(85, "正在转换图像格式...")
+            self.processing_progress.emit(85, "正在转换格式...")
 
             if composited.mode != 'RGBA':
                 composited = composited.convert('RGBA')
@@ -419,11 +419,11 @@ class PSDProcessor(QThread):
             try:
                 composited.save(temp_path, 'PNG')
             except (OSError, IOError) as e:
-                error(f"保存临时文件时出错: {e}")
+                error(f"PSD临时文件保存失败: {e}")
                 self.processing_failed.emit(f"保存临时文件时出错: {e}")
                 return
 
-            self.processing_progress.emit(100, "处理完成!")
+            self.processing_progress.emit(100, "处理完成")
             self.processing_complete.emit(temp_path)
 
         except ImportError as e:
@@ -431,10 +431,10 @@ class PSDProcessor(QThread):
             error(error_msg)
             self.processing_failed.emit(error_msg)
         except (OSError, IOError) as e:
-            error(f"加载PSD文件时文件错误: {e}")
+            error(f"PSD文件错误: {e}")
             self.processing_failed.emit(f"加载PSD文件时文件错误: {e}")
         except Exception as e:
-            exception_details("[PhotoViewer.PSDProcessor] 加载PSD文件时未知错误", e)
+            exception_details("[PSDProcessor] PSD加载失败", e)
             self.processing_failed.emit(f"加载PSD文件时未知错误: {e}")
 
 
@@ -502,7 +502,7 @@ class ImageWidget(QWidget):
                 if saved_key in self._bg_color_keys:
                     self._current_bg_color_key = saved_key
         except Exception as e:
-            error(f"加载背景色设置时出错: {e}")
+            error(f"加载背景色设置失败: {e}")
     
     def _save_bg_color_setting(self):
         """
@@ -514,7 +514,7 @@ class ImageWidget(QWidget):
                 app.settings_manager.set_setting("photo_viewer.style.bg_color_key", self._current_bg_color_key)
                 app.settings_manager.save_settings()
         except Exception as e:
-            error(f"保存背景色设置时出错: {e}")
+            error(f"保存背景色设置失败: {e}")
     
     def _get_current_bg_color(self):
         """
@@ -546,8 +546,8 @@ class ImageWidget(QWidget):
                     default_colors.get(color_key, "#212121")
                 )
         except Exception as e:
-            error(f"获取背景色时出错: {e}")
-        return "#212121"  # 默认深色背景
+            error(f"获取背景色失败: {e}")
+        return "#212121"
     
     def _switch_bg_color(self):
         """
@@ -561,7 +561,7 @@ class ImageWidget(QWidget):
             self._save_bg_color_setting()
             self.update()  # 触发重绘
         except Exception as e:
-            error(f"切换背景色时出错: {e}")
+            error(f"切换背景色失败: {e}")
     
     def _apply_rotation(self):
         """
@@ -576,7 +576,7 @@ class ImageWidget(QWidget):
                 transform = QTransform().rotate((self.rotation_steps % 4) * 90)
                 self.original_image = self.source_image.transformed(transform, Qt.SmoothTransformation)
         except Exception as e:
-            error(f"应用图片旋转时出错: {e}")
+            error(f"图片旋转失败: {e}")
 
     def rotate_clockwise(self):
         """
@@ -592,7 +592,7 @@ class ImageWidget(QWidget):
             self.update_image()
             self.update()
         except Exception as e:
-            error(f"旋转图片时出错: {e}")
+            error(f"图片旋转失败: {e}")
 
     def _set_loaded_image(self, image, image_path):
         """
@@ -775,7 +775,7 @@ class ImageWidget(QWidget):
             self.update_image()
             self.update()
         except Exception as e:
-            error(f"延迟自适应缩放时出错: {e}")
+            error(f"自适应缩放失败: {e}")
     
     def calculate_fit_scale(self):
         """
@@ -803,7 +803,7 @@ class ImageWidget(QWidget):
                     
                     self.scale_factor = max(self.scale_factor, self.min_scale)
         except Exception as e:
-            error(f"计算自适应缩放时出错: {e}")
+            error(f"自适应缩放计算失败: {e}")
             self.scale_factor = 1.0
     
     def _get_viewport_size(self):
@@ -853,7 +853,7 @@ class ImageWidget(QWidget):
                 
                 self.setMinimumSize(0, 0)
         except Exception as e:
-            error(f"更新图片时出错: {e}")
+            error(f"图片更新失败: {e}")
     
     def paintEvent(self, event):
         """
@@ -906,7 +906,7 @@ class ImageWidget(QWidget):
                         self.mouse_pos.x(), image_rect.bottom()
                     )
             except Exception as e:
-                error(f"绘制图片时出错: {e}")
+                error(f"图片绘制失败: {e}")
         painter.end()
     
     def mousePressEvent(self, event):
@@ -923,7 +923,7 @@ class ImageWidget(QWidget):
                 if self.is_valid_pixel_position(event.pos()):
                     self.update_pixel_info(event.pos())
         except Exception as e:
-            error(f"处理鼠标按下事件时出错: {e}")
+            error(f"鼠标按下处理失败: {e}")
     
     def mouseReleaseEvent(self, event):
         """
@@ -934,7 +934,7 @@ class ImageWidget(QWidget):
                 self.is_panning = False
                 self.setCursor(QCursor(Qt.ArrowCursor))
         except Exception as e:
-            error(f"处理鼠标释放事件时出错: {e}")
+            error(f"鼠标释放处理失败: {e}")
     
     def mouseMoveEvent(self, event):
         """
@@ -956,7 +956,7 @@ class ImageWidget(QWidget):
             # 实时刷新界面，确保十字线跟随鼠标移动
             self.update()
         except Exception as e:
-            error(f"处理鼠标移动事件时出错: {e}")
+            error(f"鼠标移动处理失败: {e}")
     
     def wheelEvent(self, event):
         """
@@ -1017,7 +1017,7 @@ class ImageWidget(QWidget):
                     
                     self.update()
         except Exception as e:
-            error(f"处理鼠标滚轮事件时出错: {e}")
+            error(f"滚轮缩放处理失败: {e}")
         
         # 阻止滚轮事件传递给滚动条
         event.accept()
@@ -1030,7 +1030,7 @@ class ImageWidget(QWidget):
             if event.button() == Qt.LeftButton:
                 self.reset_view()
         except Exception as e:
-            error(f"处理鼠标双击事件时出错: {e}")
+            error(f"鼠标双击处理失败: {e}")
     
     def resizeEvent(self, event):
         """
@@ -1062,7 +1062,7 @@ class ImageWidget(QWidget):
             self._context_menu.set_items(items)
             self._context_menu.popup(event.globalPos())
         except Exception as e:
-            error(f"显示右键菜单时出错: {e}")
+            error(f"右键菜单显示失败: {e}")
 
     def _on_context_menu_clicked(self, data):
         """
@@ -1097,7 +1097,7 @@ class ImageWidget(QWidget):
             color_value += f"坐标: ({self.pixel_info['x']}, {self.pixel_info['y']})"
             clipboard.setText(color_value)
         except Exception as e:
-            error(f"复制色度值时出错: {e}")
+            error(f"复制色度值失败: {e}")
     
     def copy_file_path(self):
         """
@@ -1108,7 +1108,7 @@ class ImageWidget(QWidget):
                 clipboard = QApplication.clipboard()
                 clipboard.setText(self.current_file_path)
         except Exception as e:
-            error(f"复制文件路径时出错: {e}")
+            error(f"复制文件路径失败: {e}")
     
     def copy_file_name(self):
         """
@@ -1119,7 +1119,7 @@ class ImageWidget(QWidget):
                 clipboard = QApplication.clipboard()
                 clipboard.setText(os.path.basename(self.current_file_path))
         except Exception as e:
-            error(f"复制文件名时出错: {e}")
+            error(f"复制文件名失败: {e}")
     
     def copy_file(self):
         """
@@ -1135,7 +1135,7 @@ class ImageWidget(QWidget):
                 mime_data.setUrls([url])
                 clipboard.setMimeData(mime_data)
         except Exception as e:
-            error(f"复制文件时出错: {e}")
+            error(f"复制文件失败: {e}")
     
     def is_valid_pixel_position(self, pos):
         """
@@ -1161,7 +1161,7 @@ class ImageWidget(QWidget):
             
             return image_rect.contains(pos)
         except Exception as e:
-            error(f"检查像素位置时出错: {e}")
+            error(f"像素位置检查失败: {e}")
             return False
     
     def update_pixel_info(self, pos):
@@ -1210,7 +1210,7 @@ class ImageWidget(QWidget):
                     # 发送信号
                     self.pixel_info_changed.emit(self.pixel_info)
         except Exception as e:
-            error(f"更新像素信息时出错: {e}")
+            error(f"像素信息更新失败: {e}")
     
     def reset_view(self):
         """
@@ -1222,7 +1222,7 @@ class ImageWidget(QWidget):
             self.update_image()
             self.update()
         except Exception as e:
-            error(f"重置视图时出错: {e}")
+            error(f"视图重置失败: {e}")
     
     def get_pixel_info(self):
         """
@@ -1314,7 +1314,7 @@ class PhotoViewer(QWidget):
                     # 图片加载失败
                     QMessageBox.warning(self, "错误", "无法加载图片文件")
         except Exception as e:
-            error(f"打开文件时出错: {e}")
+            error(f"文件打开失败: {e}")
             QMessageBox.warning(self, "错误", f"打开文件时出错: {str(e)}")
     
     def reset_view(self):
@@ -1324,7 +1324,7 @@ class PhotoViewer(QWidget):
         try:
             self.image_widget.reset_view()
         except Exception as e:
-            error(f"重置视图时出错: {e}")
+            error(f"视图重置失败: {e}")
     
     def load_image_from_path(self, image_path):
         """
@@ -1343,7 +1343,7 @@ class PhotoViewer(QWidget):
                 return True
             return False
         except Exception as e:
-            error(f"从路径加载图片时出错: {e}")
+            error(f"图片加载失败: {e}")
             return False
     
     def set_file(self, file_path):
@@ -1405,7 +1405,7 @@ class GifWidget(QWidget):
                 if saved_key in self._bg_color_keys:
                     self._current_bg_color_key = saved_key
         except Exception as e:
-            error(f"加载背景色设置时出错: {e}")
+            error(f"背景色设置加载失败: {e}")
     
     def _get_current_bg_color(self):
         try:
@@ -1428,7 +1428,7 @@ class GifWidget(QWidget):
                     default_colors.get(color_key, "#212121")
                 )
         except Exception as e:
-            error(f"获取背景色时出错: {e}")
+            error(f"背景色获取失败: {e}")
         return "#212121"
     
     def _apply_rotation_to_current_frame(self):
@@ -1449,7 +1449,7 @@ class GifWidget(QWidget):
 
             self.original_size = self.current_pixmap.size()
         except Exception as e:
-            error(f"应用GIF旋转时出错: {e}")
+            error(f"GIF旋转失败: {e}")
 
     def rotate_clockwise(self):
         """
@@ -1464,7 +1464,7 @@ class GifWidget(QWidget):
             self.calculate_fit_scale()
             self.update()
         except Exception as e:
-            error(f"旋转GIF时出错: {e}")
+            error(f"GIF旋转失败: {e}")
 
     def set_movie(self, movie):
         self.movie = movie
@@ -1502,7 +1502,7 @@ class GifWidget(QWidget):
             self.calculate_fit_scale()
             self.update()
         except Exception as e:
-            error(f"延迟自适应缩放时出错: {e}")
+            error(f"自适应缩放失败: {e}")
     
     def calculate_fit_scale(self):
         try:
@@ -1526,7 +1526,7 @@ class GifWidget(QWidget):
                     
                     self.scale_factor = max(self.scale_factor, self.min_scale)
         except Exception as e:
-            error(f"计算自适应缩放时出错: {e}")
+            error(f"自适应缩放计算失败: {e}")
             self.scale_factor = 1.0
     
     def _get_viewport_size(self):
@@ -1584,7 +1584,7 @@ class GifWidget(QWidget):
                         self.mouse_pos.x(), image_rect.bottom()
                     )
             except Exception as e:
-                error(f"绘制GIF时出错: {e}")
+                error(f"GIF绘制失败: {e}")
         painter.end()
     
     def is_valid_pixel_position(self, pos):
@@ -1604,7 +1604,7 @@ class GifWidget(QWidget):
             
             return image_rect.contains(pos)
         except Exception as e:
-            error(f"检查像素位置时出错: {e}")
+            error(f"像素位置检查失败: {e}")
             return False
     
     def update_pixel_info(self, pos):
@@ -1645,7 +1645,7 @@ class GifWidget(QWidget):
                         'hex': color.name()
                     }
         except Exception as e:
-            error(f"更新像素信息时出错: {e}")
+            error(f"像素信息更新失败: {e}")
     
     def mousePressEvent(self, event):
         try:
@@ -1654,7 +1654,7 @@ class GifWidget(QWidget):
                 self.last_mouse_pos = event.pos()
                 self.setCursor(QCursor(Qt.ClosedHandCursor))
         except Exception as e:
-            error(f"处理鼠标按下事件时出错: {e}")
+            error(f"鼠标按下处理失败: {e}")
     
     def mouseReleaseEvent(self, event):
         try:
@@ -1662,7 +1662,7 @@ class GifWidget(QWidget):
                 self.is_panning = False
                 self.setCursor(QCursor(Qt.ArrowCursor))
         except Exception as e:
-            error(f"处理鼠标释放事件时出错: {e}")
+            error(f"鼠标释放处理失败: {e}")
     
     def mouseMoveEvent(self, event):
         try:
@@ -1679,7 +1679,7 @@ class GifWidget(QWidget):
             
             self.update()
         except Exception as e:
-            error(f"处理鼠标移动事件时出错: {e}")
+            error(f"鼠标移动处理失败: {e}")
     
     def wheelEvent(self, event):
         try:
@@ -1723,7 +1723,7 @@ class GifWidget(QWidget):
                     
                     self.update()
         except Exception as e:
-            error(f"处理鼠标滚轮事件时出错: {e}")
+            error(f"滚轮缩放处理失败: {e}")
         
         event.accept()
     
@@ -1732,7 +1732,7 @@ class GifWidget(QWidget):
             if event.button() == Qt.LeftButton:
                 self.reset_view()
         except Exception as e:
-            error(f"处理鼠标双击事件时出错: {e}")
+            error(f"鼠标双击处理失败: {e}")
     
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1746,7 +1746,7 @@ class GifWidget(QWidget):
             self.calculate_fit_scale()
             self.update()
         except Exception as e:
-            error(f"重置视图时出错: {e}")
+            error(f"视图重置失败: {e}")
     
     def copy_color_value(self):
         """复制当前像素的色度值"""
@@ -1757,7 +1757,7 @@ class GifWidget(QWidget):
             color_value += f"坐标: ({self.pixel_info['x']}, {self.pixel_info['y']})"
             clipboard.setText(color_value)
         except Exception as e:
-            error(f"复制色度值时出错: {e}")
+            error(f"复制色度值失败: {e}")
     
     def contextMenuEvent(self, event):
         """右键菜单事件"""
@@ -1804,7 +1804,7 @@ class GifWidget(QWidget):
             if was_playing and self.movie:
                 self.movie.setPaused(False)
         except Exception as e:
-            error(f"显示右键菜单时出错: {e}")
+            error(f"右键菜单显示失败: {e}")
     
     def _check_menu_closed(self, loop, timer):
         """检查菜单是否已关闭"""
@@ -1837,7 +1837,7 @@ class GifWidget(QWidget):
             self._save_bg_color_setting()
             self.update()
         except Exception as e:
-            error(f"切换背景色时出错: {e}")
+            error(f"背景色切换失败: {e}")
     
     def _save_bg_color_setting(self):
         """保存背景色设置"""
@@ -1846,7 +1846,7 @@ class GifWidget(QWidget):
             if hasattr(app, 'settings_manager'):
                 app.settings_manager.set_setting("photo_viewer.style.bg_color_key", self._current_bg_color_key)
         except Exception as e:
-            error(f"保存背景色设置时出错: {e}")
+            error(f"背景色设置保存失败: {e}")
 
 
 class GifViewer(QWidget):
@@ -1927,14 +1927,14 @@ class GifViewer(QWidget):
             self.setWindowTitle(f"GIF查看器 - {os.path.basename(file_path)}")
             return True
         except Exception as e:
-            error(f"加载GIF文件时出错: {e}")
+            error(f"GIF加载失败: {e}")
             return False
     
     def reset_view(self):
         try:
             self.gif_widget.reset_view()
         except Exception as e:
-            error(f"重置视图时出错: {e}")
+            error(f"视图重置失败: {e}")
     
     def set_file(self, file_path):
         return self.load_gif(file_path)

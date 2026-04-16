@@ -166,7 +166,7 @@ class FontLoadThread(QThread):
             self.finished.emit(request_id, True, font_family, font_id)
 
         except Exception as e:
-            warning(f"加载字体时发生异常: {str(e)}")
+            # warning(f"加载字体时发生异常: {str(e)}")
             self.error.emit(request_id, f"加载字体失败: {str(e)}")
 
 
@@ -178,6 +178,7 @@ class FontPreviewWidget(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        debug("FontPreviewWidget 初始化")
         
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -359,7 +360,10 @@ class FontPreviewWidget(QWidget):
         参数：
             file_path (str): 字体文件路径
         """
+        debug(f"加载字体文件: {file_path}")
+        
         if not os.path.exists(file_path):
+            error(f"字体文件不存在: {file_path}")
             self.text_edit.setPlainText(f"字体文件不存在: {file_path}")
             return
 
@@ -387,8 +391,8 @@ class FontPreviewWidget(QWidget):
             try:
                 self._thread.finished.disconnect(self._on_font_loaded)
                 self._thread.error.disconnect(self._on_load_error)
-            except (TypeError, RuntimeError) as e:
-                debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
+            except (TypeError, RuntimeError):
+                # debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                 pass
             self._thread.abort()
             self._thread.wait()
@@ -398,6 +402,7 @@ class FontPreviewWidget(QWidget):
 
     def _load_font_async(self, file_path):
         """异步加载字体"""
+        debug(f"异步加载字体: {file_path}")
         with QMutexLocker(self._mutex):
             # 递增请求ID
             self._load_request_id += 1
@@ -409,8 +414,8 @@ class FontPreviewWidget(QWidget):
                 try:
                     self._thread.finished.disconnect(self._on_font_loaded)
                     self._thread.error.disconnect(self._on_load_error)
-                except (TypeError, RuntimeError) as e:
-                    debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
+                except (TypeError, RuntimeError):
+                    # debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                     pass
                 self._thread.abort()
                 self._thread.wait()
@@ -429,12 +434,16 @@ class FontPreviewWidget(QWidget):
         with QMutexLocker(self._mutex):
             # 忽略过期的回调
             if request_id != self._load_request_id:
+                debug(f"忽略过期字体加载回调: request_id={request_id}")
                 return
             self._is_loading = False
         
         if not success:
+            warning(f"字体加载失败: {font_family}")
             self.text_edit.setPlainText(f"加载字体失败")
             return
+        
+        info(f"字体加载成功: {font_family}")
 
         # 保存新加载的字体ID和字体族名称
         self.font_id = font_id
@@ -448,9 +457,11 @@ class FontPreviewWidget(QWidget):
         with QMutexLocker(self._mutex):
             # 忽略过期的回调
             if request_id != self._load_request_id:
+                debug(f"忽略过期字体加载错误回调: request_id={request_id}")
                 return
             self._is_loading = False
         
+        error(f"字体加载错误: {error_msg}")
         self.text_edit.setPlainText(f"加载字体失败: {error_msg}")
     
     def _update_font_display(self):
@@ -502,13 +513,14 @@ class FontPreviewWidget(QWidget):
 
     def cleanup(self):
         """清理资源"""
+        debug("FontPreviewWidget 清理资源")
         # 断开线程信号连接
         if self._thread:
             try:
                 self._thread.finished.disconnect(self._on_font_loaded)
                 self._thread.error.disconnect(self._on_load_error)
-            except (TypeError, RuntimeError) as e:
-                debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
+            except (TypeError, RuntimeError):
+                # debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                 pass
             
             # 终止线程
@@ -534,6 +546,7 @@ class FontPreviewer(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        debug("FontPreviewer 初始化")
         
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -581,6 +594,7 @@ class FontPreviewer(QWidget):
     
     def cleanup(self):
         """清理资源"""
+        debug("FontPreviewer 清理资源")
         self.preview_widget.cleanup()
 
 

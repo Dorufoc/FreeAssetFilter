@@ -64,15 +64,16 @@ class ArchiveBrowser(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+        debug("ArchiveBrowser 初始化开始")
+
         # 获取全局字体和DPI缩放因子
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        
+
         # 设置组件字体
         self.setFont(self.global_font)
-        
+
         # 初始化配置
         self.archive_path = None  # 压缩包路径
         self.current_path = ""  # 当前浏览路径
@@ -98,6 +99,7 @@ class ArchiveBrowser(QWidget):
 
         # 初始化UI
         self.init_ui()
+        debug("ArchiveBrowser 初始化完成")
     
     def init_ui(self):
         """
@@ -499,10 +501,11 @@ class ArchiveBrowser(QWidget):
     def set_archive_path(self, path):
         """
         设置压缩包路径
-        
+
         Args:
             path (str): 压缩包路径
         """
+        debug(f"设置压缩包路径: {path}")
         if os.path.exists(path) and os.path.isfile(path):
             self.archive_path = path
             self._detect_archive_type()
@@ -514,37 +517,44 @@ class ArchiveBrowser(QWidget):
             self.encoding_combo.set_current_item({"text": "UTF-8", "data": "utf-8"})
             self.encoding_button.setText("UTF-8")
             self.refresh()
+            info(f"压缩包路径设置成功: {path}")
         else:
+            warning(f"无效的压缩包路径: {path}")
             QMessageBox.warning(self, "警告", "无效的压缩包路径")
     
     def _on_encoding_changed(self, item_data):
         """
         编码选择变化
         """
+        debug(f"编码切换: {item_data}")
         # 获取选择的编码
         self.manual_encoding = item_data
         if hasattr(self, "encoding_button") and self.encoding_button:
             self.encoding_button.setText(str(item_data).upper())
         # 立即刷新文件列表，应用新编码
         self.refresh()
+        info(f"编码已切换为: {item_data}")
     
     def _detect_archive_type(self):
         """
         检测压缩包类型
         使用 7z 核心模块获取类型
         """
+        debug("检测压缩包类型")
         if self.archive_path and self._7z_core:
             self.archive_type = self._7z_core.get_archive_type(self.archive_path)
         else:
             self.archive_type = 'unknown'
 
         self.type_label.setText(f"压缩包类型: {self.archive_type.upper()}")
+        debug(f"压缩包类型: {self.archive_type}")
     
     def _detect_encryption(self):
         """
         检测压缩包是否加密
         使用 7z 核心模块检测
         """
+        debug("检测压缩包加密状态")
         self.is_encrypted = False
 
         try:
@@ -557,6 +567,7 @@ class ArchiveBrowser(QWidget):
             warning(f"检测加密状态失败: {e}")
 
         self.encryption_label.setText(f"加密状态: {'已加密' if self.is_encrypted else '未加密'}")
+        debug(f"加密状态: {'已加密' if self.is_encrypted else '未加密'}")
     
     def refresh(self):
         """
@@ -564,6 +575,8 @@ class ArchiveBrowser(QWidget):
         """
         if not self.archive_path:
             return
+
+        debug(f"刷新文件列表: {self.current_path or '根目录'}")
 
         # 更新路径显示
         self.path_edit.set_text(f"{os.path.basename(self.archive_path)}{'/' + self.current_path if self.current_path else ''}")
@@ -575,6 +588,7 @@ class ArchiveBrowser(QWidget):
         try:
             self.archive_content = self._get_files()
         except (OSError, IOError, RuntimeError) as e:
+            error(f"读取压缩包失败: {e}")
             QMessageBox.critical(self, "错误", f"读取压缩包失败: {e}")
             return
 
@@ -615,6 +629,7 @@ class ArchiveBrowser(QWidget):
         # 如果有编码错误，在列表顶部添加提示项
         if has_encoding_error:
             self._add_encoding_error_item()
+            warning("检测到编码错误，部分文件名无法解析")
 
         # 更新返回按钮状态（注释掉，使按钮始终保持启用状态）
         # self.back_btn.setEnabled(bool(self.current_path))
@@ -624,6 +639,7 @@ class ArchiveBrowser(QWidget):
 
         # 发送路径变化信号
         self.path_changed.emit(self.current_path)
+        debug(f"文件列表刷新完成，共 {len(self.archive_content)} 项")
 
     def _add_encoding_error_item(self):
         """
@@ -671,12 +687,14 @@ class ArchiveBrowser(QWidget):
         if not self.archive_path or not self._7z_core:
             return []
 
+        debug(f"获取文件列表: {self.current_path or '根目录'}")
         try:
             files = self._7z_core.list_archive(
                 self.archive_path,
                 current_path=self.current_path,
                 encoding=self.manual_encoding
             )
+            debug(f"获取到 {len(files)} 个文件/文件夹")
             return files
         except Exception as e:
             error(f"获取压缩包文件列表失败: {e}")
@@ -687,10 +705,12 @@ class ArchiveBrowser(QWidget):
         返回上一级目录
         """
         if self.current_path:
+            debug(f"返回上一级目录: {self.current_path}")
             # 获取父路径
             parent_path = os.path.dirname(self.current_path)
             self.current_path = parent_path if parent_path != '.' else ''
             self.refresh()
+            debug(f"已切换到目录: {self.current_path or '根目录'}")
     
     def on_item_double_clicked(self, item):
         """
@@ -700,6 +720,7 @@ class ArchiveBrowser(QWidget):
         if file_info["is_dir"] and file_info["name"]:  # 确保文件名不为空
             # 进入子目录
             new_path = f"{self.current_path}/{file_info['name']}" if self.current_path else file_info['name']
+            debug(f"进入子目录: {new_path}")
             self.current_path = new_path
             self.refresh()
     
@@ -708,6 +729,7 @@ class ArchiveBrowser(QWidget):
         点击列表项事件处理
         """
         file_info = item.data(Qt.UserRole)
+        debug(f"选中文件: {file_info.get('name', '未知')}")
         self.file_selected.emit(file_info)
 
     def _on_list_mouse_press(self, event):
@@ -721,6 +743,7 @@ class ArchiveBrowser(QWidget):
         """
         # 处理鼠标侧键返回上级（XButton1 通常是鼠标上的"后退"按钮）
         if event.button() == Qt.XButton1:
+            debug("鼠标侧键返回上级目录")
             self.go_to_parent()
             return
 
@@ -732,6 +755,7 @@ class ArchiveBrowser(QWidget):
             self.files_list.clearSelection()
             # 发送空信号表示取消选中
             self.file_selected.emit({})
+            debug("取消文件选中")
         else:
             # 点击了列表项，调用原来的点击处理
             self.on_item_clicked(item)
@@ -749,6 +773,7 @@ class ArchiveBrowser(QWidget):
         """
         # 只响应左键双击
         if event.button() == Qt.LeftButton:
+            debug("鼠标左键双击")
             # 获取双击位置对应的列表项
             item = self.files_list.itemAt(event.pos())
             if item is not None:

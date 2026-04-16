@@ -597,7 +597,7 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
                 self.setFormat(token.start_pos, len(token.text), fmt)
         except (ValueError, KeyError, AttributeError) as e:
             # 解析失败时不应用高亮
-            debug(f"[DEBUG] 语法高亮解析失败: {e}")
+            debug(f"语法高亮解析失败: {e}")
             pass
     
     def get_background_color(self):
@@ -624,7 +624,7 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
             # 重新高亮整个文档
             self.rehighlight()
         except (ImportError, RuntimeError) as e:
-            debug(f"[DEBUG] 更新主题配色方案失败: {e}")
+            debug(f"更新主题配色方案失败: {e}")
             pass
 
 class ZoomDisabledTextEdit(QTextEdit):
@@ -1022,7 +1022,7 @@ class TextPreviewWidget(QWidget):
             b = int(hex_color[5:7], 16)
             return f'rgba({r}, {g}, {b}, {alpha})'
         except (ValueError, IndexError) as e:
-            debug(f"[DEBUG] 颜色转换失败: {e}")
+            debug(f"颜色转换失败: {e}")
             return hex_color
     
 
@@ -1409,7 +1409,7 @@ class TextPreviewWidget(QWidget):
 
                 self.text_edit.setPalette(palette)
             except (AttributeError, RuntimeError) as e:
-                debug(f"[DEBUG] 更新代码高亮器主题失败: {e}")
+                debug(f"更新代码高亮器主题失败: {e}")
                 pass
         
         # 更新行号区域主题
@@ -1468,7 +1468,7 @@ class TextPreviewWidget(QWidget):
 
             self.text_edit.setPalette(palette)
         except (AttributeError, RuntimeError) as e:
-            debug(f"[DEBUG] 应用配色方案失败: {e}")
+            debug(f"应用配色方案失败: {e}")
             pass
     
     def _reset_display_state(self):
@@ -1521,26 +1521,28 @@ class TextPreviewWidget(QWidget):
     def set_file(self, file_path):
         """
         设置要预览的文件
-        
+
         Args:
             file_path (str): 文件路径
         """
         if not os.path.exists(file_path):
+            warning(f"文件不存在: {file_path}")
             return
-        
+
         self.current_file_path = file_path
-        
+        info(f"开始加载文本文件: {os.path.basename(file_path)}")
+
         # 先停止正在运行的加载线程
         if self._thread and self._thread.isRunning():
             self._thread.abort()
             self._thread.wait()
-        
+
         # 完全重置显示状态，确保任何模式都能正确切换
         self._reset_display_state()
-        
+
         # 开始加载动画
         self._start_loading()
-        
+
         # 获取编码设置
         current_item = self.encoding_dropdown._current_item
         if isinstance(current_item, dict):
@@ -1549,7 +1551,7 @@ class TextPreviewWidget(QWidget):
             encoding = current_item if current_item else "自动检测"
         if encoding == "自动检测":
             encoding = "auto"
-        
+
         # 异步加载文件
         self._load_file_async(file_path, encoding)
     
@@ -1674,20 +1676,22 @@ class TextPreviewWidget(QWidget):
     def _on_file_loaded(self, content, success):
         """文件加载完成回调"""
         self._stop_loading()
-        
+
         if not success:
+            error(f"文件加载失败: {self.current_file_path}")
             return
-        
+
         self.file_content = content
-        
         file_type = self._detect_file_type(self.current_file_path)
-        
+        debug(f"文件类型检测: {file_type}, 大小: {len(content)} 字符")
+
         if file_type == 'markdown' and MARKDOWN_AVAILABLE:
             self._render_markdown(content)
         else:
             self._render_plain_text(content, file_type)
-        
+
         self._apply_search_highlight()
+        info(f"文本文件加载完成: {os.path.basename(self.current_file_path)}")
     
     def _refresh_display(self):
         """刷新显示"""
@@ -1757,7 +1761,7 @@ class TextPreviewWidget(QWidget):
             )
             html = md.convert(content)
         except (ImportError, ValueError, RuntimeError) as e:
-            warning(f"[WARNING] Markdown渲染失败: {e}")
+            warning(f"Markdown渲染失败: {e}")
             self.text_edit.setPlainText(content)
             self.is_markdown = False
             return
@@ -1897,6 +1901,7 @@ class TextPreviewWidget(QWidget):
     def _on_load_error(self, error_msg):
         """加载错误回调"""
         self._stop_loading()
+        error(f"文本文件加载错误: {error_msg}")
         self.text_edit.setPlainText(f"加载失败: {error_msg}")
     
     def _on_load_progress(self, value):
@@ -2077,26 +2082,26 @@ class TextPreviewWidget(QWidget):
     def _perform_search(self):
         """执行搜索"""
         search_term = self.search_input.text()
-        debug(f"[DEBUG] _perform_search: search_term = '{search_term}'")
+        # debug(f"_perform_search: search_term = '{search_term}'")
         if not search_term:
             self._clear_search()
             return
-        
+
         self._search_term = search_term
         self._search_results = []
         self._current_search_index = -1
-        
+
         content = self.text_edit.toPlainText()
-        
+
         pos = content.find(search_term)
-        debug(f"[DEBUG] _perform_search: found at pos = {pos}")
-        
+        # debug(f"_perform_search: found at pos = {pos}")
+
         while pos >= 0:
             self._search_results.append(pos)
             pos = content.find(search_term, pos + 1)
-        
-        debug(f"[DEBUG] _perform_search: results count = {len(self._search_results)}")
-        
+
+        # debug(f"_perform_search: results count = {len(self._search_results)}")
+
         if self._search_results:
             self._current_search_index = 0
             self._highlight_search_results()
@@ -2107,40 +2112,40 @@ class TextPreviewWidget(QWidget):
     
     def _go_to_previous_match(self):
         """跳转到上一个匹配项"""
-        debug(f"[DEBUG] _go_to_previous_match: results = {len(self._search_results)}, current = {self._current_search_index}")
+        # debug(f"_go_to_previous_match: results = {len(self._search_results)}, current = {self._current_search_index}")
         if not self._search_results:
-            debug(f"[DEBUG] _go_to_previous_match: early return, no results")
+            # debug(f"_go_to_previous_match: early return, no results")
             return
-        
+
         self._current_search_index = (self._current_search_index - 1) % len(self._search_results)
-        debug(f"[DEBUG] _go_to_previous_match: new index = {self._current_search_index}")
+        # debug(f"_go_to_previous_match: new index = {self._current_search_index}")
         self._go_to_match(self._current_search_index)
         self._update_search_info()
     
     def _go_to_next_match(self):
         """跳转到下一个匹配项"""
-        debug(f"[DEBUG] _go_to_next_match: results = {len(self._search_results)}, current = {self._current_search_index}")
+        # debug(f"_go_to_next_match: results = {len(self._search_results)}, current = {self._current_search_index}")
         if not self._search_results:
-            debug(f"[DEBUG] _go_to_next_match: early return, no results")
+            # debug(f"_go_to_next_match: early return, no results")
             return
-        
+
         self._current_search_index = (self._current_search_index + 1) % len(self._search_results)
-        debug(f"[DEBUG] _go_to_next_match: new index = {self._current_search_index}")
+        # debug(f"_go_to_next_match: new index = {self._current_search_index}")
         self._go_to_match(self._current_search_index)
         self._update_search_info()
     
     def _go_to_match(self, index):
         """跳转到指定索引的匹配项"""
-        debug(f"[DEBUG] _go_to_match: index = {index}, results count = {len(self._search_results)}")
+        # debug(f"_go_to_match: index = {index}, results count = {len(self._search_results)}")
         if not self._search_results or index < 0 or index >= len(self._search_results):
-            debug(f"[DEBUG] _go_to_match: early return due to invalid index")
+            # debug(f"_go_to_match: early return due to invalid index")
             return
-        
+
         pos = self._search_results[index]
-        debug(f"[DEBUG] _go_to_match: pos = {pos}, term = '{self._search_term}'")
-        
+        # debug(f"_go_to_match: pos = {pos}, term = '{self._search_term}'")
+
         self._highlight_search_results()
-        
+
         cursor = QTextCursor(self.text_edit.document())
         cursor.setPosition(pos + len(self._search_term))
         self.text_edit.setTextCursor(cursor)
@@ -2148,7 +2153,7 @@ class TextPreviewWidget(QWidget):
     
     def _highlight_search_results(self):
         """高亮搜索结果"""
-        debug(f"[DEBUG] _highlight_search_results: called with {len(self._search_results)} results")
+        # debug(f"_highlight_search_results: called with {len(self._search_results)} results")
         
         app = QApplication.instance()
         accent_color_hex = "#007AFF"
@@ -2185,7 +2190,7 @@ class TextPreviewWidget(QWidget):
             
             extra_selections.append(extra_selection)
         
-        debug(f"[DEBUG] _highlight_search_results: setting {len(extra_selections)} extra selections")
+        # debug(f"_highlight_search_results: setting {len(extra_selections)} extra selections")
         self.text_edit.setExtraSelections(extra_selections)
         self.text_edit.viewport().update()
     

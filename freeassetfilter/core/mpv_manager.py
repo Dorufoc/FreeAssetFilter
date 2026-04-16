@@ -144,16 +144,10 @@ class MPVManagerLogger:
 
         self.log_history.append(log_entry)
 
-        # 限制历史记录大小
         if len(self.log_history) > self.max_history:
             self.log_history = self.log_history[-self.max_history:]
 
-        # 所有实际日志输出统一交给 app_logger
         normalized_level = str(level).upper()
-        full_message = f"[MPVManager][{normalized_level}] {message}"
-
-        if kwargs:
-            full_message = f"{full_message} | metadata={kwargs}"
 
         level_map = {
             "DEBUG": debug,
@@ -162,7 +156,7 @@ class MPVManagerLogger:
             "ERROR": error,
         }
         log_func = level_map.get(normalized_level, info)
-        log_func(full_message)
+        log_func(message)
 
     def debug(self, message: str, **kwargs):
         """记录调试日志"""
@@ -257,6 +251,7 @@ class MPVManager(QObject):
         # 初始化日志记录器
         self._logger = MPVManagerLogger(enabled=enable_logging)
         self._logger.info("MPV管理器初始化开始")
+        debug(f"enable_logging={enable_logging}")
 
         # MPV核心实例
         self._mpv_core: Optional[MPVPlayerCore] = None
@@ -307,6 +302,7 @@ class MPVManager(QObject):
         self._state_emit_timer.timeout.connect(self._flush_state_changed)
 
         self._logger.info("MPV管理器初始化完成")
+        info(f"状态节流间隔: {self._state_emit_interval_ms}ms")
 
     def _start_operation_thread(self):
         """启动操作处理线程"""
@@ -319,6 +315,7 @@ class MPVManager(QObject):
             )
             self._operation_thread.start()
             self._logger.info("操作处理线程已启动")
+            debug(f"线程名称: {self._operation_thread.name}")
 
     def _stop_operation_thread(self, timeout: float = 2.0):
         """停止操作处理线程"""
@@ -329,6 +326,7 @@ class MPVManager(QObject):
                 self._logger.warning(f"操作处理线程未在 {timeout}s 内停止")
             else:
                 self._logger.info("操作处理线程已停止")
+            debug(f"停止超时: {timeout}s")
 
     def _cleanup_resources(self):
         """清理资源"""
@@ -340,7 +338,7 @@ class MPVManager(QObject):
                 if operation and operation.future and not operation.future.done():
                     operation.future.set_result(False)
             except Empty:
-                debug("清空操作队列: 队列为空")
+                # 队列为空
                 break
         with self._pending_operation_lock:
             self._pending_latest_operations.clear()
@@ -374,19 +372,13 @@ class MPVManager(QObject):
                     with self._pending_operation_lock:
                         latest_operation = self._pending_latest_operations.get(pending_key)
                         if latest_operation is not operation:
-                            self._logger.debug(
-                                f"跳过过期操作: {operation.operation_type.value}, "
-                                f"组件: {operation.component_id}"
-                            )
+                            # 跳过过期操作
                             if operation.future and not operation.future.done():
                                 operation.future.set_result(False)
                             continue
                         self._pending_latest_operations.pop(pending_key, None)
 
-                self._logger.debug(
-                    f"处理操作: {operation.operation_type.value}, "
-                    f"组件: {operation.component_id}"
-                )
+                #debug(f"处理操作: {operation.operation_type.value}, 组件: {operation.component_id}")
 
                 # 执行操作
                 result = self._execute_operation(operation)
@@ -399,8 +391,7 @@ class MPVManager(QObject):
                 # 队列为空，继续循环
                 continue
             except RuntimeError as e:
-                exception_details("[MPVManager] 处理操作时运行时错误", e)
-                # 设置Future异常，避免调用方永久阻塞
+                exception_details("处理操作时运行时错误", e)
                 if operation and operation.future and not operation.future.done():
                     operation.future.set_exception(e)
 
@@ -521,15 +512,13 @@ class MPVManager(QObject):
                     raise ValueError(f"未知操作类型: {operation_type}")
 
         except RuntimeError as e:
-            exception_details(f"[MPVManager] 执行操作 {operation_type.value} 运行时错误", e)
+            exception_details(f"执行操作 {operation_type.value} 运行时错误", e)
 
-            # 设置错误状态
             with self._state_lock:
                 self._current_state.error_code = MpvErrorCode.GENERIC
                 self._current_state.error_message = str(e)
                 self._current_state.last_update = time.time()
 
-            # 发射错误信号（使用 QMetaObject.invokeMethod 确保在主线程执行）
             QMetaObject.invokeMethod(
                 self,
                 "_emit_error_occurred",
@@ -538,7 +527,6 @@ class MPVManager(QObject):
                 Q_ARG(str, str(e))
             )
 
-            # 抛出异常，由 _process_operations 统一处理并设置 Future 异常
             raise
 
         finally:
@@ -592,10 +580,10 @@ class MPVManager(QObject):
             queue_item = (priority, self._operation_sequence, operation)
             self._operation_queue.put(queue_item)
 
-        self._logger.debug(
-            f"操作已提交: {operation_type.value}, "
-            f"组件: {component_id}, 优先级: {priority}, 序号: {self._operation_sequence}"
-        )
+        #self._logger.debug(
+        #    f"操作已提交: {operation_type.value}, "
+        #    f"组件: {component_id}, 优先级: {priority}, 序号: {self._operation_sequence}"
+        #)
 
         return future
 
@@ -657,13 +645,12 @@ class MPVManager(QObject):
             self._mpv_core.errorOccurred.disconnect(self._on_error_occurred)
         except RuntimeError as e:
             # 信号可能未连接，这是正常情况
-            self._logger.debug(f"断开信号连接时出错: {e}")
+            debug(f"断开信号连接时出错: {e}")
 
-        # 关闭MPV核心
         try:
             self._mpv_core.close()
         except RuntimeError as e:
-            error(f"关闭MPV核心时运行时错误: {e}")
+            error(f"关闭MPV核心失败: {e}")
 
         self._mpv_core = None
 
@@ -679,7 +666,8 @@ class MPVManager(QObject):
         if self._mpv_core is None:
             raise RuntimeError("MPV核心未初始化")
 
-        self._logger.info(f"加载文件: {file_path}, 音频: {is_audio}")
+        self._logger.info(f"加载文件: {file_path}")
+        debug(f"is_audio={is_audio}")
 
         # MPVPlayerCore.load_file 只接受 file_path 参数
         success = self._mpv_core.load_file(file_path)
@@ -882,37 +870,28 @@ class MPVManager(QObject):
             bool: 是否成功
         """
         if self._mpv_core is None:
-            warning(f"[LUT] MPV未初始化")
+            warning("MPV未初始化，无法加载LUT")
             return False
 
         try:
             import os
             abs_path = os.path.abspath(lut_file_path)
-            debug(f"[LUT] 加载LUT文件: {abs_path}")
-            debug(f"[LUT] 文件存在: {os.path.exists(abs_path)}")
+            debug(f"加载LUT: {abs_path}")
 
             abs_path2 = abs_path.replace("\\", "/")
 
-            debug(f"[LUT] 尝试使用 --lut 选项")
             result = self._mpv_core.set_lut(abs_path2)
-            debug(f"[LUT] --lut 方式结果: {result}")
 
             if not result:
-                debug(f"[LUT] 尝试方式1 (vf add lavfi-lut3d)")
                 filter_arg = f"lavfi-lut3d=file='{abs_path2}'" if ' ' in abs_path2 else f"lavfi-lut3d=file={abs_path2}"
                 result = self._mpv_core.set_vf_filter(filter_arg)
-                debug(f"[LUT] 方式1 结果: {result}")
 
             if not result:
-                debug(f"[LUT] 尝试方式2 (load glsl-shaders)")
                 result = self._mpv_core.load_glsl_shader(abs_path2)
-                debug(f"[LUT] 方式2 结果: {result}")
 
             if not result:
-                debug(f"[LUT] 尝试方式3 (set glsl-shaders)")
                 shader_list = f'["{abs_path2}"]'
                 result = self._mpv_core.set_glsl_shaders(shader_list)
-                debug(f"[LUT] 方式3 结果: {result}")
 
             if result:
                 with self._state_lock:
@@ -922,11 +901,11 @@ class MPVManager(QObject):
                 self.lutLoaded.emit(lut_file_path)
                 return True
             else:
-                warning(f"[LUT] 所有方式都失败")
+                warning("加载LUT所有方式均失败")
                 return False
 
         except (OSError, ValueError, TypeError) as e:
-            exception_details("[MPVManager] 加载LUT失败", e)
+            exception_details("加载LUT失败", e)
             return False
 
     def _do_unload_lut(self) -> bool:
@@ -941,15 +920,12 @@ class MPVManager(QObject):
 
         try:
             result = self._mpv_core.clear_lut()
-            debug(f"[LUT] 清除lut结果: {result}")
 
             if not result:
                 result = self._mpv_core.clear_glsl_shaders()
-                debug(f"[LUT] 清除glsl着色器结果: {result}")
 
             if not result:
                 result = self._mpv_core.set_vf_filter("")
-                debug(f"[LUT] 清除vf滤镜结果: {result}")
 
             if result:
                 with self._state_lock:
@@ -962,7 +938,7 @@ class MPVManager(QObject):
                 return False
 
         except RuntimeError as e:
-            error(f"卸载LUT运行时错误: {e}")
+            error(f"卸载LUT失败: {e}")
             return False
 
     def _do_load_subtitle(self, subtitle_file_path: str) -> bool:
@@ -976,13 +952,13 @@ class MPVManager(QObject):
             bool: 是否成功
         """
         if self._mpv_core is None:
-            warning("[Subtitle] MPV未初始化")
+            warning("MPV未初始化，无法加载字幕")
             return False
 
         try:
             return self._mpv_core.load_subtitle(subtitle_file_path)
         except RuntimeError as e:
-            error(f"加载字幕运行时错误: {e}")
+            error(f"加载字幕失败: {e}")
             return False
 
     def _do_get_subtitle_state(self) -> Dict[str, Any]:
@@ -1008,7 +984,7 @@ class MPVManager(QObject):
         try:
             return self._mpv_core.get_subtitle_state()
         except RuntimeError as e:
-            error(f"获取字幕状态运行时错误: {e}")
+            error(f"获取字幕状态失败: {e}")
             return {
                 "has_available_subtitles": False,
                 "has_embedded_subtitles": False,
@@ -1034,7 +1010,7 @@ class MPVManager(QObject):
         try:
             return self._mpv_core.get_subtitle_tracks()
         except RuntimeError as e:
-            error(f"获取字幕轨列表运行时错误: {e}")
+            error(f"获取字幕轨列表失败: {e}")
             return []
 
     def _do_set_subtitle_visibility(self, visible: bool) -> bool:
@@ -1048,13 +1024,13 @@ class MPVManager(QObject):
             bool: 是否成功
         """
         if self._mpv_core is None:
-            warning("[Subtitle] MPV未初始化")
+            warning("MPV未初始化，无法设置字幕可见性")
             return False
 
         try:
             return self._mpv_core.set_subtitle_visibility(visible)
         except RuntimeError as e:
-            error(f"设置字幕可见性运行时错误: {e}")
+            error(f"设置字幕可见性失败: {e}")
             return False
 
     def _do_set_subtitle_track(self, track_id: Union[int, str, None]) -> bool:
@@ -1068,13 +1044,13 @@ class MPVManager(QObject):
             bool: 是否成功
         """
         if self._mpv_core is None:
-            warning("[Subtitle] MPV未初始化")
+            warning("MPV未初始化，无法切换字幕轨")
             return False
 
         try:
             return self._mpv_core.set_subtitle_track(track_id)
         except RuntimeError as e:
-            error(f"切换字幕轨运行时错误: {e}")
+            error(f"切换字幕轨失败: {e}")
             return False
 
     def _do_get_audio_state(self) -> Dict[str, Any]:
@@ -1097,7 +1073,7 @@ class MPVManager(QObject):
         try:
             return self._mpv_core.get_audio_state()
         except RuntimeError as e:
-            error(f"获取音轨状态运行时错误: {e}")
+            error(f"获取音轨状态失败: {e}")
             return {
                 "has_available_audio_tracks": False,
                 "has_multiple_audio_tracks": False,
@@ -1120,7 +1096,7 @@ class MPVManager(QObject):
         try:
             return self._mpv_core.get_audio_tracks()
         except RuntimeError as e:
-            error(f"获取音轨列表运行时错误: {e}")
+            error(f"获取音轨列表失败: {e}")
             return []
 
     def _do_set_audio_track(self, track_id: Union[int, str, None]) -> bool:
@@ -1134,13 +1110,13 @@ class MPVManager(QObject):
             bool: 是否成功
         """
         if self._mpv_core is None:
-            warning("[Audio] MPV未初始化")
+            warning("MPV未初始化，无法切换音轨")
             return False
 
         try:
             return self._mpv_core.set_audio_track(track_id)
         except RuntimeError as e:
-            error(f"切换音轨运行时错误: {e}")
+            error(f"切换音轨失败: {e}")
             return False
 
     # ==================== 信号处理回调 ====================
@@ -1297,7 +1273,7 @@ class MPVManager(QObject):
             self._logger.error("初始化操作超时")
             return False
         except RuntimeError as e:
-            error(f"initialize 运行时错误: {e}")
+            error(f"初始化失败: {e}")
             return False
 
     def close(self, async_mode: bool = True, timeout: float = 2.0) -> bool:
@@ -1344,7 +1320,7 @@ class MPVManager(QObject):
                 result = self._do_sync_close(timeout)
                 return result
             except RuntimeError as e:
-                error(f"关闭MPV管理器运行时错误: {e}")
+                error(f"关闭MPV管理器失败: {e}")
                 self._do_force_cleanup()
                 return False
     
@@ -1363,7 +1339,7 @@ class MPVManager(QObject):
             self._cleanup_event.set()  # 标记清理完成
             return result
         except RuntimeError as e:
-            error(f"同步关闭运行时错误: {e}")
+            error(f"同步关闭失败: {e}")
             self._do_force_cleanup()
             raise
 
@@ -1385,7 +1361,7 @@ class MPVManager(QObject):
 
             self._logger.info("异步关闭MPV管理器完成")
         except RuntimeError as e:
-            error(f"异步关闭运行时错误: {e}")
+            error(f"异步关闭失败: {e}")
         finally:
             self._is_shutting_down = False
             self._cleanup_event.set()  # 标记清理完成
@@ -1397,7 +1373,7 @@ class MPVManager(QObject):
             self._stop_operation_thread(1.0)
             self._cleanup_resources()
         except RuntimeError as e:
-            error(f"强制清理运行时错误: {e}")
+            error(f"强制清理失败: {e}")
         finally:
             self._is_shutting_down = False
             self._cleanup_event.set()
@@ -1465,10 +1441,10 @@ class MPVManager(QObject):
             )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
-            self._logger.error(f"加载文件操作超时: {file_path}")
+            self._logger.error(f"加载文件超时: {file_path}")
             return False
         except RuntimeError as e:
-            error(f"load_file 运行时错误: {e}")
+            error(f"加载文件失败: {e}")
             return False
 
     def play(self, component_id: str = "unknown") -> bool:
@@ -1491,7 +1467,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"play 运行时错误: {e}")
+            error(f"播放失败: {e}")
             return False
 
     def pause(self, component_id: str = "unknown") -> bool:
@@ -1514,7 +1490,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"pause 运行时错误: {e}")
+            error(f"暂停失败: {e}")
             return False
 
     def stop(self, component_id: str = "unknown") -> bool:
@@ -1537,7 +1513,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"stop 运行时错误: {e}")
+            error(f"停止失败: {e}")
             return False
 
     def seek(
@@ -1566,7 +1542,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"seek 运行时错误: {e}")
+            error(f"跳转失败: {e}")
             return False
 
     def set_position(
@@ -1595,7 +1571,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"set_position 运行时错误: {e}")
+            error(f"设置位置失败: {e}")
             return False
 
     def set_volume(
@@ -1624,7 +1600,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"set_volume 运行时错误: {e}")
+            error(f"设置音量失败: {e}")
             return False
 
     def set_speed(
@@ -1653,7 +1629,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"set_speed 运行时错误: {e}")
+            error(f"设置速度失败: {e}")
             return False
 
     def set_muted(
@@ -1682,7 +1658,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"set_muted 运行时错误: {e}")
+            error(f"设置静音失败: {e}")
             return False
 
     def set_loop(
@@ -1711,7 +1687,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"set_loop 运行时错误: {e}")
+            error(f"设置循环模式失败: {e}")
             return False
 
     def set_window_id(
@@ -1740,7 +1716,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"set_window_id 运行时错误: {e}")
+            error(f"设置窗口ID失败: {e}")
             return False
 
     def get_position(self) -> float:
@@ -1759,7 +1735,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return 0.0
         except RuntimeError as e:
-            error(f"get_position 运行时错误: {e}")
+            error(f"获取位置失败: {e}")
             return 0.0
 
     def get_duration(self) -> float:
@@ -1778,7 +1754,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return 0.0
         except RuntimeError as e:
-            error(f"get_duration 运行时错误: {e}")
+            error(f"获取时长失败: {e}")
             return 0.0
 
     def get_volume(self) -> int:
@@ -1797,7 +1773,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return 100
         except RuntimeError as e:
-            error(f"get_volume 运行时错误: {e}")
+            error(f"获取音量失败: {e}")
             return 100
 
     def get_speed(self) -> float:
@@ -1816,7 +1792,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return 1.0
         except RuntimeError as e:
-            error(f"get_speed 运行时错误: {e}")
+            error(f"获取速度失败: {e}")
             return 1.0
 
     def is_playing(self) -> bool:
@@ -1835,7 +1811,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"is_playing 运行时错误: {e}")
+            error(f"获取播放状态失败: {e}")
             return False
 
     def is_paused(self) -> bool:
@@ -1854,7 +1830,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"is_paused 运行时错误: {e}")
+            error(f"获取暂停状态失败: {e}")
             return False
 
     def is_muted(self) -> bool:
@@ -1873,7 +1849,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"is_muted 运行时错误: {e}")
+            error(f"获取静音状态失败: {e}")
             return False
 
     def get_video_size(self) -> Tuple[int, int]:
@@ -1892,7 +1868,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return (0, 0)
         except RuntimeError as e:
-            error(f"get_video_size 运行时错误: {e}")
+            error(f"获取视频尺寸失败: {e}")
             return (0, 0)
 
     def load_lut(self, lut_file_path: str, component_id: str = "unknown", timeout: float = 5.0) -> bool:
@@ -1916,10 +1892,10 @@ class MPVManager(QObject):
             )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
-            self._logger.error(f"加载LUT操作超时: {lut_file_path}")
+            self._logger.error(f"加载LUT超时: {lut_file_path}")
             return False
         except RuntimeError as e:
-            error(f"load_lut 运行时错误: {e}")
+            error(f"加载LUT失败: {e}")
             return False
 
     def unload_lut(self, component_id: str = "unknown", timeout: float = 5.0) -> bool:
@@ -1941,10 +1917,10 @@ class MPVManager(QObject):
             )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
-            self._logger.error("卸载LUT操作超时")
+            self._logger.error("卸载LUT超时")
             return False
         except RuntimeError as e:
-            error(f"unload_lut 运行时错误: {e}")
+            error(f"卸载LUT失败: {e}")
             return False
 
     def load_subtitle(self, subtitle_file_path: str, component_id: str = "unknown", timeout: float = 5.0) -> bool:
@@ -1968,10 +1944,10 @@ class MPVManager(QObject):
             )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
-            self._logger.error(f"加载字幕操作超时: {subtitle_file_path}")
+            self._logger.error(f"加载字幕超时: {subtitle_file_path}")
             return False
         except RuntimeError as e:
-            error(f"load_subtitle 运行时错误: {e}")
+            error(f"加载字幕失败: {e}")
             return False
 
     def get_subtitle_state(self, timeout: float = 1.0) -> Dict[str, Any]:
@@ -1994,7 +1970,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return {}
         except RuntimeError as e:
-            error(f"get_subtitle_state 运行时错误: {e}")
+            error(f"获取字幕状态失败: {e}")
             return {}
 
     def get_subtitle_tracks(self, timeout: float = 1.0) -> List[Dict[str, Any]]:
@@ -2017,7 +1993,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return []
         except RuntimeError as e:
-            error(f"get_subtitle_tracks 运行时错误: {e}")
+            error(f"获取字幕轨列表失败: {e}")
             return []
 
     def set_subtitle_visibility(
@@ -2046,10 +2022,10 @@ class MPVManager(QObject):
             )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
-            self._logger.error("设置字幕可见性操作超时")
+            self._logger.error("设置字幕可见性超时")
             return False
         except RuntimeError as e:
-            error(f"set_subtitle_visibility 运行时错误: {e}")
+            error(f"设置字幕可见性失败: {e}")
             return False
 
     def set_subtitle_track(
@@ -2078,10 +2054,10 @@ class MPVManager(QObject):
             )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
-            self._logger.error(f"切换字幕轨操作超时: {track_id}")
+            self._logger.error(f"切换字幕轨超时: {track_id}")
             return False
         except RuntimeError as e:
-            error(f"set_subtitle_track 运行时错误: {e}")
+            error(f"切换字幕轨失败: {e}")
             return False
 
     def hide_subtitle(self, component_id: str = "unknown", timeout: float = 5.0) -> bool:
@@ -2117,7 +2093,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return {}
         except RuntimeError as e:
-            error(f"get_audio_state 运行时错误: {e}")
+            error(f"获取音轨状态失败: {e}")
             return {}
 
     def get_audio_tracks(self, timeout: float = 1.0) -> List[Dict[str, Any]]:
@@ -2140,7 +2116,7 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return []
         except RuntimeError as e:
-            error(f"get_audio_tracks 运行时错误: {e}")
+            error(f"获取音轨列表失败: {e}")
             return []
 
     def set_audio_track(
@@ -2169,10 +2145,10 @@ class MPVManager(QObject):
             )
             return future.result(timeout=timeout)
         except FutureTimeoutError:
-            self._logger.error(f"切换音轨操作超时: {track_id}")
+            self._logger.error(f"切换音轨超时: {track_id}")
             return False
         except RuntimeError as e:
-            error(f"set_audio_track 运行时错误: {e}")
+            error(f"切换音轨失败: {e}")
             return False
 
     def get_current_lut(self) -> str:
@@ -2342,7 +2318,7 @@ class MPVManager(QObject):
             if self._mpv_core is not None:
                 self.close()
         except RuntimeError as e:
-            debug(f"析构时关闭MPV管理器运行时错误: {e}")
+            debug(f"析构时关闭MPV管理器失败: {e}")
 
 
 # 便捷函数，用于快速获取管理器实例

@@ -398,13 +398,15 @@ class PDFPreviewer(QWidget):
     def load_file_from_path(self, file_path: str):
         """从文件路径加载PDF"""
         if not file_path or not os.path.exists(file_path):
+            warning(f"PDF文件不存在: {file_path}")
             self._show_error("文件不存在")
             return
-        
+
         # 关闭之前的文档
         self._close_document()
-        
+
         try:
+            debug(f"开始加载PDF: {file_path}")
             # 使用 QtPDF 加载文档
             self.file_path = file_path
             self.pdf_document.load(file_path)
@@ -425,12 +427,13 @@ class PDFPreviewer(QWidget):
             
             # 延迟计算适合页面宽度的缩放比例
             QTimer.singleShot(10, self._calculate_fit_to_width_zoom)
-            
+
             # 发出渲染完成信号
             self.pdf_render_finished.emit()
-            
+            info(f"PDF加载完成: {file_path}, 共{self.total_pages}页")
+
         except Exception as e:
-            error(f"[ERROR] 加载PDF失败: {e}")
+            error(f"PDF加载失败: {e}")
             self._show_error(f"加载PDF失败: {str(e)}")
     
     def _clear_pages(self):
@@ -508,9 +511,9 @@ class PDFPreviewer(QWidget):
             
             # 渲染页面到 QImage
             image = self.pdf_document.render(page_num, QSize(render_width_px, render_height_px))
-            
+
             if image.isNull():
-                warning(f"[PDFPreviewer] 页面 {page_num + 1} 渲染失败")
+                warning(f"PDF页面 {page_num + 1} 渲染失败")
                 continue
             
             # 设置图像的设备像素比
@@ -604,7 +607,7 @@ class PDFPreviewer(QWidget):
             self.current_zoom = previous_user_zoom
 
         except Exception as e:
-            exception_details("[PDFPreviewer] 计算适合显示缩放失败", e, level="warning")
+            exception_details("计算适合显示缩放失败", e, level="warning")
             # 使用默认100%（缩放因子1.0）
             self.fit_to_width_zoom = 1.0
             self.current_zoom = 100
@@ -618,8 +621,9 @@ class PDFPreviewer(QWidget):
     def _close_document(self):
         """关闭当前PDF文档并清理资源"""
         if self.pdf_document:
+            debug(f"关闭PDF文档: {self.file_path}")
             self.pdf_document.close()
-        
+
         self._clear_pages()
         self.file_path = None
         self.total_pages = 0
@@ -833,5 +837,6 @@ class PDFPreviewer(QWidget):
 
     def closeEvent(self, event):
         """关闭事件处理"""
+        debug("PDF预览器关闭")
         self._close_document()
         super().closeEvent(event)

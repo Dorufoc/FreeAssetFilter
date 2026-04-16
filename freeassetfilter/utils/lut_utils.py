@@ -58,6 +58,7 @@ class CubeLUTParser:
         Returns:
             bool: 解析是否成功
         """
+        debug(f"开始解析LUT文件: {self.file_path}")
         try:
             with open(self.file_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
@@ -111,15 +112,17 @@ class CubeLUTParser:
             # 验证数据完整性
             expected_size = self.lut_size ** (3 if self.is_3d else 1)
             if len(self.data) < expected_size:
+                warning(f"LUT数据不完整: {len(self.data)}/{expected_size}")
                 return False
-            
+
+            debug(f"LUT解析成功: {self.lut_size}x{self.lut_size}x{self.lut_size} {'3D' if self.is_3d else '1D'}")
             return True
 
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            error(f"解析LUT文件失败 - 文件操作错误: {e}")
+            error(f"解析LUT文件失败: {e}")
             return False
         except (ValueError, TypeError) as e:
-            error(f"解析LUT文件失败 - 数据转换错误: {e}")
+            error(f"解析LUT数据失败: {e}")
             return False
     
     def _is_data_line(self, line: str) -> bool:
@@ -262,38 +265,42 @@ class CubeLUTParser:
 def validate_lut_file(file_path: str) -> Tuple[bool, str]:
     """
     验证LUT文件是否有效
-    
+
     Args:
         file_path: LUT文件路径
-        
+
     Returns:
         Tuple[bool, str]: (是否有效, 错误信息)
     """
+    debug(f"验证LUT文件: {file_path}")
+
     # 检查文件是否存在
     if not os.path.exists(file_path):
         return False, "文件不存在"
-    
+
     # 检查文件扩展名
     if not file_path.lower().endswith('.cube'):
         return False, "文件格式错误，仅支持.cube格式"
-    
+
     # 检查文件大小
     file_size = os.path.getsize(file_path)
     if file_size == 0:
         return False, "文件为空"
-    
+
     if file_size > 100 * 1024 * 1024:  # 100MB
+        warning(f"LUT文件过大: {file_size / 1024 / 1024:.1f}MB")
         return False, "文件过大"
-    
+
     # 尝试解析文件
     parser = CubeLUTParser(file_path)
     if not parser.parse():
         return False, "LUT文件解析失败，文件可能已损坏"
-    
-    info = parser.get_info()
-    if info['size'] == 0:
+
+    lut_info = parser.get_info()
+    if lut_info['size'] == 0:
         return False, "LUT大小无效"
-    
+
+    debug(f"LUT验证通过: {lut_info['size']}x{lut_info['size']}x{lut_info['size']}")
     return True, ""
 
 
@@ -316,34 +323,38 @@ def get_lut_preview_dir() -> str:
 def copy_lut_file(source_path: str, lut_id: Optional[str] = None) -> Tuple[bool, str]:
     """
     复制LUT文件到应用数据目录
-    
+
     Args:
         source_path: 源文件路径
         lut_id: LUT唯一标识，如不提供则自动生成
-        
+
     Returns:
         Tuple[bool, str]: (是否成功, 目标路径或错误信息)
     """
+    debug(f"复制LUT文件: {source_path}")
+
     try:
         # 验证文件
         is_valid, error_msg = validate_lut_file(source_path)
         if not is_valid:
+            warning(f"LUT文件验证失败: {error_msg}")
             return False, error_msg
-        
+
         # 生成LUT ID
         if lut_id is None:
             lut_id = str(uuid.uuid4())
-        
+
         # 获取存储目录
         lut_dir = get_lut_storage_dir()
-        
+
         # 生成目标文件名
         original_name = Path(source_path).stem
         target_name = f"{lut_id}_{original_name}.cube"
         target_path = os.path.join(lut_dir, target_name)
-        
+
         # 复制文件
         shutil.copy2(source_path, target_path)
+        debug(f"LUT文件复制成功: {target_path}")
 
         return True, target_path
 
@@ -355,16 +366,19 @@ def copy_lut_file(source_path: str, lut_id: Optional[str] = None) -> Tuple[bool,
 def remove_lut_file(file_path: str) -> bool:
     """
     删除LUT文件
-    
+
     Args:
         file_path: LUT文件路径
-        
+
     Returns:
         bool: 是否成功
     """
+    debug(f"删除LUT文件: {file_path}")
+
     try:
         if os.path.exists(file_path):
             os.remove(file_path)
+            debug(f"LUT文件删除成功: {file_path}")
         return True
     except OSError as e:
         error(f"删除LUT文件失败: {e}")
@@ -374,17 +388,17 @@ def remove_lut_file(file_path: str) -> bool:
 def get_lut_display_name(file_path: str) -> str:
     """
     从LUT文件路径获取显示名称
-    
+
     Args:
         file_path: LUT文件路径
-        
+
     Returns:
         str: 显示名称
     """
     try:
         # 尝试从文件名解析
         file_name = Path(file_path).stem
-        
+
         # 如果文件名包含UUID前缀，移除它
         parts = file_name.split('_', 1)
         if len(parts) > 1 and len(parts[0]) == 36:  # UUID长度为36
@@ -392,26 +406,27 @@ def get_lut_display_name(file_path: str) -> str:
 
         return file_name
     except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        warning(f"获取LUT显示名称失败 - 文件操作错误: {e}")
+        warning(f"获取LUT显示名称失败: {e}")
         return "Unknown LUT"
     except (ValueError, TypeError) as e:
-        warning(f"获取LUT显示名称失败 - 数据转换错误: {e}")
+        warning(f"获取LUT显示名称失败: {e}")
         return "Unknown LUT"
 
 
 def load_lut_from_settings(settings_manager) -> List[LUTInfo]:
     """
     从设置加载LUT列表
-    
+
     Args:
         settings_manager: 设置管理器实例
-        
+
     Returns:
         List[LUTInfo]: LUT信息列表
     """
     lut_files = settings_manager.get_setting("video.lut_files", [])
+    debug(f"从设置加载LUT列表: {len(lut_files)} 个")
+
     lut_list = []
-    
     for lut_data in lut_files:
         try:
             lut_info = LUTInfo(
@@ -424,22 +439,25 @@ def load_lut_from_settings(settings_manager) -> List[LUTInfo]:
             )
             lut_list.append(lut_info)
         except (KeyError, TypeError, AttributeError) as e:
-            error(f"加载LUT信息失败: {e}")
+            warning(f"加载LUT信息失败: {e}")
             continue
-    
+
+    debug(f"成功加载LUT: {len(lut_list)}/{len(lut_files)}")
     return lut_list
 
 
 def save_lut_to_settings(settings_manager, lut_info: LUTInfo):
     """
     保存LUT信息到设置
-    
+
     Args:
         settings_manager: 设置管理器实例
         lut_info: LUT信息
     """
+    debug(f"保存LUT到设置: {lut_info.name}")
+
     lut_files = settings_manager.get_setting("video.lut_files", [])
-    
+
     # 检查是否已存在
     for i, lut_data in enumerate(lut_files):
         if lut_data.get('id') == lut_info.id:
@@ -452,6 +470,7 @@ def save_lut_to_settings(settings_manager, lut_info: LUTInfo):
                 'size': lut_info.size,
                 'is_3d': lut_info.is_3d
             }
+            debug(f"更新现有LUT: {lut_info.id}")
             break
     else:
         # 添加新项
@@ -463,7 +482,8 @@ def save_lut_to_settings(settings_manager, lut_info: LUTInfo):
             'size': lut_info.size,
             'is_3d': lut_info.is_3d
         })
-    
+        debug(f"添加新LUT: {lut_info.id}")
+
     settings_manager.set_setting("video.lut_files", lut_files)
     settings_manager.save_settings()
 
@@ -471,18 +491,23 @@ def save_lut_to_settings(settings_manager, lut_info: LUTInfo):
 def remove_lut_from_settings(settings_manager, lut_id: str):
     """
     从设置中移除LUT
-    
+
     Args:
         settings_manager: 设置管理器实例
         lut_id: LUT ID
     """
+    debug(f"从设置移除LUT: {lut_id}")
+
     lut_files = settings_manager.get_setting("video.lut_files", [])
+    original_count = len(lut_files)
     lut_files = [lut for lut in lut_files if lut.get('id') != lut_id]
     settings_manager.set_setting("video.lut_files", lut_files)
-    
+
     # 如果删除的是当前激活的LUT，清除激活状态
     active_id = settings_manager.get_setting("video.active_lut_id", None)
     if active_id == lut_id:
         settings_manager.set_setting("video.active_lut_id", None)
-    
+        debug(f"清除激活LUT状态: {lut_id}")
+
     settings_manager.save_settings()
+    debug(f"LUT移除完成: {original_count - len(lut_files)} 个")

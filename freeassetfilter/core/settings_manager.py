@@ -378,11 +378,6 @@ class SettingsManager:
         self.save_settings()
 
     def save_settings(self):
-        import datetime
-        def _debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            debug(f"[{timestamp}] [SettingsManager.save_settings] {msg}")
-
         with self._settings_lock:
             dirty_keys = sorted(self._dirty_keys)
             pending_before_save = self._save_pending
@@ -394,11 +389,9 @@ class SettingsManager:
             )
 
             if dirty_keys:
-                _debug(f"开始保存设置，变更项: {', '.join(dirty_keys)}")
-                debug(f"设置文件路径: {self._settings_file}")
+                debug(f"保存设置，变更项: {', '.join(dirty_keys)}")
             elif pending_before_save:
-                _debug("开始保存设置")
-                debug(f"设置文件路径: {self._settings_file}")
+                debug("保存设置")
 
             self._save_pending = False
             if self._save_timer is not None:
@@ -421,9 +414,7 @@ class SettingsManager:
                     self.settings["appearance"].pop("preset_theme", None)
 
             if theme_dirty and "appearance" in self.settings and "colors" in self.settings["appearance"]:
-                _debug("当前主题颜色设置:")
-                for color_key, color_value in self.settings["appearance"]["colors"].items():
-                    _debug(f"  {color_key}: {color_value}")
+                debug(f"主题颜色: {self.settings['appearance']['colors']}")
 
             try:
                 settings_dir = os.path.dirname(self._settings_file) or "."
@@ -443,25 +434,15 @@ class SettingsManager:
 
                 os.replace(temp_path, self._settings_file)
 
-                if dirty_keys or pending_before_save:
-                    _debug(f"设置保存成功: {self._settings_file}")
                 self._dirty_keys.clear()
-                info(f"设置已保存到: {self._settings_file}")
+                info(f"设置已保存: {self._settings_file}")
             except PermissionError as e:
-                if dirty_keys or pending_before_save:
-                    _debug(f"设置保存失败，权限不足: {e}")
                 error(f"保存设置失败，权限不足: {e}")
             except FileNotFoundError as e:
-                if dirty_keys or pending_before_save:
-                    _debug(f"设置保存失败，目录不存在: {e}")
                 error(f"保存设置失败，目录不存在: {e}")
             except TypeError as e:
-                if dirty_keys or pending_before_save:
-                    _debug(f"设置保存失败，数据类型错误: {e}")
                 error(f"保存设置失败，数据类型错误: {e}")
             except IOError as e:
-                if dirty_keys or pending_before_save:
-                    _debug(f"设置保存失败，IO错误: {e}")
                 error(f"保存设置失败，IO错误: {e}")
             finally:
                 temp_path = locals().get("temp_path")
@@ -515,11 +496,6 @@ class SettingsManager:
             auto_save: 是否自动保存到文件，默认为False
                       设置为True时立即写入JSON，否则只在内存中更新
         """
-        import datetime
-        def _debug(msg):
-            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            debug(f"[{timestamp}] [SettingsManager.set_setting] {msg}")
-
         with self._settings_lock:
             keys = key_path.split(".")
             settings = self.settings
@@ -537,9 +513,9 @@ class SettingsManager:
             self._dirty_keys.add(key_path)
 
             if key_path == "appearance.theme" or key_path == "appearance.preset_theme":
-                _debug(f"设置主题变更: {key_path}: {old_value} -> {value}")
+                debug(f"主题变更: {key_path}={value}")
             elif key_path.startswith("appearance.colors."):
-                _debug(f"设置颜色变更: {key_path}: {old_value} -> {value}")
+                debug(f"颜色变更: {key_path}={value}")
 
             # 只有显式要求时才自动保存，但使用延迟合并写盘避免高频 I/O
             if auto_save:

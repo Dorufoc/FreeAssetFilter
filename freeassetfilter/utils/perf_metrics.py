@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, Iterable, Optional
 
-from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.utils.app_logger import debug, info, warning
 from freeassetfilter.utils.path_utils import get_app_data_path
 
 
@@ -108,6 +108,7 @@ class PerfMetricsRegistry:
         self._global_counters: Dict[str, int] = defaultdict(int)
         self._snapshot_dir = os.path.join(get_app_data_path(), "performance")
         self._sample_limit = self._read_sample_limit()
+        debug(f"PerfMetricsRegistry initialized, enabled={self._enabled}, sample_limit={self._sample_limit}")
 
     @staticmethod
     def _read_sample_limit() -> int:
@@ -122,7 +123,10 @@ class PerfMetricsRegistry:
         return self._enabled
 
     def set_enabled(self, enabled: bool) -> None:
+        old_val = self._enabled
         self._enabled = bool(enabled)
+        if old_val != self._enabled:
+            info(f"PerfMetrics enabled changed: {old_val} -> {self._enabled}")
 
     def _get_or_create(self, event_name: str) -> PerfEventStats:
         event = self._events.get(event_name)
@@ -172,8 +176,11 @@ class PerfMetricsRegistry:
 
     def clear(self) -> None:
         with self._lock:
+            event_count = len(self._events)
+            counter_count = len(self._global_counters)
             self._events.clear()
             self._global_counters.clear()
+            debug(f"PerfMetrics cleared: {event_count} events, {counter_count} counters")
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -202,10 +209,10 @@ class PerfMetricsRegistry:
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, ensure_ascii=False, indent=2)
 
-            debug(f"[PerfMetrics] 已导出性能快照: {output_path}")
+            debug(f"性能快照已导出: {output_path}")
             return output_path
         except Exception as e:
-            warning(f"[PerfMetrics] 导出性能快照失败: {e}")
+            warning(f"导出性能快照失败: {e}")
             raise
 
     def summary_lines(self) -> Iterable[str]:
