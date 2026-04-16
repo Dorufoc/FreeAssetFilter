@@ -428,7 +428,6 @@ class MPVPlayerCore(QObject):
         # 命令队列大小限制（最大100条），使用Queue替代SimpleQueue以支持maxsize
         self._command_queue_maxsize = 100
         self._command_queue = queue.Queue(maxsize=self._command_queue_maxsize)
-        self._result_queue = queue.Queue(maxsize=self._command_queue_maxsize)
 
         # 信号队列用于线程安全地发射信号
         self._signal_queue = queue.Queue(maxsize=self._command_queue_maxsize)
@@ -502,32 +501,45 @@ class MPVPlayerCore(QObject):
             
             while not self._stop_event.is_set():
                 try:
+                    # 首先检查停止信号，防止在退出时继续处理
+                    if self._stop_event.is_set():
+                        break
+                        
                     # 使用 try-except 包装每个操作，防止单个操作失败导致整个循环崩溃
                     try:
-                        event_ptr = self._dll_loader.dll.mpv_wait_event(mpv_handle, 0.01)
-                        if event_ptr:
-                            event = event_ptr.contents
-                            self._handle_mpv_event(mpv_handle, event)
-                    except (RuntimeError, AttributeError, OSError) as e:
+                        if not self._stop_event.is_set() and mpv_handle:
+                            event_ptr = self._dll_loader.dll.mpv_wait_event(mpv_handle, 0.01)
+                            if event_ptr and not self._stop_event.is_set():
+                                event = event_ptr.contents
+                                self._handle_mpv_event(mpv_handle, event)
+                    except Exception as e:
                         if not self._stop_event.is_set():
                             error(f"事件处理错误: {e}")
 
                     try:
+                        # 在获取命令前再次检查停止信号
+                        if self._stop_event.is_set():
+                            break
+                            
                         command = self._command_queue.get(block=False)
-                        self._process_command(mpv_handle, command)
+                        # 在处理命令前再次检查停止信号和句柄有效性
+                        if not self._stop_event.is_set() and mpv_handle:
+                            self._process_command(mpv_handle, command)
+                        else:
+                            self._resolve_command_result(command, None)
                     except queue.Empty:
                         pass
-                    except (RuntimeError, AttributeError, TypeError) as e:
+                    except Exception as e:
                         if not self._stop_event.is_set():
                             error(f"命令处理错误: {e}")
 
                     # 移除了位置轮询，完全依赖 MPV 的事件驱动属性观察
 
-                except (RuntimeError, AttributeError, OSError) as e:
+                except Exception as e:
                     if not self._stop_event.is_set():
                         exception_details("MPV工作线程主循环错误", e)
 
-        except (RuntimeError, OSError) as e:
+        except Exception as e:
             exception_details("MPV工作线程致命错误", e)
         finally:
             self._cleanup_mpv_handle(mpv_handle)
@@ -906,211 +918,286 @@ class MPVPlayerCore(QObject):
     
     def _process_command(self, mpv_handle: c_void_p, command: dict):
         """处理命令（在工作线程中执行）"""
-        cmd_type = command.get('type')
-        args = command.get('args', ())
-        kwargs = command.get('kwargs', {})
         result = None
 
-        # 检查 mpv_handle 是否有效（除了 CLOSE 命令）
-        if cmd_type != MPVCommandType.CLOSE and not mpv_handle:
+        try:
+            cmd_type = command.get('type')
+            args = command.get('args', ())
+            kwargs = command.get('kwargs', {})
+
+            # 第一重检查：停止事件
+            if self._stop_event.is_set() and cmd_type != MPVCommandType.CLOSE:
+                result = None
+            # 第二重检查：mpv_handle 有效性（除了 CLOSE 命令）
+            elif cmd_type != MPVCommandType.CLOSE and not mpv_handle:
+                result = None
+            else:
+                try:
+                    if cmd_type == MPVCommandType.INITIALIZE:
+                        result = True
+                    elif cmd_type == MPVCommandType.LOAD_FILE:
+                        result = self._load_file_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.PLAY:
+                        result = self._play_internal(mpv_handle)
+                    elif cmd_type == MPVCommandType.PAUSE:
+                        result = self._pause_internal(mpv_handle)
+                    elif cmd_type == MPVCommandType.STOP:
+                        result = self._stop_internal(mpv_handle)
+                    elif cmd_type == MPVCommandType.SEEK:
+                        result = self._seek_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_VOLUME:
+                        result = self._set_volume_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_SPEED:
+                        result = self._set_speed_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_MUTED:
+                        result = self._set_muted_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_LOOP:
+                        result = self._set_loop_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_WINDOW_ID:
+                        result = self._set_window_id_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_WINDOW_SIZE:
+                        result = self._set_window_size_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.GET_POSITION:
+                        result = self._get_property_double(mpv_handle, "time-pos")
+                    elif cmd_type == MPVCommandType.GET_DURATION:
+                        result = self._get_property_double(mpv_handle, "duration")
+                    elif cmd_type == MPVCommandType.GET_VOLUME:
+                        with self._state_lock:
+                            result = self._volume
+                    elif cmd_type == MPVCommandType.GET_SPEED:
+                        with self._state_lock:
+                            result = self._speed
+                    elif cmd_type == MPVCommandType.GET_VIDEO_SIZE:
+                        w = self._get_property_double(mpv_handle, "video-params/w") or 0
+                        h = self._get_property_double(mpv_handle, "video-params/h") or 0
+                        result = (int(w), int(h))
+                    elif cmd_type == MPVCommandType.SET_VF_FILTER:
+                        result = self._set_vf_filter_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.LOAD_GLSL_SHADER:
+                        result = self._load_glsl_shader_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_GLSL_SHADERS:
+                        result = self._set_glsl_shaders_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.CLEAR_GLSL_SHADERS:
+                        result = self._clear_glsl_shaders_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_LUT:
+                        result = self._set_lut_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.CLEAR_LUT:
+                        result = self._clear_lut_internal(mpv_handle)
+                    elif cmd_type == MPVCommandType.LOAD_SUBTITLE:
+                        result = self._load_subtitle_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.GET_SUBTITLE_STATE:
+                        result = self._get_subtitle_state_internal(mpv_handle)
+                    elif cmd_type == MPVCommandType.GET_SUBTITLE_TRACKS:
+                        result = self._get_subtitle_tracks_internal(mpv_handle)
+                    elif cmd_type == MPVCommandType.SET_SUBTITLE_VISIBILITY:
+                        result = self._set_subtitle_visibility_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.SET_SUBTITLE_TRACK:
+                        result = self._set_subtitle_track_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.GET_AUDIO_STATE:
+                        result = self._get_audio_state_internal(mpv_handle)
+                    elif cmd_type == MPVCommandType.GET_AUDIO_TRACKS:
+                        result = self._get_audio_tracks_internal(mpv_handle)
+                    elif cmd_type == MPVCommandType.SET_AUDIO_TRACK:
+                        result = self._set_audio_track_internal(mpv_handle, *args, **kwargs)
+                    elif cmd_type == MPVCommandType.CLOSE:
+                        self._stop_event.set()
+                        result = True
+                except Exception as e:
+                    if not self._stop_event.is_set():
+                        error(f"执行命令 {cmd_type} 时出错: {e}")
+                    result = None
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"处理命令时发生致命错误: {e}")
+            result = None
+        finally:
+            self._resolve_command_result(command, result)
+
+    def _resolve_command_result(self, command: Optional[dict], result: Any):
+        """唤醒单条命令对应的等待者，避免共享结果队列导致并发错配"""
+        if not command:
             return
 
-        try:
-            if cmd_type == MPVCommandType.INITIALIZE:
-                result = True
-            elif cmd_type == MPVCommandType.LOAD_FILE:
-                result = self._load_file_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.PLAY:
-                result = self._play_internal(mpv_handle)
-            elif cmd_type == MPVCommandType.PAUSE:
-                result = self._pause_internal(mpv_handle)
-            elif cmd_type == MPVCommandType.STOP:
-                result = self._stop_internal(mpv_handle)
-            elif cmd_type == MPVCommandType.SEEK:
-                result = self._seek_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_VOLUME:
-                result = self._set_volume_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_SPEED:
-                result = self._set_speed_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_MUTED:
-                result = self._set_muted_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_LOOP:
-                result = self._set_loop_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_WINDOW_ID:
-                result = self._set_window_id_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_WINDOW_SIZE:
-                result = self._set_window_size_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.GET_POSITION:
-                result = self._get_property_double(mpv_handle, "time-pos")
-            elif cmd_type == MPVCommandType.GET_DURATION:
-                result = self._get_property_double(mpv_handle, "duration")
-            elif cmd_type == MPVCommandType.GET_VOLUME:
-                with self._state_lock:
-                    result = self._volume
-            elif cmd_type == MPVCommandType.GET_SPEED:
-                with self._state_lock:
-                    result = self._speed
-            elif cmd_type == MPVCommandType.GET_VIDEO_SIZE:
-                w = self._get_property_double(mpv_handle, "video-params/w") or 0
-                h = self._get_property_double(mpv_handle, "video-params/h") or 0
-                result = (int(w), int(h))
-            elif cmd_type == MPVCommandType.SET_VF_FILTER:
-                result = self._set_vf_filter_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.LOAD_GLSL_SHADER:
-                result = self._load_glsl_shader_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_GLSL_SHADERS:
-                result = self._set_glsl_shaders_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.CLEAR_GLSL_SHADERS:
-                result = self._clear_glsl_shaders_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_LUT:
-                result = self._set_lut_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.CLEAR_LUT:
-                result = self._clear_lut_internal(mpv_handle)
-            elif cmd_type == MPVCommandType.LOAD_SUBTITLE:
-                result = self._load_subtitle_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.GET_SUBTITLE_STATE:
-                result = self._get_subtitle_state_internal(mpv_handle)
-            elif cmd_type == MPVCommandType.GET_SUBTITLE_TRACKS:
-                result = self._get_subtitle_tracks_internal(mpv_handle)
-            elif cmd_type == MPVCommandType.SET_SUBTITLE_VISIBILITY:
-                result = self._set_subtitle_visibility_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.SET_SUBTITLE_TRACK:
-                result = self._set_subtitle_track_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.GET_AUDIO_STATE:
-                result = self._get_audio_state_internal(mpv_handle)
-            elif cmd_type == MPVCommandType.GET_AUDIO_TRACKS:
-                result = self._get_audio_tracks_internal(mpv_handle)
-            elif cmd_type == MPVCommandType.SET_AUDIO_TRACK:
-                result = self._set_audio_track_internal(mpv_handle, *args, **kwargs)
-            elif cmd_type == MPVCommandType.CLOSE:
-                self._stop_event.set()
-                result = True
-        except (RuntimeError, AttributeError, TypeError) as e:
-            error(f"执行命令 {cmd_type} 时出错: {e}")
-            result = None
+        result_holder = command.get('result_holder')
+        result_event = command.get('result_event')
 
-        if 'result_id' in command:
-            try:
-                # 使用简单的元组，避免复杂对象
-                result_tuple = (command['result_id'], result)
-                self._result_queue.put(result_tuple)
-            except (RuntimeError, AttributeError, TypeError) as e:
-                error(f"放入结果队列时出错: {e}")
+        if isinstance(result_holder, dict):
+            result_holder['result'] = result
+
+        if isinstance(result_event, threading.Event):
+            result_event.set()
     
     def _load_file_internal(self, mpv_handle: c_void_p, file_path: str, **kwargs) -> bool:
         """内部加载文件实现"""
         if not mpv_handle:
             return False
-        if not os.path.exists(file_path):
-            # 使用安全路径显示错误信息
-            safe_path = sanitize_path(file_path)
-            self._emit_error(MpvErrorCode.LOADING_FAILED, "文件不存在")
+        try:
+            if self._stop_event.is_set():
+                return False
+            if not os.path.exists(file_path):
+                # 使用安全路径显示错误信息
+                safe_path = sanitize_path(file_path)
+                self._emit_error(MpvErrorCode.LOADING_FAILED, "文件不存在")
+                return False
+            
+            with self._state_lock:
+                self._current_file = file_path
+                self._is_playing = False
+                self._is_paused = False
+                self._position = 0.0
+                self._duration = 0.0
+            
+            cmd_args = [b"loadfile", file_path.encode('utf-8'), None]
+            cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
+            
+            result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
+            return result >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"加载文件异常: {e}")
             return False
-        
-        with self._state_lock:
-            self._current_file = file_path
-            self._is_playing = False
-            self._is_paused = False
-            self._position = 0.0
-            self._duration = 0.0
-        
-        cmd_args = [b"loadfile", file_path.encode('utf-8'), None]
-        cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
-        
-        result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-        return result >= 0
     
     def _play_internal(self, mpv_handle: c_void_p) -> bool:
         """内部播放实现"""
         if not mpv_handle:
             return False
-        c_value = ctypes.c_int(0)
-        result = self._dll_loader.dll.mpv_set_property(
-            mpv_handle, b"pause", MpvFormat.FLAG, byref(c_value)
-        )
-        if result >= 0:
-            with self._state_lock:
-                self._is_playing = True
-                self._is_paused = False
-        return result >= 0
+        try:
+            if self._stop_event.is_set():
+                return False
+            c_value = ctypes.c_int(0)
+            result = self._dll_loader.dll.mpv_set_property(
+                mpv_handle, b"pause", MpvFormat.FLAG, byref(c_value)
+            )
+            if result >= 0:
+                with self._state_lock:
+                    self._is_playing = True
+                    self._is_paused = False
+            return result >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"播放操作异常: {e}")
+            return False
     
     def _pause_internal(self, mpv_handle: c_void_p) -> bool:
         """内部暂停实现"""
         if not mpv_handle:
             return False
-        c_value = ctypes.c_int(1)
-        result = self._dll_loader.dll.mpv_set_property(
-            mpv_handle, b"pause", MpvFormat.FLAG, byref(c_value)
-        )
-        if result >= 0:
-            with self._state_lock:
-                self._is_playing = False
-                self._is_paused = True
-        return result >= 0
+        try:
+            if self._stop_event.is_set():
+                return False
+            c_value = ctypes.c_int(1)
+            result = self._dll_loader.dll.mpv_set_property(
+                mpv_handle, b"pause", MpvFormat.FLAG, byref(c_value)
+            )
+            if result >= 0:
+                with self._state_lock:
+                    self._is_playing = False
+                    self._is_paused = True
+            return result >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"暂停操作异常: {e}")
+            return False
     
     def _stop_internal(self, mpv_handle: c_void_p) -> bool:
         """内部停止实现"""
         if not mpv_handle:
             return False
-        cmd_args = [b"stop", None]
-        cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
-        result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-        
-        if result >= 0:
-            with self._state_lock:
-                self._is_playing = False
-                self._is_paused = False
-                self._position = 0.0
-        return result >= 0
+        try:
+            if self._stop_event.is_set():
+                return False
+            cmd_args = [b"stop", None]
+            cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
+            result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
+            
+            if result >= 0:
+                with self._state_lock:
+                    self._is_playing = False
+                    self._is_paused = False
+                    self._position = 0.0
+            return result >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"停止操作异常: {e}")
+            return False
     
     def _seek_internal(self, mpv_handle: c_void_p, position: float, **kwargs) -> bool:
         """内部跳转实现"""
         if not mpv_handle:
             return False
-        cmd_args = [b"seek", str(position).encode('utf-8'), b"absolute", None]
-        cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
-        return self._dll_loader.dll.mpv_command(mpv_handle, cmd_array) >= 0
+        try:
+            # 检查停止事件
+            if self._stop_event.is_set():
+                return False
+            cmd_args = [b"seek", str(position).encode('utf-8'), b"absolute", None]
+            cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
+            return self._dll_loader.dll.mpv_command(mpv_handle, cmd_array) >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"seek操作异常: {e}")
+            return False
     
     def _set_volume_internal(self, mpv_handle: c_void_p, volume: int, **kwargs) -> bool:
         """内部设置音量实现"""
         if not mpv_handle:
             return False
-        volume = max(0, min(100, volume))
-        c_value = c_double(float(volume))
-        result = self._dll_loader.dll.mpv_set_property(
-            mpv_handle, b"volume", MpvFormat.DOUBLE, byref(c_value)
-        )
-        if result >= 0:
-            with self._state_lock:
-                self._volume = volume
-        return result >= 0
+        try:
+            if self._stop_event.is_set():
+                return False
+            volume = max(0, min(100, volume))
+            c_value = c_double(float(volume))
+            result = self._dll_loader.dll.mpv_set_property(
+                mpv_handle, b"volume", MpvFormat.DOUBLE, byref(c_value)
+            )
+            if result >= 0:
+                with self._state_lock:
+                    self._volume = volume
+            return result >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"设置音量异常: {e}")
+            return False
     
     def _set_speed_internal(self, mpv_handle: c_void_p, speed: float, **kwargs) -> bool:
         """内部设置速度实现"""
         if not mpv_handle:
             return False
-        speed = max(0.1, min(10.0, speed))
-        c_value = c_double(speed)
-        result = self._dll_loader.dll.mpv_set_property(
-            mpv_handle, b"speed", MpvFormat.DOUBLE, byref(c_value)
-        )
-        if result >= 0:
-            with self._state_lock:
-                self._speed = speed
-        return result >= 0
+        try:
+            if self._stop_event.is_set():
+                return False
+            speed = max(0.1, min(10.0, speed))
+            c_value = c_double(speed)
+            result = self._dll_loader.dll.mpv_set_property(
+                mpv_handle, b"speed", MpvFormat.DOUBLE, byref(c_value)
+            )
+            if result >= 0:
+                with self._state_lock:
+                    self._speed = speed
+            return result >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"设置速度异常: {e}")
+            return False
     
     def _set_muted_internal(self, mpv_handle: c_void_p, muted: bool, **kwargs) -> bool:
         """内部设置静音实现"""
         if not mpv_handle:
             return False
-        c_value = ctypes.c_int(1 if muted else 0)
-        result = self._dll_loader.dll.mpv_set_property(
-            mpv_handle, b"mute", MpvFormat.FLAG, byref(c_value)
-        )
-        if result >= 0:
-            with self._state_lock:
-                self._muted = muted
-        return result >= 0
+        try:
+            if self._stop_event.is_set():
+                return False
+            c_value = ctypes.c_int(1 if muted else 0)
+            result = self._dll_loader.dll.mpv_set_property(
+                mpv_handle, b"mute", MpvFormat.FLAG, byref(c_value)
+            )
+            if result >= 0:
+                with self._state_lock:
+                    self._muted = muted
+            return result >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"设置静音异常: {e}")
+            return False
     
     def _set_loop_internal(self, mpv_handle: c_void_p, loop_mode: str, **kwargs) -> bool:
         """内部设置循环模式实现"""
@@ -1666,23 +1753,34 @@ class MPVPlayerCore(QObject):
     
     def _send_command(self, cmd_type: MPVCommandType, *args, **kwargs) -> Any:
         """发送命令到工作线程并等待结果"""
+        # 第一重检查：在获取锁之前快速检查停止事件
+        if self._stop_event.is_set() and cmd_type != MPVCommandType.CLOSE:
+            return None
+
+        timeout = kwargs.get('timeout', self._command_timeout)
+
         with self._command_request_lock:
+            # 第二重检查：在锁保护下再次检查停止事件
             if self._stop_event.is_set() and cmd_type != MPVCommandType.CLOSE:
                 return None
 
             with self._state_lock:
-                if not self._initialized and cmd_type != MPVCommandType.CLOSE:
+                if not self._initialized and cmd_type != MPVCommandType.CLOSE and cmd_type != MPVCommandType.INITIALIZE:
                     return None
 
             if not self._worker_thread or not self._worker_thread.is_alive():
+                if cmd_type != MPVCommandType.INITIALIZE and cmd_type != MPVCommandType.CLOSE:
+                    warning(f"MPV工作线程未运行，忽略命令: {cmd_type}")
                 return None
 
-            result_id = id(time.time())
+            result_event = threading.Event()
+            result_holder = {'result': None}
             command = {
                 'type': cmd_type,
                 'args': args,
                 'kwargs': kwargs,
-                'result_id': result_id
+                'result_event': result_event,
+                'result_holder': result_holder,
             }
 
             try:
@@ -1690,47 +1788,36 @@ class MPVPlayerCore(QObject):
             except queue.Full:
                 warning(f"命令队列已满({self._command_queue_maxsize})，丢弃最旧命令")
                 try:
+                    dropped_commands = []
+                    close_command = None
+
                     while not self._command_queue.empty():
                         old_cmd = self._command_queue.get(block=False)
                         if old_cmd.get('type') == MPVCommandType.CLOSE:
-                            self._command_queue.put(old_cmd, block=False)
+                            close_command = old_cmd
                             break
-                        else:
-                            old_result_id = old_cmd.get('result_id')
-                            if old_result_id is not None:
-                                try:
-                                    self._result_queue.put((old_result_id, None), block=False)
-                                except queue.Full:
-                                    pass
+                        dropped_commands.append(old_cmd)
+
+                    if close_command is not None:
+                        self._command_queue.put(close_command, block=False)
+
+                    for old_cmd in dropped_commands:
+                        self._resolve_command_result(old_cmd, None)
                 except queue.Empty:
                     pass
+
                 try:
                     self._command_queue.put(command, block=False)
                 except queue.Full:
                     error("命令队列仍然满，放弃执行命令")
+                    self._resolve_command_result(command, None)
                     return None
 
-            timeout = kwargs.get('timeout', self._command_timeout)
-            start_time = time.time()
+        if result_event.wait(timeout):
+            return result_holder.get('result')
 
-            while time.time() - start_time < timeout:
-                if self._stop_event.is_set() and cmd_type != MPVCommandType.CLOSE:
-                    return None
-
-                try:
-                    rid, result = self._result_queue.get(block=True, timeout=0.05)
-                    if rid == result_id:
-                        return result
-                    try:
-                        self._result_queue.put((rid, result), block=False)
-                    except queue.Full:
-                        # debug(f"结果队列拥塞，丢弃非目标结果: {rid}")
-                        pass
-                except queue.Empty:
-                    continue
-
-            warning(f"命令 {cmd_type} 执行超时({timeout}s)")
-            return None
+        warning(f"命令 {cmd_type} 执行超时({timeout}s)")
+        return None
     
     def initialize(self) -> bool:
         """
@@ -2447,21 +2534,12 @@ class MPVPlayerCore(QObject):
         try:
             while not self._command_queue.empty():
                 try:
-                    self._command_queue.get(block=False)
+                    command = self._command_queue.get(block=False)
+                    self._resolve_command_result(command, None)
                 except queue.Empty:
                     break
         except Exception as e:
             # debug(f"清空命令队列失败: {e}")
-            pass
-
-        try:
-            while not self._result_queue.empty():
-                try:
-                    self._result_queue.get(block=False)
-                except queue.Empty:
-                    break
-        except Exception as e:
-            # debug(f"清空结果队列失败: {e}")
             pass
 
     def _sync_cleanup(self, timeout=2.0):

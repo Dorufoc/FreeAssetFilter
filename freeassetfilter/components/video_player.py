@@ -1152,11 +1152,17 @@ class VideoPlayer(QWidget):
 
     def _flush_pending_seek(self):
         """提交最后一次待处理的 seek，避免拖动进度条时高频请求堆积"""
+        # 第一重快速检查：防止在退出时执行
         if (
             self._pending_seek_value is None
             or not self._mpv_manager
             or not self._mpv_manager.is_initialized()
         ):
+            return
+            
+        # 检查管理器是否正在关闭
+        if hasattr(self._mpv_manager, '_is_shutting_down') and self._mpv_manager._is_shutting_down:
+            self._pending_seek_value = None
             return
 
         duration = self._mpv_manager.get_duration_direct() or 0.0
@@ -1175,7 +1181,12 @@ class VideoPlayer(QWidget):
 
         # 如果用户仍在拖动，并且在本次发送期间又产生了新的目标位置，
         # 继续以节流频率补发下一次 seek，保证拖动中画面尽量实时跟随。
-        if self._user_interacting and self._pending_seek_value != self._last_committed_seek_value:
+        # 但再次检查是否正在关闭
+        if (
+            self._user_interacting 
+            and self._pending_seek_value != self._last_committed_seek_value
+            and not (hasattr(self._mpv_manager, '_is_shutting_down') and self._mpv_manager._is_shutting_down)
+        ):
             if not self._seek_debounce_timer.isActive():
                 self._seek_debounce_timer.start()
 

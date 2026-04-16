@@ -462,6 +462,16 @@ class FreeAssetFilterApp(QMainWindow):
                         self.unified_previewer._preview_thread.terminate()
                         self.unified_previewer._preview_thread.wait(100)
 
+            # 显式清理视频播放器（如果存在）
+            if hasattr(self.unified_previewer, 'video_player') and self.unified_previewer.video_player:
+                try:
+                    if hasattr(self.unified_previewer.video_player, 'cleanup'):
+                        # 使用同步模式关闭，确保资源完全释放
+                        self.unified_previewer.video_player.cleanup(async_mode=False)
+                        logger.debug("视频播放器已同步清理")
+                except Exception as e:
+                    logger.warning(f"清理视频播放器失败: {e}")
+
             # 清理预览区域内容
             self.unified_previewer._clear_preview(app_closing=True)
 

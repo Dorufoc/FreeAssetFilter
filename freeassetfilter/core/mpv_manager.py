@@ -361,10 +361,20 @@ class MPVManager(QObject):
         while not self._stop_event.is_set():
             operation = None
             try:
+                # 首先检查是否正在关闭
+                if self._is_shutting_down:
+                    break
+                    
                 # 从队列获取操作，超时1秒
                 _, _, operation = self._operation_queue.get(timeout=1.0)
 
                 if operation is None:
+                    continue
+                    
+                # 再次检查是否正在关闭
+                if self._is_shutting_down:
+                    if operation.future and not operation.future.done():
+                        operation.future.set_result(False)
                     continue
 
                 if operation.operation_type in self._coalescible_operations:
@@ -380,6 +390,12 @@ class MPVManager(QObject):
 
                 #debug(f"处理操作: {operation.operation_type.value}, 组件: {operation.component_id}")
 
+                # 执行操作前再次检查关闭状态
+                if self._is_shutting_down:
+                    if operation.future and not operation.future.done():
+                        operation.future.set_result(False)
+                    continue
+                    
                 # 执行操作
                 result = self._execute_operation(operation)
 
@@ -391,7 +407,8 @@ class MPVManager(QObject):
                 # 队列为空，继续循环
                 continue
             except RuntimeError as e:
-                exception_details("处理操作时运行时错误", e)
+                if not self._is_shutting_down:
+                    exception_details("处理操作时运行时错误", e)
                 if operation and operation.future and not operation.future.done():
                     operation.future.set_exception(e)
 
@@ -407,12 +424,20 @@ class MPVManager(QObject):
         Returns:
             操作结果
         """
+        # 第一重检查：关闭中直接返回
+        if self._is_shutting_down and operation.operation_type != MPVOperationType.CLOSE:
+            return False
+            
         operation_type = operation.operation_type
         args = operation.args
         kwargs = operation.kwargs
 
         try:
             with self._resource_lock:
+                # 第二重检查：在锁保护下再次检查
+                if self._is_shutting_down and operation_type != MPVOperationType.CLOSE:
+                    return False
+                    
                 self._is_busy = True
 
                 if operation_type == MPVOperationType.INITIALIZE:
@@ -1531,6 +1556,10 @@ class MPVManager(QObject):
         Returns:
             是否操作成功
         """
+        # 第一重快速检查：关闭中直接返回
+        if self._is_shutting_down:
+            return False
+            
         try:
             future = self._submit_operation(
                 MPVOperationType.SEEK,
@@ -1542,7 +1571,8 @@ class MPVManager(QObject):
         except FutureTimeoutError:
             return False
         except RuntimeError as e:
-            error(f"跳转失败: {e}")
+            if not self._is_shutting_down:
+                error(f"跳转失败: {e}")
             return False
 
     def set_position(
