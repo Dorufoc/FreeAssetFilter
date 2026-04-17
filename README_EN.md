@@ -324,13 +324,12 @@ python -m freeassetfilter.app.main
 ```
 FreeAssetFilter
 ├── GUI Framework: PySide6 (Qt6) - Cross-platform GUI
-├── Image Processing: Pillow + OpenCV + rawpy - Image decoding and processing
+├── Image Processing: Pillow + rawpy - Image decoding and processing
 ├── Video Playback: MPV (libmpv) - High-performance video playback
-├── Document Parsing: python-docx - Document rendering
 ├── Audio Processing: mutagen - Metadata reading
-├── Archives: rarfile + py7zr - Archive file handling
-├── Scientific Computing: NumPy + SciPy + scikit-image - Image algorithms
-└── Extensions: C++ (color extraction, LUT processing) - Performance-critical algorithms
+├── Archives: 7z.exe command-line tool - Archive file handling
+├── Syntax Highlighting: Syntect + Pygments - Code syntax highlighting
+└── Extensions: C++/Rust (color extraction, thumbnails, LUT processing) - Performance-critical algorithms
 ```
 
 ### Project Structure
@@ -601,13 +600,9 @@ Thanks to the following open-source projects for their contributions:
 
 - [Pillow](https://python-pillow.org/) - Python image processing library
 - [pillow-heif](https://github.com/bigcat88/pillow_heif) - HEIF/HEIC format support
+- [pillow-avif](https://github.com/python-pillow/Pillow) - AVIF format support
 - [rawpy](https://github.com/letmaik/rawpy) - RAW image processing
 - [psd-tools](https://github.com/psd-tools/psd-tools) - PSD file parsing
-- [OpenCV](https://opencv.org/) - Computer vision library
-- [scikit-image](https://scikit-image.org/) - Image processing algorithm library
-- [imageio](https://imageio.readthedocs.io/) - Image I/O library
-- [tifffile](https://github.com/cgohlke/tifffile) - TIFF file processing
-- [aggdraw](https://github.com/pytillers/aggdraw) - Anti-aliased graphics rendering
 
 #### Video & Audio
 
@@ -623,22 +618,19 @@ Thanks to the following open-source projects for their contributions:
 
 - [7-Zip](https://www.7-zip.org/) - 7z format open source implementation and LZMA/LZMA2 algorithms
 
+#### Syntax Highlighting
+
+- [Syntect](https://github.com/trishume/syntect) - High-performance syntax highlighting engine
+- [vscode-textmate](https://github.com/microsoft/vscode-textmate) - TextMate grammar parsing library
+
 #### Scientific Computing
 
 - [NumPy](https://numpy.org/) - Scientific computing library
-- [SciPy](https://scipy.org/) - Scientific computing toolkit
-- [networkx](https://networkx.org/) - Graph theory algorithm library
 
 #### Text & Encoding
 
 - [chardet](https://github.com/chardet/chardet) - Character encoding detection
 - [ExifRead](https://github.com/ianare/exif-py) - EXIF data reading
-- [texttable](https://github.com/bufordtaylor/python-texttable) - Text table generation
-
-#### System & Tools
-
-- [psutil](https://github.com/giampaolo/psutil) - System information retrieval
-- [packaging](https://packaging.pypa.io/) - Version parsing tools
 
 ### Resource Acknowledgments
 

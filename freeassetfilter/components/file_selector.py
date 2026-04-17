@@ -39,6 +39,40 @@ from PySide6.QtCore import (
     Qt, Signal, QThread, QObject, QEvent, QTimer,
     QFileInfo, QDateTime, QPoint, QSize, QRect, QRectF, QUrl
 )
+
+class ProgressThrottler(QObject):
+    def __init__(self, min_interval_ms=50, parent=None):
+        super().__init__(parent)
+        self._min_interval = min_interval_ms
+        self._last_update_time = 0
+        self._pending_current = 0
+        self._pending_total = 0
+        self._pending_file_data = None
+        self._update_func = None
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._do_update)
+
+    def update(self, current, total, file_data, update_func):
+        self._pending_current = current
+        self._pending_total = total
+        self._pending_file_data = file_data
+        self._update_func = update_func
+
+        import time
+        current_time_ms = int(time.time() * 1000)
+        if current_time_ms - self._last_update_time >= self._min_interval:
+            self._do_update()
+        elif not self._timer.isActive():
+            self._timer.start(self._min_interval)
+
+    def _do_update(self):
+        import time
+        self._last_update_time = int(time.time() * 1000)
+        if self._update_func:
+            self._update_func(self._pending_current, self._pending_total, self._pending_file_data)
+
+
 from PySide6.QtGui import (
     QIcon, QPixmap, QFont, QFontMetrics, QColor, QCursor,
     QBrush, QPainter, QPen, QPalette, QImage, QFontDatabase, QAction
@@ -795,11 +829,14 @@ class CustomFileSelector(QWidget):
         self.generate_thumbnails_btn.setEnabled(False)
         self._thumbnail_thread = ThumbnailGeneratorThread(thumbnail_manager, files_to_generate)
 
-        def on_progress_updated(current, total, file_data):
+        progress_throttler = ProgressThrottler(min_interval_ms=50)
+
+        def _do_progress_update(current, total, file_data):
             progress_bar.setValue(current, use_animation=False)
             progress_msg.set_text(f"正在生成缩略图... ({current}/{total})")
-            progress_msg.repaint()
-            QApplication.processEvents()
+
+        def on_progress_updated(current, total, file_data):
+            progress_throttler.update(current, total, file_data, _do_progress_update)
 
         def on_thumbnail_created(file_data):
             FileBlockCard._clear_shared_caches(file_data.get("path"))

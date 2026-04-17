@@ -6,11 +6,11 @@
 
 **一款强大的多功能文件预览与管理工具，让文件浏览如丝般高效顺滑**
 
-[!\[GitHub Release\](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square\&logo=github\&color=blue null)](https://github.com/Dorufoc/FreeAssetFilter/releases)
-[!\[Python Version\](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square\&logo=python null)](https://www.python.org/)
-[!\[PySide6\](https://img.shields.io/badge/PySide6-6.4%2B-green?style=flat-square\&logo=qt null)](https://wiki.qt.io/Qt_for_Python)\
-[!\[License\](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square null)](LICENSE)
-[!\[Platform\](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square\&logo=windows null)](https://www.microsoft.com/windows)
+[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square&logo=github&color=blue)](https://github.com/Dorufoc/FreeAssetFilter/releases)
+[![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/PySide6-6.4%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
 
 [English](README_EN.md) • [功能预览](#-功能预览) • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [安装指南](#-安装指南) • [使用说明](#-使用说明) • [技术架构](#-技术架构) • [开发指南](#-开发指南) • [贡献指南](#-贡献指南)
 
@@ -324,13 +324,12 @@ python -m freeassetfilter.app.main
 ```
 FreeAssetFilter
 ├── GUI 框架: PySide6 (Qt6) - 跨平台图形界面
-├── 图像处理: Pillow + OpenCV + rawpy - 图像解码与处理
+├── 图像处理: Pillow + rawpy - 图像解码与处理
 ├── 视频播放: MPV (libmpv) - 高性能视频播放
-├── 文档解析: python-docx - 文档渲染
 ├── 音频处理: mutagen - 元数据读取
-├── 压缩包: rarfile + py7zr - 归档文件处理
-├── 科学计算: NumPy + SciPy + scikit-image - 图像算法
-└── 扩展模块: C++ (颜色提取、LUT 处理) - 性能关键算法
+├── 压缩包: 7z.exe 命令行工具 - 归档文件处理
+├── 语法高亮: Syntect + Pygments - 代码语法高亮
+└── 扩展模块: C++/Rust (颜色提取、缩略图、LUT 处理) - 性能关键算法
 ```
 
 ### 项目结构
@@ -601,13 +600,9 @@ GNU Affero General Public License for more details.
 
 - [Pillow](https://python-pillow.org/) - Python 图像处理库
 - [pillow-heif](https://github.com/bigcat88/pillow_heif) - HEIF/HEIC 格式支持
+- [pillow-avif](https://github.com/python-pillow/Pillow) - AVIF 格式支持
 - [rawpy](https://github.com/letmaik/rawpy) - RAW 图像处理
 - [psd-tools](https://github.com/psd-tools/psd-tools) - PSD 文件解析
-- [OpenCV](https://opencv.org/) - 计算机视觉库
-- [scikit-image](https://scikit-image.org/) - 图像处理算法库
-- [imageio](https://imageio.readthedocs.io/) - 图像 I/O 库
-- [tifffile](https://github.com/cgohlke/tifffile) - TIFF 文件处理
-- [aggdraw](https://github.com/pytillers/aggdraw) - 抗锯齿图形绘制
 
 #### 视频与音频
 
@@ -623,22 +618,19 @@ GNU Affero General Public License for more details.
 
 - [7-Zip](https://www.7-zip.org/) - 7z 格式开源实现与 LZMA/LZMA2 算法
 
+#### 语法高亮
+
+- [Syntect](https://github.com/trishume/syntect) - 高性能语法高亮引擎
+- [vscode-textmate](https://github.com/microsoft/vscode-textmate) - TextMate 语法解析库
+
 #### 科学计算
 
 - [NumPy](https://numpy.org/) - 科学计算库
-- [SciPy](https://scipy.org/) - 科学计算工具集
-- [networkx](https://networkx.org/) - 图论算法库
 
 #### 文本与编码
 
 - [chardet](https://github.com/chardet/chardet) - 字符编码检测
 - [ExifRead](https://github.com/ianare/exif-py) - EXIF 数据读取
-- [texttable](https://github.com/bufordtaylor/python-texttable) - 文本表格生成
-
-#### 系统与工具
-
-- [psutil](https://github.com/giampaolo/psutil) - 系统信息获取
-- [packaging](https://packaging.pypa.io/) - 版本解析工具
 
 ### 资源致谢
 
