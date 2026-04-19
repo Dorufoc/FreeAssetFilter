@@ -16,7 +16,9 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 
 import os
+import sys
 import struct
+import hashlib
 import ctypes
 from ctypes import windll, byref, create_unicode_buffer, sizeof
 from ctypes.wintypes import (DWORD, MAX_PATH, HANDLE, UINT,
@@ -24,6 +26,86 @@ from ctypes.wintypes import (DWORD, MAX_PATH, HANDLE, UINT,
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+
+# 图标缓存目录
+_ICON_CACHE_DIR = None
+
+
+def _get_icon_cache_dir() -> str:
+    """获取图标缓存目录"""
+    global _ICON_CACHE_DIR
+    if _ICON_CACHE_DIR is not None:
+        return _ICON_CACHE_DIR
+
+    try:
+        if getattr(sys, 'frozen', False):
+            project_root = os.path.dirname(sys.executable)
+        else:
+            current_file = os.path.abspath(__file__)
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+
+        _ICON_CACHE_DIR = os.path.join(project_root, ".icon_cache")
+        if not os.path.exists(_ICON_CACHE_DIR):
+            os.makedirs(_ICON_CACHE_DIR, exist_ok=True)
+    except Exception as e:
+        debug(f"创建图标缓存目录失败: {e}")
+        _ICON_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".freeassetfilter_icon_cache")
+        try:
+            os.makedirs(_ICON_CACHE_DIR, exist_ok=True)
+        except Exception:
+            _ICON_CACHE_DIR = None
+
+    return _ICON_CACHE_DIR
+
+
+def _get_icon_cache_key(file_path: str) -> str:
+    """根据文件路径生成缓存文件名"""
+    file_hash = hashlib.md5(file_path.encode("utf-8")).hexdigest()
+    return f"{file_hash}.png"
+
+
+def get_cached_icon_path(file_path: str) -> str:
+    """
+    获取文件图标的缓存路径
+    返回缓存文件路径，如果不存在则返回空字符串
+    """
+    cache_dir = _get_icon_cache_dir()
+    if cache_dir is None:
+        return ""
+
+    cache_key = _get_icon_cache_key(file_path)
+    cache_path = os.path.join(cache_dir, cache_key)
+
+    if os.path.exists(cache_path):
+        return cache_path
+    return ""
+
+
+def save_icon_to_cache(file_path: str, pixmap) -> bool:
+    """
+    将图标保存到缓存文件
+
+    参数:
+        file_path: str - 原始文件路径（用于生成缓存键）
+        pixmap: QPixmap - 要保存的图标
+
+    返回:
+        bool - 是否保存成功
+    """
+    if pixmap is None or pixmap.isNull():
+        return False
+
+    cache_dir = _get_icon_cache_dir()
+    if cache_dir is None:
+        return False
+
+    try:
+        cache_key = _get_icon_cache_key(file_path)
+        cache_path = os.path.join(cache_dir, cache_key)
+        return pixmap.save(cache_path, "PNG")
+    except Exception as e:
+        debug(f"保存图标到缓存失败: {file_path}, {e}")
+        return False
 
 # 定义Windows API常量
 SHGFI_ICON = 0x000000100
@@ -273,29 +355,32 @@ def get_all_icons_from_exe(file_path):
                         )
                         
                         if result == 0 and hicon.value != 0:
-                            # 获取图标尺寸
-                            icon_info = ICONINFO()
-                            if GetIconInfo(hicon, byref(icon_info)):
-                                try:
-                                    bmp = BITMAP()
-                                    if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
-                                        # 添加到图标列表
-                                        icons.append({
-                                            "hicon": hicon,
-                                            "index": i,
-                                            "width": bmp.bmWidth,
-                                            "height": bmp.bmHeight
-                                        })
-                                        continue  # 保留当前图标句柄
-                                finally:
-                                    # 释放图标信息资源
-                                    if icon_info.hbmMask:
-                                        DeleteObject(icon_info.hbmMask)
-                                    if icon_info.hbmColor:
-                                        DeleteObject(icon_info.hbmColor)
-                            
-                            # 如果无法获取尺寸信息，释放图标
-                            DestroyIcon(hicon)
+                            try:
+                                # 获取图标尺寸
+                                icon_info = ICONINFO()
+                                if GetIconInfo(hicon, byref(icon_info)):
+                                    try:
+                                        bmp = BITMAP()
+                                        if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
+                                            # 添加到图标列表
+                                            icons.append({
+                                                "hicon": hicon,
+                                                "index": i,
+                                                "width": bmp.bmWidth,
+                                                "height": bmp.bmHeight
+                                            })
+                                            hicon = HICON()  # 置空，表示图标已被接管
+                                            continue  # 保留当前图标句柄
+                                    finally:
+                                        # 释放图标信息资源
+                                        if icon_info.hbmMask:
+                                            DeleteObject(icon_info.hbmMask)
+                                        if icon_info.hbmColor:
+                                            DeleteObject(icon_info.hbmColor)
+                            finally:
+                                # 如果图标未被添加到列表（continue 未执行），释放图标
+                                if hicon.value != 0:
+                                    DestroyIcon(hicon)
             except (OSError, ctypes.WinError, AttributeError) as e:
                 warning(f"SHDefExtractIcon提取图标失败: {file_path}, 错误: {e}")
 
@@ -311,53 +396,59 @@ def get_all_icons_from_exe(file_path):
                     if extracted_count > 0:
                         # 处理大图标的情况
                         if large_icons[0]:
-                            # 获取图标尺寸
-                            icon_info = ICONINFO()
-                            if GetIconInfo(large_icons[0], byref(icon_info)):
-                                try:
-                                    bmp = BITMAP()
-                                    if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
-                                        icons.append({
-                                            "hicon": large_icons[0],
-                                            "index": i,
-                                            "width": bmp.bmWidth,
-                                            "height": bmp.bmHeight
-                                        })
-                                        continue  # 保留当前图标句柄
-                                finally:
-                                    # 释放图标信息资源
-                                    if icon_info.hbmMask:
-                                        DeleteObject(icon_info.hbmMask)
-                                    if icon_info.hbmColor:
-                                        DeleteObject(icon_info.hbmColor)
-                            
-                            # 如果无法获取尺寸信息，释放图标
-                            DestroyIcon(large_icons[0])
+                            try:
+                                # 获取图标尺寸
+                                icon_info = ICONINFO()
+                                if GetIconInfo(large_icons[0], byref(icon_info)):
+                                    try:
+                                        bmp = BITMAP()
+                                        if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
+                                            icons.append({
+                                                "hicon": large_icons[0],
+                                                "index": i,
+                                                "width": bmp.bmWidth,
+                                                "height": bmp.bmHeight
+                                            })
+                                            large_icons[0] = HICON()  # 置空，表示图标已被接管
+                                            continue  # 保留当前图标句柄
+                                    finally:
+                                        # 释放图标信息资源
+                                        if icon_info.hbmMask:
+                                            DeleteObject(icon_info.hbmMask)
+                                        if icon_info.hbmColor:
+                                            DeleteObject(icon_info.hbmColor)
+                            finally:
+                                # 如果图标未被添加到列表（continue 未执行），释放图标
+                                if large_icons[0]:
+                                    DestroyIcon(large_icons[0])
                         
                         # 处理小图标的情况
                         if small_icons[0]:
-                            # 获取图标尺寸
-                            icon_info = ICONINFO()
-                            if GetIconInfo(small_icons[0], byref(icon_info)):
-                                try:
-                                    bmp = BITMAP()
-                                    if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
-                                        icons.append({
-                                            "hicon": small_icons[0],
-                                            "index": i,
-                                            "width": bmp.bmWidth,
-                                            "height": bmp.bmHeight
-                                        })
-                                        continue  # 保留当前图标句柄
-                                finally:
-                                    # 释放图标信息资源
-                                    if icon_info.hbmMask:
-                                        DeleteObject(icon_info.hbmMask)
-                                    if icon_info.hbmColor:
-                                        DeleteObject(icon_info.hbmColor)
-                            
-                            # 如果无法获取尺寸信息，释放图标
-                            DestroyIcon(small_icons[0])
+                            try:
+                                # 获取图标尺寸
+                                icon_info = ICONINFO()
+                                if GetIconInfo(small_icons[0], byref(icon_info)):
+                                    try:
+                                        bmp = BITMAP()
+                                        if GetObjectW(icon_info.hbmColor, sizeof(bmp), byref(bmp)) > 0:
+                                            icons.append({
+                                                "hicon": small_icons[0],
+                                                "index": i,
+                                                "width": bmp.bmWidth,
+                                                "height": bmp.bmHeight
+                                            })
+                                            small_icons[0] = HICON()  # 置空，表示图标已被接管
+                                            continue  # 保留当前图标句柄
+                                    finally:
+                                        # 释放图标信息资源
+                                        if icon_info.hbmMask:
+                                            DeleteObject(icon_info.hbmMask)
+                                        if icon_info.hbmColor:
+                                            DeleteObject(icon_info.hbmColor)
+                            finally:
+                                # 如果图标未被添加到列表（continue 未执行），释放图标
+                                if small_icons[0]:
+                                    DestroyIcon(small_icons[0])
 
     except (OSError, ctypes.WinError) as e:
         warning(f"提取EXE图标失败: {file_path}, 错误: {e}")
@@ -408,16 +499,22 @@ def get_highest_resolution_icon(file_path, desired_size=256):
             all_icons = get_all_icons_from_exe(file_path)
 
             if all_icons:
-                # 选择分辨率最高的图标
-                best_icon = max(all_icons, key=lambda icon: icon["width"] * icon["height"])
-                debug(f"选择最高分辨率图标: {best_icon['width']}x{best_icon['height']}")
+                try:
+                    # 选择分辨率最高的图标
+                    best_icon = max(all_icons, key=lambda icon: icon["width"] * icon["height"])
+                    debug(f"选择最高分辨率图标: {best_icon['width']}x{best_icon['height']}")
 
-                # 释放其他图标的句柄
-                for icon in all_icons:
-                    if icon["hicon"] != best_icon["hicon"]:
+                    # 释放其他图标的句柄
+                    for icon in all_icons:
+                        if icon["hicon"] != best_icon["hicon"]:
+                            DestroyIcon(icon["hicon"])
+
+                    return best_icon["hicon"]
+                except Exception:
+                    # 如果选择最佳图标过程中发生异常，释放所有图标
+                    for icon in all_icons:
                         DestroyIcon(icon["hicon"])
-
-                return best_icon["hicon"]
+                    raise
             debug(f"EXE文件未提取到图标: {file_path}")
 
         # 使用SHGetFileInfo获取其他类型文件的图标
@@ -934,5 +1031,13 @@ __all__ = [
     "get_all_icons_from_exe",
     "hicon_to_pixmap",
     "get_lnk_target",
-    "DestroyIcon"
+    "DestroyIcon",
+    "get_cached_icon_path",
+    "save_icon_to_cache",
+    "get_icon_cache_dir",
 ]
+
+
+def get_icon_cache_dir() -> str:
+    """获取图标缓存目录路径"""
+    return _get_icon_cache_dir() or ""

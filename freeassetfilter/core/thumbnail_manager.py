@@ -1401,6 +1401,18 @@ class ThumbnailManager:
         """获取适用于当前平台的子进程创建标志"""
         return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
+    def _get_subprocess_startupinfo(self):
+        """获取适用于当前平台的子进程启动信息，用于隐藏窗口"""
+        startupinfo = None
+        if sys.platform == "win32":
+            try:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            except Exception:
+                pass
+        return startupinfo
+
     def _get_video_duration_ffprobe(self, file_path: str) -> Optional[float]:
         """使用 ffprobe 获取视频时长（秒）"""
         command = [
@@ -1424,6 +1436,7 @@ class ThumbnailManager:
                 errors="replace",
                 timeout=self.FFPROBE_TIMEOUT,
                 creationflags=self._get_subprocess_creationflags(),
+                startupinfo=self._get_subprocess_startupinfo(),
             )
         except FileNotFoundError:
             warning("ffprobe未找到")
@@ -1553,6 +1566,7 @@ class ThumbnailManager:
                         errors="replace",
                         timeout=self.FFMPEG_SOFT_TIMEOUT,
                         creationflags=self._get_subprocess_creationflags(),
+                        startupinfo=self._get_subprocess_startupinfo(),
                     )
                 except FileNotFoundError:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "ffmpeg_missing")
@@ -1663,6 +1677,7 @@ class ThumbnailManager:
                     timeout=timeout,
                     cwd=project_root,
                     creationflags=self._get_subprocess_creationflags(),
+                    startupinfo=self._get_subprocess_startupinfo(),
                 )
             except subprocess.TimeoutExpired:
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "timeout")

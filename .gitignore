@@ -86,3 +86,4 @@ htmlcov/
 *.temp
 *.cache
 unit.md
+.icon_cache/

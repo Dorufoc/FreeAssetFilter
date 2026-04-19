@@ -2788,239 +2788,95 @@ class CustomFileSelector(QWidget):
     def _set_file_icon(self, file_info):
         """
         设置文件图标或缩略图，返回一个QWidget
+        优化版本：对exe/lnk文件使用异步加载，避免阻塞UI
         """
-        # 首先处理lnk和exe文件，使用它们自身的图标
+        from PySide6.QtSvgWidgets import QSvgWidget
+
         if not file_info["is_dir"]:
             suffix = file_info["suffix"].lower()
             if suffix in ["lnk", "exe"]:
-                # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
-                base_icon_size = int(40 * self.dpi_scale)
-                scaled_icon_size = int(base_icon_size * 0.8)
-                
-                # 创建标签显示图标
-                label = QLabel()
-                label.setAlignment(Qt.AlignCenter)
-                label.setFixedSize(base_icon_size, base_icon_size)
-                
-                # 直接从文件路径获取图标
-                file_path = file_info["path"]
-                
-                try:
-                    # 使用自定义的图标工具获取最高分辨率图标
-                    from freeassetfilter.utils.icon_utils import get_highest_resolution_icon, hicon_to_pixmap, DestroyIcon
+                return self._create_async_system_icon_widget(file_info)
 
-                    # 获取最高分辨率图标
-                    hicon = get_highest_resolution_icon(file_path, desired_size=256)
-                    if hicon:
-                        # 转换为QPixmap，传入正确的DPI缩放因子
-                        # 注意：传入base_icon_size作为逻辑像素大小，使pixmap填满label
-                        pixmap = hicon_to_pixmap(hicon, base_icon_size, None, self.devicePixelRatio())
-                        DestroyIcon(hicon)  # 释放图标资源
-
-                        if pixmap and not pixmap.isNull():
-                            label.setPixmap(pixmap)
-                            return label
-                except (ImportError, OSError, AttributeError) as e:
-                    debug(f"获取文件图标失败 {file_path}: {e}")
-                
-                # 备用方案：使用QFileIconProvider来获取文件图标
-                from PySide6.QtWidgets import QFileIconProvider
-                icon_provider = QFileIconProvider()
-                file_info_qt = QFileInfo(file_path)
-                icon = icon_provider.icon(file_info_qt)
-                
-                # 获取图标可用的所有尺寸，选择最大的尺寸以获取最高质量图标
-                available_sizes = icon.availableSizes()
-                if available_sizes:
-                    # 选择最大的尺寸
-                    max_size = max(available_sizes, key=lambda s: s.width() * s.height())
-                    max_width, max_height = max_size.width(), max_size.height()
-                else:
-                    # 如果没有可用尺寸信息，使用4096x4096作为最大尺寸（通常足够获取ICO中最大的图标）
-                    max_width = max_height = 4096
-                
-                # 使用最大尺寸获取图标
-                high_res_pixmap = icon.pixmap(max_width, max_height)
-                
-                # 使用高质量缩放算法缩放到目标大小，同时处理DPI
-                # 注意：使用base_icon_size使pixmap填满label
-                scaled_pixmap = high_res_pixmap.scaled(
-                    base_icon_size * self.devicePixelRatio(), 
-                    base_icon_size * self.devicePixelRatio(), 
-                    Qt.KeepAspectRatio, 
-                    Qt.SmoothTransformation
-                )
-                scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
-                
-                # 检查是否获取到有效图标
-                if not scaled_pixmap.isNull():
-                    label.setPixmap(scaled_pixmap)
-                    return label
-        
-        # 检查是否存在已生成的缩略图
         thumbnail_path = self._get_thumbnail_path(file_info["path"])
-        
-        # 检查是否是照片或视频类型，这些类型可以使用缩略图
+
         suffix = file_info["suffix"].lower() if not file_info["is_dir"] else ""
         is_photo = suffix in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'avif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'psd', 'psb']
         is_video = suffix in ['mp4', 'mov', 'avi', 'mkv', 'wmv', 'flv', 'webm', 'm4v', 'mpeg', 'mpg', 'mxf']
-        
-        # 只有照片和视频类型才使用缩略图，其余类型直接使用SVG图标
+
         use_thumbnail = False
         if (is_photo or is_video) and os.path.exists(thumbnail_path):
             use_thumbnail = True
-        
+
         if use_thumbnail:
-            # 应用DPI缩放因子到图标大小
             base_icon_size = int(40 * self.dpi_scale)
-            scaled_icon_size = base_icon_size
-            
-            # 创建标签显示缩略图
+
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
             label.setFixedSize(base_icon_size, base_icon_size)
-            
-            # 加载缩略图
+
             pixmap = QPixmap(thumbnail_path)
-            
-            # 计算实际像素大小
+
             actual_size = int(base_icon_size * self.devicePixelRatio())
-            
-            # 使用高质量缩放算法缩放到实际像素大小
+
             scaled_pixmap = pixmap.scaled(
-                actual_size, actual_size, 
-                Qt.KeepAspectRatio, 
+                actual_size, actual_size,
+                Qt.KeepAspectRatio,
                 Qt.SmoothTransformation
             )
             scaled_pixmap.setDevicePixelRatio(self.devicePixelRatio())
-            
-            # 创建一个新的Pixmap用于绘制叠加图标
+
             combined_pixmap = QPixmap(base_icon_size, base_icon_size)
             combined_pixmap.fill(Qt.transparent)
-            
-            # 创建画家
+
             painter = QPainter(combined_pixmap)
-            
-            # 计算绘制位置（居中）
+
             draw_x = (base_icon_size - scaled_pixmap.width() // self.devicePixelRatio()) // 2
             draw_y = (base_icon_size - scaled_pixmap.height() // self.devicePixelRatio()) // 2
-            
-            # 绘制缩略图
+
             painter.drawPixmap(draw_x, draw_y, scaled_pixmap)
-            
-            # 加载并绘制对应的文件类型图标
+
             try:
-                # 应用DPI缩放因子到叠加图标大小
                 scaled_overlay_icon_size = int(24 * self.dpi_scale)
                 scaled_margin = int(4 * self.dpi_scale)
-                
-                # 使用现有的_get_file_type_pixmap方法获取文件类型图标
+
                 file_type_pixmap = self._get_file_type_pixmap(file_info, icon_size=scaled_overlay_icon_size)
-                
-                # 绘制缩小的图标在右下角
+
                 x = base_icon_size - scaled_overlay_icon_size - scaled_margin
                 y = base_icon_size - scaled_overlay_icon_size - scaled_margin
-                
-                # 绘制文件类型图标
+
                 painter.drawPixmap(x, y, file_type_pixmap)
             except Exception as e:
                 warning(f"叠加文件类型图标失败: {e}")
             finally:
                 painter.end()
-            
-            # 设置最终的叠加图标
+
             label.setPixmap(combined_pixmap)
             return label
-        
-        # 定义文件类型映射
-        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg", "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb"]
-        video_formats = ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "wmv", "flv", "webm", "3gp", "mpg", "mpeg", "vob", "m2ts", "ts", "mts"]
-        audio_formats = ["mp3", "wav", "flac", "ogg", "wma", "aac", "m4a", "opus"]
-        document_formats = ["pdf", "txt", "md", "rst", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
-        font_formats = ["ttf", "otf", "woff", "woff2", "eot", "svg"]
-        archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "tar.gz", "tar.bz2", "tar.xz", "tar.lzma", "iso", "cab", "arj", "lzh", "ace", "z"]
-        
-        # 首先处理lnk和exe文件，使用它们自身的图标
-        if not file_info["is_dir"]:
-            suffix = file_info["suffix"].lower()
-            if suffix in ["lnk", "exe"]:
-                # 应用DPI缩放因子到图标大小，然后将lnk和exe图标大小调整为现在的0.8倍
-                base_icon_size = int(40 * self.dpi_scale)
-                scaled_icon_size = int(base_icon_size * 0.8)
-                
-                # 创建标签显示图标
-                label = QLabel()
-                label.setAlignment(Qt.AlignCenter)
-                label.setFixedSize(base_icon_size, base_icon_size)
-                
-                # 直接从文件路径获取图标
-                file_path = file_info["path"]
-                
-                # 使用QFileIconProvider来获取文件图标，这在Windows上更可靠
-                from PySide6.QtWidgets import QFileIconProvider
-                icon_provider = QFileIconProvider()
-                file_info_qt = QFileInfo(file_path)
-                icon = icon_provider.icon(file_info_qt)
-                
-                # 获取图标可用的所有尺寸，选择最大的尺寸以获取最高质量图标
-                available_sizes = icon.availableSizes()
-                if available_sizes:
-                    # 选择最大的尺寸
-                    max_size = max(available_sizes, key=lambda s: s.width() * s.height())
-                    max_width, max_height = max_size.width(), max_size.height()
-                else:
-                    # 如果没有可用尺寸信息，使用4096x4096作为最大尺寸（通常足够获取ICO中最大的图标）
-                    max_width = max_height = 4096
-                
-                # 使用最大尺寸获取图标
-                high_res_pixmap = icon.pixmap(max_width, max_height)
-                
-                # 使用高质量缩放算法缩放到目标大小
-                pixmap = high_res_pixmap.scaled(scaled_icon_size, scaled_icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                
-                # 检查是否获取到有效图标
-                if not pixmap.isNull():
-                    label.setPixmap(pixmap)
-                    return label
-        
-        # 确定要使用的SVG图标
+
         icon_path = get_file_icon_path(file_info)
-        
-        # 加载并显示SVG图标
+
         if icon_path and os.path.exists(icon_path):
-            # 应用DPI缩放因子到图标大小
             scaled_icon_size = int(40 * self.dpi_scale)
-            
-            # 获取后缀名信息
+
             suffix_text = ""
             if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
                 if icon_path.endswith("压缩文件.svg"):
                     suffix_text = "." + file_info["suffix"]
                 else:
                     suffix_text = file_info["suffix"].upper()
-                    
-                    # 限制未知文件后缀名长度，大于等于5个字符的统一显示FILE
+
                     if len(suffix_text) >= 5:
                         suffix_text = "FILE"
-            
-            # 对于未知文件类型和压缩文件类型，使用统一的SVG渲染器处理
+
             if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
-                # 使用统一的SVG渲染器处理带有文字的未知文件类型图标
-                # 注意：这里直接使用scaled_icon_size而不是120，避免DPI缩放被应用两次
                 return SvgRenderer.render_unknown_file_icon(icon_path, suffix_text, scaled_icon_size, 1.0)
             else:
-                # 普通文件类型，优先使用QSvgWidget直接渲染SVG
                 try:
-                    from PySide6.QtSvgWidgets import QSvgWidget
-                    
-                    # 读取SVG文件内容并进行颜色替换预处理
                     with open(icon_path, 'r', encoding='utf-8') as f:
                         svg_content = f.read()
-                    
-                    # 预处理SVG内容：替换颜色
+
                     svg_content = SvgRenderer._replace_svg_colors(svg_content)
-                    
-                    # 使用预处理后的内容创建QSvgWidget
+
                     svg_widget = QSvgWidget()
                     svg_widget.load(svg_content.encode('utf-8'))
                     svg_widget.setFixedSize(scaled_icon_size, scaled_icon_size)
@@ -3028,16 +2884,69 @@ class CustomFileSelector(QWidget):
                     return svg_widget
                 except Exception as svg_e:
                     warning(f"使用QSvgWidget渲染SVG图标失败: {svg_e}")
-                    # 如果QSvgWidget渲染失败，回退到使用SvgRenderer生成高质量位图
                     base_pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, 120, self.dpi_scale)
-                    
-                    # 创建一个透明的QLabel
+
                     label = QLabel()
                     label.setAlignment(Qt.AlignCenter)
                     label.setFixedSize(scaled_icon_size, scaled_icon_size)
                     label.setPixmap(base_pixmap)
-                    
+
                     return label
+
+    def _create_async_system_icon_widget(self, file_info):
+        """
+        创建异步加载系统图标的widget（用于exe/lnk文件）
+        先显示SVG占位图标，后台异步加载系统图标后替换
+        """
+        from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
+        from freeassetfilter.utils.icon_utils import hicon_to_pixmap, DestroyIcon
+        from PySide6.QtGui import QGuiApplication
+
+        base_icon_size = int(40 * self.dpi_scale)
+        scaled_icon_size = int(base_icon_size * 0.8)
+
+        label = QLabel()
+        label.setAlignment(Qt.AlignCenter)
+        label.setFixedSize(base_icon_size, base_icon_size)
+        label.setObjectName("AsyncSystemIconLabel")
+
+        file_path = file_info["path"]
+
+        icon_path = get_file_icon_path(file_info)
+        if icon_path and os.path.exists(icon_path):
+            try:
+                from PySide6.QtSvgWidgets import QSvgWidget
+                svg_widget = SvgRenderer.render_svg_to_exact_pixmap(
+                    icon_path,
+                    icon_width=scaled_icon_size,
+                    icon_height=scaled_icon_size,
+                    replace_colors=True,
+                    device_pixel_ratio=self.devicePixelRatio(),
+                )
+                if svg_widget and not svg_widget.isNull():
+                    label.setPixmap(svg_widget)
+            except Exception:
+                pass
+
+        def on_icon_loaded(loaded_path, pixmap):
+            if pixmap and not pixmap.isNull():
+                try:
+                    scaled = pixmap.scaled(
+                        base_icon_size * label.devicePixelRatio(),
+                        base_icon_size * label.devicePixelRatio(),
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                    scaled.setDevicePixelRatio(label.devicePixelRatio())
+                    label.setPixmap(scaled)
+                    label.update()
+                except RuntimeError:
+                    pass
+
+        loader = AsyncIconLoader.instance()
+        loader.load_icon(file_path, on_icon_loaded, icon_size=scaled_icon_size)
+
+        return label
     
     def _get_file_type_pixmap(self, file_info, icon_size=24):
         """

@@ -19,6 +19,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import os
 import weakref
 from collections import OrderedDict
+from typing import Optional
 
 from PySide6.QtWidgets import QWidget, QSizePolicy, QApplication, QLabel
 from PySide6.QtCore import (
@@ -51,6 +52,7 @@ from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.utils.app_logger import debug, error
 from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path, get_thumbnail_manager
+from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
 
 
 class FileBlockCard(QWidget):
@@ -91,6 +93,13 @@ class FileBlockCard(QWidget):
     _font_family_cache = None
     _deferred_icon_queue = []
     _deferred_icon_timer = None
+    _async_loader: Optional["AsyncIconLoader"] = None
+
+    @classmethod
+    def _get_async_loader(cls) -> "AsyncIconLoader":
+        if cls._async_loader is None:
+            cls._async_loader = AsyncIconLoader.instance()
+        return cls._async_loader
 
     @classmethod
     def _get_cached_icon(cls, cache_key):
@@ -110,7 +119,223 @@ class FileBlockCard(QWidget):
         cls._icon_cache.move_to_end(cache_key)
 
         while len(cls._icon_cache) > cls._ICON_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(cls._icon_cache))
+            if isinstance(oldest_key, tuple) and len(oldest_key) > 0:
+                source_type = oldest_key[0]
+                if source_type == "system_icon":
+                    cls._icon_cache.move_to_end(oldest_key)
+                    continue
             cls._icon_cache.popitem(last=False)
+
+    @classmethod
+    def _is_system_icon_key(cls, cache_key):
+        if not isinstance(cache_key, tuple) or len(cache_key) == 0:
+            return False
+        source_type = cache_key[0]
+        return source_type == "system_icon"
+
+    @classmethod
+    def preload_icons_for_files(cls, file_infos, icon_size, base_color="#212121", auxiliary_color="#3D3D3D",
+                                 normal_color="#717171", accent_color="#B036EE", secondary_color="#FFFFFF"):
+        for file_info in file_infos:
+            file_path = file_info.get("path", "")
+            if not file_path:
+                continue
+
+            is_dir = file_info.get("is_dir", False)
+            suffix = file_info.get("suffix", "").lower()
+            device_pixel_ratio = 1.0
+
+            is_system_icon = not is_dir and suffix in ["lnk", "exe", "url"]
+
+            if is_system_icon:
+                system_cache_key = ("system_icon", os.path.normpath(file_path), suffix)
+                if cls._get_cached_icon(system_cache_key) is not None:
+                    continue
+
+                placeholder_key = (
+                    ("file_icon", is_dir, suffix, ("file_icon", os.path.normpath(file_path), None)),
+                    icon_size,
+                    1.0,
+                    device_pixel_ratio,
+                    base_color,
+                    auxiliary_color,
+                    normal_color,
+                    accent_color,
+                    secondary_color,
+                )
+                placeholder = cls._get_cached_icon(placeholder_key)
+                if placeholder is None:
+                    icon_helper_path = get_file_icon_path(file_info)
+                    if icon_helper_path and os.path.exists(icon_helper_path):
+                        placeholder = SvgRenderer.render_svg_to_exact_pixmap(
+                            icon_helper_path,
+                            icon_width=icon_size,
+                            icon_height=icon_size,
+                            replace_colors=True,
+                            device_pixel_ratio=device_pixel_ratio,
+                        )
+
+                if placeholder and not placeholder.isNull():
+                    cls._store_cached_icon(system_cache_key, placeholder)
+
+                loader = cls._get_async_loader()
+                loader.load_icon(file_path, cls._on_preload_system_icon_completed, icon_size=icon_size)
+            else:
+                cls._preload_non_system_icon(file_info, icon_size, device_pixel_ratio, base_color,
+                                             auxiliary_color, normal_color, accent_color, secondary_color)
+
+    @classmethod
+    def _on_preload_system_icon_completed(cls, file_path: str, pixmap):
+        if pixmap is None or pixmap.isNull():
+            return
+
+        normalized_path = os.path.normpath(file_path)
+        cache_key = ("system_icon", normalized_path, "")
+
+        existing = cls._get_cached_icon(cache_key)
+        if existing is not None and not existing.isNull():
+            return
+
+        cls._store_cached_icon(cache_key, pixmap)
+
+    @classmethod
+    def _preload_non_system_icon(cls, file_info, icon_size, device_pixel_ratio, base_color, auxiliary_color,
+                                 normal_color, accent_color, secondary_color):
+        file_path = file_info.get("path", "")
+        if not file_path:
+            return
+
+        is_dir = file_info.get("is_dir", False)
+        suffix = file_info.get("suffix", "").lower()
+
+        icon_source_signature = ("file_icon", os.path.normpath(file_path), None)
+        cache_identity = (
+            "file_icon",
+            is_dir,
+            suffix,
+            icon_source_signature,
+        )
+        cache_key = (
+            cache_identity,
+            icon_size,
+            1.0,
+            device_pixel_ratio,
+            base_color,
+            auxiliary_color,
+            normal_color,
+            accent_color,
+            secondary_color,
+        )
+
+        if cls._get_cached_icon(cache_key) is not None:
+            return
+
+        thumbnail_path = get_existing_thumbnail_path(file_path)
+        is_photo = suffix in [
+            "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg",
+            "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb"
+        ]
+        is_video = suffix in [
+            "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf"
+        ]
+
+        if (is_photo or is_video) and thumbnail_path and os.path.exists(thumbnail_path):
+            pixmap = QPixmap(thumbnail_path)
+            if pixmap and not pixmap.isNull():
+                cls._store_cached_icon(cache_key, pixmap)
+                return
+
+        icon_path = get_file_icon_path(file_info)
+        if icon_path and os.path.exists(icon_path):
+            if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
+                display_suffix = suffix.upper()
+                if len(display_suffix) >= 5:
+                    display_suffix = "FILE"
+                pixmap = cls._build_unknown_icon_pixmap_static(icon_path, display_suffix, icon_size, device_pixel_ratio,
+                                                               base_color)
+            elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
+                display_suffix = "." + suffix if suffix else ""
+                pixmap = cls._build_unknown_icon_pixmap_static(icon_path, display_suffix, icon_size, device_pixel_ratio,
+                                                               base_color)
+            else:
+                pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+                    icon_path,
+                    icon_width=icon_size,
+                    icon_height=icon_size,
+                    replace_colors=True,
+                    device_pixel_ratio=device_pixel_ratio,
+                )
+
+            if pixmap and not pixmap.isNull():
+                cls._store_cached_icon(cache_key, pixmap)
+
+    @classmethod
+    def _build_unknown_icon_pixmap_static(cls, icon_path, text, icon_size, dpr=1.0, base_color="#212121"):
+        physical_canvas_size = max(1, int(round(icon_size * dpr)))
+        base_pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+            icon_path,
+            icon_width=icon_size,
+            icon_height=icon_size,
+            replace_colors=True,
+            device_pixel_ratio=dpr,
+        )
+
+        final_pixmap = QPixmap(physical_canvas_size, physical_canvas_size)
+        final_pixmap.fill(Qt.transparent)
+
+        painter = QPainter(final_pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(
+            QRectF(0.0, 0.0, float(physical_canvas_size), float(physical_canvas_size)),
+            base_pixmap,
+            QRectF(0.0, 0.0, float(base_pixmap.width()), float(base_pixmap.height())),
+        )
+
+        if text:
+            font = QFont()
+            font.setBold(True)
+            base_font_pixel_size = max(1, int(physical_canvas_size * 0.234))
+            min_font_pixel_size = max(1, int(physical_canvas_size * 0.15))
+            font.setPixelSize(base_font_pixel_size)
+
+            font_metrics = QFontMetrics(font)
+            text_width = font_metrics.horizontalAdvance(text)
+            text_height = font_metrics.height()
+
+            while (
+                (text_width > physical_canvas_size * 0.8 or text_height > physical_canvas_size * 0.8)
+                and base_font_pixel_size > min_font_pixel_size
+            ):
+                base_font_pixel_size -= 1
+                font.setPixelSize(base_font_pixel_size)
+                font_metrics = QFontMetrics(font)
+                text_width = font_metrics.horizontalAdvance(text)
+                text_height = font_metrics.height()
+
+            is_unified_style = " – 2.svg" in icon_path
+            is_textured_archive = "压缩文件 – 1.svg" in icon_path
+            if is_unified_style:
+                text_color = QColor(base_color)
+            elif icon_path.endswith("压缩文件.svg") or is_textured_archive:
+                text_color = QColor(255, 255, 255)
+            else:
+                text_color = QColor(0, 0, 0)
+
+            painter.setPen(text_color)
+            painter.setFont(font)
+            painter.drawText(
+                QRectF(0.0, 0.0, float(physical_canvas_size), float(physical_canvas_size)),
+                Qt.AlignCenter,
+                text,
+            )
+
+        painter.end()
+        final_pixmap.setDevicePixelRatio(dpr)
+        return final_pixmap
+
 
     @classmethod
     def _clear_shared_caches(cls, file_path=None):
@@ -287,6 +512,7 @@ class FileBlockCard(QWidget):
         self._drag_display_name_text = ""
         self._icon_pixmap = QPixmap()
         self._icon_cache_key = None
+        self._async_load_pending = False
 
         self._setup_ui()
         self._setup_signals()
@@ -863,7 +1089,11 @@ class FileBlockCard(QWidget):
         self.update()
 
     def refresh_thumbnail(self):
+        old_path = self.file_info.get("path", "")
+        if old_path:
+            self._get_async_loader().cancel_load(old_path)
         self._icon_cache_key = None
+        self._async_load_pending = False
         self._update_icon(force=True)
         self.update()
 
@@ -876,6 +1106,11 @@ class FileBlockCard(QWidget):
         self._anim_bg_color = QColor(self._style_colors["normal_bg"])
         self._anim_border_color = QColor(self._style_colors["normal_border"])
 
+        old_path = self.file_info.get("path", "")
+        if old_path:
+            self._get_async_loader().cancel_load(old_path)
+
+        self._async_load_pending = False
         self.file_info = file_info
         self._icon_cache_key = None
         self._update_text_cache(force=True)
@@ -1457,29 +1692,6 @@ class FileBlockCard(QWidget):
         suffix = self.file_info.get("suffix", "").lower()
 
         try:
-            if not is_dir and suffix in ["lnk", "exe", "url"]:
-                try:
-                    from freeassetfilter.utils.icon_utils import (
-                        get_highest_resolution_icon,
-                        hicon_to_pixmap,
-                        DestroyIcon,
-                    )
-                    from PySide6.QtGui import QGuiApplication
-
-                    dpr = QGuiApplication.primaryScreen().devicePixelRatio()
-                    hicon = get_highest_resolution_icon(file_path)
-                    if hicon:
-                        pixmap = hicon_to_pixmap(hicon, icon_size, None, dpr, keep_original_size=True)
-                        DestroyIcon(hicon)
-                        if pixmap and not pixmap.isNull():
-                            return self._normalize_icon_pixmap(pixmap, icon_size)
-                except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-                    debug(f"提取Windows图标失败 - 文件操作错误: {e}")
-                except (ValueError, TypeError) as e:
-                    debug(f"提取Windows图标失败 - 数据转换错误: {e}")
-                except RuntimeError as e:
-                    debug(f"提取Windows图标失败 - Qt运行时错误: {e}")
-
             thumbnail_path = self._get_thumbnail_path(file_path)
             is_photo = suffix in [
                 "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg",
@@ -1524,6 +1736,31 @@ class FileBlockCard(QWidget):
         fallback.fill(Qt.transparent)
         return fallback
 
+    def _on_system_icon_loaded(self, file_path: str, pixmap):
+        """异步加载系统图标完成后的回调"""
+        normalized_path = os.path.normpath(file_path)
+        current_path = os.path.normpath(self.file_info.get("path", ""))
+        
+        if normalized_path != current_path:
+            return
+
+        if pixmap and not pixmap.isNull():
+            icon_size = int(38 * self.dpi_scale)
+            self._icon_pixmap = self._normalize_icon_pixmap(pixmap, icon_size)
+            self._async_load_pending = False
+            if not self._icon_pixmap.isNull():
+                FileBlockCard._store_cached_icon(self._icon_cache_key, self._icon_pixmap)
+            self.update()
+
+    def _start_async_system_icon_load(self):
+        """开始异步加载系统图标（exe/lnk）"""
+        file_path = self.file_info.get("path", "")
+        icon_size = int(38 * self.dpi_scale)
+        
+        self._async_load_pending = True
+        loader = self._get_async_loader()
+        loader.load_icon(file_path, self._on_system_icon_loaded, icon_size=icon_size)
+
     def _update_icon(self, force=False, defer_build=False):
         file_path = self.file_info.get("path", "")
         suffix = self.file_info.get("suffix", "").lower()
@@ -1567,6 +1804,43 @@ class FileBlockCard(QWidget):
         cached = FileBlockCard._get_cached_icon(cache_key)
         if cached is not None and not cached.isNull():
             self._icon_pixmap = cached
+            self._async_load_pending = False
+            return
+
+        is_system_icon = not self.file_info.get("is_dir", False) and suffix in ["lnk", "exe", "url"]
+
+        if is_system_icon:
+            system_icon_cached = FileBlockCard._get_cached_icon(("system_icon", os.path.normpath(file_path), suffix))
+            if system_icon_cached is not None and not system_icon_cached.isNull():
+                self._icon_pixmap = self._normalize_icon_pixmap(system_icon_cached, icon_size)
+                self._async_load_pending = False
+                return
+
+            cached_file_path = ""
+            try:
+                from freeassetfilter.utils.icon_utils import get_cached_icon_path
+                cached_file_path = get_cached_icon_path(file_path)
+            except Exception:
+                pass
+
+            if cached_file_path and os.path.exists(cached_file_path):
+                file_pixmap = QPixmap(cached_file_path)
+                if file_pixmap and not file_pixmap.isNull():
+                    self._icon_pixmap = self._normalize_icon_pixmap(file_pixmap, icon_size)
+                    self._async_load_pending = False
+                    FileBlockCard._store_cached_icon(("system_icon", os.path.normpath(file_path), suffix), self._icon_pixmap)
+                    return
+
+            placeholder = self._render_exact_svg_icon_pixmap(
+                self._get_icon_path(),
+                icon_size,
+                icon_size,
+                replace_colors=True,
+            )
+            self._icon_pixmap = placeholder
+            self._async_load_pending = False
+            self._start_async_system_icon_load()
+            FileBlockCard._store_cached_icon(("system_icon", os.path.normpath(file_path), suffix), placeholder)
             return
 
         if defer_build:

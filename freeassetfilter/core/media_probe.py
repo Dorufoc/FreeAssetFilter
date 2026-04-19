@@ -52,6 +52,19 @@ def get_subprocess_creationflags() -> int:
     return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+def get_subprocess_startupinfo():
+    """获取适用于当前平台的子进程启动信息，用于隐藏窗口"""
+    startupinfo = None
+    if sys.platform == "win32":
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+        except Exception:
+            pass
+    return startupinfo
+
+
 def _run_warmup_command(command: List[str], *, label: str, timeout: int) -> bool:
     """
     执行轻量级预热命令，提前拉起 ffmpeg / ffprobe 相关运行时。
@@ -65,6 +78,7 @@ def _run_warmup_command(command: List[str], *, label: str, timeout: int) -> bool
             errors="replace",
             timeout=max(1, int(timeout)),
             creationflags=get_subprocess_creationflags(),
+            startupinfo=get_subprocess_startupinfo(),
         )
     except FileNotFoundError:
         debug(f"预热跳过，未找到命令: {label}")
@@ -180,6 +194,7 @@ def run_ffprobe_json(
                 errors="replace",
                 timeout=timeout,
                 creationflags=get_subprocess_creationflags(),
+                startupinfo=get_subprocess_startupinfo(),
             )
         except FileNotFoundError:
             increment_perf_counter("media_probe.run_ffprobe_json", "ffprobe_missing")
