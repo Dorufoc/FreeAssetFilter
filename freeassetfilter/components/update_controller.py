@@ -72,7 +72,18 @@ class SilentUpdateCheckWorker(QThread):
     def run(self):
         debug("SilentUpdateCheckWorker: 开始静默检查更新")
         try:
+            if self.isInterruptionRequested():
+                debug("SilentUpdateCheckWorker: 在开始前已被中断")
+                self.check_finished.emit()
+                return
+            
             result = check_for_updates()
+            
+            if self.isInterruptionRequested():
+                debug("SilentUpdateCheckWorker: 检查完成后已被中断，忽略结果")
+                self.check_finished.emit()
+                return
+            
             debug("SilentUpdateCheckWorker: 静默检查完成")
             
             if result.get("update_available", False):
@@ -81,10 +92,16 @@ class SilentUpdateCheckWorker(QThread):
             
             self.check_finished.emit()
         except UpdateError as e:
-            debug(f"SilentUpdateCheckWorker: 静默检查失败: {e}")
+            if self.isInterruptionRequested():
+                debug("SilentUpdateCheckWorker: 静默检查已中断")
+            else:
+                debug(f"SilentUpdateCheckWorker: 静默检查失败: {e}")
             self.check_finished.emit()
         except Exception as e:
-            debug(f"SilentUpdateCheckWorker: 静默检查异常: {e}")
+            if self.isInterruptionRequested():
+                debug("SilentUpdateCheckWorker: 静默检查已中断")
+            else:
+                debug(f"SilentUpdateCheckWorker: 静默检查异常: {e}")
             self.check_finished.emit()
 
 
@@ -292,12 +309,21 @@ class UpdateController(QObject):
     def cancel_silent_check(self):
         """
         取消静默检查（例如用户手动触发检查更新时）
+        使用协作式取消机制，避免强制终止线程导致的资源泄漏
         """
         if self._silent_check_worker and self._silent_check_worker.isRunning():
             debug("UpdateController: 取消静默检查")
             self._silent_check_cancelled = True
-            self._silent_check_worker.terminate()
-            self._silent_check_worker.wait(1000)
+            
+            # 使用 Qt 标准的 requestInterruption() 请求线程中断
+            self._silent_check_worker.requestInterruption()
+            
+            # 等待线程自然退出，最多等待3秒
+            if not self._silent_check_worker.wait(3000):
+                warning("UpdateController: 线程未在3秒内正常退出，使用强制终止")
+                self._silent_check_worker.terminate()
+                self._silent_check_worker.wait(2000)
+            
             self._silent_check_worker = None
 
     def bind_button(self, button):

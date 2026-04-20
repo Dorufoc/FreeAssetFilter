@@ -69,8 +69,26 @@ def _find_fafversion_file():
     path4 = os.path.join(os.getcwd(), "FAFVERSION")
     if os.path.exists(path4):
         return path4
-    
-    return None
+
+    # 策略 5: 所有路径都找不到时，创建默认版本文件
+    create_path = None
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        create_path = os.path.join(exe_dir, "FAFVERSION")
+    else:
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        create_path = os.path.join(project_root, "FAFVERSION")
+
+    try:
+        os.makedirs(os.path.dirname(create_path), exist_ok=True)
+        with open(create_path, "w", encoding="utf-8") as f:
+            f.write("v1\n")
+            f.write("1970-01-01\n")
+        info(f"已创建默认版本文件: {create_path}")
+        return create_path
+    except (OSError, IOError) as e:
+        warning(f"创建版本文件失败: {e}")
+        return None
 
 FAFVERSION_FILE = _find_fafversion_file() or get_resource_path("FAFVERSION")
 
@@ -143,7 +161,6 @@ def load_local_version_info():
             tag_name,
             build_date,
             build_date_obj,
-            version_tuple,
         }
     """
     info("读取本地版本信息")
@@ -166,7 +183,6 @@ def load_local_version_info():
     tag_name = lines[0]
     build_date = lines[1]
     build_date_obj = parse_date(build_date)
-    version_tuple = parse_tag_version(tag_name)
 
     info(f"本地版本: {tag_name}, 构建日期: {build_date}")
 
@@ -174,7 +190,6 @@ def load_local_version_info():
         "tag_name": tag_name,
         "build_date": build_date,
         "build_date_obj": build_date_obj,
-        "version_tuple": version_tuple,
     }
 
 
@@ -271,7 +286,7 @@ def compare_version_tuples(version_a, version_b):
 
 def compare_release_with_local(local_info, release_info):
     """
-    先比较日期，再比较版本号
+    只比较更新日期
 
     Returns:
         int: 1(release更新), 0(相同), -1(local更新)
@@ -284,10 +299,7 @@ def compare_release_with_local(local_info, release_info):
     if release_date < local_date:
         return -1
 
-    return compare_version_tuples(
-        release_info["version_tuple"],
-        local_info["version_tuple"],
-    )
+    return 0
 
 
 def generate_random_browser_user_agent():
@@ -457,10 +469,7 @@ def select_latest_release(releases):
         raise UpdateError("未找到包含 exe 安装包且可校验 SHA256 的有效发布版本")
 
     candidates.sort(
-        key=lambda item: (
-            item["published_date_obj"],
-            item["version_tuple"],
-        ),
+        key=lambda item: item["published_date_obj"],
         reverse=True,
     )
 
