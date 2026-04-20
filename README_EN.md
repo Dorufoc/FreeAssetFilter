@@ -20,6 +20,8 @@
 
 ---
 
+![Stone Badge](https://stone.professorlee.work/api/stone/Dorufoc/FreeAssetFilter)
+
 ## Feature Preview
 
 ### Core Highlights

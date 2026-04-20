@@ -6,11 +6,11 @@
 
 **一款强大的多功能文件预览与管理工具，让文件浏览如丝般高效顺滑**
 
-[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square&logo=github&color=blue)](https://github.com/Dorufoc/FreeAssetFilter/releases)
-[![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://www.python.org/)
-[![PySide6](https://img.shields.io/badge/PySide6-6.4%2B-green?style=flat-square&logo=qt)](https://wiki.qt.io/Qt_for_Python)
+[![GitHub Release](https://img.shields.io/github/v/release/Dorufoc/FreeAssetFilter?style=flat-square\&logo=github\&color=blue)](https://github.com/Dorufoc/FreeAssetFilter/releases)
+[![Python Version](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square\&logo=python)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/PySide6-6.4%2B-green?style=flat-square\&logo=qt)](https://wiki.qt.io/Qt_for_Python)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-orange?style=flat-square)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
+[![Platform](https://img.shields.io/badge/Platform-Windows-purple?style=flat-square\&logo=windows)](https://www.microsoft.com/windows)
 
 [English](README_EN.md) • [功能预览](#-功能预览) • [快速开始](#-快速开始) • [功能特性](#-功能特性) • [安装指南](#-安装指南) • [使用说明](#-使用说明) • [技术架构](#-技术架构) • [开发指南](#-开发指南) • [贡献指南](#-贡献指南)
 
@@ -19,6 +19,8 @@
 </div>
 
 ***
+
+![Stone Badge](https://stone.professorlee.work/api/stone/Dorufoc/FreeAssetFilter)
 
 ## 功能预览
 
@@ -530,7 +532,7 @@ self.previewers = {
 
 - [ ] 文件导出智能化分类
 - [ ] 时间线等智能化筛选分类工具
-- [X] ISO文件稳定预览
+- [x] ISO文件稳定预览
 - [ ] 插件系统架构
 
 ### 可能会实现的功能
