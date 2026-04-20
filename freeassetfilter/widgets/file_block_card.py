@@ -249,13 +249,15 @@ class FileBlockCard(QWidget):
         icon_path = get_file_icon_path(file_info)
         if icon_path and os.path.exists(icon_path):
             if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
-                display_suffix = suffix.upper()
-                if len(display_suffix) >= 5:
+                display_suffix = suffix.upper() if suffix else ""
+                if not display_suffix or len(display_suffix) >= 5:
                     display_suffix = "FILE"
                 pixmap = cls._build_unknown_icon_pixmap_static(icon_path, display_suffix, icon_size, device_pixel_ratio,
                                                                base_color)
             elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                 display_suffix = "." + suffix if suffix else ""
+                if not display_suffix or len(display_suffix) >= 5:
+                    display_suffix = "FILE"
                 pixmap = cls._build_unknown_icon_pixmap_static(icon_path, display_suffix, icon_size, device_pixel_ratio,
                                                                base_color)
             else:
@@ -1709,13 +1711,15 @@ class FileBlockCard(QWidget):
             icon_path = self._get_icon_path()
             if icon_path and os.path.exists(icon_path):
                 if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
-                    display_suffix = suffix.upper()
-                    if len(display_suffix) >= 5:
+                    display_suffix = suffix.upper() if suffix else ""
+                    if len(display_suffix) >= 5 or not display_suffix:
                         display_suffix = "FILE"
                     return self._build_unknown_icon_pixmap(icon_path, display_suffix, icon_size)
 
                 if icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
                     display_suffix = "." + suffix if suffix else ""
+                    if not display_suffix or len(display_suffix) >= 5:
+                        display_suffix = "FILE"
                     return self._build_unknown_icon_pixmap(icon_path, display_suffix, icon_size)
 
                 return self._render_exact_svg_icon_pixmap(

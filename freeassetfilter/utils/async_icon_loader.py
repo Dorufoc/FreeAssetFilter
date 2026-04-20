@@ -102,7 +102,7 @@ class AsyncIconLoader:
 
     def __init__(self) -> None:
         self._pool = QThreadPool.globalInstance()
-        self._pool.setMaxThreadCount(4)
+        self._pool.setMaxThreadCount(max(2, min(os.cpu_count() or 4, 8)))
         self._signals = _IconLoadSignals()
         self._callbacks: dict[str, weakref.ref] = {}
         self._runnables: dict[str, _IconLoadRunnable] = {}

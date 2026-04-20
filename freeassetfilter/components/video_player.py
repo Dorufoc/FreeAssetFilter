@@ -554,6 +554,9 @@ class VideoPlayer(QWidget):
         self._control_bar.set_detach_button_visible(self._show_detach_button)
         main_layout.addWidget(self._control_bar)
         
+        if self._playback_mode == self.AUDIO_MODE:
+            self._control_bar.set_video_controls_visible(False)
+        
         # 初始化浮动控制栏
         self._init_floating_control_bar()
         

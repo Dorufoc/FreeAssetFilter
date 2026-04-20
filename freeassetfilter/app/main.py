@@ -517,6 +517,10 @@ class FreeAssetFilterApp(QMainWindow):
         if app is not None:
             setattr(app, "_faf_restore_safe_mode", False)
 
+        # 终止静默检查更新线程
+        if hasattr(self, "update_controller") and self.update_controller:
+            self.update_controller.cancel_silent_check()
+
         # 用户尝试关闭程序时，优先清理预览区域
         self._cleanup_preview_before_close()
 
@@ -1595,7 +1599,15 @@ class FreeAssetFilterApp(QMainWindow):
         """
         QTimer.singleShot(100, self.check_and_restore_backup)
         QTimer.singleShot(400, self._start_background_warmup)
+        QTimer.singleShot(600, self._start_silent_update_check)
         QTimer.singleShot(800, self._schedule_thumbnail_cleanup)
+
+    def _start_silent_update_check(self):
+        """
+        启动后台静默检查更新
+        """
+        if hasattr(self, "update_controller") and self.update_controller:
+            self.update_controller.start_silent_update_check()
 
     def _start_background_warmup(self):
         """

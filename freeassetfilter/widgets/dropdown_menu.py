@@ -1041,8 +1041,11 @@ class Ddropmenu(QWidget):
         if not self._items:
             return
 
+        debug(f"[Ddropmenu.show_menu] 调用 - self={id(self)}, items_count={len(self._items)}")
+
         previous_menu = Ddropmenu._active_menu
         if previous_menu is not None and previous_menu is not self:
+            debug(f"[Ddropmenu.show_menu] 隐藏之前的活动菜单 - prev={id(previous_menu)}")
             previous_menu.hide_menu()
 
         self.menuOpening.emit()
@@ -1050,6 +1053,7 @@ class Ddropmenu(QWidget):
         self._adjust_menu_size()
         self._update_animation_direction()
 
+        debug(f"[Ddropmenu.show_menu] 调用 hover_menu.show() - hover_menu={id(self.hover_menu)}")
         self.hover_menu.show()
         self._menu_visible = True
         Ddropmenu._active_menu = self
@@ -1118,6 +1122,30 @@ class Ddropmenu(QWidget):
                 self.hide_menu()
 
         return super().eventFilter(obj, event)
+
+    def closeEvent(self, event):
+        """窗口关闭时清理事件过滤器"""
+        app = QApplication.instance()
+        if app:
+            try:
+                app.removeEventFilter(self)
+            except RuntimeError:
+                pass
+        
+        if self._shortcut:
+            self._shortcut.deleteLater()
+            self._shortcut = None
+            
+        super().closeEvent(event)
+
+    def __del__(self):
+        """析构函数，确保清理事件过滤器"""
+        try:
+            app = QApplication.instance()
+            if app:
+                app.removeEventFilter(self)
+        except RuntimeError:
+            pass
 
 
 class CustomDropdownMenu(Ddropmenu):

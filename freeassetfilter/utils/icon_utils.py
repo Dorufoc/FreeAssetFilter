@@ -32,19 +32,23 @@ _ICON_CACHE_DIR = None
 
 
 def _get_icon_cache_dir() -> str:
-    """获取图标缓存目录"""
+    """获取图标缓存目录（位于data/cache/icons）"""
     global _ICON_CACHE_DIR
     if _ICON_CACHE_DIR is not None:
         return _ICON_CACHE_DIR
 
     try:
-        if getattr(sys, 'frozen', False):
-            project_root = os.path.dirname(sys.executable)
-        else:
-            current_file = os.path.abspath(__file__)
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+        try:
+            from freeassetfilter.utils.path_utils import get_app_data_path
+            data_dir = get_app_data_path()
+        except Exception:
+            if getattr(sys, 'frozen', False):
+                data_dir = os.path.join(os.path.dirname(sys.executable), 'data')
+            else:
+                current_file = os.path.abspath(__file__)
+                data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(current_file))), 'data')
 
-        _ICON_CACHE_DIR = os.path.join(project_root, ".icon_cache")
+        _ICON_CACHE_DIR = os.path.join(data_dir, 'cache', 'icons')
         if not os.path.exists(_ICON_CACHE_DIR):
             os.makedirs(_ICON_CACHE_DIR, exist_ok=True)
     except Exception as e:

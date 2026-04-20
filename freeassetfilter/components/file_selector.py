@@ -2865,8 +2865,8 @@ class CustomFileSelector(QWidget):
                 else:
                     suffix_text = file_info["suffix"].upper()
 
-                    if len(suffix_text) >= 5:
-                        suffix_text = "FILE"
+                if not suffix_text or len(suffix_text) >= 5:
+                    suffix_text = "FILE"
 
             if icon_path.endswith("未知底板.svg") or icon_path.endswith("压缩文件.svg"):
                 return SvgRenderer.render_unknown_file_icon(icon_path, suffix_text, scaled_icon_size, 1.0)

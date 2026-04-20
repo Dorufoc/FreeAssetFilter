@@ -498,21 +498,33 @@ def is_path_within_base(path: str, base_path: str) -> bool:
 def get_resource_path(relative_path):
     """获取资源文件的绝对路径，兼容开发和打包环境"""
     try:
-        # PyInstaller创建临时文件夹，存储于_MEIPASS
-        base_path = sys._MEIPASS
-    except AttributeError:
-        # 开发环境：使用项目根目录
-        base_path = os.path.abspath(".")
-        # 向上找到项目根目录
-        if not os.path.exists(os.path.join(base_path, relative_path)):
-            # 如果当前目录没有，尝试向上查找
-            base_path = os.path.dirname(os.path.abspath(__file__))
-            for _ in range(3):  # 最多向上找3级
-                if os.path.exists(os.path.join(base_path, relative_path)):
-                    break
-                base_path = os.path.dirname(base_path)
-    
-    return os.path.join(base_path, relative_path)
+        # PyInstaller打包环境
+        if getattr(sys, 'frozen', False):
+            # _MEIPASS 是 PyInstaller 解压后的临时目录
+            base_path = sys._MEIPASS
+            full_path = os.path.join(base_path, relative_path)
+            # 如果直接路径不存在，尝试在 _internal 子目录中查找
+            if not os.path.exists(full_path):
+                internal_path = os.path.join(base_path, "_internal", relative_path)
+                if os.path.exists(internal_path):
+                    return internal_path
+            return full_path
+        else:
+            # 开发环境：使用项目根目录
+            base_path = os.path.abspath(".")
+            # 向上找到项目根目录
+            if not os.path.exists(os.path.join(base_path, relative_path)):
+                # 如果当前目录没有，尝试向上查找
+                base_path = os.path.dirname(os.path.abspath(__file__))
+                for _ in range(3):  # 最多向上找3级
+                    if os.path.exists(os.path.join(base_path, relative_path)):
+                        break
+                    base_path = os.path.dirname(base_path)
+            
+            return os.path.join(base_path, relative_path)
+    except Exception:
+        # 如果所有尝试都失败，返回相对路径的绝对路径
+        return os.path.abspath(relative_path)
 
 
 def get_app_data_path():

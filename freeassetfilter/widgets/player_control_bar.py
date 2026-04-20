@@ -676,7 +676,23 @@ class PlayerControlBar(QWidget):
         self._has_multiple_audio_tracks = bool(visible)
         if self._show_audio_button and hasattr(self, '_audio_button'):
             self._update_audio_button_style()
-            self._audio_button.setVisible(True)
+            self._audio_button.setVisible(visible)
+
+    def set_video_controls_visible(self, visible: bool):
+        """
+        设置视频相关按钮（分离窗口、字幕、LUT）的可见性
+
+        Args:
+            visible: 是否可见
+        """
+        if self._show_detach_button and self._show_fullscreen_button and hasattr(self, '_detach_button'):
+            self._detach_button.setVisible(visible)
+        
+        if self._show_subtitle_button and hasattr(self, '_subtitle_button'):
+            self._subtitle_button.setVisible(visible)
+        
+        if self._show_lut_controls and hasattr(self, '_lut_button'):
+            self._lut_button.setVisible(visible)
 
     def is_audio_button_visible(self) -> bool:
         """获取音轨按钮是否可见"""
@@ -954,7 +970,6 @@ class PlayerControlBar(QWidget):
             self._update_subtitle_button_style()
         if self._show_audio_button and hasattr(self, '_audio_button'):
             self._update_audio_button_style()
-            self._audio_button.setVisible(True)
     
     def hideEvent(self, event):
         """隐藏事件"""

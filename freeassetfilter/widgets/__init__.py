@@ -35,6 +35,8 @@ from .scrolling_text import ScrollingText
 from .player_control_bar import PlayerControlBar
 # 导入轮盘选色组件
 from .color_wheel_picker import ColorWheelPicker, ColorWheelPickerWidget, D_ColorWheelPickerMenu
+# 导入加载状态转圈动画组件
+from .loading_widget import LoadingSpinner
 
 __all__ = [
     'CustomButton',
@@ -56,5 +58,6 @@ __all__ = [
     'PlayerControlBar',
     'ColorWheelPicker',
     'ColorWheelPickerWidget',
-    'D_ColorWheelPickerMenu'
+    'D_ColorWheelPickerMenu',
+    'LoadingSpinner'
 ]

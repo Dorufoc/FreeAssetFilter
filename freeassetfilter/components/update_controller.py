@@ -17,7 +17,8 @@ import subprocess
 from urllib import request, error as urllib_error
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea, QSizePolicy
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea, QSizePolicy, QTextBrowser
+from PySide6.QtGui import QFont
 
 from freeassetfilter.core.update_manager import (
     UpdateError,
@@ -31,6 +32,7 @@ from freeassetfilter.core.update_manager import (
 from freeassetfilter.utils.app_logger import info, warning, error, debug
 from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
+from freeassetfilter.widgets.loading_widget import LoadingSpinner
 from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
 
 
@@ -54,6 +56,36 @@ class UpdateCheckWorker(QThread):
         except Exception as e:
             error(f"检查更新失败: {e}")
             self.failure.emit(f"检查更新失败：{e}")
+
+
+class SilentUpdateCheckWorker(QThread):
+    """
+    启动时静默检查更新线程
+    - 不影响任何用户操作
+    - 如果有更新，通过信号通知主线程显示提示
+    - 如果是最新版本，静默结束
+    """
+    
+    update_available = Signal(dict)
+    check_finished = Signal()
+    
+    def run(self):
+        debug("SilentUpdateCheckWorker: 开始静默检查更新")
+        try:
+            result = check_for_updates()
+            debug("SilentUpdateCheckWorker: 静默检查完成")
+            
+            if result.get("update_available", False):
+                debug("SilentUpdateCheckWorker: 发现新版本")
+                self.update_available.emit(result)
+            
+            self.check_finished.emit()
+        except UpdateError as e:
+            debug(f"SilentUpdateCheckWorker: 静默检查失败: {e}")
+            self.check_finished.emit()
+        except Exception as e:
+            debug(f"SilentUpdateCheckWorker: 静默检查异常: {e}")
+            self.check_finished.emit()
 
 
 class UpdateDownloadWorker(QThread):
@@ -219,6 +251,7 @@ class UpdateController(QObject):
         self._current_dialog = None
         self._current_progress_bar = None
         self._current_progress_info_label = None
+        self._current_loading_spinner = None
         self._current_release_info = None
         self._current_ready_package = None
         self._check_cancelled = False
@@ -232,6 +265,40 @@ class UpdateController(QObject):
         self._last_speed_check_time = None
         self._last_speed_check_size = 0
         self._current_download_speed_text = "0 B/s"
+        
+        # 静默检查更新相关状态
+        self._silent_check_worker = None
+        self._silent_check_cancelled = False
+
+    def start_silent_update_check(self):
+        """
+        启动静默更新检查（程序启动时调用）
+        """
+        if self._silent_check_worker and self._silent_check_worker.isRunning():
+            debug("UpdateController: 静默检查已在进行中，忽略重复请求")
+            return
+        
+        if self._check_worker and self._check_worker.isRunning():
+            debug("UpdateController: 手动检查更新正在进行，跳过静默检查")
+            return
+            
+        self._silent_check_cancelled = False
+        self._silent_check_worker = SilentUpdateCheckWorker(self)
+        self._silent_check_worker.update_available.connect(self._on_silent_check_update_available)
+        self._silent_check_worker.check_finished.connect(self._on_silent_check_finished)
+        self._silent_check_worker.start()
+        debug("UpdateController: 静默更新检查已启动")
+
+    def cancel_silent_check(self):
+        """
+        取消静默检查（例如用户手动触发检查更新时）
+        """
+        if self._silent_check_worker and self._silent_check_worker.isRunning():
+            debug("UpdateController: 取消静默检查")
+            self._silent_check_cancelled = True
+            self._silent_check_worker.terminate()
+            self._silent_check_worker.wait(1000)
+            self._silent_check_worker = None
 
     def bind_button(self, button):
         """
@@ -256,6 +323,10 @@ class UpdateController(QObject):
         点击"检查更新"
         """
         debug("UpdateController: 用户点击检查更新")
+        
+        # 取消正在进行的静默检查
+        self.cancel_silent_check()
+        
         if self._check_worker and self._check_worker.isRunning():
             debug("UpdateController: 检查更新已在进行中，忽略重复请求")
             return
@@ -595,6 +666,7 @@ class UpdateController(QObject):
         theme_colors = self._get_theme_colors()
         label = QLabel(text)
         label.setWordWrap(True)
+        label.setAlignment(Qt.AlignCenter)
         label.setTextInteractionFlags(Qt.TextSelectableByMouse if selectable else Qt.NoTextInteraction)
         label.setStyleSheet(
             f"""
@@ -612,6 +684,7 @@ class UpdateController(QObject):
     def _create_section_title_label(self, text):
         theme_colors = self._get_theme_colors()
         label = QLabel(text)
+        label.setAlignment(Qt.AlignCenter)
         label.setStyleSheet(
             f"""
             QLabel {{
@@ -626,65 +699,251 @@ class UpdateController(QObject):
         )
         return label
 
+    def _render_markdown_release_notes(self, html_content):
+        """
+        将更新日志内容包装为完整 HTML 文档，应用 CSS 样式
+
+        Args:
+            html_content (str): 更新日志内容（纯文本或 HTML）
+
+        Returns:
+            str: 渲染后的完整 HTML 文档
+        """
+        if not html_content or not html_content.strip():
+            return "<p style='color: #999;'>暂无更新日志。</p>"
+
+        # 检测是否为 HTML 格式（以标签开头）
+        is_html = html_content.strip().startswith("<")
+
+        if not is_html:
+            # 纯文本/Markdown 格式，转换为 HTML
+            html_content = self._convert_markdown_to_html(html_content)
+
+        theme_colors = self._get_theme_colors()
+        secondary_color = theme_colors["secondary"]
+        border_color = theme_colors["secondary"]
+        auxiliary_color = theme_colors["auxiliary"]
+
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body {{ font-family: Microsoft YaHei, sans-serif; font-size: 10pt; line-height: 1.6; color: {secondary_color}; margin: 0; padding: 8px; }}
+div {{ color: {secondary_color}; }}
+p {{ color: {secondary_color}; margin: 0.5em 0; }}
+li {{ color: {secondary_color}; margin: 0.3em 0; }}
+pre {{ background-color: {auxiliary_color}; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 0.5em 0; white-space: pre-wrap; word-wrap: break-word; }}
+code {{ background-color: {auxiliary_color}; padding: 2px 5px; border-radius: 3px; font-family: Consolas, monospace; color: {secondary_color}; }}
+pre code {{ background-color: transparent; padding: 0; color: {secondary_color} !important; }}
+h1, h2, h3, h4, h5, h6 {{ color: {secondary_color}; margin-top: 1em; margin-bottom: 0.5em; }}
+h1 {{ font-size: 1.8em; border-bottom: 1px solid {border_color}; padding-bottom: 0.3em; }}
+h2 {{ font-size: 1.5em; border-bottom: 1px solid {border_color}; padding-bottom: 0.2em; }}
+h3 {{ font-size: 1.25em; }}
+h4 {{ font-size: 1.1em; }}
+h5 {{ font-size: 1em; }}
+h6 {{ font-size: 0.9em; }}
+table {{ border-collapse: collapse; width: 100%; margin: 0.5em 0; }}
+th {{ background-color: {auxiliary_color}; color: {secondary_color}; }}
+td {{ color: {secondary_color}; }}
+th, td {{ border: 1px solid {border_color}; padding: 8px; text-align: left; }}
+blockquote {{ border-left: 4px solid {border_color}; margin: 0.5em 0; padding-left: 16px; color: {secondary_color}; }}
+img {{ max-width: 100%; }}
+strong, b {{ color: {secondary_color}; font-weight: 600; }}
+em, i {{ color: {secondary_color}; font-style: italic; }}
+a {{ color: {secondary_color}; text-decoration: underline; }}
+ul, ol {{ margin: 0.5em 0; padding-left: 2em; }}
+ul ul, ul ol, ol ul, ol ol {{ margin: 0.2em 0; }}
+ul li {{ list-style-type: disc; }}
+ul ul li {{ list-style-type: circle; }}
+ol li {{ list-style-type: decimal; }}
+ol ol li {{ list-style-type: lower-alpha; }}
+hr {{ border: none; border-top: 1px solid {border_color}; margin: 1em 0; }}
+</style>
+</head>
+<body>
+{html_content}
+</body>
+</html>"""
+        return full_html
+
+    @staticmethod
+    def _convert_markdown_to_html(text):
+        """将简化的 Markdown 文本转换为 HTML"""
+        # 统一换行符
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        
+        lines = text.split("\n")
+        html_parts = []
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            if not stripped:
+                # 空行
+                html_parts.append("<br>")
+            elif stripped.startswith("### "):
+                html_parts.append(f"<h4>{UpdateController._process_inline_markdown(stripped[4:])}</h4>")
+            elif stripped.startswith("## "):
+                html_parts.append(f"<h3>{UpdateController._process_inline_markdown(stripped[3:])}</h3>")
+            elif stripped.startswith("# "):
+                html_parts.append(f"<h2>{UpdateController._process_inline_markdown(stripped[2:])}</h2>")
+            elif stripped.startswith("- ") or stripped.startswith("* "):
+                html_parts.append(f"<li>{UpdateController._process_inline_markdown(stripped[2:])}</li>")
+            else:
+                # 普通文本行，处理行内 Markdown 后直接输出
+                html_parts.append(f"{UpdateController._process_inline_markdown(stripped)}<br>")
+        
+        return "".join(html_parts)
+
+    @staticmethod
+    def _process_inline_markdown(text):
+        """处理行内 Markdown 格式：粗体、斜体、链接、代码"""
+        # 先转义 HTML 特殊字符
+        text = UpdateController._escape_html(text)
+        
+        # 处理链接格式：**text**: url 或 **text**:url
+        import re
+        text = re.sub(
+            r'\*\*(.+?)\*\*:\s*(https?://[^\s<]+)',
+            r'<strong>\1</strong>: <a href="\2" target="_blank">\2</a>',
+            text
+        )
+        
+        # 处理纯链接
+        text = re.sub(
+            r'(https?://[^\s<]+)',
+            r'<a href="\1" target="_blank">\1</a>',
+            text
+        )
+        
+        # 处理粗体 **text**
+        text = re.sub(
+            r'\*\*(.+?)\*\*',
+            r'<strong>\1</strong>',
+            text
+        )
+        
+        # 处理斜体 *text*（但要排除已经处理的粗体）
+        text = re.sub(
+            r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)',
+            r'<em>\1</em>',
+            text
+        )
+        
+        # 处理行内代码 `text`
+        text = re.sub(
+            r'`(.+?)`',
+            r'<code>\1</code>',
+            text
+        )
+        
+        return text
+
+    @staticmethod
+    def _escape_html(text):
+        """转义 HTML 特殊字符"""
+        return (
+            text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    def _create_markdown_text_edit(self, html_content):
+        """
+        创建用于显示更新日志的 QTextBrowser
+
+        Args:
+            html_content (str): HTML 内容（完整 HTML 文档）
+
+        Returns:
+            QTextBrowser: 配置好的 QTextBrowser 实例
+        """
+        text_browser = QTextBrowser()
+        text_browser.setReadOnly(True)
+        text_browser.setOpenExternalLinks(False)
+        text_browser.setHtml(html_content)
+        text_browser.setLineWrapMode(QTextBrowser.WidgetWidth)
+        text_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        text_browser.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        text_browser.setFrameShape(QTextBrowser.NoFrame)
+        text_browser.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextBrowserInteraction)
+
+        theme_colors = self._get_theme_colors()
+        text_browser.setStyleSheet(
+            f"""
+            QTextBrowser {{
+                background-color: transparent;
+                color: {theme_colors["secondary"]};
+                border: none;
+                padding: 0px;
+                margin: 0px;
+            }}
+            """
+        )
+
+        return text_browser
+
     def _show_update_available_detail_dialog(self, local_info, release_info, installer_ready):
         self._close_current_dialog()
 
         dialog = CustomMessageBox(self.main_window)
         dialog.setModal(True)
-        dialog.set_title("发现新版本")
-        dialog.set_text("检测到可用更新，请查看本次发行详情。")
-
-        detail_container = QWidget()
-        detail_layout = QVBoxLayout(detail_container)
-        detail_layout.setContentsMargins(0, 0, 0, 0)
-        detail_layout.setSpacing(8)
-
+        
         current_tag = local_info.get("tag_name", "未知版本")
         latest_tag = release_info.get("tag_name", "未知版本")
         latest_date = release_info.get("published_date", "未知日期")
         installer_size = self._format_size(release_info.get("installer_size", 0))
         release_notes = self._normalize_release_notes(release_info.get("release_body", ""))
 
-        detail_layout.addWidget(self._create_info_label(f"当前版本号：{current_tag}"))
-        detail_layout.addWidget(self._create_info_label(f"最新版本号：{latest_tag}"))
-        detail_layout.addWidget(self._create_info_label(f"最新更新日期：{latest_date}"))
-        detail_layout.addWidget(self._create_info_label(f"安装包大小：{installer_size}"))
+        dialog.set_title(f"检测到可用更新（{latest_tag}）")
 
-        detail_layout.addWidget(self._create_section_title_label("详细日志"))
-        detail_layout.addWidget(self._create_info_label(release_notes, selectable=True))
+        main_container = QWidget()
+        main_layout = QVBoxLayout(main_container)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(12)
 
+        info_text = f"发布日期：{latest_date}    |    安装包大小：{installer_size}"
+        main_layout.addWidget(self._create_info_label(info_text))
+
+        main_layout.addWidget(self._create_section_title_label("更新日志"))
+        
+        markdown_html = self._render_markdown_release_notes(release_notes)
+        markdown_label = self._create_markdown_text_edit(markdown_html)
+        
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        scroll_area.setMinimumSize(420, 280)
+        scroll_area.setMinimumSize(450, 260)
 
+        scroll_area.setWidget(markdown_label)
+        
         theme_colors = self._get_theme_colors()
-
+        normal_color = theme_colors["auxiliary"]
+        
+        scroll_area.setStyleSheet(
+            f"""
+            QScrollArea {{
+                background-color: {normal_color};
+                border: 1px solid {normal_color};
+                border-radius: 4px;
+                padding: 6px;
+            }}
+            """
+        )
+        
         vertical_scrollbar = D_ScrollBar(Qt.Vertical, scroll_area)
-        vertical_scrollbar.set_colors(
-            theme_colors["secondary"],
-            theme_colors["secondary"],
-            theme_colors["accent"],
-            theme_colors["auxiliary"],
-        )
-
-        horizontal_scrollbar = D_ScrollBar(Qt.Horizontal, scroll_area)
-        horizontal_scrollbar.set_colors(
-            theme_colors["secondary"],
-            theme_colors["secondary"],
-            theme_colors["accent"],
-            theme_colors["auxiliary"],
-        )
-
+        vertical_scrollbar.apply_theme_from_settings()
         scroll_area.setVerticalScrollBar(vertical_scrollbar)
-        scroll_area.setHorizontalScrollBar(horizontal_scrollbar)
-        scroll_area.setWidget(detail_container)
         SmoothScroller.apply_to_scroll_area(scroll_area, enable_mouse_drag=False, enable_smart_width=True)
 
-        dialog.list_layout.addWidget(scroll_area)
+        main_layout.addWidget(scroll_area)
+
+        dialog.list_layout.addWidget(main_container)
         dialog.list_widget.show()
 
         buttons = ["立即安装", "取消"] if installer_ready else ["下载更新", "取消"]
@@ -846,28 +1105,52 @@ class UpdateController(QObject):
         progress_container_layout.setContentsMargins(0, 0, 0, 0)
         progress_container_layout.setSpacing(8)
 
-        progress_bar = D_ProgressBar(is_interactive=False)
-        progress_bar.setInteractive(False)
-        progress_bar.setRange(progress_min, progress_max)
-        progress_bar.setValue(progress_value, use_animation=False)
+        is_checking = progress_max == 0
 
-        progress_info_label = QLabel("")
-        progress_info_label.setAlignment(Qt.AlignCenter)
-        theme_colors = self._get_theme_colors()
-        progress_info_label.setStyleSheet(
-            f"""
-            QLabel {{
-                color: {theme_colors["secondary"]};
-                background-color: transparent;
-                padding: 0px;
-                margin: 0px;
-            }}
-            """
-        )
+        if is_checking:
+            dialog.text_label.hide()
+            dialog.body_layout.removeWidget(dialog.text_label)
+            dialog.image_label.hide()
+            dialog.body_layout.removeWidget(dialog.image_label)
+            dialog.list_widget.hide()
+            dialog.body_layout.removeWidget(dialog.list_widget)
+            dialog.input_widget.hide()
+            dialog.body_layout.removeWidget(dialog.input_widget)
+            dialog.progress_widget.hide()
+            dialog.body_layout.removeWidget(dialog.progress_widget)
 
-        progress_container_layout.addWidget(progress_bar)
-        progress_container_layout.addWidget(progress_info_label)
-        dialog.set_progress(progress_container)
+            self._current_loading_spinner = LoadingSpinner(icon_size=48, dpi_scale=1.0)
+            self._current_loading_spinner.start()
+            progress_container_layout.addWidget(self._current_loading_spinner, 0, Qt.AlignCenter)
+            self._current_progress_bar = None
+            self._current_progress_info_label = None
+        else:
+            progress_bar = D_ProgressBar(is_interactive=False)
+            progress_bar.setInteractive(False)
+            progress_bar.setRange(progress_min, progress_max)
+            progress_bar.setValue(progress_value, use_animation=False)
+            progress_container_layout.addWidget(progress_bar)
+
+            progress_info_label = QLabel("")
+            progress_info_label.setAlignment(Qt.AlignCenter)
+            theme_colors = self._get_theme_colors()
+            progress_info_label.setStyleSheet(
+                f"""
+                QLabel {{
+                    color: {theme_colors["secondary"]};
+                    background-color: transparent;
+                    padding: 0px;
+                    margin: 0px;
+                }}
+                """
+            )
+            progress_container_layout.addWidget(progress_info_label)
+            self._current_progress_info_label = progress_info_label
+            self._current_progress_bar = progress_bar
+            self._current_loading_spinner = None
+
+        button_index = dialog.body_layout.indexOf(dialog.button_widget)
+        dialog.body_layout.insertWidget(button_index, progress_container)
 
         if buttons:
             dialog.set_buttons(buttons, Qt.Horizontal, button_types or ["primary"] * len(buttons))
@@ -878,8 +1161,6 @@ class UpdateController(QObject):
             dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowCloseButtonHint)
 
         self._current_dialog = dialog
-        self._current_progress_bar = progress_bar
-        self._current_progress_info_label = progress_info_label
         dialog.show()
 
     def _show_message_dialog(self, title, text, buttons, button_types, callback=None):
@@ -931,6 +1212,51 @@ class UpdateController(QObject):
         self._last_speed_check_time = None
         self._last_speed_check_size = 0
         self._current_download_speed_text = "0 B/s"
+        if self._current_loading_spinner is not None:
+            self._current_loading_spinner.stop()
+            self._current_loading_spinner = None
         self._current_dialog = None
         self._current_progress_bar = None
         self._current_progress_info_label = None
+
+    def _on_silent_check_update_available(self, result):
+        """
+        静默检查发现新版本后的回调
+        """
+        if self._silent_check_cancelled:
+            debug("UpdateController: 静默检查已被取消，忽略更新提示")
+            self._silent_check_cancelled = False
+            return
+        
+        # 如果用户已经手动触发了检查更新，不显示弹窗
+        if self._check_worker and self._check_worker.isRunning():
+            debug("UpdateController: 手动检查正在运行，静默检查结果不弹窗")
+            return
+        
+        release_info = result["latest_release"]
+        self._current_release_info = release_info
+        info(f"静默检查发现新版本: {release_info.get('tag_name', 'unknown')}")
+        
+        local_info = result.get("local_info", {})
+        
+        cache_result = result.get("cache_result", {})
+        installer_path = cache_result.get("installer_path")
+        installer_ready = bool(cache_result.get("is_ready")) and bool(installer_path)
+        
+        self._current_ready_package = cache_result if installer_ready else None
+        if installer_ready:
+            debug("UpdateController: 静默检查发现本地已存在可用安装包")
+        
+        # 显示更新提示弹窗
+        self._show_update_available_detail_dialog(
+            local_info=local_info,
+            release_info=release_info,
+            installer_ready=installer_ready,
+        )
+
+    def _on_silent_check_finished(self):
+        """
+        静默检查完成的回调（无论成功失败）
+        """
+        debug("UpdateController: 静默检查已完成")
+        self._silent_check_worker = None

@@ -213,16 +213,16 @@ class ModernSettingsWindow(QDialog):
         """
         创建左侧导航栏
         """
-        widget = QWidget()
-        widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Expanding)
+        self.nav_widget = QWidget()
+        self.nav_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Expanding)
 
         app = QApplication.instance()
         dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         min_width = int(80 * dpi_scale)
-        widget.setMinimumWidth(min_width)
+        self.nav_widget.setMinimumWidth(min_width)
 
-        widget.setObjectName("navigationContainer")
-        widget.setStyleSheet(f"""
+        self.nav_widget.setObjectName("navigationContainer")
+        self.nav_widget.setStyleSheet(f"""
             QWidget#navigationContainer {{ 
                 background-color: {self.theme_manager.get_theme_colors()['base_color']}; 
                 border-radius: 8px;
@@ -230,29 +230,29 @@ class ModernSettingsWindow(QDialog):
             }}
         """)
 
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(8, 15, 8, 10)
-        layout.setSpacing(8)
+        self.nav_layout = QVBoxLayout(self.nav_widget)
+        self.nav_layout.setContentsMargins(8, 15, 8, 10)
+        self.nav_layout.setSpacing(8)
 
-        title_label = QLabel("设置")
-        title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        title_font = QFont(self.global_font)
-        title_font.setPointSize(int(self.global_font.pointSize() * 1.2))
-        title_font.setWeight(QFont.Weight.Bold)
-        title_label.setFont(title_font)
-        title_label.setStyleSheet(f"""
+        self.nav_title_label = QLabel("设置")
+        self.nav_title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        nav_title_font = QFont(self.global_font)
+        nav_title_font.setPointSize(int(self.global_font.pointSize() * 1.2))
+        nav_title_font.setWeight(QFont.Weight.Bold)
+        self.nav_title_label.setFont(nav_title_font)
+        self.nav_title_label.setStyleSheet(f"""
             QLabel {{
                 color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 margin-bottom: 10px;
                 padding: 5px;
             }}
         """)
-        layout.addWidget(title_label)
+        self.nav_layout.addWidget(self.nav_title_label)
 
-        nav_scroll_area = QScrollArea()
-        nav_scroll_area.setWidgetResizable(True)
-        nav_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        nav_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.nav_scroll_area = QScrollArea()
+        self.nav_scroll_area.setWidgetResizable(True)
+        self.nav_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.nav_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         base_color = self.theme_manager.get_theme_colors()['base_color']
         auxiliary_color = self.theme_manager.get_theme_colors()['auxiliary_color']
@@ -300,23 +300,23 @@ class ModernSettingsWindow(QDialog):
                 border: none;
             }}
         """
-        nav_scroll_area.setStyleSheet(nav_scrollbar_style)
+        self.nav_scroll_area.setStyleSheet(nav_scrollbar_style)
 
-        nav_scroll_area.setVerticalScrollBar(D_ScrollBar(nav_scroll_area, Qt.Vertical))
-        nav_scroll_area.verticalScrollBar().set_colors(normal_color, secondary_color, accent_color, auxiliary_color)
+        self.nav_scroll_area.setVerticalScrollBar(D_ScrollBar(self.nav_scroll_area, Qt.Vertical))
+        self.nav_scroll_area.verticalScrollBar().set_colors(normal_color, secondary_color, accent_color, auxiliary_color)
 
-        SmoothScroller.apply_to_scroll_area(nav_scroll_area)
+        SmoothScroller.apply_to_scroll_area(self.nav_scroll_area)
 
-        nav_content = QWidget()
-        nav_content.setStyleSheet(f"""
+        self.nav_content = QWidget()
+        self.nav_content.setStyleSheet(f"""
             QWidget {{
                 background-color: transparent;
             }}
         """)
-        nav_layout = QVBoxLayout(nav_content)
-        nav_layout.setContentsMargins(0, 0, 0, 0)
-        nav_layout.setSpacing(8)
-        nav_layout.setAlignment(Qt.AlignTop)
+        self.nav_content_layout = QVBoxLayout(self.nav_content)
+        self.nav_content_layout.setContentsMargins(0, 0, 0, 0)
+        self.nav_content_layout.setSpacing(8)
+        self.nav_content_layout.setAlignment(Qt.AlignTop)
 
         self.navigation_buttons = []
         self.navigation_items = [
@@ -337,22 +337,22 @@ class ModernSettingsWindow(QDialog):
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             button.clicked.connect(lambda checked, idx=i: self._on_navigation_clicked(idx))
             self.navigation_buttons.append(button)
-            nav_layout.addWidget(button)
+            self.nav_content_layout.addWidget(button)
 
-        nav_scroll_area.setWidget(nav_content)
-        layout.addWidget(nav_scroll_area, 1)
+        self.nav_scroll_area.setWidget(self.nav_content)
+        self.nav_layout.addWidget(self.nav_scroll_area, 1)
 
-        return widget
+        return self.nav_widget
     
     def _create_content_area(self):
         """
         创建右侧内容区域
         """
-        widget = QWidget()
-        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.content_widget = QWidget()
+        self.content_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        widget.setObjectName("contentContainer")
-        widget.setStyleSheet(f"""
+        self.content_widget.setObjectName("contentContainer")
+        self.content_widget.setStyleSheet(f"""
             QWidget#contentContainer {{ 
                 background-color: {self.theme_manager.get_theme_colors()['base_color']}; 
                 border-radius: 8px;
@@ -360,9 +360,9 @@ class ModernSettingsWindow(QDialog):
             }}
         """)
 
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(5)
+        self.content_area_layout = QVBoxLayout(self.content_widget)
+        self.content_area_layout.setContentsMargins(10, 10, 10, 10)
+        self.content_area_layout.setSpacing(5)
 
         self.content_title = QLabel("通用设置")
         content_title_font = QFont(self.global_font)
@@ -376,7 +376,7 @@ class ModernSettingsWindow(QDialog):
                 padding: 5px;
             }}
         """)
-        layout.addWidget(self.content_title)
+        self.content_area_layout.addWidget(self.content_title)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -388,11 +388,12 @@ class ModernSettingsWindow(QDialog):
 
         scrollbar_style = f"""
             QScrollArea {{
-                border: 0px solid transparent;
-                background-color: {base_color};
+                border: 1px solid {normal_color};
+                background-color: {auxiliary_color};
+                border-radius: 4px;
             }}
             QScrollArea > QWidget > QWidget {{
-                background-color: {base_color};
+                background-color: {auxiliary_color};
             }}
             QScrollBar:vertical {{
                 width: 6px;
@@ -441,12 +442,12 @@ class ModernSettingsWindow(QDialog):
         self.scroll_layout.setAlignment(Qt.AlignTop)
 
         self.scroll_area.setWidget(self.scroll_content)
-        layout.addWidget(self.scroll_area, 1)
+        self.content_area_layout.addWidget(self.scroll_area, 1)
 
         self.buttons_widget = self._create_buttons_widget()
-        layout.addWidget(self.buttons_widget)
+        self.content_area_layout.addWidget(self.buttons_widget)
 
-        return widget
+        return self.content_widget
     
     def _create_appearance_tab(self):
         """
@@ -506,31 +507,31 @@ class ModernSettingsWindow(QDialog):
         Returns:
             tuple: (QWidget, QLayout) 标签页内容部件和滚动布局
         """
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        self.tab_widget = QWidget()
+        self.tab_layout = QVBoxLayout(self.tab_widget)
         
         # 标题标签
-        title_label = QLabel(title)
+        self.tab_title_label = QLabel(title)
 
         # 使用全局字体，让Qt6自动处理DPI缩放
-        title_font = QFont(self.global_font)
-        title_font.setPointSize(int(self.global_font.pointSize() * 1.1))
-        title_font.setWeight(QFont.Weight.Bold)
-        title_label.setFont(title_font)
+        tab_title_font = QFont(self.global_font)
+        tab_title_font.setPointSize(int(self.global_font.pointSize() * 1.1))
+        tab_title_font.setWeight(QFont.Weight.Bold)
+        self.tab_title_label.setFont(tab_title_font)
 
-        title_label.setStyleSheet(f"""
+        self.tab_title_label.setStyleSheet(f"""
             QLabel {{
                 color: {self.theme_manager.get_theme_colors()['secondary_color']};
                 margin-bottom: 5px;
                 padding: 2px;
             }}
         """)
-        layout.addWidget(title_label)
+        self.tab_layout.addWidget(self.tab_title_label)
         
         # 滚动区域
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet(f"""
+        self.tab_scroll_area = QScrollArea()
+        self.tab_scroll_area.setWidgetResizable(True)
+        self.tab_scroll_area.setStyleSheet(f"""
             QScrollArea {{ 
                 background-color: transparent;
                 border: none;
@@ -549,46 +550,46 @@ class ModernSettingsWindow(QDialog):
         """)
         
         # 滚动内容
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
+        self.tab_scroll_content = QWidget()
+        self.tab_scroll_layout = QVBoxLayout(self.tab_scroll_content)
         
         # 应用DPI缩放因子到布局
         scaled_padding = 2
         scaled_spacing = 3
-        scroll_layout.setContentsMargins(scaled_padding, scaled_padding, scaled_padding, scaled_padding)
-        scroll_layout.setSpacing(scaled_spacing)
+        self.tab_scroll_layout.setContentsMargins(scaled_padding, scaled_padding, scaled_padding, scaled_padding)
+        self.tab_scroll_layout.setSpacing(scaled_spacing)
         
-        scroll_area.setWidget(scroll_content)
-        layout.addWidget(scroll_area, 1)
+        self.tab_scroll_area.setWidget(self.tab_scroll_content)
+        self.tab_layout.addWidget(self.tab_scroll_area, 1)
         
-        return widget, scroll_layout
+        return self.tab_widget, self.tab_scroll_layout
     
     def _create_buttons_widget(self):
         """
         创建底部按钮区域
         """
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
+        self.buttons_widget = QWidget()
+        self.buttons_layout = QHBoxLayout(self.buttons_widget)
         
         # 应用DPI缩放因子到布局
         scaled_spacing = 3
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(scaled_spacing)
+        self.buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.buttons_layout.setSpacing(scaled_spacing)
         
         # 重置按钮
         self.reset_button = CustomButton("重置", button_type="secondary")
         self.reset_button.clicked.connect(self.reset_settings)
-        layout.addWidget(self.reset_button)
+        self.buttons_layout.addWidget(self.reset_button)
         
         # 占位符
-        layout.addStretch()
+        self.buttons_layout.addStretch()
         
         # 保存按钮
         self.save_button = CustomButton("保存", button_type="primary")
         self.save_button.clicked.connect(self.save_settings)
-        layout.addWidget(self.save_button)
+        self.buttons_layout.addWidget(self.save_button)
         
-        return widget
+        return self.buttons_widget
     
     def _on_navigation_clicked(self, index):
         """
@@ -631,6 +632,23 @@ class ModernSettingsWindow(QDialog):
         if tab_id in title_mapping:
             self.content_title.setText(title_mapping[tab_id])
 
+        # 清空当前内容前先隐藏所有可能的活动菜单
+        # 清理动态创建的下拉菜单属性
+        dynamic_menu_attrs = [
+            'speed_dropdown_menu', 'background_style_dropdown', 'theme_dropdown_menu',
+            'icon_style_dropdown', 'font_dropdown_menu', 'custom_font_dropdown',
+            'markdown_font_dropdown_menu'
+        ]
+        for attr in dynamic_menu_attrs:
+            if hasattr(self, attr):
+                menu = getattr(self, attr, None)
+                if menu is not None:
+                    try:
+                        menu.hide_menu()
+                    except RuntimeError:
+                        pass
+                    setattr(self, attr, None)
+
         # 清空当前内容
         while self.scroll_layout.count() > 0:
             item = self.scroll_layout.takeAt(0)
@@ -657,9 +675,9 @@ class ModernSettingsWindow(QDialog):
         """
         添加文件选择器设置项
         """
-        file_selector_group = QGroupBox("文件选择器设置")
-        file_selector_group.setStyleSheet(self.group_box_style)
-        file_selector_layout = QVBoxLayout(file_selector_group)
+        self.file_selector_group = QGroupBox("文件选择器设置")
+        self.file_selector_group.setStyleSheet(self.group_box_style)
+        self.file_selector_layout = QVBoxLayout(self.file_selector_group)
         
         # 自动清理缩略图缓存
         self.auto_clear_cache_switch = CustomSettingItem(
@@ -669,7 +687,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_selector.auto_clear_thumbnail_cache", True)
         )
         self.auto_clear_cache_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.auto_clear_thumbnail_cache": value}))
-        file_selector_layout.addWidget(self.auto_clear_cache_switch)
+        self.file_selector_layout.addWidget(self.auto_clear_cache_switch)
         
         # 缓存清理周期
         self.cache_cleanup_period = CustomSettingItem(
@@ -681,7 +699,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_selector.cache_cleanup_period", 7)
         )
         self.cache_cleanup_period.value_changed.connect(lambda value: self.current_settings.update({"file_selector.cache_cleanup_period": value}))
-        file_selector_layout.addWidget(self.cache_cleanup_period)
+        self.file_selector_layout.addWidget(self.cache_cleanup_period)
         
         # 缓存清理阈值
         self.cache_cleanup_threshold = CustomSettingItem(
@@ -693,7 +711,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_selector.cache_cleanup_threshold", 500)
         )
         self.cache_cleanup_threshold.value_changed.connect(lambda value: self.current_settings.update({"file_selector.cache_cleanup_threshold": value}))
-        file_selector_layout.addWidget(self.cache_cleanup_threshold)
+        self.file_selector_layout.addWidget(self.cache_cleanup_threshold)
         
         # 恢复上次路径
         self.restore_last_path_switch = CustomSettingItem(
@@ -703,7 +721,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_selector.restore_last_path", True)
         )
         self.restore_last_path_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.restore_last_path": value}))
-        file_selector_layout.addWidget(self.restore_last_path_switch)
+        self.file_selector_layout.addWidget(self.restore_last_path_switch)
 
         # 触控操作优化
         self.touch_optimization_switch = CustomSettingItem(
@@ -713,7 +731,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_selector.touch_optimization", True)
         )
         self.touch_optimization_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.touch_optimization": value}))
-        file_selector_layout.addWidget(self.touch_optimization_switch)
+        self.file_selector_layout.addWidget(self.touch_optimization_switch)
 
         # 鼠标按钮交换
         self.mouse_buttons_swap_switch = CustomSettingItem(
@@ -723,14 +741,14 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_selector.mouse_buttons_swap", False)
         )
         self.mouse_buttons_swap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.mouse_buttons_swap": value}))
-        file_selector_layout.addWidget(self.mouse_buttons_swap_switch)
+        self.file_selector_layout.addWidget(self.mouse_buttons_swap_switch)
 
-        self.scroll_layout.addWidget(file_selector_group)
+        self.scroll_layout.addWidget(self.file_selector_group)
 
         # 实验性功能组
-        experimental_group = QGroupBox("实验性")
-        experimental_group.setStyleSheet(self.group_box_style)
-        experimental_layout = QVBoxLayout(experimental_group)
+        self.file_selector_experimental_group = QGroupBox("实验性")
+        self.file_selector_experimental_group.setStyleSheet(self.group_box_style)
+        self.file_selector_experimental_layout = QVBoxLayout(self.file_selector_experimental_group)
 
         # 时间线视图开关
         self.timeline_view_switch = CustomSettingItem(
@@ -740,17 +758,17 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_selector.timeline_view_enabled", False)
         )
         self.timeline_view_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_selector.timeline_view_enabled": value}))
-        experimental_layout.addWidget(self.timeline_view_switch)
+        self.file_selector_experimental_layout.addWidget(self.timeline_view_switch)
 
-        self.scroll_layout.addWidget(experimental_group)
+        self.scroll_layout.addWidget(self.file_selector_experimental_group)
 
     def _add_file_staging_settings(self):
         """
         添加文件暂存池设置项
         """
-        file_staging_group = QGroupBox("文件暂存池设置")
-        file_staging_group.setStyleSheet(self.group_box_style)
-        file_staging_layout = QVBoxLayout(file_staging_group)
+        self.file_staging_group = QGroupBox("文件暂存池设置")
+        self.file_staging_group.setStyleSheet(self.group_box_style)
+        self.file_staging_layout = QVBoxLayout(self.file_staging_group)
         
         # 自动恢复记录
         self.auto_restore_switch = CustomSettingItem(
@@ -760,7 +778,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_staging.auto_restore_records", True)
         )
         self.auto_restore_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.auto_restore_records": value}))
-        file_staging_layout.addWidget(self.auto_restore_switch)
+        self.file_staging_layout.addWidget(self.auto_restore_switch)
 
         # 触控操作优化
         self.staging_touch_optimization_switch = CustomSettingItem(
@@ -770,14 +788,14 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_staging.touch_optimization", True)
         )
         self.staging_touch_optimization_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.touch_optimization": value}))
-        file_staging_layout.addWidget(self.staging_touch_optimization_switch)
+        self.file_staging_layout.addWidget(self.staging_touch_optimization_switch)
 
-        self.scroll_layout.addWidget(file_staging_group)
+        self.scroll_layout.addWidget(self.file_staging_group)
 
         # 实验性功能组
-        experimental_group = QGroupBox("实验性")
-        experimental_group.setStyleSheet(self.group_box_style)
-        experimental_layout = QVBoxLayout(experimental_group)
+        self.file_staging_experimental_group = QGroupBox("实验性")
+        self.file_staging_experimental_group.setStyleSheet(self.group_box_style)
+        self.file_staging_experimental_layout = QVBoxLayout(self.file_staging_experimental_group)
 
         # 导出后删除原始文件
         self.delete_original_switch = CustomSettingItem(
@@ -787,7 +805,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("file_staging.delete_original_after_export", False)
         )
         self.delete_original_switch.switch_toggled.connect(lambda value: self.current_settings.update({"file_staging.delete_original_after_export": value}))
-        experimental_layout.addWidget(self.delete_original_switch)
+        self.file_staging_experimental_layout.addWidget(self.delete_original_switch)
 
         # 默认数据路径设置
         self.default_export_data_path = CustomSettingItem(
@@ -797,7 +815,7 @@ class ModernSettingsWindow(QDialog):
             initial_text=self._get_current_setting_value("file_staging.default_export_data_path", "")
         )
         self.default_export_data_path.folder_selected.connect(lambda path: self.current_settings.update({"file_staging.default_export_data_path": path}))
-        experimental_layout.addWidget(self.default_export_data_path)
+        self.file_staging_experimental_layout.addWidget(self.default_export_data_path)
 
         # 默认导出文件路径设置
         self.default_export_file_path = CustomSettingItem(
@@ -807,18 +825,18 @@ class ModernSettingsWindow(QDialog):
             initial_text=self._get_current_setting_value("file_staging.default_export_file_path", "")
         )
         self.default_export_file_path.folder_selected.connect(lambda path: self.current_settings.update({"file_staging.default_export_file_path": path}))
-        experimental_layout.addWidget(self.default_export_file_path)
+        self.file_staging_experimental_layout.addWidget(self.default_export_file_path)
 
-        self.scroll_layout.addWidget(experimental_group)
+        self.scroll_layout.addWidget(self.file_staging_experimental_group)
 
     def _add_player_settings(self):
         """
         添加播放器设置项
         """
         # 控制栏常驻功能区设置组
-        control_bar_group = QGroupBox("控制栏常驻功能区")
-        control_bar_group.setStyleSheet(self.group_box_style)
-        control_bar_layout = QVBoxLayout(control_bar_group)
+        self.control_bar_group = QGroupBox("控制栏常驻功能区")
+        self.control_bar_group.setStyleSheet(self.group_box_style)
+        self.control_bar_layout = QVBoxLayout(self.control_bar_group)
 
         # 全屏按钮开关
         self.control_bar_fullscreen_switch = CustomSettingItem(
@@ -830,7 +848,7 @@ class ModernSettingsWindow(QDialog):
         self.control_bar_fullscreen_switch.switch_toggled.connect(
             lambda value: self.current_settings.update({"player.control_bar_show_fullscreen": value})
         )
-        control_bar_layout.addWidget(self.control_bar_fullscreen_switch)
+        self.control_bar_layout.addWidget(self.control_bar_fullscreen_switch)
 
         # LUT按钮开关
         self.control_bar_lut_switch = CustomSettingItem(
@@ -842,7 +860,7 @@ class ModernSettingsWindow(QDialog):
         self.control_bar_lut_switch.switch_toggled.connect(
             lambda value: self.current_settings.update({"player.control_bar_show_lut": value})
         )
-        control_bar_layout.addWidget(self.control_bar_lut_switch)
+        self.control_bar_layout.addWidget(self.control_bar_lut_switch)
 
         # 字幕按钮开关
         self.control_bar_subtitle_switch = CustomSettingItem(
@@ -854,7 +872,7 @@ class ModernSettingsWindow(QDialog):
         self.control_bar_subtitle_switch.switch_toggled.connect(
             lambda value: self.current_settings.update({"player.control_bar_show_subtitle": value})
         )
-        control_bar_layout.addWidget(self.control_bar_subtitle_switch)
+        self.control_bar_layout.addWidget(self.control_bar_subtitle_switch)
 
         # 音轨按钮开关
         self.control_bar_audio_switch = CustomSettingItem(
@@ -866,7 +884,7 @@ class ModernSettingsWindow(QDialog):
         self.control_bar_audio_switch.switch_toggled.connect(
             lambda value: self.current_settings.update({"player.control_bar_show_audio": value})
         )
-        control_bar_layout.addWidget(self.control_bar_audio_switch)
+        self.control_bar_layout.addWidget(self.control_bar_audio_switch)
 
         # 音量按钮开关
         self.control_bar_volume_switch = CustomSettingItem(
@@ -878,7 +896,7 @@ class ModernSettingsWindow(QDialog):
         self.control_bar_volume_switch.switch_toggled.connect(
             lambda value: self._on_control_bar_volume_changed(value)
         )
-        control_bar_layout.addWidget(self.control_bar_volume_switch)
+        self.control_bar_layout.addWidget(self.control_bar_volume_switch)
 
         # 倍速按钮开关
         self.control_bar_speed_switch = CustomSettingItem(
@@ -890,14 +908,14 @@ class ModernSettingsWindow(QDialog):
         self.control_bar_speed_switch.switch_toggled.connect(
             lambda value: self._on_control_bar_speed_changed(value)
         )
-        control_bar_layout.addWidget(self.control_bar_speed_switch)
+        self.control_bar_layout.addWidget(self.control_bar_speed_switch)
 
-        self.scroll_layout.addWidget(control_bar_group)
+        self.scroll_layout.addWidget(self.control_bar_group)
 
         # 音量设置组
-        volume_group = QGroupBox("音量设置")
-        volume_group.setStyleSheet(self.group_box_style)
-        volume_layout = QVBoxLayout(volume_group)
+        self.volume_group = QGroupBox("音量设置")
+        self.volume_group.setStyleSheet(self.group_box_style)
+        self.volume_layout = QVBoxLayout(self.volume_group)
 
         # 使用默认音量开关
         self.use_default_volume_switch = CustomSettingItem(
@@ -907,7 +925,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("player.use_default_volume", False)
         )
         self.use_default_volume_switch.switch_toggled.connect(lambda value: self._on_use_default_volume_changed(value))
-        volume_layout.addWidget(self.use_default_volume_switch)
+        self.volume_layout.addWidget(self.use_default_volume_switch)
 
         # 默认音量滑块（仅在开启使用默认音量时显示）
         self.default_volume_bar = CustomSettingItem(
@@ -923,14 +941,14 @@ class ModernSettingsWindow(QDialog):
         volume_button_showing = self._get_current_setting_value("player.control_bar_show_volume", True)
         self.use_default_volume_switch.setVisible(volume_button_showing)
         self.default_volume_bar.setVisible(volume_button_showing and self.use_default_volume_switch.get_switch_value())
-        volume_layout.addWidget(self.default_volume_bar)
+        self.volume_layout.addWidget(self.default_volume_bar)
 
-        self.scroll_layout.addWidget(volume_group)
+        self.scroll_layout.addWidget(self.volume_group)
 
         # 倍速设置组
-        speed_group = QGroupBox("倍速设置")
-        speed_group.setStyleSheet(self.group_box_style)
-        speed_layout = QVBoxLayout(speed_group)
+        self.speed_group = QGroupBox("倍速设置")
+        self.speed_group.setStyleSheet(self.group_box_style)
+        self.speed_layout = QVBoxLayout(self.speed_group)
 
         # 使用默认倍速开关
         self.use_default_speed_switch = CustomSettingItem(
@@ -940,26 +958,26 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("player.use_default_speed", True)
         )
         self.use_default_speed_switch.switch_toggled.connect(lambda value: self._on_use_default_speed_changed(value))
-        speed_layout.addWidget(self.use_default_speed_switch)
+        self.speed_layout.addWidget(self.use_default_speed_switch)
 
         # 默认倍速选择按钮（仅在开启使用默认倍速时显示）
         from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
-        speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
-        current_speed = self._get_current_setting_value("player.default_speed", 1.0)
+        self.speed_options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
+        self.current_speed = self._get_current_setting_value("player.default_speed", 1.0)
 
         self.default_speed_setting = CustomSettingItem(
             text="默认倍速",
             secondary_text="设置默认播放倍速",
             interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
-            buttons=[{"text": f"{current_speed}x", "type": "primary"}]
+            buttons=[{"text": f"{self.current_speed}x", "type": "primary"}]
         )
 
         # 倍速选择按钮点击处理
         def on_speed_button_clicked(button_index):
             # 创建倍速下拉菜单
             self.speed_dropdown_menu = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
-            speed_items = [f"{speed}x" for speed in speed_options]
-            self.speed_dropdown_menu.set_items(speed_items, default_item=f"{current_speed}x")
+            speed_items = [f"{speed}x" for speed in self.speed_options]
+            self.speed_dropdown_menu.set_items(speed_items, default_item=f"{self.current_speed}x")
 
             def on_speed_item_clicked(selected_speed):
                 speed_value = float(selected_speed.replace('x', ''))
@@ -976,29 +994,29 @@ class ModernSettingsWindow(QDialog):
         speed_button_showing = self._get_current_setting_value("player.control_bar_show_speed", True)
         self.use_default_speed_switch.setVisible(speed_button_showing)
         self.default_speed_setting.setVisible(speed_button_showing and self.use_default_speed_switch.get_switch_value())
-        speed_layout.addWidget(self.default_speed_setting)
+        self.speed_layout.addWidget(self.default_speed_setting)
 
-        self.scroll_layout.addWidget(speed_group)
+        self.scroll_layout.addWidget(self.speed_group)
 
         # 音频背景样式设置组
-        theme_group = QGroupBox("音频背景样式")
-        theme_group.setStyleSheet(self.group_box_style)
-        theme_layout = QVBoxLayout(theme_group)
+        self.audio_background_style_group = QGroupBox("音频背景样式")
+        self.audio_background_style_group.setStyleSheet(self.group_box_style)
+        self.audio_background_style_group_layout = QVBoxLayout(self.audio_background_style_group)
 
         # 背景样式选择（流体动画、封面模糊）
-        background_styles = ["流体动画", "封面模糊"]
-        current_style = self._get_current_setting_value("player.audio_background_style", "流体动画")
+        self.background_styles = ["流体动画", "封面模糊"]
+        self.current_style = self._get_current_setting_value("player.audio_background_style", "流体动画")
 
         self.audio_background_style_setting = CustomSettingItem(
             text="背景样式",
             secondary_text="选择音频播放时的背景显示样式",
             interaction_type=CustomSettingItem.BUTTON_GROUP_TYPE,
-            buttons=[{"text": current_style, "type": "primary"}]
+            buttons=[{"text": self.current_style, "type": "primary"}]
         )
 
         def on_background_style_button_clicked(button_index):
             self.background_style_dropdown = CustomDropdownMenu(self, position="bottom", use_internal_button=False)
-            self.background_style_dropdown.set_items(background_styles, default_item=current_style)
+            self.background_style_dropdown.set_items(self.background_styles, default_item=self.current_style)
 
             def on_style_item_clicked(selected_style):
                 self.current_settings.update({"player.audio_background_style": selected_style})
@@ -1010,14 +1028,14 @@ class ModernSettingsWindow(QDialog):
             self.background_style_dropdown.show_menu()
 
         self.audio_background_style_setting.button_clicked.connect(on_background_style_button_clicked)
-        theme_layout.addWidget(self.audio_background_style_setting)
+        self.audio_background_style_group_layout.addWidget(self.audio_background_style_setting)
 
-        self.scroll_layout.addWidget(theme_group)
+        self.scroll_layout.addWidget(self.audio_background_style_group)
 
         # 实验性选项设置组
-        experimental_group = QGroupBox("实验性选项")
-        experimental_group.setStyleSheet(self.group_box_style)
-        experimental_layout = QVBoxLayout(experimental_group)
+        self.experimental_group = QGroupBox("实验性选项")
+        self.experimental_group.setStyleSheet(self.group_box_style)
+        self.experimental_layout = QVBoxLayout(self.experimental_group)
 
         # 全屏模式控制栏经典隐藏策略开关
         self.fullscreen_classic_control_bar_switch = CustomSettingItem(
@@ -1029,7 +1047,7 @@ class ModernSettingsWindow(QDialog):
         self.fullscreen_classic_control_bar_switch.switch_toggled.connect(
             lambda value: self.current_settings.update({"player.fullscreen_classic_control_bar": value})
         )
-        experimental_layout.addWidget(self.fullscreen_classic_control_bar_switch)
+        self.experimental_layout.addWidget(self.fullscreen_classic_control_bar_switch)
 
         # 控制栏超时隐藏时间滑块
         self.control_bar_timeout_bar = CustomSettingItem(
@@ -1043,9 +1061,9 @@ class ModernSettingsWindow(QDialog):
         self.control_bar_timeout_bar.value_changed.connect(
             lambda value: self.current_settings.update({"player.control_bar_timeout": value})
         )
-        experimental_layout.addWidget(self.control_bar_timeout_bar)
+        self.experimental_layout.addWidget(self.control_bar_timeout_bar)
 
-        self.scroll_layout.addWidget(experimental_group)
+        self.scroll_layout.addWidget(self.experimental_group)
 
     def _on_control_bar_volume_changed(self, value):
         """
@@ -1134,9 +1152,9 @@ class ModernSettingsWindow(QDialog):
         }
         
         # 主题设置组
-        theme_group = QGroupBox("主题")
-        theme_group.setStyleSheet(self.group_box_style)
-        theme_layout = QVBoxLayout(theme_group)
+        self.theme_group = QGroupBox("主题")
+        self.theme_group.setStyleSheet(self.group_box_style)
+        self.theme_group_layout = QVBoxLayout(self.theme_group)
 
         # 深色/浅色主题开关
         self.theme_switch = CustomSettingItem(
@@ -1175,7 +1193,7 @@ class ModernSettingsWindow(QDialog):
             # self._update_styles()
 
         self.theme_switch.switch_toggled.connect(on_theme_toggled)
-        theme_layout.addWidget(self.theme_switch)
+        self.theme_group_layout.addWidget(self.theme_switch)
         
         # 获取当前颜色以确定初始主题
         current_accent = self._get_current_setting_value("appearance.colors.accent_color", "#007AFF")
@@ -1228,7 +1246,7 @@ class ModernSettingsWindow(QDialog):
             self.theme_dropdown_menu.show_menu()
         
         self.theme_selector_setting.button_clicked.connect(on_theme_selector_clicked)
-        theme_layout.addWidget(self.theme_selector_setting)
+        self.theme_group_layout.addWidget(self.theme_selector_setting)
         
         # 自定义颜色输入框（初始隐藏）
         self.custom_color_input = CustomSettingItem(
@@ -1256,7 +1274,7 @@ class ModernSettingsWindow(QDialog):
         
         self.custom_color_input.input_submitted.connect(on_custom_color_applied)
         self.custom_color_input.setVisible(initial_theme == "自定义")
-        theme_layout.addWidget(self.custom_color_input)
+        self.theme_group_layout.addWidget(self.custom_color_input)
 
         # 图标样式选择
         icon_styles = ["扁平", "质感", "统一"]
@@ -1285,14 +1303,14 @@ class ModernSettingsWindow(QDialog):
             self.icon_style_dropdown.show_menu()
 
         self.icon_style_setting.button_clicked.connect(on_icon_style_button_clicked)
-        theme_layout.addWidget(self.icon_style_setting)
+        self.theme_group_layout.addWidget(self.icon_style_setting)
 
-        self.scroll_layout.addWidget(theme_group)
+        self.scroll_layout.addWidget(self.theme_group)
 
         # 字体设置组
-        font_group = QGroupBox("字体设置")
-        font_group.setStyleSheet(self.group_box_style)
-        font_layout = QVBoxLayout(font_group)
+        self.font_group = QGroupBox("字体设置")
+        self.font_group.setStyleSheet(self.group_box_style)
+        self.font_group_layout = QVBoxLayout(self.font_group)
 
         # 字体样式选择
         from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
@@ -1329,7 +1347,7 @@ class ModernSettingsWindow(QDialog):
         self.font_style_setting.button_clicked.connect(on_font_style_button_clicked)
 
         # 将字体样式选择控件添加到布局
-        font_layout.addWidget(self.font_style_setting)
+        self.font_group_layout.addWidget(self.font_style_setting)
 
         # 字体大小滑块
         self.font_size_bar = CustomSettingItem(
@@ -1341,18 +1359,18 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("font.size", 20)
         )
         self.font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"font.size": value}))
-        font_layout.addWidget(self.font_size_bar)
+        self.font_group_layout.addWidget(self.font_size_bar)
 
-        self.scroll_layout.addWidget(font_group)
+        self.scroll_layout.addWidget(self.font_group)
 
     def _add_text_preview_settings(self):
         """
         添加文本预览器设置项
         """
         # 纯文本文件预览分组
-        text_preview_group = QGroupBox("纯文本文件预览")
-        text_preview_group.setStyleSheet(self.group_box_style)
-        text_preview_layout = QVBoxLayout(text_preview_group)
+        self.text_preview_group = QGroupBox("纯文本文件预览")
+        self.text_preview_group.setStyleSheet(self.group_box_style)
+        self.text_preview_group_layout = QVBoxLayout(self.text_preview_group)
 
         # 自动换行开关
         self.text_word_wrap_switch = CustomSettingItem(
@@ -1362,7 +1380,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("text_preview.word_wrap", True)
         )
         self.text_word_wrap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"text_preview.word_wrap": value}))
-        text_preview_layout.addWidget(self.text_word_wrap_switch)
+        self.text_preview_group_layout.addWidget(self.text_word_wrap_switch)
 
         # 使用全局字体开关
         self.use_global_font_switch = CustomSettingItem(
@@ -1372,7 +1390,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("text_preview.use_global_font", True)
         )
         self.use_global_font_switch.switch_toggled.connect(lambda value: self._on_use_global_font_changed(value))
-        text_preview_layout.addWidget(self.use_global_font_switch)
+        self.text_preview_group_layout.addWidget(self.use_global_font_switch)
 
         # 自定义加载字体选择（仅在关闭使用全局字体时显示）
         from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
@@ -1402,7 +1420,7 @@ class ModernSettingsWindow(QDialog):
         self.custom_font_setting.button_clicked.connect(on_custom_font_button_clicked)
         # 根据开关状态设置初始可见性
         self.custom_font_setting.setVisible(not self.use_global_font_switch.get_switch_value())
-        text_preview_layout.addWidget(self.custom_font_setting)
+        self.text_preview_group_layout.addWidget(self.custom_font_setting)
 
         # 使用全局字体大小开关
         self.use_global_font_size_switch = CustomSettingItem(
@@ -1412,7 +1430,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("text_preview.use_global_font_size", True)
         )
         self.use_global_font_size_switch.switch_toggled.connect(lambda value: self._on_use_global_font_size_changed(value))
-        text_preview_layout.addWidget(self.use_global_font_size_switch)
+        self.text_preview_group_layout.addWidget(self.use_global_font_size_switch)
 
         # 自定义字体大小滑块（仅在关闭使用全局字体大小时显示）
         self.custom_font_size_bar = CustomSettingItem(
@@ -1426,14 +1444,14 @@ class ModernSettingsWindow(QDialog):
         self.custom_font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"text_preview.custom_font_size": value}))
         # 根据开关状态设置初始可见性
         self.custom_font_size_bar.setVisible(not self.use_global_font_size_switch.get_switch_value())
-        text_preview_layout.addWidget(self.custom_font_size_bar)
+        self.text_preview_group_layout.addWidget(self.custom_font_size_bar)
 
-        self.scroll_layout.addWidget(text_preview_group)
+        self.scroll_layout.addWidget(self.text_preview_group)
 
         # Markdown预览分组
-        markdown_group = QGroupBox("Markdown预览")
-        markdown_group.setStyleSheet(self.group_box_style)
-        markdown_layout = QVBoxLayout(markdown_group)
+        self.markdown_group = QGroupBox("Markdown预览")
+        self.markdown_group.setStyleSheet(self.group_box_style)
+        self.markdown_group_layout = QVBoxLayout(self.markdown_group)
 
         # Markdown自动换行开关
         self.markdown_word_wrap_switch = CustomSettingItem(
@@ -1443,7 +1461,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("text_preview.markdown_word_wrap", True)
         )
         self.markdown_word_wrap_switch.switch_toggled.connect(lambda value: self.current_settings.update({"text_preview.markdown_word_wrap": value}))
-        markdown_layout.addWidget(self.markdown_word_wrap_switch)
+        self.markdown_group_layout.addWidget(self.markdown_word_wrap_switch)
 
         # Markdown使用全局字体开关
         self.markdown_use_global_font_switch = CustomSettingItem(
@@ -1453,7 +1471,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("text_preview.markdown_use_global_font", True)
         )
         self.markdown_use_global_font_switch.switch_toggled.connect(lambda value: self._on_markdown_use_global_font_changed(value))
-        markdown_layout.addWidget(self.markdown_use_global_font_switch)
+        self.markdown_group_layout.addWidget(self.markdown_use_global_font_switch)
 
         # Markdown自定义加载字体选择（仅在关闭使用全局字体时显示）
         current_markdown_font = self._get_current_setting_value("text_preview.markdown_custom_font_family", "Microsoft YaHei")
@@ -1481,7 +1499,7 @@ class ModernSettingsWindow(QDialog):
         self.markdown_custom_font_setting.button_clicked.connect(on_markdown_font_button_clicked)
         # 根据开关状态设置初始可见性
         self.markdown_custom_font_setting.setVisible(not self.markdown_use_global_font_switch.get_switch_value())
-        markdown_layout.addWidget(self.markdown_custom_font_setting)
+        self.markdown_group_layout.addWidget(self.markdown_custom_font_setting)
 
         # Markdown使用全局字体大小开关
         self.markdown_use_global_font_size_switch = CustomSettingItem(
@@ -1491,7 +1509,7 @@ class ModernSettingsWindow(QDialog):
             initial_value=self._get_current_setting_value("text_preview.markdown_use_global_font_size", True)
         )
         self.markdown_use_global_font_size_switch.switch_toggled.connect(lambda value: self._on_markdown_use_global_font_size_changed(value))
-        markdown_layout.addWidget(self.markdown_use_global_font_size_switch)
+        self.markdown_group_layout.addWidget(self.markdown_use_global_font_size_switch)
 
         # Markdown自定义字体大小滑块（仅在关闭使用全局字体大小时显示）
         self.markdown_custom_font_size_bar = CustomSettingItem(
@@ -1505,9 +1523,9 @@ class ModernSettingsWindow(QDialog):
         self.markdown_custom_font_size_bar.value_changed.connect(lambda value: self.current_settings.update({"text_preview.markdown_custom_font_size": value}))
         # 根据开关状态设置初始可见性
         self.markdown_custom_font_size_bar.setVisible(not self.markdown_use_global_font_size_switch.get_switch_value())
-        markdown_layout.addWidget(self.markdown_custom_font_size_bar)
+        self.markdown_group_layout.addWidget(self.markdown_custom_font_size_bar)
 
-        self.scroll_layout.addWidget(markdown_group)
+        self.scroll_layout.addWidget(self.markdown_group)
 
     def _on_use_global_font_changed(self, value):
         """
@@ -1573,8 +1591,8 @@ class ModernSettingsWindow(QDialog):
         # JSON配置组（仅在实验性功能开启时显示）
         self.json_config_group = QGroupBox("JSON配置")
         self.json_config_group.setStyleSheet(self.group_box_style)
-        json_config_layout = QVBoxLayout(self.json_config_group)
-        json_config_layout.setSpacing(int(10 * dpi_scale))
+        self.json_config_layout = QVBoxLayout(self.json_config_group)
+        self.json_config_layout.setSpacing(int(10 * dpi_scale))
 
         # 使用默认打开方式打开settings.json
         self.open_settings_json_item = CustomSettingItem(
@@ -1584,7 +1602,7 @@ class ModernSettingsWindow(QDialog):
             buttons=[{"text": "打开", "type": "primary"}]
         )
         self.open_settings_json_item.button_clicked.connect(self._on_open_settings_json_clicked)
-        json_config_layout.addWidget(self.open_settings_json_item)
+        self.json_config_layout.addWidget(self.open_settings_json_item)
 
         self.scroll_layout.addWidget(self.json_config_group)
 
@@ -1599,72 +1617,72 @@ class ModernSettingsWindow(QDialog):
         app = QApplication.instance()
         dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
 
-        about_group = QGroupBox("关于 FreeAssetFilter")
-        about_group.setStyleSheet(self.group_box_style)
-        about_layout = QVBoxLayout(about_group)
-        about_layout.setSpacing(int(15 * dpi_scale))
+        self.about_group = QGroupBox("关于 FreeAssetFilter")
+        self.about_group.setStyleSheet(self.group_box_style)
+        self.about_group_layout = QVBoxLayout(self.about_group)
+        self.about_group_layout.setSpacing(int(15 * dpi_scale))
 
-        logo_label = QLabel()
-        logo_label.setAlignment(Qt.AlignCenter)
-        logo_label.setText("<h1>FreeAssetFilter</h1>")
-        logo_font = QFont(self.global_font)
-        logo_font.setPointSize(int(self.global_font.pointSize() * 2.0))
-        logo_font.setWeight(QFont.Weight.Bold)
+        self.logo_label = QLabel()
+        self.logo_label.setAlignment(Qt.AlignCenter)
+        self.logo_label.setText("<h1>FreeAssetFilter</h1>")
+        self.logo_font = QFont(self.global_font)
+        self.logo_font.setPointSize(int(self.global_font.pointSize() * 2.0))
+        self.logo_font.setWeight(QFont.Weight.Bold)
 
         title_font_family = self._get_about_title_font_family()
         if title_font_family:
-            logo_font.setFamily(title_font_family)
+            self.logo_font.setFamily(title_font_family)
 
         accent_color = self._get_current_setting_value("appearance.colors.accent_color", "#007AFF")
-        logo_label.setFont(logo_font)
-        logo_label.setStyleSheet(f"""
+        self.logo_label.setFont(self.logo_font)
+        self.logo_label.setStyleSheet(f"""
             QLabel {{
                 color: {accent_color};
                 margin: 10px 0;
             }}
         """)
-        about_layout.addWidget(logo_label)
+        self.about_group_layout.addWidget(self.logo_label)
 
-        version_info = QLabel(f"版本 {get_app_version()}")
-        version_info.setAlignment(Qt.AlignCenter)
-        version_info.setFont(self.global_font)
-        version_info.setStyleSheet("""
+        self.version_info = QLabel(f"版本 {get_app_version()}")
+        self.version_info.setAlignment(Qt.AlignCenter)
+        self.version_info.setFont(self.global_font)
+        self.version_info.setStyleSheet("""
             QLabel {
                 color: #666;
             }
         """)
-        about_layout.addWidget(version_info)
+        self.about_group_layout.addWidget(self.version_info)
 
-        description = QLabel("一个功能强大的免费资源过滤和预览工具，支持多种文件格式的快速预览和管理。")
-        description.setAlignment(Qt.AlignCenter)
-        description.setWordWrap(True)
-        description.setFont(self.global_font)
-        description.setStyleSheet("""
+        self.about_description = QLabel("一个功能强大的免费资源过滤和预览工具，支持多种文件格式的快速预览和管理。")
+        self.about_description.setAlignment(Qt.AlignCenter)
+        self.about_description.setWordWrap(True)
+        self.about_description.setFont(self.global_font)
+        self.about_description.setStyleSheet("""
             QLabel {
                 color: #888;
                 margin: 10px 20px;
             }
         """)
-        about_layout.addWidget(description)
+        self.about_group_layout.addWidget(self.about_description)
 
-        link_group = QGroupBox("链接")
-        link_group.setStyleSheet(self.group_box_style)
-        link_layout = QVBoxLayout(link_group)
-        link_layout.setSpacing(int(8 * dpi_scale))
+        self.link_group = QGroupBox("链接")
+        self.link_group.setStyleSheet(self.group_box_style)
+        self.link_group_layout = QVBoxLayout(self.link_group)
+        self.link_group_layout.setSpacing(int(8 * dpi_scale))
 
-        github_btn = CustomButton("GitHub 仓库", button_type="secondary")
-        github_btn.setCursor(Qt.PointingHandCursor)
-        github_btn.clicked.connect(lambda: self._open_link("https://github.com/yourusername/FreeAssetFilter"))
-        link_layout.addWidget(github_btn)
+        self.github_btn = CustomButton("GitHub 仓库", button_type="secondary")
+        self.github_btn.setCursor(Qt.PointingHandCursor)
+        self.github_btn.clicked.connect(lambda: self._open_link("https://github.com/yourusername/FreeAssetFilter"))
+        self.link_group_layout.addWidget(self.github_btn)
 
-        about_layout.addWidget(link_group)
+        self.about_group_layout.addWidget(self.link_group)
 
-        self.scroll_layout.addWidget(about_group)
+        self.scroll_layout.addWidget(self.about_group)
 
-        version_check_group = QGroupBox("版本检查")
-        version_check_group.setStyleSheet(self.group_box_style)
-        version_check_layout = QVBoxLayout(version_check_group)
-        version_check_layout.setSpacing(int(8 * dpi_scale))
+        self.version_check_group = QGroupBox("版本检查")
+        self.version_check_group.setStyleSheet(self.group_box_style)
+        self.version_check_group_layout = QVBoxLayout(self.version_check_group)
+        self.version_check_group_layout.setSpacing(int(8 * dpi_scale))
 
         self.manual_update_check_item = CustomSettingItem(
             text="手动检查更新",
@@ -1673,9 +1691,9 @@ class ModernSettingsWindow(QDialog):
             buttons=[{"text": "检查更新", "type": "primary"}]
         )
         self.manual_update_check_item.button_clicked.connect(self._on_manual_update_check_clicked)
-        version_check_layout.addWidget(self.manual_update_check_item)
+        self.version_check_group_layout.addWidget(self.manual_update_check_item)
 
-        self.scroll_layout.addWidget(version_check_group)
+        self.scroll_layout.addWidget(self.version_check_group)
 
     def _get_about_title_font_family(self):
         """
@@ -1956,8 +1974,12 @@ class ModernSettingsWindow(QDialog):
         
         scroll_style = f"""
             QScrollArea {{ 
-                background-color: transparent;
-                border: none;
+                background-color: {auxiliary_color};
+                border: 1px solid {normal_color};
+                border-radius: 4px;
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background-color: {auxiliary_color};
             }}
             QScrollBar:vertical {{ 
                 width: 6px;

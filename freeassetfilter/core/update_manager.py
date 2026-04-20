@@ -39,7 +39,40 @@ FIREFOX_MAJOR_VERSIONS = [133, 134, 135, 136, 137]
 
 REQUEST_ACCEPT_HEADER = "application/vnd.github+json"
 
-FAFVERSION_FILE = get_resource_path("FAFVERSION")
+def _find_fafversion_file():
+    """
+    查找 FAFVERSION 文件，支持多种路径策略
+    
+    Returns:
+        str: FAFVERSION 文件的完整路径，如果找不到则返回 None
+    """
+    import sys
+    
+    # 策略 1: 使用 get_resource_path
+    path1 = get_resource_path("FAFVERSION")
+    if os.path.exists(path1):
+        return path1
+    
+    # 策略 2: 打包环境下，尝试 exe 所在目录
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        path2 = os.path.join(exe_dir, "FAFVERSION")
+        if os.path.exists(path2):
+            return path2
+        
+        # 策略 3: 尝试 _internal 目录
+        path3 = os.path.join(exe_dir, "_internal", "FAFVERSION")
+        if os.path.exists(path3):
+            return path3
+    
+    # 策略 4: 尝试当前工作目录
+    path4 = os.path.join(os.getcwd(), "FAFVERSION")
+    if os.path.exists(path4):
+        return path4
+    
+    return None
+
+FAFVERSION_FILE = _find_fafversion_file() or get_resource_path("FAFVERSION")
 
 CACHE_DIR_NAME = "download"
 CACHE_METADATA_FILE = "update_cache.json"

@@ -1575,13 +1575,15 @@ class CustomFileHorizontalCard(QWidget):
             icon_path = self._get_file_icon_path(suffix, is_dir)
             if icon_path and os.path.exists(icon_path):
                 if "未知底板" in os.path.basename(icon_path):
-                    display_suffix = suffix.upper()
-                    if len(display_suffix) >= 5:
+                    display_suffix = suffix.upper() if suffix else ""
+                    if len(display_suffix) >= 5 or not display_suffix:
                         display_suffix = "FILE"
-                    return self._build_unknown_icon_pixmap(icon_path, display_suffix or "?", icon_size)
+                    return self._build_unknown_icon_pixmap(icon_path, display_suffix, icon_size)
 
                 if "压缩文件" in os.path.basename(icon_path):
                     display_suffix = "." + suffix if suffix else ""
+                    if not display_suffix or len(display_suffix) >= 5:
+                        display_suffix = "FILE"
                     return self._build_unknown_icon_pixmap(icon_path, display_suffix, icon_size)
 
                 return self._render_exact_svg_icon_pixmap(

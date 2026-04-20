@@ -361,6 +361,9 @@ class D_HoverMenu(QWidget):
 
     def _animate_show(self):
         """执行向上显示 + 淡入的非线性动画"""
+        from freeassetfilter.utils.app_logger import debug
+        debug(f"[D_HoverMenu._animate_show] 调用 - self={id(self)}, parent={id(self.parent())}, _is_visible={self._is_visible}, isVisible={self.isVisible()}")
+        
         if self._is_visible and not self._is_animating and self._get_opacity() >= 0.99 and self._vertical_offset == 0:
             return
 
@@ -380,7 +383,9 @@ class D_HoverMenu(QWidget):
             self._vertical_offset = start_offset
             self._update_mouse_transparency()
             self._update_position_with_offset()
+            debug(f"[D_HoverMenu._animate_show] 调用 super().show() - 首次显示")
             super().show()
+            debug(f"[D_HoverMenu._animate_show] super().show() 完成，isVisible={self.isVisible()}")
         elif start_offset == 0 and start_opacity <= 0.01:
             start_offset = self._hidden_vertical_offset
             self._vertical_offset = start_offset

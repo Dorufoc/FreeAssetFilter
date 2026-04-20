@@ -1215,7 +1215,9 @@ class TextPreviewWidget(QWidget):
         # 连接文本变化信号以更新行号宽度
         self.text_edit.textChanged.connect(self._update_line_number_width)
         
-        SmoothScroller.apply_to_scroll_area(self.text_edit)
+        # 注意：QTextEdit 不是 QScrollArea，不能使用 apply_to_scroll_area()
+        # 改用 apply() 方法来应用平滑滚动（包括 QScroller 惯性和滚轮动画）
+        SmoothScroller.apply(self.text_edit)
         
         self._init_context_menu()
     
@@ -1766,99 +1768,99 @@ class TextPreviewWidget(QWidget):
             self.is_markdown = False
             return
 
-            current_font = self.text_edit.font()
-            font_family = current_font.family()
-            # 使用当前字体大小滑块的值作为基准，与普通文本保持一致
-            # 优先使用滑块当前值，确保用户调整字体大小后能够实时反映
-            current_slider_value = self.font_size_slider.value()
-            font_size = current_slider_value
-            
-            is_dark = False
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                # 使用正确的设置键名 appearance.theme
-                theme = app.settings_manager.get_setting("appearance.theme", "default")
-                is_dark = theme == "dark"
-                secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-                base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-                normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#666666")
-                auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#999999")
-            else:
-                secondary_color = "#333333"
-                base_color = "#FFFFFF"
-                normal_color = "#666666"
-                auxiliary_color = "#999999"
-            
-            # 代码块背景使用 auxiliary_color
-            code_bg = auxiliary_color
-            pre_bg = code_bg
-            # 表格边框使用 normal_color，表头背景使用 auxiliary_color
-            border_color = normal_color
-            th_bg = auxiliary_color
-            
-            header_style = f"""
-                <style>
-                    body {{ font-family: {font_family}, sans-serif; font-size: {font_size}pt; line-height: 1.6; color: {secondary_color}; margin: 0; padding: 0; }}
-                    div {{ color: {secondary_color}; }}
-                    p {{ color: {secondary_color}; margin: 0.5em 0; }}
-                    li {{ color: {secondary_color}; margin: 0.3em 0; }}
-                    pre {{ background-color: {pre_bg}; padding: 10px; border-radius: 0; overflow-x: hidden; margin: 0; white-space: pre-wrap; word-wrap: break-word; }}
-                    /* 消除连续代码块之间的缝隙 */
-                    pre + pre {{ margin-top: 0; }}
-                    div > pre:first-child {{ border-radius: 4px 4px 0 0; }}
-                    div > pre:last-child {{ border-radius: 0 0 4px 4px; }}
-                    div > pre:only-child {{ border-radius: 4px; }}
-                    code {{ background-color: {code_bg}; padding: 2px 5px; border-radius: 3px; font-family: Consolas, monospace; color: {secondary_color}; }}
-                    pre code {{ background-color: transparent; padding: 0; color: {secondary_color} !important; }}
-                    pre code * {{ color: {secondary_color} !important; }}
-                    h1, h2, h3, h4, h5, h6 {{ color: {secondary_color}; margin-top: 1.5em; margin-bottom: 0.5em; }}
-                    h1 {{ font-size: 2em; border-bottom: 1px solid {border_color}; }}
-                    h2 {{ font-size: 1.5em; border-bottom: 1px solid {border_color}; }}
-                    table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
-                    th {{ background-color: {th_bg}; color: {secondary_color}; }}
-                    td {{ color: {secondary_color}; }}
-                    th, td {{ border: 1px solid {border_color}; padding: 8px; text-align: left; }}
-                    blockquote {{ border-left: 4px solid {border_color}; margin: 0.5em 0; padding-left: 16px; color: {secondary_color}; }}
-                    img {{ max-width: 100%; }}
-                    strong, b {{ color: {secondary_color}; }}
-                    em, i {{ color: {secondary_color}; }}
-                    a {{ color: {secondary_color}; text-decoration: underline; }}
-                    /* 列表样式优化 */
-                    ul, ol {{ margin: 0.5em 0; padding-left: 2em; }}
-                    ul ul, ul ol, ol ul, ol ol {{ margin: 0.2em 0; }}
-                    ul li {{ list-style-type: disc; }}
-                    ul ul li {{ list-style-type: circle; }}
-                    ul ul ul li {{ list-style-type: square; }}
-                    ol li {{ list-style-type: decimal; }}
-                    ol ol li {{ list-style-type: lower-alpha; }}
-                    ol ol ol li {{ list-style-type: lower-roman; }}
-                    li > p {{ margin: 0.2em 0; }}
-                    li > ul, li > ol {{ margin: 0.2em 0; }}
-                </style>
-            """
-            
-            # 在应用样式前，处理 Markdown 内容中的颜色（仅深色模式）
-            if is_dark:
-                html = self._process_html_colors(html, True)
-            
-            html = f"<html><head>{header_style}</head><body>{html}</body></html>"
+        current_font = self.text_edit.font()
+        font_family = current_font.family()
+        # 使用当前字体大小滑块的值作为基准，与普通文本保持一致
+        # 优先使用滑块当前值，确保用户调整字体大小后能够实时反映
+        current_slider_value = self.font_size_slider.value()
+        font_size = current_slider_value
+        
+        is_dark = False
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            # 使用正确的设置键名 appearance.theme
+            theme = app.settings_manager.get_setting("appearance.theme", "default")
+            is_dark = theme == "dark"
+            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#666666")
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#999999")
+        else:
+            secondary_color = "#333333"
+            base_color = "#FFFFFF"
+            normal_color = "#666666"
+            auxiliary_color = "#999999"
+        
+        # 代码块背景使用 auxiliary_color
+        code_bg = auxiliary_color
+        pre_bg = code_bg
+        # 表格边框使用 normal_color，表头背景使用 auxiliary_color
+        border_color = normal_color
+        th_bg = auxiliary_color
+        
+        header_style = f"""
+            <style>
+                body {{ font-family: {font_family}, sans-serif; font-size: {font_size}pt; line-height: 1.6; color: {secondary_color}; margin: 0; padding: 0; }}
+                div {{ color: {secondary_color}; }}
+                p {{ color: {secondary_color}; margin: 0.5em 0; }}
+                li {{ color: {secondary_color}; margin: 0.3em 0; }}
+                pre {{ background-color: {pre_bg}; padding: 10px; border-radius: 0; overflow-x: hidden; margin: 0; white-space: pre-wrap; word-wrap: break-word; }}
+                /* 消除连续代码块之间的缝隙 */
+                pre + pre {{ margin-top: 0; }}
+                div > pre:first-child {{ border-radius: 4px 4px 0 0; }}
+                div > pre:last-child {{ border-radius: 0 0 4px 4px; }}
+                div > pre:only-child {{ border-radius: 4px; }}
+                code {{ background-color: {code_bg}; padding: 2px 5px; border-radius: 3px; font-family: Consolas, monospace; color: {secondary_color}; }}
+                pre code {{ background-color: transparent; padding: 0; color: {secondary_color} !important; }}
+                pre code * {{ color: {secondary_color} !important; }}
+                h1, h2, h3, h4, h5, h6 {{ color: {secondary_color}; margin-top: 1.5em; margin-bottom: 0.5em; }}
+                h1 {{ font-size: 2em; border-bottom: 1px solid {border_color}; }}
+                h2 {{ font-size: 1.5em; border-bottom: 1px solid {border_color}; }}
+                table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+                th {{ background-color: {th_bg}; color: {secondary_color}; }}
+                td {{ color: {secondary_color}; }}
+                th, td {{ border: 1px solid {border_color}; padding: 8px; text-align: left; }}
+                blockquote {{ border-left: 4px solid {border_color}; margin: 0.5em 0; padding-left: 16px; color: {secondary_color}; }}
+                img {{ max-width: 100%; }}
+                strong, b {{ color: {secondary_color}; }}
+                em, i {{ color: {secondary_color}; }}
+                a {{ color: {secondary_color}; text-decoration: underline; }}
+                /* 列表样式优化 */
+                ul, ol {{ margin: 0.5em 0; padding-left: 2em; }}
+                ul ul, ul ol, ol ul, ol ol {{ margin: 0.2em 0; }}
+                ul li {{ list-style-type: disc; }}
+                ul ul li {{ list-style-type: circle; }}
+                ul ul ul li {{ list-style-type: square; }}
+                ol li {{ list-style-type: decimal; }}
+                ol ol li {{ list-style-type: lower-alpha; }}
+                ol ol ol li {{ list-style-type: lower-roman; }}
+                li > p {{ margin: 0.2em 0; }}
+                li > ul, li > ol {{ margin: 0.2em 0; }}
+            </style>
+        """
+        
+        # 在应用样式前，处理 Markdown 内容中的颜色（仅深色模式）
+        if is_dark:
+            html = self._process_html_colors(html, True)
+        
+        html = f"<html><head>{header_style}</head><body>{html}</body></html>"
 
-            # Markdown 模式下根据设置启用/禁用自动换行
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                markdown_word_wrap = app.settings_manager.get_setting("text_preview.markdown_word_wrap", True)
-            else:
-                markdown_word_wrap = True
-                
-            if markdown_word_wrap:
-                self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-                self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            else:
-                self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
-                self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-                
-            self.text_edit.setHtml(html)
-            self.is_markdown = True
+        # Markdown 模式下根据设置启用/禁用自动换行
+        app = QApplication.instance()
+        if hasattr(app, 'settings_manager'):
+            markdown_word_wrap = app.settings_manager.get_setting("text_preview.markdown_word_wrap", True)
+        else:
+            markdown_word_wrap = True
+            
+        if markdown_word_wrap:
+            self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        else:
+            self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            
+        self.text_edit.setHtml(html)
+        self.is_markdown = True
     
     def _render_plain_text(self, content, file_type):
         """渲染纯文本/代码"""

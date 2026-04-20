@@ -692,6 +692,9 @@ class SvgRenderer:
             scaled_icon_size = icon_size
             set_perf_metadata("svg.render_unknown_file_icon", "last_icon_size", scaled_icon_size)
 
+            if not text or len(text) >= 5:
+                text = "FILE"
+
             if not icon_path or not os.path.exists(icon_path):
                 increment_perf_counter("svg.render_unknown_file_icon", "missing_source")
                 label = QLabel()
