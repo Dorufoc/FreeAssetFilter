@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QScrol
 from PySide6.QtGui import QFont
 
 from freeassetfilter.core.update_manager import (
+    UpdateCancelled,
     UpdateError,
     build_request_headers,
     check_for_updates,
@@ -43,13 +44,28 @@ class UpdateCheckWorker(QThread):
 
     success = Signal(dict)
     failure = Signal(str)
+    cancelled = Signal()
 
     def run(self):
         debug("UpdateCheckWorker: 开始检查更新")
         try:
-            result = check_for_updates()
+            if self.isInterruptionRequested():
+                debug("UpdateCheckWorker: 在开始前已被中断")
+                self.cancelled.emit()
+                return
+
+            result = check_for_updates(cancel_check=self.isInterruptionRequested)
+
+            if self.isInterruptionRequested():
+                debug("UpdateCheckWorker: 检查完成后已被中断，忽略结果")
+                self.cancelled.emit()
+                return
+
             debug("UpdateCheckWorker: 检查更新成功")
             self.success.emit(result)
+        except UpdateCancelled:
+            debug("UpdateCheckWorker: 检查更新已取消")
+            self.cancelled.emit()
         except UpdateError as e:
             warning(f"检查更新失败: {e}")
             self.failure.emit(str(e))
@@ -77,7 +93,7 @@ class SilentUpdateCheckWorker(QThread):
                 self.check_finished.emit()
                 return
             
-            result = check_for_updates()
+            result = check_for_updates(cancel_check=self.isInterruptionRequested)
             
             if self.isInterruptionRequested():
                 debug("SilentUpdateCheckWorker: 检查完成后已被中断，忽略结果")
@@ -272,6 +288,7 @@ class UpdateController(QObject):
         self._current_release_info = None
         self._current_ready_package = None
         self._check_cancelled = False
+        self._pending_check_restart = False
         self._current_download_total_size = 0
         self._download_progress_timer = QTimer(self)
         self._download_progress_timer.setInterval(1000)
@@ -354,16 +371,27 @@ class UpdateController(QObject):
         self.cancel_silent_check()
         
         if self._check_worker and self._check_worker.isRunning():
-            debug("UpdateController: 检查更新已在进行中，忽略重复请求")
+            if self._check_cancelled or self._check_worker.isInterruptionRequested():
+                debug("UpdateController: 当前检查正在取消中，记录重新检查请求")
+                self._pending_check_restart = True
+                self._set_dialog_text("正在取消当前检查，随后将重新检查更新…")
+                self._set_dialog_buttons([])
+                self._check_worker.requestInterruption()
+            else:
+                debug("UpdateController: 检查更新已在进行中，忽略重复请求")
             return
 
         if self._download_worker and self._download_worker.isRunning():
             debug("UpdateController: 下载更新已在进行中，忽略检查请求")
             return
 
+        self._start_manual_check()
+
+    def _start_manual_check(self):
         self._current_release_info = None
         self._current_ready_package = None
         self._check_cancelled = False
+        self._pending_check_restart = False
 
         self._show_progress_dialog(
             title="检查更新",
@@ -380,8 +408,17 @@ class UpdateController(QObject):
         self._check_worker = UpdateCheckWorker(self)
         self._check_worker.success.connect(self._on_check_success)
         self._check_worker.failure.connect(self._on_check_failure)
+        self._check_worker.cancelled.connect(self._on_check_cancelled)
         self._check_worker.start()
         debug("UpdateController: 检查更新任务已启动")
+
+    def _restart_manual_check_if_needed(self):
+        if not self._pending_check_restart:
+            return
+
+        debug("UpdateController: 当前检查已结束，重新发起检查更新")
+        self._pending_check_restart = False
+        QTimer.singleShot(0, self._start_manual_check)
 
     def _on_check_dialog_clicked(self, index):
         if index != 0:
@@ -390,7 +427,9 @@ class UpdateController(QObject):
         if self._check_worker and self._check_worker.isRunning():
             debug("UpdateController: 用户取消检查更新")
             self._check_cancelled = True
-            self._close_current_dialog()
+            self._set_dialog_text("正在取消检查，请稍候…")
+            self._set_dialog_buttons([])
+            self._check_worker.requestInterruption()
 
     def _on_check_success(self, result):
         debug("UpdateController: 检查更新成功，处理结果")
@@ -399,6 +438,8 @@ class UpdateController(QObject):
         if self._check_cancelled:
             debug("UpdateController: 检查已被取消，忽略结果")
             self._check_cancelled = False
+            self._close_current_dialog()
+            self._restart_manual_check_if_needed()
             return
 
         if not result.get("update_available", False):
@@ -450,7 +491,10 @@ class UpdateController(QObject):
         self._check_worker = None
 
         if self._check_cancelled:
+            debug("UpdateController: 检查取消后收到失败结果，忽略")
             self._check_cancelled = False
+            self._close_current_dialog()
+            self._restart_manual_check_if_needed()
             return
 
         self._show_message_dialog(
@@ -459,6 +503,13 @@ class UpdateController(QObject):
             buttons=["确定"],
             button_types=["primary"],
         )
+
+    def _on_check_cancelled(self):
+        debug("UpdateController: 检查更新已取消")
+        self._check_worker = None
+        self._check_cancelled = False
+        self._close_current_dialog()
+        self._restart_manual_check_if_needed()
 
     def _on_update_available_dialog_clicked(self, index):
         if index != 0 or not self._current_release_info:

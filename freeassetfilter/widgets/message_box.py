@@ -10,7 +10,17 @@ from PySide6.QtWidgets import (
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
     QScrollArea
 )
-from PySide6.QtCore import Qt, QPoint, Signal, QRect, QSize
+from PySide6.QtCore import (
+    Qt,
+    QPoint,
+    Signal,
+    QRect,
+    QSize,
+    QPropertyAnimation,
+    QParallelAnimationGroup,
+    QEasingCurve,
+    QTimer,
+)
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QIcon, QPixmap
 from PySide6.QtWidgets import QGraphicsDropShadowEffect
 
@@ -415,8 +425,26 @@ class CustomMessageBox(QDialog):
         self._list_selection_mode = "single"  # 默认单选模式
         self._list_items = []
         
+        # 初始化动画状态
+        self._show_animation_group = None
+        self._hide_animation_group = None
+        self._fade_in_animation = None
+        self._fade_out_animation = None
+        self._move_in_animation = None
+        self._move_out_animation = None
+        self._is_show_animating = False
+        self._is_hide_animating = False
+        self._close_after_hide = False
+        self._pending_result = None
+        self._animation_target_pos = None
+        self._animation_offset = int(14 * self.dpi_scale)
+        self._show_animation_duration = 220
+        self._hide_animation_duration = 170
+        self._has_played_show_animation = False
+        
         # 初始化UI
         self.init_ui()
+        self._setup_animations()
     
     def init_ui(self):
         """
@@ -865,6 +893,147 @@ class CustomMessageBox(QDialog):
         # 确保窗口能正确调整大小
         self.adjust_size()
     
+    def _setup_animations(self):
+        """
+        初始化显示/隐藏动画
+        """
+        self._fade_in_animation = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_in_animation.setDuration(self._show_animation_duration)
+        self._fade_in_animation.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._move_in_animation = QPropertyAnimation(self, b"pos", self)
+        self._move_in_animation.setDuration(self._show_animation_duration)
+        self._move_in_animation.setEasingCurve(QEasingCurve.OutCubic)
+        
+        self._show_animation_group = QParallelAnimationGroup(self)
+        self._show_animation_group.addAnimation(self._fade_in_animation)
+        self._show_animation_group.addAnimation(self._move_in_animation)
+        self._show_animation_group.finished.connect(self._on_show_animation_finished)
+        
+        self._fade_out_animation = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade_out_animation.setDuration(self._hide_animation_duration)
+        self._fade_out_animation.setEasingCurve(QEasingCurve.InCubic)
+        
+        self._move_out_animation = QPropertyAnimation(self, b"pos", self)
+        self._move_out_animation.setDuration(self._hide_animation_duration)
+        self._move_out_animation.setEasingCurve(QEasingCurve.InCubic)
+        
+        self._hide_animation_group = QParallelAnimationGroup(self)
+        self._hide_animation_group.addAnimation(self._fade_out_animation)
+        self._hide_animation_group.addAnimation(self._move_out_animation)
+        self._hide_animation_group.finished.connect(self._on_hide_animation_finished)
+    
+    def _stop_animations(self):
+        """
+        停止所有动画
+        """
+        if self._show_animation_group and self._show_animation_group.state() == QPropertyAnimation.Running:
+            self._show_animation_group.stop()
+        if self._hide_animation_group and self._hide_animation_group.state() == QPropertyAnimation.Running:
+            self._hide_animation_group.stop()
+    
+    def _start_show_animation(self):
+        """
+        启动显示动画
+        """
+        if self._is_hide_animating:
+            return
+        
+        self._stop_animations()
+        self._is_show_animating = True
+        self._is_hide_animating = False
+        self._close_after_hide = False
+        
+        if self._animation_target_pos is None:
+            self._animation_target_pos = self.pos()
+        
+        start_pos = QPoint(
+            self._animation_target_pos.x(),
+            self._animation_target_pos.y() + self._animation_offset
+        )
+        
+        self.setWindowOpacity(0.0)
+        self.move(start_pos)
+        
+        self._fade_in_animation.setStartValue(0.0)
+        self._fade_in_animation.setEndValue(1.0)
+        self._move_in_animation.setStartValue(start_pos)
+        self._move_in_animation.setEndValue(self._animation_target_pos)
+        
+        self._show_animation_group.start()
+    
+    def _start_hide_animation(self):
+        """
+        启动隐藏动画
+        """
+        if self._is_hide_animating:
+            return
+        
+        self._stop_animations()
+        self._is_show_animating = False
+        self._is_hide_animating = True
+        
+        current_pos = self.pos()
+        end_pos = QPoint(current_pos.x(), current_pos.y() + self._animation_offset)
+        current_opacity = self.windowOpacity()
+        if current_opacity <= 0.0:
+            current_opacity = 1.0
+        
+        self._fade_out_animation.setStartValue(current_opacity)
+        self._fade_out_animation.setEndValue(0.0)
+        self._move_out_animation.setStartValue(current_pos)
+        self._move_out_animation.setEndValue(end_pos)
+        
+        self._hide_animation_group.start()
+    
+    def _request_animated_close(self, result=None):
+        """
+        请求以动画方式关闭弹窗
+        
+        Args:
+            result (int, optional): 对话框结果值
+        """
+        if self._close_after_hide or self._is_hide_animating:
+            return
+        
+        if result is None:
+            result = self.result()
+        
+        self._pending_result = result
+        self._close_after_hide = True
+        self._start_hide_animation()
+    
+    def _on_show_animation_finished(self):
+        """
+        显示动画结束处理
+        """
+        self._is_show_animating = False
+        self._has_played_show_animation = True
+        self.setWindowOpacity(1.0)
+        if self._animation_target_pos is not None:
+            self.move(self._animation_target_pos)
+    
+    def _on_hide_animation_finished(self):
+        """
+        隐藏动画结束处理
+        """
+        self._is_hide_animating = False
+        self.setWindowOpacity(1.0)
+        
+        if self._animation_target_pos is not None:
+            self.move(self._animation_target_pos)
+        
+        pending_result = self._pending_result
+        self._pending_result = None
+        should_close = self._close_after_hide
+        self._close_after_hide = False
+        self._has_played_show_animation = False
+        
+        if should_close:
+            if pending_result is None:
+                pending_result = self.result()
+            super().done(pending_result)
+    
     def _on_button_clicked(self, button_index):
         """
         按钮点击事件处理
@@ -873,10 +1042,8 @@ class CustomMessageBox(QDialog):
             button_index (int): 按钮索引
         """
         self.buttonClicked.emit(button_index)
-        # 设置对话框的返回值
         self.setResult(button_index)
-        # 点击按钮后自动关闭弹窗
-        self.close()
+        self._request_animated_close(button_index)
     
     def adjust_size(self):
         """
@@ -921,9 +1088,13 @@ class CustomMessageBox(QDialog):
         super().showEvent(event)
         # 确保窗口居中
         self.center()
+        self._animation_target_pos = self.pos()
         # 强制刷新阴影效果
         if hasattr(self, 'shadow_effect') and self.shadow_effect:
             self.window_body.update()
+        
+        if not self._has_played_show_animation and not self._is_show_animating and not self._is_hide_animating:
+            QTimer.singleShot(0, self._start_show_animation)
     
     def center(self):
         """
@@ -959,6 +1130,29 @@ class CustomMessageBox(QDialog):
                 screen_rect.center().x() - self.width() // 2,
                 screen_rect.center().y() - self.height() // 2
             )
+    
+    def closeEvent(self, event):
+        """
+        关闭事件，统一接管为退场动画
+        """
+        if self._close_after_hide or self._is_hide_animating:
+            event.ignore()
+            return
+        
+        event.ignore()
+        self._request_animated_close()
+    
+    def accept(self):
+        """
+        以动画方式接受对话框
+        """
+        self._request_animated_close(QDialog.Accepted)
+    
+    def reject(self):
+        """
+        以动画方式拒绝对话框
+        """
+        self._request_animated_close(QDialog.Rejected)
     
     def keyPressEvent(self, event):
         """

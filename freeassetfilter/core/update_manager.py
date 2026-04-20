@@ -135,6 +135,20 @@ class UpdateError(Exception):
     """
 
 
+class UpdateCancelled(UpdateError):
+    """
+    更新检查已取消
+    """
+
+
+def _raise_if_cancelled(cancel_check=None):
+    """
+    在可协作取消的阶段主动检查取消状态
+    """
+    if callable(cancel_check) and cancel_check():
+        raise UpdateCancelled("更新检查已取消")
+
+
 def get_cache_dir():
     """
     获取安装包缓存目录
@@ -350,16 +364,30 @@ def build_request_headers(accept_header=REQUEST_ACCEPT_HEADER):
     }
 
 
-def _http_get_text(url, timeout=30):
+def _http_get_text(url, timeout=30, cancel_check=None):
     """
     通过标准库执行 HTTP GET，请求文本内容
     """
+    _raise_if_cancelled(cancel_check)
+
     req = request.Request(url, headers=build_request_headers(), method="GET")
     try:
         with request.urlopen(req, timeout=timeout) as response:
             charset = response.headers.get_content_charset() or "utf-8"
-            result = response.read().decode(charset, errors="replace")
+            chunks = []
+
+            while True:
+                _raise_if_cancelled(cancel_check)
+                chunk = response.read(8192)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+
+            _raise_if_cancelled(cancel_check)
+            result = b"".join(chunks).decode(charset, errors="replace")
             return result
+    except UpdateCancelled:
+        raise
     except urllib_error.URLError as e:
         error(f"网络请求失败: {e}")
         raise UpdateError(f"网络请求失败：{e}") from e
@@ -368,14 +396,14 @@ def _http_get_text(url, timeout=30):
         raise UpdateError(f"网络请求失败：{e}") from e
 
 
-def fetch_github_releases():
+def fetch_github_releases(cancel_check=None):
     """
     保留旧接口，兼容历史调用。
     当前优先使用网页源避免 GitHub API rate limit。
     """
     info("获取 GitHub Releases (API)")
 
-    raw_text = _http_get_text(GITHUB_RELEASES_API_URL, timeout=30)
+    raw_text = _http_get_text(GITHUB_RELEASES_API_URL, timeout=30, cancel_check=cancel_check)
 
     try:
         releases = json.loads(raw_text)
@@ -391,12 +419,14 @@ def fetch_github_releases():
     return releases
 
 
-def select_latest_release(releases):
+def select_latest_release(releases, cancel_check=None):
     """
     保留旧接口，兼容历史调用。
     当前主流程已改为网页源抓取。
     """
     info("筛选最新 Release")
+
+    _raise_if_cancelled(cancel_check)
 
     candidates = []
 
@@ -437,6 +467,7 @@ def select_latest_release(releases):
             installer_sha256 = fetch_installer_sha256(
                 checksum_download_url=checksum_asset["browser_download_url"],
                 installer_name=installer_asset["name"],
+                cancel_check=cancel_check,
             )
             if not installer_sha256:
                 continue
@@ -478,11 +509,13 @@ def select_latest_release(releases):
     return latest
 
 
-def _extract_latest_tag_from_redirect():
+def _extract_latest_tag_from_redirect(cancel_check=None):
     """
     通过 releases/latest 跳转获取最新 tag
     """
     info("获取最新版本标签")
+
+    _raise_if_cancelled(cancel_check)
 
     req = request.Request(
         GITHUB_RELEASES_LATEST_URL,
@@ -492,7 +525,10 @@ def _extract_latest_tag_from_redirect():
 
     try:
         with request.urlopen(req, timeout=30) as response:
+            _raise_if_cancelled(cancel_check)
             final_url = response.geturl()
+    except UpdateCancelled:
+        raise
     except urllib_error.URLError as e:
         error(f"获取最新发布跳转失败: {e}")
         raise UpdateError(f"获取最新发布跳转失败：{e}") from e
@@ -530,13 +566,13 @@ def _parse_size_to_bytes(size_text, size_unit):
     return int(value * factor)
 
 
-def _fetch_release_metadata_from_atom(tag_name):
+def _fetch_release_metadata_from_atom(tag_name, cancel_check=None):
     """
     从 releases.atom 中获取指定 tag 的发布时间和更新日志
     """
     info(f"获取版本元数据: {tag_name}")
 
-    atom_text = _http_get_text(GITHUB_RELEASES_ATOM_URL, timeout=30)
+    atom_text = _http_get_text(GITHUB_RELEASES_ATOM_URL, timeout=30, cancel_check=cancel_check)
 
     try:
         root = ElementTree.fromstring(atom_text)
@@ -591,7 +627,7 @@ def _fetch_release_metadata_from_atom(tag_name):
     raise UpdateError(f"在 releases.atom 中未找到版本 {tag_name}")
 
 
-def _fetch_installer_info_from_expanded_assets(tag_name):
+def _fetch_installer_info_from_expanded_assets(tag_name, cancel_check=None):
     """
     从 expanded_assets 页面获取 exe、sha256 和大小
     """
@@ -600,6 +636,7 @@ def _fetch_installer_info_from_expanded_assets(tag_name):
     html_text = _http_get_text(
         f"{GITHUB_RELEASES_EXPANDED_ASSETS_URL}/{tag_name}",
         timeout=30,
+        cancel_check=cancel_check,
     )
 
     match = ASSET_ROW_PATTERN.search(html_text)
@@ -628,17 +665,20 @@ def _fetch_installer_info_from_expanded_assets(tag_name):
     }
 
 
-def fetch_latest_release_via_web():
+def fetch_latest_release_via_web(cancel_check=None):
     """
     使用 GitHub 网页源获取最新发布，避免 API rate limit
     """
     info("获取最新 Release (网页源)")
 
-    tag_name = _extract_latest_tag_from_redirect()
+    _raise_if_cancelled(cancel_check)
+    tag_name = _extract_latest_tag_from_redirect(cancel_check=cancel_check)
     version_tuple = parse_tag_version(tag_name)
 
-    metadata = _fetch_release_metadata_from_atom(tag_name)
-    installer_info = _fetch_installer_info_from_expanded_assets(tag_name)
+    _raise_if_cancelled(cancel_check)
+    metadata = _fetch_release_metadata_from_atom(tag_name, cancel_check=cancel_check)
+    _raise_if_cancelled(cancel_check)
+    installer_info = _fetch_installer_info_from_expanded_assets(tag_name, cancel_check=cancel_check)
 
     info(f"获取成功: {tag_name}")
     return {
@@ -758,14 +798,16 @@ def select_checksum_asset(assets):
     return checksum_candidates[0]
 
 
-def fetch_installer_sha256(checksum_download_url, installer_name):
+def fetch_installer_sha256(checksum_download_url, installer_name, cancel_check=None):
     """
     下载并解析 checksum 文件，提取目标 exe 的 sha256
     """
     info(f"获取校验文件: {installer_name}")
 
     try:
-        text = _http_get_text(checksum_download_url, timeout=30)
+        text = _http_get_text(checksum_download_url, timeout=30, cancel_check=cancel_check)
+    except UpdateCancelled:
+        raise
     except UpdateError as e:
         warning(f"获取校验文件失败: {e}")
         return None
@@ -1027,7 +1069,7 @@ def get_cached_installer_if_valid(release_info):
     }
 
 
-def check_for_updates():
+def check_for_updates(cancel_check=None):
     """
     检查更新
 
@@ -1043,18 +1085,24 @@ def check_for_updates():
     """
     info("开始检查更新")
 
+    _raise_if_cancelled(cancel_check)
     local_info = load_local_version_info()
 
     latest_release = None
     api_error = None
 
     try:
-        latest_release = fetch_latest_release_via_web()
+        latest_release = fetch_latest_release_via_web(cancel_check=cancel_check)
+    except UpdateCancelled:
+        raise
     except UpdateError as web_error:
         warning(f"网页源检查更新失败，回退 API: {web_error}")
+        _raise_if_cancelled(cancel_check)
         try:
-            releases = fetch_github_releases()
-            latest_release = select_latest_release(releases)
+            releases = fetch_github_releases(cancel_check=cancel_check)
+            latest_release = select_latest_release(releases, cancel_check=cancel_check)
+        except UpdateCancelled:
+            raise
         except UpdateError as fallback_error:
             api_error = fallback_error
 
@@ -1063,6 +1111,7 @@ def check_for_updates():
             raise api_error
         raise UpdateError("无法获取最新发布信息")
 
+    _raise_if_cancelled(cancel_check)
     comparison_result = compare_release_with_local(local_info, latest_release)
     update_available = comparison_result > 0
 
@@ -1072,6 +1121,7 @@ def check_for_updates():
     }
 
     if update_available:
+        _raise_if_cancelled(cancel_check)
         cache_result = get_cached_installer_if_valid(latest_release)
 
     result = {
