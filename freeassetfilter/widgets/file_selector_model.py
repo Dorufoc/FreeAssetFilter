@@ -1,0 +1,1255 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+FreeAssetFilter v1.0
+
+Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+
+协议说明：本软件基于 AGPL-3.0 协议开源
+1. 个人非商业使用：需保留本注释及开发者署名；
+
+项目地址：https://github.com/Dorufoc/FreeAssetFilter
+许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
+
+文件选择器列表模型和视图组件
+实现文件列表的数据管理和交互展示
+"""
+
+import os
+import weakref
+from collections import OrderedDict
+from typing import Optional, List, Dict, Any
+
+from PySide6.QtCore import (
+    Qt,
+    Signal,
+    QModelIndex,
+    QAbstractListModel,
+    QSize,
+    QItemSelection,
+    QItemSelectionModel,
+    QTimer,
+    QRect,
+    QRectF,
+    QUrl,
+)
+from PySide6.QtGui import (
+    QPixmap,
+    QPainter,
+    QMouseEvent,
+    QContextMenuEvent,
+    QDesktopServices,
+    QPalette,
+    QColor,
+)
+from PySide6.QtWidgets import (
+    QListView,
+    QApplication,
+    QLabel,
+    QStyle,
+    QStyleOptionViewItem,
+)
+
+from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path
+from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
+from freeassetfilter.utils.file_icon_helper import get_file_icon_path
+from freeassetfilter.utils.app_logger import debug
+
+
+class FileSelectorListModel(QAbstractListModel):
+    """
+    文件选择器列表数据模型
+
+    自定义角色：
+    - FilePathRole: 文件完整路径
+    - FileNameRole: 文件名
+    - IsDirRole: 是否为目录
+    - FileSizeRole: 文件大小
+    - CreatedRole: 创建时间
+    - SuffixRole: 文件后缀
+    - IsSelectedRole: 是否选中
+    - IsPreviewingRole: 是否预览中
+    - IconPixmapRole: 图标像素图
+    - CardWidthRole: 卡片宽度
+    """
+
+    FilePathRole = Qt.UserRole + 1
+    FileNameRole = Qt.UserRole + 2
+    IsDirRole = Qt.UserRole + 3
+    FileSizeRole = Qt.UserRole + 4
+    CreatedRole = Qt.UserRole + 5
+    SuffixRole = Qt.UserRole + 6
+    IsSelectedRole = Qt.UserRole + 7
+    IsPreviewingRole = Qt.UserRole + 8
+    IconPixmapRole = Qt.UserRole + 9
+    CardWidthRole = Qt.UserRole + 10
+
+    _ICON_CACHE_MAX_ENTRIES = 256
+    _icon_cache = OrderedDict()
+
+    def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
+        super().__init__(parent)
+        self._files: List[Dict[str, Any]] = []
+        self._card_width: int = 150
+        self._card_height: int = 75
+        self._max_cols: int = 3
+        self._dpi_scale = dpi_scale
+        self._global_font = global_font
+        self._path_to_row: Dict[str, int] = {}
+        self._async_loader = AsyncIconLoader.instance()
+        self._pending_async_icons: Dict[str, tuple] = {}
+
+    def _normalize_path(self, file_path: str) -> str:
+        return os.path.normpath(file_path) if file_path else ""
+
+    def _rebuild_path_index(self) -> None:
+        self._path_to_row.clear()
+        for row, file_info in enumerate(self._files):
+            normalized_path = self._normalize_path(file_info.get("path", ""))
+            if normalized_path:
+                self._path_to_row[normalized_path] = row
+
+    def get_row(self, file_path: str) -> int:
+        """获取指定文件路径的行号"""
+        return self._path_to_row.get(self._normalize_path(file_path), -1)
+
+    def is_selected(self, file_path: str) -> bool:
+        """获取指定文件的选中状态"""
+        row = self.get_row(file_path)
+        if row < 0:
+            return False
+        return self._files[row].get("is_selected", False)
+
+    def toggle_selected(self, file_path: str) -> bool:
+        """切换指定文件的选中状态，返回新的选中状态"""
+        row = self.get_row(file_path)
+        if row < 0:
+            return False
+
+        new_state = not self._files[row].get("is_selected", False)
+        self._files[row]["is_selected"] = new_state
+        idx = self.index(row, 0)
+        self.dataChanged.emit(idx, idx, [self.IsSelectedRole])
+        return new_state
+
+    def select_all(self) -> None:
+        """选中所有文件"""
+        if not self._files:
+            return
+
+        changed_rows = []
+        for row, file_info in enumerate(self._files):
+            if not file_info.get("is_selected", False):
+                file_info["is_selected"] = True
+                changed_rows.append(row)
+
+        for row in changed_rows:
+            idx = self.index(row, 0)
+            self.dataChanged.emit(idx, idx, [self.IsSelectedRole])
+
+    def deselect_all(self) -> None:
+        """取消选中所有文件"""
+        if not self._files:
+            return
+
+        changed_rows = []
+        for row, file_info in enumerate(self._files):
+            if file_info.get("is_selected", False):
+                file_info["is_selected"] = False
+                changed_rows.append(row)
+
+        for row in changed_rows:
+            idx = self.index(row, 0)
+            self.dataChanged.emit(idx, idx, [self.IsSelectedRole])
+
+    def set_previewing(self, file_path: str, is_previewing: bool = None) -> None:
+        """设置指定文件为预览状态"""
+        normalized_target = self._normalize_path(file_path)
+
+        if is_previewing is None:
+            for row, file_info in enumerate(self._files):
+                current_path = self._normalize_path(file_info.get("path", ""))
+                is_preview = current_path == normalized_target
+                if file_info.get("is_previewing", False) != is_preview:
+                    file_info["is_previewing"] = is_preview
+                    idx = self.index(row, 0)
+                    self.dataChanged.emit(idx, idx, [self.IsPreviewingRole])
+            return
+
+        row = self.get_row(normalized_target)
+        if row < 0:
+            return
+
+        if self._files[row].get("is_previewing", False) != is_previewing:
+            self._files[row]["is_previewing"] = is_previewing
+            idx = self.index(row, 0)
+            self.dataChanged.emit(idx, idx, [self.IsPreviewingRole])
+
+    def update_geometry(self, card_width: int, card_height: int, max_cols: int) -> None:
+        """兼容接口：更新卡片几何信息"""
+        self.set_card_width(card_width, card_height, max_cols)
+
+    def clear_caches(self, file_path: Optional[str] = None, emit_change: bool = False) -> None:
+        """清空缓存，可按文件路径精确失效"""
+        if file_path is None:
+            self._icon_cache.clear()
+            self._pending_async_icons.clear()
+            if emit_change and self.rowCount() > 0:
+                top = self.index(0, 0)
+                bottom = self.index(self.rowCount() - 1, 0)
+                self.dataChanged.emit(top, bottom, [self.IconPixmapRole])
+            return
+
+        normalized_path = self._normalize_path(file_path)
+        keys_to_remove = []
+
+        for cache_key in list(self._icon_cache.keys()):
+            if not isinstance(cache_key, tuple) or not cache_key:
+                continue
+
+            cache_identity = cache_key[0]
+            if not isinstance(cache_identity, tuple) or len(cache_identity) < 4:
+                continue
+
+            source_signature = cache_identity[-1]
+            if not isinstance(source_signature, tuple) or len(source_signature) < 2:
+                continue
+
+            source_path = source_signature[1]
+            if source_path and self._normalize_path(str(source_path)) == normalized_path:
+                keys_to_remove.append(cache_key)
+
+        for cache_key in keys_to_remove:
+            self._icon_cache.pop(cache_key, None)
+
+        self._pending_async_icons.pop(normalized_path, None)
+
+        if emit_change:
+            self.refresh_icon(file_path)
+
+    def refresh_icon(self, file_path: str) -> bool:
+        """按文件路径刷新图标/缩略图显示"""
+        row = self.get_row(file_path)
+        if row < 0:
+            return False
+
+        idx = self.index(row, 0)
+        self.dataChanged.emit(idx, idx, [self.IconPixmapRole])
+        return True
+
+    def sizeHint(self) -> QSize:
+        """获取模型的建议大小"""
+        return QSize(self._card_width, self._card_height)
+
+    def set_files(self, file_list: List[Dict[str, Any]]) -> None:
+        """设置文件列表，不进行全量图标预加载，由可视区按需请求"""
+        self.beginResetModel()
+        self._files = file_list.copy()
+        for file_info in self._files:
+            file_info.setdefault("is_selected", False)
+            file_info.setdefault("is_previewing", False)
+        self._rebuild_path_index()
+        self.endResetModel()
+
+    def set_card_width(self, width: int, height: int, max_cols: int) -> None:
+        """更新卡片尺寸和列数"""
+        if self._card_width == width and self._card_height == height and self._max_cols == max_cols:
+            return
+
+        self._card_width = width
+        self._card_height = height
+        self._max_cols = max_cols
+
+        if self.rowCount() > 0:
+            top = self.index(0, 0)
+            bottom = self.index(self.rowCount() - 1, 0)
+            self.dataChanged.emit(top, bottom, [self.CardWidthRole])
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        if parent.isValid():
+            return 0
+        return len(self._files)
+
+    def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
+        if not index.isValid() or index.row() >= len(self._files):
+            return None
+
+        file_info = self._files[index.row()]
+
+        if role == Qt.DisplayRole:
+            return file_info.get("name", "")
+        if role == self.FilePathRole:
+            return file_info.get("path", "")
+        if role == self.FileNameRole:
+            return file_info.get("name", "")
+        if role == self.IsDirRole:
+            return file_info.get("is_dir", False)
+        if role == self.FileSizeRole:
+            return file_info.get("size", 0)
+        if role == self.CreatedRole:
+            return file_info.get("created", "")
+        if role == self.SuffixRole:
+            return file_info.get("suffix", "").lower()
+        if role == self.IsSelectedRole:
+            return file_info.get("is_selected", False)
+        if role == self.IsPreviewingRole:
+            return file_info.get("is_previewing", False)
+        if role == self.IconPixmapRole:
+            return self._get_icon_pixmap(file_info)
+        if role == self.CardWidthRole:
+            return self._card_width
+
+        return None
+
+    def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:
+        if not index.isValid() or index.row() >= len(self._files):
+            return False
+
+        if role == self.IsSelectedRole:
+            self._files[index.row()]["is_selected"] = value
+            self.dataChanged.emit(index, index, [role])
+            return True
+
+        if role == self.IsPreviewingRole:
+            self._files[index.row()]["is_previewing"] = value
+            self.dataChanged.emit(index, index, [role])
+            return True
+
+        return False
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlags:
+        if not index.isValid():
+            return Qt.NoItemFlags
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
+
+    def roleNames(self) -> Dict[int, bytes]:
+        return {
+            self.FilePathRole: b"filePath",
+            self.FileNameRole: b"fileName",
+            self.IsDirRole: b"isDir",
+            self.FileSizeRole: b"fileSize",
+            self.CreatedRole: b"created",
+            self.SuffixRole: b"suffix",
+            self.IsSelectedRole: b"isSelected",
+            self.IsPreviewingRole: b"isPreviewing",
+            self.IconPixmapRole: b"iconPixmap",
+            self.CardWidthRole: b"cardWidth",
+        }
+
+    def set_selected(self, file_path: str, is_selected: bool) -> bool:
+        """设置指定文件的选中状态"""
+        row = self.get_row(file_path)
+        if row < 0:
+            return False
+
+        if self._files[row].get("is_selected", False) != is_selected:
+            self._files[row]["is_selected"] = is_selected
+            idx = self.index(row, 0)
+            self.dataChanged.emit(idx, idx, [self.IsSelectedRole])
+        return True
+
+    def clear_previewing(self) -> None:
+        """清除所有文件的预览状态"""
+        for row, file_info in enumerate(self._files):
+            if file_info.get("is_previewing", False):
+                file_info["is_previewing"] = False
+                idx = self.index(row, 0)
+                self.dataChanged.emit(idx, idx, [self.IsPreviewingRole])
+
+    def clear(self) -> None:
+        """清空文件列表"""
+        self.beginResetModel()
+        self._files.clear()
+        self._path_to_row.clear()
+        self._pending_async_icons.clear()
+        self.endResetModel()
+
+    def get_file_info(self, index: QModelIndex) -> Dict[str, Any]:
+        """获取索引对应的文件信息"""
+        if not index.isValid() or index.row() >= len(self._files):
+            return {}
+        return self._files[index.row()].copy()
+
+    def get_selected_files(self) -> List[str]:
+        """获取所有选中文件的路径"""
+        return [f["path"] for f in self._files if f.get("is_selected", False)]
+
+    @classmethod
+    def _get_cached_icon(cls, cache_key):
+        """从缓存获取图标"""
+        cached = cls._icon_cache.get(cache_key)
+        if cached is None:
+            return None
+        cls._icon_cache.move_to_end(cache_key)
+        return cached
+
+    @classmethod
+    def _store_cached_icon(cls, cache_key, pixmap) -> None:
+        """存储图标到缓存"""
+        if cache_key is None or pixmap is None or pixmap.isNull():
+            return
+
+        cls._icon_cache[cache_key] = pixmap
+        cls._icon_cache.move_to_end(cache_key)
+
+        while len(cls._icon_cache) > cls._ICON_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(cls._icon_cache))
+            if isinstance(oldest_key, tuple) and len(oldest_key) > 0:
+                source_type = oldest_key[0]
+                if source_type == "system_icon":
+                    cls._icon_cache.move_to_end(oldest_key)
+                    continue
+            cls._icon_cache.popitem(last=False)
+
+    @staticmethod
+    def _safe_get_mtime(path: str):
+        if not path:
+            return None
+        try:
+            return os.path.getmtime(path)
+        except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
+            return None
+
+    def _build_icon_source_signature(self, file_info: Dict[str, Any]):
+        file_path = file_info.get("path", "")
+        is_dir = file_info.get("is_dir", False)
+        suffix = file_info.get("suffix", "").lower()
+
+        if not file_path:
+            return ("empty",)
+
+        normalized_path = self._normalize_path(file_path)
+
+        if not is_dir and suffix in ["lnk", "exe", "url"]:
+            return ("system_icon", normalized_path, self._safe_get_mtime(file_path))
+
+        thumbnail_path = get_existing_thumbnail_path(file_path)
+        is_photo = suffix in [
+            "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg",
+            "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb",
+        ]
+        is_video = suffix in [
+            "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf",
+        ]
+
+        if (is_photo or is_video) and thumbnail_path and os.path.exists(thumbnail_path):
+            return ("thumbnail", self._normalize_path(thumbnail_path), self._safe_get_mtime(thumbnail_path))
+
+        icon_path = get_file_icon_path(file_info)
+        if icon_path and os.path.exists(icon_path):
+            return ("file_icon", self._normalize_path(icon_path), self._safe_get_mtime(icon_path))
+
+        return ("file_icon", "", None)
+
+    def _get_theme_color_tuple(self):
+        app = QApplication.instance()
+        settings_manager = getattr(app, "settings_manager", None) if app else None
+        if settings_manager is None:
+            settings_manager = SettingsManager()
+
+        base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+        accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
+        secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+        return base_color, auxiliary_color, normal_color, accent_color, secondary_color
+
+    def _get_device_pixel_ratio(self) -> float:
+        try:
+            app = QApplication.instance()
+            if app:
+                screen = app.primaryScreen()
+                if screen:
+                    ratio = float(screen.devicePixelRatio())
+                    if ratio > 0:
+                        return ratio
+        except (RuntimeError, AttributeError, TypeError, ValueError):
+            pass
+        return 1.0
+
+    def _normalize_icon_pixmap(self, pixmap: QPixmap, icon_size: int) -> QPixmap:
+        if pixmap.isNull():
+            fallback = QPixmap(icon_size, icon_size)
+            fallback.fill(Qt.transparent)
+            return fallback
+
+        try:
+            clean_pixmap = QPixmap.fromImage(pixmap.toImage())
+            clean_pixmap.setDevicePixelRatio(1.0)
+
+            dpr = self._get_device_pixel_ratio()
+            physical_canvas_size = max(1, int(round(icon_size * dpr)))
+
+            image = clean_pixmap.toImage()
+            source_rect = QRect(0, 0, image.width(), image.height())
+
+            try:
+                min_x = image.width()
+                min_y = image.height()
+                max_x = -1
+                max_y = -1
+
+                for y in range(image.height()):
+                    for x in range(image.width()):
+                        if QColor.fromRgba(image.pixel(x, y)).alpha() > 0:
+                            min_x = min(min_x, x)
+                            min_y = min(min_y, y)
+                            max_x = max(max_x, x)
+                            max_y = max(max_y, y)
+
+                if max_x >= min_x and max_y >= min_y:
+                    source_rect = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+            except (RuntimeError, TypeError, ValueError):
+                pass
+
+            target_size = QSize(source_rect.width(), source_rect.height()).scaled(
+                physical_canvas_size,
+                physical_canvas_size,
+                Qt.KeepAspectRatio,
+            )
+
+            normalized = QPixmap(physical_canvas_size, physical_canvas_size)
+            normalized.fill(Qt.transparent)
+
+            painter = QPainter(normalized)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            painter.drawPixmap(
+                QRectF(
+                    (physical_canvas_size - target_size.width()) / 2.0,
+                    (physical_canvas_size - target_size.height()) / 2.0,
+                    float(target_size.width()),
+                    float(target_size.height()),
+                ),
+                clean_pixmap,
+                QRectF(source_rect),
+            )
+            painter.end()
+
+            normalized.setDevicePixelRatio(dpr)
+            return normalized
+        except (RuntimeError, TypeError, ValueError) as error:
+            debug(f"规范化图标 Pixmap 失败: {error}")
+            fallback = QPixmap(icon_size, icon_size)
+            fallback.fill(Qt.transparent)
+            return fallback
+
+    @classmethod
+    def _build_unknown_icon_pixmap_static(
+        cls,
+        icon_path: str,
+        text: str,
+        icon_size: int,
+        dpr: float = 1.0,
+        base_color: str = "#212121",
+    ) -> QPixmap:
+        """构建未知类型文件的图标（带文字叠加）"""
+        from PySide6.QtGui import QFont, QFontMetrics, QColor
+
+        physical_canvas_size = max(1, int(round(icon_size * dpr)))
+        base_pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+            icon_path,
+            icon_width=icon_size,
+            icon_height=icon_size,
+            replace_colors=True,
+            device_pixel_ratio=dpr,
+        )
+
+        final_pixmap = QPixmap(physical_canvas_size, physical_canvas_size)
+        final_pixmap.fill(Qt.transparent)
+
+        painter = QPainter(final_pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(
+            QRectF(0.0, 0.0, float(physical_canvas_size), float(physical_canvas_size)),
+            base_pixmap,
+            QRectF(0.0, 0.0, float(base_pixmap.width()), float(base_pixmap.height())),
+        )
+
+        if text:
+            font = QFont()
+            font.setBold(True)
+            base_font_pixel_size = max(1, int(physical_canvas_size * 0.234))
+            min_font_pixel_size = max(1, int(physical_canvas_size * 0.15))
+            font.setPixelSize(base_font_pixel_size)
+
+            font_metrics = QFontMetrics(font)
+            text_width = font_metrics.horizontalAdvance(text)
+            text_height = font_metrics.height()
+
+            while (
+                (text_width > physical_canvas_size * 0.8 or text_height > physical_canvas_size * 0.8)
+                and base_font_pixel_size > min_font_pixel_size
+            ):
+                base_font_pixel_size -= 1
+                font.setPixelSize(base_font_pixel_size)
+                font_metrics = QFontMetrics(font)
+                text_width = font_metrics.horizontalAdvance(text)
+                text_height = font_metrics.height()
+
+            is_unified_style = " – 2.svg" in icon_path
+            is_textured_archive = "压缩文件 – 1.svg" in icon_path
+            if is_unified_style:
+                text_color = QColor(base_color)
+            elif icon_path.endswith("压缩文件.svg") or is_textured_archive:
+                text_color = QColor(255, 255, 255)
+            else:
+                text_color = QColor(0, 0, 0)
+
+            painter.setPen(text_color)
+            painter.setFont(font)
+            painter.drawText(
+                QRectF(0.0, 0.0, float(physical_canvas_size), float(physical_canvas_size)),
+                Qt.AlignCenter,
+                text,
+            )
+
+        painter.end()
+        final_pixmap.setDevicePixelRatio(dpr)
+        return final_pixmap
+
+    def _emit_icon_changed_for_path(self, normalized_path: str) -> None:
+        row = self._path_to_row.get(normalized_path, -1)
+        if row < 0:
+            return
+        idx = self.index(row, 0)
+        self.dataChanged.emit(idx, idx, [self.IconPixmapRole])
+
+    def _handle_async_system_icon_loaded(self, file_path: str, expected_suffix: str, icon_size: int, pixmap):
+        normalized_path = self._normalize_path(file_path)
+        pending_info = self._pending_async_icons.get(normalized_path)
+
+        if not pending_info:
+            return
+
+        pending_suffix, pending_icon_size = pending_info
+        if pending_suffix != expected_suffix or pending_icon_size != icon_size:
+            return
+
+        if pixmap and not pixmap.isNull():
+            normalized_pixmap = self._normalize_icon_pixmap(pixmap, icon_size)
+            cache_key = ("system_icon", normalized_path, expected_suffix, icon_size)
+            self._store_cached_icon(cache_key, normalized_pixmap)
+
+        self._pending_async_icons.pop(normalized_path, None)
+        self._emit_icon_changed_for_path(normalized_path)
+
+    def _request_async_system_icon(self, file_info: Dict[str, Any], icon_size: int) -> None:
+        file_path = file_info.get("path", "")
+        suffix = file_info.get("suffix", "").lower()
+        normalized_path = self._normalize_path(file_path)
+        if not normalized_path:
+            return
+
+        pending_info = self._pending_async_icons.get(normalized_path)
+        if pending_info == (suffix, icon_size):
+            return
+
+        self._pending_async_icons[normalized_path] = (suffix, icon_size)
+
+        self_ref = weakref.ref(self)
+
+        def _on_loaded(loaded_path, pixmap):
+            model = self_ref()
+            if model is None:
+                return
+            model._handle_async_system_icon_loaded(loaded_path, suffix, icon_size, pixmap)
+
+        self._async_loader.load_icon(file_path, _on_loaded, icon_size=icon_size)
+
+    def _get_icon_pixmap(self, file_info: Dict[str, Any]) -> QPixmap:
+        """
+        获取文件图标像素图
+        按需计算并缓存，不进行全量预加载。
+        """
+        file_path = file_info.get("path", "")
+        if not file_path:
+            return QPixmap()
+
+        is_dir = file_info.get("is_dir", False)
+        suffix = file_info.get("suffix", "").lower()
+        icon_size = int(38 * self._dpi_scale)
+        dpr = round(self._get_device_pixel_ratio(), 4)
+        base_color, auxiliary_color, normal_color, accent_color, secondary_color = self._get_theme_color_tuple()
+
+        icon_source_signature = self._build_icon_source_signature(file_info)
+        source_type = icon_source_signature[0] if icon_source_signature else "empty"
+        cache_identity = (
+            source_type,
+            is_dir,
+            suffix,
+            icon_source_signature,
+        )
+        cache_key = (
+            cache_identity,
+            icon_size,
+            self._dpi_scale,
+            dpr,
+            base_color,
+            auxiliary_color,
+            normal_color,
+            accent_color,
+            secondary_color,
+        )
+
+        cached = self._get_cached_icon(cache_key)
+        if cached is not None and not cached.isNull():
+            return cached
+
+        is_system_icon = (not is_dir) and suffix in ["lnk", "exe", "url"]
+        normalized_path = self._normalize_path(file_path)
+
+        if is_system_icon:
+            system_cache_key = ("system_icon", normalized_path, suffix, icon_size)
+            system_cached = self._get_cached_icon(system_cache_key)
+            if system_cached is not None and not system_cached.isNull():
+                return system_cached
+
+            icon_path = get_file_icon_path(file_info)
+            if icon_path and os.path.exists(icon_path):
+                placeholder = SvgRenderer.render_svg_to_exact_pixmap(
+                    icon_path,
+                    icon_width=icon_size,
+                    icon_height=icon_size,
+                    replace_colors=True,
+                    device_pixel_ratio=dpr,
+                )
+                if placeholder and not placeholder.isNull():
+                    normalized_placeholder = self._normalize_icon_pixmap(placeholder, icon_size)
+                    self._store_cached_icon(system_cache_key, normalized_placeholder)
+                    self._request_async_system_icon(file_info, icon_size)
+                    return normalized_placeholder
+
+            placeholder = QPixmap(icon_size, icon_size)
+            placeholder.fill(Qt.transparent)
+            self._store_cached_icon(system_cache_key, placeholder)
+            self._request_async_system_icon(file_info, icon_size)
+            return placeholder
+
+        thumbnail_path = get_existing_thumbnail_path(file_path)
+        is_photo = suffix in [
+            "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg",
+            "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb",
+        ]
+        is_video = suffix in [
+            "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf",
+        ]
+
+        if (is_photo or is_video) and thumbnail_path and os.path.exists(thumbnail_path):
+            pixmap = QPixmap(thumbnail_path)
+            if pixmap and not pixmap.isNull():
+                normalized_pixmap = self._normalize_icon_pixmap(pixmap, icon_size)
+                self._store_cached_icon(cache_key, normalized_pixmap)
+                return normalized_pixmap
+
+        icon_path = get_file_icon_path(file_info)
+        if icon_path and os.path.exists(icon_path):
+            if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
+                display_suffix = suffix.upper() if suffix else ""
+                if not display_suffix or len(display_suffix) >= 5:
+                    display_suffix = "FILE"
+                pixmap = self._build_unknown_icon_pixmap_static(icon_path, display_suffix, icon_size, dpr, base_color)
+            elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
+                display_suffix = "." + suffix if suffix else ""
+                if not display_suffix or len(display_suffix) >= 5:
+                    display_suffix = "FILE"
+                pixmap = self._build_unknown_icon_pixmap_static(icon_path, display_suffix, icon_size, dpr, base_color)
+            else:
+                pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+                    icon_path,
+                    icon_width=icon_size,
+                    icon_height=icon_size,
+                    replace_colors=True,
+                    device_pixel_ratio=dpr,
+                )
+
+            if pixmap and not pixmap.isNull():
+                normalized_pixmap = self._normalize_icon_pixmap(pixmap, icon_size)
+                self._store_cached_icon(cache_key, normalized_pixmap)
+                return normalized_pixmap
+
+        placeholder = QPixmap(icon_size, icon_size)
+        placeholder.fill(Qt.transparent)
+        return placeholder
+
+
+class FileListView(QListView):
+    """
+    文件选择器列表视图
+
+    信号：
+    - file_clicked: 文件点击信号，传递 file_info
+    - file_double_clicked: 文件双击信号，传递 file_info
+    - file_right_clicked: 文件右键信号，传递 file_info
+    - file_selection_changed: 文件选择变化信号，传递(file_info, is_selected)
+    - file_drag_started: 文件拖拽开始信号，传递 file_info
+    - file_drag_ended: 文件拖拽结束信号，传递(file_info, drop_target)
+    """
+
+    file_clicked = Signal(dict)
+    file_double_clicked = Signal(dict)
+    file_right_clicked = Signal(dict)
+    file_selection_changed = Signal(dict, bool)
+    file_drag_started = Signal(dict)
+    file_drag_ended = Signal(dict, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pressed_index = QModelIndex()
+        self._press_pos = None
+        self._press_global_pos = None
+        self._drag_index = QModelIndex()
+        self._dragging = False
+        self._drag_card = None
+        self._touch_drag_threshold = 10
+        self._long_press_duration = 500
+        self._touch_optimization_enabled = True
+        self._mouse_buttons_swapped = False
+        self._pending_click_file_info = None
+
+        self._long_press_timer = QTimer(self)
+        self._long_press_timer.setSingleShot(True)
+        self._long_press_timer.timeout.connect(self._start_long_press_drag)
+
+        self._setup_view()
+        self._load_interaction_settings()
+
+    def _setup_view(self) -> None:
+        """配置视图属性"""
+        self.setViewMode(QListView.IconMode)
+        self.setResizeMode(QListView.Adjust)
+        self.setMovement(QListView.Static)
+        self.setSelectionMode(QListView.ExtendedSelection)
+        self.setUniformItemSizes(True)
+        self.setLayoutMode(QListView.Batched)
+        self.setWrapping(True)
+        self.setFlow(QListView.LeftToRight)
+        self.setSpacing(8)
+        self.setEditTriggers(QListView.NoEditTriggers)
+        self.setSelectionRectVisible(False)
+        self.setSelectionBehavior(QListView.SelectRows)
+        self.setMouseTracking(True)
+
+    def _load_interaction_settings(self) -> None:
+        app = QApplication.instance()
+        settings_manager = getattr(app, "settings_manager", None) if app else None
+        if settings_manager is None:
+            settings_manager = SettingsManager()
+
+        try:
+            self._touch_optimization_enabled = bool(
+                settings_manager.get_setting("file_selector.touch_optimization", True)
+            )
+            self._mouse_buttons_swapped = bool(
+                settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            debug(f"加载文件选择器交互设置失败: {error}")
+            self._touch_optimization_enabled = True
+            self._mouse_buttons_swapped = False
+
+        dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+        self._touch_drag_threshold = int(10 * dpi_scale)
+        self._long_press_duration = 500
+
+    def refresh_interaction_settings(self) -> None:
+        self._load_interaction_settings()
+
+    def _get_file_info_from_index(self, index: QModelIndex) -> Dict[str, Any]:
+        model = self.model()
+        if isinstance(model, FileSelectorListModel):
+            return model.get_file_info(index)
+        return {}
+
+    def _current_action_button(self, button):
+        if button == Qt.LeftButton:
+            return Qt.RightButton if self._mouse_buttons_swapped else Qt.LeftButton
+        if button == Qt.RightButton:
+            return Qt.LeftButton if self._mouse_buttons_swapped else Qt.RightButton
+        return button
+
+    def _sync_single_selection(self, index: QModelIndex, file_info: Dict[str, Any]) -> None:
+        model = self.model()
+        if not isinstance(model, FileSelectorListModel):
+            return
+
+        self.selectionModel().clearSelection()
+        self.selectionModel().select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+
+        for row, row_file_info in enumerate(model._files):
+            normalized_path = row_file_info.get("path", "")
+            should_select = row == index.row()
+            model.set_selected(normalized_path, should_select)
+
+    def _sync_range_selection(self, anchor_index: QModelIndex, current_index: QModelIndex) -> None:
+        model = self.model()
+        selection_model = self.selectionModel()
+
+        if not isinstance(model, FileSelectorListModel) or selection_model is None:
+            return
+
+        top_row = min(anchor_index.row(), current_index.row())
+        bottom_row = max(anchor_index.row(), current_index.row())
+
+        selection_model.clearSelection()
+        selection = QItemSelection()
+        top_index = model.index(top_row, 0)
+        bottom_index = model.index(bottom_row, 0)
+        selection.select(top_index, bottom_index)
+        selection_model.select(selection, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+
+        selected_paths = set()
+        for row in range(top_row, bottom_row + 1):
+            row_info = model._files[row]
+            selected_paths.add(os.path.normpath(row_info.get("path", "")))
+
+        for row, row_info in enumerate(model._files):
+            file_path = row_info.get("path", "")
+            normalized_path = os.path.normpath(file_path)
+            should_select = normalized_path in selected_paths
+            old_state = row_info.get("is_selected", False)
+            model.set_selected(file_path, should_select)
+            if old_state != should_select:
+                self.file_selection_changed.emit(model.get_file_info(model.index(row, 0)), should_select)
+
+    def _toggle_ctrl_selection(self, index: QModelIndex, file_info: Dict[str, Any]) -> None:
+        selection_model = self.selectionModel()
+        model = self.model()
+        if selection_model is None or not isinstance(model, FileSelectorListModel):
+            return
+
+        is_selected = selection_model.isSelected(index)
+        if is_selected:
+            selection_model.select(index, QItemSelectionModel.Deselect | QItemSelectionModel.Rows)
+        else:
+            selection_model.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+
+        new_state = not is_selected
+        model.set_selected(file_info.get("path", ""), new_state)
+        self.file_selection_changed.emit(file_info, new_state)
+
+    def _build_drag_pixmap(self, index: QModelIndex) -> QPixmap:
+        delegate = self.itemDelegateForIndex(index) or self.itemDelegate()
+        if delegate is None:
+            return QPixmap()
+
+        # 注意：
+        # - gridSize() 现在表示“单元格尺寸”（包含为矩阵间距预留的空白）
+        # - 拖拽预览需要的是“真实卡片尺寸”
+        # 因此这里优先使用 delegate.sizeHint()，保证拖拽卡片与列表中的卡片本体一致。
+        try:
+            option = QStyleOptionViewItem()
+            option.initFrom(self.viewport())
+            preview_size = delegate.sizeHint(option, index)
+        except Exception:
+            preview_size = QSize()
+
+        if not preview_size.isValid() or preview_size.width() <= 0 or preview_size.height() <= 0:
+            preview_size = self.gridSize()
+
+        preview_size = QSize(
+            max(1, preview_size.width()),
+            max(1, preview_size.height()),
+        )
+
+        if hasattr(delegate, "build_drag_pixmap"):
+            try:
+                return delegate.build_drag_pixmap(index, preview_size, self.palette())
+            except Exception as error:
+                debug(f"构建拖拽预览卡片失败，回退默认绘制逻辑: {error}")
+
+        option = QStyleOptionViewItem()
+        option.initFrom(self.viewport())
+        option.rect = QRect(0, 0, preview_size.width(), preview_size.height())
+        option.palette = self.palette()
+        option.state |= QStyle.State_Enabled
+
+        pixmap = QPixmap(option.rect.size())
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        delegate.paint(painter, option, index)
+        painter.end()
+        return pixmap
+
+    def _create_drag_card(self, pixmap: QPixmap) -> None:
+        if self._drag_card is not None:
+            self._drag_card.hide()
+            self._drag_card.deleteLater()
+            self._drag_card = None
+
+        if pixmap.isNull():
+            return
+
+        self._drag_card = QLabel(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        self._drag_card.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._drag_card.setStyleSheet("background: transparent; border: none;")
+        self._drag_card.setPixmap(pixmap)
+        self._drag_card.resize(pixmap.size())
+
+        cursor_pos = self._press_global_pos or self.mapToGlobal(self.rect().center())
+        self._drag_card.move(
+            cursor_pos.x() - self._drag_card.width() // 2,
+            cursor_pos.y() - self._drag_card.height() // 2,
+        )
+        self._drag_card.show()
+
+    def _update_drag_card_position(self, global_pos) -> None:
+        if self._drag_card is None:
+            return
+
+        self._drag_card.move(
+            global_pos.x() - self._drag_card.width() // 2,
+            global_pos.y() - self._drag_card.height() // 2,
+        )
+
+    def _start_long_press_drag(self) -> None:
+        if not self._pressed_index.isValid():
+            return
+
+        file_info = self._get_file_info_from_index(self._pressed_index)
+        if not file_info:
+            return
+
+        delegate = self.itemDelegateForIndex(self._pressed_index) or self.itemDelegate()
+        if delegate and hasattr(delegate, "set_dragging_file_path"):
+            try:
+                delegate.set_dragging_file_path(file_info.get("path", ""))
+            except Exception as error:
+                debug(f"设置拖拽源卡片状态失败: {error}")
+
+        self._pending_click_file_info = None
+        self._drag_index = self._pressed_index
+        self._dragging = True
+        self._create_drag_card(self._build_drag_pixmap(self._drag_index))
+        self.setCursor(Qt.ClosedHandCursor)
+        self.viewport().update()
+        self.file_drag_started.emit(file_info)
+
+    def _detect_drop_target(self, global_pos) -> str:
+        main_window = self.window()
+        if not main_window:
+            return "none"
+
+        if hasattr(main_window, "file_staging_pool"):
+            staging_pool = main_window.file_staging_pool
+            if staging_pool and staging_pool.isVisible():
+                global_rect = QRect(staging_pool.mapToGlobal(staging_pool.rect().topLeft()), staging_pool.rect().size())
+                if global_rect.contains(global_pos):
+                    return "staging_pool"
+
+        if hasattr(main_window, "unified_previewer"):
+            previewer = main_window.unified_previewer
+            if previewer and previewer.isVisible():
+                global_rect = QRect(previewer.mapToGlobal(previewer.rect().topLeft()), previewer.rect().size())
+                if global_rect.contains(global_pos):
+                    return "previewer"
+
+        return "none"
+
+    def _cleanup_press_state(self) -> None:
+        self._long_press_timer.stop()
+        self._press_pos = None
+        self._press_global_pos = None
+        self._pressed_index = QModelIndex()
+        self._pending_click_file_info = None
+
+    def _cleanup_drag_state(self) -> None:
+        previous_drag_index = self._drag_index
+
+        self._long_press_timer.stop()
+        self._dragging = False
+        self._drag_index = QModelIndex()
+
+        if self._drag_card is not None:
+            self._drag_card.hide()
+            self._drag_card.deleteLater()
+            self._drag_card = None
+
+        if previous_drag_index.isValid():
+            delegate = self.itemDelegateForIndex(previous_drag_index) or self.itemDelegate()
+            if delegate and hasattr(delegate, "set_dragging_file_path"):
+                try:
+                    delegate.set_dragging_file_path(None)
+                except Exception as error:
+                    debug(f"清理拖拽源卡片状态失败: {error}")
+
+        self.unsetCursor()
+        self.viewport().update()
+        self._cleanup_press_state()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        index = self.indexAt(event.pos())
+        logical_button = self._current_action_button(event.button())
+
+        if not index.isValid():
+            if logical_button == Qt.LeftButton:
+                self.clearSelection()
+                model = self.model()
+                if isinstance(model, FileSelectorListModel):
+                    model.deselect_all()
+            self._cleanup_press_state()
+            super().mousePressEvent(event)
+            return
+
+        self._pressed_index = index
+        self._press_pos = event.pos()
+        self._press_global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+
+        file_info = self._get_file_info_from_index(index)
+        modifiers = QApplication.keyboardModifiers()
+        selection_model = self.selectionModel()
+
+        if logical_button == Qt.LeftButton:
+            if modifiers & Qt.ControlModifier:
+                self._toggle_ctrl_selection(index, file_info)
+                self._cleanup_press_state()
+                return
+
+            if modifiers & Qt.ShiftModifier and selection_model is not None:
+                anchor_index = selection_model.currentIndex()
+                if not anchor_index.isValid():
+                    anchor_index = index
+                self._sync_range_selection(anchor_index, index)
+                self._cleanup_press_state()
+                return
+
+            # 普通左键按下：
+            # - 不切换选中态
+            # - 仅记录当前项，供后续 release 触发 click 或长按触发 drag
+            # 旧 FileBlockCard 语义中，左键单击/长按都不会把卡片切成选中样式，
+            # 选中态只由右键/多选逻辑控制。
+            if selection_model is not None:
+                selection_model.setCurrentIndex(index, QItemSelectionModel.Current)
+
+            self._pending_click_file_info = file_info
+
+            if self._touch_optimization_enabled:
+                self._long_press_timer.start(self._long_press_duration)
+            return
+
+        if logical_button == Qt.RightButton:
+            model = self.model()
+            if isinstance(model, FileSelectorListModel):
+                new_state = not file_info.get("is_selected", False)
+                model.set_selected(file_info.get("path", ""), new_state)
+                if selection_model is not None:
+                    if new_state:
+                        selection_model.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+                    else:
+                        selection_model.select(index, QItemSelectionModel.Deselect | QItemSelectionModel.Rows)
+                self.file_selection_changed.emit(file_info, new_state)
+
+            self.file_right_clicked.emit(file_info)
+            self._cleanup_press_state()
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._dragging and self._drag_card is not None:
+            global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+            self._update_drag_card_position(global_pos)
+            event.accept()
+            return
+
+        if self._press_pos is not None and self._pressed_index.isValid():
+            delta = event.pos() - self._press_pos
+            if abs(delta.x()) > self._touch_drag_threshold or abs(delta.y()) > self._touch_drag_threshold:
+                self._long_press_timer.stop()
+                self._pending_click_file_info = None
+
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        logical_button = self._current_action_button(event.button())
+
+        if self._dragging and logical_button == Qt.LeftButton:
+            global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+            file_info = self._get_file_info_from_index(self._drag_index)
+            drop_target = self._detect_drop_target(global_pos)
+            if file_info:
+                self.file_drag_ended.emit(file_info, drop_target)
+            self._cleanup_drag_state()
+            event.accept()
+            return
+
+        pending_click_file_info = self._pending_click_file_info
+
+        if logical_button == Qt.LeftButton and pending_click_file_info:
+            self.file_clicked.emit(pending_click_file_info)
+            self._cleanup_press_state()
+            event.accept()
+            return
+
+        self._cleanup_press_state()
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        index = self.indexAt(event.pos())
+        if not index.isValid():
+            event.ignore()
+            return
+
+        logical_button = self._current_action_button(event.button())
+        if logical_button != Qt.LeftButton:
+            event.ignore()
+            return
+
+        self._long_press_timer.stop()
+        file_info = self._get_file_info_from_index(index)
+        if file_info:
+            self.file_double_clicked.emit(file_info)
+        event.accept()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """右键菜单行为由 mousePressEvent 统一转发，避免与旧逻辑冲突。"""
+        event.accept()
+
+    def hideEvent(self, event) -> None:
+        self._cleanup_drag_state()
+        super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:
+        self._cleanup_drag_state()
+        super().closeEvent(event)
+
+    def _open_file(self, file_info: Dict[str, Any]) -> None:
+        """打开文件"""
+        file_path = file_info.get("path", "")
+        if file_path and os.path.exists(file_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+
+    def _open_folder_location(self, file_info: Dict[str, Any]) -> None:
+        """打开文件夹位置"""
+        file_path = file_info.get("path", "")
+        if file_path:
+            if file_info.get("is_dir", False):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+            else:
+                folder_path = os.path.dirname(file_path)
+                QDesktopServices.openUrl(QUrl.fromLocalFile(folder_path))
+
+    def _show_in_folder(self, file_info: Dict[str, Any]) -> None:
+        """在文件夹中显示文件"""
+        file_path = file_info.get("path", "")
+        if file_path and not file_info.get("is_dir", False):
+            folder_path = os.path.dirname(file_path)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder_path))
+
+    def _copy_file_path(self, file_info: Dict[str, Any]) -> None:
+        """复制文件路径到剪贴板"""
+        file_path = file_info.get("path", "")
+        if file_path:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(file_path)
+
+    def _delete_file(self, file_info: Dict[str, Any]) -> None:
+        """删除文件（预留接口）"""
+        pass

@@ -30,10 +30,10 @@ from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QDialog, QApplication,
-    QPushButton, QLabel, QComboBox, QLineEdit, QScrollArea,
+    QPushButton, QLabel, QComboBox, QLineEdit, QScrollArea, QListView,
     QHeaderView, QGroupBox, QGridLayout, QMenu,
     QFrame, QSplitter, QSizePolicy, QInputDialog, QListWidget, QProgressBar,
-    QProgressDialog
+    QProgressDialog, QAbstractItemView
 )
 from PySide6.QtCore import (
     Qt, Signal, QThread, QObject, QEvent, QTimer,
@@ -91,6 +91,8 @@ from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.components.auto_timeline import AutoTimeline
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path, is_media_file
+from freeassetfilter.widgets.file_selector_model import FileSelectorListModel, FileListView
+from freeassetfilter.widgets.file_selector_delegate import FileBlockCardDelegate
 
 
 class ThumbnailGeneratorThread(QThread):
@@ -203,47 +205,17 @@ class CustomFileSelector(QWidget):
         os.makedirs(os.path.dirname(self.save_path_file), exist_ok=True)
         os.makedirs(os.path.dirname(self.favorites_file), exist_ok=True)
         
-        # 添加防抖定时器，用于减少刷新频率（在init_ui之前初始化，避免_clear_files_layout访问时出错）
+        # 添加防抖定时器，用于减少刷新频率
         self.resize_timer = QTimer(self)
         self.resize_timer.setSingleShot(True)
-        self.resize_timer.setInterval(300)  # 300毫秒延迟（从150ms增加到300ms），减少频繁刷新
-        self.resize_timer.timeout.connect(self._on_resize_timeout)  # 定时器超时后处理resize
+        self.resize_timer.setInterval(300)
+        self.resize_timer.timeout.connect(self._on_resize_timeout)
         
-        # 添加定期检查卡片布局的定时器
-        self.layout_check_timer = QTimer(self)
-        self.layout_check_timer.setInterval(10000)  # 每10000ms检查一次（从5秒延长到10秒）
-        self.layout_check_timer.timeout.connect(self._check_card_layout)
-        self._layout_dirty = False  # 标记布局是否需要更新
-        
-        # 虚拟化渲染相关属性
-        self._virtual_files = []
-        self._file_index_map = {}
-        self._visible_cards = {}
-        self._card_pool = []
-        self._all_files_count = 0
-        self._last_viewport_width = 0
-        self._virtual_buffer_rows = 6
-        self._fixed_max_cols = 2
-        self._fixed_card_width = None
-        self._current_render_range = (0, 0)
+        # 文件选择器 Model/View 架构相关
+        self.file_model = FileSelectorListModel(self.dpi_scale, self.global_font)
+        self.card_delegate = FileBlockCardDelegate(self.dpi_scale, self.global_font)
+        self.files_scroll_area = None
         self._is_loading = False
-
-        self._viewport_update_timer = QTimer(self)
-        self._viewport_update_timer.setSingleShot(True)
-        self._viewport_update_timer.setInterval(16)
-        self._viewport_update_timer.timeout.connect(self._update_virtual_viewport)
-
-        self._scrollbar_check_timer = QTimer(self)  # 滚动条状态检查节流定时器
-        self._scrollbar_check_timer.setSingleShot(True)
-        self._scrollbar_check_timer.setInterval(80)
-        self._scrollbar_check_timer.timeout.connect(self._run_scrollbar_check)
-
-        self._background_prewarm_queue = deque()
-        self._background_prewarm_timer = QTimer(self)
-        self._background_prewarm_timer.setSingleShot(True)
-        self._background_prewarm_timer.setInterval(120)
-        self._background_prewarm_timer.timeout.connect(self._process_background_prewarm)
-        self._background_prewarm_card = None
         
         # 首次显示标志位，用于避免初始化时卡片重叠
         self._first_show = True
@@ -255,14 +227,10 @@ class CustomFileSelector(QWidget):
         # 初始化UI
         self.init_ui()
         
-        # 采用事件驱动布局更新，避免定时巡检带来的周期性唤醒开销
-        # self.layout_check_timer.start()
-        
         # 启用拖拽功能
         self.setAcceptDrops(True)
-        self.files_container.setAcceptDrops(True)
-        # 设置事件过滤器，确保files_container的拖放事件能正确传递
-        self.files_container.installEventFilter(self)
+        self.files_scroll_area.setAcceptDrops(True)
+        self.files_scroll_area.installEventFilter(self)
         
         # 获取应用实例
         app = QApplication.instance()
@@ -523,7 +491,7 @@ class CustomFileSelector(QWidget):
     
     def _create_files_area(self):
         """
-        创建文件列表区域
+        创建文件列表区域 - 使用 Model/View 架构
         """
         app = QApplication.instance()
         base_color = "#212121"
@@ -539,49 +507,75 @@ class CustomFileSelector(QWidget):
             secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
             accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
         
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._card_spacing = int(5 * self.dpi_scale)
+        self._card_margin = int(3 * self.dpi_scale)
 
-        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
-        scroll_area.verticalScrollBar().apply_theme_from_settings()
+        # 使用 QListView 替代 QScrollArea + QGridLayout
+        self.files_scroll_area = FileListView(self)
+        self.files_scroll_area.setObjectName("fileListView")
+        
+        # 设置 Model 和 Delegate
+        self.files_scroll_area.setModel(self.file_model)
+        self.files_scroll_area.setItemDelegate(self.card_delegate)
+        self.card_delegate.set_view(self.files_scroll_area)
+        
+        # 配置 QListView 属性
+        self.files_scroll_area.setViewMode(QListView.IconMode)
+        self.files_scroll_area.setResizeMode(QListView.Adjust)
+        self.files_scroll_area.setMovement(QListView.Static)
+        self.files_scroll_area.setSelectionMode(QListView.ExtendedSelection)
+        self.files_scroll_area.setUniformItemSizes(True)
+        self.files_scroll_area.setLayoutMode(QListView.Batched)
+        self.files_scroll_area.setWrapping(True)
+        self.files_scroll_area.setFlow(QListView.LeftToRight)
+        # 卡片之间的外边距由 gridSize 中预留的单元格空白来提供，
+        # 这里不要再额外叠加 QListView.spacing，否则容易再次造成尺寸计算混乱。
+        self.files_scroll_area.setSpacing(0)
+        self.files_scroll_area.setBatchSize(50)
+        
+        # 替换垂直滚动条为 D_ScrollBar
+        self.files_scroll_area.setVerticalScrollBar(D_ScrollBar(self.files_scroll_area, Qt.Vertical))
+        self.files_scroll_area.verticalScrollBar().apply_theme_from_settings()
+        
+        # 应用平滑滚动
+        # 注意：这里必须禁用 LeftMouseButtonGesture，
+        # 否则会与文件卡片的长按拖拽手势竞争，导致长按拖拽异常。
+        SmoothScroller.apply(self.files_scroll_area, enable_mouse_drag=False)
+        
+        # 设置像素级滚动模式
+        self.files_scroll_area.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.files_scroll_area.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
 
-        SmoothScroller.apply_to_scroll_area(scroll_area)
-
-        # 滚动区域外边距，与文件存储池保持一致
+        # 滚动区域样式（与原来保持一致）
         scaled_padding = int(3 * self.dpi_scale)
         scrollbar_style = f"""
-            QScrollArea {{
+            QListView {{
                 border: 1px solid {normal_color};
                 border-radius: 8px;
                 background-color: {base_color};
                 padding: {scaled_padding}px;
             }}
-            QScrollArea > QWidget > QWidget {{
-                background-color: {base_color};
-            }}
         """
-        scroll_area.setStyleSheet(scrollbar_style)
+        self.files_scroll_area.setStyleSheet(scrollbar_style)
 
-        self.files_container = QWidget()
-        self.files_container.setObjectName("FilesContainer")
-        self.files_container.setStyleSheet(f"#FilesContainer {{ border: none; background-color: {base_color}; }}")
-        self._card_spacing = int(5 * self.dpi_scale)
-        self._card_margin = int(3 * self.dpi_scale)
+        self.files_container = self.files_scroll_area
         
-        scroll_area.setWidget(self.files_container)
+        # 连接信号
+        self.files_scroll_area.file_clicked.connect(self._handle_card_clicked_signal)
+        self.files_scroll_area.file_double_clicked.connect(self._handle_card_double_clicked_signal)
+        self.files_scroll_area.file_right_clicked.connect(self._handle_card_right_clicked_signal)
+        self.files_scroll_area.file_selection_changed.connect(self._handle_card_selection_changed_signal)
+        self.files_scroll_area.file_drag_started.connect(self._on_card_drag_started)
+        self.files_scroll_area.file_drag_ended.connect(self._on_card_drag_ended)
         
-        scroll_area.viewport().installEventFilter(self)
-        self.files_container.installEventFilter(self)
-
-        # 保存滚动区域引用，用于滚动定位
-        self.files_scroll_area = scroll_area
-
+        # 安装事件过滤器
+        self.files_scroll_area.viewport().installEventFilter(self)
+        self.files_scroll_area.installEventFilter(self)
+        
         # 连接滚动条valueChanged信号，实现滚动时的懒加载
-        scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
+        self.files_scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
 
-        return scroll_area
+        return self.files_scroll_area
     
     def _create_status_bar(self):
         """
@@ -649,6 +643,8 @@ class CustomFileSelector(QWidget):
         增量刷新文件选择器主题，不重建文件列表
         """
         FileBlockCard._clear_shared_caches()
+        self.file_model.clear_caches(emit_change=True)
+        self.card_delegate.update_theme()
         colors = self._get_theme_colors()
 
         self.setStyleSheet(f"background-color: {colors['secondary_color']};")
@@ -672,25 +668,22 @@ class CustomFileSelector(QWidget):
         if hasattr(self, "files_scroll_area") and self.files_scroll_area:
             scaled_padding = int(3 * self.dpi_scale)
             scrollbar_style = f"""
-                QScrollArea {{
+                QListView {{
                     border: 1px solid {colors['normal_color']};
                     border-radius: 8px;
                     background-color: {colors['base_color']};
                     padding: {scaled_padding}px;
-                }}
-                QScrollArea > QWidget > QWidget {{
-                    background-color: {colors['base_color']};
                 }}
             """
             self.files_scroll_area.setStyleSheet(scrollbar_style)
             scrollbar = self.files_scroll_area.verticalScrollBar()
             if hasattr(scrollbar, "apply_theme_from_settings"):
                 scrollbar.apply_theme_from_settings()
-
-        if hasattr(self, "files_container") and self.files_container:
-            self.files_container.setStyleSheet(
-                f"#FilesContainer {{ border: none; background-color: {colors['base_color']}; }}"
-            )
+            if hasattr(self.files_scroll_area, "refresh_interaction_settings"):
+                try:
+                    self.files_scroll_area.refresh_interaction_settings()
+                except Exception:
+                    pass
 
         for button_name in (
             "drive_btn",
@@ -720,20 +713,13 @@ class CustomFileSelector(QWidget):
                 except Exception:
                     pass
 
-        for widget in self._iter_visible_cards():
-            if widget is not None and hasattr(widget, "update_theme"):
-                try:
-                    widget.update_theme()
-                except Exception:
-                    pass
-
         if hasattr(self, "hover_tooltip") and self.hover_tooltip:
             try:
                 self.hover_tooltip.update()
             except Exception:
                 pass
 
-        self.update()
+        self.files_scroll_area.update()
     
     def _generate_thumbnails(self):
         """
@@ -839,9 +825,12 @@ class CustomFileSelector(QWidget):
             progress_throttler.update(current, total, file_data, _do_progress_update)
 
         def on_thumbnail_created(file_data):
-            FileBlockCard._clear_shared_caches(file_data.get("path"))
+            file_path = file_data.get("path")
+            FileBlockCard._clear_shared_caches(file_path)
+            self.file_model.clear_caches(file_path=file_path, emit_change=True)
             if file_data["source"] == "staging_pool":
-                self._refresh_staging_pool_card(file_data["path"])
+                self._refresh_staging_pool_card(file_path)
+            self.files_scroll_area.update()
 
         def on_error_occurred(file_path, error):
             warning(f"生成缩略图失败: {file_path}, 错误: {error}")
@@ -873,6 +862,7 @@ class CustomFileSelector(QWidget):
                 result_text += f"\n（{'，'.join(result_parts)}）"
 
             FileBlockCard._clear_shared_caches()
+            self.file_model.clear_caches(emit_change=True)
             self.refresh_files()
             staging_pool_for_refresh = self._get_staging_pool()
             if staging_pool_for_refresh:
@@ -971,6 +961,11 @@ class CustomFileSelector(QWidget):
 
                 if file_count > 0:
                     FileBlockCard._clear_shared_caches()
+                    if hasattr(self, 'file_model') and self.file_model:
+                        try:
+                            self.file_model.clear_caches(emit_change=True)
+                        except RuntimeError as e:
+                            debug(f"清空文件模型缓存失败: {e}")
                     if self and hasattr(self, 'refresh_files'):
                         try:
                             self.refresh_files()
@@ -1922,206 +1917,34 @@ class CustomFileSelector(QWidget):
             callback (callable, optional): 文件卡片生成完成后的回调函数
             scroll_to_top (bool, optional): 是否滚动到顶端，默认为True
         """
-        self._is_loading = True
         try:
             self.path_edit.setText(self.current_path)
             self._update_drive_selector()
-            self._clear_files_layout()
 
             files = self._get_files()
             files = self._sort_files(files)
             files = self._filter_files(files)
 
-            self._virtual_files = files
-            self._all_files_count = len(files)
-            self._file_index_map = {
-                os.path.normpath(file_info["path"]): index
-                for index, file_info in enumerate(files)
-            }
-            self._refresh_callback = callback
-            self._fixed_max_cols = self._calculate_max_columns()
-            self._fixed_card_width = self._calculate_card_width()
+            # 设置 Model 数据
+            self.file_model.set_files(files)
+            
+            # 恢复选中状态
+            self._update_file_selection_state()
+            # 恢复预览状态
+            self._check_and_apply_preview_state()
 
-            total_height = self._get_total_content_height()
-            self.files_container.setMinimumHeight(total_height)
-            self.files_container.resize(max(self.files_container.width(), 1), total_height)
+            if scroll_to_top and hasattr(self, 'files_scroll_area') and self.files_scroll_area:
+                scrollbar = self.files_scroll_area.verticalScrollBar()
+                scrollbar.setValue(0)
 
-            if scroll_to_top and hasattr(self, 'files_scroll_area'):
-                scroll_area = self.files_scroll_area
-                if scroll_area:
-                    scrollbar = scroll_area.verticalScrollBar()
-                    scrollbar.setValue(0)
-
-            self._update_virtual_viewport(force=True)
-            self._trigger_scrollbar_check()
-            self._rebuild_background_prewarm_queue()
-            self._schedule_background_prewarm()
+            self._update_grid_size()
+            self.files_scroll_area.update()
 
             if callback:
                 callback()
-                self._refresh_callback = None
-        finally:
-            self._is_loading = False
+        except Exception as e:
+            error(f"刷新文件列表失败: {e}")
 
-    def _refresh_file_list(self):
-        """
-        刷新文件列表（refresh_files 的别名，用于兼容旧代码）
-        """
-        self.refresh_files()
-
-    def _load_next_batch(self):
-        self._update_virtual_viewport()
-
-    def _on_scroll_value_changed(self, value):
-        immediate_update_needed = True
-
-        if self._all_files_count > 0 and self._fixed_max_cols > 0:
-            viewport = self.files_scroll_area.viewport() if self.files_scroll_area else None
-            viewport_height = viewport.height() if viewport else 0
-            row_height = self._get_card_height() + self._card_spacing
-
-            if viewport_height > 0 and row_height > 0:
-                first_row = max(0, value // row_height - self._virtual_buffer_rows)
-                last_row = ((value + viewport_height) // row_height) + self._virtual_buffer_rows
-                target_start = max(0, first_row * self._fixed_max_cols)
-                target_end = min(self._all_files_count, (last_row + 1) * self._fixed_max_cols)
-
-                current_start, current_end = self._current_render_range
-                immediate_update_needed = target_start < current_start or target_end > current_end
-
-        if immediate_update_needed:
-            self._viewport_update_timer.stop()
-            self._update_virtual_viewport()
-        else:
-            self._viewport_update_timer.start()
-
-    def _load_remaining_on_scroll(self):
-        self._update_virtual_viewport()
-    
-    def _clear_files_layout(self):
-        """
-        清空当前虚拟化视图中的所有卡片，并回收复用池
-        """
-        self.resize_timer.stop()
-        self._viewport_update_timer.stop()
-        self._background_prewarm_timer.stop()
-        self._background_prewarm_queue.clear()
-
-        for index in list(self._visible_cards.keys()):
-            self._release_card(index)
-
-        while self._card_pool:
-            card = self._card_pool.pop()
-            try:
-                card.setParent(None)
-                card.deleteLater()
-            except RuntimeError:
-                pass
-
-        self._virtual_files = []
-        self._file_index_map = {}
-        self._all_files_count = 0
-        self._fixed_max_cols = 2
-        self._fixed_card_width = None
-        self._current_render_range = (0, 0)
-
-        for attr_name in ('_last_max_cols', '_last_card_width', '_last_container_width'):
-            if hasattr(self, attr_name):
-                delattr(self, attr_name)
-
-        self.files_container.setMinimumHeight(0)
-        self.files_container.update()
-    
-    def _trigger_scrollbar_check(self):
-        """
-        触发滚动条状态检查
-        在文件卡片加载完成后调用，确保滚动条正确显示/隐藏
-        """
-        if hasattr(self, "_scrollbar_check_timer"):
-            self._scrollbar_check_timer.start()
-
-    def _run_scrollbar_check(self):
-        """执行一次节流后的滚动条状态检查"""
-        scroll_area = getattr(self, "files_scroll_area", None)
-        if not scroll_area:
-            return
-
-        from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
-
-        scrollbar = scroll_area.verticalScrollBar()
-        if isinstance(scrollbar, D_ScrollBar):
-            scrollbar._check_and_update_width()
-
-    def _get_background_prewarm_card(self):
-        if self._background_prewarm_card is None:
-            warmup_file_info = {
-                "name": "",
-                "path": "",
-                "is_dir": False,
-                "size": 0,
-                "created": "",
-                "suffix": "",
-            }
-            self._background_prewarm_card = FileBlockCard(warmup_file_info, dpi_scale=self.dpi_scale, parent=None)
-            self._background_prewarm_card.hide()
-        return self._background_prewarm_card
-
-    def _rebuild_background_prewarm_queue(self):
-        self._background_prewarm_queue.clear()
-
-        if self._all_files_count <= 0:
-            return
-
-        start_index, end_index = self._current_render_range
-        left_index = start_index - 1
-        right_index = end_index
-
-        while right_index < self._all_files_count or left_index >= 0:
-            if right_index < self._all_files_count:
-                self._background_prewarm_queue.append(right_index)
-                right_index += 1
-            if left_index >= 0:
-                self._background_prewarm_queue.append(left_index)
-                left_index -= 1
-
-    def _schedule_background_prewarm(self):
-        if not self.isVisible():
-            return
-        if not self._background_prewarm_queue:
-            return
-        if not self._background_prewarm_timer.isActive():
-            self._background_prewarm_timer.start()
-
-    def _process_background_prewarm(self):
-        if not self.isVisible():
-            return
-
-        if not self._virtual_files or not self._background_prewarm_queue:
-            return
-
-        start_index, end_index = self._current_render_range
-        prewarm_card = self._get_background_prewarm_card()
-        processed = 0
-        max_per_tick = 1
-
-        while self._background_prewarm_queue and processed < max_per_tick:
-            index = self._background_prewarm_queue.popleft()
-            if start_index <= index < end_index:
-                continue
-            if index < 0 or index >= len(self._virtual_files):
-                continue
-
-            file_info = self._virtual_files[index]
-            try:
-                prewarm_card.set_file_info(file_info)
-            except RuntimeError:
-                self._background_prewarm_card = None
-                prewarm_card = self._get_background_prewarm_card()
-                prewarm_card.set_file_info(file_info)
-            processed += 1
-
-        if self._background_prewarm_queue:
-            self._background_prewarm_timer.start()
     
     def _get_files(self):
         """
@@ -2279,13 +2102,6 @@ class CustomFileSelector(QWidget):
         
         return filtered
     
-    def _on_viewport_resized(self, event):
-        """
-        当视口大小变化时，重新排列文件卡片
-        """
-        # 直接重新生成文件列表，以适应新的宽度
-        self.refresh_files()
-    
     def _calculate_card_base_width(self):
         """
         计算卡片的基础宽度（基于日期文本宽度）
@@ -2299,53 +2115,41 @@ class CustomFileSelector(QWidget):
         Returns:
             int: 计算后的卡片基础宽度
         """
-        # 原固定宽度作为最小宽度基准（50 * DPI缩放）
         base_min_width = int(50 * self.dpi_scale)
         
-        # 获取小字体（时间标签使用的字体，0.85倍全局字体）
         small_font = QFont(self.global_font)
         small_font.setPointSize(int(self.global_font.pointSize() * 0.85))
         small_font_metrics = QFontMetrics(small_font)
         
-        # 计算日期文本的宽度（格式：yyyy-MM-dd，如 2024-03-15）
-        date_text = "2024-12-31"  # 典型日期格式，10个字符
+        date_text = "2024-12-31"
         date_text_width = small_font_metrics.horizontalAdvance(date_text)
         
-        # 加上1个英文字符的宽度（使用 'W' 作为最宽字符）
         char_width = small_font_metrics.horizontalAdvance("W")
         
-        # 水平边距（左右）
         horizontal_margins = int(4 * self.dpi_scale) * 2
-        
-        # 边框宽度
         border_width = int(1 * self.dpi_scale) * 2
         
-        # 计算实际需要的宽度：日期宽度 + 1个字符宽度 + 边距 + 边框
         required_width = date_text_width + char_width + horizontal_margins + border_width
         
-        # 返回最大值：确保不小于原固定宽度（50 * DPI缩放），同时能完整显示日期
         return max(required_width, base_min_width)
 
     def _calculate_max_columns(self):
         """
         根据当前视口宽度精确计算每行卡片数量
-        实时捕获窗口宽度，通过数值运算确定卡片数量
-        完全基于视口宽度动态计算，没有固定限制
-        使用 _calculate_card_base_width 计算卡片基础宽度
         """
-        scroll_area = getattr(self, "files_scroll_area", None)
-        if not scroll_area:
-            return 2
+        list_view = getattr(self, "files_scroll_area", None)
+        if not list_view:
+            return 1
 
-        viewport_width = scroll_area.viewport().width()
+        viewport_width = list_view.viewport().width()
+        if viewport_width <= 0:
+            return 1
 
-        # 使用自适应计算的卡片基础宽度
         card_width = self._calculate_card_base_width()
-        spacing = int(5 * self.dpi_scale)
-        actual_margin = int(5 * self.dpi_scale)
-        margin = actual_margin * 2
+        spacing = self._card_spacing
+        margin = self._card_margin * 2
 
-        available_width = viewport_width - margin
+        available_width = max(0, viewport_width - margin)
 
         columns = 1
         max_possible_columns = 0
@@ -2358,202 +2162,118 @@ class CustomFileSelector(QWidget):
             else:
                 break
 
-        # 确保至少显示2列
-        max_possible_columns = max(2, max_possible_columns)
-
-        return max_possible_columns
+        return max(1, max_possible_columns)
     
     def _calculate_card_width(self):
         """
         计算每个卡片可用的动态宽度
         """
-        scroll_area = getattr(self, "files_scroll_area", None)
+        list_view = getattr(self, "files_scroll_area", None)
+        if not list_view:
+            return self._calculate_card_base_width()
 
-        if scroll_area:
-            container_width = scroll_area.viewport().width()
-        else:
-            container_width = self.files_container.width()
-
-        if container_width <= 0:
-            return None
-
+        viewport_width = list_view.viewport().width()
         max_cols = self._calculate_max_columns()
-        if max_cols <= 0:
-            return None
 
+        card_base_width = self._calculate_card_base_width()
         spacing = self._card_spacing
-        total_margin = self._card_margin * 2
-        available_width = container_width - (max_cols - 1) * spacing - total_margin
-        return max(1, available_width // max_cols)
+        margin = self._card_margin * 2
 
-    def _get_card_height(self):
-        return int(75 * self.dpi_scale)
+        available_width = max(0, viewport_width - margin)
+        total_spacing = (max_cols - 1) * spacing
 
-    def _get_total_rows(self):
-        import math
-        if self._all_files_count <= 0 or self._fixed_max_cols <= 0:
-            return 0
-        return math.ceil(self._all_files_count / self._fixed_max_cols)
+        if max_cols <= 0:
+            return card_base_width
 
-    def _get_total_content_height(self):
-        total_rows = self._get_total_rows()
-        if total_rows <= 0:
-            return 0
-        card_height = self._get_card_height()
-        return total_rows * card_height + max(0, total_rows - 1) * self._card_spacing
+        card_width = (available_width - total_spacing) // max_cols
 
-    def _iter_visible_cards(self):
-        return list(self._visible_cards.values())
-
-    def _find_visible_card_by_path(self, file_path):
-        normalized_path = os.path.normpath(file_path)
-        for card in self._visible_cards.values():
-            try:
-                if os.path.normpath(card.file_info.get("path", "")) == normalized_path:
-                    return card
-            except RuntimeError:
-                continue
-        return None
-
-    def _refresh_visible_card_thumbnail(self, file_path):
-        card = self._find_visible_card_by_path(file_path)
-        if card and hasattr(card, "refresh_thumbnail"):
-            card.refresh_thumbnail()
-
-    def _obtain_card(self, file_info, card_width):
-        if self._card_pool:
-            card = self._card_pool.pop()
-            card.prepare_for_reuse(file_info, card_width)
-        else:
-            card = self._create_file_card_with_width(file_info, card_width)
-        card.setParent(self.files_container)
-        card.show()
-        return card
-
-    def _release_card(self, index):
-        card = self._visible_cards.pop(index, None)
-        if not card:
-            return
-        try:
-            card.hide()
-            card.setParent(self.files_container)
-            self._card_pool.append(card)
-        except RuntimeError:
-            pass
-
-    def _sync_card_state(self, card, file_info):
-        file_path_norm = os.path.normpath(file_info["path"])
-        should_select = file_path_norm in self._selected_file_paths
-        if card.is_selected() != should_select:
-            card.set_selected(should_select)
-
-        should_preview = bool(self.previewing_file_path and file_path_norm == self.previewing_file_path)
-        if card.is_previewing() != should_preview:
-            card.set_previewing(should_preview)
-
-    def _position_card(self, card, index, card_width):
-        row = index // self._fixed_max_cols
-        col = index % self._fixed_max_cols
-        x = self._card_margin + col * (card_width + self._card_spacing)
-        y = row * (self._get_card_height() + self._card_spacing)
-        card.setGeometry(x, y, card.width(), self._get_card_height())
-
-    def _update_virtual_viewport(self, force=False):
-        if not hasattr(self, "files_scroll_area") or not self.files_scroll_area:
-            return
-
-        viewport = self.files_scroll_area.viewport()
-        viewport_height = viewport.height()
-        if viewport_height <= 0:
-            return
-
-        max_cols = self._calculate_max_columns()
-        card_width = self._calculate_card_width()
-        if max_cols <= 0 or card_width is None:
-            return
-
-        self._fixed_max_cols = max_cols
-        self._fixed_card_width = card_width
-
-        total_height = self._get_total_content_height()
-        self.files_container.setMinimumHeight(total_height)
-        self.files_container.resize(max(viewport.width(), 1), total_height)
-
-        if self._all_files_count <= 0:
-            for index in list(self._visible_cards.keys()):
-                self._release_card(index)
-            self._trigger_scrollbar_check()
-            return
-
-        scroll_value = self.files_scroll_area.verticalScrollBar().value()
-        row_height = self._get_card_height() + self._card_spacing
-        first_row = max(0, scroll_value // max(1, row_height) - self._virtual_buffer_rows)
-        last_row = ((scroll_value + viewport_height) // max(1, row_height)) + self._virtual_buffer_rows
-
-        start_index = max(0, first_row * self._fixed_max_cols)
-        end_index = min(self._all_files_count, (last_row + 1) * self._fixed_max_cols)
-
-        needed_indexes = set(range(start_index, end_index))
-        current_indexes = set(self._visible_cards.keys())
-        indexes_to_release = current_indexes - needed_indexes
-        indexes_to_add = needed_indexes - current_indexes
-
-        layout_changed = (
-            force
-            or getattr(self, "_last_container_width", None) != viewport.width()
-            or getattr(self, "_last_max_cols", None) != self._fixed_max_cols
-            or getattr(self, "_last_card_width", None) != card_width
-        )
-
-        if not indexes_to_release and not indexes_to_add and not layout_changed:
-            self._current_render_range = (start_index, end_index)
-            return
-
-        for index in indexes_to_release:
-            self._release_card(index)
-
-        indexes_to_process = sorted(needed_indexes) if layout_changed else sorted(indexes_to_add)
-
-        for index in indexes_to_process:
-            file_info = self._virtual_files[index]
-            card = self._visible_cards.get(index)
-            if card is None:
-                card = self._obtain_card(file_info, card_width)
-                self._visible_cards[index] = card
-            else:
-                if card._flexible_width != card_width:
-                    card.set_flexible_width(card_width)
-            self._sync_card_state(card, file_info)
-            self._position_card(card, index, card_width)
-
-        self._current_render_range = (start_index, end_index)
-        self._last_container_width = viewport.width()
-        self._last_max_cols = self._fixed_max_cols
-        self._last_card_width = card_width
-        self._layout_dirty = False
-
-        if force:
-            self._trigger_scrollbar_check()
+        return max(card_width, card_base_width)
+    
+    def _on_scroll_value_changed(self, value):
+        if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
+            self.files_scroll_area.update()
     
     def _on_resize_timeout(self):
-        """
-        Resize 超时处理
-        """
-        self._layout_dirty = True
-        self._update_all_cards_width()
+        if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
+            self._update_grid_size()
+            self.files_scroll_area.update()
     
-    def _update_all_cards_width(self):
-        """更新所有可见卡片的宽度与位置"""
-        self._layout_dirty = True
-        self._update_virtual_viewport(force=True)
-    
-    def _check_card_layout(self):
+    def _update_grid_size(self):
         """
-        定期检查卡片布局状态
+        更新 QListView 的网格尺寸，实现卡片宽度和列数的自适应
+        
+        根据视口宽度动态计算：
+        1. 计算当前视口能容纳的最大列数
+        2. 计算每个卡片的实际宽度
+        3. 更新 gridSize 和 Model 的卡片宽度
         """
-        if not self._layout_dirty:
+        list_view = getattr(self, 'files_scroll_area', None)
+        if not list_view or not self.file_model:
             return
-        self._update_virtual_viewport(force=True)
+
+        viewport_width = list_view.viewport().width()
+        if viewport_width <= 0:
+            return
+
+        # 计算边距（与 _card_margin 保持一致）
+        margin = self._card_margin * 2
+        available_width = viewport_width - margin
+
+        # 计算卡片基础宽度
+        card_base_width = self._calculate_card_base_width()
+        spacing = self._card_spacing
+
+        # 计算最大列数
+        max_cols = 1
+        while True:
+            total_width = max_cols * card_base_width + (max_cols - 1) * spacing
+            if total_width > available_width:
+                max_cols -= 1
+                break
+            max_cols += 1
+            if max_cols > 100:  # 防止死循环
+                break
+        
+        max_cols = max(1, max_cols)
+
+        # 计算每个卡片的实际宽度
+        total_spacing = (max_cols - 1) * spacing
+        card_width = max((available_width - total_spacing) // max_cols, card_base_width)
+
+        # 卡片高度
+        card_height = int(75 * self.dpi_scale)
+
+        # 这里的 gridSize 表示“单元格尺寸”：
+        # - 单元格本体 = 卡片尺寸 + 外边距预留
+        # - delegate 再在单元格内部绘制真正的卡片本体
+        # 这样可以在不影响拖拽预览卡片尺寸的前提下，恢复矩阵中的卡片间距。
+        grid_size = QSize(card_width + spacing, card_height + spacing)
+        list_view.setGridSize(grid_size)
+
+        # 更新 Model 的卡片宽度，以便 Delegate 绘制时使用
+        self.file_model.set_card_width(card_width, card_height, max_cols)
+
+    
+    def _update_file_selection_state(self):
+        for row in range(self.file_model.rowCount()):
+            file_path = self.file_model.index(row, 0).data(self.file_model.FilePathRole)
+            if file_path:
+                normalized_path = os.path.normpath(file_path)
+                is_selected = normalized_path in self._selected_file_paths
+                self.file_model.set_selected(normalized_path, is_selected)
+    
+    def _check_and_apply_preview_state(self):
+        if self.previewing_file_path:
+            self.file_model.set_previewing(self.previewing_file_path, True)
+        else:
+            self.file_model.clear_previewing()
+    
+    def _find_visible_card_by_path(self, file_path):
+        normalized_path = os.path.normpath(file_path)
+        row = self.file_model.get_row(normalized_path)
+        if row < 0:
+            return None
+        return self.file_model.get_file_info(self.file_model.index(row, 0))
     
     def event(self, event):
         """
@@ -2565,110 +2285,6 @@ class CustomFileSelector(QWidget):
                 self.go_to_parent()
                 return True
         return super().event(event)
-    
-    def _create_file_card(self, file_info):
-        """
-        创建单个文件卡片（使用FileBlockCard）
-        """
-        # from freeassetfilter.utils.app_logger import debug as logger_debug
-        # def debug(msg):
-        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        #     logger_debug(f"[{timestamp}] [CustomFileSelector._create_file_card] {msg}")
-
-        file_path = file_info["path"]
-        file_dir = os.path.normpath(os.path.dirname(file_path))
-
-        # debug(f"创建文件卡片: {file_path}")
-        # debug(f"文件目录（规范化后）: {file_dir}")
-        # debug(f"selected_files: {self.selected_files}")
-        
-        file_dict = {
-            "name": file_info["name"],
-            "path": file_info["path"],
-            "is_dir": file_info["is_dir"],
-            "size": file_info["size"],
-            "created": file_info["created"],
-            "suffix": file_info.get("suffix", "")
-        }
-        
-        card = FileBlockCard(file_dict, dpi_scale=self.dpi_scale, parent=self.files_container)
-        card.setObjectName("FileBlockCard")
-        
-        file_path_norm = os.path.normpath(file_path)
-        is_selected = file_path_norm in self._selected_file_paths
-        if is_selected:
-            card.set_selected(True)
-        
-        if self.previewing_file_path and file_path_norm == self.previewing_file_path:
-            card.set_previewing(True)
-        
-        card.clicked.connect(self._handle_card_clicked_signal)
-        card.right_clicked.connect(self._handle_card_right_clicked_signal)
-        card.double_clicked.connect(self._handle_card_double_clicked_signal)
-        card.selection_changed.connect(self._handle_card_selection_changed_signal)
-        
-        # 连接拖拽信号
-        card.drag_started.connect(self._on_card_drag_started)
-        card.drag_ended.connect(self._on_card_drag_ended)
-        
-        self.hover_tooltip.set_target_widget(card)
-        
-        return card
-    
-    def _create_file_card_with_width(self, file_info, card_width):
-        """
-        创建单个文件卡片，并预先设置固定宽度
-        优化版本：避免加载过程中的宽度抖动
-
-        Args:
-            file_info: 文件信息字典
-            card_width: 预设的卡片宽度
-        """
-        # import datetime
-        # from freeassetfilter.utils.app_logger import debug as logger_debug
-        # def debug(msg):
-        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        #     logger_debug(f"[{timestamp}] [CustomFileSelector._create_file_card_with_width] {msg}")
-        
-        file_path = file_info["path"]
-        file_dir = os.path.normpath(os.path.dirname(file_path))
-        
-        file_dict = {
-            "name": file_info["name"],
-            "path": file_info["path"],
-            "is_dir": file_info["is_dir"],
-            "size": file_info["size"],
-            "created": file_info["created"],
-            "suffix": file_info.get("suffix", "")
-        }
-        
-        card = FileBlockCard(file_dict, dpi_scale=self.dpi_scale, parent=self.files_container)
-        card.setObjectName("FileBlockCard")
-        
-        if card_width and card_width > 0:
-            card.set_flexible_width(card_width)
-        
-        file_path_norm = os.path.normpath(file_path)
-        is_selected = file_path_norm in self._selected_file_paths
-        
-        if is_selected:
-            card.set_selected(True)
-        
-        if self.previewing_file_path and file_path_norm == self.previewing_file_path:
-            card.set_previewing(True)
-        
-        card.clicked.connect(self._handle_card_clicked_signal)
-        card.right_clicked.connect(self._handle_card_right_clicked_signal)
-        card.double_clicked.connect(self._handle_card_double_clicked_signal)
-        card.selection_changed.connect(self._handle_card_selection_changed_signal)
-        
-        # 连接拖拽信号
-        card.drag_started.connect(self._on_card_drag_started)
-        card.drag_ended.connect(self._on_card_drag_ended)
-        
-        self.hover_tooltip.set_target_widget(card)
-        
-        return card
     
     def _on_card_drag_started(self, file_info):
         """
@@ -3021,37 +2637,12 @@ class CustomFileSelector(QWidget):
         #self.selected_count_label.setText(f"当前目录: {current_selected} 个，所有目录: {total_selected} 个")
     
     def eventFilter(self, obj, event):
-        """
-        事件过滤器，处理文件卡片的鼠标事件和滚动区域的大小变化事件
-        """
-        # 处理文件卡片的鼠标事件
-        if obj.objectName() == "FileBlockCard":
-            if event.type() == QEvent.MouseButtonPress:
-                if event.button() == Qt.LeftButton:
-                    if obj.file_info["is_dir"]:
-                        self.go_to_path(obj.file_info["path"])
-                    else:
-                        self._open_file_by_path(obj.file_info["path"])
-                        self.file_selected.emit(obj.file_info)
-                    return True
-                elif event.button() == Qt.RightButton:
-                    return False
-                else:
-                    return False
-            elif event.type() == QEvent.MouseButtonDblClick:
-                if event.button() == Qt.LeftButton:
-                    if obj.file_info["is_dir"]:
-                        self.go_to_path(obj.file_info["path"])
-                    else:
-                        self._open_file_by_path(obj.file_info["path"])
-                        self.file_selected.emit(obj.file_info)
-                    return True
-        # 处理文件容器的拖放事件
-        elif obj == self.files_container:
+        if obj == self.files_scroll_area.viewport() or obj == self.files_scroll_area:
+            if event.type() == QEvent.Resize:
+                self._on_resize_timeout()
             if event.type() == QEvent.DragEnter or event.type() == QEvent.DragMove:
                 if event.mimeData().hasUrls():
                     event.acceptProposedAction()
-                    # 添加拖拽视觉反馈：蓝色加粗虚线边框
                     app = QApplication.instance()
                     secondary_color = "#f1f3f5"
                     accent_color = "#1890ff"
@@ -3061,7 +2652,6 @@ class CustomFileSelector(QWidget):
                     self.setStyleSheet(f"background-color: {secondary_color}; border: 3px dashed {accent_color}; border-radius: {int(8 * self.dpi_scale)}px;")
                     return True
             elif event.type() == QEvent.DragLeave:
-                # 恢复原始样式，移除边框
                 app = QApplication.instance()
                 secondary_color = "#f1f3f5"
                 if hasattr(app, 'settings_manager'):
@@ -3069,78 +2659,51 @@ class CustomFileSelector(QWidget):
                 self.setStyleSheet(f"background-color: {secondary_color}; border: none;")
                 return True
             elif event.type() == QEvent.Drop:
-                # 将事件传递给主控件处理
                 self.dropEvent(event)
                 return True
         elif event.type() == QEvent.Resize:
             target_width = 0
             if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
                 target_width = self.files_scroll_area.viewport().width()
-            elif hasattr(self, 'files_container') and self.files_container:
-                target_width = self.files_container.width()
 
-            if target_width > 0 and target_width != self._last_viewport_width:
-                self._last_viewport_width = target_width
-                self._layout_dirty = True
+            if target_width > 0:
                 self.resize_timer.start()
 
             return False
         
         return super().eventFilter(obj, event)
     
-    def _show_context_menu(self, card, pos):
-        """
-        显示上下文菜单
-        """
+    def _show_context_menu(self, file_info, pos):
         menu = QMenu(self)
         
-        # 打开文件
         open_action = QAction("打开文件", self)
-        open_action.triggered.connect(lambda: self._open_file(card))
+        open_action.triggered.connect(lambda: self._open_file_by_path(file_info["path"]))
         menu.addAction(open_action)
         
-        # 查看属性
         properties_action = QAction("查看属性", self)
-        properties_action.triggered.connect(lambda: self._show_properties(card))
+        properties_action.triggered.connect(lambda: self._show_properties(file_info))
         menu.addAction(properties_action)
         
-        # 检查文件是否已经被选中（在暂存池中）
-        file_path = card.file_info["path"]
+        file_path = file_info["path"]
         file_path_norm = os.path.normpath(file_path)
         is_selected = file_path_norm in self._selected_file_paths
         
-        # 如果文件已被选中（在暂存池中），添加"从暂存池移除"选项
         if is_selected:
             remove_from_pool_action = QAction("从暂存池移除", self)
-            remove_from_pool_action.triggered.connect(lambda: self._remove_from_staging_pool(card))
+            remove_from_pool_action.triggered.connect(lambda: self._remove_from_staging_pool(file_info))
             menu.addAction(remove_from_pool_action)
         
-        # 发出右键点击信号
-        self.file_right_clicked.emit(card.file_info)
+        self.file_right_clicked.emit(file_info)
         
-        # 显示菜单
-        menu.exec_(card.mapToGlobal(pos))
+        menu.exec_(self.mapToGlobal(pos))
     
-    def _open_file(self, card):
-        """
-        打开文件
-        """
-        # import datetime
-        # from freeassetfilter.utils.app_logger import debug as logger_debug
-        # def debug(msg):
-        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        #     logger_debug(f"[{timestamp}] [CustomFileSelector] {msg}")
-
-        file_path = card.file_info["path"]
-        # debug(f"打开文件: {file_path}, 是否为目录: {card.file_info['is_dir']}")
+    def _open_file(self, file_info):
+        file_path = file_info["path"]
 
         if os.path.exists(file_path):
-            if card.file_info["is_dir"]:
-                # debug(f"打开目录，进入新路径: {file_path}")
+            if file_info["is_dir"]:
                 self.current_path = file_path
                 self.refresh_files()
-            # else:
-                # debug(f"打开文件，文件信息: {card.file_info}")
 
     def _open_file_by_path(self, file_path):
         """
@@ -3167,24 +2730,16 @@ class CustomFileSelector(QWidget):
             # else:
                 # debug(f"打开文件: {file_path}")
     
-    def _show_properties(self, card):
-        """
-        显示文件属性
-        """
-        file_info = card.file_info
-        
-        # 创建属性对话框
+    def _show_properties(self, file_info):
         dialog = QDialog(self)
         dialog.setWindowTitle("文件属性")
         dialog.setMinimumWidth(400)
         
         layout = QVBoxLayout(dialog)
         
-        # 创建属性表格
         group_box = QGroupBox("基本信息")
         grid = QGridLayout(group_box)
         
-        # 添加属性行
         properties = [
             ("名称", file_info["name"]),
             ("路径", file_info["path"]),
@@ -3202,41 +2757,27 @@ class CustomFileSelector(QWidget):
         
         layout.addWidget(group_box)
         
-        # 添加关闭按钮
         close_btn = QPushButton("关闭")
-        # 使用全局字体，让Qt6自动处理DPI缩放
         close_btn.setFont(self.global_font)
         close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn, 0, Qt.AlignRight)
         
-        # 显示对话框
         dialog.exec()
     
-    def _remove_from_staging_pool(self, card):
-        """
-        将文件从暂存池中移除
-        
-        Args:
-            card (FileBlockCard): 文件卡片对象
-        """
-        file_info = card.file_info
+    def _remove_from_staging_pool(self, file_info):
         file_path = file_info["path"]
         file_path_norm = os.path.normpath(file_path)
         file_dir = os.path.normpath(os.path.dirname(file_path))
         
-        # 更新文件选择器中的选中状态
         if file_dir in self.selected_files:
             self.selected_files[file_dir].discard(file_path_norm)
             self._selected_file_paths.discard(file_path_norm)
             
-            # 如果目录下没有选中的文件了，删除该目录的键
             if not self.selected_files[file_dir]:
                 del self.selected_files[file_dir]
             
-            # 更新UI显示选中状态
-            card.set_selected(False)
+            self.file_model.set_selected(file_path_norm, False)
             
-            # 发出信号通知暂存池移除文件
             self.file_selection_changed.emit(file_info, False)
     
     def dragEnterEvent(self, event):
@@ -3522,25 +3063,6 @@ class CustomFileSelector(QWidget):
 
         # debug(f"完成处理拖拽的文件: {file_path}")
     
-    def _update_file_selection_state(self):
-        """
-        更新文件选择状态，确保UI显示正确的选中状态
-        """
-        # import datetime
-        # from freeassetfilter.utils.app_logger import debug as logger_debug
-        # def debug(msg):
-        #     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        #     logger_debug(f"[{timestamp}] [CustomFileSelector._update_file_selection_state] {msg}")
-
-        for widget in self._iter_visible_cards():
-            if widget is not None and hasattr(widget, 'file_info'):
-                file_path = widget.file_info['path']
-                file_path_norm = os.path.normpath(file_path)
-                is_selected = file_path_norm in self._selected_file_paths
-                current_widget_selected = widget.is_selected()
-                if current_widget_selected != is_selected:
-                    widget.set_selected(is_selected)
-
     def _update_timeline_button_visibility(self):
         """
         根据设置更新时间线按钮的显示/隐藏状态
@@ -3623,86 +3145,53 @@ class CustomFileSelector(QWidget):
             self.timeline_window.import_csv(csv_path)
     
     def set_previewing_file(self, file_path):
-        """
-        设置当前正在预览的文件，更新对应卡片的预览态
-        
-        Args:
-            file_path (str): 文件路径
-        """
-        # 保存当前预览的文件路径
         self.previewing_file_path = os.path.normpath(file_path) if file_path else None
-        
-        # 先清除所有卡片的预览态
         self.clear_previewing_state()
-        
-        # 规范化路径用于比较
-        file_path_norm = os.path.normpath(file_path)
-        
-        card = self._find_visible_card_by_path(file_path_norm)
-        if card:
-            card.set_previewing(True)
+        if self.previewing_file_path:
+            self.file_model.set_previewing(self.previewing_file_path, True)
     
     def clear_previewing_state(self):
-        """
-        清除所有卡片的预览态
-        注意：不清除 previewing_file_path，以便在路径切换后仍能恢复预览态
-        """
-        for widget in self._iter_visible_cards():
-            if widget is not None and hasattr(widget, 'set_previewing'):
-                widget.set_previewing(False)
+        self.file_model.clear_previewing()
     
-    def _check_and_apply_preview_state(self):
-        """
-        检查并应用预览状态到当前已加载的卡片
-        在懒加载完成后调用，确保预览态能够正确应用
-        """
-        if not self.previewing_file_path:
-            return
-        
-        card = self._find_visible_card_by_path(self.previewing_file_path)
-        if card:
-            card.set_previewing(True)
-
     def scroll_to_file(self, file_info):
         """
-        滚动到指定文件的位置
-        
-        Args:
-            file_info: 文件信息字典，需包含 'path' 键
+        滚动到指定文件的位置，将目标卡片滚动到显示区域的第一行
+        如果滚动范围不足，则滚动到最底部
         """
         if not file_info or 'path' not in file_info:
             return
 
         target_path = os.path.normpath(file_info['path'])
 
-        target_index = self._file_index_map.get(target_path, -1)
-        if target_index < 0:
+        row = self.file_model.get_row(target_path)
+        if row < 0:
             return
 
-        scroll_area = getattr(self, 'files_scroll_area', None)
-        if not scroll_area:
+        list_view = getattr(self, 'files_scroll_area', None)
+        if not list_view:
             return
 
-        viewport = scroll_area.viewport()
-        vertical_scrollbar = scroll_area.verticalScrollBar()
-
+        vertical_scrollbar = list_view.verticalScrollBar()
         max_cols = self._calculate_max_columns()
         if max_cols <= 0:
             max_cols = 3
 
-        target_row = target_index // max_cols
+        # 计算目标视觉行号
+        target_row = row // max_cols
         spacing = int(5 * self.dpi_scale)
+        card_height = int(75 * self.dpi_scale)
 
-        card_height = self._get_card_height()
-
+        # 计算滚动位置：目标行 * (卡片高度 + 间距)
         desired_scroll_pos = target_row * (card_height + spacing)
 
-        viewport_height = viewport.height()
+        viewport_height = list_view.viewport().height()
         max_scroll = vertical_scrollbar.maximum()
 
+        # 如果卡片高度大于视口高度（单卡片超出一屏），调整滚动位置
         if card_height > viewport_height:
             desired_scroll_pos = target_row * (card_height + spacing) + card_height - viewport_height
 
+        # 限制在有效范围内
         desired_scroll_pos = max(0, min(desired_scroll_pos, max_scroll))
 
         from PySide6.QtCore import QPropertyAnimation, QEasingCurve

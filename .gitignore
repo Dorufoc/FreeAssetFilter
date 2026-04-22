@@ -87,3 +87,5 @@ htmlcov/
 *.cache
 unit.md
 .icon_cache/
+freeassetfilter/widgets/file_block_card_backup_before_refactor.py
+freeassetfilter/components/file_selector_backup_before_refactor.py
