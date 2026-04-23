@@ -427,6 +427,28 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         )
         painter.restore()
 
+    def _resolve_card_rect(self, option, index, for_drag_preview=False):
+        rect = QRect(option.rect)
+        if for_drag_preview:
+            return rect
+
+        target_size = self.sizeHint(option, index)
+        if not target_size.isValid():
+            return rect
+
+        target_width = min(rect.width(), target_size.width())
+        target_height = min(rect.height(), target_size.height())
+
+        offset_x = max(0, (rect.width() - target_width) // 2)
+        offset_y = max(0, (rect.height() - target_height) // 2)
+
+        return QRect(
+            rect.x() + offset_x,
+            rect.y() + offset_y,
+            target_width,
+            target_height,
+        )
+
     def _paint_card(self, painter, option, index, for_drag_preview=False):
         view = option.widget
         if view and view is not self._view:
@@ -437,7 +459,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-        rect = option.rect
+        rect = self._resolve_card_rect(option, index, for_drag_preview=for_drag_preview)
         geometry = self._calculate_geometry(rect)
         file_info = self._get_file_info(index)
 

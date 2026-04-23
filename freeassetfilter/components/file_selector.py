@@ -119,7 +119,6 @@ class ThumbnailGeneratorThread(QThread):
             return
 
         def _on_progress(current, total, file_data, success):
-            # 批量模式下逐项回调，确保进度条与实际完成项一致
             if success:
                 self.thumbnail_created.emit(file_data)
             self.progress_updated.emit(current, total, file_data)
@@ -133,7 +132,6 @@ class ThumbnailGeneratorThread(QThread):
                 progress_callback=_on_progress,
                 cancel_check=_cancel_check
             )
-            # 取消时返回已处理数，非取消时返回总数
             final_total = processed_count if self._is_cancelled else total_count
             self.finished.emit(success_count, final_total)
         except Exception as e:
@@ -142,6 +140,160 @@ class ThumbnailGeneratorThread(QThread):
 
     def cancel(self):
         self._is_cancelled = True
+
+
+class DriveListLoaderThread(QThread):
+    loaded = Signal(list, list)
+
+    def run(self):
+        local_drives = []
+        network_locations = []
+
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                drives_bitmask = kernel32.GetLogicalDrives()
+                for drive in range(26):
+                    if drives_bitmask & (1 << drive):
+                        local_drives.append(chr(65 + drive) + ':')
+            except Exception as e:
+                warning(f"获取本地盘符失败: {e}")
+
+            try:
+                import ctypes
+                from ctypes import wintypes
+                mpr = ctypes.WinDLL('mpr')
+
+                class NETRESOURCE(ctypes.Structure):
+                    _fields_ = [
+                        ('dwScope', wintypes.DWORD),
+                        ('dwType', wintypes.DWORD),
+                        ('dwDisplayType', wintypes.DWORD),
+                        ('dwUsage', wintypes.DWORD),
+                        ('lpLocalName', wintypes.LPWSTR),
+                        ('lpRemoteName', wintypes.LPWSTR),
+                        ('lpComment', wintypes.LPWSTR),
+                        ('lpProvider', wintypes.LPWSTR)
+                    ]
+
+                resource_connected = 1
+                resource_type_any = 0
+                h_enum = wintypes.HANDLE()
+
+                if mpr.WNetOpenEnumW(resource_connected, resource_type_any, 0, None, ctypes.byref(h_enum)) == 0:
+                    try:
+                        while True:
+                            buf_size = wintypes.DWORD(16384)
+                            count = wintypes.DWORD(0xFFFFFFFF)
+                            buf = ctypes.create_string_buffer(buf_size.value)
+                            result = mpr.WNetEnumResourceW(h_enum, ctypes.byref(count), buf, ctypes.byref(buf_size))
+                            if result != 0:
+                                break
+
+                            ptr = ctypes.cast(buf, ctypes.POINTER(NETRESOURCE))
+                            for i in range(count.value):
+                                res = ptr[i]
+                                if res.lpLocalName:
+                                    local_name = ctypes.wstring_at(res.lpLocalName)
+                                    if local_name and local_name not in local_drives:
+                                        local_drives.append(local_name)
+                                if res.lpRemoteName:
+                                    remote_name = ctypes.wstring_at(res.lpRemoteName)
+                                    if remote_name and remote_name not in network_locations:
+                                        network_locations.append(remote_name)
+                    finally:
+                        mpr.WNetCloseEnum(h_enum)
+            except Exception as e:
+                debug(f"获取网络位置失败，保留本地盘符列表: {e}")
+        else:
+            local_drives = ['/']
+
+        local_drives = sorted(set(local_drives))
+        network_locations = sorted(set(network_locations))
+        self.loaded.emit(local_drives, network_locations)
+
+
+class FileListLoaderThread(QThread):
+    loaded = Signal(str, list)
+    failed = Signal(str, str)
+
+    def __init__(self, current_path, parent=None):
+        super().__init__(parent)
+        self.current_path = current_path
+
+    def run(self):
+        files = []
+
+        try:
+            if self.current_path == "All":
+                if sys.platform == 'win32':
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    drives_bitmask = kernel32.GetLogicalDrives()
+                    for drive in range(26):
+                        if drives_bitmask & (1 << drive):
+                            drive_name = chr(65 + drive) + ':'
+                            drive_path = drive_name + '\\'
+                            try:
+                                stat = os.stat(drive_path)
+                                modified = QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate)
+                                created = QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate)
+                            except OSError:
+                                modified = ""
+                                created = ""
+
+                            files.append({
+                                "name": drive_name,
+                                "path": drive_path,
+                                "is_dir": True,
+                                "size": 0,
+                                "modified": modified,
+                                "created": created,
+                                "suffix": ""
+                            })
+                else:
+                    root_path = "/"
+                    try:
+                        stat = os.stat(root_path)
+                        modified = QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate)
+                        created = QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate)
+                    except OSError:
+                        modified = ""
+                        created = ""
+
+                    files.append({
+                        "name": root_path,
+                        "path": root_path,
+                        "is_dir": True,
+                        "size": 0,
+                        "modified": modified,
+                        "created": created,
+                        "suffix": ""
+                    })
+            else:
+                with os.scandir(self.current_path) as entries:
+                    for entry in entries:
+                        if entry.name.startswith("."):
+                            continue
+
+                        try:
+                            stat = entry.stat(follow_symlinks=False)
+                            files.append({
+                                "name": entry.name,
+                                "path": entry.path,
+                                "is_dir": entry.is_dir(follow_symlinks=False),
+                                "size": stat.st_size,
+                                "modified": QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate),
+                                "created": QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate),
+                                "suffix": os.path.splitext(entry.name)[1].lower().lstrip('.')
+                            })
+                        except (OSError, PermissionError):
+                            continue
+
+            self.loaded.emit(self.current_path, files)
+        except Exception as e:
+            self.failed.emit(self.current_path, str(e))
 
 
 class CustomFileSelector(QWidget):
@@ -216,6 +368,11 @@ class CustomFileSelector(QWidget):
         self.card_delegate = FileBlockCardDelegate(self.dpi_scale, self.global_font)
         self.files_scroll_area = None
         self._is_loading = False
+        self._drive_list_thread = None
+        self._file_loader_thread = None
+        self._refresh_request_id = 0
+        self._cached_local_drives = []
+        self._cached_network_locations = []
         
         # 首次显示标志位，用于避免初始化时卡片重叠
         self._first_show = True
@@ -230,7 +387,6 @@ class CustomFileSelector(QWidget):
         # 启用拖拽功能
         self.setAcceptDrops(True)
         self.files_scroll_area.setAcceptDrops(True)
-        self.files_scroll_area.installEventFilter(self)
         
         # 获取应用实例
         app = QApplication.instance()
@@ -367,6 +523,7 @@ class CustomFileSelector(QWidget):
         self.drive_combo.set_use_scroll_layout(False)
         # 盘符菜单宽度改为按内容自适应，不再设置固定宽度
         # 动态获取当前系统存在的盘符
+        self._apply_drive_list(["All"], default_item="All")
         self._update_drive_list()
         self.drive_combo.itemClicked.connect(self._on_drive_changed)
         # 连接菜单即将打开信号，在显示菜单前刷新盘符列表
@@ -528,8 +685,8 @@ class CustomFileSelector(QWidget):
         self.files_scroll_area.setLayoutMode(QListView.Batched)
         self.files_scroll_area.setWrapping(True)
         self.files_scroll_area.setFlow(QListView.LeftToRight)
-        # 卡片之间的外边距由 gridSize 中预留的单元格空白来提供，
-        # 这里不要再额外叠加 QListView.spacing，否则容易再次造成尺寸计算混乱。
+        # 卡片之间的外边距由 gridSize 中预留的单元格空白提供，
+        # 不再额外叠加 QListView.spacing，避免布局口径再次分裂。
         self.files_scroll_area.setSpacing(0)
         self.files_scroll_area.setBatchSize(50)
         
@@ -571,9 +728,6 @@ class CustomFileSelector(QWidget):
         # 安装事件过滤器
         self.files_scroll_area.viewport().installEventFilter(self)
         self.files_scroll_area.installEventFilter(self)
-        
-        # 连接滚动条valueChanged信号，实现滚动时的懒加载
-        self.files_scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_value_changed)
 
         return self.files_scroll_area
     
@@ -1547,159 +1701,61 @@ class CustomFileSelector(QWidget):
         """
         动态获取当前系统存在的盘符列表和网络位置并更新到下拉框
         """
-        local_drives = []
-        network_locations = []
-        if sys.platform == 'win32':
-            # Windows系统：遍历A-Z，检查存在且可用的盘符
-            for drive in range(65, 91):  # A-Z
-                drive_letter = chr(drive) + ':/'
-                if os.path.exists(drive_letter):
-                    drive_name = drive_letter[:-1]  # 显示为 "C:" 而不是 "C:/"
-                    # 检测盘符可用性
-                    if self._is_drive_available(drive_name):
-                        local_drives.append(drive_name)
-                    else:
-                        debug(f"跳过不可用的盘符: {drive_name}")
-            
-            # 获取网络映射驱动器
-            try:
-                import ctypes
-                from ctypes import wintypes
-                
-                # 定义Windows API函数
-                mpr = ctypes.WinDLL('mpr')
-                
-                # 定义结构体
-                class NETRESOURCE(ctypes.Structure):
-                    _fields_ = [
-                        ('dwScope', wintypes.DWORD),
-                        ('dwType', wintypes.DWORD),
-                        ('dwDisplayType', wintypes.DWORD),
-                        ('dwUsage', wintypes.DWORD),
-                        ('lpLocalName', wintypes.LPWSTR),
-                        ('lpRemoteName', wintypes.LPWSTR),
-                        ('lpComment', wintypes.LPWSTR),
-                        ('lpProvider', wintypes.LPWSTR)
-                    ]
-                
-                # 定义常量
-                RESOURCE_CONNECTED = 1
-                RESOURCETYPE_ANY = 0
-                
-                # 调用WNetOpenEnum获取网络资源枚举句柄
-                hEnum = wintypes.HANDLE()
-                if mpr.WNetOpenEnumW(RESOURCE_CONNECTED, RESOURCETYPE_ANY, 0, None, ctypes.byref(hEnum)) == 0:
-                    # 枚举网络资源
-                    while True:
-                        # 第一次调用获取需要的缓冲区大小
-                        buf_size = wintypes.DWORD(0)
-                        count = wintypes.DWORD(0)
-                        if mpr.WNetEnumResourceW(hEnum, ctypes.byref(count), None, ctypes.byref(buf_size)) != 234:  # ERROR_MORE_DATA
-                            break
-                        
-                        # 分配缓冲区
-                        buf = ctypes.create_string_buffer(buf_size.value)
-                        
-                        # 再次调用获取网络资源
-                        if mpr.WNetEnumResourceW(hEnum, ctypes.byref(count), buf, ctypes.byref(buf_size)) != 0:
-                            break
-                        
-                        # 解析结果
-                        resources = []
-                        ptr = ctypes.cast(buf, ctypes.POINTER(NETRESOURCE))
-                        for i in range(count.value):
-                            res = ptr[i]
-                            if res.lpLocalName and res.lpRemoteName:
-                                # 添加网络映射驱动器（先检测可用性）
-                                local_name = ctypes.wstring_at(res.lpLocalName)
-                                if local_name and local_name not in local_drives:
-                                    if self._is_drive_available(local_name):
-                                        local_drives.append(local_name)  # 如 "Z:"
-                                    else:
-                                        debug(f"跳过不可用的网络驱动器: {local_name}")
-                                # 直接添加网络位置（UNC路径）
-                                remote_name = ctypes.wstring_at(res.lpRemoteName)
-                                if remote_name and remote_name not in network_locations:
-                                    network_locations.append(remote_name)  # 如 "\\server\share"
-                        
-                # 关闭枚举句柄
-                mpr.WNetCloseEnum(hEnum)
-            except Exception as e:
-                warning(f"获取网络映射驱动器失败: {e}")
-                # 使用net use命令作为备选方案
-                try:
-                    import subprocess
-                    result = subprocess.run(
-                        ['net', 'use'],
-                        capture_output=True,
-                        text=True,
-                        encoding='gbk',
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                    )
-                    if result.returncode == 0:
-                        lines = result.stdout.strip().split('\n')
-                        for line in lines[6:]:  # 跳过前6行标题和分隔线
-                            line = line.strip()
-                            if not line:
-                                continue
-                            # 解析net use命令输出
-                            # 示例输出: "Z:        \\server\share     Microsoft Windows Network"
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                local_name = parts[0]
-                                remote_name = parts[1]
-                                if local_name and local_name not in local_drives:
-                                    if self._is_drive_available(local_name):
-                                        local_drives.append(local_name)
-                                    else:
-                                        debug(f"跳过不可用的网络驱动器: {local_name}")
-                                if remote_name and remote_name not in network_locations:
-                                    network_locations.append(remote_name)
-                except Exception as e:
-                    warning(f"使用net use命令获取网络位置失败: {e}")
-        else:
-            # Linux/macOS系统：根目录
-            local_drives = ['/']
-        
-        # 对网络位置进行去重和排序
-        network_locations = list(set(network_locations))
-        network_locations.sort()
-        
-        # 先添加"All"选项，然后添加本地驱动器，最后添加网络位置
-        all_drives = ["All"] + local_drives.copy()
+        cached_items = self._build_drive_items(self._cached_local_drives, self._cached_network_locations)
+        if cached_items:
+            self._apply_drive_list(cached_items)
+
+        if self._drive_list_thread and self._drive_list_thread.isRunning():
+            return
+
+        self._drive_list_thread = DriveListLoaderThread(self)
+        self._drive_list_thread.loaded.connect(self._on_drive_list_loaded)
+        self._drive_list_thread.finished.connect(self._on_drive_list_thread_finished)
+        self._drive_list_thread.start()
+
+    def _build_drive_items(self, local_drives, network_locations):
+        all_drives = ["All"] + list(local_drives)
         if network_locations:
-            # 添加一个分隔符，区分本地驱动器和网络位置
             all_drives.append("--- 网络位置 ---")
             all_drives.extend(network_locations)
-        
-        # 添加到下拉框
-        if all_drives:
-            # 设置默认选中项为当前路径所在的盘符
-            if sys.platform == 'win32':
-                # Windows系统：提取当前路径的盘符，如 "C:\path\to\dir" -> "C:"
-                current_drive = os.path.splitdrive(self.current_path)[0]
-                # 如果当前路径是UNC路径，直接使用完整路径作为当前盘符
-                if not current_drive and self.current_path.startswith('\\'):
-                    # 查找包含当前路径的网络位置
-                    for drive in all_drives:
-                        if drive != "--- 网络位置 ---" and self.current_path.startswith(drive):
-                            current_drive = drive
-                            break
-            else:
-                # Linux/macOS系统：根目录
-                current_drive = '/'
-            
-            # 设置列表项和默认选中项
-            self.drive_combo.set_items(all_drives, default_item=current_drive)
+        return all_drives
 
-            # 盘符菜单不使用滚动布局，直接完整显示所有条目
-            visible_drive_count = max(1, len(all_drives))
-            self.drive_combo.set_max_visible_items(visible_drive_count)
+    def _get_current_drive_item(self, all_drives):
+        if self.current_path == "All":
+            return "All"
 
-            estimated_row_height = self.drive_combo.list_widget.list_widget.sizeHintForRow(0)
-            estimated_row_height = max(int(19 * self.dpi_scale), estimated_row_height)
-            full_menu_height = visible_drive_count * estimated_row_height + int(6 * self.dpi_scale)
-            self.drive_combo.set_max_height(full_menu_height)
+        if sys.platform == 'win32':
+            current_drive = os.path.splitdrive(self.current_path)[0]
+            if not current_drive and self.current_path.startswith('\\'):
+                for drive in all_drives:
+                    if drive != "--- 网络位置 ---" and self.current_path.startswith(drive):
+                        return drive
+            return current_drive or "All"
+
+        return '/'
+
+    def _apply_drive_list(self, all_drives, default_item=None):
+        if not all_drives:
+            return
+
+        current_drive = default_item or self._get_current_drive_item(all_drives)
+        self.drive_combo.set_items(all_drives, default_item=current_drive)
+
+        visible_drive_count = max(1, len(all_drives))
+        self.drive_combo.set_max_visible_items(visible_drive_count)
+
+        estimated_row_height = self.drive_combo.list_widget.list_widget.sizeHintForRow(0)
+        estimated_row_height = max(int(19 * self.dpi_scale), estimated_row_height)
+        full_menu_height = visible_drive_count * estimated_row_height + int(6 * self.dpi_scale)
+        self.drive_combo.set_max_height(full_menu_height)
+
+    def _on_drive_list_loaded(self, local_drives, network_locations):
+        self._cached_local_drives = local_drives
+        self._cached_network_locations = network_locations
+        self._apply_drive_list(self._build_drive_items(local_drives, network_locations))
+
+    def _on_drive_list_thread_finished(self):
+        self._drive_list_thread = None
     
     def _on_drive_changed(self, drive):
         """
@@ -1723,19 +1779,14 @@ class CustomFileSelector(QWidget):
             return
         
         if sys.platform == 'win32':
-            # 处理Windows系统
-            if drive.startswith('\\'):  # UNC路径，如 \\server\share
-                # 直接使用UNC路径作为当前路径
+            if drive.startswith('\\'):
                 drive_path = drive
-            else:  # 本地盘符，如 C:
-                # 确保路径格式为 "D:\\"
+            else:
                 drive_path = drive + '\\'
         else:
-            # Linux/macOS系统：根目录
             drive_path = drive
-        
-        # 确保路径存在且是绝对路径
-        if os.path.exists(drive_path) and os.path.isabs(drive_path):
+
+        if os.path.isabs(drive_path):
             self.current_path = drive_path
             self.save_current_path()
             self.refresh_files()
@@ -1783,8 +1834,11 @@ class CustomFileSelector(QWidget):
             self.current_path = "All"
             self.save_current_path()
             self.refresh_files()
-        elif os.path.exists(path):
-            self.current_path = path
+            return
+
+        normalized_path = os.path.abspath(os.path.normpath(path)) if not path.startswith('\\') else os.path.normpath(path)
+        if os.path.isabs(normalized_path):
+            self.current_path = normalized_path
             self.save_current_path()
             self.refresh_files()
         else:
@@ -1796,20 +1850,31 @@ class CustomFileSelector(QWidget):
             warning_msg.buttonClicked.connect(warning_msg.close)
             warning_msg.exec()
     
+    def _has_active_filter(self):
+        pattern = str(getattr(self, "filter_pattern", "")).strip()
+        return bool(pattern and pattern != "*")
+
     def _update_filter_button_style(self):
         """
         根据筛选条件状态更新筛选按钮的样式
         - 当筛选条件非空时，使用强调样式（primary）
         - 当筛选条件为空时，使用普通样式（normal）
         """
-        if hasattr(self, 'filter_btn'):
-            # 检查是否有筛选条件（self.filter_pattern不等于"*"表示有筛选条件）
-            new_button_type = "primary" if self.filter_pattern != "*" else "normal"
-            # 只有在按钮类型发生变化时才更新
-            if self.filter_btn.button_type != new_button_type:
-                self.filter_btn.button_type = new_button_type
-                # 重新初始化动画以应用新的按钮类型颜色
-                self.filter_btn._init_animations()
+        if not hasattr(self, "filter_btn"):
+            return
+
+        new_button_type = "primary" if self._has_active_filter() else "normal"
+        current_button_type = getattr(self.filter_btn, "button_type", None)
+        if current_button_type == new_button_type:
+            return
+
+        if hasattr(self.filter_btn, "set_button_type"):
+            self.filter_btn.set_button_type(new_button_type)
+        else:
+            self.filter_btn.button_type = new_button_type
+            if hasattr(self.filter_btn, "update_theme"):
+                self.filter_btn.update_theme()
+        self.filter_btn.update()
 
     def apply_filter(self):
         """
@@ -1918,19 +1983,38 @@ class CustomFileSelector(QWidget):
             scroll_to_top (bool, optional): 是否滚动到顶端，默认为True
         """
         try:
+            self._refresh_request_id += 1
+            request_id = self._refresh_request_id
+            self._is_loading = True
             self.path_edit.setText(self.current_path)
             self._update_drive_selector()
+            self.file_model.set_files([])
 
-            files = self._get_files()
+            if self._file_loader_thread and self._file_loader_thread.isRunning():
+                self._file_loader_thread.loaded.disconnect()
+                self._file_loader_thread.failed.disconnect()
+                self._file_loader_thread.quit()
+                self._file_loader_thread.wait(100)
+
+            self._file_loader_thread = FileListLoaderThread(self.current_path, self)
+            self._file_loader_thread.loaded.connect(lambda loaded_path, files: self._on_files_loaded(request_id, loaded_path, files, callback, scroll_to_top))
+            self._file_loader_thread.failed.connect(lambda failed_path, message: self._on_files_load_failed(request_id, failed_path, message))
+            self._file_loader_thread.finished.connect(self._on_file_loader_finished)
+            self._file_loader_thread.start()
+        except Exception as e:
+            self._is_loading = False
+            error(f"刷新文件列表失败: {e}")
+
+    def _on_files_loaded(self, request_id, loaded_path, files, callback, scroll_to_top):
+        if request_id != self._refresh_request_id or loaded_path != self.current_path:
+            return
+
+        try:
+            self._is_loading = False
             files = self._sort_files(files)
             files = self._filter_files(files)
-
-            # 设置 Model 数据
             self.file_model.set_files(files)
-            
-            # 恢复选中状态
             self._update_file_selection_state()
-            # 恢复预览状态
             self._check_and_apply_preview_state()
 
             if scroll_to_top and hasattr(self, 'files_scroll_area') and self.files_scroll_area:
@@ -1943,7 +2027,24 @@ class CustomFileSelector(QWidget):
             if callback:
                 callback()
         except Exception as e:
-            error(f"刷新文件列表失败: {e}")
+            error(f"应用文件列表失败: {e}")
+
+    def _on_files_load_failed(self, request_id, failed_path, message):
+        if request_id != self._refresh_request_id or failed_path != self.current_path:
+            return
+
+        self._is_loading = False
+        error(f"读取目录失败: {message}")
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
+        error_msg = CustomMessageBox(self)
+        error_msg.set_title("错误")
+        error_msg.set_text(f"读取目录失败: {message}")
+        error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+        error_msg.buttonClicked.connect(error_msg.close)
+        error_msg.exec()
+
+    def _on_file_loader_finished(self):
+        self._file_loader_thread = None
 
     
     def _get_files(self):
@@ -2147,6 +2248,7 @@ class CustomFileSelector(QWidget):
 
         card_width = self._calculate_card_base_width()
         spacing = self._card_spacing
+        cell_width = card_width + spacing
         margin = self._card_margin * 2
 
         available_width = max(0, viewport_width - margin)
@@ -2155,7 +2257,7 @@ class CustomFileSelector(QWidget):
         max_possible_columns = 0
 
         while True:
-            total_width = columns * card_width + (columns - 1) * spacing
+            total_width = columns * cell_width
             if total_width <= available_width:
                 max_possible_columns = columns
                 columns += 1
@@ -2180,7 +2282,7 @@ class CustomFileSelector(QWidget):
         margin = self._card_margin * 2
 
         available_width = max(0, viewport_width - margin)
-        total_spacing = (max_cols - 1) * spacing
+        total_spacing = max_cols * spacing
 
         if max_cols <= 0:
             return card_base_width
@@ -2188,10 +2290,6 @@ class CustomFileSelector(QWidget):
         card_width = (available_width - total_spacing) // max_cols
 
         return max(card_width, card_base_width)
-    
-    def _on_scroll_value_changed(self, value):
-        if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
-            self.files_scroll_area.update()
     
     def _on_resize_timeout(self):
         if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
@@ -2226,7 +2324,7 @@ class CustomFileSelector(QWidget):
         # 计算最大列数
         max_cols = 1
         while True:
-            total_width = max_cols * card_base_width + (max_cols - 1) * spacing
+            total_width = max_cols * (card_base_width + spacing)
             if total_width > available_width:
                 max_cols -= 1
                 break
@@ -2237,16 +2335,15 @@ class CustomFileSelector(QWidget):
         max_cols = max(1, max_cols)
 
         # 计算每个卡片的实际宽度
-        total_spacing = (max_cols - 1) * spacing
+        total_spacing = max_cols * spacing
         card_width = max((available_width - total_spacing) // max_cols, card_base_width)
 
         # 卡片高度
         card_height = int(75 * self.dpi_scale)
 
-        # 这里的 gridSize 表示“单元格尺寸”：
-        # - 单元格本体 = 卡片尺寸 + 外边距预留
-        # - delegate 再在单元格内部绘制真正的卡片本体
-        # 这样可以在不影响拖拽预览卡片尺寸的前提下，恢复矩阵中的卡片间距。
+        # gridSize 表示单元格尺寸，包含为卡片矩阵留出的外边距；
+        # delegate 会在单元格内部居中绘制真实卡片。
+        list_view.setSpacing(0)
         grid_size = QSize(card_width + spacing, card_height + spacing)
         list_view.setGridSize(grid_size)
 

@@ -500,6 +500,10 @@ class FileBlockCard(QWidget):
         self._long_press_timer.timeout.connect(self._on_long_press)
         self._long_press_duration = 500
         self._is_long_pressing = False
+        self._preview_busy = False
+        self._preview_busy_timer = QTimer(self)
+        self._preview_busy_timer.setSingleShot(True)
+        self._preview_busy_timer.timeout.connect(self._clear_preview_busy)
         self._drag_start_pos = None
         self._drag_card = None
         self._is_dragging = False
@@ -766,9 +770,11 @@ class FileBlockCard(QWidget):
         return super().eventFilter(obj, event)
 
     def _on_click(self, event):
+        self._set_preview_busy()
         self.clicked.emit(self.file_info)
 
     def _on_right_click(self, event):
+        self._set_preview_busy()
         self.set_selected(not self._is_selected)
         self.right_clicked.emit(self.file_info)
 
@@ -1147,11 +1153,19 @@ class FileBlockCard(QWidget):
         self._update_text_cache(force=True)
 
     def _on_long_press(self):
-        if self._is_previewer_loading():
+        if self._is_previewer_loading() or self._preview_busy:
             self._is_long_pressing = False
             return
         self._is_long_pressing = True
         self._start_drag()
+
+    def _set_preview_busy(self):
+        if not self._preview_busy:
+            self._preview_busy = True
+            self._preview_busy_timer.start(800)
+
+    def _clear_preview_busy(self):
+        self._preview_busy = False
 
     def _start_drag(self):
         self._is_dragging = True

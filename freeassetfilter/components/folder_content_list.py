@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QFileIconProvider, QMenu, QApplication
 )
 from PySide6.QtCore import (
-    Qt, Signal, QFileInfo, QDateTime
+    Qt, Signal, QFileInfo, QDateTime, QThread
 )
 from PySide6.QtGui import (
     QIcon, QFont, QColor, QBrush
@@ -43,6 +43,48 @@ from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 # 导入自定义按钮
 from freeassetfilter.widgets.button_widgets import CustomButton
+
+
+class FolderContentLoaderThread(QThread):
+    loaded = Signal(str, list)
+    load_failed = Signal(str, str)
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self._path = path
+
+    def run(self):
+        entries = []
+        try:
+            with os.scandir(self._path) as it:
+                for entry in it:
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except (OSError, PermissionError):
+                        is_dir = False
+
+                    try:
+                        stat = entry.stat(follow_symlinks=False)
+                        size = stat.st_size
+                        modified_ts = stat.st_mtime
+                    except (OSError, PermissionError):
+                        size = 0
+                        modified_ts = None
+
+                    entries.append({
+                        "name": entry.name,
+                        "path": entry.path,
+                        "is_dir": is_dir,
+                        "size": size,
+                        "modified_ts": modified_ts,
+                    })
+
+            entries.sort(key=lambda item: (not item["is_dir"], item["name"].lower()))
+            self.loaded.emit(self._path, entries)
+        except PermissionError as e:
+            self.load_failed.emit(self._path, f"权限不足: {e}")
+        except OSError as e:
+            self.load_failed.emit(self._path, f"系统错误: {e}")
 
 
 class FolderContentList(QWidget):
@@ -74,6 +116,8 @@ class FolderContentList(QWidget):
 
         # 创建文件图标提供者
         self.icon_provider = QFileIconProvider()
+        self._load_thread = None
+        self._load_request_id = 0
 
         # 初始化UI
         self.init_ui()
@@ -263,44 +307,62 @@ class FolderContentList(QWidget):
         """
         加载当前路径下的内容
         """
-        # 清空列表
+        self._load_request_id += 1
+        request_id = self._load_request_id
+        path = self.current_path
+
         self.content_list.clear()
+        loading_item = QListWidgetItem("正在加载...")
+        loading_item.setFont(self.scaled_font)
+        self.content_list.addItem(loading_item)
 
-        try:
-            # 获取当前路径下的所有文件和文件夹
-            entries = os.listdir(self.current_path)
-            debug(f"加载文件夹内容，条目数: {len(entries)}")
+        if self._load_thread and self._load_thread.isRunning():
+            self._load_thread.loaded.disconnect()
+            self._load_thread.load_failed.disconnect()
+            self._load_thread.quit()
+            self._load_thread.wait(100)
 
-            # 排序：文件夹在前，文件在后，按名称排序
-            entries.sort(key=lambda x: (not os.path.isdir(os.path.join(self.current_path, x)), x.lower()))
+        self._load_thread = FolderContentLoaderThread(path, self)
+        self._load_thread.loaded.connect(lambda loaded_path, entries: self._on_folder_content_loaded(request_id, loaded_path, entries))
+        self._load_thread.load_failed.connect(lambda failed_path, message: self._on_folder_content_failed(request_id, failed_path, message))
+        self._load_thread.start()
 
-            # 添加当前目录下的所有项
-            for entry in entries:
-                entry_path = os.path.join(self.current_path, entry)
-                file_info = QFileInfo(entry_path)
+    def _on_folder_content_loaded(self, request_id, loaded_path, entries):
+        if request_id != self._load_request_id or loaded_path != self.current_path:
+            return
 
-                # 创建列表项
-                item = QListWidgetItem()
-                # 应用全局字体
-                item.setFont(self.scaled_font)
+        self.content_list.clear()
+        debug(f"加载文件夹内容，条目数: {len(entries)}")
 
-                # 设置图标
-                if file_info.isDir():
-                    icon = self.icon_provider.icon(QFileIconProvider.Folder)
-                    item.setText(entry)
+        for entry in entries:
+            file_info = QFileInfo(entry["path"])
+            item = QListWidgetItem()
+            item.setFont(self.scaled_font)
+
+            if entry["is_dir"]:
+                icon = self.icon_provider.icon(QFileIconProvider.Folder)
+                item.setText(entry["name"])
+            else:
+                icon = self.icon_provider.icon(file_info)
+                size = self._format_size(entry["size"])
+                if entry["modified_ts"] is None:
+                    modified_time = ""
                 else:
-                    icon = self.icon_provider.icon(file_info)
-                    # 显示文件名、大小和修改时间
-                    size = self._format_size(file_info.size())
-                    modified_time = file_info.lastModified().toString("yyyy-MM-dd HH:mm")
-                    item.setText(f"{entry} ({size}) - {modified_time}")
+                    modified_time = datetime.fromtimestamp(entry["modified_ts"]).strftime("%Y-%m-%d %H:%M")
+                item.setText(f"{entry['name']} ({size}) - {modified_time}" if modified_time else f"{entry['name']} ({size})")
 
-                item.setIcon(icon)
-                self.content_list.addItem(item)
-        except PermissionError as e:
-            warning(f"权限不足: {e}")
-        except OSError as e:
-            warning(f"系统错误: {e}")
+            item.setIcon(icon)
+            self.content_list.addItem(item)
+
+    def _on_folder_content_failed(self, request_id, failed_path, message):
+        if request_id != self._load_request_id or failed_path != self.current_path:
+            return
+
+        self.content_list.clear()
+        error_item = QListWidgetItem(message)
+        error_item.setFont(self.scaled_font)
+        self.content_list.addItem(error_item)
+        warning(message)
     
 
     

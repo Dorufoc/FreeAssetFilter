@@ -1,0 +1,742 @@
+import os
+from typing import Any, Dict, List, Optional
+
+from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate, QStyleOptionViewItem
+
+from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.utils.app_logger import debug
+from freeassetfilter.utils.file_icon_helper import get_file_icon_path
+from freeassetfilter.widgets.file_selector_model import FileListView, FileSelectorListModel
+
+
+class FileStagingPoolListModel(FileSelectorListModel):
+    DisplayNameRole = FileSelectorListModel.CardWidthRole + 1
+    OriginalNameRole = DisplayNameRole + 1
+    ModifiedRole = OriginalNameRole + 1
+    IsMissingRole = ModifiedRole + 1
+    SizeCalculatingRole = IsMissingRole + 1
+    InfoTextRole = SizeCalculatingRole + 1
+    ItemHeightRole = InfoTextRole + 1
+    ItemSizeRole = ItemHeightRole + 1
+
+    def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
+        super().__init__(dpi_scale=dpi_scale, global_font=global_font, parent=parent)
+        self._card_width = max(240, int(320 * float(dpi_scale or 1.0)))
+        self._card_height = max(52, int(64 * float(dpi_scale or 1.0)))
+        self._max_cols = 1
+
+    def _normalize_path(self, file_path: str) -> str:
+        if not file_path:
+            return ""
+        return os.path.normcase(os.path.normpath(file_path))
+
+    def _display_path(self, file_path: str) -> str:
+        return os.path.normpath(file_path) if file_path else ""
+
+    def _safe_exists(self, file_path: str) -> bool:
+        try:
+            return bool(file_path) and os.path.exists(file_path)
+        except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _safe_is_dir(self, file_path: str) -> bool:
+        try:
+            return bool(file_path) and os.path.isdir(file_path)
+        except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _extract_suffix(self, file_info: Dict[str, Any]) -> str:
+        suffix = str(file_info.get("suffix", "") or "").lower().lstrip(".")
+        if suffix:
+            return suffix
+        name = str(file_info.get("name", "") or "")
+        if name:
+            return os.path.splitext(name)[1].lower().lstrip(".")
+        path = str(file_info.get("path", "") or "")
+        return os.path.splitext(path)[1].lower().lstrip(".") if path else ""
+
+    @staticmethod
+    def _format_file_size(size_bytes) -> str:
+        if size_bytes is None:
+            return ""
+        try:
+            size_value = float(size_bytes)
+        except (TypeError, ValueError):
+            return ""
+        if size_value < 0:
+            size_value = 0.0
+        units = ["B", "KB", "MB", "GB", "TB"]
+        unit_index = 0
+        while size_value >= 1024 and unit_index < len(units) - 1:
+            size_value /= 1024.0
+            unit_index += 1
+        if unit_index == 0:
+            return f"{int(size_value)} {units[unit_index]}"
+        return f"{size_value:.2f} {units[unit_index]}"
+
+    def _build_info_text(self, file_info: Dict[str, Any]) -> str:
+        file_path = str(file_info.get("path", "") or "")
+        if file_info.get("is_missing", False):
+            return file_path
+        if file_info.get("is_dir", False):
+            if file_info.get("size_calculating", False):
+                suffix = "正在计算大小..."
+            else:
+                suffix = self._format_file_size(file_info.get("size")) or "文件夹"
+        else:
+            suffix = self._format_file_size(file_info.get("size"))
+        if file_path and suffix:
+            return f"{file_path}  {suffix}"
+        return file_path or suffix or ""
+
+    def _visible_display_name(self, file_info: Dict[str, Any]) -> str:
+        display_name = str(file_info.get("display_name") or file_info.get("name") or "")
+        if not display_name:
+            display_name = os.path.basename(str(file_info.get("path", "") or ""))
+        if file_info.get("is_missing", False):
+            return f"{display_name}（已移动或删除）"
+        return display_name
+
+    def _prepare_file_info(self, file_info: Dict[str, Any], current: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        prepared = (current or {}).copy()
+        prepared.update(file_info or {})
+
+        path = self._display_path(str(prepared.get("path", "") or ""))
+        prepared["path"] = path
+        exists = self._safe_exists(path)
+
+        if "is_dir" in prepared:
+            is_dir = bool(prepared.get("is_dir", False))
+        else:
+            is_dir = self._safe_is_dir(path) if exists else bool((current or {}).get("is_dir", False))
+        prepared["is_dir"] = is_dir
+
+        name = str(prepared.get("name", "") or "") or (os.path.basename(path) or path)
+        prepared["name"] = name
+        prepared["display_name"] = str(prepared.get("display_name", "") or "") or name
+        prepared["original_name"] = str(prepared.get("original_name", "") or "") or name
+        prepared["suffix"] = self._extract_suffix(prepared)
+        prepared["is_selected"] = False
+        prepared["is_previewing"] = bool(prepared.get("is_previewing", False))
+
+        if "is_missing" in file_info:
+            prepared["is_missing"] = bool(file_info.get("is_missing", False))
+        else:
+            prepared["is_missing"] = not exists
+
+        if prepared["is_dir"]:
+            if prepared["is_missing"]:
+                prepared["size_calculating"] = False
+            elif "size_calculating" in prepared:
+                prepared["size_calculating"] = bool(prepared.get("size_calculating", False))
+            else:
+                prepared["size_calculating"] = prepared.get("size") is None
+        else:
+            prepared["size_calculating"] = False
+
+        info_text = str(file_info.get("info_text", "") or prepared.get("info_text", "") or "")
+        prepared["info_text"] = info_text or self._build_info_text(prepared)
+        return prepared
+
+    def item_size(self) -> QSize:
+        return QSize(self._card_width, self._card_height)
+
+    def set_item_size(self, width: int, height: int) -> None:
+        width = max(1, int(width))
+        height = max(1, int(height))
+        if self._card_width == width and self._card_height == height:
+            return
+        self._card_width = width
+        self._card_height = height
+        if self.rowCount() > 0:
+            top = self.index(0, 0)
+            bottom = self.index(self.rowCount() - 1, 0)
+            self.dataChanged.emit(top, bottom, [Qt.SizeHintRole, self.CardWidthRole, self.ItemHeightRole, self.ItemSizeRole])
+
+    def _emit_row_changed(self, row: int, roles: Optional[List[int]] = None) -> None:
+        if row < 0 or row >= len(self._files):
+            return
+        idx = self.index(row, 0)
+        self.dataChanged.emit(idx, idx, roles or [Qt.DisplayRole, Qt.DecorationRole, Qt.SizeHintRole, Qt.ToolTipRole, self.IsSelectedRole, self.IsPreviewingRole, self.IsMissingRole, self.InfoTextRole, self.DisplayNameRole])
+
+    def _resolve_icon_source(self, file_info: Dict[str, Any]):
+        file_path = str(file_info.get("path", "") or "")
+        if not file_path:
+            return super()._resolve_icon_source(file_info)
+        if file_info.get("is_missing", False) or not self._safe_exists(file_path):
+            icon_path = get_file_icon_path(file_info) or ""
+            return {
+                "source_type": "file_icon",
+                "normalized_path": self._normalize_path(icon_path),
+                "mtime": self._safe_get_mtime(icon_path),
+                "icon_path": icon_path,
+                "thumbnail_path": "",
+                "suffix": str(file_info.get("suffix", "") or "").lower(),
+                "is_dir": bool(file_info.get("is_dir", False)),
+            }
+        return super()._resolve_icon_source(file_info)
+
+    def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
+        if not index.isValid() or index.row() >= len(self._files):
+            return None
+        file_info = self._files[index.row()]
+        if role == Qt.DisplayRole:
+            return self._visible_display_name(file_info)
+        if role == Qt.DecorationRole:
+            return self._get_icon_pixmap(file_info)
+        if role == Qt.SizeHintRole:
+            return self.item_size()
+        if role == Qt.ToolTipRole:
+            display_name = self._visible_display_name(file_info)
+            info_text = str(file_info.get("info_text", "") or file_info.get("path", "") or "")
+            return f"{display_name}\n{info_text}" if info_text and info_text != display_name else display_name
+        if role == self.DisplayNameRole:
+            return str(file_info.get("display_name", "") or "")
+        if role == self.OriginalNameRole:
+            return str(file_info.get("original_name", "") or "")
+        if role == self.ModifiedRole:
+            return file_info.get("modified", "")
+        if role == self.IsMissingRole:
+            return bool(file_info.get("is_missing", False))
+        if role == self.SizeCalculatingRole:
+            return bool(file_info.get("size_calculating", False))
+        if role == self.InfoTextRole:
+            return str(file_info.get("info_text", "") or "")
+        if role == self.ItemHeightRole:
+            return self._card_height
+        if role == self.ItemSizeRole:
+            return self.item_size()
+        return super().data(index, role)
+
+    def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:
+        if not index.isValid() or index.row() >= len(self._files):
+            return False
+        path = str(self._files[index.row()].get("path", "") or "")
+        if role == self.DisplayNameRole:
+            return self.update_file(path, {"display_name": str(value or "")})
+        if role == self.InfoTextRole:
+            return self.update_file(path, {"info_text": str(value or "")})
+        if role == self.IsMissingRole:
+            return self.update_file(path, {"is_missing": bool(value)})
+        if role == self.SizeCalculatingRole:
+            return self.update_file(path, {"size_calculating": bool(value)})
+        return super().setData(index, value, role)
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlags:
+        if not index.isValid():
+            return Qt.NoItemFlags
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled
+
+    def roleNames(self) -> Dict[int, bytes]:
+        roles = super().roleNames()
+        roles.update({
+            self.DisplayNameRole: b"displayName",
+            self.OriginalNameRole: b"originalName",
+            self.ModifiedRole: b"modified",
+            self.IsMissingRole: b"isMissing",
+            self.SizeCalculatingRole: b"sizeCalculating",
+            self.InfoTextRole: b"infoText",
+            self.ItemHeightRole: b"itemHeight",
+            self.ItemSizeRole: b"itemSize",
+        })
+        return roles
+
+    def mimeTypes(self) -> List[str]:
+        return ["text/uri-list"]
+
+    def mimeData(self, indexes) -> QMimeData:
+        mime_data = QMimeData()
+        urls = []
+        seen = set()
+        for index in indexes:
+            if not index.isValid():
+                continue
+            path = str(self.data(index, self.FilePathRole) or "")
+            key = self._normalize_path(path)
+            if not path or key in seen:
+                continue
+            seen.add(key)
+            urls.append(QUrl.fromLocalFile(path))
+        if urls:
+            mime_data.setUrls(urls)
+        return mime_data
+
+    def supportedDragActions(self):
+        return Qt.CopyAction | Qt.MoveAction
+
+    def set_files(self, file_list: List[Dict[str, Any]]) -> None:
+        items = []
+        seen = set()
+        for file_info in file_list:
+            prepared = self._prepare_file_info(file_info)
+            key = self._normalize_path(prepared.get("path", ""))
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            items.append(prepared)
+        self.beginResetModel()
+        self._files = items
+        self._rebuild_path_index()
+        self.endResetModel()
+
+    def add_file(self, file_info: Dict[str, Any]) -> bool:
+        prepared = self._prepare_file_info(file_info)
+        key = self._normalize_path(prepared.get("path", ""))
+        if key and key in self._path_to_row:
+            return False
+        row = len(self._files)
+        self.beginInsertRows(QModelIndex(), row, row)
+        self._files.append(prepared)
+        if key:
+            self._path_to_row[key] = row
+        self.endInsertRows()
+        return True
+
+    def add_files(self, file_list: List[Dict[str, Any]]) -> int:
+        added = 0
+        for file_info in file_list:
+            if self.add_file(file_info):
+                added += 1
+        return added
+
+    def remove_file(self, file_path: str) -> Dict[str, Any]:
+        row = self.get_row(file_path)
+        if row < 0:
+            return {}
+        removed_info = self._files[row].copy()
+        self.beginRemoveRows(QModelIndex(), row, row)
+        self._files.pop(row)
+        self.endRemoveRows()
+        self._rebuild_path_index()
+        return removed_info
+
+    def update_file(self, file_path: str, updates: Dict[str, Any]) -> bool:
+        """
+        更新指定文件项，并在关键信息变化时按最新状态重建说明文本。
+
+        Args:
+            file_path (str): 待更新文件项的路径。
+            updates (Dict[str, Any]): 需要合并到文件项中的字段。
+
+        Returns:
+            bool: 更新成功返回 True；目标项不存在或新路径冲突时返回 False。
+
+        异常场景:
+            本函数不主动抛出异常，异常状态通过返回 False 表示。
+        """
+        row = self.get_row(file_path)
+        if row < 0:
+            return False
+        current = self._files[row]
+        update_payload = updates or {}
+        new_info = current.copy()
+        new_info.update(update_payload)
+
+        refresh_info_keys = {"size", "size_calculating", "is_missing", "is_dir", "path"}
+        current_for_prepare = current
+        if "info_text" not in update_payload and any(key in update_payload for key in refresh_info_keys):
+            # 相关字段发生变化时，移除旧说明文本并在预处理阶段按最新状态重新生成。
+            new_info.pop("info_text", None)
+            current_for_prepare = current.copy()
+            current_for_prepare.pop("info_text", None)
+
+        prepared = self._prepare_file_info(new_info, current_for_prepare)
+        old_key = self._normalize_path(current.get("path", ""))
+        new_key = self._normalize_path(prepared.get("path", ""))
+        if new_key and new_key != old_key and new_key in self._path_to_row:
+            return False
+        self._files[row] = prepared
+        if new_key != old_key:
+            self._rebuild_path_index()
+        self._emit_row_changed(row)
+        return True
+
+    def rename_file(self, file_path: str, display_name: str) -> bool:
+        name = str(display_name or "").strip()
+        if not name:
+            row = self.get_row(file_path)
+            if row < 0:
+                return False
+            name = str(self._files[row].get("name", "") or "")
+        return self.update_file(file_path, {"display_name": name})
+
+    def has_path(self, file_path: str) -> bool:
+        return self.get_row(file_path) >= 0
+
+    def index_from_path(self, file_path: str) -> QModelIndex:
+        row = self.get_row(file_path)
+        return self.index(row, 0) if row >= 0 else QModelIndex()
+
+    def get_file_info_by_path(self, file_path: str) -> Dict[str, Any]:
+        row = self.get_row(file_path)
+        return self._files[row].copy() if row >= 0 else {}
+
+    def refresh_icon(self, file_path: str) -> bool:
+        row = self.get_row(file_path)
+        if row < 0:
+            return False
+        old_info = self._files[row]
+        old_source = self._resolve_icon_source(old_info)
+        refreshed_input = old_info.copy()
+        refreshed_input.pop("is_missing", None)
+        refreshed_input.pop("info_text", None)
+        refreshed = self._prepare_file_info(refreshed_input, old_info)
+        new_source = self._resolve_icon_source(refreshed)
+        self.clear_caches(file_path)
+        old_source_path = str(old_source.get("normalized_path", "") or "")
+        new_source_path = str(new_source.get("normalized_path", "") or "")
+        if old_source_path:
+            self.clear_caches(old_source_path)
+        if new_source_path and new_source_path != old_source_path:
+            self.clear_caches(new_source_path)
+        self._files[row] = refreshed
+        self._emit_row_changed(row, [Qt.DecorationRole, self.IconPixmapRole, self.IsMissingRole, self.InfoTextRole])
+        return True
+
+
+class FileStagingPoolItemDelegate(QStyledItemDelegate):
+    def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
+        super().__init__(parent)
+        self._dpi_scale = float(dpi_scale or 1.0)
+        self._global_font = global_font
+        self._dragging_file_path = ""
+
+    def set_dragging_file_path(self, file_path: Optional[str]) -> None:
+        self._dragging_file_path = os.path.normcase(os.path.normpath(file_path)) if file_path else ""
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
+        model = index.model()
+        if isinstance(model, FileStagingPoolListModel):
+            return model.item_size()
+        return QSize(320, 64)
+
+    def _colors(self):
+        app = QApplication.instance()
+        settings_manager = getattr(app, "settings_manager", None) if app else None
+        if settings_manager is None:
+            settings_manager = SettingsManager()
+        return {
+            "base": settings_manager.get_setting("appearance.colors.base_color", "#212121"),
+            "aux": settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131"),
+            "normal": settings_manager.get_setting("appearance.colors.normal_color", "#717171"),
+            "accent": settings_manager.get_setting("appearance.colors.accent_color", "#B036EE"),
+            "secondary": settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF"),
+        }
+
+    def build_drag_pixmap(self, index: QModelIndex, preview_size: QSize, palette) -> QPixmap:
+        option = QStyleOptionViewItem()
+        option.rect = QRect(0, 0, preview_size.width(), preview_size.height())
+        pixmap = QPixmap(preview_size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        self.paint(painter, option, index)
+        painter.end()
+        return pixmap
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        model = index.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            super().paint(painter, option, index)
+            return
+
+        colors = self._colors()
+        rect = option.rect.adjusted(2, 2, -2, -2)
+        file_path = str(index.data(model.FilePathRole) or "")
+        path_key = os.path.normcase(os.path.normpath(file_path)) if file_path else ""
+        is_dragging = bool(self._dragging_file_path and path_key == self._dragging_file_path)
+        is_selected = bool(index.data(model.IsSelectedRole))
+        is_previewing = bool(index.data(model.IsPreviewingRole))
+        is_missing = bool(index.data(model.IsMissingRole))
+        display_name = str(index.data(model.DisplayNameRole) or index.data(Qt.DisplayRole) or "")
+        info_text = str(index.data(model.InfoTextRole) or "")
+        icon = index.data(Qt.DecorationRole)
+
+        bg = QColor(colors["base"])
+        border = QColor(colors["normal"])
+        text = QColor(colors["secondary"])
+        sub_text = QColor(colors["normal"])
+        if is_selected:
+            bg = QColor(colors["accent"])
+            bg.setAlpha(36)
+            border = QColor(colors["accent"])
+        if is_previewing:
+            bg = QColor(colors["accent"])
+            bg.setAlpha(52)
+            border = QColor(colors["secondary"])
+        if is_missing:
+            sub_text = QColor(colors["secondary"])
+            sub_text.setAlpha(170)
+            text = QColor(colors["secondary"])
+            text.setAlpha(210)
+            if not is_selected and not is_previewing:
+                bg = QColor(colors["aux"])
+        if is_dragging:
+            bg.setAlpha(max(18, bg.alpha() // 2 or 18))
+            text.setAlpha(120)
+            sub_text.setAlpha(100)
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = border
+        if is_missing:
+            painter.setPen(QColor(border))
+            dash_pen = painter.pen()
+            dash_pen.setColor(border)
+            dash_pen.setStyle(Qt.DashLine)
+            painter.setPen(dash_pen)
+        else:
+            painter.setPen(border)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(QRectF(rect), 8.0, 8.0)
+
+        icon_size = max(28, int(38 * self._dpi_scale))
+        margin_x = max(8, int(10 * self._dpi_scale))
+        icon_rect = QRect(rect.left() + margin_x, rect.center().y() - icon_size // 2, icon_size, icon_size)
+        if isinstance(icon, QPixmap) and not icon.isNull():
+            painter.drawPixmap(icon_rect, icon)
+
+        text_left = icon_rect.right() + max(8, int(10 * self._dpi_scale))
+        text_rect = QRect(text_left, rect.top() + max(6, int(7 * self._dpi_scale)), rect.right() - text_left - margin_x, rect.height() - max(12, int(14 * self._dpi_scale)))
+
+        title_font = QFont(self._global_font) if self._global_font else QFont()
+        title_font.setBold(True)
+        title_font.setPixelSize(max(12, int(13 * self._dpi_scale)))
+        info_font = QFont(self._global_font) if self._global_font else QFont()
+        info_font.setPixelSize(max(10, int(11 * self._dpi_scale)))
+
+        title_metrics = QFontMetrics(title_font)
+        info_metrics = QFontMetrics(info_font)
+        title_text = title_metrics.elidedText(display_name, Qt.ElideRight, text_rect.width())
+        info_text = info_metrics.elidedText(info_text, Qt.ElideMiddle, text_rect.width())
+
+        title_height = title_metrics.height()
+        info_height = info_metrics.height()
+        title_rect = QRect(text_rect.left(), text_rect.top(), text_rect.width(), title_height)
+        info_rect = QRect(text_rect.left(), text_rect.bottom() - info_height, text_rect.width(), info_height)
+
+        painter.setFont(title_font)
+        painter.setPen(text)
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, title_text)
+        painter.setFont(info_font)
+        painter.setPen(sub_text)
+        painter.drawText(info_rect, Qt.AlignLeft | Qt.AlignVCenter, info_text)
+        painter.restore()
+
+
+class FileStagingPoolListView(FileListView):
+    item_left_clicked = Signal(dict)
+    item_right_clicked = Signal(dict)
+    item_double_clicked = Signal(dict)
+    drag_started = Signal(dict)
+    drag_ended = Signal(dict, str)
+
+    def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
+        self._dpi_scale = float(dpi_scale or 1.0)
+        self._global_font = global_font
+        self._delegate = None
+        self._action_press_index = QModelIndex()
+        super().__init__(parent)
+        self._delegate = FileStagingPoolItemDelegate(self._dpi_scale, self._global_font, self)
+        self.setItemDelegate(self._delegate)
+        self.file_clicked.connect(self.item_left_clicked.emit)
+        self.file_right_clicked.connect(self.item_right_clicked.emit)
+        self.file_double_clicked.connect(self.item_double_clicked.emit)
+        self.file_drag_started.connect(self.drag_started.emit)
+        self.file_drag_ended.connect(self.drag_ended.emit)
+        self._sync_item_size()
+
+    def _setup_view(self) -> None:
+        self.setViewMode(QListView.ListMode)
+        self.setResizeMode(QListView.Adjust)
+        self.setMovement(QListView.Static)
+        self.setSelectionMode(QListView.NoSelection)
+        self.setUniformItemSizes(True)
+        self.setLayoutMode(QListView.Batched)
+        self.setWrapping(False)
+        self.setFlow(QListView.TopToBottom)
+        self.setSpacing(max(2, int(4 * self._dpi_scale)))
+        self.setEditTriggers(QListView.NoEditTriggers)
+        self.setSelectionRectVisible(False)
+        self.setSelectionBehavior(QListView.SelectRows)
+        self.setMouseTracking(True)
+        self.setVerticalScrollMode(QListView.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(False)
+        self.setDropIndicatorShown(False)
+        self.setDefaultDropAction(Qt.CopyAction)
+
+    def _load_interaction_settings(self) -> None:
+        app = QApplication.instance()
+        settings_manager = getattr(app, "settings_manager", None) if app else None
+        if settings_manager is None:
+            settings_manager = SettingsManager()
+        try:
+            staging_touch = settings_manager.get_setting("file_staging.touch_optimization", None)
+            staging_swap = settings_manager.get_setting("file_staging.mouse_buttons_swap", None)
+            selector_touch = settings_manager.get_setting("file_selector.touch_optimization", True)
+            selector_swap = settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+            self._touch_optimization_enabled = bool(selector_touch if staging_touch is None else staging_touch)
+            self._mouse_buttons_swapped = bool(selector_swap if staging_swap is None else staging_swap)
+        except (RuntimeError, TypeError, ValueError) as error:
+            debug(f"加载暂存池交互设置失败: {error}")
+            self._touch_optimization_enabled = True
+            self._mouse_buttons_swapped = False
+        self._touch_drag_threshold = int(10 * self._dpi_scale)
+        self._long_press_duration = 500
+
+    def _detect_drop_target(self, global_pos) -> str:
+        main_window = self.window()
+        if not main_window:
+            return "none"
+        selector = getattr(main_window, "file_selector_a", None) or getattr(main_window, "file_selector", None)
+        if selector and selector.isVisible():
+            selector_rect = QRect(selector.mapToGlobal(selector.rect().topLeft()), selector.rect().size())
+            if selector_rect.contains(global_pos):
+                return "file_selector"
+        previewer = getattr(main_window, "unified_previewer", None)
+        if previewer and previewer.isVisible():
+            previewer_rect = QRect(previewer.mapToGlobal(previewer.rect().topLeft()), previewer.rect().size())
+            if previewer_rect.contains(global_pos):
+                return "previewer"
+        return "none"
+
+    def _resolve_action_delegate(self, index: QModelIndex):
+        if not index.isValid():
+            return None
+        delegate = self.itemDelegateForIndex(index) or self.itemDelegate()
+        if delegate is None:
+            return None
+        if not hasattr(delegate, "action_at") or not hasattr(delegate, "editorEvent"):
+            return None
+        return delegate
+
+    def _create_action_option(self, index: QModelIndex) -> QStyleOptionViewItem:
+        option = QStyleOptionViewItem()
+        if hasattr(self, "initViewItemOption"):
+            self.initViewItemOption(option)
+        option.rect = self.visualRect(index)
+        option.widget = self.viewport()
+        option.state |= QStyle.State_MouseOver
+        return option
+
+    def _action_at_pos(self, index: QModelIndex, pos, require_visible: bool = False):
+        delegate = self._resolve_action_delegate(index)
+        if delegate is None:
+            return None
+        option = self._create_action_option(index)
+        try:
+            return delegate.action_at(option, index, pos, require_visible=require_visible)
+        except Exception as error:
+            debug(f"命中文件存储池操作按钮失败: {error}")
+            return None
+
+    def _dispatch_action_delegate_event(self, event, index: QModelIndex) -> bool:
+        delegate = self._resolve_action_delegate(index)
+        model = self.model()
+        if delegate is None or model is None:
+            return False
+        option = self._create_action_option(index)
+        try:
+            return bool(delegate.editorEvent(event, model, option, index))
+        except Exception as error:
+            debug(f"分发文件存储池操作按钮事件失败: {error}")
+            return False
+
+    @staticmethod
+    def _event_pos(event) -> QPoint:
+        if hasattr(event, "position"):
+            try:
+                return event.position().toPoint()
+            except (RuntimeError, TypeError, ValueError):
+                pass
+        if hasattr(event, "pos"):
+            try:
+                return event.pos()
+            except (RuntimeError, TypeError, ValueError):
+                pass
+        return QPoint(-1, -1)
+
+    def setModel(self, model) -> None:
+        super().setModel(model)
+        self._sync_item_size()
+
+    def _sync_item_size(self) -> None:
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return
+        width = max(240, self.viewport().width() - 4)
+        height = model.item_size().height()
+        model.set_item_size(width, height)
+        self.setGridSize(QSize(width, height + self.spacing()))
+
+    def resizeEvent(self, event) -> None:
+        self._sync_item_size()
+        super().resizeEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        event_pos = self._event_pos(event)
+        index = self.indexAt(event_pos)
+        logical_button = self._current_action_button(event.button())
+        if logical_button == Qt.LeftButton and index.isValid():
+            action = self._action_at_pos(index, event_pos, require_visible=False)
+            if action:
+                # FileListView 会提前消费左键按下/抬起流程，这里先把按钮事件交给委托，
+                # 避免按钮点击被普通卡片点击或长按拖拽逻辑吞掉。
+                self._cleanup_press_state()
+                self._action_press_index = index
+                self._dispatch_action_delegate_event(event, index)
+                event.accept()
+                return
+
+        self._action_press_index = QModelIndex()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        event_pos = self._event_pos(event)
+        target_index = self._action_press_index if self._action_press_index.isValid() else self.indexAt(event_pos)
+        if target_index.isValid():
+            self._dispatch_action_delegate_event(event, target_index)
+        else:
+            self.viewport().unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        logical_button = self._current_action_button(event.button())
+        if logical_button == Qt.LeftButton and self._action_press_index.isValid():
+            pressed_index = self._action_press_index
+            self._action_press_index = QModelIndex()
+            self._dispatch_action_delegate_event(event, pressed_index)
+            self._cleanup_press_state()
+            event.accept()
+            return
+
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        if self._action_press_index.isValid():
+            pressed_index = self._action_press_index
+            self._action_press_index = QModelIndex()
+            self._dispatch_action_delegate_event(QEvent(QEvent.Leave), pressed_index)
+        self.viewport().unsetCursor()
+        super().leaveEvent(event)
+
+    def refresh_icon(self, file_path: str) -> bool:
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return False
+        result = model.refresh_icon(file_path)
+        if result:
+            self.viewport().update()
+        return result
+
+    def set_previewing_path(self, file_path: str) -> None:
+        model = self.model()
+        if isinstance(model, FileStagingPoolListModel):
+            model.set_previewing(file_path)
+
+    def build_default_model(self) -> FileStagingPoolListModel:
+        return FileStagingPoolListModel(dpi_scale=self._dpi_scale, global_font=self._global_font, parent=self)

@@ -25,8 +25,8 @@ import re
 import threading
 import time
 from collections import deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Optional, Tuple, Callable, Dict, Set, List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, Tuple, Callable, Dict, Set, List, Union
 from pathlib import Path
 from dataclasses import dataclass
 from freeassetfilter.core.media_probe import get_ffmpeg_path, get_ffprobe_path
@@ -688,12 +688,23 @@ class ThumbnailManager:
 
     def create_thumbnails_batch(
         self,
-        files_to_generate: List[Dict],
-        progress_callback: Optional[Callable[[int, int, Dict, bool], None]] = None,
+        files_to_generate: List[Union[str, Dict]],
+        progress_callback: Optional[Callable[[int, int, Union[str, Dict], bool], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None
     ) -> Tuple[int, int]:
         """
-        批量创建缩略图（异步多队列 + 原生批处理版）
+        批量创建缩略图（异步多队列 + 原生批处理版）。
+
+        参数：
+            files_to_generate: 待生成缩略图的文件列表，兼容字符串路径列表与包含 path/file_path 字段的字典列表。
+            progress_callback: 单文件完成后的进度回调，回调参数依次为当前完成数、总数、原始文件项、是否成功。
+            cancel_check: 取消检查函数，返回 True 时停止继续投递新任务。
+
+        返回值：
+            Tuple[int, int]: 成功数量与已处理数量。
+
+        异常场景：
+            函数内部会吞掉单文件处理异常，确保批处理流程不中断。
 
         调度目标：
         1. 原生图片/视频优先走 Rust 批量接口，减少 Python<->Rust 往返与进程调度开销；
@@ -748,6 +759,30 @@ class ThumbnailManager:
             "python_image": 0.35,
             "python_video": 2.0,
         }
+        exists_cache: Dict[str, bool] = {}
+        exists_cache_lock = threading.Lock()
+
+        def _cached_exists(path: str) -> bool:
+            with exists_cache_lock:
+                cached = exists_cache.get(path)
+            if cached is not None:
+                return cached
+
+            exists = os.path.exists(path)
+            with exists_cache_lock:
+                exists_cache[path] = exists
+            return exists
+
+        def _set_cached_exists(path: str, exists: bool) -> None:
+            with exists_cache_lock:
+                exists_cache[path] = exists
+
+        def _get_existing_thumbnail_path(thumbnail_path: str, legacy_thumbnail_path: str) -> Optional[str]:
+            if _cached_exists(thumbnail_path):
+                return thumbnail_path
+            if _cached_exists(legacy_thumbnail_path):
+                return legacy_thumbnail_path
+            return None
 
         def _run_single_task(queue_name: str, item: Dict) -> Tuple[str, List[Tuple[Dict, bool, Optional[str]]], float]:
             start_time = time.perf_counter()
@@ -774,8 +809,9 @@ class ThumbnailManager:
                         file_path, thumbnail_path, legacy_thumbnail_path, prefer_native=False
                     )
 
-                success = bool(result_path and os.path.exists(result_path))
+                success = bool(result_path and _cached_exists(result_path))
                 if success:
+                    _set_cached_exists(result_path, True)
                     self._update_file_access_time(result_path)
             except Exception:
                 success = False
@@ -814,6 +850,7 @@ class ThumbnailManager:
                         with open(thumbnail_path, "wb") as f:
                             f.write(jpg_bytes)
                         result_path = thumbnail_path
+                        _set_cached_exists(thumbnail_path, True)
                     else:
                         result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
                         if result_path is None:
@@ -822,8 +859,9 @@ class ThumbnailManager:
                             else:
                                 result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
 
-                    success = bool(result_path and os.path.exists(result_path))
+                    success = bool(result_path and _cached_exists(result_path))
                     if success:
+                        _set_cached_exists(result_path, True)
                         self._update_file_access_time(result_path)
                 except Exception:
                     success = False
@@ -834,31 +872,40 @@ class ThumbnailManager:
             duration = time.perf_counter() - start_time
             return queue_name, outputs, duration
 
+        def _normalize_batch_file_data(file_data: Union[str, Dict]) -> Tuple[str, Union[str, Dict]]:
+            """标准化批量任务输入，统一提取文件路径并保留原始回调对象。"""
+            if isinstance(file_data, str):
+                return file_data, file_data
+            if isinstance(file_data, dict):
+                file_path = file_data.get("path") or file_data.get("file_path") or ""
+                return file_path, file_data
+            return "", file_data
+
         info(f"开始批量生成缩略图: total={total_count}")
         with track_perf("thumbnail.create_thumbnails_batch"):
             for file_data in files_to_generate:
                 if cancel_check and cancel_check():
                     break
 
-                file_path = file_data.get("path", "")
-                if not file_path or not os.path.exists(file_path):
+                file_path, callback_file_data = _normalize_batch_file_data(file_data)
+                if not file_path or not _cached_exists(file_path):
                     increment_perf_counter("thumbnail.create_thumbnails_batch", "missing_source")
                     processed_count += 1
                     if progress_callback:
-                        progress_callback(processed_count, total_count, file_data, False)
+                        progress_callback(processed_count, total_count, callback_file_data, False)
                     continue
 
                 thumbnail_path = self.get_thumbnail_path(file_path)
                 legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
+                existing = _get_existing_thumbnail_path(thumbnail_path, legacy_thumbnail_path)
 
-                if os.path.exists(thumbnail_path) or os.path.exists(legacy_thumbnail_path):
+                if existing:
                     increment_perf_counter("thumbnail.create_thumbnails_batch", "cache_hit")
-                    existing = thumbnail_path if os.path.exists(thumbnail_path) else legacy_thumbnail_path
                     self._update_file_access_time(existing)
                     success_count += 1
                     processed_count += 1
                     if progress_callback:
-                        progress_callback(processed_count, total_count, file_data, True)
+                        progress_callback(processed_count, total_count, callback_file_data, True)
                     continue
 
                 increment_perf_counter("thumbnail.create_thumbnails_batch", "cache_miss")
@@ -872,7 +919,7 @@ class ThumbnailManager:
                 )
 
                 item = {
-                    "file_data": file_data,
+                    "file_data": callback_file_data,
                     "file_path": file_path,
                     "thumbnail_path": thumbnail_path,
                     "legacy_thumbnail_path": legacy_thumbnail_path,
@@ -1025,14 +1072,23 @@ class ThumbnailManager:
         )
 
         future_to_queue = {}
+        completed_signal = threading.Event()
         cancelled = False
+
+        def _mark_future_completed(_future) -> None:
+            completed_signal.set()
 
         def _consume_completed_futures(done_futures) -> None:
             nonlocal success_count, processed_count
 
+            consumed_any = False
             for future in done_futures:
                 queue_name = future_to_queue.pop(future, None)
-                if queue_name is not None and queue_active_counts[queue_name] > 0:
+                if queue_name is None:
+                    continue
+
+                consumed_any = True
+                if queue_active_counts[queue_name] > 0:
                     queue_active_counts[queue_name] -= 1
 
                 try:
@@ -1049,6 +1105,9 @@ class ThumbnailManager:
                     processed_count += 1
                     if progress_callback:
                         progress_callback(processed_count, total_count, item["file_data"], success)
+
+            if consumed_any and not future_to_queue:
+                completed_signal.clear()
 
         executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="thumb_batch")
         try:
@@ -1076,6 +1135,7 @@ class ThumbnailManager:
                         # debug(f"提交单项任务: queue={queue_name}, file={batch_items[0]['file_path']}")
                         future = executor.submit(_run_single_task, queue_name, batch_items[0])
 
+                    future.add_done_callback(_mark_future_completed)
                     future_to_queue[future] = queue_name
                     queue_active_counts[queue_name] += 1
                     dispatched = True
@@ -1083,22 +1143,32 @@ class ThumbnailManager:
                 if not future_to_queue:
                     if not _has_pending_tasks():
                         break
-                    if not dispatched:
-                        time.sleep(0.01)
                     continue
 
-                done, _ = wait(list(future_to_queue.keys()), timeout=0.1, return_when=FIRST_COMPLETED)
-                if not done:
+                done_now = [future for future in list(future_to_queue.keys()) if future.done()]
+                if done_now:
+                    _consume_completed_futures(done_now)
                     continue
 
-                _consume_completed_futures(done)
+                if dispatched:
+                    continue
+
+                completed_signal.wait(timeout=0.1)
+                completed_signal.clear()
+
+                done_now = [future for future in list(future_to_queue.keys()) if future.done()]
+                if done_now:
+                    _consume_completed_futures(done_now)
 
             if not cancelled:
                 while future_to_queue:
-                    done, _ = wait(list(future_to_queue.keys()), timeout=0.1, return_when=FIRST_COMPLETED)
-                    if not done:
+                    done_now = [future for future in list(future_to_queue.keys()) if future.done()]
+                    if done_now:
+                        _consume_completed_futures(done_now)
                         continue
-                    _consume_completed_futures(done)
+
+                    completed_signal.wait(timeout=0.1)
+                    completed_signal.clear()
             else:
                 done_now = [future for future in list(future_to_queue.keys()) if future.done()]
                 if done_now:

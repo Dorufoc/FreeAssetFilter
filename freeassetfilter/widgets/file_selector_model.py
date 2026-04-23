@@ -16,6 +16,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 
 import os
+import time
 import weakref
 from collections import OrderedDict
 from typing import Optional, List, Dict, Any
@@ -87,6 +88,15 @@ class FileSelectorListModel(QAbstractListModel):
     CardWidthRole = Qt.UserRole + 10
 
     _ICON_CACHE_MAX_ENTRIES = 256
+    _SYSTEM_ICON_RETRY_DELAY_MS = 1000
+    _SYSTEM_ICON_SUFFIXES = frozenset({"lnk", "exe", "url"})
+    _PHOTO_SUFFIXES = frozenset({
+        "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg",
+        "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb",
+    })
+    _VIDEO_SUFFIXES = frozenset({
+        "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf",
+    })
     _icon_cache = OrderedDict()
 
     def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
@@ -100,6 +110,8 @@ class FileSelectorListModel(QAbstractListModel):
         self._path_to_row: Dict[str, int] = {}
         self._async_loader = AsyncIconLoader.instance()
         self._pending_async_icons: Dict[str, tuple] = {}
+        self._system_icon_retry_until: Dict[tuple, float] = {}
+        self._attached_view_ref = None
 
     def _normalize_path(self, file_path: str) -> str:
         return os.path.normpath(file_path) if file_path else ""
@@ -191,11 +203,28 @@ class FileSelectorListModel(QAbstractListModel):
         """兼容接口：更新卡片几何信息"""
         self.set_card_width(card_width, card_height, max_cols)
 
+    def attach_view(self, view) -> None:
+        """关联视图，用于滚动期间的性能优化策略"""
+        self._attached_view_ref = weakref.ref(view) if view is not None else None
+
+    def _get_attached_view(self):
+        return self._attached_view_ref() if self._attached_view_ref else None
+
+    def _is_scroll_optimizing(self) -> bool:
+        view = self._get_attached_view()
+        if view is None or not hasattr(view, "is_scroll_optimizing"):
+            return False
+        try:
+            return bool(view.is_scroll_optimizing())
+        except Exception:
+            return False
+
     def clear_caches(self, file_path: Optional[str] = None, emit_change: bool = False) -> None:
         """清空缓存，可按文件路径精确失效"""
         if file_path is None:
             self._icon_cache.clear()
             self._pending_async_icons.clear()
+            self._system_icon_retry_until.clear()
             if emit_change and self.rowCount() > 0:
                 top = self.index(0, 0)
                 bottom = self.index(self.rowCount() - 1, 0)
@@ -207,6 +236,14 @@ class FileSelectorListModel(QAbstractListModel):
 
         for cache_key in list(self._icon_cache.keys()):
             if not isinstance(cache_key, tuple) or not cache_key:
+                continue
+
+            if (
+                len(cache_key) == 4
+                and cache_key[0] == "system_icon"
+                and self._normalize_path(str(cache_key[1])) == normalized_path
+            ):
+                keys_to_remove.append(cache_key)
                 continue
 
             cache_identity = cache_key[0]
@@ -225,6 +262,13 @@ class FileSelectorListModel(QAbstractListModel):
             self._icon_cache.pop(cache_key, None)
 
         self._pending_async_icons.pop(normalized_path, None)
+        retry_keys_to_remove = [
+            retry_key
+            for retry_key in self._system_icon_retry_until.keys()
+            if retry_key and self._normalize_path(str(retry_key[0])) == normalized_path
+        ]
+        for retry_key in retry_keys_to_remove:
+            self._system_icon_retry_until.pop(retry_key, None)
 
         if emit_change:
             self.refresh_icon(file_path)
@@ -364,6 +408,7 @@ class FileSelectorListModel(QAbstractListModel):
         self._files.clear()
         self._path_to_row.clear()
         self._pending_async_icons.clear()
+        self._system_icon_retry_until.clear()
         self.endResetModel()
 
     def get_file_info(self, index: QModelIndex) -> Dict[str, Any]:
@@ -396,12 +441,19 @@ class FileSelectorListModel(QAbstractListModel):
 
         while len(cls._icon_cache) > cls._ICON_CACHE_MAX_ENTRIES:
             oldest_key = next(iter(cls._icon_cache))
+            source_type = None
             if isinstance(oldest_key, tuple) and len(oldest_key) > 0:
                 source_type = oldest_key[0]
-                if source_type == "system_icon":
-                    cls._icon_cache.move_to_end(oldest_key)
-                    continue
+            if source_type == "system_icon":
+                cls._icon_cache.move_to_end(oldest_key)
+                continue
             cls._icon_cache.popitem(last=False)
+
+    @classmethod
+    def _discard_cached_icon(cls, cache_key) -> None:
+        if cache_key is None:
+            return
+        cls._icon_cache.pop(cache_key, None)
 
     @staticmethod
     def _safe_get_mtime(path: str):
@@ -412,36 +464,102 @@ class FileSelectorListModel(QAbstractListModel):
         except (OSError, PermissionError, RuntimeError, TypeError, ValueError):
             return None
 
-    def _build_icon_source_signature(self, file_info: Dict[str, Any]):
+    @staticmethod
+    def _get_monotonic_time_ms() -> float:
+        return time.monotonic() * 1000.0
+
+    @staticmethod
+    def _build_system_icon_cache_key(normalized_path: str, suffix: str, icon_size: int):
+        return ("system_icon", normalized_path, suffix, icon_size)
+
+    @staticmethod
+    def _build_system_icon_retry_key(normalized_path: str, suffix: str, icon_size: int):
+        return (normalized_path, suffix, icon_size)
+
+    def _is_system_icon_retry_deferred(self, normalized_path: str, suffix: str, icon_size: int) -> bool:
+        retry_key = self._build_system_icon_retry_key(normalized_path, suffix, icon_size)
+        retry_until_ms = self._system_icon_retry_until.get(retry_key)
+        if retry_until_ms is None:
+            return False
+
+        now_ms = self._get_monotonic_time_ms()
+        if now_ms >= retry_until_ms:
+            self._system_icon_retry_until.pop(retry_key, None)
+            return False
+        return True
+
+    def _resolve_icon_source(self, file_info: Dict[str, Any]):
         file_path = file_info.get("path", "")
         is_dir = file_info.get("is_dir", False)
         suffix = file_info.get("suffix", "").lower()
 
         if not file_path:
-            return ("empty",)
+            return {
+                "source_type": "empty",
+                "normalized_path": "",
+                "mtime": None,
+                "icon_path": "",
+                "thumbnail_path": "",
+                "suffix": suffix,
+                "is_dir": is_dir,
+            }
 
         normalized_path = self._normalize_path(file_path)
 
-        if not is_dir and suffix in ["lnk", "exe", "url"]:
-            return ("system_icon", normalized_path, self._safe_get_mtime(file_path))
+        if not is_dir and suffix in self._SYSTEM_ICON_SUFFIXES:
+            return {
+                "source_type": "system_icon",
+                "normalized_path": normalized_path,
+                "mtime": self._safe_get_mtime(file_path),
+                "icon_path": "",
+                "thumbnail_path": "",
+                "suffix": suffix,
+                "is_dir": is_dir,
+            }
 
-        thumbnail_path = get_existing_thumbnail_path(file_path)
-        is_photo = suffix in [
-            "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg",
-            "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb",
-        ]
-        is_video = suffix in [
-            "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf",
-        ]
+        thumbnail_path = ""
+        if suffix in self._PHOTO_SUFFIXES or suffix in self._VIDEO_SUFFIXES:
+            thumbnail_path = get_existing_thumbnail_path(file_path) or ""
+            if thumbnail_path:
+                return {
+                    "source_type": "thumbnail",
+                    "normalized_path": self._normalize_path(thumbnail_path),
+                    "mtime": self._safe_get_mtime(thumbnail_path),
+                    "icon_path": "",
+                    "thumbnail_path": thumbnail_path,
+                    "suffix": suffix,
+                    "is_dir": is_dir,
+                }
 
-        if (is_photo or is_video) and thumbnail_path and os.path.exists(thumbnail_path):
-            return ("thumbnail", self._normalize_path(thumbnail_path), self._safe_get_mtime(thumbnail_path))
-
-        icon_path = get_file_icon_path(file_info)
+        icon_path = get_file_icon_path(file_info) or ""
         if icon_path and os.path.exists(icon_path):
-            return ("file_icon", self._normalize_path(icon_path), self._safe_get_mtime(icon_path))
+            return {
+                "source_type": "file_icon",
+                "normalized_path": self._normalize_path(icon_path),
+                "mtime": self._safe_get_mtime(icon_path),
+                "icon_path": icon_path,
+                "thumbnail_path": thumbnail_path,
+                "suffix": suffix,
+                "is_dir": is_dir,
+            }
 
-        return ("file_icon", "", None)
+        return {
+            "source_type": "file_icon",
+            "normalized_path": "",
+            "mtime": None,
+            "icon_path": icon_path,
+            "thumbnail_path": thumbnail_path,
+            "suffix": suffix,
+            "is_dir": is_dir,
+        }
+
+    def _build_icon_source_signature(self, file_info: Dict[str, Any]):
+        resolved_source = self._resolve_icon_source(file_info)
+        return (
+            resolved_source["source_type"],
+            resolved_source["normalized_path"],
+            resolved_source["mtime"],
+        )
 
     def _get_theme_color_tuple(self):
         app = QApplication.instance()
@@ -614,6 +732,8 @@ class FileSelectorListModel(QAbstractListModel):
         return final_pixmap
 
     def _emit_icon_changed_for_path(self, normalized_path: str) -> None:
+        if self._is_scroll_optimizing():
+            return
         row = self._path_to_row.get(normalized_path, -1)
         if row < 0:
             return
@@ -631,10 +751,17 @@ class FileSelectorListModel(QAbstractListModel):
         if pending_suffix != expected_suffix or pending_icon_size != icon_size:
             return
 
+        cache_key = self._build_system_icon_cache_key(normalized_path, expected_suffix, icon_size)
+        retry_key = self._build_system_icon_retry_key(normalized_path, expected_suffix, icon_size)
         if pixmap and not pixmap.isNull():
             normalized_pixmap = self._normalize_icon_pixmap(pixmap, icon_size)
-            cache_key = ("system_icon", normalized_path, expected_suffix, icon_size)
             self._store_cached_icon(cache_key, normalized_pixmap)
+            self._system_icon_retry_until.pop(retry_key, None)
+        else:
+            self._discard_cached_icon(cache_key)
+            self._system_icon_retry_until[retry_key] = (
+                self._get_monotonic_time_ms() + self._SYSTEM_ICON_RETRY_DELAY_MS
+            )
 
         self._pending_async_icons.pop(normalized_path, None)
         self._emit_icon_changed_for_path(normalized_path)
@@ -644,6 +771,9 @@ class FileSelectorListModel(QAbstractListModel):
         suffix = file_info.get("suffix", "").lower()
         normalized_path = self._normalize_path(file_path)
         if not normalized_path:
+            return
+
+        if self._is_system_icon_retry_deferred(normalized_path, suffix, icon_size):
             return
 
         pending_info = self._pending_async_icons.get(normalized_path)
@@ -662,6 +792,43 @@ class FileSelectorListModel(QAbstractListModel):
 
         self._async_loader.load_icon(file_path, _on_loaded, icon_size=icon_size)
 
+    def _build_lightweight_placeholder(
+        self,
+        file_info: Dict[str, Any],
+        icon_size: int,
+        dpr: float,
+        base_color: str,
+    ) -> QPixmap:
+        icon_path = get_file_icon_path(file_info) or ""
+        suffix = str(file_info.get("suffix", "")).lower()
+
+        if icon_path and os.path.exists(icon_path):
+            if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
+                display_suffix = suffix.upper() if suffix else ""
+                if not display_suffix or len(display_suffix) >= 5:
+                    display_suffix = "FILE"
+                pixmap = self._build_unknown_icon_pixmap_static(icon_path, display_suffix, icon_size, dpr, base_color)
+            elif icon_path.endswith("压缩文件.svg") or icon_path.endswith("压缩文件 – 1.svg"):
+                display_suffix = "." + suffix if suffix else ""
+                if not display_suffix or len(display_suffix) >= 5:
+                    display_suffix = "FILE"
+                pixmap = self._build_unknown_icon_pixmap_static(icon_path, display_suffix, icon_size, dpr, base_color)
+            else:
+                pixmap = SvgRenderer.render_svg_to_exact_pixmap(
+                    icon_path,
+                    icon_width=icon_size,
+                    icon_height=icon_size,
+                    replace_colors=True,
+                    device_pixel_ratio=dpr,
+                )
+
+            if pixmap and not pixmap.isNull():
+                return self._normalize_icon_pixmap(pixmap, icon_size)
+
+        placeholder = QPixmap(icon_size, icon_size)
+        placeholder.fill(Qt.transparent)
+        return placeholder
+
     def _get_icon_pixmap(self, file_info: Dict[str, Any]) -> QPixmap:
         """
         获取文件图标像素图
@@ -671,14 +838,18 @@ class FileSelectorListModel(QAbstractListModel):
         if not file_path:
             return QPixmap()
 
-        is_dir = file_info.get("is_dir", False)
-        suffix = file_info.get("suffix", "").lower()
         icon_size = int(38 * self._dpi_scale)
         dpr = round(self._get_device_pixel_ratio(), 4)
         base_color, auxiliary_color, normal_color, accent_color, secondary_color = self._get_theme_color_tuple()
-
-        icon_source_signature = self._build_icon_source_signature(file_info)
-        source_type = icon_source_signature[0] if icon_source_signature else "empty"
+        resolved_source = self._resolve_icon_source(file_info)
+        source_type = resolved_source["source_type"]
+        suffix = resolved_source["suffix"]
+        is_dir = resolved_source["is_dir"]
+        icon_source_signature = (
+            source_type,
+            resolved_source["normalized_path"],
+            resolved_source["mtime"],
+        )
         cache_identity = (
             source_type,
             is_dir,
@@ -701,54 +872,30 @@ class FileSelectorListModel(QAbstractListModel):
         if cached is not None and not cached.isNull():
             return cached
 
-        is_system_icon = (not is_dir) and suffix in ["lnk", "exe", "url"]
         normalized_path = self._normalize_path(file_path)
-
-        if is_system_icon:
-            system_cache_key = ("system_icon", normalized_path, suffix, icon_size)
+        is_scroll_optimizing = self._is_scroll_optimizing()
+        if source_type == "system_icon":
+            system_cache_key = self._build_system_icon_cache_key(normalized_path, suffix, icon_size)
             system_cached = self._get_cached_icon(system_cache_key)
             if system_cached is not None and not system_cached.isNull():
                 return system_cached
 
-            icon_path = get_file_icon_path(file_info)
-            if icon_path and os.path.exists(icon_path):
-                placeholder = SvgRenderer.render_svg_to_exact_pixmap(
-                    icon_path,
-                    icon_width=icon_size,
-                    icon_height=icon_size,
-                    replace_colors=True,
-                    device_pixel_ratio=dpr,
-                )
-                if placeholder and not placeholder.isNull():
-                    normalized_placeholder = self._normalize_icon_pixmap(placeholder, icon_size)
-                    self._store_cached_icon(system_cache_key, normalized_placeholder)
-                    self._request_async_system_icon(file_info, icon_size)
-                    return normalized_placeholder
-
-            placeholder = QPixmap(icon_size, icon_size)
-            placeholder.fill(Qt.transparent)
-            self._store_cached_icon(system_cache_key, placeholder)
-            self._request_async_system_icon(file_info, icon_size)
+            placeholder = self._build_lightweight_placeholder(file_info, icon_size, dpr, base_color)
+            if not is_scroll_optimizing and not self._is_system_icon_retry_deferred(normalized_path, suffix, icon_size):
+                self._request_async_system_icon(file_info, icon_size)
             return placeholder
 
-        thumbnail_path = get_existing_thumbnail_path(file_path)
-        is_photo = suffix in [
-            "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "svg",
-            "avif", "cr2", "cr3", "nef", "arw", "dng", "orf", "psd", "psb",
-        ]
-        is_video = suffix in [
-            "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "mpeg", "mpg", "mxf",
-        ]
-
-        if (is_photo or is_video) and thumbnail_path and os.path.exists(thumbnail_path):
-            pixmap = QPixmap(thumbnail_path)
+        if source_type == "thumbnail":
+            if is_scroll_optimizing:
+                return self._build_lightweight_placeholder(file_info, icon_size, dpr, base_color)
+            pixmap = QPixmap(resolved_source["thumbnail_path"])
             if pixmap and not pixmap.isNull():
                 normalized_pixmap = self._normalize_icon_pixmap(pixmap, icon_size)
                 self._store_cached_icon(cache_key, normalized_pixmap)
                 return normalized_pixmap
 
-        icon_path = get_file_icon_path(file_info)
-        if icon_path and os.path.exists(icon_path):
+        icon_path = resolved_source["icon_path"]
+        if icon_path:
             if icon_path.endswith("未知底板.svg") or icon_path.endswith("未知底板 – 1.svg"):
                 display_suffix = suffix.upper() if suffix else ""
                 if not display_suffix or len(display_suffix) >= 5:
@@ -811,13 +958,27 @@ class FileListView(QListView):
         self._touch_optimization_enabled = True
         self._mouse_buttons_swapped = False
         self._pending_click_file_info = None
+        self._connected_vertical_scrollbar = None
+        self._connected_horizontal_scrollbar = None
+        self._scrollbar_drag_active = False
+        self._defer_icon_loading = False
+        self._last_slider_value = None
+        self._last_slider_value_timestamp = 0.0
+        self._defer_icon_loading_enter_velocity = 2600.0
+        self._defer_icon_loading_exit_velocity = 1200.0
+        self._defer_icon_loading_resume_delay_ms = 120
 
         self._long_press_timer = QTimer(self)
         self._long_press_timer.setSingleShot(True)
         self._long_press_timer.timeout.connect(self._start_long_press_drag)
 
+        self._defer_icon_loading_timer = QTimer(self)
+        self._defer_icon_loading_timer.setSingleShot(True)
+        self._defer_icon_loading_timer.timeout.connect(self._resume_icon_loading)
+
         self._setup_view()
         self._load_interaction_settings()
+        self.configure_scrollbar_tracking()
 
     def _setup_view(self) -> None:
         """配置视图属性"""
@@ -859,6 +1020,104 @@ class FileListView(QListView):
 
     def refresh_interaction_settings(self) -> None:
         self._load_interaction_settings()
+
+    def is_scroll_optimizing(self) -> bool:
+        return self._defer_icon_loading
+
+    def _get_monotonic_time_ms(self) -> float:
+        return time.monotonic() * 1000.0
+
+    def _set_deferred_icon_loading(self, active: bool) -> None:
+        active = bool(active)
+        if self._defer_icon_loading == active:
+            return
+        self._defer_icon_loading = active
+        self.viewport().update()
+
+    def _resume_icon_loading(self) -> None:
+        self._set_deferred_icon_loading(False)
+
+    def _schedule_icon_loading_resume(self) -> None:
+        self._defer_icon_loading_timer.start(self._defer_icon_loading_resume_delay_ms)
+
+    def _connect_scrollbar(self, scrollbar, orientation: str) -> None:
+        if scrollbar is None:
+            return
+
+        current_attr = f"_connected_{orientation}_scrollbar"
+        previous_scrollbar = getattr(self, current_attr, None)
+        if previous_scrollbar is scrollbar:
+            return
+
+        if previous_scrollbar is not None:
+            for signal, slot in (
+                (previous_scrollbar.sliderPressed, self._on_scrollbar_slider_pressed),
+                (previous_scrollbar.sliderMoved, self._on_scrollbar_slider_moved),
+                (previous_scrollbar.sliderReleased, self._on_scrollbar_slider_released),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+
+        scrollbar.sliderPressed.connect(self._on_scrollbar_slider_pressed)
+        scrollbar.sliderMoved.connect(self._on_scrollbar_slider_moved)
+        scrollbar.sliderReleased.connect(self._on_scrollbar_slider_released)
+        setattr(self, current_attr, scrollbar)
+
+    def configure_scrollbar_tracking(self) -> None:
+        self._connect_scrollbar(self.verticalScrollBar(), "vertical")
+        self._connect_scrollbar(self.horizontalScrollBar(), "horizontal")
+
+    def setModel(self, model) -> None:
+        super().setModel(model)
+        if isinstance(model, FileSelectorListModel):
+            model.attach_view(self)
+
+    def setVerticalScrollBar(self, scrollbar) -> None:
+        super().setVerticalScrollBar(scrollbar)
+        self.configure_scrollbar_tracking()
+
+    def setHorizontalScrollBar(self, scrollbar) -> None:
+        super().setHorizontalScrollBar(scrollbar)
+        self.configure_scrollbar_tracking()
+
+    def _on_scrollbar_slider_pressed(self) -> None:
+        scrollbar = self.sender()
+        self._scrollbar_drag_active = True
+        self._last_slider_value = scrollbar.value() if scrollbar is not None else None
+        self._last_slider_value_timestamp = self._get_monotonic_time_ms()
+        self._defer_icon_loading_timer.stop()
+
+    def _on_scrollbar_slider_moved(self, value: int, now_ms: float = None) -> None:
+        if not self._scrollbar_drag_active:
+            return
+
+        current_time_ms = self._get_monotonic_time_ms() if now_ms is None else float(now_ms)
+        previous_value = self._last_slider_value
+        previous_time_ms = self._last_slider_value_timestamp
+
+        self._last_slider_value = value
+        self._last_slider_value_timestamp = current_time_ms
+
+        if previous_value is None or previous_time_ms <= 0:
+            return
+
+        delta_value = abs(int(value) - int(previous_value))
+        delta_time_ms = max(1.0, current_time_ms - previous_time_ms)
+        velocity = (delta_value * 1000.0) / delta_time_ms
+
+        if velocity >= self._defer_icon_loading_enter_velocity:
+            self._defer_icon_loading_timer.stop()
+            self._set_deferred_icon_loading(True)
+        elif self._defer_icon_loading and velocity <= self._defer_icon_loading_exit_velocity:
+            self._schedule_icon_loading_resume()
+
+    def _on_scrollbar_slider_released(self) -> None:
+        self._scrollbar_drag_active = False
+        self._last_slider_value = None
+        self._last_slider_value_timestamp = 0.0
+        self._schedule_icon_loading_resume()
 
     def _get_file_info_from_index(self, index: QModelIndex) -> Dict[str, Any]:
         model = self.model()
@@ -939,7 +1198,7 @@ class FileListView(QListView):
             return QPixmap()
 
         # 注意：
-        # - gridSize() 现在表示“单元格尺寸”（包含为矩阵间距预留的空白）
+        # - gridSize() 表示单元格尺寸，包含矩阵外边距预留
         # - 拖拽预览需要的是“真实卡片尺寸”
         # 因此这里优先使用 delegate.sizeHint()，保证拖拽卡片与列表中的卡片本体一致。
         try:

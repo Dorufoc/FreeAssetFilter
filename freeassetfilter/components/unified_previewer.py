@@ -92,6 +92,7 @@ class UnifiedPreviewer(QWidget):
         
         self._current_settings_window = None
         self._scheduled_preview_cleanup = False
+        self._preview_cleanup_sequence = 0
 
         # 初始化UI
         self.init_ui()
@@ -372,8 +373,6 @@ class UnifiedPreviewer(QWidget):
         debug("开始处理文件预览")
         
         if not self.current_file_info:
-            # 没有文件信息时，显示默认提示
-            # debug("没有文件信息，显示默认提示")
             self._clear_preview()
             self.preview_layout.addWidget(self.default_label)
             self.default_label.show()
@@ -383,15 +382,9 @@ class UnifiedPreviewer(QWidget):
             self.clear_preview_button.hide()
             return
         
-        # debug(f"获取文件信息: {self.current_file_info}")
-        
-        # 获取文件路径和类型
         file_path = self.current_file_info["path"]
         file_type = self.current_file_info["suffix"]
         
-        # debug(f"提取的文件路径: {file_path}, 文件类型: {file_type}")
-        
-        # 确定预览类型
         preview_type = None
         if self.current_file_info["is_dir"]:
             preview_type = "dir"
@@ -402,7 +395,7 @@ class UnifiedPreviewer(QWidget):
         elif file_type in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
             preview_type = "audio"
         elif file_type in ["doc", "docx", "xls", "xlsx", "ppt", "pptx"]:
-            preview_type = "document"  # 新增文档类型
+            preview_type = "document"
         elif file_type in ["pdf"]:
             preview_type = "pdf"
         elif file_type in ["txt", "md", "rst", "py", "java", "cpp", "js", "html", "css", "php", "c", "h", "cs", "go", "rb", "swift", "kt", "yml", "yaml", "json", "xml"]:
@@ -414,70 +407,55 @@ class UnifiedPreviewer(QWidget):
         else:
             preview_type = "unknown"
         
-        # debug(f"确定预览类型: {preview_type}")
-        
         debug(f"current_preview_type: {self.current_preview_type}, preview_type: {preview_type}")
         debug(f"current_preview_widget: {self.current_preview_widget}")
         
-        # 检查当前预览组件是否可以处理该类型
-        # 如果预览类型相同，直接更新组件
         if preview_type == self.current_preview_type and self.current_preview_widget:
-            # 更新现有组件
             debug(f"预览类型相同，直接更新组件: {preview_type}")
             self._update_preview_widget(file_path, preview_type)
         else:
-            # 设置加载状态为True，防止快速点击触发多个预览
-            self.is_loading_preview = True
-            debug(f"预览类型不同，创建新组件: {preview_type}, is_loading_preview=True")
-            
-            # 显示进度条弹窗
-            title = "正在加载预览"
-            message = "正在准备预览组件..."
-            if preview_type == "video":
-                title = "正在加载视频"
-                message = "正在准备视频播放器..."
-                # debug("显示视频加载进度条")
-            elif preview_type == "audio":
-                title = "正在加载音频"
-                message = "正在准备音频播放器..."
-                # debug("显示音频加载进度条")
-            elif preview_type == "pdf":
-                title = "正在加载PDF"
-                message = "正在准备PDF阅读器..."
-                # debug("显示PDF加载进度条")
-            elif preview_type == "archive":
-                title = "正在加载压缩包"
-                message = "正在准备压缩包浏览器..."
-                # debug("显示压缩包加载进度条")
-            elif preview_type == "image":
-                title = "正在加载图片"
-                message = "正在准备图片查看器..."
-                # debug("显示图片加载进度条")
-            elif preview_type == "text":
-                title = "正在加载文本"
-                message = "正在准备文本查看器..."
-                # debug("显示文本加载进度条")
-            elif preview_type == "dir":
-                title = "正在加载文件夹"
-                message = "正在准备文件夹浏览器..."
-                # debug("显示文件夹加载进度条")
-            elif preview_type == "font":
-                title = "正在加载字体"
-                message = "正在准备字体预览器..."
-                # debug("显示字体加载进度条")
+            self._start_preview_switch(file_path, preview_type)
+        
+        self.open_with_system_button.show()
+        self.copy_to_clipboard_button.show()
+        self.locate_in_selector_button.show()
+        self.clear_preview_button.show()
 
-            self._show_progress_dialog(title, message)
-            
-            # 预览类型不同，清除当前组件，创建新组件
-            # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
-            # debug("清除当前预览组件")
-            self._clear_preview(emit_signal=False)
-            
-            # 清理后台线程
+    def _start_preview_switch(self, file_path, preview_type):
+        self.is_loading_preview = True
+
+        title = "正在加载预览"
+        message = "正在准备预览组件..."
+        if preview_type == "video":
+            title = "正在加载视频"
+            message = "正在准备视频播放器..."
+        elif preview_type == "audio":
+            title = "正在加载音频"
+            message = "正在准备音频播放器..."
+        elif preview_type == "pdf":
+            title = "正在加载PDF"
+            message = "正在准备PDF阅读器..."
+        elif preview_type == "archive":
+            title = "正在加载压缩包"
+            message = "正在准备压缩包浏览器..."
+        elif preview_type == "image":
+            title = "正在加载图片"
+            message = "正在准备图片查看器..."
+        elif preview_type == "text":
+            title = "正在加载文本"
+            message = "正在准备文本查看器..."
+        elif preview_type == "dir":
+            title = "正在加载文件夹"
+            message = "正在准备文件夹浏览器..."
+        elif preview_type == "font":
+            title = "正在加载字体"
+            message = "正在准备字体预览器..."
+
+        self._show_progress_dialog(title, message)
+
+        def _continue_loading():
             self._cleanup_preview_thread()
-            
-            # 创建后台加载线程
-            # debug(f"创建后台加载线程，预览类型: {preview_type}, 文件路径: {file_path}")
+
             try:
                 self._preview_thread = self.PreviewLoaderThread(file_path, preview_type, self)
             except Exception as e:
@@ -485,15 +463,11 @@ class UnifiedPreviewer(QWidget):
                 self.is_loading_preview = False
                 self._on_file_read_finished()
                 return
-            
-            # 连接线程信号
-            # debug("连接线程信号")
+
             self._preview_thread.preview_created.connect(self._on_preview_created)
             self._preview_thread.preview_error.connect(self._on_preview_error)
             self._preview_thread.preview_progress.connect(self._on_progress_updated)
-            
-            # 启动线程
-            # debug("启动后台加载线程")
+
             try:
                 self._preview_thread.start()
             except Exception as e:
@@ -501,16 +475,10 @@ class UnifiedPreviewer(QWidget):
                 self.is_loading_preview = False
                 self._on_file_read_finished()
                 return
-            
-            # 更新当前预览类型
-            # debug(f"更新当前预览类型: {preview_type}")
+
             self.current_preview_type = preview_type
-        
-        # 显示"使用系统默认方式打开"按钮和"定位到所在目录"按钮
-        self.open_with_system_button.show()
-        self.copy_to_clipboard_button.show()
-        self.locate_in_selector_button.show()
-        self.clear_preview_button.show()
+
+        self._clear_preview(emit_signal=False, on_cleared=_continue_loading)
     
     def _cleanup_preview_thread(self):
         """
@@ -673,7 +641,7 @@ class UnifiedPreviewer(QWidget):
         except Exception as e:
             error(f"复制文件到剪切板失败: {e}")
 
-    def _clear_preview(self, emit_signal=True, app_closing=False):
+    def _clear_preview(self, emit_signal=True, app_closing=False, on_cleared=None):
         """
         清除当前预览内容，确保所有组件都被正确释放，但保留控制栏
         
@@ -682,143 +650,111 @@ class UnifiedPreviewer(QWidget):
                                在切换预览类型时不应发出信号，避免清除新设置的预览态。
             app_closing (bool): 是否处于应用退出流程。
                                 退出时应避免在主线程执行阻塞式播放器清理，并强制清理分离窗口中的播放器。
+            on_cleared (callable | None): 清理完成后的回调，用于非阻塞续接后续逻辑。
         """
-        # 先停止后台线程，避免在清理过程中发生访问冲突
         self._cleanup_preview_thread()
-        
-        # 先移除默认标签（如果存在），避免重复添加
+
         if hasattr(self, 'default_label') and self.default_label and self.default_label.parent() is self.preview_area:
             self.preview_layout.removeWidget(self.default_label)
             self.default_label.hide()
-        
-        # 停止当前预览组件的播放（如果是视频或音频）
-        if self.current_preview_widget:
-            # 检查是否是VideoPlayer且已经分离到独立窗口
-            is_detached_video_player = False
+
+        widget = self.current_preview_widget
+        is_detached_video_player = False
+        video_player_widget = None
+
+        if widget:
             try:
                 from freeassetfilter.components.video_player import VideoPlayer
-                if isinstance(self.current_preview_widget, VideoPlayer):
-                    # 应用退出时必须强制清理分离窗口中的播放器，避免残留顶层窗口或后台资源
+                if isinstance(widget, VideoPlayer):
+                    video_player_widget = widget
                     if (
                         not app_closing
-                        and hasattr(self.current_preview_widget, '_detached_window')
-                        and self.current_preview_widget._detached_window
+                        and hasattr(widget, '_detached_window')
+                        and widget._detached_window
                     ):
                         is_detached_video_player = True
-                        info(f"[UnifiedPreviewer] 视频播放器已分离到独立窗口，跳过清理")
+                        info("[UnifiedPreviewer] 视频播放器已分离到独立窗口，跳过清理")
             except Exception as e:
                 error(f"检查VideoPlayer分离状态时出错: {e}")
-            
-            # 如果已经分离，就跳过清理
+
+        def _finish_clear(callback_token=None):
+            if callback_token is not None and callback_token != self._preview_cleanup_sequence:
+                return
+
             if not is_detached_video_player:
-                # 对于文本预览器，需要特别处理QWebEngineView的资源释放
-                try:
-                    from freeassetfilter.components.text_previewer import TextPreviewWidget
-                    if isinstance(self.current_preview_widget, TextPreviewWidget):
-                        # 调用cleanup方法进行完整的资源清理
-                        if hasattr(self.current_preview_widget, 'cleanup'):
-                            self.current_preview_widget.cleanup()
-                except Exception as e:
-                    error(f"清理TextPreviewWidget组件时出错: {e}")
-                
-                # 对于字体预览器，需要特别处理字体资源释放
-                try:
-                    from freeassetfilter.components.font_previewer import FontPreviewWidget
-                    if isinstance(self.current_preview_widget, FontPreviewWidget):
-                        # 调用cleanup方法进行完整的资源清理
-                        if hasattr(self.current_preview_widget, 'cleanup'):
-                            self.current_preview_widget.cleanup()
-                except Exception as e:
-                    error(f"清理FontPreviewWidget组件时出错: {e}")
-                
-                # 停止播放
-                if hasattr(self.current_preview_widget, 'stop'):
-                    try:
-                        self.current_preview_widget.stop()
-                    except Exception as e:
-                        error(f"停止预览组件时出错: {e}")
-                
-                # 对于VideoPlayer组件，确保完全停止所有播放器核心
-                # 这是关键步骤：必须确保MPV完全销毁后才能创建新的播放器，否则会导致访问冲突
-                video_player_widget = None
-                try:
-                    from freeassetfilter.components.video_player import VideoPlayer
-                    if isinstance(self.current_preview_widget, VideoPlayer):
-                        video_player_widget = self.current_preview_widget
-                        # 切换预览时使用同步清理，确保旧 MPV 完全释放后再创建新播放器；
-                        # 应用退出时改为异步清理，避免在主线程 join/等待导致程序退出卡死。
-                        if hasattr(video_player_widget, 'cleanup'):
-                            try:
-                                video_player_widget.cleanup(async_mode=app_closing)
-                            except Exception as e:
-                                error(f"调用VideoPlayer.cleanup()时出错: {e}")
-
-                        if not app_closing:
-                            # 处理事件，确保清理操作完成
-                            # 使用 ExcludeUserInputEvents 标志排除用户输入事件，避免在处理过程中
-                            # 触发鼠标/键盘事件导致重入问题（如eventFilter中的事件处理）
-                            from PySide6.QtCore import QCoreApplication, QEventLoop
-                            QCoreApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
-
-                            # 等待一小段时间确保MPV资源完全释放
-                            from PySide6.QtCore import QThread
-                            QThread.msleep(100)  # 等待100ms让MPV完全释放
-                except Exception as e:
-                    error(f"清理VideoPlayer组件时出错: {e}")
-
-                # 注意：不要调用 self.current_preview_widget.disconnect()
-                # 因为这会断开所有信号连接，包括 QWebEngineView 等内部组件的信号
-                # 可能导致程序卡死。使用 removeWidget 和 deleteLater 已经足够
-
-                # 清除布局中的所有组件，除了控制栏
-                # 控制栏是第一个组件，所以只清除从索引1开始的组件
                 for i in reversed(range(self.preview_layout.count())):
-                    if i == 0:  # 保留控制栏
+                    if i == 0:
                         continue
                     item = self.preview_layout.itemAt(i)
-                    if item is not None:
-                        widget = item.widget()
-                        if widget is not None:
-                            self.preview_layout.removeWidget(widget)
-                            # 对于VideoPlayer，先隐藏再销毁，确保窗口句柄被正确释放
-                            if widget is video_player_widget:
-                                widget.hide()
-                            widget.deleteLater()
-        
-        # 检查是否是VideoPlayer且已经分离到独立窗口
-        is_detached_video_player = False
+                    if item is None:
+                        continue
+                    layout_widget = item.widget()
+                    if layout_widget is None:
+                        continue
+                    self.preview_layout.removeWidget(layout_widget)
+                    if layout_widget is video_player_widget:
+                        layout_widget.hide()
+                    layout_widget.deleteLater()
+
+                while self.preview_layout.count() > 1:
+                    item = self.preview_layout.takeAt(1)
+                    if item is None:
+                        continue
+                    layout_widget = item.widget()
+                    if layout_widget is not None:
+                        layout_widget.deleteLater()
+
+                self.current_preview_widget = None
+                self.current_preview_type = None
+
+            if emit_signal:
+                self.preview_cleared.emit()
+
+            if on_cleared:
+                try:
+                    on_cleared()
+                except Exception as e:
+                    exception_details("[UnifiedPreviewer] 执行预览清理回调失败", e)
+
+        if not widget or is_detached_video_player:
+            _finish_clear()
+            return
+
         try:
-            from freeassetfilter.components.video_player import VideoPlayer
-            if isinstance(self.current_preview_widget, VideoPlayer):
-                if (
-                    not app_closing
-                    and hasattr(self.current_preview_widget, '_detached_window')
-                    and self.current_preview_widget._detached_window
-                ):
-                    is_detached_video_player = True
+            from freeassetfilter.components.text_previewer import TextPreviewWidget
+            if isinstance(widget, TextPreviewWidget) and hasattr(widget, 'cleanup'):
+                widget.cleanup()
         except Exception as e:
-            error(f"检查VideoPlayer分离状态时出错: {e}")
-        
-        # 只有当播放器未分离时才清理布局
-        if not is_detached_video_player:
-            # 确保布局中只保留控制栏
-            while self.preview_layout.count() > 1:  # 1表示只保留控制栏
-                item = self.preview_layout.takeAt(1)  # 从索引1开始移除
-                if item is not None:
-                    widget = item.widget()
-                    if widget is not None:
-                        widget.deleteLater()
-        
-        # 只有当播放器未分离时才重置当前预览组件和类型
-        if not is_detached_video_player:
-            # 重置当前预览组件和类型
-            self.current_preview_widget = None
-            self.current_preview_type = None
-        
-        # 根据参数决定是否发出预览清除信号
-        # 在切换预览类型时不发出信号，避免清除新设置的预览态
-        if emit_signal:
-            self.preview_cleared.emit()
+            error(f"清理TextPreviewWidget组件时出错: {e}")
+
+        try:
+            from freeassetfilter.components.font_previewer import FontPreviewWidget
+            if isinstance(widget, FontPreviewWidget) and hasattr(widget, 'cleanup'):
+                widget.cleanup()
+        except Exception as e:
+            error(f"清理FontPreviewWidget组件时出错: {e}")
+
+        if hasattr(widget, 'stop'):
+            try:
+                widget.stop()
+            except Exception as e:
+                error(f"停止预览组件时出错: {e}")
+
+        if video_player_widget is None:
+            _finish_clear()
+            return
+
+        try:
+            if hasattr(video_player_widget, 'cleanup'):
+                video_player_widget.cleanup(async_mode=True)
+        except Exception as e:
+            error(f"调用VideoPlayer.cleanup()时出错: {e}")
+
+        self._preview_cleanup_sequence += 1
+        callback_token = self._preview_cleanup_sequence
+
+        delay_ms = 0 if app_closing else 120
+        QTimer.singleShot(delay_ms, lambda: _finish_clear(callback_token))
     
     def _update_preview_widget(self, file_path, preview_type):
         """
@@ -835,9 +771,7 @@ class UnifiedPreviewer(QWidget):
         try:
             # 如果是文档类型预览，需要重新转换
             if preview_type == "document":
-                # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
-                self._clear_preview(emit_signal=False)
-                self._show_preview()
+                self._clear_preview(emit_signal=False, on_cleared=self._show_preview)
                 return
             # 确保组件处于正确状态
             if preview_type in ["video", "audio"]:
@@ -880,14 +814,10 @@ class UnifiedPreviewer(QWidget):
                 current_is_photoviewer = isinstance(self.current_preview_widget, PhotoViewer)
                 
                 if is_animated and not current_is_gifviewer:
-                    # 需要切换到 GifViewer
-                    self._clear_preview(emit_signal=False)
-                    self._show_image_preview(file_path)
+                    self._clear_preview(emit_signal=False, on_cleared=lambda: self._show_image_preview(file_path))
                     return
                 elif not is_animated and not current_is_photoviewer:
-                    # 需要切换到 PhotoViewer
-                    self._clear_preview(emit_signal=False)
-                    self._show_image_preview(file_path)
+                    self._clear_preview(emit_signal=False, on_cleared=lambda: self._show_image_preview(file_path))
                     return
                 else:
                     # 组件类型匹配，直接更新
@@ -914,18 +844,11 @@ class UnifiedPreviewer(QWidget):
                 if hasattr(self.current_preview_widget, 'set_path'):
                     self.current_preview_widget.set_path(file_path)
             elif preview_type == "font":
-                # 字体预览组件：每次传入新字体时，清除旧组件并创建新组件
-                # 这样可以确保字体资源被正确释放，新字体能够正确加载
-                # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
-                self._clear_preview(emit_signal=False)
-                self._show_font_preview(file_path)
+                self._clear_preview(emit_signal=False, on_cleared=lambda: self._show_font_preview(file_path))
                 return
         except Exception as e:
             error(f"更新预览组件时出错: {e}")
-            # 如果更新失败，清除当前组件，重新创建
-            # 传入 emit_signal=False，避免发出 preview_cleared 信号清除新设置的预览态
-            self._clear_preview(emit_signal=False)
-            self._show_preview()
+            self._clear_preview(emit_signal=False, on_cleared=self._show_preview)
     
     def _show_error_with_copy_button(self, error_message):
         """
@@ -1988,9 +1911,6 @@ class UnifiedPreviewer(QWidget):
                 from freeassetfilter.components.video_player import VideoPlayer
                 from freeassetfilter.core.settings_manager import SettingsManager
 
-                if self.current_preview_widget:
-                    self.stop_preview()
-
                 settings_manager = SettingsManager()
                 enable_detach = settings_manager.get_setting("player.enable_fullscreen", False)
                 initial_volume = settings_manager.get_player_volume()
@@ -2031,7 +1951,11 @@ class UnifiedPreviewer(QWidget):
             except Exception as e:
                 error(f"[UnifiedPreviewer] 重建媒体播放器失败: {e}")
 
-        QTimer.singleShot(200, _rebuild_player)
+        if self.current_preview_widget:
+            self._clear_preview(emit_signal=False, on_cleared=_rebuild_player)
+            return
+
+        QTimer.singleShot(0, _rebuild_player)
 
     def _refresh_file_selector_and_staging_pool(self):
         """

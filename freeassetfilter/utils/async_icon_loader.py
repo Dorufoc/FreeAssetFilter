@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import weakref
 from typing import Callable, Optional
 
 from PySide6.QtCore import (
@@ -104,7 +103,7 @@ class AsyncIconLoader:
         self._pool = QThreadPool.globalInstance()
         self._pool.setMaxThreadCount(max(2, min(os.cpu_count() or 4, 8)))
         self._signals = _IconLoadSignals()
-        self._callbacks: dict[str, weakref.ref] = {}
+        self._callbacks: dict[str, Callable[[str, Optional[QPixmap]], None]] = {}
         self._runnables: dict[str, _IconLoadRunnable] = {}
 
         self._signals.finished.connect(self._on_finished)
@@ -123,8 +122,9 @@ class AsyncIconLoader:
     ) -> None:
         self.cancel_load(file_path)
 
-        cb_ref = weakref.ref(callback)
-        self._callbacks[file_path] = cb_ref
+        # Keep a strong reference until completion; callers often pass
+        # short-lived closures that would otherwise be collected immediately.
+        self._callbacks[file_path] = callback
 
         runnable = _IconLoadRunnable(file_path, icon_size, self._signals)
         self._runnables[file_path] = runnable
@@ -146,13 +146,9 @@ class AsyncIconLoader:
 
     def _on_finished(self, file_path: str, pixmap: Optional[QPixmap]) -> None:
         self._runnables.pop(file_path, None)
-        cb_ref = self._callbacks.pop(file_path, None)
-        if cb_ref is not None:
-            callback = cb_ref()
-            if callback is not None:
-                try:
-                    callback(file_path, pixmap)
-                except Exception as e:
-                    _debug(f"执行回调异常: {file_path}, {e}")
-            else:
-                _debug(f"回调已被回收: {file_path}")
+        callback = self._callbacks.pop(file_path, None)
+        if callback is not None:
+            try:
+                callback(file_path, pixmap)
+            except Exception as e:
+                _debug(f"执行回调异常: {file_path}, {e}")

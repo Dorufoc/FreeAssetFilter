@@ -39,8 +39,9 @@ from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
-from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.file_staging_pool_model import FileStagingPoolListModel, FileStagingPoolListView
+from freeassetfilter.widgets.file_staging_pool_delegate import FileStagingPoolCardDelegate
 from PySide6.QtCore import (
     Qt, Signal, Slot, QFileInfo, QThread, QMetaObject, Q_ARG, QObject, QRunnable, QTimer
 )
@@ -109,9 +110,9 @@ class FileStagingPool(QWidget):
         # 初始化UI
         self.init_ui()
 
-        # 启用拖拽功能
+        # 启用外部文件拖放
         self.setAcceptDrops(True)
-        self.cards_container.setAcceptDrops(True)
+        self.pool_view.setAcceptDrops(False)
 
         # 连接信号
         self.update_progress.connect(self.on_update_progress)
@@ -165,11 +166,8 @@ class FileStagingPool(QWidget):
         scaled_h_margin = int(3 * self.dpi_scale)
 
         main_layout = QVBoxLayout(self)
-        app = QApplication.instance()
-        background_color = "#2D2D2D"
-        if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
-        self.setStyleSheet(f"background-color: {background_color};")
+        colors = self._get_theme_colors()
+        self.setStyleSheet(f"background-color: {colors['window_background']};")
         main_layout.setSpacing(scaled_margin)
         main_layout.setContentsMargins(scaled_h_margin, scaled_margin, scaled_h_margin, scaled_margin)
 
@@ -181,122 +179,49 @@ class FileStagingPool(QWidget):
 
         main_layout.addLayout(title_layout)
 
-        # 创建滚动区域
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # 创建基于模型/视图/委托的主列表链路，替换旧 QScrollArea + cards 容器
+        self.pool_model = FileStagingPoolListModel(
+            dpi_scale=self.dpi_scale,
+            global_font=self.global_font,
+            parent=self,
+        )
+        self.pool_view = FileStagingPoolListView(
+            dpi_scale=self.dpi_scale,
+            global_font=self.global_font,
+            parent=self,
+        )
+        self.pool_delegate = FileStagingPoolCardDelegate(
+            dpi_scale=self.dpi_scale,
+            global_font=self.global_font,
+            single_line_mode=False,
+            enable_delete_action=True,
+            parent=self.pool_view,
+        )
+        self.pool_view.setModel(self.pool_model)
+        self.pool_view.setItemDelegate(self.pool_delegate)
+        self.pool_delegate.set_view(self.pool_view)
+        self.pool_view.setVerticalScrollBar(D_ScrollBar(self.pool_view, Qt.Vertical))
+        self.pool_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.pool_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.pool_view.setSpacing(int(3 * self.dpi_scale))
+        SmoothScroller.apply(self.pool_view)
 
-        app = QApplication.instance()
-        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
-        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
-        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
-        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-        accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
+        self.pool_view.item_left_clicked.connect(self.item_left_clicked.emit)
+        self.pool_view.item_right_clicked.connect(self.item_right_clicked.emit)
+        self.pool_view.item_double_clicked.connect(self._on_list_item_double_clicked)
+        self.pool_view.drag_started.connect(self.on_card_drag_started)
+        self.pool_view.drag_ended.connect(self.on_card_drag_ended)
+        self.pool_delegate.renameRequested.connect(self._on_delegate_rename_requested)
+        self.pool_delegate.deleteRequested.connect(self.remove_file)
 
-        scaled_border_radius = int(8 * self.dpi_scale)
-        scaled_border_width = int(1 * self.dpi_scale)
-
-        scaled_padding = int(3 * self.dpi_scale)
-
-        scrollbar_style = f"""
-            QScrollArea {{
-                border: {scaled_border_width}px solid {normal_color};
-                border-radius: {scaled_border_radius}px;
-                background-color: {base_color};
-                padding: {scaled_padding}px;
-            }}
-            QScrollArea > QWidget > QWidget {{
-                background-color: transparent;
-                border: none;
-            }}
-            QScrollBar:vertical {{
-                width: 6px;
-                background-color: {auxiliary_color};
-                border: 0px solid transparent;
-                border-radius: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background-color: {normal_color};
-                min-height: 15px;
-                border-radius: 3px;
-                border: none;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background-color: {secondary_color};
-                border: none;
-            }}
-            QScrollBar::handle:vertical:pressed {{
-                background-color: {accent_color};
-                border: none;
-            }}
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {{
-                height: 0px;
-                border: none;
-            }}
-            QScrollBar::add-page:vertical,
-            QScrollBar::sub-page:vertical {{
-                background: none;
-                border: 0px solid transparent;
-                border: none;
-            }}
-            QScrollBar:horizontal {{
-                height: 6px;
-                background-color: {auxiliary_color};
-                border: 0px solid transparent;
-                border-radius: 0px;
-            }}
-            QScrollBar::handle:horizontal {{
-                background-color: {normal_color};
-                min-width: 15px;
-                border-radius: 3px;
-                border: none;
-            }}
-            QScrollBar::handle:horizontal:hover {{
-                background-color: {secondary_color};
-                border: none;
-            }}
-            QScrollBar::handle:horizontal:pressed {{
-                background-color: {accent_color};
-                border: none;
-            }}
-            QScrollBar::add-line:horizontal,
-            QScrollBar::sub-line:horizontal {{
-                width: 0px;
-                border: none;
-            }}
-            QScrollBar::add-page:horizontal,
-            QScrollBar::sub-page:horizontal {{
-                background: none;
-                border: 0px solid transparent;
-                border: none;
-            }}
-        """
-        self.scroll_area.setStyleSheet(scrollbar_style)
-
-        # 使用动画滚动条
-        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
-        self.scroll_area.verticalScrollBar().set_colors(normal_color, secondary_color, accent_color, auxiliary_color)
-
-        SmoothScroller.apply_to_scroll_area(self.scroll_area)
-
-        # 创建卡片容器和布局
-        self.cards_container = QWidget()
-        self.cards_layout = QVBoxLayout(self.cards_container)
-        self.cards_layout.setSpacing(int(3 * self.dpi_scale))
-        self.cards_layout.setContentsMargins(int(3 * self.dpi_scale), 0, int(3 * self.dpi_scale), 0)
-        self.cards_layout.setAlignment(Qt.AlignTop)
-        self.cards_layout.addStretch(1)
-
-        # 将卡片容器放入滚动区域
-        self.scroll_area.setWidget(self.cards_container)
+        # 与旧实现保持兼容的属性别名
+        self.scroll_area = self.pool_view
+        self.cards = []
 
         # 添加到主布局
         main_layout.addWidget(self.scroll_area, 1)
 
-        # 存储卡片对象
-        self.cards = []
+        self._apply_scroll_area_theme(colors)
 
         # 创建统计信息容器
         stats_container = QWidget()
@@ -308,7 +233,7 @@ class FileStagingPool(QWidget):
         self.stats_label = QLabel("0个条目")
         self.stats_label.setAlignment(Qt.AlignCenter)
         self.stats_label.setFont(self.global_font)
-        self.stats_label.setStyleSheet(f"color: {secondary_color};")
+        self.stats_label.setStyleSheet(f"color: {colors['secondary_color']};")
         stats_container_layout.addWidget(self.stats_label)
 
         main_layout.addWidget(stats_container)
@@ -389,23 +314,41 @@ class FileStagingPool(QWidget):
 
         return colors
 
+    def _sync_items_from_model(self):
+        """
+        从模型同步当前文件列表，保持对外 items 接口兼容。
+        """
+        self.items = [file_info.copy() for file_info in self.pool_model._files]
+
+    def refresh_interaction_settings(self):
+        """
+        刷新主列表的交互设置。
+        """
+        self.pool_view.refresh_interaction_settings()
+        self.pool_model.refresh_interaction_settings()
+        self.pool_view.viewport().update()
+
     def _apply_scroll_area_theme(self, colors):
         """
-        应用滚动区域主题
+        应用主列表区域主题。
+
+        Args:
+            colors (dict): 当前主题颜色配置。
         """
         scaled_border_radius = int(8 * self.dpi_scale)
         scaled_border_width = int(1 * self.dpi_scale)
         scaled_padding = int(3 * self.dpi_scale)
 
         scrollbar_style = f"""
-            QScrollArea {{
+            QListView {{
                 border: {scaled_border_width}px solid {colors['normal_color']};
                 border-radius: {scaled_border_radius}px;
                 background-color: {colors['base_color']};
                 padding: {scaled_padding}px;
+                outline: none;
             }}
-            QScrollArea > QWidget > QWidget {{
-                background-color: transparent;
+            QListView::item {{
+                background: transparent;
                 border: none;
             }}
             QScrollBar:vertical {{
@@ -471,9 +414,9 @@ class FileStagingPool(QWidget):
                 border: none;
             }}
         """
-        self.scroll_area.setStyleSheet(scrollbar_style)
+        self.pool_view.setStyleSheet(scrollbar_style)
 
-        scrollbar = self.scroll_area.verticalScrollBar()
+        scrollbar = self.pool_view.verticalScrollBar()
         if hasattr(scrollbar, "set_colors"):
             scrollbar.set_colors(
                 colors["normal_color"],
@@ -482,9 +425,12 @@ class FileStagingPool(QWidget):
                 colors["auxiliary_color"],
             )
 
+        self.pool_model.clear_caches()
+        self.pool_view.viewport().update()
+
     def update_theme(self):
         """
-        增量刷新存储池主题，并重载卡片以确保横向卡片使用新配色
+        增量刷新存储池主题，并同步刷新模型/视图委托显示。
         """
         colors = self._get_theme_colors()
 
@@ -509,204 +455,107 @@ class FileStagingPool(QWidget):
             except Exception:
                 pass
 
-        if self.items:
-            self.reload_all_cards()
-
+        if hasattr(self.pool_delegate, "clear_caches"):
+            self.pool_delegate.clear_caches()
+        self.refresh_all_card_icons()
         self.update()
 
     def add_file(self, file_info):
         """
-        添加文件或文件夹到临时存储池
+        添加文件或文件夹到临时存储池。
 
         Args:
-            file_info (dict): 文件或文件夹信息字典
+            file_info (dict): 文件或文件夹信息字典。
         """
         if self._is_closing:
             return
 
         file_path = os.path.normpath(file_info["path"])
         debug(f"添加文件到存储池: {file_info.get('name', 'unknown')}")
-        for item in self.items:
-            if os.path.normpath(item["path"]) == file_path:
-                return
+        if self.pool_model.has_path(file_path):
+            return
 
-        if "display_name" not in file_info:
-            file_info["display_name"] = file_info["name"]
-        if "original_name" not in file_info:
-            file_info["original_name"] = file_info["name"]
-
-        # 确保文件夹有 size_calculating 标记
+        file_info = dict(file_info)
+        file_info.setdefault("display_name", file_info.get("name", os.path.basename(file_path)))
+        file_info.setdefault("original_name", file_info.get("name", os.path.basename(file_path)))
         if file_info.get("is_dir") and "size_calculating" not in file_info:
             file_info["size_calculating"] = True
 
-        self.items.append(file_info)
-
-        card = CustomFileHorizontalCard(file_info["path"], display_name=file_info["display_name"])
-
-        # 检查文件是否处于预览状态（使用normcase处理Windows路径大小写）
         if self.previewing_file_path and os.path.normcase(file_path) == os.path.normcase(self.previewing_file_path):
-            card.set_previewing(True)
+            file_info["is_previewing"] = True
 
-        # 设置文件信息用于拖拽
-        card.set_file_info(file_info)
+        if not self.pool_model.add_file(file_info):
+            return
 
-        card.clicked.connect(lambda path: self.on_card_clicked(path, card, file_info))
-        card.doubleClicked.connect(lambda path: self.on_item_double_clicked(path))
-        card.selectionChanged.connect(lambda selected, path: self.on_card_selection_changed(selected, path, file_info))
-        card.renameRequested.connect(lambda path: self.on_card_rename_requested(path, file_info))
-        card.deleteRequested.connect(lambda path: self.on_card_delete_requested(path, file_info))
-        # 连接拖拽信号
-        card.drag_started.connect(lambda fi: self.on_card_drag_started(fi))
-        card.drag_ended.connect(lambda fi, target: self.on_card_drag_ended(fi, target))
+        self._sync_items_from_model()
 
-        self.hover_tooltip.set_target_widget(card.card_container)
-
-        if self.cards_layout.count() > 0 and self.cards_layout.itemAt(self.cards_layout.count() - 1).spacerItem():
-            self.cards_layout.takeAt(self.cards_layout.count() - 1)
-
-        self.cards_layout.addWidget(card)
-
-        self.cards_layout.addStretch(1)
-
-        self.cards.append((card, file_info))
-
-        # 如果是文件夹，启动线程计算体积
-        if file_info["is_dir"]:
-            self._calculate_folder_size(file_info["path"])
+        if file_info.get("is_dir"):
+            self._calculate_folder_size(file_path)
         else:
-            # 如果是图片或视频文件，异步生成缩略图
             thumbnail_manager = get_thumbnail_manager(self.dpi_scale)
-            if thumbnail_manager.is_media_file(file_info["path"]):
-                self._generate_thumbnail_async(file_info["path"], card)
+            if thumbnail_manager.is_media_file(file_path):
+                self._generate_thumbnail_async(file_path)
 
-        # 更新统计信息
         self.update_stats()
-
-        # 实时保存备份（恢复阶段会被挂起，正常阶段会被防抖合并）
         self._save_backup_if_needed()
-
-        # 发出信号通知文件选择器该文件已被添加到储存池
-        self.file_added_to_pool.emit(file_info)
+        added_info = self.pool_model.get_file_info_by_path(file_path) or file_info
+        self.file_added_to_pool.emit(added_info)
 
     def remove_file(self, file_path):
         """
-        从临时存储池移除文件
+        从临时存储池移除文件。
 
         Args:
-            file_path (str): 文件路径
+            file_path (str): 文件路径。
         """
-        file_path = os.path.normpath(file_path)
-        debug(f"从存储池移除文件: {file_path}")
-        for i, (card, file_info) in enumerate(self.cards):
-            if os.path.normpath(file_info["path"]) == file_path:
-                removed_file = file_info
+        normalized_path = os.path.normpath(file_path)
+        debug(f"从存储池移除文件: {normalized_path}")
+        removed_file = self.pool_model.remove_file(normalized_path)
+        if not removed_file:
+            return
 
-                self.items.pop(i)
-
-                self.cards_layout.removeWidget(card)
-                card.deleteLater()
-
-                self.cards.pop(i)
-
-                self.remove_from_selector.emit(removed_file)
-                break
-
-        has_stretch = any(self.cards_layout.itemAt(i).spacerItem() for i in range(self.cards_layout.count()))
-        if not has_stretch:
-            self.cards_layout.addStretch(1)
-
+        self._sync_items_from_model()
+        self.remove_from_selector.emit(removed_file)
         self.update_stats()
-
         self._save_backup_if_needed()
 
     def clear_all(self):
         """
-        清空所有项目
+        清空所有项目。
         """
         debug(f"清空存储池所有项目，当前共 {len(self.items)} 项")
-        # 确认对话框
         confirm_msg = CustomMessageBox(self)
         confirm_msg.set_title("确认清空")
         confirm_msg.set_text("确定要清空所有项目吗？")
         confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
 
-        # 记录确认结果
         is_confirmed = False
 
         def on_confirm_clicked(button_index):
             nonlocal is_confirmed
-            is_confirmed = (button_index == 0)  # 0表示确定按钮
+            is_confirmed = (button_index == 0)
             confirm_msg.close()
 
         confirm_msg.buttonClicked.connect(on_confirm_clicked)
         confirm_msg.exec()
 
         if is_confirmed:
-            # 保存当前项目列表的副本，因为清空操作会修改原列表
-            items_to_remove = self.items.copy()
-
-            # 移除所有卡片，但保留拉伸因子
-            while self.cards_layout.count() > 0:
-                item = self.cards_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-                elif item.spacerItem():
-                    # 保留拉伸因子，将其重新添加回布局
-                    self.cards_layout.addItem(item)
-                    break
-
-            # 发出信号通知文件选择器取消所有选中
-            for item in items_to_remove:
-                self.remove_from_selector.emit(item)
-
-            # 清空列表
-            self.items.clear()
-            self.cards.clear()
-            # 更新统计信息
-            self.update_stats()
-
-            # 确保拉伸因子存在
-            if not any(self.cards_layout.itemAt(i).spacerItem() for i in range(self.cards_layout.count())):
-                self.cards_layout.addStretch(1)
-
-            # 实时保存备份
-            self._save_backup_if_needed()
+            self.clear_all_without_confirmation()
 
     def reload_all_cards(self):
         """
-        重载所有卡片
-        清空当前所有卡片并重新创建，类似于应用启动时的初始化
-        用于主题变更或需要完全刷新卡片显示的场景
+        重载主列表数据与显示缓存。
         """
         if not self.items:
             return
 
-        # 保存当前项目列表的副本
-        items_to_reload = self.items.copy()
-
-        # 清除预览状态
+        items_to_reload = [item.copy() for item in self.items if os.path.exists(item.get("path", ""))]
         self.previewing_file_path = None
-
-        # 移除所有卡片（包括拉伸因子）
-        while self.cards_layout.count() > 0:
-            item = self.cards_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        # 清空卡片列表
-        self.cards.clear()
-        self.items.clear()
-
-        # 重新添加所有文件（这会重新创建卡片）
-        for file_info in items_to_reload:
-            # 检查文件是否仍然存在
-            if os.path.exists(file_info["path"]):
-                self.add_file(file_info)
-
-        # 更新统计信息
+        self.pool_model.clear()
+        self.pool_model.set_files(items_to_reload)
+        self._sync_items_from_model()
         self.update_stats()
-
-        # 实时保存备份
+        self.refresh_all_card_icons()
         self._save_backup_if_needed()
 
     def _format_file_size(self, size_bytes):
@@ -761,61 +610,37 @@ class FileStagingPool(QWidget):
         else:
             self.stats_label.setText(f" {total_items}个条目 | {formatted_size}")
 
-    def on_card_clicked(self, path, card, file_info):
+    def _on_list_item_double_clicked(self, file_info):
         """
-        处理卡片点击事件
+        处理列表项双击事件。
 
         Args:
-            path: 文件路径
-            card: 卡片对象
-            file_info: 文件信息字典
+            file_info (dict): 双击项的文件信息。
         """
-        # 发出左键点击信号，用于调用统一预览器
-        self.item_left_clicked.emit(file_info)
+        if file_info:
+            self.item_left_clicked.emit(file_info)
 
-    def on_card_selection_changed(self, selected, path, file_info):
+    def _on_delegate_rename_requested(self, file_path):
         """
-        处理卡片选中状态变化事件
+        处理委托发起的重命名请求。
 
         Args:
-            selected: 是否选中
-            path: 文件路径
-            file_info: 文件信息字典
+            file_path (str): 目标文件路径。
         """
-        # 可以在这里添加选中状态变化后的处理逻辑
-        pass
-
-    def on_card_rename_requested(self, path, file_info):
-        """
-        处理卡片重命名请求
-
-        Args:
-            path: 文件路径
-            file_info: 文件信息字典
-        """
-        self.rename_file(file_info, None)
-
-    def on_card_delete_requested(self, path, file_info):
-        """
-        处理卡片删除请求
-
-        Args:
-            path: 文件路径
-            file_info: 文件信息字典
-        """
-        self.remove_file(path)
+        file_info = self.pool_model.get_file_info_by_path(file_path)
+        if file_info:
+            self.rename_file(file_info, None)
 
     def on_item_double_clicked(self, path):
         """
-        双击项目事件处理
+        兼容旧入口的双击项目事件处理。
 
         Args:
-            path: 文件路径
+            path (str): 文件路径。
         """
-        for file_info in self.items:
-            if file_info["path"] == path:
-                self.item_left_clicked.emit(file_info)
-                break
+        file_info = self.pool_model.get_file_info_by_path(path)
+        if file_info:
+            self.item_left_clicked.emit(file_info)
 
     def on_card_drag_started(self, file_info):
         """
@@ -847,40 +672,31 @@ class FileStagingPool(QWidget):
 
     def rename_file(self, file_info, widget=None):
         """
-        重命名文件（仅修改前端显示名称，保持原始后缀名）
+        重命名文件（仅修改前端显示名称，保持原始后缀名）。
 
         Args:
-            file_info (dict): 文件信息字典
-            widget (QWidget): 不再使用，保留参数以保持向后兼容
+            file_info (dict): 文件信息字典。
+            widget (QWidget): 不再使用，保留参数以保持向后兼容。
         """
-        from freeassetfilter.widgets.D_widgets import CustomInputBox
-
-        # 获取当前显示名称
         current_name = file_info["display_name"]
 
-        # 分离文件名主体和后缀名
         if "." in current_name:
-            # 有后缀名的情况
             name_parts = current_name.rsplit(".", 1)
             name_base = name_parts[0]
             name_ext = name_parts[1]
         else:
-            # 没有后缀名的情况
             name_base = current_name
             name_ext = ""
 
-        # 定义文件名非法字符
         illegal_chars = '<>:"/\\|?*' + ''.join([chr(c) for c in range(32)])
 
         while True:
-            # 弹出自定义输入对话框，只显示和允许修改文件名主体
             input_box = CustomMessageBox(self)
             input_box.set_title("重命名")
             input_box.set_text("请输入新的文件名：")
             input_box.set_input(name_base)
             input_box.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
 
-            # 连接按钮点击信号
             button_clicked = None
 
             def on_button_clicked(index):
@@ -895,11 +711,9 @@ class FileStagingPool(QWidget):
             new_name_input = input_box.get_input() if ok else ""
 
             if not ok:
-                # 用户取消操作
                 return
 
             if not new_name_input:
-                # 文件名不能为空
                 warning_msg = CustomMessageBox(self)
                 warning_msg.set_title("错误")
                 warning_msg.set_text("文件名不能为空！")
@@ -909,10 +723,8 @@ class FileStagingPool(QWidget):
                 continue
 
             if new_name_input == current_name:
-                # 文件名未改变
                 return
 
-            # 检查是否包含非法字符
             if any(char in new_name_input for char in illegal_chars):
                 warning_msg = CustomMessageBox(self)
                 warning_msg.set_title("错误")
@@ -922,36 +734,27 @@ class FileStagingPool(QWidget):
                 warning_msg.exec()
                 continue
 
-            # 生成新的文件名
-            if name_ext:
-                new_name = f"{new_name_input}.{name_ext}"
-            else:
-                new_name = new_name_input
+            new_name = f"{new_name_input}.{name_ext}" if name_ext else new_name_input
 
-            # 检查路径长度
-            MAX_PATH = 260
+            max_path = 260
             estimated_total_length = len(new_name) + 150
-            if estimated_total_length > MAX_PATH:
+            if estimated_total_length > max_path:
                 warning_msg = CustomMessageBox(self)
                 warning_msg.set_title("错误")
-                warning_msg.set_text(f"文件名过长！加上路径后可能超过Windows系统的{MAX_PATH}字符限制。\n"
-                                     f"当前估计总长度：{estimated_total_length}字符，建议缩短文件名。")
+                warning_msg.set_text(
+                    f"文件名过长！加上路径后可能超过Windows系统的{max_path}字符限制。\n"
+                    f"当前估计总长度：{estimated_total_length}字符，建议缩短文件名。"
+                )
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
                 warning_msg.exec()
                 continue
 
-            # 更新文件信息中的显示名称
-            file_info["display_name"] = new_name
+            if not self.pool_model.rename_file(file_info["path"], new_name):
+                return
 
-            # 更新卡片的显示
-            for card, card_file_info in self.cards:
-                if card_file_info["path"] == file_info["path"]:
-                    card_file_info["display_name"] = new_name
-                    card.set_file_path(file_info["path"], display_name=new_name)
-                    break
-
-            # 实时保存备份
+            self._sync_items_from_model()
+            self.pool_view.viewport().update()
             self._save_backup_if_needed()
             break
 
@@ -1191,21 +994,13 @@ class FileStagingPool(QWidget):
 
     def on_folder_size_calculated(self, file_info):
         """
-        处理文件夹体积计算完成信号
+        处理文件夹体积计算完成信号。
 
         Args:
-            file_info (dict): 计算完成的文件夹信息
+            file_info (dict): 计算完成的文件夹信息。
         """
-        # 更新UI显示
         self.update_stats()
-
-        # 更新卡片显示
-        for card, card_file_info in self.cards:
-            if card_file_info["path"] == file_info["path"]:
-                card.set_file_path(file_info["path"], display_name=file_info["display_name"])
-                break
-
-        # 防抖保存
+        self.pool_view.viewport().update()
         self._save_backup_if_needed()
 
     def eventFilter(self, obj, event):
@@ -1816,32 +1611,17 @@ class FileStagingPool(QWidget):
 
     def clear_all_without_confirmation(self):
         """
-        不显示确认对话框，直接清空所有项目
+        不显示确认对话框，直接清空所有项目。
         """
-        # 保存当前项目列表的副本，因为清空操作会修改原列表
         items_to_remove = self.items.copy()
+        self.pool_model.clear()
+        self._sync_items_from_model()
 
-        # 移除所有卡片，但保留拉伸因子
-        while self.cards_layout.count() > 0:
-            item = self.cards_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.spacerItem():
-                # 保留拉伸因子，将其重新添加回布局
-                self.cards_layout.addItem(item)
-                break
-
-        # 发出信号通知文件选择器取消所有选中
         for item in items_to_remove:
             self.remove_from_selector.emit(item)
 
-        self.items.clear()
-        self.cards.clear()
+        self.previewing_file_path = None
         self.update_stats()
-
-        if not any(self.cards_layout.itemAt(i).spacerItem() for i in range(self.cards_layout.count())):
-            self.cards_layout.addStretch(1)
-
         self._save_backup_if_needed()
 
     def dragEnterEvent(self, event):
@@ -1968,13 +1748,9 @@ class FileStagingPool(QWidget):
                         self.add_file(file_info)
         except (OSError, PermissionError) as e:
             warning(f"添加文件夹内容失败: {e}")
-        self.items.clear()
-        self.cards.clear()
+
+        self._sync_items_from_model()
         self.update_stats()
-
-        if not any(self.cards_layout.itemAt(i).spacerItem() for i in range(self.cards_layout.count())):
-            self.cards_layout.addStretch(1)
-
         self._save_backup_if_needed()
 
     def load_backup(self):
@@ -2166,24 +1942,34 @@ class FileStagingPool(QWidget):
     @Slot(object)
     def _on_folder_size_calculated(self, result):
         """
-        处理文件夹大小计算完成的回调
+        处理文件夹大小计算完成的回调。
 
         Args:
-            result (dict): 包含 folder_path 和 total_size 的字典
+            result (dict): 包含 path 和 size 的字典。
         """
         if self._is_closing:
             return
 
         folder_path = result.get("path")
         total_size = result.get("size")
+        if not folder_path:
+            return
 
         try:
-            for file_info in self.items:
-                if file_info["path"] == folder_path:
-                    file_info["size"] = total_size
-                    file_info["size_calculating"] = False
-                    self.folder_size_calculated.emit(file_info)
-                    break
+            updated = self.pool_model.update_file(
+                folder_path,
+                {
+                    "size": total_size,
+                    "size_calculating": False,
+                },
+            )
+            if not updated:
+                return
+
+            self._sync_items_from_model()
+            updated_file_info = self.pool_model.get_file_info_by_path(folder_path)
+            if updated_file_info:
+                self.folder_size_calculated.emit(updated_file_info)
         except RuntimeError:
             pass
 
@@ -2263,25 +2049,22 @@ class FileStagingPool(QWidget):
             error(f"刷新文件选择器单个卡片缩略图失败: {e}")
 
     def _on_thumbnail_ready(self, thumb_path, file_path, card):
-        """缩略图生成完成的回调函数
+        """缩略图生成完成的回调函数。
 
         Args:
-            thumb_path (str): 缩略图路径
-            file_path (str): 原文件路径
-            card (CustomFileHorizontalCard): 需要刷新的卡片对象
+            thumb_path (str): 缩略图路径。
+            file_path (str): 原文件路径。
+            card (object): 兼容旧参数，当前主链路不再直接使用卡片对象。
         """
         if self._is_closing:
             return
 
-        # debug(f"缩略图生成完成: {thumb_path}")
-        if card and hasattr(card, 'refresh_thumbnail'):
-            from PySide6.QtCore import QMetaObject, Qt
-            QMetaObject.invokeMethod(
-                card,
-                "refresh_thumbnail",
-                Qt.QueuedConnection
-            )
-            # debug(f"已触发存储池卡片缩略图刷新")
+        try:
+            self.pool_model.refresh_icon(file_path)
+            self._sync_items_from_model()
+            self.pool_view.viewport().update()
+        except Exception as e:
+            error(f"刷新存储池列表缩略图失败: {e}")
 
         self._refresh_selector_card(file_path)
 
@@ -2715,57 +2498,49 @@ class FileStagingPool(QWidget):
 
     def refresh_all_card_icons(self):
         """
-        刷新当前存储池中所有卡片的图标/缩略图。
+        刷新当前存储池中所有项目的图标/缩略图。
         用于启动恢复阶段结束后，从安全降级图标恢复为正常图标。
         """
         if self._is_closing:
             return
 
-        for card, _ in self.cards:
+        for item in list(self.items):
+            file_path = item.get("path", "")
+            if not file_path:
+                continue
             try:
-                if hasattr(card, 'refresh_thumbnail'):
-                    card.refresh_thumbnail()
+                self.pool_model.refresh_icon(file_path)
             except (RuntimeError, AttributeError, TypeError) as e:
-                error(f"刷新存储池卡片图标失败: {e}")
+                error(f"刷新存储池列表图标失败: {e}")
+
+        self._sync_items_from_model()
+        self.pool_view.viewport().update()
 
     def set_previewing_file(self, file_path):
         """
-        设置当前正在预览的文件，更新对应卡片的预览态
+        设置当前正在预览的文件，更新对应列表项的预览态。
 
         Args:
-            file_path (str): 文件路径
+            file_path (str): 文件路径。
         """
         if not file_path:
             return
 
-        # 保存当前预览的文件路径
-        self.previewing_file_path = os.path.normpath(file_path)
-
-        # 先清除所有卡片的预览态
-        self.clear_previewing_state()
-
-        # 规范化路径用于比较（Windows下使用normcase处理大小写）
-        file_path_norm = os.path.normcase(os.path.normpath(file_path))
-
-        # 查找并设置对应卡片的预览态
-        found = False
-        for card, card_file_info in self.cards:
-            card_path_norm = os.path.normcase(os.path.normpath(card_file_info.get('path', '')))
-            if card_path_norm == file_path_norm:
-                card.set_previewing(True)
-                found = True
-                break
-
-        # debug(f"设置预览文件: {file_path}, 找到={found}, 卡片数={len(self.cards)}")
+        normalized_path = os.path.normpath(file_path)
+        self.previewing_file_path = normalized_path
+        self.pool_model.clear_previewing()
+        self.pool_model.set_previewing(normalized_path, True)
+        self._sync_items_from_model()
+        self.pool_view.viewport().update()
 
     def clear_previewing_state(self):
         """
-        清除所有卡片的预览态
-        注意：不清除 previewing_file_path，以便在需要时仍能恢复预览态
+        清除所有列表项的预览态。
+        注意：不清除 previewing_file_path，以便在需要时仍能恢复预览态。
         """
-        for card, _ in self.cards:
-            if hasattr(card, 'set_previewing'):
-                card.set_previewing(False)
+        self.pool_model.clear_previewing()
+        self._sync_items_from_model()
+        self.pool_view.viewport().update()
 
     def closeEvent(self, event):
         """
