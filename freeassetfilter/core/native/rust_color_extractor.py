@@ -54,7 +54,7 @@ class RustColorExtractorBridge:
         if self._is_frozen_app():
             return [bundled_dll]
 
-        return [dev_release_dll, dev_debug_dll]
+        return [bundled_dll, dev_release_dll, dev_debug_dll]
 
     def _load(self):
         debug("开始加载 Rust DLL")
