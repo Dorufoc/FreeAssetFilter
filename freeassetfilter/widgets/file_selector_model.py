@@ -35,13 +35,14 @@ from PySide6.QtCore import (
     QUrl,
 )
 from PySide6.QtGui import (
+    QBitmap,
     QPixmap,
     QPainter,
     QMouseEvent,
     QContextMenuEvent,
     QDesktopServices,
     QPalette,
-    QColor,
+    QRegion,
 )
 from PySide6.QtWidgets import (
     QListView,
@@ -603,24 +604,9 @@ class FileSelectorListModel(QAbstractListModel):
             image = clean_pixmap.toImage()
             source_rect = QRect(0, 0, image.width(), image.height())
 
-            try:
-                min_x = image.width()
-                min_y = image.height()
-                max_x = -1
-                max_y = -1
-
-                for y in range(image.height()):
-                    for x in range(image.width()):
-                        if QColor.fromRgba(image.pixel(x, y)).alpha() > 0:
-                            min_x = min(min_x, x)
-                            min_y = min(min_y, y)
-                            max_x = max(max_x, x)
-                            max_y = max(max_y, y)
-
-                if max_x >= min_x and max_y >= min_y:
-                    source_rect = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
-            except (RuntimeError, TypeError, ValueError):
-                pass
+            bounded_rect = self._find_non_transparent_bounds(image)
+            if bounded_rect is not None:
+                source_rect = bounded_rect
 
             target_size = QSize(source_rect.width(), source_rect.height()).scaled(
                 physical_canvas_size,
@@ -654,6 +640,20 @@ class FileSelectorListModel(QAbstractListModel):
             fallback = QPixmap(icon_size, icon_size)
             fallback.fill(Qt.transparent)
             return fallback
+
+    @staticmethod
+    def _find_non_transparent_bounds(image) -> Optional[QRect]:
+        try:
+            alpha_mask = image.createAlphaMask()
+            if alpha_mask.isNull():
+                return None
+
+            bounds = QRegion(QBitmap.fromImage(alpha_mask)).boundingRect()
+            if bounds.isNull() or bounds.width() <= 0 or bounds.height() <= 0:
+                return None
+            return bounds
+        except (RuntimeError, TypeError, ValueError):
+            return None
 
     @classmethod
     def _build_unknown_icon_pixmap_static(

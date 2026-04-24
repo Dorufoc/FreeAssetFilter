@@ -33,6 +33,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self._global_font = global_font
         self._view = None
         self._animation_states = {}
+        self._active_animation_keys = set()
         self._dragging_file_path = None
 
         self._animation_timer = QTimer(self)
@@ -51,6 +52,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
     def clear_caches(self):
         """清理委托内部动画缓存"""
         self._animation_states.clear()
+        self._active_animation_keys.clear()
         self._dragging_file_path = None
         self._stop_animation_timer_if_idle()
         if self._view:
@@ -243,6 +245,12 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             self._animation_states[key] = self._default_anim_state()
         return self._animation_states[key]
 
+    def _ensure_animation_timer_running(self):
+        if not self._active_animation_keys:
+            return
+        if not self._animation_timer.isActive():
+            self._animation_timer.start()
+
     def _ease(self, curve_name: str, t: float) -> float:
         t = max(0.0, min(1.0, t))
         if curve_name == "in_out_quad":
@@ -328,27 +336,34 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         state["easing"] = easing
         state["animation_start_time"] = datetime.now().timestamp() * 1000.0
         state["animating"] = True
+        self._active_animation_keys.add(key)
 
-        if not self._animation_timer.isActive():
-            self._animation_timer.start()
+        self._ensure_animation_timer_running()
 
         return state
 
     def _stop_animation_timer_if_idle(self):
-        if any(state.get("animating", False) for state in self._animation_states.values()):
-            if not self._animation_timer.isActive():
-                self._animation_timer.start()
+        if self._active_animation_keys:
+            self._ensure_animation_timer_running()
             return
 
         if self._animation_timer.isActive():
             self._animation_timer.stop()
 
     def _on_animation_tick(self):
+        if not self._active_animation_keys:
+            self._stop_animation_timer_if_idle()
+            return
+
         now = datetime.now().timestamp() * 1000.0
         needs_repaint = False
 
-        for state in self._animation_states.values():
-            if not state.get("animating", False):
+        completed_keys = []
+
+        for key in tuple(self._active_animation_keys):
+            state = self._animation_states.get(key)
+            if not state or not state.get("animating", False):
+                completed_keys.append(key)
                 continue
 
             elapsed = now - state["animation_start_time"]
@@ -358,6 +373,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
                 state["bg_color"] = QColor(state["target_bg"])
                 state["border_color"] = QColor(state["target_border"])
                 state["animating"] = False
+                completed_keys.append(key)
             else:
                 progress = elapsed / duration
                 eased = self._ease(state.get("easing", "out_cubic"), progress)
@@ -365,6 +381,9 @@ class FileBlockCardDelegate(QStyledItemDelegate):
                 state["border_color"] = self._interpolate_color(state["start_border"], state["target_border"], eased)
 
             needs_repaint = True
+
+        for key in completed_keys:
+            self._active_animation_keys.discard(key)
 
         self._stop_animation_timer_if_idle()
 
