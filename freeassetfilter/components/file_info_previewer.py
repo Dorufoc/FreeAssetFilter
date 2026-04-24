@@ -37,6 +37,12 @@ from freeassetfilter.core.media_probe import (
     get_video_stream_info,
 )
 from freeassetfilter.core.py7z_core import get_7z_core
+from freeassetfilter.utils.path_utils import contains_injection_chars, validate_safe_path
+from freeassetfilter.utils.subprocess_utils import run_with_limited_output
+
+
+FFPROBE_INFO_TIMEOUT = 8
+FFPROBE_INFO_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea, QGroupBox,
@@ -130,7 +136,11 @@ class AudioInfoTask(QRunnable):
 
         if not info:
             try:
-                result = subprocess.run(
+                safe_file_path = validate_safe_path(self.file_path)
+                if contains_injection_chars(safe_file_path):
+                    raise ValueError("文件路径包含命令注入风险字符")
+
+                result = run_with_limited_output(
                     [
                         get_ffprobe_path(),
                         "-v",
@@ -138,15 +148,19 @@ class AudioInfoTask(QRunnable):
                         "-print_format",
                         "json",
                         "-show_format",
-                        self.file_path,
+                        safe_file_path,
                     ],
-                    capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     check=True,
+                    timeout=FFPROBE_INFO_TIMEOUT,
+                    max_stdout_bytes=FFPROBE_INFO_MAX_OUTPUT_BYTES,
+                    max_stderr_bytes=FFPROBE_INFO_MAX_OUTPUT_BYTES,
                     creationflags=get_subprocess_creationflags(),
                 )
+                if getattr(result, "stdout_truncated", False):
+                    raise ValueError("ffprobe JSON 输出超过安全限制")
                 ffprobe_data = json.loads(result.stdout)
                 if "format" in ffprobe_data:
                     format_info = ffprobe_data["format"]
@@ -765,7 +779,11 @@ class FileInfoPreviewer(QObject):
 
         if not info or "时长" not in info:
             try:
-                result = subprocess.run(
+                safe_file_path = validate_safe_path(file_path)
+                if contains_injection_chars(safe_file_path):
+                    raise ValueError("文件路径包含命令注入风险字符")
+
+                result = run_with_limited_output(
                     [
                         get_ffprobe_path(),
                         "-v",
@@ -773,15 +791,19 @@ class FileInfoPreviewer(QObject):
                         "-print_format",
                         "json",
                         "-show_format",
-                        file_path,
+                        safe_file_path,
                     ],
-                    capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     check=True,
+                    timeout=FFPROBE_INFO_TIMEOUT,
+                    max_stdout_bytes=FFPROBE_INFO_MAX_OUTPUT_BYTES,
+                    max_stderr_bytes=FFPROBE_INFO_MAX_OUTPUT_BYTES,
                     creationflags=get_subprocess_creationflags(),
                 )
+                if getattr(result, "stdout_truncated", False):
+                    raise ValueError("ffprobe JSON 输出超过安全限制")
                 ffprobe_data = json.loads(result.stdout)
                 if "format" in ffprobe_data:
                     format_info = ffprobe_data["format"]

@@ -16,11 +16,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from freeassetfilter.utils.app_logger import debug, info, warning
+from freeassetfilter.utils.path_utils import contains_injection_chars, is_sensitive_path, validate_safe_path
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
+from freeassetfilter.utils.subprocess_utils import run_with_limited_output
 
 
 FFPROBE_TIMEOUT = 8
 FFMPEG_TIMEOUT = 15
+FFPROBE_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+FFMPEG_WARMUP_MAX_OUTPUT_BYTES = 512 * 1024
 
 _FFMPEG_WARMUP_LOCK = threading.Lock()
 _FFMPEG_WARMUP_RESULT: Optional[Dict[str, bool]] = None
@@ -70,13 +74,14 @@ def _run_warmup_command(command: List[str], *, label: str, timeout: int) -> bool
     执行轻量级预热命令，提前拉起 ffmpeg / ffprobe 相关运行时。
     """
     try:
-        completed = subprocess.run(
+        completed = run_with_limited_output(
             command,
-            capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=max(1, int(timeout)),
+            max_stdout_bytes=FFMPEG_WARMUP_MAX_OUTPUT_BYTES,
+            max_stderr_bytes=FFMPEG_WARMUP_MAX_OUTPUT_BYTES,
             creationflags=get_subprocess_creationflags(),
             startupinfo=get_subprocess_startupinfo(),
         )
@@ -95,6 +100,8 @@ def _run_warmup_command(command: List[str], *, label: str, timeout: int) -> bool
         if stderr_text:
             debug(f"预热返回非0: {label}, stderr={stderr_text}")
         return False
+    if getattr(completed, "stdout_truncated", False) or getattr(completed, "stderr_truncated", False):
+        debug(f"预热输出被截断: {label}")
 
     return True
 
@@ -152,6 +159,23 @@ def run_ffprobe_json(
     """
     运行 ffprobe 并返回 JSON 结果
     """
+    try:
+        file_path = validate_safe_path(file_path)
+    except ValueError as e:
+        increment_perf_counter("media_probe.run_ffprobe_json", "invalid_path")
+        debug(f"路径验证失败: {e}")
+        return None
+
+    if contains_injection_chars(file_path):
+        increment_perf_counter("media_probe.run_ffprobe_json", "injection_blocked")
+        debug("ffprobe 路径包含命令注入风险字符")
+        return None
+
+    if is_sensitive_path(file_path):
+        increment_perf_counter("media_probe.run_ffprobe_json", "sensitive_path_blocked")
+        debug("ffprobe 路径命中敏感系统路径，已拒绝")
+        return None
+
     debug(f"开始探测媒体: {file_path}")
     with track_perf("media_probe.run_ffprobe_json"):
         set_perf_metadata("media_probe.run_ffprobe_json", "last_timeout", timeout)
@@ -186,13 +210,14 @@ def run_ffprobe_json(
         increment_perf_counter("media_probe.run_ffprobe_json", "invocations")
 
         try:
-            completed = subprocess.run(
+            completed = run_with_limited_output(
                 command,
-                capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout,
+                max_stdout_bytes=FFPROBE_MAX_OUTPUT_BYTES,
+                max_stderr_bytes=FFPROBE_MAX_OUTPUT_BYTES,
                 creationflags=get_subprocess_creationflags(),
                 startupinfo=get_subprocess_startupinfo(),
             )
@@ -214,6 +239,11 @@ def run_ffprobe_json(
             stderr_text = (completed.stderr or "").strip()
             if stderr_text:
                 debug(f"ffprobe 异常输出: {stderr_text}")
+            return None
+
+        if getattr(completed, "stdout_truncated", False):
+            increment_perf_counter("media_probe.run_ffprobe_json", "stdout_truncated")
+            debug(f"ffprobe JSON 输出过大，已拒绝解析: {file_path}")
             return None
 
         try:

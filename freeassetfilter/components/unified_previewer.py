@@ -40,6 +40,12 @@ from freeassetfilter.components.archive_browser import ArchiveBrowser
 from freeassetfilter.widgets.D_widgets import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager
+from freeassetfilter.utils.path_utils import contains_injection_chars, validate_safe_path
+from freeassetfilter.utils.subprocess_utils import run_with_limited_output
+
+
+DOCUMENT_CONVERT_TIMEOUT = 300
+DOCUMENT_CONVERT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
 
 class UnifiedPreviewer(QWidget):
@@ -1516,6 +1522,9 @@ class UnifiedPreviewer(QWidget):
             import subprocess
             import tempfile
             import os
+            file_path = validate_safe_path(file_path)
+            if contains_injection_chars(file_path):
+                raise ValueError("文件路径包含命令注入风险字符")
             
             # 生成临时PDF文件路径 - 使用程序data/temp文件夹
             # 计算项目根目录：freeassetfilter/components/unified_previewer.py -> freeassetfilter/components -> freeassetfilter -> 项目根目录
@@ -1597,13 +1606,14 @@ class UnifiedPreviewer(QWidget):
                 
                 # 设置超时时间为300秒（5分钟），处理大文件
                 try:
-                    result = subprocess.run(
+                    result = run_with_limited_output(
                         cmd,
-                        capture_output=True,
                         text=True,
                         encoding="utf-8",
                         errors="replace",
-                        timeout=300,
+                        timeout=DOCUMENT_CONVERT_TIMEOUT,
+                        max_stdout_bytes=DOCUMENT_CONVERT_MAX_OUTPUT_BYTES,
+                        max_stderr_bytes=DOCUMENT_CONVERT_MAX_OUTPUT_BYTES,
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
                     
@@ -1612,6 +1622,8 @@ class UnifiedPreviewer(QWidget):
                         debug(f"LibreOffice输出: {result.stdout}")
                     if result.stderr:
                         warning(f"LibreOffice错误: {result.stderr}")
+                    if getattr(result, "stdout_truncated", False) or getattr(result, "stderr_truncated", False):
+                        warning("LibreOffice 输出超过安全限制，已截断")
                     debug(f"LibreOffice返回码: {result.returncode}")
                     
                     if result.returncode != 0:

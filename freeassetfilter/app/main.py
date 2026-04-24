@@ -292,7 +292,14 @@ try:
 except ImportError:
     pass
 
-from freeassetfilter.utils.path_utils import get_resource_path, get_app_data_path, get_config_path
+from freeassetfilter.utils.path_utils import (
+    contains_injection_chars,
+    get_resource_path,
+    get_app_data_path,
+    get_config_path,
+    is_sensitive_path,
+    validate_safe_path,
+)
 from freeassetfilter.core.update_manager import get_app_version
 
 from PySide6.QtWidgets import (
@@ -1927,9 +1934,30 @@ class FreeAssetFilterApp(QMainWindow):
 
         for file_info in batch:
             try:
+                if not isinstance(file_info, dict):
+                    continue
+
                 file_path = file_info.get("path", "")
-                if file_path and os.path.exists(file_path):
-                    self.file_staging_pool.add_file(file_info)
+                safe_file_path = ""
+                if file_path:
+                    try:
+                        safe_file_path = validate_safe_path(file_path)
+                    except ValueError as e:
+                        warning(f"恢复备份项路径验证失败: {e}")
+                        safe_file_path = ""
+
+                if safe_file_path and contains_injection_chars(safe_file_path):
+                    warning("恢复备份项包含命令注入风险字符，已跳过")
+                    safe_file_path = ""
+
+                if safe_file_path and is_sensitive_path(safe_file_path):
+                    warning("恢复备份项命中敏感系统路径，已跳过")
+                    safe_file_path = ""
+
+                if safe_file_path and os.path.exists(safe_file_path):
+                    restored_file_info = dict(file_info)
+                    restored_file_info["path"] = safe_file_path
+                    self.file_staging_pool.add_file(restored_file_info)
                     self._restore_success_count += 1
                 else:
                     self._pending_restore_unlinked_files.append({
@@ -2768,7 +2796,9 @@ def main():
         thread_names = ", ".join(t.name for t in non_daemon_alive)
         debug(f"非守护线程存活: {thread_names}")
         for t in non_daemon_alive:
-            t.join(timeout=3.0)
+            t.join(timeout=1.0)
+            if t.is_alive():
+                warning(f"线程 {t.name} 未能正常退出")
 
     sys.exit(exit_code)
 

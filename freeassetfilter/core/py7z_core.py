@@ -27,6 +27,7 @@ from pathlib import Path
 from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 from freeassetfilter.utils.path_utils import validate_safe_path, contains_injection_chars
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
+from freeassetfilter.utils.subprocess_utils import run_with_limited_output
 
 
 class Py7zCore:
@@ -41,6 +42,7 @@ class Py7zCore:
     # 安全限制常量
     MAX_ARCHIVE_FILES = 10000  # 压缩包内最大文件数量
     MAX_NESTED_DEPTH = 5       # 嵌套压缩包最大递归深度
+    MAX_COMMAND_OUTPUT_BYTES = 8 * 1024 * 1024
 
     def __init__(self, command_timeout: int = None):
         """
@@ -119,11 +121,12 @@ class Py7zCore:
 
         # 如果都找不到，尝试使用 where 命令
         try:
-            result = subprocess.run(
+            result = run_with_limited_output(
                 ["where", "7z.exe"],
-                capture_output=True,
                 text=True,
                 timeout=5,
+                max_stdout_bytes=64 * 1024,
+                max_stderr_bytes=64 * 1024,
                 **self._get_subprocess_kwargs()
             )
             if result.returncode == 0 and result.stdout.strip():
@@ -169,12 +172,17 @@ class Py7zCore:
             try:
                 # 对于 UTF-16 编码，不使用 text=True，而是手动解码
                 if encoding.lower() in ['utf-16', 'utf-16le', 'utf-16be']:
-                    result = subprocess.run(
+                    result = run_with_limited_output(
                         cmd,
-                        capture_output=True,
                         timeout=actual_timeout,
+                        max_stdout_bytes=self.MAX_COMMAND_OUTPUT_BYTES,
+                        max_stderr_bytes=self.MAX_COMMAND_OUTPUT_BYTES,
                         **subprocess_kwargs
                     )
+                    if getattr(result, "stdout_truncated", False) or getattr(result, "stderr_truncated", False):
+                        increment_perf_counter("py7z.run_command", "output_truncated")
+                        return -1, "", "7z 输出超过安全限制"
+
                     try:
                         if encoding.lower() == 'utf-16':
                             stdout = result.stdout.decode('utf-16', errors='replace')
@@ -196,15 +204,20 @@ class Py7zCore:
                     )
                     return result.returncode, stdout, stderr
                 else:
-                    result = subprocess.run(
+                    result = run_with_limited_output(
                         cmd,
-                        capture_output=True,
                         text=True,
                         encoding=encoding,
                         errors="replace",
                         timeout=actual_timeout,
+                        max_stdout_bytes=self.MAX_COMMAND_OUTPUT_BYTES,
+                        max_stderr_bytes=self.MAX_COMMAND_OUTPUT_BYTES,
                         **subprocess_kwargs
                     )
+                    if getattr(result, "stdout_truncated", False) or getattr(result, "stderr_truncated", False):
+                        increment_perf_counter("py7z.run_command", "output_truncated")
+                        return -1, "", "7z 输出超过安全限制"
+
                     increment_perf_counter(
                         "py7z.run_command",
                         "success" if result.returncode == 0 else "nonzero_exit",

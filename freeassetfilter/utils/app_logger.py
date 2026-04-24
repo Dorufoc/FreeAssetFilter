@@ -268,7 +268,10 @@ class ComponentSourceFormatter(logging.Formatter):
         # 如果没有source_file属性，添加一个默认值
         if not hasattr(record, 'source_file'):
             record.source_file = 'unknown'
-        return super().format(record)
+        formatted = super().format(record)
+        formatted = sanitize_path(formatted)
+        formatted = sanitize_sensitive_info(formatted)
+        return formatted
 
 
 # ==================== 异常类型分类 ====================

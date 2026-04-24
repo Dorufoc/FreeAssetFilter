@@ -26,9 +26,73 @@ class JSONSizeExceededError(Exception):
     pass
 
 
-def _check_json_depth(obj, current_depth=0, max_depth=50):
+class JSONValueExceededError(Exception):
+    """JSON单个值或集合大小超出限制错误"""
+    pass
+
+
+DEFAULT_MAX_JSON_STRING_LENGTH = 1024 * 1024
+DEFAULT_MAX_JSON_COLLECTION_ITEMS = 50000
+
+
+def _precheck_json_text(
+    json_str,
+    max_depth=50,
+    max_string_length=DEFAULT_MAX_JSON_STRING_LENGTH,
+):
     """
-    递归检查JSON对象的嵌套深度
+    在 json.loads 前做轻量扫描，提前拒绝极深嵌套和超长字符串。
+
+    这不是完整 JSON 校验；格式校验仍交给 json.loads。这里的目标是避免
+    恶意输入在解析阶段才暴露资源风险。
+    """
+    if not isinstance(json_str, str):
+        raise TypeError("JSON内容必须是字符串")
+
+    depth = 0
+    in_string = False
+    escape = False
+    string_length = 0
+
+    for char in json_str:
+        if in_string:
+            if escape:
+                escape = False
+                string_length += 1
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            else:
+                string_length += 1
+
+            if string_length > max_string_length:
+                raise JSONValueExceededError(
+                    f"JSON字符串长度超过最大限制 ({max_string_length} 字符)"
+                )
+            continue
+
+        if char == '"':
+            in_string = True
+            escape = False
+            string_length = 0
+        elif char in "{[":
+            depth += 1
+            if depth > max_depth:
+                raise JSONDepthExceededError(f"JSON嵌套深度超过最大限制 ({max_depth}层)")
+        elif char in "}]":
+            depth = max(0, depth - 1)
+
+
+def _check_json_depth(
+    obj,
+    current_depth=0,
+    max_depth=50,
+    max_string_length=DEFAULT_MAX_JSON_STRING_LENGTH,
+    max_collection_items=DEFAULT_MAX_JSON_COLLECTION_ITEMS,
+):
+    """
+    递归检查JSON对象的嵌套深度和单个值大小
 
     Args:
         obj: 要检查的对象
@@ -42,16 +106,45 @@ def _check_json_depth(obj, current_depth=0, max_depth=50):
         raise JSONDepthExceededError(f"JSON嵌套深度超过最大限制 ({max_depth}层)")
 
     if isinstance(obj, dict):
+        if len(obj) > max_collection_items:
+            raise JSONValueExceededError(
+                f"JSON对象成员数量超过最大限制 ({max_collection_items} 项)"
+            )
         for value in obj.values():
-            _check_json_depth(value, current_depth + 1, max_depth)
+            _check_json_depth(
+                value,
+                current_depth + 1,
+                max_depth,
+                max_string_length,
+                max_collection_items,
+            )
     elif isinstance(obj, list):
+        if len(obj) > max_collection_items:
+            raise JSONValueExceededError(
+                f"JSON数组长度超过最大限制 ({max_collection_items} 项)"
+            )
         for item in obj:
-            _check_json_depth(item, current_depth + 1, max_depth)
+            _check_json_depth(
+                item,
+                current_depth + 1,
+                max_depth,
+                max_string_length,
+                max_collection_items,
+            )
+    elif isinstance(obj, str) and len(obj) > max_string_length:
+        raise JSONValueExceededError(
+            f"JSON字符串长度超过最大限制 ({max_string_length} 字符)"
+        )
 
 
-def safe_json_loads(json_str, max_depth=50):
+def safe_json_loads(
+    json_str,
+    max_depth=50,
+    max_string_length=DEFAULT_MAX_JSON_STRING_LENGTH,
+    max_collection_items=DEFAULT_MAX_JSON_COLLECTION_ITEMS,
+):
     """
-    安全地解析JSON字符串，带有深度限制
+    安全地解析JSON字符串，带有深度和值大小限制
 
     Args:
         json_str: JSON字符串
@@ -64,12 +157,25 @@ def safe_json_loads(json_str, max_depth=50):
         JSONDepthExceededError: 如果深度超过限制
         json.JSONDecodeError: 如果JSON格式错误
     """
+    _precheck_json_text(json_str, max_depth=max_depth, max_string_length=max_string_length)
     data = json.loads(json_str)
-    _check_json_depth(data, current_depth=0, max_depth=max_depth)
+    _check_json_depth(
+        data,
+        current_depth=0,
+        max_depth=max_depth,
+        max_string_length=max_string_length,
+        max_collection_items=max_collection_items,
+    )
     return data
 
 
-def safe_json_load(file_path, max_depth=50, max_size_bytes=10*1024*1024):
+def safe_json_load(
+    file_path,
+    max_depth=50,
+    max_size_bytes=10*1024*1024,
+    max_string_length=DEFAULT_MAX_JSON_STRING_LENGTH,
+    max_collection_items=DEFAULT_MAX_JSON_COLLECTION_ITEMS,
+):
     """
     安全地从文件加载JSON，带有深度和大小限制
 
@@ -95,9 +201,20 @@ def safe_json_load(file_path, max_depth=50, max_size_bytes=10*1024*1024):
 
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
-        data = json.loads(content)
-        _check_json_depth(data, current_depth=0, max_depth=max_depth)
-        return data
+        return safe_json_loads(
+            content,
+            max_depth=max_depth,
+            max_string_length=max_string_length,
+            max_collection_items=max_collection_items,
+        )
+
+
+def _apply_private_file_permissions(file_path):
+    """尽量限制设置文件权限，降低本机其他账户读取敏感路径信息的风险。"""
+    try:
+        os.chmod(file_path, 0o600)
+    except (OSError, PermissionError, FileNotFoundError, ValueError, TypeError):
+        pass
 
 
 class SettingsManager:
@@ -113,6 +230,8 @@ class SettingsManager:
     MAX_JSON_DEPTH = 50          # 最大JSON解析深度
     MAX_JSON_SIZE_MB = 10        # 最大JSON文件大小（MB）
     MAX_JSON_SIZE_BYTES = MAX_JSON_SIZE_MB * 1024 * 1024  # 转换为字节
+    MAX_JSON_STRING_LENGTH = DEFAULT_MAX_JSON_STRING_LENGTH
+    MAX_JSON_COLLECTION_ITEMS = DEFAULT_MAX_JSON_COLLECTION_ITEMS
 
     def __new__(cls, settings_file=None):
         with cls._lock:
@@ -259,6 +378,11 @@ class SettingsManager:
             return default_settings
         except JSONDepthExceededError as e:
             error(f"设置文件嵌套深度超出安全限制: {e}")
+            default_settings = self._create_default_settings_copy()
+            self.settings = default_settings
+            return default_settings
+        except JSONValueExceededError as e:
+            error(f"设置文件单个值超出安全限制: {e}")
             default_settings = self._create_default_settings_copy()
             self.settings = default_settings
             return default_settings
@@ -433,6 +557,7 @@ class SettingsManager:
                     temp_path = tmp_file.name
 
                 os.replace(temp_path, self._settings_file)
+                _apply_private_file_permissions(self._settings_file)
 
                 self._dirty_keys.clear()
                 info(f"设置已保存: {self._settings_file}")
@@ -602,7 +727,7 @@ class SettingsManager:
             except FileNotFoundError:
                 warning(f"设置文件不存在，使用默认颜色: {self._settings_file}")
                 return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
-            except (JSONSizeExceededError, JSONDepthExceededError) as e:
+            except (JSONSizeExceededError, JSONDepthExceededError, JSONValueExceededError) as e:
                 error(f"设置文件超出安全限制，无法读取颜色: {e}")
                 return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
             except json.JSONDecodeError as e:
@@ -640,7 +765,7 @@ class SettingsManager:
             except FileNotFoundError:
                 warning(f"设置文件不存在，使用默认颜色: {self._settings_file}")
                 return self.default_settings["appearance"]["colors"].copy()
-            except (JSONSizeExceededError, JSONDepthExceededError) as e:
+            except (JSONSizeExceededError, JSONDepthExceededError, JSONValueExceededError) as e:
                 error(f"设置文件超出安全限制，无法读取颜色: {e}")
                 return self.default_settings["appearance"]["colors"].copy()
             except json.JSONDecodeError as e:

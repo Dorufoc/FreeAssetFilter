@@ -17,21 +17,38 @@ from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import setup
 
 from freeassetfilter.utils.app_logger import info
+from freeassetfilter.utils.subprocess_utils import run_with_limited_output
 
 def detect_compiler():
     """检测可用的 C++ 编译器"""
     try:
-        result = subprocess.run(["g++", "--version"], capture_output=True, text=True)
+        result = run_with_limited_output(
+            ["g++", "--version"],
+            text=True,
+            timeout=5,
+            max_stdout_bytes=64 * 1024,
+            max_stderr_bytes=64 * 1024,
+        )
         if result.returncode == 0:
             return "mingw"
     except FileNotFoundError:
         pass
+    except subprocess.TimeoutExpired:
+        pass
     
     try:
-        result = subprocess.run(["cl"], capture_output=True, text=True)
+        result = run_with_limited_output(
+            ["cl"],
+            text=True,
+            timeout=5,
+            max_stdout_bytes=64 * 1024,
+            max_stderr_bytes=64 * 1024,
+        )
         if result.returncode == 0:
             return "msvc"
     except FileNotFoundError:
+        pass
+    except subprocess.TimeoutExpired:
         pass
     
     return None

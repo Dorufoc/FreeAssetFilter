@@ -272,12 +272,18 @@ class FileListLoaderThread(QThread):
                         "suffix": ""
                     })
             else:
+                if os.path.islink(self.current_path):
+                    raise OSError("拒绝扫描符号链接目录")
+
                 with os.scandir(self.current_path) as entries:
                     for entry in entries:
                         if entry.name.startswith("."):
                             continue
 
                         try:
+                            if entry.is_symlink():
+                                continue
+
                             stat = entry.stat(follow_symlinks=False)
                             files.append({
                                 "name": entry.name,
@@ -2119,6 +2125,9 @@ class CustomFileSelector(QWidget):
         else:
             # 正常目录视图 - 使用 os.scandir() 替代 os.listdir() + QFileInfo
             try:
+                if os.path.islink(self.current_path):
+                    raise OSError("拒绝扫描符号链接目录")
+
                 # os.scandir() 返回的 DirEntry 对象已经缓存了文件元数据，性能更好
                 with os.scandir(self.current_path) as entries:
                     for entry in entries:
@@ -2127,6 +2136,9 @@ class CustomFileSelector(QWidget):
                             continue
                         
                         try:
+                            if entry.is_symlink():
+                                continue
+
                             # 使用 DirEntry 的 stat() 方法获取文件信息（缓存的，不触发额外系统调用）
                             stat = entry.stat(follow_symlinks=False)
                             

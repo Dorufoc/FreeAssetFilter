@@ -35,12 +35,13 @@ from freeassetfilter.core.image_color_utils import load_raw_image, normalize_pil
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
-from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.utils.path_utils import contains_injection_chars, get_app_data_path, validate_safe_path
 from freeassetfilter.utils.perf_metrics import (
     increment_perf_counter,
     set_perf_metadata,
     track_perf,
 )
+from freeassetfilter.utils.subprocess_utils import run_with_limited_output
 
 # 尝试导入PIL库
 PIL_AVAILABLE = False
@@ -188,6 +189,7 @@ class ThumbnailManager:
     BATCH_VIDEO_SUBPROCESS_TIMEOUT = 45
     FFPROBE_TIMEOUT = 8
     FFMPEG_SOFT_TIMEOUT = 12
+    MAX_SUBPROCESS_OUTPUT_BYTES = 2 * 1024 * 1024
 
     # 缩略图磁盘缓存限制
     MAX_THUMB_CACHE_SIZE = 500 * 1024 * 1024  # 500MB
@@ -1657,6 +1659,14 @@ class ThumbnailManager:
 
     def _get_video_duration_ffprobe(self, file_path: str) -> Optional[float]:
         """使用 ffprobe 获取视频时长（秒）"""
+        try:
+            file_path = validate_safe_path(file_path)
+        except ValueError:
+            return None
+
+        if contains_injection_chars(file_path):
+            return None
+
         command = [
             get_ffprobe_path(),
             "-v",
@@ -1670,13 +1680,14 @@ class ThumbnailManager:
         ]
 
         try:
-            completed = subprocess.run(
+            completed = run_with_limited_output(
                 command,
-                capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=self.FFPROBE_TIMEOUT,
+                max_stdout_bytes=self.MAX_SUBPROCESS_OUTPUT_BYTES,
+                max_stderr_bytes=self.MAX_SUBPROCESS_OUTPUT_BYTES,
                 creationflags=self._get_subprocess_creationflags(),
                 startupinfo=self._get_subprocess_startupinfo(),
             )
@@ -1694,6 +1705,8 @@ class ThumbnailManager:
             # stderr_text = (completed.stderr or "").strip()
             # if stderr_text:
             #     debug(f"ffprobe异常: {stderr_text}")
+            return None
+        if getattr(completed, "stdout_truncated", False):
             return None
 
         try:
@@ -1754,6 +1767,16 @@ class ThumbnailManager:
     def _create_video_thumbnail_ffmpeg(self, file_path: str, thumbnail_path: str) -> Optional[str]:
         """使用 FFmpeg 软解抽帧生成视频缩略图"""
         with track_perf("thumbnail.create_video_thumbnail_ffmpeg"):
+            try:
+                file_path = validate_safe_path(file_path)
+            except ValueError:
+                increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "invalid_path")
+                return None
+
+            if contains_injection_chars(file_path):
+                increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "injection_blocked")
+                return None
+
             dpi_scaled_size = int(self.BASE_SIZE * self.dpi_scale)
             temp_output_path = f"{thumbnail_path}.ffmpeg.tmp.jpg"
             scale_filter = f"scale={dpi_scaled_size}:{dpi_scaled_size}:force_original_aspect_ratio=decrease:flags=lanczos"
@@ -1800,13 +1823,14 @@ class ThumbnailManager:
                 ])
 
                 try:
-                    completed = subprocess.run(
+                    completed = run_with_limited_output(
                         command,
-                        capture_output=True,
                         text=True,
                         encoding="utf-8",
                         errors="replace",
                         timeout=self.FFMPEG_SOFT_TIMEOUT,
+                        max_stdout_bytes=self.MAX_SUBPROCESS_OUTPUT_BYTES,
+                        max_stderr_bytes=self.MAX_SUBPROCESS_OUTPUT_BYTES,
                         creationflags=self._get_subprocess_creationflags(),
                         startupinfo=self._get_subprocess_startupinfo(),
                     )
@@ -1910,13 +1934,14 @@ class ThumbnailManager:
             )
 
             try:
-                completed = subprocess.run(
+                completed = run_with_limited_output(
                     command,
-                    capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     timeout=timeout,
+                    max_stdout_bytes=self.MAX_SUBPROCESS_OUTPUT_BYTES,
+                    max_stderr_bytes=self.MAX_SUBPROCESS_OUTPUT_BYTES,
                     cwd=project_root,
                     creationflags=self._get_subprocess_creationflags(),
                     startupinfo=self._get_subprocess_startupinfo(),
@@ -1932,6 +1957,10 @@ class ThumbnailManager:
 
             stderr_text = (completed.stderr or "").strip()
             filtered_stderr_text = self._record_subprocess_decode_stats(stderr_text)
+            if getattr(completed, "stdout_truncated", False) or getattr(completed, "stderr_truncated", False):
+                increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "output_truncated")
+                warning(f"视频缩略图子进程输出超过安全限制，已跳过: {file_path}")
+                return None
 
             if completed.returncode == 0:
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "success")
