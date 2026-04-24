@@ -344,6 +344,8 @@ class CustomFileSelector(QWidget):
         
         # 初始化配置
         self.current_path = "All"  # 默认路径为"All"
+        self._last_accessible_path = "All"  # 最近一次成功加载的目录，用于读取失败后恢复
+        self._navigation_recovery_path = "All"  # 当前导航请求失败时应返回的来源目录
         self.selected_files = {}  # 存储每个目录下的选中文件 {directory: {file_path1, file_path2}}]
         self._selected_file_paths = set()  # 扁平化选中集合（规范化路径），用于 O(1) 选中判断
         self.previewing_file_path = None  # 当前处于预览态的文件路径
@@ -436,24 +438,42 @@ class CustomFileSelector(QWidget):
             if os.path.exists(self.save_path_file):
                 with open(self.save_path_file, 'r') as f:
                     data = json.load(f)
+                    last_accessible_path = data.get("last_accessible_path")
+                    if self._is_valid_selector_path(last_accessible_path):
+                        self._last_accessible_path = last_accessible_path
+                        self._navigation_recovery_path = last_accessible_path
+
                     # 只有当上次保存的路径存在且不是无效路径时才使用
                     if "last_path" in data:
                         last_path = data["last_path"]
                         # 检查路径是否有效（普通路径需要存在，"All"是特殊路径）
-                        if last_path == "All" or os.path.exists(last_path):
+                        if self._is_valid_selector_path(last_path):
                             self.current_path = last_path
         except Exception as e:
             warning(f"加载上次路径失败: {e}")
             # 如果加载失败，确保默认显示"All"
             self.current_path = "All"
     
-    def save_current_path(self):
+    def save_current_path(self, path=None):
         """
         保存当前路径到文件
         """
         try:
+            last_accessible_path = getattr(self, "_last_accessible_path", "All")
+            if path is None:
+                current_path = getattr(self, "current_path", "All")
+                if self._same_selector_path(current_path, last_accessible_path):
+                    path_to_save = current_path
+                else:
+                    path_to_save = getattr(self, "_navigation_recovery_path", None) or last_accessible_path or "All"
+            else:
+                path_to_save = path
+
             with open(self.save_path_file, 'w') as f:
-                json.dump({"last_path": self.current_path}, f)
+                json.dump({
+                    "last_path": path_to_save,
+                    "last_accessible_path": last_accessible_path,
+                }, f)
         except Exception as e:
             warning(f"保存路径失败: {e}")
     
@@ -1201,16 +1221,12 @@ class CustomFileSelector(QWidget):
         
         # 如果是磁盘根目录，返回到All页面
         if is_root_dir:
-            self.current_path = "All"
-            self.save_current_path()
-            self.refresh_files()
+            self._navigate_to_path("All")
         else:
             # 否则，执行原有的返回上级目录逻辑
             parent_dir = os.path.dirname(self.current_path)
             if parent_dir and parent_dir != self.current_path:
-                self.current_path = parent_dir
-                self.save_current_path()
-                self.refresh_files()
+                self._navigate_to_path(parent_dir)
     
     def _load_favorites(self):
         """
@@ -1370,9 +1386,7 @@ class CustomFileSelector(QWidget):
         点击收藏夹卡片时跳转到对应路径
         """
         if os.path.exists(favorite['path']):
-            self.current_path = favorite['path']
-            self.save_current_path()
-            self.refresh_files()
+            self._navigate_to_path(favorite['path'])
             dialog.close()
     
     def _on_favorite_rename(self, favorite, dialog, favorites_cards):
@@ -1503,8 +1517,7 @@ class CustomFileSelector(QWidget):
         if ' - ' in text:
             path = text.split(' - ', 1)[1]
             if os.path.exists(path):
-                self.current_path = path
-                self.refresh_files()
+                self._navigate_to_path(path)
                 # 关闭收藏夹对话框
                 dialog.accept()
     
@@ -1664,6 +1677,45 @@ class CustomFileSelector(QWidget):
         """
         self.load_last_path()
         self.refresh_files()
+
+    def _is_valid_selector_path(self, path):
+        if path == "All":
+            return True
+        if not path:
+            return False
+        try:
+            return os.path.exists(path)
+        except (OSError, PermissionError, TypeError, ValueError):
+            return False
+
+    def _get_recovery_source_for_navigation(self):
+        current_path = getattr(self, "current_path", "All")
+        if self._is_valid_selector_path(current_path):
+            return current_path
+
+        last_accessible_path = getattr(self, "_last_accessible_path", "All")
+        if self._is_valid_selector_path(last_accessible_path):
+            return last_accessible_path
+
+        return "All"
+
+    def _remember_navigation_source(self, target_path):
+        if self._same_selector_path(getattr(self, "current_path", None), target_path):
+            return
+
+        recovery_path = self._get_recovery_source_for_navigation()
+        self._navigation_recovery_path = recovery_path
+        self._last_accessible_path = recovery_path
+        self.save_current_path(path=recovery_path)
+
+    def _navigate_to_path(self, target_path, callback=None, scroll_to_top=True, update_path_edit=True):
+        self._remember_navigation_source(target_path)
+        self.current_path = target_path
+
+        if update_path_edit and hasattr(self, "path_edit") and self.path_edit:
+            self.path_edit.setText(target_path)
+
+        self.refresh_files(callback=callback, scroll_to_top=scroll_to_top)
     
     def _is_drive_available(self, drive_path):
         """
@@ -1779,9 +1831,7 @@ class CustomFileSelector(QWidget):
         # 处理"All"选项
         if drive == "All":
             # 设置一个特殊的路径标识，表示当前处于"All"视图
-            self.current_path = "All"
-            self.save_current_path()
-            self.refresh_files()
+            self._navigate_to_path("All")
             return
         
         if sys.platform == 'win32':
@@ -1793,9 +1843,7 @@ class CustomFileSelector(QWidget):
             drive_path = drive
 
         if os.path.isabs(drive_path):
-            self.current_path = drive_path
-            self.save_current_path()
-            self.refresh_files()
+            self._navigate_to_path(drive_path)
     
     def go_forward(self):
         """
@@ -1803,8 +1851,7 @@ class CustomFileSelector(QWidget):
         """
         if self.history_index < len(self.nav_history) - 1:
             self.history_index += 1
-            self.current_path = self.nav_history[self.history_index]
-            self.refresh_files()
+            self._navigate_to_path(self.nav_history[self.history_index])
             # 更新按钮状态
             self.back_btn.setEnabled(self.history_index > 0)
             self.forward_btn.setEnabled(self.history_index < len(self.nav_history) - 1)
@@ -1837,16 +1884,12 @@ class CustomFileSelector(QWidget):
         """
         path = self.path_edit.text().strip()
         if not path or path.lower() == "all":
-            self.current_path = "All"
-            self.save_current_path()
-            self.refresh_files()
+            self._navigate_to_path("All")
             return
 
         normalized_path = os.path.abspath(os.path.normpath(path)) if not path.startswith('\\') else os.path.normpath(path)
         if os.path.isabs(normalized_path):
-            self.current_path = normalized_path
-            self.save_current_path()
-            self.refresh_files()
+            self._navigate_to_path(normalized_path)
         else:
             from freeassetfilter.widgets.D_widgets import CustomMessageBox
             warning_msg = CustomMessageBox(self)
@@ -2017,6 +2060,8 @@ class CustomFileSelector(QWidget):
 
         try:
             self._is_loading = False
+            self._last_accessible_path = loaded_path
+            self.save_current_path()
             files = self._sort_files(files)
             files = self._filter_files(files)
             self.file_model.set_files(files)
@@ -2041,16 +2086,128 @@ class CustomFileSelector(QWidget):
 
         self._is_loading = False
         error(f"读取目录失败: {message}")
+
+        allow_elevated_restart = sys.platform == 'win32' and self._looks_like_permission_denied(message)
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
         error_msg = CustomMessageBox(self)
-        error_msg.set_title("错误")
-        error_msg.set_text(f"读取目录失败: {message}")
-        error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-        error_msg.buttonClicked.connect(error_msg.close)
+        error_msg.set_title("目录无法访问")
+        if allow_elevated_restart:
+            error_msg.set_text(
+                f"读取目录失败: {message}\n\n"
+                "这通常是 Windows 权限或 UAC 限制造成的。当前进程不能原地提升权限，"
+                "可以选择以管理员身份重新启动程序后再尝试访问。"
+            )
+            error_msg.set_buttons(["以管理员身份重启", "确定"], Qt.Horizontal, ["warning", "primary"])
+        else:
+            error_msg.set_text(f"读取目录失败: {message}")
+            error_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+
+        clicked_button = None
+
+        def on_error_button_clicked(button_index):
+            nonlocal clicked_button
+            clicked_button = button_index
+            error_msg.close()
+
+        error_msg.buttonClicked.connect(on_error_button_clicked)
         error_msg.exec()
+
+        if allow_elevated_restart and clicked_button == 0:
+            launched, launch_message = self._restart_application_as_admin()
+            if launched:
+                return
+            self._show_elevated_restart_failed_dialog(launch_message)
+
+        self._recover_after_directory_load_failure(failed_path)
 
     def _on_file_loader_finished(self):
         self._file_loader_thread = None
+
+    def _looks_like_permission_denied(self, message):
+        text = str(message).lower()
+        permission_markers = (
+            "permission",
+            "access is denied",
+            "拒绝访问",
+            "权限",
+            "winerror 5",
+            "errno 13",
+        )
+        return any(marker in text for marker in permission_markers)
+
+    def _same_selector_path(self, left, right):
+        if left == right:
+            return True
+        if not left or not right or left == "All" or right == "All":
+            return False
+        try:
+            return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
+        except (TypeError, ValueError):
+            return False
+
+    def _get_directory_load_failure_recovery_path(self, failed_path):
+        recovery_path = (
+            getattr(self, "_navigation_recovery_path", None)
+            or getattr(self, "_last_accessible_path", None)
+            or "All"
+        )
+        if self._same_selector_path(recovery_path, failed_path):
+            return "All"
+        return recovery_path
+
+    def _recover_after_directory_load_failure(self, failed_path):
+        recovery_path = self._get_directory_load_failure_recovery_path(failed_path)
+        self._last_accessible_path = recovery_path
+        self._navigation_recovery_path = recovery_path
+        self.current_path = recovery_path
+
+        if hasattr(self, "path_edit") and self.path_edit:
+            self.path_edit.setText(recovery_path)
+
+        self.save_current_path()
+        self.refresh_files()
+
+    def _restart_application_as_admin(self):
+        if sys.platform != 'win32':
+            return False, "当前平台不支持 Windows UAC 提权重启"
+
+        try:
+            import ctypes
+            import subprocess
+
+            executable = sys.executable
+            if getattr(sys, "frozen", False):
+                relaunch_args = sys.argv[1:]
+            else:
+                relaunch_args = sys.argv
+
+            parameters = subprocess.list2cmdline(relaunch_args)
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                executable,
+                parameters,
+                os.getcwd(),
+                1,
+            )
+            if result <= 32:
+                return False, f"系统拒绝启动管理员进程，错误码: {result}"
+
+            app = QApplication.instance()
+            if app:
+                app.quit()
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    def _show_elevated_restart_failed_dialog(self, message):
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
+        restart_msg = CustomMessageBox(self)
+        restart_msg.set_title("管理员重启失败")
+        restart_msg.set_text(f"无法以管理员身份重新启动程序：\n{message}")
+        restart_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
+        restart_msg.buttonClicked.connect(restart_msg.close)
+        restart_msg.exec()
 
     
     def _get_files(self):
@@ -2811,8 +2968,7 @@ class CustomFileSelector(QWidget):
 
         if os.path.exists(file_path):
             if file_info["is_dir"]:
-                self.current_path = file_path
-                self.refresh_files()
+                self._navigate_to_path(file_path)
 
     def _open_file_by_path(self, file_path):
         """
@@ -2833,9 +2989,7 @@ class CustomFileSelector(QWidget):
         if os.path.exists(file_path):
             if is_dir:
                 # debug(f"打开目录，进入新路径: {file_path}")
-                self.current_path = file_path
-                self.path_edit.setText(file_path)
-                self.refresh_files()
+                self._navigate_to_path(file_path)
             # else:
                 # debug(f"打开文件: {file_path}")
     
@@ -2957,6 +3111,7 @@ class CustomFileSelector(QWidget):
                     # debug(f"文件所在目录（规范化后）: {file_dir}")
 
                     # 将文件选择器当前路径设置为文件所在目录
+                    self._remember_navigation_source(file_dir)
                     self.current_path = file_dir
                     # debug(f"设置当前路径为: {file_dir}")
 
