@@ -34,115 +34,358 @@ from freeassetfilter.utils.path_utils import get_app_data_path
 
 # ==================== 系统信息收集 ====================
 
-def _get_wmi_info() -> Dict[str, Any]:
+def _get_windows_version() -> str:
     """
-    通过 WMI 获取系统硬件信息（Windows）
+    通过 RtlGetVersion API 获取 Windows 版本信息
+    该 API 不受兼容性模式影响，比 WMI 更可靠
+    
+    Returns:
+        str: 格式化的 Windows 版本字符串
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class OSVERSIONINFOEXW(ctypes.Structure):
+            _fields_ = [
+                ("dwOSVersionInfoSize", wintypes.DWORD),
+                ("dwMajorVersion", wintypes.DWORD),
+                ("dwMinorVersion", wintypes.DWORD),
+                ("dwBuildNumber", wintypes.DWORD),
+                ("dwPlatformId", wintypes.DWORD),
+                ("szCSDVersion", wintypes.WCHAR * 128),
+                ("wServicePackMajor", wintypes.WORD),
+                ("wServicePackMinor", wintypes.WORD),
+                ("wSuiteMask", wintypes.WORD),
+                ("wProductType", wintypes.BYTE),
+                ("wReserved", wintypes.BYTE),
+            ]
+
+        os_info = OSVERSIONINFOEXW()
+        os_info.dwOSVersionInfoSize = ctypes.sizeof(OSVERSIONINFOEXW)
+
+        ntdll = ctypes.windll.ntdll
+        status = ntdll.RtlGetVersion(ctypes.byref(os_info))
+
+        if status == 0:  # STATUS_SUCCESS
+            # 根据版本号识别 Windows 版本名称
+            version_name = "Windows"
+            major = os_info.dwMajorVersion
+            minor = os_info.dwMinorVersion
+
+            if major == 10 and minor == 0:
+                if os_info.dwBuildNumber >= 22000:
+                    version_name = "Windows 11"
+                else:
+                    version_name = "Windows 10"
+            elif major == 6 and minor == 3:
+                version_name = "Windows 8.1"
+            elif major == 6 and minor == 2:
+                version_name = "Windows 8"
+            elif major == 6 and minor == 1:
+                version_name = "Windows 7"
+            elif major == 6 and minor == 0:
+                version_name = "Windows Vista"
+
+            return f"{version_name} (Build {os_info.dwBuildNumber})"
+    except Exception:
+        pass
+    return ""
+
+
+def _get_memory_info() -> str:
+    """
+    通过 GlobalMemoryStatusEx API 获取物理内存信息
+    
+    Returns:
+        str: 格式化的内存容量字符串
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", wintypes.DWORD),
+                ("dwMemoryLoad", wintypes.DWORD),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        mem_status = MEMORYSTATUSEX()
+        mem_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+
+        kernel32 = ctypes.windll.kernel32
+        if kernel32.GlobalMemoryStatusEx(ctypes.byref(mem_status)):
+            total_gb = mem_status.ullTotalPhys / (1024 ** 3)
+            return f"{total_gb:.2f} GB"
+    except Exception:
+        pass
+    return ""
+
+
+def _get_cpu_info_from_registry() -> str:
+    """
+    通过注册表获取 CPU 名称
+    
+    Returns:
+        str: CPU 名称
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+        ) as key:
+            cpu_name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+            return cpu_name.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _get_gpu_info_from_registry() -> str:
+    """
+    通过注册表获取显卡信息
+
+    Returns:
+        str: 显卡名称列表
+    """
+    gpus = []
+
+    # 强显卡标识（必须包含其中一个）
+    GPU_KEYWORDS_STRONG = ['NVIDIA', 'AMD', 'RADEON', 'GEFORCE', 'RTX', 'GTX', 'ARC', 'QUADRO', 'TESLA']
+    # 弱显卡标识（需要配合其他显卡相关词）
+    GPU_KEYWORDS_WEAK = ['INTEL']
+    # 显卡辅助词（配合弱标识使用）
+    GPU_HELPERS = ['GRAPHICS', 'IRIS', 'XE', 'UHD', 'HD', 'ARC', 'GPU']
+    # 需要排除的非显卡设备关键词
+    EXCLUDE_KEYWORDS = ['USB', 'AUDIO', 'NETWORK', 'ETHERNET', 'WIFI', 'WI-FI', 'BLUETOOTH',
+                       'HOST', 'HUB', 'SATA', 'NVME', 'SSD',
+                       'CAMERA', 'MICROPHONE', 'SPEAKER', 'TOUCHPAD', 'KEYBOARD', 'MOUSE']
+
+    def is_valid_gpu(name: str) -> bool:
+        """检查是否为有效的显卡名称"""
+        name_upper = name.upper()
+
+        # 不能包含排除关键词
+        has_exclude = any(kw in name_upper for kw in EXCLUDE_KEYWORDS)
+        if has_exclude:
+            return False
+
+        # 检查强显卡标识
+        has_strong = any(kw in name_upper for kw in GPU_KEYWORDS_STRONG)
+        if has_strong:
+            return True
+
+        # 检查弱显卡标识 + 辅助词
+        has_weak = any(kw in name_upper for kw in GPU_KEYWORDS_WEAK)
+        has_helper = any(kw in name_upper for kw in GPU_HELPERS)
+        if has_weak and has_helper:
+            return True
+
+        return False
+
+    def clean_gpu_name(name: str) -> str:
+        """清理显卡名称，移除 INF 文件引用格式"""
+        # 处理 @oem123.inf,%xxx%;Name 格式
+        if ';' in name:
+            parts = name.split(';')
+            # 取最后一部分（实际名称）
+            name = parts[-1].strip()
+        # 移除残留的 %xxx% 变量
+        import re
+        name = re.sub(r'%[^%]+%', '', name)
+        # 清理多余的空格
+        name = ' '.join(name.split())
+        return name.strip()
+
+    try:
+        import winreg
+
+        # 方法1: 从 Enum\PCI 键获取显卡信息
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Enum\PCI"
+            ) as pci_key:
+                index = 0
+                while True:
+                    try:
+                        device_id = winreg.EnumKey(pci_key, index)
+
+                        with winreg.OpenKey(pci_key, device_id) as dev_key:
+                            sub_index = 0
+                            while True:
+                                try:
+                                    sub_id = winreg.EnumKey(dev_key, sub_index)
+                                    full_path = f"SYSTEM\\CurrentControlSet\\Enum\\PCI\\{device_id}\\{sub_id}"
+
+                                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, full_path) as sub_key:
+                                        try:
+                                            # 优先读取 FriendlyName
+                                            try:
+                                                friendly_name, _ = winreg.QueryValueEx(sub_key, "FriendlyName")
+                                                name = friendly_name.strip()
+                                            except FileNotFoundError:
+                                                #  fallback 到 DeviceDesc
+                                                device_desc, _ = winreg.QueryValueEx(sub_key, "DeviceDesc")
+                                                name = device_desc.strip()
+
+                                            if name and is_valid_gpu(name):
+                                                cleaned = clean_gpu_name(name)
+                                                if cleaned:
+                                                    gpus.append(cleaned)
+                                        except FileNotFoundError:
+                                            pass
+                                    sub_index += 1
+                                except OSError:
+                                    break
+                        index += 1
+                    except OSError:
+                        break
+        except Exception:
+            pass
+
+        # 方法2: 从 Control\Video\{GUID}\Video 获取活跃显卡
+        if not gpus:
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"SYSTEM\CurrentControlSet\Control\Video"
+                ) as video_key:
+                    index = 0
+                    while True:
+                        try:
+                            guid = winreg.EnumKey(video_key, index)
+                            video_sub_path = f"SYSTEM\\CurrentControlSet\\Control\\Video\\{guid}\\Video"
+
+                            try:
+                                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, video_sub_path) as sub_key:
+                                    try:
+                                        device_desc, _ = winreg.QueryValueEx(sub_key, "DeviceDesc")
+                                        if device_desc:
+                                            desc = device_desc.strip()
+                                            if is_valid_gpu(desc):
+                                                cleaned = clean_gpu_name(desc)
+                                                if cleaned:
+                                                    gpus.append(cleaned)
+                                    except FileNotFoundError:
+                                        pass
+                            except FileNotFoundError:
+                                pass
+                            index += 1
+                        except OSError:
+                            break
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+
+    # 去重并返回
+    if gpus:
+        seen = set()
+        unique_gpus = []
+        for gpu in gpus:
+            # 简化名称用于去重判断（移除常见厂商名和空格）
+            simple = gpu.upper()
+            for word in ['NVIDIA', 'AMD', 'INTEL', 'CORPORATION', 'GRAPHICS', '  ']:
+                simple = simple.replace(word, ' ')
+            simple = simple.strip().replace(' ', '')
+
+            if simple not in seen:
+                seen.add(simple)
+                unique_gpus.append(gpu)
+
+        return ", ".join(unique_gpus[:2])  # 最多显示2个显卡
+
+    return ""
+
+
+def _get_system_info_native() -> Dict[str, Any]:
+    """
+    通过 Windows API 和注册表获取系统硬件信息
+    绕过 WMI，避免 OEM 系统对 WMI 的屏蔽或魔改
     
     Returns:
         Dict[str, Any]: 包含 CPU、显卡、内存等信息的字典
     """
     info = {}
-    try:
-        import ctypes
-        from ctypes import wintypes
-        
-        class SWbemLocator(ctypes.Structure):
-            pass
-        
-        class ISWbemServices(ctypes.Structure):
-            pass
-        
-        try:
-            import win32com.client
-            wmi = win32com.client.GetObject("winmgmts:")
-            
-            cpu_info = wmi.ExecQuery("SELECT Name, Manufacturer FROM Win32_Processor")
-            if cpu_info:
-                cpu = cpu_info[0]
-                info['cpu'] = f"{cpu.Manufacturer} {cpu.Name}"
-            
-            gpu_info = wmi.ExecQuery("SELECT Name, DriverVersion FROM Win32_VideoController")
-            if gpu_info:
-                gpus = []
-                for gpu in gpu_info:
-                    gpus.append(f"{gpu.Name} (驱动: {gpu.DriverVersion})")
-                info['gpu'] = ", ".join(gpus)
-            
-            mem_info = wmi.ExecQuery("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem")
-            if mem_info:
-                total_mem = int(mem_info[0].TotalPhysicalMemory)
-                info['memory'] = f"{total_mem / (1024**3):.2f} GB"
-            
-            os_info = wmi.ExecQuery("SELECT Caption, Version, BuildNumber FROM Win32_OperatingSystem")
-            if os_info:
-                os_data = os_info[0]
-                info['os'] = f"{os_data.Caption} (版本 {os_data.Version}, 构建 {os_data.BuildNumber})"
-        
-        except ImportError:
-            try:
-                import wmi
-                c = wmi.WMI()
-                
-                for cpu in c.Win32_Processor():
-                    info['cpu'] = f"{cpu.Manufacturer} {cpu.Name}"
-                    break
-                
-                gpus = []
-                for gpu in c.Win32_VideoController():
-                    gpus.append(f"{gpu.Name} (驱动: {gpu.DriverVersion})")
-                if gpus:
-                    info['gpu'] = ", ".join(gpus)
-                
-                for cs in c.Win32_ComputerSystem():
-                    total_mem = int(cs.TotalPhysicalMemory)
-                    info['memory'] = f"{total_mem / (1024**3):.2f} GB"
-                    break
-                
-                for os_data in c.Win32_OperatingSystem():
-                    info['os'] = f"{os_data.Caption} (版本 {os_data.Version}, 构建 {os_data.BuildNumber})"
-                    break
-            except ImportError:
-                pass
-    except Exception:
-        pass
-    
+
+    # 获取操作系统版本
+    os_version = _get_windows_version()
+    if os_version:
+        info['os'] = os_version
+
+    # 获取内存信息
+    memory = _get_memory_info()
+    if memory:
+        info['memory'] = memory
+
+    # 获取 CPU 信息
+    cpu = _get_cpu_info_from_registry()
+    if cpu:
+        info['cpu'] = cpu
+
+    # 获取显卡信息
+    gpu = _get_gpu_info_from_registry()
+    if gpu:
+        info['gpu'] = gpu
+
     return info
 
 
 def _get_system_info() -> Dict[str, Any]:
     """
     获取系统信息的综合函数
+    优先使用 Windows API 和注册表方式，绕过 WMI 避免 OEM 系统限制
     
     Returns:
         Dict[str, Any]: 包含所有系统信息的字典
     """
     info = {}
-    
+
+    # 获取 Python 环境信息
     try:
         info['python_version'] = platform.python_version()
         info['python_implementation'] = platform.python_implementation()
         info['architecture'] = platform.architecture()[0]
     except Exception:
         pass
-    
+
+    # 第1层：使用 Windows API 和注册表获取系统信息（最可靠）
     try:
-        wmi_info = _get_wmi_info()
-        info.update(wmi_info)
+        native_info = _get_system_info_native()
+        info.update(native_info)
     except Exception:
         pass
-    
-    if 'os' not in info:
+
+    # 第2层：兜底方案 - 使用 platform 模块
+    if 'os' not in info or not info['os']:
         try:
             info['os'] = f"{platform.system()} {platform.release()}"
         except Exception:
             info['os'] = "未知"
-    
-    if 'cpu' not in info:
+
+    if 'cpu' not in info or not info['cpu']:
         try:
-            info['cpu'] = platform.processor() or "未知"
+            cpu_name = platform.processor()
+            info['cpu'] = cpu_name if cpu_name else "未知"
         except Exception:
             info['cpu'] = "未知"
-    
+
+    if 'memory' not in info or not info['memory']:
+        info['memory'] = "未知"
+
+    if 'gpu' not in info or not info['gpu']:
+        info['gpu'] = "未知"
+
     return info
 
 
