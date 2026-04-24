@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 import threading
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
@@ -1200,14 +1201,13 @@ class FileStagingPool(QWidget):
         """
         import hashlib
         try:
-            if not os.path.exists(file_path):
-                return None
-
             hash_md5 = hashlib.md5()
             with open(file_path, "rb") as f:
                 for chunk in iter(lambda: f.read(4096), b""):
                     hash_md5.update(chunk)
             return hash_md5.hexdigest()
+        except FileNotFoundError:
+            return None
         except (IOError, OSError, PermissionError) as e:
             warning(f"计算MD5失败: {e}")
             return None
@@ -1330,52 +1330,71 @@ class FileStagingPool(QWidget):
         if not dir_path:
             return
 
+        md5_matches = defaultdict(list)
+        name_matches = defaultdict(list)
+
+        for file_item in unlinked_files:
+            if file_item.get("status") != "unlinked":
+                continue
+
+            original_file_info = file_item["original_file_info"]
+            original_md5 = file_item.get("_original_md5")
+            if original_md5 is None:
+                original_md5 = self.calculate_md5(original_file_info["path"])
+                file_item["_original_md5"] = original_md5
+
+            if original_md5:
+                md5_matches[original_md5].append(file_item)
+            name_matches[original_file_info["name"]].append(file_item)
+
         # 遍历目录下所有文件
         matched_count = 0
-        for root, dirs, files in os.walk(dir_path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                file_md5 = self.calculate_md5(file_path)
+        for entry in self._iter_file_entries(dir_path):
+            file_path = entry.path
+            file_name = entry.name
+            file_md5 = self.calculate_md5(file_path)
 
-                # 查找匹配的未链接文件
-                for file_item in unlinked_files:
-                    if file_item["status"] == "unlinked":
-                        original_file_info = file_item["original_file_info"]
-                        original_name = original_file_info["name"]
-                        original_md5 = self.calculate_md5(original_file_info["path"])
+            matched_item = None
+            if file_md5:
+                for file_item in md5_matches.get(file_md5, ()):
+                    if file_item.get("status") == "unlinked":
+                        matched_item = file_item
+                        break
 
-                        # 优先匹配MD5
-                        if file_md5 and original_md5 and file_md5 == original_md5:
-                            file_item["status"] = "linked"
-                            file_item["new_path"] = file_path
-                            matched_count += 1
-                            break
-                        # 其次匹配文件名
-                        elif file == original_name:
-                            confirm_msg = CustomMessageBox(self)
-                            confirm_msg.set_title("文件名匹配")
-                            confirm_msg.set_text(f"找到文件名匹配的文件，但MD5不匹配。\n"
-                                                 f"原始文件: {original_name}\n"
-                                                 f"找到文件: {file_path}\n"
-                                                 f"是否接受仅文件名匹配？")
-                            confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
+            if matched_item is not None:
+                matched_item["status"] = "linked"
+                matched_item["new_path"] = file_path
+                matched_count += 1
+                continue
 
-                            # 记录确认结果
-                            is_confirmed = False
+            for file_item in name_matches.get(file_name, ()):
+                if file_item.get("status") != "unlinked":
+                    continue
 
-                            def on_confirm_clicked(button_index):
-                                nonlocal is_confirmed
-                                is_confirmed = (button_index == 0)
-                                confirm_msg.close()
+                confirm_msg = CustomMessageBox(self)
+                confirm_msg.set_title("文件名匹配")
+                confirm_msg.set_text(f"找到文件名匹配的文件，但MD5不匹配。\n"
+                                     f"原始文件: {file_name}\n"
+                                     f"找到文件: {file_path}\n"
+                                     f"是否接受仅文件名匹配？")
+                confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
 
-                            confirm_msg.buttonClicked.connect(on_confirm_clicked)
-                            confirm_msg.exec()
+                # 记录确认结果
+                is_confirmed = False
 
-                            if is_confirmed:
-                                file_item["status"] = "linked"
-                                file_item["new_path"] = file_path
-                                matched_count += 1
-                                break
+                def on_confirm_clicked(button_index):
+                    nonlocal is_confirmed
+                    is_confirmed = (button_index == 0)
+                    confirm_msg.close()
+
+                confirm_msg.buttonClicked.connect(on_confirm_clicked)
+                confirm_msg.exec()
+
+                if is_confirmed:
+                    file_item["status"] = "linked"
+                    file_item["new_path"] = file_path
+                    matched_count += 1
+                break
 
         # 更新列表显示
         self.update_unlinked_list(unlinked_files)
@@ -1692,7 +1711,66 @@ class FileStagingPool(QWidget):
             if file_info:
                 self.navigate_to_path.emit(file_path, file_info)
 
-    def _get_file_info(self, file_path):
+    @staticmethod
+    def _iter_file_entries(folder_path, cancel_event=None):
+        """
+        递归遍历目录中的文件项，复用 scandir 结果减少额外系统调用。
+
+        Args:
+            folder_path (str): 文件夹路径
+            cancel_event (threading.Event | None): 可选取消标记
+
+        Yields:
+            os.DirEntry: 文件项
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            return
+
+        try:
+            with os.scandir(folder_path) as entries:
+                for entry in entries:
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            yield from FileStagingPool._iter_file_entries(entry.path, cancel_event)
+                        elif entry.is_file():
+                            yield entry
+                    except (OSError, PermissionError, FileNotFoundError):
+                        continue
+        except (OSError, PermissionError, FileNotFoundError):
+            return
+
+    @staticmethod
+    def _sum_folder_file_sizes(folder_path, cancel_event=None):
+        """
+        递归累加文件夹中的文件大小。
+
+        Args:
+            folder_path (str): 文件夹路径
+            cancel_event (threading.Event | None): 可选取消标记
+
+        Returns:
+            int | None: 总大小；若计算已取消则返回 None
+        """
+        total_size = 0
+
+        for entry in FileStagingPool._iter_file_entries(folder_path, cancel_event):
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+
+            try:
+                total_size += entry.stat().st_size
+            except (OSError, PermissionError, FileNotFoundError):
+                continue
+
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+
+        return total_size
+
+    def _get_file_info(self, file_path, stat_result=None, is_dir=None):
         """
         获取文件或文件夹信息
 
@@ -1704,9 +1782,10 @@ class FileStagingPool(QWidget):
         """
         from datetime import datetime
         try:
-            file_stat = os.stat(file_path)
+            file_stat = stat_result or os.stat(file_path)
             file_name = os.path.basename(file_path)
-            is_dir = os.path.isdir(file_path)
+            if is_dir is None:
+                is_dir = os.path.isdir(file_path)
 
             # 获取文件后缀（不带点号）
             suffix = ""
@@ -1740,12 +1819,14 @@ class FileStagingPool(QWidget):
             folder_path (str): 文件夹路径
         """
         try:
-            for root, dirs, files in os.walk(folder_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    file_info = self._get_file_info(file_path)
-                    if file_info:
-                        self.add_file(file_info)
+            for entry in self._iter_file_entries(folder_path):
+                try:
+                    file_info = self._get_file_info(entry.path, stat_result=entry.stat(), is_dir=False)
+                except (OSError, PermissionError, FileNotFoundError):
+                    file_info = None
+
+                if file_info:
+                    self.add_file(file_info)
         except (OSError, PermissionError) as e:
             warning(f"添加文件夹内容失败: {e}")
 
@@ -1906,32 +1987,16 @@ class FileStagingPool(QWidget):
         Returns:
             dict | None: 计算结果
         """
-        total_size = 0
+        total_size = None
 
         try:
-            for root, dirs, files in os.walk(folder_path):
-                if cancel_event.is_set():
-                    return None
-
-                for file in files:
-                    if cancel_event.is_set():
-                        return None
-
-                    file_path = os.path.join(root, file)
-                    try:
-                        if os.path.exists(file_path):
-                            stat_result = os.stat(file_path)
-                            total_size += stat_result.st_size
-                    except (OSError, PermissionError, FileNotFoundError):
-                        pass
-                    except Exception:
-                        pass
+            total_size = FileStagingPool._sum_folder_file_sizes(folder_path, cancel_event)
         except (OSError, PermissionError, FileNotFoundError):
             pass
         except Exception:
             pass
 
-        if cancel_event.is_set():
+        if cancel_event.is_set() or total_size is None:
             return None
 
         return {
@@ -2120,12 +2185,9 @@ class FileStagingPool(QWidget):
                 else:
                     try:
                         if os.path.isdir(folder_path):
-                            folder_size = 0
-                            for root, dirs, files_in_dir in os.walk(folder_path):
-                                for file in files_in_dir:
-                                    file_path = os.path.join(root, file)
-                                    folder_size += os.path.getsize(file_path)
-                            total_size += folder_size
+                            folder_size = self._sum_folder_file_sizes(folder_path)
+                            if folder_size is not None:
+                                total_size += folder_size
                     except (OSError, PermissionError, FileNotFoundError) as e:
                         warning(f"同步计算文件夹大小时失败: {e}")
 

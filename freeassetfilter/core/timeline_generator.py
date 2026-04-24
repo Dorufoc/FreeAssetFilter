@@ -120,6 +120,38 @@ def save_duration_cache():
             warning(f"保存视频时长缓存失败: {e}")
 
 
+def iter_folder_asset_files(folder_path: str):
+    """
+    递归遍历文件夹中的资产文件，复用 scandir 的目录项信息。
+
+    Yields:
+        tuple[str, str, str, int]: (文件名, 文件路径, 所属子文件夹名, mtime)
+    """
+    root_path = os.path.abspath(folder_path)
+    root_name = os.path.basename(folder_path) or root_path
+
+    def _scan_directory(current_path: str):
+        try:
+            with os.scandir(current_path) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            yield from _scan_directory(entry.path)
+                        elif entry.is_file():
+                            parent_path = os.path.abspath(os.path.dirname(entry.path))
+                            subfolder_name = root_name if parent_path == root_path else os.path.basename(parent_path)
+                            stat_result = entry.stat()
+                            yield (entry.name, entry.path, subfolder_name, int(stat_result.st_mtime))
+                    except OSError as e:
+                        increment_perf_counter("timeline.folder_scanner.run", "stat_failure")
+                        exception_details(f"[TimelineGenerator] 获取文件信息出错: {entry.path}", e)
+        except Exception as e:
+            increment_perf_counter("timeline.folder_scanner.run", "scan_failure")
+            exception_details(f"[TimelineGenerator] 扫描目录时出错: {current_path}", e)
+
+    yield from _scan_directory(root_path)
+
+
 def get_video_duration(file_path):
     """
     获取视频文件的真实时长（秒）
@@ -457,31 +489,17 @@ class FolderScanner(QThread):
         with track_perf("timeline.folder_scanner.run"):
             results = []
             asset_files = []
-            subfolder_set = set()
             main_folder_name = os.path.basename(self.path) or os.path.abspath(self.path)
+            subfolder_set = {main_folder_name}
 
             set_perf_metadata("timeline.folder_scanner.run", "last_scan_path", self.path)
             debug(f"开始扫描文件夹: {self.path}")
 
             try:
-                for root, dirs, files in os.walk(self.path):
-                    if root == self.path:
-                        subfolder_name = main_folder_name
-                    else:
-                        subfolder_name = os.path.basename(root)
-
-                    subfolder_set.add(subfolder_name)
-
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        try:
-                            stat = os.stat(file_path)
-                            mod_time = int(stat.st_mtime)
-                            asset_files.append((file, file_path, subfolder_name, mod_time))
-                            increment_perf_counter("timeline.folder_scanner.run", "asset_candidates")
-                        except OSError as e:
-                            increment_perf_counter("timeline.folder_scanner.run", "stat_failure")
-                            exception_details(f"[TimelineGenerator] 获取文件信息出错: {file_path}", e)
+                for asset_info in iter_folder_asset_files(self.path):
+                    asset_files.append(asset_info)
+                    subfolder_set.add(asset_info[2])
+                    increment_perf_counter("timeline.folder_scanner.run", "asset_candidates")
             except Exception as e:
                 increment_perf_counter("timeline.folder_scanner.run", "scan_failure")
                 exception_details("[TimelineGenerator] 扫描过程中出错", e)

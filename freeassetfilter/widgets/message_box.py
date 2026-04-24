@@ -436,6 +436,7 @@ class CustomMessageBox(QDialog):
         self._is_hide_animating = False
         self._close_after_hide = False
         self._pending_result = None
+        self._allow_direct_close = False
         self._animation_target_pos = None
         self._animation_offset = int(14 * self.dpi_scale)
         self._show_animation_duration = 220
@@ -1032,7 +1033,11 @@ class CustomMessageBox(QDialog):
         if should_close:
             if pending_result is None:
                 pending_result = self.result()
-            super().done(pending_result)
+            self._allow_direct_close = True
+            try:
+                super().done(pending_result)
+            finally:
+                self._allow_direct_close = False
     
     def _on_button_clicked(self, button_index):
         """
@@ -1135,6 +1140,10 @@ class CustomMessageBox(QDialog):
         """
         关闭事件，统一接管为退场动画
         """
+        if self._allow_direct_close:
+            event.accept()
+            return
+
         if self._close_after_hide or self._is_hide_animating:
             event.ignore()
             return

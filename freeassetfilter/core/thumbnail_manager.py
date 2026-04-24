@@ -24,7 +24,7 @@ import json
 import re
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, Callable, Dict, Set, List, Union
 from pathlib import Path
@@ -137,6 +137,14 @@ class VideoFrameCache:
         self.current_bytes = 0
 
 
+@dataclass
+class SvgRenderCacheEntry:
+    """SVG 渲染缓存条目"""
+    image: any
+    mtime: float
+    last_validated_at: float
+
+
 class ThumbnailManager:
     """
     缩略图管理器
@@ -193,7 +201,9 @@ class ThumbnailManager:
     MAX_FRAME_CACHE_BYTES_PER_GROUP = 32 * 1024 * 1024
 
     # SVG 渲染缓存限制
-    MAX_SVG_CACHE_ENTRIES = 64
+    MAX_SVG_CACHE_ENTRIES = 256
+    SVG_CACHE_REVALIDATE_INTERVAL_SECONDS = 1.0
+    PATH_EXISTS_CACHE_TTL_SECONDS = 1.0
 
     # 最大图像尺寸限制（防止内存溢出）
     MAX_IMAGE_DIMENSION = 8192
@@ -248,10 +258,17 @@ class ThumbnailManager:
         self._subprocess_decode_stats_lock = threading.Lock()
         self._subprocess_decode_stats = self._make_empty_subprocess_decode_stats()
 
-        # SVG 渲染缓存：(file_path, mtime) -> PIL.Image
-        self._svg_render_cache: Dict[Tuple[str, float], Image.Image] = {}
-        self._svg_cache_access_order: deque = deque()
+        # SVG 渲染缓存：file_path -> SvgRenderCacheEntry
+        self._svg_render_cache: OrderedDict[str, SvgRenderCacheEntry] = OrderedDict()
         self._svg_cache_lock = threading.Lock()
+        self._path_exists_cache: Dict[str, Tuple[bool, float]] = {}
+        self._path_exists_cache_lock = threading.Lock()
+        set_perf_metadata("thumbnail.load_svg_image", "max_entries", self.MAX_SVG_CACHE_ENTRIES)
+        set_perf_metadata(
+            "thumbnail.load_svg_image",
+            "revalidate_interval_ms",
+            int(self.SVG_CACHE_REVALIDATE_INTERVAL_SECONDS * 1000),
+        )
 
         # 正在处理的视频文件集合（用于请求去重）
         self._processing_videos: Set[str] = set()
@@ -320,6 +337,173 @@ class ThumbnailManager:
             "qsv": 0,
             "unknown_hw_mode": 0,
         }
+
+    @staticmethod
+    def _close_pil_image_quietly(image) -> None:
+        """安静关闭 PIL 图像对象。"""
+        if image is None:
+            return
+        try:
+            image.close()
+        except Exception:
+            pass
+
+    def _get_cached_path_exists(self, path: str, force_refresh: bool = False) -> bool:
+        """带短 TTL 的存在性缓存，减少热路径重复查盘。"""
+        if not path:
+            return False
+
+        now = time.monotonic()
+        ttl = max(0.0, float(self.PATH_EXISTS_CACHE_TTL_SECONDS))
+
+        if not force_refresh:
+            with self._path_exists_cache_lock:
+                cached_entry = self._path_exists_cache.get(path)
+            if cached_entry is not None:
+                exists, cached_at = cached_entry
+                if ttl <= 0 or (now - cached_at) <= ttl:
+                    return exists
+
+        exists = os.path.exists(path)
+        with self._path_exists_cache_lock:
+            self._path_exists_cache[path] = (exists, now)
+        return exists
+
+    def _set_cached_path_exists(self, path: str, exists: bool) -> None:
+        """显式更新存在性缓存。"""
+        if not path:
+            return
+        with self._path_exists_cache_lock:
+            self._path_exists_cache[path] = (exists, time.monotonic())
+
+    def _clear_path_exists_cache(self) -> None:
+        """清空存在性缓存。"""
+        with self._path_exists_cache_lock:
+            self._path_exists_cache.clear()
+
+    def _get_existing_thumbnail_path_from_paths(
+        self,
+        thumbnail_path: str,
+        legacy_thumbnail_path: str,
+    ) -> Optional[str]:
+        """返回当前存在的缩略图路径，优先主格式，其次兼容旧格式。"""
+        if self._get_cached_path_exists(thumbnail_path):
+            return thumbnail_path
+        if self._get_cached_path_exists(legacy_thumbnail_path):
+            return legacy_thumbnail_path
+        return None
+
+    def _set_svg_cache_metadata_locked(self) -> None:
+        """更新 SVG 缓存当前容量指标。调用方需持有 SVG 缓存锁。"""
+        set_perf_metadata("thumbnail.load_svg_image", "current_entries", len(self._svg_render_cache))
+
+    def _pop_svg_cache_entry_locked(self, file_path: str) -> Optional[SvgRenderCacheEntry]:
+        """弹出 SVG 缓存条目并释放缓存图像。调用方需持有 SVG 缓存锁。"""
+        entry = self._svg_render_cache.pop(file_path, None)
+        if entry is not None:
+            self._close_pil_image_quietly(entry.image)
+        return entry
+
+    def _get_cached_svg_image(self, file_path: str):
+        """优先走热缓存命中，仅在冷命中时重新校验 mtime。"""
+        event_name = "thumbnail.load_svg_image"
+        now = time.monotonic()
+
+        with self._svg_cache_lock:
+            entry = self._svg_render_cache.get(file_path)
+            if entry is None:
+                increment_perf_counter(event_name, "cache_miss")
+                self._set_svg_cache_metadata_locked()
+                return None
+
+            if now - entry.last_validated_at < self.SVG_CACHE_REVALIDATE_INTERVAL_SECONDS:
+                self._svg_render_cache.move_to_end(file_path)
+                increment_perf_counter(event_name, "cache_hit")
+                increment_perf_counter(event_name, "hot_cache_hit")
+                self._set_svg_cache_metadata_locked()
+                return entry.image.copy()
+
+        try:
+            current_mtime = os.path.getmtime(file_path)
+        except OSError:
+            increment_perf_counter(event_name, "stat_failure")
+            with self._svg_cache_lock:
+                if self._pop_svg_cache_entry_locked(file_path) is not None:
+                    increment_perf_counter(event_name, "stat_invalidated")
+                increment_perf_counter(event_name, "cache_miss")
+                self._set_svg_cache_metadata_locked()
+            return None
+
+        with self._svg_cache_lock:
+            entry = self._svg_render_cache.get(file_path)
+            if entry is None:
+                increment_perf_counter(event_name, "cache_miss")
+                self._set_svg_cache_metadata_locked()
+                return None
+
+            if entry.mtime != current_mtime:
+                self._pop_svg_cache_entry_locked(file_path)
+                increment_perf_counter(event_name, "stale_invalidated")
+                increment_perf_counter(event_name, "cache_miss")
+                self._set_svg_cache_metadata_locked()
+                return None
+
+            entry.last_validated_at = now
+            self._svg_render_cache.move_to_end(file_path)
+            increment_perf_counter(event_name, "cache_hit")
+            increment_perf_counter(event_name, "revalidated_cache_hit")
+            self._set_svg_cache_metadata_locked()
+            return entry.image.copy()
+
+    def _store_svg_cache_image(self, file_path: str, img) -> None:
+        """缓存 SVG 渲染结果，并维护 LRU 淘汰。"""
+        event_name = "thumbnail.load_svg_image"
+
+        try:
+            file_mtime = os.path.getmtime(file_path)
+        except OSError:
+            increment_perf_counter(event_name, "store_stat_failure")
+            return
+
+        cached_copy = img.copy()
+        now = time.monotonic()
+
+        with self._svg_cache_lock:
+            self._pop_svg_cache_entry_locked(file_path)
+            self._svg_render_cache[file_path] = SvgRenderCacheEntry(
+                image=cached_copy,
+                mtime=file_mtime,
+                last_validated_at=now,
+            )
+
+            while len(self._svg_render_cache) > self.MAX_SVG_CACHE_ENTRIES:
+                _, evicted_entry = self._svg_render_cache.popitem(last=False)
+                self._close_pil_image_quietly(evicted_entry.image)
+                increment_perf_counter(event_name, "cache_eviction")
+
+            self._set_svg_cache_metadata_locked()
+
+    def _shutdown_thumbnail_batch_executor_async(
+        self,
+        executor: ThreadPoolExecutor,
+        *,
+        cancel_futures: bool,
+        reason: str,
+    ) -> None:
+        """在守护线程中回收线程池，避免当前调用线程卡在 shutdown(wait=True)。"""
+
+        def _shutdown() -> None:
+            try:
+                executor.shutdown(wait=True, cancel_futures=cancel_futures)
+            except Exception as exc:
+                warning(f"异步关闭缩略图线程池失败({reason}): {exc}")
+
+        cleanup_thread = threading.Thread(
+            target=_shutdown,
+            name=f"thumb_batch_shutdown_{reason}",
+            daemon=True,
+        )
+        cleanup_thread.start()
 
     def _reset_subprocess_decode_stats(self) -> None:
         """重置父进程聚合的子进程视频解码路径统计"""
@@ -443,14 +627,11 @@ class ThumbnailManager:
         """
         with track_perf("thumbnail.get_existing_thumbnail_path"):
             thumbnail_path = self.get_thumbnail_path(file_path)
-            if os.path.exists(thumbnail_path):
-                increment_perf_counter("thumbnail.get_existing_thumbnail_path", "cache_hit")
-                return thumbnail_path
-
             legacy_path = self.get_legacy_thumbnail_path(file_path)
-            if os.path.exists(legacy_path):
+            existing = self._get_existing_thumbnail_path_from_paths(thumbnail_path, legacy_path)
+            if existing:
                 increment_perf_counter("thumbnail.get_existing_thumbnail_path", "cache_hit")
-                return legacy_path
+                return existing
 
             increment_perf_counter("thumbnail.get_existing_thumbnail_path", "cache_miss")
             return None
@@ -595,6 +776,7 @@ class ThumbnailManager:
 
                 try:
                     os.remove(file_path)
+                    self._set_cached_path_exists(file_path, False)
                     deleted_count += 1
                     remaining_size -= file_size
                     remaining_count -= 1
@@ -619,7 +801,7 @@ class ThumbnailManager:
             Optional[str]: 缩略图路径，生成失败返回None
         """
         with track_perf("thumbnail.create_thumbnail"):
-            if not os.path.exists(file_path):
+            if not self._get_cached_path_exists(file_path):
                 increment_perf_counter("thumbnail.create_thumbnail", "missing_source")
                 warning(f"文件不存在: {file_path}")
                 return None
@@ -629,14 +811,11 @@ class ThumbnailManager:
 
             # 如果缩略图已存在且不强制重新生成，优先返回 JPG，其次兼容历史 PNG
             if not force_regenerate:
-                if os.path.exists(thumbnail_path):
+                existing = self._get_existing_thumbnail_path_from_paths(thumbnail_path, legacy_thumbnail_path)
+                if existing:
                     increment_perf_counter("thumbnail.create_thumbnail", "cache_hit")
-                    self._update_file_access_time(thumbnail_path)
-                    return thumbnail_path
-                if os.path.exists(legacy_thumbnail_path):
-                    increment_perf_counter("thumbnail.create_thumbnail", "cache_hit")
-                    self._update_file_access_time(legacy_thumbnail_path)
-                    return legacy_thumbnail_path
+                    self._update_file_access_time(existing)
+                    return existing
 
             increment_perf_counter("thumbnail.create_thumbnail", "cache_miss")
 
@@ -673,7 +852,8 @@ class ThumbnailManager:
                         result = None
 
                 # 如果成功生成，更新访问时间
-                if result and os.path.exists(result):
+                if result and self._get_cached_path_exists(result, force_refresh=True):
+                    self._set_cached_path_exists(result, True)
                     increment_perf_counter("thumbnail.create_thumbnail", "success")
                     self._update_file_access_time(result)
                 else:
@@ -759,31 +939,6 @@ class ThumbnailManager:
             "python_image": 0.35,
             "python_video": 2.0,
         }
-        exists_cache: Dict[str, bool] = {}
-        exists_cache_lock = threading.Lock()
-
-        def _cached_exists(path: str) -> bool:
-            with exists_cache_lock:
-                cached = exists_cache.get(path)
-            if cached is not None:
-                return cached
-
-            exists = os.path.exists(path)
-            with exists_cache_lock:
-                exists_cache[path] = exists
-            return exists
-
-        def _set_cached_exists(path: str, exists: bool) -> None:
-            with exists_cache_lock:
-                exists_cache[path] = exists
-
-        def _get_existing_thumbnail_path(thumbnail_path: str, legacy_thumbnail_path: str) -> Optional[str]:
-            if _cached_exists(thumbnail_path):
-                return thumbnail_path
-            if _cached_exists(legacy_thumbnail_path):
-                return legacy_thumbnail_path
-            return None
-
         def _run_single_task(queue_name: str, item: Dict) -> Tuple[str, List[Tuple[Dict, bool, Optional[str]]], float]:
             start_time = time.perf_counter()
             file_path = item["file_path"]
@@ -809,9 +964,9 @@ class ThumbnailManager:
                         file_path, thumbnail_path, legacy_thumbnail_path, prefer_native=False
                     )
 
-                success = bool(result_path and _cached_exists(result_path))
+                success = bool(result_path and self._get_cached_path_exists(result_path, force_refresh=True))
                 if success:
-                    _set_cached_exists(result_path, True)
+                    self._set_cached_path_exists(result_path, True)
                     self._update_file_access_time(result_path)
             except Exception:
                 success = False
@@ -850,7 +1005,7 @@ class ThumbnailManager:
                         with open(thumbnail_path, "wb") as f:
                             f.write(jpg_bytes)
                         result_path = thumbnail_path
-                        _set_cached_exists(thumbnail_path, True)
+                        self._set_cached_path_exists(thumbnail_path, True)
                     else:
                         result_path = self._create_native_thumbnail(file_path, thumbnail_path, legacy_thumbnail_path)
                         if result_path is None:
@@ -859,9 +1014,9 @@ class ThumbnailManager:
                             else:
                                 result_path = self._create_image_thumbnail(file_path, legacy_thumbnail_path)
 
-                    success = bool(result_path and _cached_exists(result_path))
+                    success = bool(result_path and self._get_cached_path_exists(result_path, force_refresh=True))
                     if success:
-                        _set_cached_exists(result_path, True)
+                        self._set_cached_path_exists(result_path, True)
                         self._update_file_access_time(result_path)
                 except Exception:
                     success = False
@@ -888,7 +1043,7 @@ class ThumbnailManager:
                     break
 
                 file_path, callback_file_data = _normalize_batch_file_data(file_data)
-                if not file_path or not _cached_exists(file_path):
+                if not file_path or not self._get_cached_path_exists(file_path):
                     increment_perf_counter("thumbnail.create_thumbnails_batch", "missing_source")
                     processed_count += 1
                     if progress_callback:
@@ -897,7 +1052,7 @@ class ThumbnailManager:
 
                 thumbnail_path = self.get_thumbnail_path(file_path)
                 legacy_thumbnail_path = self.get_legacy_thumbnail_path(file_path)
-                existing = _get_existing_thumbnail_path(thumbnail_path, legacy_thumbnail_path)
+                existing = self._get_existing_thumbnail_path_from_paths(thumbnail_path, legacy_thumbnail_path)
 
                 if existing:
                     increment_perf_counter("thumbnail.create_thumbnails_batch", "cache_hit")
@@ -1174,12 +1329,29 @@ class ThumbnailManager:
                 if done_now:
                     _consume_completed_futures(done_now)
         finally:
+            remaining_futures = list(future_to_queue.keys())
             if cancelled:
-                for future in list(future_to_queue.keys()):
+                for future in remaining_futures:
                     future.cancel()
-                executor.shutdown(wait=False, cancel_futures=True)
+                if remaining_futures:
+                    debug(f"批量生成取消后转异步关闭线程池: remaining={len(remaining_futures)}")
+                    self._shutdown_thumbnail_batch_executor_async(
+                        executor,
+                        cancel_futures=True,
+                        reason="cancelled",
+                    )
+                else:
+                    executor.shutdown(wait=False, cancel_futures=True)
             else:
-                executor.shutdown(wait=True)
+                if remaining_futures:
+                    warning(f"批量生成结束时仍有未完成任务，转异步关闭线程池: remaining={len(remaining_futures)}")
+                    self._shutdown_thumbnail_batch_executor_async(
+                        executor,
+                        cancel_futures=False,
+                        reason="drain",
+                    )
+                else:
+                    executor.shutdown(wait=False)
 
         increment_perf_counter("thumbnail.create_thumbnails_batch", "processed", processed_count)
         increment_perf_counter("thumbnail.create_thumbnails_batch", "success", success_count)
@@ -1765,9 +1937,11 @@ class ThumbnailManager:
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "success")
                 if filtered_stderr_text:
                     debug(f"视频缩略图子进程输出: {filtered_stderr_text}")
-                if os.path.exists(thumbnail_path):
+                if self._get_cached_path_exists(thumbnail_path, force_refresh=True):
+                    self._set_cached_path_exists(thumbnail_path, True)
                     return thumbnail_path
-                if os.path.exists(legacy_thumbnail_path):
+                if self._get_cached_path_exists(legacy_thumbnail_path, force_refresh=True):
+                    self._set_cached_path_exists(legacy_thumbnail_path, True)
                     return legacy_thumbnail_path
                 increment_perf_counter("thumbnail.create_video_thumbnail_batch_safe", "missing_output")
                 return None
@@ -1912,119 +2086,105 @@ class ThumbnailManager:
         qimage = None
         painter = None
         renderer = None
-        cache_key = None
+        event_name = "thumbnail.load_svg_image"
 
         try:
-            from PySide6.QtSvg import QSvgRenderer
-            from PySide6.QtGui import QImage, QPainter
-            from PySide6.QtCore import Qt
+            with track_perf(event_name):
+                from PySide6.QtSvg import QSvgRenderer
+                from PySide6.QtGui import QImage, QPainter
+                from PySide6.QtCore import Qt
 
-            file_mtime = os.path.getmtime(file_path)
-            cache_key = (file_path, file_mtime)
-            with self._svg_cache_lock:
-                cached_img = self._svg_render_cache.get(cache_key)
+                cached_img = self._get_cached_svg_image(file_path)
                 if cached_img is not None:
-                    return cached_img.copy(), True
+                    return cached_img, True
 
-            # 直接使用QSvgRenderer渲染SVG，不经过SvgRenderer的复杂处理
-            renderer = QSvgRenderer(file_path)
+                # 直接使用QSvgRenderer渲染SVG，不经过SvgRenderer的复杂处理
+                renderer = QSvgRenderer(file_path)
 
-            if not renderer.isValid():
-                warning(f"无效SVG文件: {file_path}")
-                return None, False
+                if not renderer.isValid():
+                    increment_perf_counter(event_name, "invalid_svg")
+                    warning(f"无效SVG文件: {file_path}")
+                    return None, False
 
-            # 获取SVG的默认尺寸
-            default_size = renderer.defaultSize()
+                # 获取SVG的默认尺寸
+                default_size = renderer.defaultSize()
 
-            # 如果SVG没有设置尺寸，使用默认尺寸 256x256
-            if default_size.width() <= 0 or default_size.height() <= 0:
-                render_width, render_height = 256, 256
-            else:
-                # 保持原始比例，最大边为256
-                max_size = 256
-                scale = min(max_size / default_size.width(), max_size / default_size.height())
-                render_width = int(default_size.width() * scale)
-                render_height = int(default_size.height() * scale)
+                # 如果SVG没有设置尺寸，使用默认尺寸 256x256
+                if default_size.width() <= 0 or default_size.height() <= 0:
+                    render_width, render_height = 256, 256
+                else:
+                    # 保持原始比例，最大边为256
+                    max_size = 256
+                    scale = min(max_size / default_size.width(), max_size / default_size.height())
+                    render_width = int(default_size.width() * scale)
+                    render_height = int(default_size.height() * scale)
 
-                # 确保最小尺寸为1
-                render_width = max(1, render_width)
-                render_height = max(1, render_height)
+                    # 确保最小尺寸为1
+                    render_width = max(1, render_width)
+                    render_height = max(1, render_height)
 
-            # 检查尺寸限制
-            if render_width > self.MAX_IMAGE_DIMENSION or render_height > self.MAX_IMAGE_DIMENSION:
-                warning(f"SVG尺寸超限: {render_width}x{render_height}")
-                return None, False
+                # 检查尺寸限制
+                if render_width > self.MAX_IMAGE_DIMENSION or render_height > self.MAX_IMAGE_DIMENSION:
+                    increment_perf_counter(event_name, "oversized_dimensions")
+                    warning(f"SVG尺寸超限: {render_width}x{render_height}")
+                    return None, False
 
-            # 检查像素总数限制
-            render_pixels = render_width * render_height
-            if render_pixels > self.MAX_IMAGE_PIXELS:
-                warning(f"SVG像素超限: {render_pixels}")
-                return None, False
+                # 检查像素总数限制
+                render_pixels = render_width * render_height
+                if render_pixels > self.MAX_IMAGE_PIXELS:
+                    increment_perf_counter(event_name, "oversized_pixels")
+                    warning(f"SVG像素超限: {render_pixels}")
+                    return None, False
 
-            # 创建QImage用于渲染 - 直接使用计算好的保持比例的尺寸
-            qimage = QImage(render_width, render_height, QImage.Format_ARGB32_Premultiplied)
-            qimage.fill(Qt.transparent)
+                # 创建QImage用于渲染 - 直接使用计算好的保持比例的尺寸
+                qimage = QImage(render_width, render_height, QImage.Format_ARGB32_Premultiplied)
+                qimage.fill(Qt.transparent)
 
-            # 创建画家并渲染
-            painter = QPainter(qimage)
-            painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                # 创建画家并渲染
+                painter = QPainter(qimage)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
-            # 计算缩放因子 - 保持原始宽高比
-            if default_size.width() > 0 and default_size.height() > 0:
-                scale_x = render_width / default_size.width()
-                scale_y = render_height / default_size.height()
-                painter.scale(scale_x, scale_y)
+                # 计算缩放因子 - 保持原始宽高比
+                if default_size.width() > 0 and default_size.height() > 0:
+                    scale_x = render_width / default_size.width()
+                    scale_y = render_height / default_size.height()
+                    painter.scale(scale_x, scale_y)
 
-            renderer.render(painter)
+                renderer.render(painter)
 
-            # 转换为RGBA8888格式
-            if qimage.format() != QImage.Format_RGBA8888:
-                qimage = qimage.convertToFormat(QImage.Format_RGBA8888)
+                # 转换为RGBA8888格式
+                if qimage.format() != QImage.Format_RGBA8888:
+                    qimage = qimage.convertToFormat(QImage.Format_RGBA8888)
 
-            # 获取图像数据
-            width = qimage.width()
-            height = qimage.height()
-            ptr = qimage.constBits()
+                # 获取图像数据
+                width = qimage.width()
+                height = qimage.height()
+                ptr = qimage.constBits()
 
-            # 处理不同版本的PySide6
-            if hasattr(ptr, 'tobytes'):
-                img_data = ptr.tobytes()
-            elif hasattr(ptr, 'asstring'):
-                img_data = ptr.asstring()
-            else:
-                img_data = bytes(ptr)
+                # 处理不同版本的PySide6
+                if hasattr(ptr, 'tobytes'):
+                    img_data = ptr.tobytes()
+                elif hasattr(ptr, 'asstring'):
+                    img_data = ptr.asstring()
+                else:
+                    img_data = bytes(ptr)
 
-            # 验证数据长度
-            expected_len = width * height * 4  # RGBA = 4 bytes per pixel
-            if len(img_data) < expected_len:
-                warning(f"SVG数据长度不足: {len(img_data)} < {expected_len}")
-                return None, False
+                # 验证数据长度
+                expected_len = width * height * 4  # RGBA = 4 bytes per pixel
+                if len(img_data) < expected_len:
+                    increment_perf_counter(event_name, "short_image_data")
+                    warning(f"SVG数据长度不足: {len(img_data)} < {expected_len}")
+                    return None, False
 
-            # 创建PIL图像
-            img = Image.frombytes("RGBA", (width, height), img_data)
-
-            with self._svg_cache_lock:
-                try:
-                    self._svg_render_cache[cache_key] = img.copy()
-                    self._svg_cache_access_order.append(cache_key)
-
-                    while len(self._svg_cache_access_order) > self.MAX_SVG_CACHE_ENTRIES:
-                        oldest_key = self._svg_cache_access_order.popleft()
-                        if oldest_key == cache_key:
-                            continue
-                        old_img = self._svg_render_cache.pop(oldest_key, None)
-                        if old_img is not None:
-                            try:
-                                old_img.close()
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
-            return img, True
+                # 创建PIL图像
+                img = Image.frombytes("RGBA", (width, height), img_data)
+                self._store_svg_cache_image(file_path, img)
+                increment_perf_counter(event_name, "render_success")
+                return img, True
 
         except Exception as e:
+            increment_perf_counter(event_name, "failure")
             warning(f"加载SVG失败: {file_path}, {e}")
             return None, False
         finally:
@@ -2061,6 +2221,7 @@ class ThumbnailManager:
                 if os.path.isfile(file_path):
                     try:
                         os.remove(file_path)
+                        self._set_cached_path_exists(file_path, False)
                         deleted_count += 1
                     except (OSError, IOError) as e:
                         debug(f"[ThumbnailManager] 删除缩略图文件失败 {file_path}: {e}")
@@ -2071,16 +2232,15 @@ class ThumbnailManager:
                 self._frame_caches.clear()
 
             with self._svg_cache_lock:
-                for cached_img in self._svg_render_cache.values():
-                    try:
-                        cached_img.close()
-                    except Exception:
-                        pass
+                for entry in self._svg_render_cache.values():
+                    self._close_pil_image_quietly(entry.image)
                 self._svg_render_cache.clear()
-                self._svg_cache_access_order.clear()
+                self._set_svg_cache_metadata_locked()
 
             if self._rust_bridge.available:
                 self._rust_bridge.clear_cache()
+
+            self._clear_path_exists_cache()
 
             info(f"已清理 {deleted_count} 个缩略图缓存")
             return deleted_count
@@ -2175,6 +2335,7 @@ class ThumbnailManager:
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
+                    self._set_cached_path_exists(file_path, False)
                     deleted_count += 1
             except (OSError, IOError) as e:
                 # debug(f"删除缓存文件失败 {file_path}: {e}")
