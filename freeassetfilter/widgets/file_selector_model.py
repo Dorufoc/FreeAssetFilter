@@ -55,6 +55,7 @@ from PySide6.QtWidgets import (
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.utils.app_logger import debug
@@ -1032,9 +1033,13 @@ class FileListView(QListView):
         dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
         self._touch_drag_threshold = int(10 * dpi_scale)
         self._long_press_duration = 500
+        self._path_transition_enabled = self._is_path_transition_enabled()
 
     def refresh_interaction_settings(self) -> None:
         self._load_interaction_settings()
+
+    def _is_path_transition_enabled(self) -> bool:
+        return is_animation_enabled("directory_transition", default=True)
 
     def is_scroll_optimizing(self) -> bool:
         return self._defer_icon_loading
@@ -1077,6 +1082,7 @@ class FileListView(QListView):
 
         该动画只缓存 viewport 快照并由单个计时器驱动，避免在每张卡片上创建动画对象。
         """
+        self._path_transition_enabled = self._is_path_transition_enabled()
         if not self._path_transition_enabled or not self.isVisible():
             return False
 
@@ -1095,6 +1101,7 @@ class FileListView(QListView):
         return True
 
     def finish_path_transition(self, direction: int = None) -> bool:
+        self._path_transition_enabled = self._is_path_transition_enabled()
         if not self._path_transition_enabled:
             self.cancel_path_transition()
             return False

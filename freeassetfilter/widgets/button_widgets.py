@@ -14,6 +14,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QPushButton, QSizePolicy, QApplication
 
 from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 
 
@@ -251,7 +252,7 @@ class CustomButton(QPushButton):
 
         self._state = state
 
-        if not self._animations_initialized or not animated:
+        if not self._animations_initialized or not animated or not self._is_button_animation_enabled():
             self._state_animation.stop()
             self._current_colors = self._copy_color_map(target)
             self._start_colors = self._copy_color_map(target)
@@ -291,6 +292,13 @@ class CustomButton(QPushButton):
             return app.settings_manager
         from freeassetfilter.core.settings_manager import SettingsManager
         return SettingsManager()
+
+    def _is_button_animation_enabled(self):
+        return is_animation_enabled(
+            "button_smoothing",
+            default=True,
+            settings_manager=self._get_settings_manager(),
+        )
 
     def _darken_or_lighten_color(self, color_value, percentage, settings_manager):
         color = QColor(color_value)

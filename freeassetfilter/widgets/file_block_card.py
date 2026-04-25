@@ -49,6 +49,7 @@ from PySide6.QtGui import (
 
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.utils.app_logger import debug, error
 from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path, get_thumbnail_manager
@@ -915,12 +916,26 @@ class FileBlockCard(QWidget):
             if group is not None:
                 group.stop()
 
+    def _is_state_animation_enabled(self):
+        return is_animation_enabled("file_card_state", default=True)
+
+    def _apply_state_without_animation(self, bg_color, border_color):
+        self._stop_all_animations()
+        self._anim_bg_color = QColor(bg_color)
+        self._anim_border_color = QColor(border_color)
+        self._update_card_style()
+        self._update_label_styles()
+
     def _trigger_hover_animation(self):
         if not hasattr(self, "_style_colors"):
             self._update_styles()
             return
 
         if self._is_selected or self._is_previewing:
+            return
+        if not self._is_state_animation_enabled():
+            colors = self._style_colors
+            self._apply_state_without_animation(colors["hover_bg"], colors["hover_border"])
             return
 
         self._leave_anim_group.stop()
@@ -939,6 +954,10 @@ class FileBlockCard(QWidget):
             return
 
         if self._is_selected or self._is_previewing:
+            return
+        if not self._is_state_animation_enabled():
+            colors = self._style_colors
+            self._apply_state_without_animation(colors["normal_bg"], colors["normal_border"])
             return
 
         self._hover_anim_group.stop()
@@ -1014,6 +1033,11 @@ class FileBlockCard(QWidget):
         if not hasattr(self, "_style_colors"):
             self._update_styles()
             return
+        if not self._is_state_animation_enabled():
+            colors = self._style_colors
+            target_bg = colors["selected_bg"] if self._is_selected else colors["normal_bg"]
+            self._apply_state_without_animation(target_bg, QColor(self.secondary_color))
+            return
 
         self._hover_anim_group.stop()
         self._leave_anim_group.stop()
@@ -1037,9 +1061,15 @@ class FileBlockCard(QWidget):
             self._update_styles()
             return
 
-        self._preview_anim_group.stop()
-
         colors = self._style_colors
+        if not self._is_state_animation_enabled():
+            if self._is_selected:
+                self._apply_state_without_animation(colors["selected_bg"], colors["selected_border"])
+            else:
+                self._apply_state_without_animation(colors["normal_bg"], colors["normal_border"])
+            return
+
+        self._preview_anim_group.stop()
         if self._is_selected:
             target_bg = colors["selected_bg"]
             target_border = colors["selected_border"]
@@ -1058,6 +1088,10 @@ class FileBlockCard(QWidget):
         if not hasattr(self, "_style_colors"):
             self._update_styles()
             return
+        if not self._is_state_animation_enabled():
+            colors = self._style_colors
+            self._apply_state_without_animation(colors["selected_bg"], colors["selected_border"])
+            return
 
         self._hover_anim_group.stop()
         self._leave_anim_group.stop()
@@ -1072,6 +1106,10 @@ class FileBlockCard(QWidget):
     def _trigger_deselect_animation(self):
         if not hasattr(self, "_style_colors"):
             self._update_styles()
+            return
+        if not self._is_state_animation_enabled():
+            colors = self._style_colors
+            self._apply_state_without_animation(colors["normal_bg"], colors["normal_border"])
             return
 
         self._select_anim_group.stop()

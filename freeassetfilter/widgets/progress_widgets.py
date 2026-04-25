@@ -17,6 +17,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 import os
 
@@ -757,6 +758,9 @@ class D_ProgressBar(QWidget):
             self._animation.stop()
             self._animation.setDuration(0)
 
+    def _is_progress_animation_enabled(self):
+        return is_animation_enabled("progress_bar_smoothing", default=True)
+
     def setStrictAnimationTiming(self, enabled):
         """
         设置是否启用严格动画时序。
@@ -1165,7 +1169,10 @@ class D_ProgressBar(QWidget):
 
             should_use_animation = use_animation if use_animation is not None else not self._animation_suspended
             should_use_animation = (
-                should_use_animation and self._animation_enabled and self._animation_duration > 0
+                should_use_animation
+                and self._animation_enabled
+                and self._animation_duration > 0
+                and self._is_progress_animation_enabled()
             )
 
             if not should_use_animation:

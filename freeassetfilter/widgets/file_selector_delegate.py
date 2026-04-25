@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 
 
@@ -76,6 +77,9 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self._init_colors()
         self._init_fonts()
         self.clear_caches()
+
+    def _are_state_animations_enabled(self):
+        return is_animation_enabled("file_card_state", default=True)
 
     def set_dragging_file_path(self, file_path):
         """设置当前处于拖拽中的文件路径"""
@@ -352,12 +356,24 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         state["is_selected"] = is_selected
         state["is_previewing"] = is_previewing
 
+        animations_enabled = self._are_state_animations_enabled()
+
         if not needs_transition:
             if not state["animating"]:
                 state["bg_color"] = QColor(target_bg)
                 state["border_color"] = QColor(target_border)
                 state["shadow_color"] = QColor(target_shadow)
                 state["shadow_blur"] = float(target_shadow_blur)
+            return state
+
+        if not animations_enabled:
+            state["animating"] = False
+            state["bg_color"] = QColor(target_bg)
+            state["border_color"] = QColor(target_border)
+            state["shadow_color"] = QColor(target_shadow)
+            state["shadow_blur"] = float(target_shadow_blur)
+            self._active_animation_keys.discard(key)
+            self._stop_animation_timer_if_idle()
             return state
 
         duration, easing = self._transition_meta(
@@ -396,6 +412,21 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             self._animation_timer.stop()
 
     def _on_animation_tick(self):
+        if not self._are_state_animations_enabled():
+            for state in self._animation_states.values():
+                if not state.get("animating", False):
+                    continue
+                state["bg_color"] = QColor(state["target_bg"])
+                state["border_color"] = QColor(state["target_border"])
+                state["shadow_color"] = QColor(state["target_shadow"])
+                state["shadow_blur"] = float(state["target_shadow_blur"])
+                state["animating"] = False
+            self._active_animation_keys.clear()
+            self._stop_animation_timer_if_idle()
+            if self._view:
+                self._view.viewport().update()
+            return
+
         if not self._active_animation_keys:
             self._stop_animation_timer_if_idle()
             return

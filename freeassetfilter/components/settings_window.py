@@ -1402,6 +1402,8 @@ class ModernSettingsWindow(QDialog):
 
         self.scroll_layout.addWidget(self.theme_group)
 
+        self._add_animation_settings()
+
         # 字体设置组
         self.font_group = QGroupBox("字体设置")
         self.font_group.setStyleSheet(self.group_box_style)
@@ -1457,6 +1459,65 @@ class ModernSettingsWindow(QDialog):
         self.font_group_layout.addWidget(self.font_size_bar)
 
         self.scroll_layout.addWidget(self.font_group)
+
+    def _add_animation_settings(self):
+        """
+        添加动画设置项。
+        """
+        animation_items = [
+            (
+                "directory_transition",
+                "目录跳转动画",
+                "文件选择器切换目录时启用整体移动过渡"
+            ),
+            (
+                "file_record_changes",
+                "文件记录增减动画",
+                "文件存储池记录增加和移除时启用过渡动画"
+            ),
+            (
+                "smooth_scrolling",
+                "滚动平滑",
+                "启用丝滑滚动的惯性、阻尼和滚动条补间"
+            ),
+            (
+                "file_card_state",
+                "文件卡片状态动画",
+                "文件卡片在普通、选中、悬停和预览状态间平滑过渡"
+            ),
+            (
+                "progress_bar_smoothing",
+                "进度条平滑",
+                "启用 D 进度条组件的默认补间动画"
+            ),
+            (
+                "button_smoothing",
+                "按钮平滑",
+                "启用自定义按钮普通、悬停和按下样式的过渡动画"
+            ),
+        ]
+
+        self.animation_group = QGroupBox("动画")
+        self.animation_group.setStyleSheet(self.group_box_style)
+        self.animation_group_layout = QVBoxLayout(self.animation_group)
+        self.animation_setting_items = {}
+
+        for setting_key, text, secondary_text in animation_items:
+            full_key = f"appearance.animations.{setting_key}"
+            setting_item = CustomSettingItem(
+                text=text,
+                secondary_text=secondary_text,
+                interaction_type=CustomSettingItem.SWITCH_TYPE,
+                initial_value=self._get_current_setting_value(full_key, True)
+            )
+            setting_item.switch_toggled.connect(
+                lambda value, key=full_key: self.current_settings.update({key: value})
+            )
+            self.animation_setting_items[setting_key] = setting_item
+            setattr(self, f"{setting_key}_animation_switch", setting_item)
+            self.animation_group_layout.addWidget(setting_item)
+
+        self.scroll_layout.addWidget(self.animation_group)
 
     def _add_text_preview_settings(self):
         """
@@ -2207,6 +2268,12 @@ class ModernSettingsWindow(QDialog):
             "appearance.colors.accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
             "appearance.colors.normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
             "appearance.colors.custom_design_color": self.settings_manager.get_setting("appearance.colors.custom_design_color", "#27BE24"),
+            "appearance.animations.directory_transition": self.settings_manager.get_setting("appearance.animations.directory_transition", True),
+            "appearance.animations.file_record_changes": self.settings_manager.get_setting("appearance.animations.file_record_changes", True),
+            "appearance.animations.smooth_scrolling": self.settings_manager.get_setting("appearance.animations.smooth_scrolling", True),
+            "appearance.animations.file_card_state": self.settings_manager.get_setting("appearance.animations.file_card_state", True),
+            "appearance.animations.progress_bar_smoothing": self.settings_manager.get_setting("appearance.animations.progress_bar_smoothing", True),
+            "appearance.animations.button_smoothing": self.settings_manager.get_setting("appearance.animations.button_smoothing", True),
             "font.size": self.settings_manager.get_setting("font.size", 20),
             "font.style": self.settings_manager.get_setting("font.style", "Microsoft YaHei"),
             "file_selector.auto_clear_thumbnail_cache": self.settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True),
@@ -2472,6 +2539,13 @@ class ModernSettingsWindow(QDialog):
         if hasattr(self, 'font_size_bar') and self.font_size_bar:
             default_size = defaults["font"]["size"]
             self.font_size_bar.set_value(default_size)
+
+        # 更新通用设置 - 动画设置
+        default_animations = defaults["appearance"].get("animations", {})
+        for animation_key, default_value in default_animations.items():
+            switch = getattr(self, f"{animation_key}_animation_switch", None)
+            if switch:
+                switch.set_switch_value(default_value)
 
         # 更新文件选择器设置
         if hasattr(self, 'auto_clear_cache_switch') and self.auto_clear_cache_switch:

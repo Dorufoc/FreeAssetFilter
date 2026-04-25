@@ -272,6 +272,14 @@ class SettingsManager:
                 "theme": "default",
                 "icon_style": 0,
                 "preset_theme": "活力蓝",
+                "animations": {
+                    "directory_transition": True,
+                    "file_record_changes": True,
+                    "smooth_scrolling": True,
+                    "file_card_state": True,
+                    "progress_bar_smoothing": True,
+                    "button_smoothing": True
+                },
                 "colors": {
                     "accent_color": "#007AFF",
                     "secondary_color": "#333333",
@@ -411,6 +419,7 @@ class SettingsManager:
                 "theme": self.default_settings["appearance"]["theme"],
                 "icon_style": self.default_settings["appearance"]["icon_style"],
                 "preset_theme": self.default_settings["appearance"].get("preset_theme", ""),
+                "animations": self.default_settings["appearance"]["animations"].copy(),
                 "colors": self.default_settings["appearance"]["colors"].copy()
             },
             "file_selector": self.default_settings["file_selector"].copy(),
@@ -657,6 +666,7 @@ class SettingsManager:
                 "theme": default["appearance"]["theme"],
                 "icon_style": default["appearance"]["icon_style"],
                 "preset_theme": default["appearance"].get("preset_theme", ""),
+                "animations": default["appearance"]["animations"].copy(),
                 "colors": default["appearance"]["colors"].copy()
             },
             "file_selector": default["file_selector"].copy(),
@@ -675,6 +685,10 @@ class SettingsManager:
                         merged[key]["icon_style"] = value["icon_style"]
                     if "preset_theme" in value:
                         merged[key]["preset_theme"] = value["preset_theme"]
+                    if "animations" in value and isinstance(value["animations"], dict):
+                        for animation_key, animation_enabled in value["animations"].items():
+                            if animation_key in merged[key]["animations"]:
+                                merged[key]["animations"][animation_key] = animation_enabled
                     if "colors" in value:
                         for color_key in base_color_keys:
                             if color_key in value["colors"]:

@@ -7,6 +7,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
 from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.widgets.file_selector_model import FileListView, FileSelectorListModel
@@ -625,6 +626,10 @@ class FileStagingPoolListView(FileListView):
             self._mouse_buttons_swapped = False
         self._touch_drag_threshold = int(10 * self._dpi_scale)
         self._long_press_duration = 500
+        self._card_motion_enabled = self._is_card_motion_enabled()
+
+    def _is_card_motion_enabled(self) -> bool:
+        return is_animation_enabled("file_record_changes", default=True)
 
     def _detect_drop_target(self, global_pos) -> str:
         main_window = self.window()
@@ -862,6 +867,7 @@ class FileStagingPoolListView(FileListView):
         }
 
     def _start_card_motion(self) -> None:
+        self._card_motion_enabled = self._is_card_motion_enabled()
         if not self._card_motion_enabled or not self.isVisible():
             self.cancel_card_motion(update=False)
             return
@@ -921,12 +927,18 @@ class FileStagingPoolListView(FileListView):
         }
 
     def _on_rows_about_to_be_inserted(self, _parent: QModelIndex, _first: int, _last: int) -> None:
+        if not self._is_card_motion_enabled():
+            self.cancel_card_motion(update=False)
+            return
         if self._card_motion_insert_finalize_scheduled:
             return
         self.cancel_card_motion(update=False)
         self._card_motion_pending_insert_rects = self._snapshot_visible_item_rects()
 
     def _on_rows_inserted(self, _parent: QModelIndex, first: int, last: int) -> None:
+        if not self._is_card_motion_enabled():
+            self.cancel_card_motion(update=False)
+            return
         model = self.model()
         if isinstance(model, FileStagingPoolListModel):
             for row in range(max(0, first), min(model.rowCount() - 1, last) + 1):
@@ -966,6 +978,9 @@ class FileStagingPoolListView(FileListView):
         self._start_card_motion()
 
     def _on_rows_about_to_be_removed(self, _parent: QModelIndex, first: int, last: int) -> None:
+        if not self._is_card_motion_enabled():
+            self.cancel_card_motion(update=False)
+            return
         if self._card_motion_manual_finalize_active:
             return
 
@@ -1036,6 +1051,9 @@ class FileStagingPoolListView(FileListView):
         return pending
 
     def _on_rows_removed(self, _parent: QModelIndex, _first: int, _last: int) -> None:
+        if not self._is_card_motion_enabled():
+            self.cancel_card_motion(update=True)
+            return
         if self._card_motion_manual_finalize_active:
             return
 
@@ -1086,6 +1104,15 @@ class FileStagingPoolListView(FileListView):
             return
 
         if roles and FileStagingPoolListModel.IsRemovingRole not in roles:
+            return
+
+        if not self._is_card_motion_enabled():
+            for row in range(top_left.row(), bottom_right.row() + 1):
+                index = model.index(row, 0)
+                if not index.isValid() or not bool(model.data(index, FileStagingPoolListModel.IsRemovingRole)):
+                    continue
+                file_path = str(model.data(index, FileStagingPoolListModel.FilePathRole) or "")
+                self._finalize_marked_removal(file_path, self._motion_key_for_index(index))
             return
 
         animations = dict(self._card_motion_items)

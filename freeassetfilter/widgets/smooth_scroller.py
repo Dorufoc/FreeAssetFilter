@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QScrollBar,
 )
 from PySide6.QtGui import QColor, QWheelEvent, QPainter
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 import time
 
@@ -119,6 +120,9 @@ class D_ScrollBar(QScrollBar):
         """
         self._scroll_area = scroll_area
         self._check_and_update_width()
+
+    def _is_smooth_scrolling_enabled(self):
+        return is_animation_enabled("smooth_scrolling", default=True)
 
     def _on_range_changed(self, min_val=0, max_val=0):
         """滚动范围变化时触发宽度检查"""
@@ -222,6 +226,9 @@ class D_ScrollBar(QScrollBar):
     def _sync_visual_handle_ratio(self, immediate=False):
         target_ratio = self._get_actual_handle_ratio()
 
+        if not self._is_smooth_scrolling_enabled():
+            immediate = True
+
         if immediate:
             self._handle_ratio_anim.stop()
             self._set_visual_handle_ratio(target_ratio)
@@ -240,6 +247,10 @@ class D_ScrollBar(QScrollBar):
 
     def _sync_visual_position_ratio(self, immediate=False, animate_if_jump=False):
         target_ratio = self._get_actual_position_ratio()
+
+        if not self._is_smooth_scrolling_enabled():
+            immediate = True
+            animate_if_jump = False
 
         if immediate:
             self._handle_position_anim.stop()
@@ -490,6 +501,13 @@ class D_ScrollBar(QScrollBar):
         self._is_hovering = True
         target_color = self._pressed_color if self._is_pressed else self._hover_color
 
+        if not self._is_smooth_scrolling_enabled():
+            self._leave_anim.stop()
+            self._hover_anim.stop()
+            self._set_anim_handle_color(QColor(target_color))
+            super().enterEvent(event)
+            return
+
         self._leave_anim.stop()
         self._hover_anim.setStartValue(QColor(self._anim_handle_color_value))
         self._hover_anim.setEndValue(QColor(target_color))
@@ -500,6 +518,14 @@ class D_ScrollBar(QScrollBar):
     def leaveEvent(self, event):
         """鼠标离开事件"""
         self._is_hovering = False
+
+        if not self._is_smooth_scrolling_enabled():
+            self._hover_anim.stop()
+            self._leave_anim.stop()
+            if not self._is_pressed:
+                self._set_anim_handle_color(QColor(self._normal_color))
+            super().leaveEvent(event)
+            return
 
         if not self._is_pressed:
             self._hover_anim.stop()
@@ -544,6 +570,11 @@ class D_ScrollBar(QScrollBar):
         """
         恢复 QScroller 手势
         """
+        if not self._is_smooth_scrolling_enabled():
+            self._scroller_was_touch_active = False
+            self._scroller_was_mouse_active = False
+            return
+
         if self._scroller_target:
             try:
                 if self._scroller_was_touch_active:
@@ -563,6 +594,14 @@ class D_ScrollBar(QScrollBar):
         self._suppress_jump_animation(0.30)
         self._sync_visual_position_ratio(immediate=True)
 
+        if not self._is_smooth_scrolling_enabled():
+            self._hover_anim.stop()
+            self._press_anim.stop()
+            self._release_anim.stop()
+            self._set_anim_handle_color(QColor(self._pressed_color))
+            super().mousePressEvent(event)
+            return
+
         self._hover_anim.stop()
         self._press_anim.setStartValue(QColor(self._anim_handle_color_value))
         self._press_anim.setEndValue(QColor(self._pressed_color))
@@ -581,6 +620,14 @@ class D_ScrollBar(QScrollBar):
         self._is_pressed = False
         self._restore_scroller_gesture()
         self._suppress_jump_animation(0.12)
+
+        if not self._is_smooth_scrolling_enabled():
+            self._press_anim.stop()
+            self._release_anim.stop()
+            self._set_anim_handle_color(QColor(self._hover_color if self._is_hovering else self._normal_color))
+            self._sync_visual_position_ratio(immediate=True)
+            super().mouseReleaseEvent(event)
+            return
 
         self._press_anim.stop()
         self._release_anim.setStartValue(QColor(self._anim_handle_color_value))
@@ -685,6 +732,21 @@ class _WheelSmoothScrollFilter(QObject):
 
         if target_value == current_value:
             return False
+
+        if not is_animation_enabled("smooth_scrolling", default=True):
+            if isinstance(scrollbar, D_ScrollBar):
+                scrollbar._suppress_jump_animation(0.12)
+                scrollbar.setValue(int(target_value))
+                scrollbar._sync_visual_position_ratio(immediate=True)
+            else:
+                scrollbar.setValue(int(target_value))
+            setattr(
+                self,
+                "_pending_vertical_target" if scrollbar.orientation() == Qt.Vertical else "_pending_horizontal_target",
+                None,
+            )
+            self._emit_scroll_finished_if_needed()
+            return True
 
         self._animate_scrollbar(scrollbar, target_value)
         return True
@@ -842,6 +904,21 @@ class SmoothScroller:
         """
         target = _get_target_widget(widget)
         scroller = QScroller.scroller(target)
+
+        if not is_animation_enabled("smooth_scrolling", default=True):
+            try:
+                QScroller.ungrabGesture(target)
+            except RuntimeError:
+                pass
+
+            wheel_filter = getattr(target, "_smooth_wheel_filter", None)
+            if wheel_filter is not None:
+                try:
+                    target.removeEventFilter(wheel_filter)
+                except RuntimeError:
+                    pass
+                target._smooth_wheel_filter = None
+            return scroller
 
         QScroller.grabGesture(target, gesture_type)
         if enable_mouse_drag:
