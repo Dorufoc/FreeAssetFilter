@@ -90,6 +90,7 @@ class D_ScrollBar(QScrollBar):
         self._anim_handle_color_value = QColor(self._normal_color)
         self._visual_handle_ratio_value = 1.0
         self._visual_position_ratio_value = 0.0
+        self._elastic_overscroll_value = 0.0
         self._updating_style = False
         self._last_style = ""
         self._suppress_jump_animation_until = 0.0
@@ -209,6 +210,10 @@ class D_ScrollBar(QScrollBar):
         self._handle_position_anim = QPropertyAnimation(self, b"_visual_position_ratio")
         self._handle_position_anim.setDuration(220)
         self._handle_position_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        self._elastic_overscroll_anim = QPropertyAnimation(self, b"_elastic_overscroll")
+        self._elastic_overscroll_anim.setDuration(260)
+        self._elastic_overscroll_anim.setEasingCurve(QEasingCurve.OutCubic)
 
     def _get_actual_handle_ratio(self):
         page_step = max(0, self.pageStep())
@@ -431,6 +436,52 @@ class D_ScrollBar(QScrollBar):
 
     _visual_position_ratio = Property(float, fget=_get_visual_position_ratio, fset=_set_visual_position_ratio)
 
+    def _get_elastic_overscroll(self):
+        return self._elastic_overscroll_value
+
+    def _set_elastic_overscroll(self, offset):
+        new_offset = float(offset)
+        if abs(new_offset) < 0.01:
+            new_offset = 0.0
+        if new_offset != 0.0 and abs(new_offset - self._elastic_overscroll_value) < 0.25:
+            return
+        self._elastic_overscroll_value = new_offset
+        self.update()
+
+    _elastic_overscroll = Property(float, fget=_get_elastic_overscroll, fset=_set_elastic_overscroll)
+
+    def _get_elastic_overscroll_limit(self):
+        rect = QRectF(self.rect())
+        if rect.isEmpty():
+            return 0.0
+
+        available_length = rect.height() if self.orientation() == Qt.Vertical else rect.width()
+        if available_length <= 0:
+            return 0.0
+
+        return max(4.0 * self._dpi_scale, min(18.0 * self._dpi_scale, available_length * 0.08))
+
+    def trigger_elastic_overscroll(self, direction, strength=1.0):
+        """
+        在真实滚动值到达边界后，为继续滚动的输入提供轻量回弹反馈。
+        direction: -1 表示顶端/左端，1 表示底端/右端。
+        """
+        if not self._is_smooth_scrolling_enabled() or self.maximum() <= self.minimum():
+            return
+
+        direction = -1.0 if direction < 0 else 1.0
+        limit = self._get_elastic_overscroll_limit()
+        if limit <= 0:
+            return
+
+        target_offset = direction * min(limit, max(4.0 * self._dpi_scale, float(strength)))
+
+        self._elastic_overscroll_anim.stop()
+        self._elastic_overscroll_anim.setStartValue(self._elastic_overscroll_value)
+        self._elastic_overscroll_anim.setKeyValueAt(0.36, target_offset)
+        self._elastic_overscroll_anim.setEndValue(0.0)
+        self._elastic_overscroll_anim.start()
+
     def sliderChange(self, change):
         super().sliderChange(change)
         if change in (
@@ -460,6 +511,8 @@ class D_ScrollBar(QScrollBar):
         scroll_span = max(1, self.maximum() - self.minimum())
         travel = max(0.0, available_length - handle_length)
         handle_offset = travel * self._visual_position_ratio_value
+        if self._elastic_overscroll_value:
+            handle_offset += self._elastic_overscroll_value
 
         if is_vertical:
             return QRectF(full_rect.left(), full_rect.top() + handle_offset, full_rect.width(), handle_length)
@@ -728,9 +781,11 @@ class _WheelSmoothScrollFilter(QObject):
         current_value = scrollbar.value()
         step = self._normalize_delta(delta, has_pixel_delta)
         target_value = self._calculate_target_value(scrollbar, current_value, step)
-        target_value = max(scrollbar.minimum(), min(scrollbar.maximum(), target_value))
 
         if target_value == current_value:
+            if self._trigger_elastic_overscroll_if_needed(scrollbar, current_value, step):
+                self._emit_scroll_finished_if_needed()
+                return True
             return False
 
         if not is_animation_enabled("smooth_scrolling", default=True):
@@ -749,6 +804,23 @@ class _WheelSmoothScrollFilter(QObject):
             return True
 
         self._animate_scrollbar(scrollbar, target_value)
+        return True
+
+    def _trigger_elastic_overscroll_if_needed(self, scrollbar, current_value, step):
+        if not isinstance(scrollbar, D_ScrollBar):
+            return False
+        if not is_animation_enabled("smooth_scrolling", default=True):
+            return False
+
+        at_minimum = current_value <= scrollbar.minimum()
+        at_maximum = current_value >= scrollbar.maximum()
+        scrolling_past_minimum = step > 0 and at_minimum
+        scrolling_past_maximum = step < 0 and at_maximum
+        if not scrolling_past_minimum and not scrolling_past_maximum:
+            return False
+
+        direction = -1 if scrolling_past_minimum else 1
+        scrollbar.trigger_elastic_overscroll(direction, strength=abs(step) * 0.35)
         return True
 
     def _normalize_delta(self, delta, is_pixel_delta):
@@ -780,16 +852,19 @@ class _WheelSmoothScrollFilter(QObject):
         pending_attr = "_pending_vertical_target" if orientation == Qt.Vertical else "_pending_horizontal_target"
         animation = getattr(self, animation_attr, None)
         pending_target = getattr(self, pending_attr, None)
+        minimum = scrollbar.minimum()
+        maximum = scrollbar.maximum()
 
         if pending_target is not None:
-            base_value = int(pending_target)
+            base_value = max(minimum, min(maximum, int(pending_target)))
         elif animation is not None and animation.state() == QPropertyAnimation.Running:
             end_value = animation.endValue()
             base_value = int(end_value) if end_value is not None else current_value
+            base_value = max(minimum, min(maximum, base_value))
         else:
             base_value = current_value
 
-        target_value = base_value - step
+        target_value = max(minimum, min(maximum, base_value - step))
         setattr(self, pending_attr, target_value)
         return target_value
 

@@ -1478,7 +1478,7 @@ class ModernSettingsWindow(QDialog):
             (
                 "smooth_scrolling",
                 "滚动平滑",
-                "启用丝滑滚动的惯性、阻尼和滚动条补间"
+                "启用丝滑滚动的惯性、阻尼、滚动条补间和边界回弹"
             ),
             (
                 "file_card_state",
