@@ -163,6 +163,40 @@ class CustomInputBox(QWidget):
 
         # 初始化右键菜单
         self._init_context_menu()
+
+    def cleanup(self):
+        """
+        释放输入框持有的临时弹出控件。
+
+        设置页切换会销毁整棵旧控件树；如果 Qt.Popup 类型的右键菜单只依赖
+        父控件析构，Windows 下偶发出现原生 popup 窗口短暂闪现。
+        """
+        context_menu = getattr(self, "_context_menu", None)
+        if context_menu is None:
+            return
+
+        try:
+            if hasattr(context_menu, "_timeout_timer") and context_menu._timeout_timer:
+                context_menu._timeout_timer.stop()
+        except RuntimeError:
+            pass
+
+        try:
+            context_menu.hide()
+        except RuntimeError:
+            pass
+
+        try:
+            context_menu.setParent(None)
+        except RuntimeError:
+            pass
+
+        try:
+            context_menu.deleteLater()
+        except RuntimeError:
+            pass
+
+        self._context_menu = None
     
     def init_ui(self):
         """

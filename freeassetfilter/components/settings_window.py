@@ -102,6 +102,7 @@ class ModernSettingsWindow(QDialog):
 
         # 当前设置值
         self.current_settings = {}
+        self._current_tab_id = None
 
         # 初始化全局字体
         app = QApplication.instance()
@@ -591,6 +592,100 @@ class ModernSettingsWindow(QDialog):
         
         return self.buttons_widget
     
+    def _dispose_transient_popup(self, popup):
+        """
+        立即隐藏并销毁临时弹出层。
+
+        这些弹出层通常是 Qt.Popup / Qt.Tool 窗口。切页时如果只等待父控件
+        deleteLater，Windows 下可能会短暂映射出一个空白原生窗口。
+        """
+        if popup is None:
+            return
+
+        for timer_attr in ("_timeout_timer", "_layout_refresh_timer", "timer"):
+            timer = getattr(popup, timer_attr, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except RuntimeError:
+                    pass
+
+        try:
+            if hasattr(popup, "hide_menu"):
+                popup.hide_menu()
+            elif hasattr(popup, "hide_immediately"):
+                popup.hide_immediately()
+            elif hasattr(popup, "hide"):
+                popup.hide()
+        except RuntimeError:
+            pass
+
+        cleanup = getattr(popup, "cleanup", None)
+        if callable(cleanup):
+            try:
+                cleanup()
+            except RuntimeError:
+                pass
+
+        try:
+            popup.setParent(None)
+        except RuntimeError:
+            pass
+
+        try:
+            popup.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _cleanup_widget_transient_popups(self, root_widget):
+        """清理即将销毁的页面控件树里持有的临时弹出层。"""
+        if root_widget is None:
+            return
+
+        widgets = [root_widget]
+        try:
+            widgets.extend(root_widget.findChildren(QWidget))
+        except RuntimeError:
+            return
+
+        for widget in widgets:
+            cleanup = getattr(widget, "cleanup", None)
+            if callable(cleanup):
+                try:
+                    cleanup()
+                except RuntimeError:
+                    pass
+
+            for attr in ("_context_menu", "_hover_tooltip", "hover_menu"):
+                popup = getattr(widget, attr, None)
+                if popup is not None:
+                    self._dispose_transient_popup(popup)
+                    try:
+                        setattr(widget, attr, None)
+                    except RuntimeError:
+                        pass
+
+            try:
+                is_transient_window = widget is not root_widget and widget.isWindow()
+            except RuntimeError:
+                is_transient_window = False
+
+            if is_transient_window:
+                self._dispose_transient_popup(widget)
+
+    def _cleanup_dynamic_menus(self):
+        """清理设置页按需创建并挂在窗口上的下拉菜单。"""
+        dynamic_menu_attrs = [
+            'speed_dropdown_menu', 'background_style_dropdown', 'theme_dropdown_menu',
+            'icon_style_dropdown', 'font_dropdown_menu', 'custom_font_dropdown',
+            'markdown_font_dropdown_menu'
+        ]
+        for attr in dynamic_menu_attrs:
+            menu = getattr(self, attr, None)
+            if menu is not None:
+                self._dispose_transient_popup(menu)
+                setattr(self, attr, None)
+
     def _on_navigation_clicked(self, index):
         """
         导航选项点击事件处理
@@ -601,7 +696,12 @@ class ModernSettingsWindow(QDialog):
         nav_ids = ["general", "file_selector", "file_staging", "player", "text_preview", "developer", "about"]
         
         if 0 <= index < len(nav_ids):
-            debug(f"切换导航: {nav_ids[index]}")
+            tab_id = nav_ids[index]
+            if tab_id == self._current_tab_id:
+                debug(f"忽略重复导航: {tab_id}")
+                return
+
+            debug(f"切换导航: {tab_id}")
             for i, button in enumerate(self.navigation_buttons):
                 if i == index:
                     button.button_type = "primary"
@@ -610,8 +710,8 @@ class ModernSettingsWindow(QDialog):
                     button.button_type = "normal"
                     button.update_style()
             
-            self._fill_tab_content(nav_ids[index])
-    
+            self._fill_tab_content(tab_id)
+
     def _fill_tab_content(self, tab_id):
         """
         根据标签页ID填充内容
@@ -619,6 +719,10 @@ class ModernSettingsWindow(QDialog):
         Args:
             tab_id (str): 标签页ID
         """
+        if tab_id == self._current_tab_id:
+            debug(f"忽略重复填充设置页: {tab_id}")
+            return
+
         # 更新内容标题
         title_mapping = {
             "general": "通用设置",
@@ -626,34 +730,23 @@ class ModernSettingsWindow(QDialog):
             "file_staging": "文件暂存池设置",
             "player": "播放器设置",
             "text_preview": "文本预览器设置",
-            "developer": "开发者设置"
+            "developer": "开发者设置",
+            "about": "关于"
         }
 
         if tab_id in title_mapping:
             self.content_title.setText(title_mapping[tab_id])
 
-        # 清空当前内容前先隐藏所有可能的活动菜单
-        # 清理动态创建的下拉菜单属性
-        dynamic_menu_attrs = [
-            'speed_dropdown_menu', 'background_style_dropdown', 'theme_dropdown_menu',
-            'icon_style_dropdown', 'font_dropdown_menu', 'custom_font_dropdown',
-            'markdown_font_dropdown_menu'
-        ]
-        for attr in dynamic_menu_attrs:
-            if hasattr(self, attr):
-                menu = getattr(self, attr, None)
-                if menu is not None:
-                    try:
-                        menu.hide_menu()
-                    except RuntimeError:
-                        pass
-                    setattr(self, attr, None)
+        # 清空当前内容前先销毁所有临时弹出层，避免 Qt.Popup 在切页时短暂闪现。
+        self._cleanup_dynamic_menus()
 
         # 清空当前内容
         while self.scroll_layout.count() > 0:
             item = self.scroll_layout.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                widget = item.widget()
+                self._cleanup_widget_transient_popups(widget)
+                widget.deleteLater()
 
         # 根据标签页ID添加设置项
         if tab_id == "general":
@@ -670,6 +763,8 @@ class ModernSettingsWindow(QDialog):
             self._add_developer_settings()
         elif tab_id == "about":
             self._add_about_settings()
+
+        self._current_tab_id = tab_id
 
     def _add_file_selector_settings(self):
         """
@@ -2524,6 +2619,9 @@ class ModernSettingsWindow(QDialog):
         )
         
         sys.exit(0)
+
+
+SettingsWindow = ModernSettingsWindow
 
 
 # 更新 __init__.py 文件，导出新控件
