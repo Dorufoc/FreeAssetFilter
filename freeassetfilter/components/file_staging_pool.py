@@ -69,6 +69,23 @@ class FileStagingPool(QWidget):
     folder_size_result_ready = Signal(object)  # 线程完成后的文件夹大小结果投递信号
     navigate_to_path = Signal(str, dict)  # 当需要导航到某个路径时发出，第二个参数是可选的文件信息
 
+    _BACKUP_STRING_FIELDS = (
+        "name",
+        "display_name",
+        "original_name",
+        "modified",
+        "created",
+        "suffix",
+        "info_text",
+    )
+    _BACKUP_BOOL_FIELDS = (
+        "is_dir",
+        "is_selected",
+        "is_previewing",
+        "is_missing",
+        "size_calculating",
+    )
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -1036,18 +1053,69 @@ class FileStagingPool(QWidget):
         """
         import json
         try:
-            # 构建备份数据，包含文件列表和选择器状态
-            backup_data = {
-                'items': self.items,
-                'selector_state': {
-                    'last_path': last_path
-                }
-            }
+            backup_data = self._build_backup_payload(last_path)
             with open(self.backup_file, 'w', encoding='utf-8') as f:
                 json.dump(backup_data, f, ensure_ascii=False, indent=2)
             # debug(f"保存备份成功: {len(self.items)} 项, 路径: {last_path}")
-        except (IOError, OSError) as e:
+        except (IOError, OSError, TypeError, ValueError) as e:
             warning(f"保存文件列表备份失败: {e}")
+
+    @classmethod
+    def _serialize_backup_item(cls, file_info):
+        """
+        将运行时文件信息压缩为可安全写入 JSON 的备份结构。
+        """
+        if not isinstance(file_info, dict):
+            return None
+
+        raw_path = file_info.get("path")
+        if raw_path is None:
+            return None
+
+        path = os.path.normpath(str(raw_path).strip())
+        if not path:
+            return None
+
+        serialized = {"path": path}
+
+        size = file_info.get("size")
+        if isinstance(size, (int, float)) and not isinstance(size, bool):
+            serialized["size"] = int(size)
+        else:
+            serialized["size"] = None
+
+        for field in cls._BACKUP_STRING_FIELDS:
+            value = file_info.get(field)
+            serialized[field] = "" if value is None else str(value)
+
+        for field in cls._BACKUP_BOOL_FIELDS:
+            serialized[field] = bool(file_info.get(field, False))
+
+        return serialized
+
+    def _build_backup_payload(self, last_path='All'):
+        """
+        构建统一的备份载荷，过滤不可序列化的运行时字段。
+        """
+        source_items = []
+        if hasattr(self, "pool_model") and getattr(self.pool_model, "_files", None) is not None:
+            source_items = self.pool_model._files
+            self.items = [file_info.copy() for file_info in source_items]
+        else:
+            source_items = self.items
+
+        items = []
+        for file_info in source_items:
+            serialized = self._serialize_backup_item(file_info)
+            if serialized:
+                items.append(serialized)
+
+        return {
+            'items': items,
+            'selector_state': {
+                'last_path': str(last_path or 'All')
+            }
+        }
 
     def show_import_export_dialog(self):
         """
@@ -1839,18 +1907,46 @@ class FileStagingPool(QWidget):
         从备份文件加载文件列表
 
         Returns:
-            list: 加载的文件列表，如果没有备份则返回空列表
+            dict: 规范化后的备份数据，如果没有备份则返回空结构
         """
         import json
         try:
             if os.path.exists(self.backup_file):
                 with open(self.backup_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    raw_backup = json.load(f)
+                    if isinstance(raw_backup, dict):
+                        items = raw_backup.get("items", [])
+                        selector_state = raw_backup.get("selector_state", {})
+                    elif isinstance(raw_backup, list):
+                        items = raw_backup
+                        selector_state = {}
+                    else:
+                        items = []
+                        selector_state = {}
+
+                    normalized_items = []
+                    for file_info in items:
+                        serialized = self._serialize_backup_item(file_info)
+                        if serialized:
+                            normalized_items.append(serialized)
+
+                    last_path = selector_state.get("last_path", "All") if isinstance(selector_state, dict) else "All"
+                    return {
+                        "items": normalized_items,
+                        "selector_state": {
+                            "last_path": str(last_path or "All")
+                        }
+                    }
         except json.JSONDecodeError as e:
             warning(f"备份文件JSON格式错误: {e}")
-        except (IOError, OSError) as e:
+        except (IOError, OSError, TypeError, ValueError) as e:
             warning(f"加载文件列表备份失败: {e}")
-        return []
+        return {
+            "items": [],
+            "selector_state": {
+                "last_path": "All"
+            }
+        }
 
     def get_directory_space(self, directory):
         """

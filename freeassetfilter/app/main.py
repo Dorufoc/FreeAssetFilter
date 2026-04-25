@@ -544,12 +544,12 @@ class FreeAssetFilterApp(QMainWindow):
         # 保存文件存储池状态，传递文件选择器的当前路径
         if hasattr(self, 'file_staging_pool'):
             try:
-                if hasattr(self.file_staging_pool, 'cleanup'):
-                    self.file_staging_pool.cleanup()
                 if hasattr(self.file_staging_pool, 'flush_backup_save_now'):
                     self.file_staging_pool.flush_backup_save_now(last_path)
                 else:
                     self.file_staging_pool.save_backup(last_path)
+                if hasattr(self.file_staging_pool, 'cleanup'):
+                    self.file_staging_pool.cleanup()
             except Exception as e:
                 logger.warning(f"关闭主窗口时清理文件存储池失败: {e}")
 
@@ -1856,17 +1856,19 @@ class FreeAssetFilterApp(QMainWindow):
         from freeassetfilter.widgets.D_widgets import CustomMessageBox
         import json
 
-        backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
-
-        if not os.path.exists(backup_file):
-            return
-
-        try:
-            with open(backup_file, 'r', encoding='utf-8') as f:
-                backup_data = json.load(f)
-        except (OSError, IOError, ValueError, TypeError) as e:
-            warning(f"读取备份文件失败: {e}")
-            return
+        backup_data = None
+        if hasattr(self, 'file_staging_pool') and hasattr(self.file_staging_pool, 'load_backup'):
+            backup_data = self.file_staging_pool.load_backup()
+        else:
+            backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
+            if not os.path.exists(backup_file):
+                return
+            try:
+                with open(backup_file, 'r', encoding='utf-8') as f:
+                    backup_data = json.load(f)
+            except (OSError, IOError, ValueError, TypeError) as e:
+                warning(f"读取备份文件失败: {e}")
+                return
 
         items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
 
@@ -1992,7 +1994,10 @@ class FreeAssetFilterApp(QMainWindow):
             setattr(self.file_staging_pool, "_suspend_backup_save", False)
             try:
                 last_path = getattr(getattr(self, 'file_selector_a', None), 'current_path', 'All')
-                self.file_staging_pool.save_backup(last_path)
+                if hasattr(self.file_staging_pool, 'flush_backup_save_now'):
+                    self.file_staging_pool.flush_backup_save_now(last_path)
+                else:
+                    self.file_staging_pool.save_backup(last_path)
             except Exception as e:
                 warning(f"恢复完成后统一保存备份失败: {e}")
 

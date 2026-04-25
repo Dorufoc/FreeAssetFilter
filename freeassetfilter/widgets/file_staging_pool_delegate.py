@@ -148,6 +148,11 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         self._info_color = QColor(self.secondary_color)
         self._missing_name_color = QColor(self.normal_color)
         self._missing_info_color = QColor(self.normal_color)
+        self._hover_shadow = QColor(self.secondary_color)
+        self._hover_shadow.setAlpha(55)
+        self._preview_shadow = QColor(self.accent_color)
+        self._preview_shadow.setAlpha(110)
+        self._idle_shadow = QColor(0, 0, 0, 0)
 
     def _init_fonts(self):
         app = QApplication.instance()
@@ -443,7 +448,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
             return False
 
         file_info = self._get_file_info(index)
-        if not file_info or file_info.get("is_previewing", False):
+        if not file_info:
             return False
 
         file_path = self._normalize_path(file_info.get("path", ""))
@@ -688,7 +693,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
             self._dragging_file_path and file_path == self._dragging_file_path and not for_drag_preview
         )
 
-        bg_color, border_color, border_width, content_opacity = self._get_paint_colors(
+        bg_color, border_color, shadow_color, shadow_blur, border_width, content_opacity = self._get_paint_colors(
             geometry,
             is_selected,
             is_previewing,
@@ -696,6 +701,8 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
             is_dragging_source=is_dragging_source,
             for_drag_preview=for_drag_preview,
         )
+
+        self._draw_shadow(painter, rect, geometry["radius"], shadow_color, shadow_blur)
 
         draw_rect = QRectF(rect).adjusted(
             border_width / 2.0,

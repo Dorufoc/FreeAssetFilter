@@ -8,16 +8,27 @@ FileSelectorDelegate - 文件选择器列表视图的自定义委托
 """
 
 from datetime import datetime
+from collections import OrderedDict
 
 from PySide6.QtCore import Qt, QSize, QRect, QRectF, QTimer
 from PySide6.QtGui import QColor, QPen, QFont, QFontMetrics, QPixmap, QPainter
-from PySide6.QtWidgets import QStyledItemDelegate, QApplication, QStyle, QStyleOptionViewItem
+from PySide6.QtWidgets import (
+    QStyledItemDelegate,
+    QApplication,
+    QStyle,
+    QStyleOptionViewItem,
+    QGraphicsBlurEffect,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
+)
 
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.app_logger import debug
 
 
 class FileBlockCardDelegate(QStyledItemDelegate):
+    _SHADOW_CACHE_MAX_ENTRIES = 96
+
     """
     文件块卡片委托
 
@@ -35,6 +46,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self._animation_states = {}
         self._active_animation_keys = set()
         self._dragging_file_path = None
+        self._shadow_pixmap_cache = OrderedDict()
 
         self._animation_timer = QTimer(self)
         self._animation_timer.setInterval(16)
@@ -54,6 +66,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self._animation_states.clear()
         self._active_animation_keys.clear()
         self._dragging_file_path = None
+        self._shadow_pixmap_cache.clear()
         self._stop_animation_timer_if_idle()
         if self._view:
             self._view.viewport().update()
@@ -107,6 +120,11 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self._selected_border = QColor(self.accent_color)
         self._preview_border = QColor(self.secondary_color)
         self._text_color = QColor(self.secondary_color)
+        self._hover_shadow = QColor(self.secondary_color)
+        self._hover_shadow.setAlpha(55)
+        self._preview_shadow = QColor(self.accent_color)
+        self._preview_shadow.setAlpha(110)
+        self._idle_shadow = QColor(0, 0, 0, 0)
 
     def _init_fonts(self):
         """初始化字体配置"""
@@ -224,6 +242,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         return {
             "bg_color": QColor(self._normal_bg),
             "border_color": QColor(self._normal_border),
+            "shadow_color": QColor(self._idle_shadow),
             "is_hovered": False,
             "is_selected": False,
             "is_previewing": False,
@@ -233,8 +252,13 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             "easing": "out_cubic",
             "start_bg": QColor(self._normal_bg),
             "start_border": QColor(self._normal_border),
+            "start_shadow": QColor(self._idle_shadow),
             "target_bg": QColor(self._normal_bg),
             "target_border": QColor(self._normal_border),
+            "target_shadow": QColor(self._idle_shadow),
+            "shadow_blur": 0.0,
+            "start_shadow_blur": 0.0,
+            "target_shadow_blur": 0.0,
         }
 
     def _get_animation_key(self, file_info):
@@ -257,6 +281,12 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             if t < 0.5:
                 return 2 * t * t
             return 1 - pow(-2 * t + 2, 2) / 2
+        if curve_name == "out_quint":
+            return 1 - pow(1 - t, 5)
+        if curve_name == "in_out_cubic":
+            if t < 0.5:
+                return 4 * t * t * t
+            return 1 - pow(-2 * t + 2, 3) / 2
         return 1 - pow(1 - t, 3)
 
     def _interpolate_color(self, c1, c2, t):
@@ -266,33 +296,38 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         a = int(c1.alpha() + (c2.alpha() - c1.alpha()) * t)
         return QColor(r, g, b, a)
 
-    def _target_colors_for_flags(self, is_hovered: bool, is_selected: bool, is_previewing: bool):
+    def _interpolate_value(self, start: float, end: float, t: float) -> float:
+        return start + (end - start) * t
+
+    def _target_visuals_for_flags(self, is_hovered: bool, is_selected: bool, is_previewing: bool):
         if is_previewing:
             target_bg = QColor(self._selected_bg) if is_selected else QColor(self._normal_bg)
-            return target_bg, QColor(self._preview_border)
+            return target_bg, QColor(self._preview_border), QColor(self._preview_shadow), 8.0 * self._dpi_scale
 
         if is_selected:
-            return QColor(self._selected_bg), QColor(self._selected_border)
+            selected_shadow = QColor(self._selected_border)
+            selected_shadow.setAlpha(72)
+            return QColor(self._selected_bg), QColor(self._selected_border), selected_shadow, 8.0 * self._dpi_scale
 
         if is_hovered:
-            return QColor(self._hover_bg), QColor(self._hover_border)
+            return QColor(self._hover_bg), QColor(self._hover_border), QColor(self._hover_shadow), 8.0 * self._dpi_scale
 
-        return QColor(self._normal_bg), QColor(self._normal_border)
+        return QColor(self._normal_bg), QColor(self._normal_border), QColor(self._idle_shadow), 0.0
 
     def _transition_meta(self, prev_hovered, prev_selected, prev_previewing, is_hovered, is_selected, is_previewing):
         if is_previewing and not prev_previewing:
-            return 180, "out_cubic"
+            return 220, "out_quint"
         if (not is_previewing) and prev_previewing:
-            return 200, "in_out_quad"
+            return 220, "in_out_cubic"
         if is_selected and not prev_selected:
-            return 180, "out_cubic"
+            return 190, "out_quint"
         if (not is_selected) and prev_selected:
-            return 200, "in_out_quad"
+            return 220, "in_out_cubic"
         if is_hovered and not prev_hovered:
-            return 150, "out_cubic"
+            return 180, "out_quint"
         if (not is_hovered) and prev_hovered:
-            return 200, "in_out_quad"
-        return 150, "out_cubic"
+            return 220, "in_out_cubic"
+        return 180, "out_cubic"
 
     def _sync_animation_state(self, key, file_info, is_hovered, is_selected, is_previewing):
         state = self._get_animation_state(key)
@@ -301,7 +336,11 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         prev_selected = state["is_selected"]
         prev_previewing = state["is_previewing"]
 
-        target_bg, target_border = self._target_colors_for_flags(is_hovered, is_selected, is_previewing)
+        target_bg, target_border, target_shadow, target_shadow_blur = self._target_visuals_for_flags(
+            is_hovered,
+            is_selected,
+            is_previewing,
+        )
 
         needs_transition = (
             prev_hovered != is_hovered
@@ -317,6 +356,8 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             if not state["animating"]:
                 state["bg_color"] = QColor(target_bg)
                 state["border_color"] = QColor(target_border)
+                state["shadow_color"] = QColor(target_shadow)
+                state["shadow_blur"] = float(target_shadow_blur)
             return state
 
         duration, easing = self._transition_meta(
@@ -330,8 +371,12 @@ class FileBlockCardDelegate(QStyledItemDelegate):
 
         state["start_bg"] = QColor(state["bg_color"])
         state["start_border"] = QColor(state["border_color"])
+        state["start_shadow"] = QColor(state["shadow_color"])
+        state["start_shadow_blur"] = float(state["shadow_blur"])
         state["target_bg"] = QColor(target_bg)
         state["target_border"] = QColor(target_border)
+        state["target_shadow"] = QColor(target_shadow)
+        state["target_shadow_blur"] = float(target_shadow_blur)
         state["animation_duration"] = duration
         state["easing"] = easing
         state["animation_start_time"] = datetime.now().timestamp() * 1000.0
@@ -372,6 +417,8 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             if elapsed >= duration:
                 state["bg_color"] = QColor(state["target_bg"])
                 state["border_color"] = QColor(state["target_border"])
+                state["shadow_color"] = QColor(state["target_shadow"])
+                state["shadow_blur"] = float(state["target_shadow_blur"])
                 state["animating"] = False
                 completed_keys.append(key)
             else:
@@ -379,6 +426,8 @@ class FileBlockCardDelegate(QStyledItemDelegate):
                 eased = self._ease(state.get("easing", "out_cubic"), progress)
                 state["bg_color"] = self._interpolate_color(state["start_bg"], state["target_bg"], eased)
                 state["border_color"] = self._interpolate_color(state["start_border"], state["target_border"], eased)
+                state["shadow_color"] = self._interpolate_color(state["start_shadow"], state["target_shadow"], eased)
+                state["shadow_blur"] = self._interpolate_value(state["start_shadow_blur"], state["target_shadow_blur"], eased)
 
             needs_repaint = True
 
@@ -398,15 +447,126 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             border_color = QColor(self.auxiliary_color)
             border_color.setAlpha(102)
 
-            return bg_color, border_color, geometry["border_width"], 0.4
+            shadow_color = QColor(self._idle_shadow)
+            return bg_color, border_color, shadow_color, 0.0, geometry["border_width"], 0.4
 
         if for_drag_preview:
-            return QColor(self.base_color), QColor(self.normal_color), geometry["border_width"], 1.0
+            return QColor(self.base_color), QColor(self.normal_color), QColor(self._idle_shadow), 0.0, geometry["border_width"], 1.0
 
         border_width = geometry["preview_border_width"] if is_previewing else geometry["border_width"]
         bg_color = QColor(anim_state["bg_color"])
         border_color = QColor(anim_state["border_color"])
-        return bg_color, border_color, border_width, 1.0
+        shadow_color = QColor(anim_state["shadow_color"])
+        shadow_blur = max(0.0, float(anim_state["shadow_blur"]))
+        return bg_color, border_color, shadow_color, shadow_blur, border_width, 1.0
+
+    def _draw_shadow(self, painter, rect: QRect, radius: float, shadow_color: QColor, shadow_blur: float):
+        if shadow_blur <= 0.5 or shadow_color.alpha() <= 0:
+            return
+
+        dpr = 1.0
+        paint_device = painter.device()
+        if paint_device is not None and hasattr(paint_device, "devicePixelRatioF"):
+            try:
+                dpr = max(1.0, float(paint_device.devicePixelRatioF()))
+            except (RuntimeError, TypeError, ValueError):
+                dpr = 1.0
+
+        shadow_pixmap, margin = self._get_real_shadow_pixmap(
+            rect.width(),
+            rect.height(),
+            radius,
+            shadow_color,
+            shadow_blur,
+            dpr,
+        )
+        if shadow_pixmap.isNull():
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(rect.x() - margin, rect.y() - margin, shadow_pixmap)
+        painter.restore()
+
+    def _get_real_shadow_pixmap(
+        self,
+        width: int,
+        height: int,
+        radius: float,
+        shadow_color: QColor,
+        shadow_blur: float,
+        dpr: float,
+    ):
+        width = max(1, int(width))
+        height = max(1, int(height))
+        radius = max(0.0, float(radius))
+        shadow_blur = max(0.0, float(shadow_blur))
+        dpr = max(1.0, float(dpr))
+
+        margin = max(2, int(round(shadow_blur * 2.0)))
+        cache_key = (
+            width,
+            height,
+            round(radius, 2),
+            shadow_color.rgba(),
+            round(shadow_blur, 2),
+            round(dpr, 2),
+        )
+
+        cached = self._shadow_pixmap_cache.get(cache_key)
+        if cached is not None:
+            self._shadow_pixmap_cache.move_to_end(cache_key)
+            return cached
+
+        logical_size = QSize(width + margin * 2, height + margin * 2)
+        shadow_pixmap = QPixmap(
+            max(1, int(round(logical_size.width() * dpr))),
+            max(1, int(round(logical_size.height() * dpr))),
+        )
+        shadow_pixmap.setDevicePixelRatio(dpr)
+        shadow_pixmap.fill(Qt.transparent)
+
+        source_pixmap = QPixmap(shadow_pixmap.size())
+        source_pixmap.setDevicePixelRatio(dpr)
+        source_pixmap.fill(Qt.transparent)
+
+        source_painter = QPainter(source_pixmap)
+        source_painter.setRenderHint(QPainter.Antialiasing, True)
+        source_painter.setPen(Qt.NoPen)
+        source_painter.setBrush(shadow_color)
+        source_painter.drawRoundedRect(
+            QRectF(margin, margin, width, height),
+            radius,
+            radius,
+        )
+        source_painter.end()
+
+        blur_effect = QGraphicsBlurEffect()
+        blur_effect.setBlurRadius(shadow_blur)
+
+        scene = QGraphicsScene()
+        item = QGraphicsPixmapItem(source_pixmap)
+        item.setGraphicsEffect(blur_effect)
+        scene.addItem(item)
+        scene.setSceneRect(QRectF(0, 0, logical_size.width(), logical_size.height()))
+
+        shadow_painter = QPainter(shadow_pixmap)
+        shadow_painter.setRenderHint(QPainter.Antialiasing, True)
+        shadow_painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        scene.render(
+            shadow_painter,
+            QRectF(0, 0, logical_size.width(), logical_size.height()),
+            QRectF(0, 0, logical_size.width(), logical_size.height()),
+        )
+        shadow_painter.end()
+
+        cache_value = (shadow_pixmap, margin)
+        self._shadow_pixmap_cache[cache_key] = cache_value
+        self._shadow_pixmap_cache.move_to_end(cache_key)
+        while len(self._shadow_pixmap_cache) > self._SHADOW_CACHE_MAX_ENTRIES:
+            self._shadow_pixmap_cache.popitem(last=False)
+
+        return cache_value
 
     def _draw_scaled_pixmap(self, painter, rect, pixmap, opacity=1.0):
         if pixmap.isNull() or rect.width() <= 0 or rect.height() <= 0:
@@ -498,7 +658,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         file_path = self._normalize_path(file_info.get("path", ""))
         is_dragging_source = bool(self._dragging_file_path and file_path == self._dragging_file_path and not for_drag_preview)
 
-        bg_color, border_color, border_width, content_opacity = self._get_paint_colors(
+        bg_color, border_color, shadow_color, shadow_blur, border_width, content_opacity = self._get_paint_colors(
             geometry,
             is_selected,
             is_previewing,
@@ -506,6 +666,8 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             is_dragging_source=is_dragging_source,
             for_drag_preview=for_drag_preview,
         )
+
+        self._draw_shadow(painter, rect, geometry["radius"], shadow_color, shadow_blur)
 
         draw_rect = QRectF(rect).adjusted(
             border_width / 2.0,
