@@ -12,16 +12,18 @@ from PySide6.QtCore import (
     Property,
     QEasingCurve,
     QEvent,
+    QRectF,
 )
 from PySide6.QtWidgets import (
     QScrollArea,
+    QAbstractSlider,
     QAbstractItemView,
     QScroller,
     QScrollerProperties,
     QApplication,
     QScrollBar,
 )
-from PySide6.QtGui import QColor, QWheelEvent
+from PySide6.QtGui import QColor, QWheelEvent, QPainter
 from freeassetfilter.utils.app_logger import debug
 import time
 
@@ -85,8 +87,11 @@ class D_ScrollBar(QScrollBar):
         self._auxiliary_color = QColor("#f1f3f3")
 
         self._anim_handle_color_value = QColor(self._normal_color)
+        self._visual_handle_ratio_value = 1.0
+        self._visual_position_ratio_value = 0.0
         self._updating_style = False
         self._last_style = ""
+        self._suppress_jump_animation_until = 0.0
 
         # 动态宽度控制相关属性
         self._default_width = 4
@@ -99,10 +104,14 @@ class D_ScrollBar(QScrollBar):
         self._scroller_was_mouse_active = False
 
         self._init_animations()
+        self._sync_visual_handle_ratio(immediate=True)
+        self._sync_visual_position_ratio(immediate=True)
         self._update_style()
 
         self.setAttribute(Qt.WA_Hover, True)
         self.rangeChanged.connect(self._on_range_changed)
+        self.valueChanged.connect(lambda _: self.update())
+        self.actionTriggered.connect(self._on_action_triggered)
 
     def set_scroll_area(self, scroll_area):
         """
@@ -114,6 +123,7 @@ class D_ScrollBar(QScrollBar):
     def _on_range_changed(self, min_val=0, max_val=0):
         """滚动范围变化时触发宽度检查"""
         self._check_and_update_width()
+        self._sync_visual_handle_ratio()
 
     def _check_and_update_width(self):
         """
@@ -188,6 +198,100 @@ class D_ScrollBar(QScrollBar):
         self._release_anim.setDuration(150)
         self._release_anim.setEasingCurve(QEasingCurve.InOutQuad)
 
+        self._handle_ratio_anim = QPropertyAnimation(self, b"_visual_handle_ratio")
+        self._handle_ratio_anim.setDuration(260)
+        self._handle_ratio_anim.setEasingCurve(QEasingCurve.OutBack)
+
+        self._handle_position_anim = QPropertyAnimation(self, b"_visual_position_ratio")
+        self._handle_position_anim.setDuration(220)
+        self._handle_position_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _get_actual_handle_ratio(self):
+        page_step = max(0, self.pageStep())
+        total_span = max(0, self.maximum() - self.minimum()) + page_step
+        if total_span <= 0:
+            return 1.0
+        return max(0.0, min(1.0, page_step / float(total_span)))
+
+    def _get_actual_position_ratio(self):
+        scroll_span = self.maximum() - self.minimum()
+        if scroll_span <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (self.value() - self.minimum()) / float(scroll_span)))
+
+    def _sync_visual_handle_ratio(self, immediate=False):
+        target_ratio = self._get_actual_handle_ratio()
+
+        if immediate:
+            self._handle_ratio_anim.stop()
+            self._set_visual_handle_ratio(target_ratio)
+            return
+
+        current_ratio = self._visual_handle_ratio_value
+        if abs(current_ratio - target_ratio) < 0.002:
+            self._handle_ratio_anim.stop()
+            self._set_visual_handle_ratio(target_ratio)
+            return
+
+        self._handle_ratio_anim.stop()
+        self._handle_ratio_anim.setStartValue(current_ratio)
+        self._handle_ratio_anim.setEndValue(target_ratio)
+        self._handle_ratio_anim.start()
+
+    def _sync_visual_position_ratio(self, immediate=False, animate_if_jump=False):
+        target_ratio = self._get_actual_position_ratio()
+
+        if immediate:
+            self._handle_position_anim.stop()
+            self._set_visual_position_ratio(target_ratio)
+            return
+
+        current_ratio = self._visual_position_ratio_value
+        if not animate_if_jump or self._is_pressed or self._is_jump_animation_suppressed():
+            self._handle_position_anim.stop()
+            self._set_visual_position_ratio(target_ratio)
+            return
+
+        if not self._is_position_jump(current_ratio, target_ratio):
+            self._handle_position_anim.stop()
+            self._set_visual_position_ratio(target_ratio)
+            return
+
+        self._handle_position_anim.stop()
+        self._handle_position_anim.setStartValue(current_ratio)
+        self._handle_position_anim.setEndValue(target_ratio)
+        self._handle_position_anim.start()
+
+    def _suppress_jump_animation(self, duration_seconds=0.25):
+        self._suppress_jump_animation_until = max(
+            self._suppress_jump_animation_until,
+            time.time() + max(0.0, float(duration_seconds)),
+        )
+
+    def _is_jump_animation_suppressed(self):
+        return time.time() < self._suppress_jump_animation_until
+
+    def _is_position_jump(self, current_ratio, target_ratio):
+        groove_rect = QRectF(self.rect())
+        if groove_rect.isEmpty():
+            return False
+
+        is_vertical = self.orientation() == Qt.Vertical
+        available_length = groove_rect.height() if is_vertical else groove_rect.width()
+        if available_length <= 0:
+            return False
+
+        min_size = max(1.0, 15.0 * self._dpi_scale)
+        handle_length = min(available_length, max(min_size, available_length * self._visual_handle_ratio_value))
+        travel = max(0.0, available_length - handle_length)
+        jump_pixels = abs(target_ratio - current_ratio) * travel
+        jump_threshold = max(28.0 * self._dpi_scale, min_size * 1.35)
+        return jump_pixels >= jump_threshold
+
+    def _on_action_triggered(self, action):
+        self._suppress_jump_animation(0.22)
+        self._sync_visual_position_ratio(immediate=True)
+
     def set_colors(self, normal_color, hover_color, pressed_color, auxiliary_color=None):
         """
         设置滚动条颜色
@@ -245,9 +349,6 @@ class D_ScrollBar(QScrollBar):
             min_dim = f"min-{size_dim}"
             other_size = "height"
 
-        color = self._anim_handle_color_value
-        handle_color = f"rgba({color.red()}, {color.green()}, {color.blue()}, 255)"
-
         bg = self._auxiliary_color
         bg_color = f"rgba({bg.red()}, {bg.green()}, {bg.blue()}, 255)"
 
@@ -259,7 +360,7 @@ class D_ScrollBar(QScrollBar):
                 border-radius: 0px;
             }}
             QScrollBar::{"handle:" + ("vertical" if is_vertical else "horizontal")} {{
-                background-color: {handle_color};
+                background-color: transparent;
                 {min_dim}: {min_size}px;
                 border-radius: {radius}px;
                 border: none;
@@ -291,8 +392,98 @@ class D_ScrollBar(QScrollBar):
             return
         self._anim_handle_color_value = new_color
         self._update_style()
+        self.update()
 
     _anim_handle_color = Property(QColor, fget=_get_anim_handle_color, fset=_set_anim_handle_color)
+
+    def _get_visual_handle_ratio(self):
+        return self._visual_handle_ratio_value
+
+    def _set_visual_handle_ratio(self, ratio):
+        clamped_ratio = max(0.0, min(1.0, float(ratio)))
+        if abs(clamped_ratio - self._visual_handle_ratio_value) < 0.0005:
+            return
+        self._visual_handle_ratio_value = clamped_ratio
+        self.update()
+
+    _visual_handle_ratio = Property(float, fget=_get_visual_handle_ratio, fset=_set_visual_handle_ratio)
+
+    def _get_visual_position_ratio(self):
+        return self._visual_position_ratio_value
+
+    def _set_visual_position_ratio(self, ratio):
+        clamped_ratio = max(0.0, min(1.0, float(ratio)))
+        if abs(clamped_ratio - self._visual_position_ratio_value) < 0.0005:
+            return
+        self._visual_position_ratio_value = clamped_ratio
+        self.update()
+
+    _visual_position_ratio = Property(float, fget=_get_visual_position_ratio, fset=_set_visual_position_ratio)
+
+    def sliderChange(self, change):
+        super().sliderChange(change)
+        if change in (
+            QAbstractSlider.SliderRangeChange,
+            QAbstractSlider.SliderStepsChange,
+            QAbstractSlider.SliderValueChange,
+        ):
+            if change == QAbstractSlider.SliderValueChange:
+                self._sync_visual_position_ratio(animate_if_jump=True)
+            else:
+                self._sync_visual_handle_ratio()
+                self._sync_visual_position_ratio(animate_if_jump=True)
+
+    def _build_handle_rect(self):
+        full_rect = QRectF(self.rect())
+        if full_rect.isEmpty():
+            return QRectF()
+
+        is_vertical = self.orientation() == Qt.Vertical
+        available_length = full_rect.height() if is_vertical else full_rect.width()
+        if available_length <= 0:
+            return QRectF()
+
+        min_size = max(1.0, 15.0 * self._dpi_scale)
+        handle_length = min(available_length, max(min_size, available_length * self._visual_handle_ratio_value))
+
+        scroll_span = max(1, self.maximum() - self.minimum())
+        travel = max(0.0, available_length - handle_length)
+        handle_offset = travel * self._visual_position_ratio_value
+
+        if is_vertical:
+            return QRectF(full_rect.left(), full_rect.top() + handle_offset, full_rect.width(), handle_length)
+        return QRectF(full_rect.left() + handle_offset, full_rect.top(), handle_length, full_rect.height())
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        groove_rect = QRectF(self.rect())
+        if groove_rect.isEmpty():
+            return
+
+        bg = self._auxiliary_color
+        handle = self._anim_handle_color_value
+        radius = min(groove_rect.width(), groove_rect.height()) / 2.0
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(groove_rect, radius, radius)
+
+        if self._current_width > 0:
+            handle_rect = self._build_handle_rect()
+            if not handle_rect.isEmpty():
+                painter.setBrush(handle)
+                painter.drawRoundedRect(handle_rect, radius, radius)
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        thickness = max(0, int(round(self._current_width * self._dpi_scale)))
+        if self.orientation() == Qt.Vertical:
+            hint.setWidth(thickness)
+        else:
+            hint.setHeight(thickness)
+        return hint
 
     def enterEvent(self, event):
         """鼠标进入事件"""
@@ -369,6 +560,8 @@ class D_ScrollBar(QScrollBar):
         """鼠标按下事件"""
         self._is_pressed = True
         self._disable_scroller_gesture()
+        self._suppress_jump_animation(0.30)
+        self._sync_visual_position_ratio(immediate=True)
 
         self._hover_anim.stop()
         self._press_anim.setStartValue(QColor(self._anim_handle_color_value))
@@ -387,11 +580,13 @@ class D_ScrollBar(QScrollBar):
         """鼠标释放事件"""
         self._is_pressed = False
         self._restore_scroller_gesture()
+        self._suppress_jump_animation(0.12)
 
         self._press_anim.stop()
         self._release_anim.setStartValue(QColor(self._anim_handle_color_value))
         self._release_anim.setEndValue(QColor(self._hover_color if self._is_hovering else self._normal_color))
         self._release_anim.start()
+        self._sync_visual_position_ratio(immediate=True)
 
         super().mouseReleaseEvent(event)
 
@@ -569,6 +764,9 @@ class _WheelSmoothScrollFilter(QObject):
         animation_attr = "_vertical_animation" if orientation == Qt.Vertical else "_horizontal_animation"
         pending_attr = "_pending_vertical_target" if orientation == Qt.Vertical else "_pending_horizontal_target"
         animation = getattr(self, animation_attr, None)
+
+        if isinstance(scrollbar, D_ScrollBar):
+            scrollbar._suppress_jump_animation(max(0.18, self._duration / 1000.0 + 0.05))
 
         start_value = scrollbar.value()
         if animation is not None and animation.state() == QPropertyAnimation.Running:
