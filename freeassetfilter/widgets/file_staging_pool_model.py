@@ -1,7 +1,8 @@
 import os
+import time
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
@@ -538,7 +539,21 @@ class FileStagingPoolListView(FileListView):
         self._global_font = global_font
         self._delegate = None
         self._action_press_index = QModelIndex()
+        self._card_motion_model = None
+        self._card_motion_items: Dict[str, Dict[str, Any]] = {}
+        self._card_motion_exit_items: List[Dict[str, Any]] = []
+        self._card_motion_pending_insert_rects: Dict[str, QRect] = {}
+        self._card_motion_pending_insert_keys = set()
+        self._card_motion_insert_finalize_scheduled = False
+        self._card_motion_pending_removals: List[Dict[str, Any]] = []
+        self._card_motion_start_ms = 0.0
+        self._card_motion_capturing = False
+        self._card_motion_enabled = True
+        self._card_motion_duration_ms = 210
         super().__init__(parent)
+        self._card_motion_timer = QTimer(self)
+        self._card_motion_timer.setInterval(16)
+        self._card_motion_timer.timeout.connect(self._advance_card_motion)
         self._delegate = FileStagingPoolItemDelegate(self._dpi_scale, self._global_font, self)
         self.setItemDelegate(self._delegate)
         self.file_clicked.connect(self.item_left_clicked.emit)
@@ -661,8 +676,347 @@ class FileStagingPoolListView(FileListView):
         return QPoint(-1, -1)
 
     def setModel(self, model) -> None:
+        self._disconnect_card_motion_model()
+        self.cancel_card_motion(update=False)
         super().setModel(model)
+        self._connect_card_motion_model(model)
         self._sync_item_size()
+
+    def _connect_card_motion_model(self, model) -> None:
+        if not isinstance(model, FileStagingPoolListModel):
+            self._card_motion_model = None
+            return
+
+        self._card_motion_model = model
+        model.rowsAboutToBeInserted.connect(self._on_rows_about_to_be_inserted)
+        model.rowsInserted.connect(self._on_rows_inserted)
+        model.rowsAboutToBeRemoved.connect(self._on_rows_about_to_be_removed)
+        model.rowsRemoved.connect(self._on_rows_removed)
+        model.modelAboutToBeReset.connect(self._on_model_about_to_reset)
+
+    def _disconnect_card_motion_model(self) -> None:
+        model = self._card_motion_model
+        if model is None:
+            return
+
+        for signal, slot in (
+            (model.rowsAboutToBeInserted, self._on_rows_about_to_be_inserted),
+            (model.rowsInserted, self._on_rows_inserted),
+            (model.rowsAboutToBeRemoved, self._on_rows_about_to_be_removed),
+            (model.rowsRemoved, self._on_rows_removed),
+            (model.modelAboutToBeReset, self._on_model_about_to_reset),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        self._card_motion_model = None
+
+    def _card_motion_now_ms(self) -> float:
+        return time.monotonic() * 1000.0
+
+    def _normalize_motion_path(self, file_path: str) -> str:
+        return os.path.normcase(os.path.normpath(file_path)) if file_path else ""
+
+    def _motion_key_for_index(self, index: QModelIndex) -> str:
+        if not index.isValid():
+            return ""
+        model = index.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return ""
+        file_path = str(model.data(index, FileStagingPoolListModel.FilePathRole) or "")
+        return self._normalize_motion_path(file_path)
+
+    def _visible_row_window(self, extra_rows: int = 3) -> tuple[int, int]:
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return 0, -1
+
+        row_count = model.rowCount()
+        if row_count <= 0:
+            return 0, -1
+
+        row_height = max(1, self.gridSize().height() or model.item_size().height() + self.spacing())
+        scroll_value = self.verticalScrollBar().value() if self.verticalScrollBar() is not None else 0
+        first = max(0, int(scroll_value // row_height) - extra_rows)
+        last = min(row_count - 1, int((scroll_value + self.viewport().height()) // row_height) + extra_rows)
+        return first, last
+
+    def _snapshot_visible_item_rects(self, extra_rows: int = 3) -> Dict[str, QRect]:
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return {}
+
+        first, last = self._visible_row_window(extra_rows)
+        if last < first:
+            return {}
+
+        guard = self.viewport().rect().adjusted(0, -self.gridSize().height() * extra_rows, 0, self.gridSize().height() * extra_rows)
+        rects: Dict[str, QRect] = {}
+        for row in range(first, last + 1):
+            index = model.index(row, 0)
+            key = self._motion_key_for_index(index)
+            if not key:
+                continue
+            rect = self.visualRect(index)
+            if rect.isValid() and rect.intersects(guard):
+                rects[key] = QRect(rect)
+        return rects
+
+    def _slide_offset_for_rect(self, rect: QRect) -> int:
+        width = rect.width() if rect.isValid() else self.viewport().width()
+        return max(28, min(96, int(width * 0.18)))
+
+    def _ease_card_motion(self, progress: float, curve: str = "out_cubic") -> float:
+        t = max(0.0, min(1.0, float(progress)))
+        if curve == "in_cubic":
+            return t * t * t
+        if curve == "in_out_cubic":
+            if t < 0.5:
+                return 4.0 * t * t * t
+            return 1.0 - pow(-2.0 * t + 2.0, 3) / 2.0
+        if curve == "out_quint":
+            return 1.0 - pow(1.0 - t, 5)
+        return 1.0 - pow(1.0 - t, 3)
+
+    def _card_motion_progress(self, duration_ms: int = None) -> float:
+        if self._card_motion_start_ms <= 0.0:
+            return 1.0
+        duration = max(1.0, float(duration_ms or self._card_motion_duration_ms))
+        elapsed = self._card_motion_now_ms() - self._card_motion_start_ms
+        return max(0.0, min(1.0, elapsed / duration))
+
+    def _render_exit_pixmap(self, index: QModelIndex, source_rect: QRect) -> QPixmap:
+        if not index.isValid() or not source_rect.isValid() or source_rect.width() <= 0 or source_rect.height() <= 0:
+            return QPixmap()
+
+        viewport = self.viewport()
+        dpr = max(1.0, float(viewport.devicePixelRatioF()))
+        pixmap = QPixmap(max(1, int(source_rect.width() * dpr)), max(1, int(source_rect.height() * dpr)))
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.transparent)
+
+        option = QStyleOptionViewItem()
+        if hasattr(self, "initViewItemOption"):
+            self.initViewItemOption(option)
+        option.rect = QRect(0, 0, source_rect.width(), source_rect.height())
+        option.widget = viewport
+        option.state |= QStyle.State_Enabled
+
+        delegate = self.itemDelegateForIndex(index) or self.itemDelegate()
+        if delegate is None:
+            return pixmap
+
+        painter = QPainter(pixmap)
+        self._card_motion_capturing = True
+        try:
+            delegate.paint(painter, option, index)
+        finally:
+            self._card_motion_capturing = False
+            painter.end()
+        return pixmap
+
+    def _make_move_animation(self, start_rect: QRect, end_rect: QRect) -> Dict[str, Any]:
+        return {
+            "start_rect": QRect(start_rect),
+            "end_rect": QRect(end_rect),
+            "start_opacity": 1.0,
+            "end_opacity": 1.0,
+            "easing": "in_out_cubic",
+        }
+
+    def _make_enter_animation(self, end_rect: QRect) -> Dict[str, Any]:
+        start_rect = QRect(end_rect)
+        start_rect.translate(-self._slide_offset_for_rect(end_rect), 0)
+        return {
+            "start_rect": start_rect,
+            "end_rect": QRect(end_rect),
+            "start_opacity": 0.0,
+            "end_opacity": 1.0,
+            "easing": "out_quint",
+        }
+
+    def _start_card_motion(self) -> None:
+        if not self._card_motion_enabled or not self.isVisible():
+            self.cancel_card_motion(update=False)
+            return
+        if not self._card_motion_items and not self._card_motion_exit_items:
+            return
+        self._card_motion_start_ms = self._card_motion_now_ms()
+        if not self._card_motion_timer.isActive():
+            self._card_motion_timer.start()
+        self.viewport().update()
+
+    def cancel_card_motion(self, update: bool = True) -> None:
+        timer = getattr(self, "_card_motion_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._card_motion_items.clear()
+        self._card_motion_exit_items.clear()
+        self._card_motion_pending_insert_rects = {}
+        self._card_motion_pending_insert_keys.clear()
+        self._card_motion_insert_finalize_scheduled = False
+        self._card_motion_pending_removals.clear()
+        self._card_motion_start_ms = 0.0
+        if update and self.viewport() is not None:
+            self.viewport().update()
+
+    def _advance_card_motion(self) -> None:
+        if not self._card_motion_items and not self._card_motion_exit_items:
+            self.cancel_card_motion(update=False)
+            return
+
+        if self._card_motion_progress() >= 1.0:
+            self.cancel_card_motion(update=True)
+            return
+
+        self.viewport().update()
+
+    def card_motion_paint_parameters(self, index: QModelIndex, current_rect: QRect):
+        if self._card_motion_capturing or not self._card_motion_items:
+            return None
+
+        animation = self._card_motion_items.get(self._motion_key_for_index(index))
+        if not animation:
+            return None
+
+        progress = self._card_motion_progress()
+        eased = self._ease_card_motion(progress, animation.get("easing", "out_cubic"))
+        start_rect = animation["start_rect"]
+        end_rect = animation["end_rect"]
+        x = start_rect.x() + (end_rect.x() - start_rect.x()) * eased
+        y = start_rect.y() + (end_rect.y() - start_rect.y()) * eased
+        opacity = animation["start_opacity"] + (animation["end_opacity"] - animation["start_opacity"]) * eased
+        return {
+            "dx": int(round(x - current_rect.x())),
+            "dy": int(round(y - current_rect.y())),
+            "opacity": max(0.0, min(1.0, opacity)),
+        }
+
+    def _on_rows_about_to_be_inserted(self, _parent: QModelIndex, _first: int, _last: int) -> None:
+        if self._card_motion_insert_finalize_scheduled:
+            return
+        self.cancel_card_motion(update=False)
+        self._card_motion_pending_insert_rects = self._snapshot_visible_item_rects()
+
+    def _on_rows_inserted(self, _parent: QModelIndex, first: int, last: int) -> None:
+        model = self.model()
+        if isinstance(model, FileStagingPoolListModel):
+            for row in range(max(0, first), min(model.rowCount() - 1, last) + 1):
+                key = self._motion_key_for_index(model.index(row, 0))
+                if key:
+                    self._card_motion_pending_insert_keys.add(key)
+
+        if self._card_motion_insert_finalize_scheduled:
+            return
+
+        self._card_motion_insert_finalize_scheduled = True
+        QTimer.singleShot(0, self._finish_pending_insert_card_motion)
+
+    def _finish_pending_insert_card_motion(self) -> None:
+        old_rects = dict(self._card_motion_pending_insert_rects)
+        inserted_keys = set(self._card_motion_pending_insert_keys)
+        self._card_motion_pending_insert_rects = {}
+        self._card_motion_pending_insert_keys.clear()
+        self._card_motion_insert_finalize_scheduled = False
+
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return
+
+        animations: Dict[str, Dict[str, Any]] = {}
+        new_rects = self._snapshot_visible_item_rects()
+        for key, end_rect in new_rects.items():
+            if key in inserted_keys:
+                animations[key] = self._make_enter_animation(end_rect)
+                continue
+            start_rect = old_rects.get(key)
+            if start_rect is not None and start_rect != end_rect:
+                animations[key] = self._make_move_animation(start_rect, end_rect)
+
+        self._card_motion_items = animations
+        self._card_motion_exit_items = []
+        self._start_card_motion()
+
+    def _on_rows_about_to_be_removed(self, _parent: QModelIndex, first: int, last: int) -> None:
+        self.cancel_card_motion(update=False)
+
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return
+
+        old_rects = self._snapshot_visible_item_rects()
+        guard = self.viewport().rect().adjusted(0, -self.gridSize().height(), 0, self.gridSize().height())
+        exit_items = []
+        for row in range(max(0, first), min(model.rowCount() - 1, last) + 1):
+            index = model.index(row, 0)
+            rect = self.visualRect(index)
+            if not rect.isValid() or not rect.intersects(guard):
+                continue
+            pixmap = self._render_exit_pixmap(index, rect)
+            if not pixmap.isNull():
+                exit_items.append({
+                    "rect": QRect(rect),
+                    "pixmap": pixmap,
+                    "easing": "in_cubic",
+                })
+
+        self._card_motion_pending_removals.append({
+            "old_rects": old_rects,
+            "exit_items": exit_items,
+        })
+
+    def _on_rows_removed(self, _parent: QModelIndex, _first: int, _last: int) -> None:
+        pending = self._card_motion_pending_removals.pop(0) if self._card_motion_pending_removals else {"old_rects": {}, "exit_items": []}
+        QTimer.singleShot(0, lambda pending=pending: self._finish_remove_card_motion(pending))
+
+    def _finish_remove_card_motion(self, pending: Dict[str, Any]) -> None:
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return
+
+        animations: Dict[str, Dict[str, Any]] = {}
+        old_rects = pending.get("old_rects", {})
+        new_rects = self._snapshot_visible_item_rects()
+        for key, end_rect in new_rects.items():
+            start_rect = old_rects.get(key)
+            if start_rect is not None and start_rect != end_rect:
+                animations[key] = self._make_move_animation(start_rect, end_rect)
+
+        self._card_motion_items = animations
+        self._card_motion_exit_items = list(pending.get("exit_items", []))
+        self._start_card_motion()
+
+    def _on_model_about_to_reset(self) -> None:
+        self.cancel_card_motion(update=False)
+
+    def _paint_card_exit_overlays(self) -> None:
+        if self._card_motion_capturing or not self._card_motion_exit_items:
+            return
+
+        progress = self._card_motion_progress()
+        painter = QPainter(self.viewport())
+        try:
+            for item in self._card_motion_exit_items:
+                rect = item["rect"]
+                pixmap = item["pixmap"]
+                eased = self._ease_card_motion(progress, item.get("easing", "in_cubic"))
+                dx = -int(round(self._slide_offset_for_rect(rect) * eased))
+                opacity = max(0.0, min(1.0, 1.0 - self._ease_card_motion(progress, "out_cubic")))
+                if opacity <= 0.0:
+                    continue
+                painter.save()
+                painter.setOpacity(opacity)
+                painter.drawPixmap(rect.topLeft() + QPoint(dx, 0), pixmap)
+                painter.restore()
+        finally:
+            painter.end()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if getattr(self, "_path_transition_active", False) or getattr(self, "_path_transition_waiting_for_incoming", False):
+            return
+        self._paint_card_exit_overlays()
 
     def _sync_item_size(self) -> None:
         model = self.model()
@@ -674,8 +1028,14 @@ class FileStagingPoolListView(FileListView):
         self.setGridSize(QSize(width, height + self.spacing()))
 
     def resizeEvent(self, event) -> None:
+        self.cancel_card_motion(update=False)
         self._sync_item_size()
         super().resizeEvent(event)
+
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        if dx or dy:
+            self.cancel_card_motion(update=False)
+        super().scrollContentsBy(dx, dy)
 
     def mousePressEvent(self, event) -> None:
         event_pos = self._event_pos(event)
@@ -723,6 +1083,14 @@ class FileStagingPoolListView(FileListView):
             self._dispatch_action_delegate_event(QEvent(QEvent.Leave), pressed_index)
         self.viewport().unsetCursor()
         super().leaveEvent(event)
+
+    def hideEvent(self, event) -> None:
+        self.cancel_card_motion(update=False)
+        super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:
+        self.cancel_card_motion(update=False)
+        super().closeEvent(event)
 
     def refresh_icon(self, file_path: str) -> bool:
         model = self.model()

@@ -728,6 +728,31 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         )
         painter.restore()
 
+    def paint(self, painter, option, index):
+        motion_provider = self._view
+        if motion_provider is None and option.widget is not None:
+            motion_provider = option.widget.parent()
+
+        motion = None
+        if motion_provider is not None and hasattr(motion_provider, "card_motion_paint_parameters"):
+            try:
+                motion = motion_provider.card_motion_paint_parameters(index, option.rect)
+            except Exception as error:
+                debug(f"获取文件存储池卡片动画参数失败: {error}")
+
+        if not motion:
+            self._paint_card(painter, option, index, for_drag_preview=False)
+            return
+
+        adjusted_option = QStyleOptionViewItem(option)
+        adjusted_option.rect = option.rect.translated(int(motion.get("dx", 0)), int(motion.get("dy", 0)))
+        opacity = max(0.0, min(1.0, float(motion.get("opacity", 1.0))))
+
+        painter.save()
+        painter.setOpacity(opacity)
+        self._paint_card(painter, adjusted_option, index, for_drag_preview=False)
+        painter.restore()
+
     def sizeHint(self, option, index):
         model = index.model()
         if model:
