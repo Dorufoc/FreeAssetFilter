@@ -944,6 +944,7 @@ class FileListView(QListView):
     file_selection_changed = Signal(dict, bool)
     file_drag_started = Signal(dict)
     file_drag_ended = Signal(dict, str)
+    navigate_parent_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -967,6 +968,16 @@ class FileListView(QListView):
         self._defer_icon_loading_enter_velocity = 2600.0
         self._defer_icon_loading_exit_velocity = 1200.0
         self._defer_icon_loading_resume_delay_ms = 120
+        self._path_transition_enabled = True
+        self._path_transition_direction = 0
+        self._path_transition_duration_ms = 100
+        self._path_transition_progress = 1.0
+        self._path_transition_start_ms = 0.0
+        self._path_transition_outgoing_pixmap = QPixmap()
+        self._path_transition_incoming_pixmap = QPixmap()
+        self._path_transition_waiting_for_incoming = False
+        self._path_transition_active = False
+        self._path_transition_capturing_base = False
 
         self._long_press_timer = QTimer(self)
         self._long_press_timer.setSingleShot(True)
@@ -975,6 +986,10 @@ class FileListView(QListView):
         self._defer_icon_loading_timer = QTimer(self)
         self._defer_icon_loading_timer.setSingleShot(True)
         self._defer_icon_loading_timer.timeout.connect(self._resume_icon_loading)
+
+        self._path_transition_timer = QTimer(self)
+        self._path_transition_timer.setInterval(16)
+        self._path_transition_timer.timeout.connect(self._advance_path_transition)
 
         self._setup_view()
         self._load_interaction_settings()
@@ -1026,6 +1041,152 @@ class FileListView(QListView):
 
     def _get_monotonic_time_ms(self) -> float:
         return time.monotonic() * 1000.0
+
+    def _capture_viewport_snapshot(self) -> QPixmap:
+        viewport = self.viewport()
+        if viewport is None:
+            return QPixmap()
+
+        size = viewport.size()
+        if not size.isValid() or size.width() <= 0 or size.height() <= 0:
+            return QPixmap()
+
+        dpr = max(1.0, float(viewport.devicePixelRatioF()))
+        pixmap = QPixmap(max(1, int(size.width() * dpr)), max(1, int(size.height() * dpr)))
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.transparent)
+
+        self._path_transition_capturing_base = True
+        try:
+            viewport.render(pixmap)
+        finally:
+            self._path_transition_capturing_base = False
+
+        return pixmap
+
+    def _normalize_path_transition_direction(self, direction: int) -> int:
+        if direction > 0:
+            return 1
+        if direction < 0:
+            return -1
+        return 0
+
+    def begin_path_transition(self, direction: int) -> bool:
+        """
+        捕获当前卡片矩阵，等待新目录加载后执行整体平移/渐隐渐现。
+
+        该动画只缓存 viewport 快照并由单个计时器驱动，避免在每张卡片上创建动画对象。
+        """
+        if not self._path_transition_enabled or not self.isVisible():
+            return False
+
+        outgoing_pixmap = self._capture_viewport_snapshot()
+        if outgoing_pixmap.isNull():
+            return False
+
+        self.cancel_path_transition(update=False)
+        self._path_transition_direction = self._normalize_path_transition_direction(direction)
+        self._path_transition_outgoing_pixmap = outgoing_pixmap
+        self._path_transition_incoming_pixmap = QPixmap()
+        self._path_transition_waiting_for_incoming = True
+        self._path_transition_active = False
+        self._path_transition_progress = 0.0
+        self.viewport().update()
+        return True
+
+    def finish_path_transition(self, direction: int = None) -> bool:
+        if not self._path_transition_enabled:
+            self.cancel_path_transition()
+            return False
+
+        if direction is not None:
+            self._path_transition_direction = self._normalize_path_transition_direction(direction)
+
+        incoming_pixmap = self._capture_viewport_snapshot()
+        if incoming_pixmap.isNull():
+            self.cancel_path_transition()
+            return False
+
+        if self._path_transition_outgoing_pixmap.isNull():
+            self._path_transition_outgoing_pixmap = incoming_pixmap
+
+        self._path_transition_incoming_pixmap = incoming_pixmap
+        self._path_transition_waiting_for_incoming = False
+        self._path_transition_active = True
+        self._path_transition_progress = 0.0
+        self._path_transition_start_ms = self._get_monotonic_time_ms()
+        self._path_transition_timer.start()
+        self.viewport().update()
+        return True
+
+    def cancel_path_transition(self, update: bool = True) -> None:
+        self._path_transition_timer.stop()
+        self._path_transition_active = False
+        self._path_transition_waiting_for_incoming = False
+        self._path_transition_progress = 1.0
+        self._path_transition_outgoing_pixmap = QPixmap()
+        self._path_transition_incoming_pixmap = QPixmap()
+        if update:
+            self.viewport().update()
+
+    def _advance_path_transition(self, now_ms: float = None) -> None:
+        if not self._path_transition_active:
+            self._path_transition_timer.stop()
+            return
+
+        current_time_ms = self._get_monotonic_time_ms() if now_ms is None else float(now_ms)
+        elapsed_ms = max(0.0, current_time_ms - self._path_transition_start_ms)
+        progress = elapsed_ms / max(1.0, float(self._path_transition_duration_ms))
+
+        if progress >= 1.0:
+            self.cancel_path_transition()
+            return
+
+        self._path_transition_progress = max(0.0, min(1.0, progress))
+        self.viewport().update()
+
+    def _ease_path_transition(self, progress: float) -> float:
+        progress = max(0.0, min(1.0, float(progress)))
+        return 1.0 - pow(1.0 - progress, 3)
+
+    def _path_transition_offset(self) -> int:
+        width = self.viewport().width()
+        if width <= 0:
+            return 0
+        return max(24, min(96, int(width * 0.08)))
+
+    def _draw_transition_pixmap(self, painter: QPainter, pixmap: QPixmap, dx: int, opacity: float) -> None:
+        if pixmap.isNull() or opacity <= 0.0:
+            return
+
+        painter.save()
+        painter.setOpacity(max(0.0, min(1.0, float(opacity))))
+        painter.drawPixmap(int(dx), 0, pixmap)
+        painter.restore()
+
+    def _paint_path_transition(self) -> None:
+        painter = QPainter(self.viewport())
+        try:
+            painter.fillRect(self.viewport().rect(), self.viewport().palette().color(QPalette.Base))
+
+            if self._path_transition_waiting_for_incoming:
+                self._draw_transition_pixmap(painter, self._path_transition_outgoing_pixmap, 0, 1.0)
+                return
+
+            direction = self._path_transition_direction
+            progress = max(0.0, min(1.0, self._path_transition_progress))
+            eased = self._ease_path_transition(progress)
+            offset = self._path_transition_offset()
+
+            outgoing_dx = int(-direction * offset * eased) if direction else 0
+            incoming_dx = int(direction * offset * (1.0 - eased)) if direction else 0
+            outgoing_opacity = max(0.0, 1.0 - progress * 1.12)
+            incoming_opacity = min(1.0, progress * 1.18)
+
+            self._draw_transition_pixmap(painter, self._path_transition_outgoing_pixmap, outgoing_dx, outgoing_opacity)
+            self._draw_transition_pixmap(painter, self._path_transition_incoming_pixmap, incoming_dx, incoming_opacity)
+        finally:
+            painter.end()
 
     def _set_deferred_icon_loading(self, active: bool) -> None:
         active = bool(active)
@@ -1082,6 +1243,23 @@ class FileListView(QListView):
         super().setHorizontalScrollBar(scrollbar)
         self.configure_scrollbar_tracking()
 
+    def paintEvent(self, event) -> None:
+        if self._path_transition_capturing_base:
+            super().paintEvent(event)
+            return
+
+        if self._path_transition_active or self._path_transition_waiting_for_incoming:
+            self._paint_path_transition()
+            event.accept()
+            return
+
+        super().paintEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        if self._path_transition_active:
+            self.cancel_path_transition(update=False)
+        super().resizeEvent(event)
+
     def _on_scrollbar_slider_pressed(self) -> None:
         scrollbar = self.sender()
         self._scrollbar_drag_active = True
@@ -1131,6 +1309,14 @@ class FileListView(QListView):
         if button == Qt.RightButton:
             return Qt.LeftButton if self._mouse_buttons_swapped else Qt.RightButton
         return button
+
+    @staticmethod
+    def _is_back_navigation_button(button) -> bool:
+        for button_name in ("BackButton", "XButton1", "ExtraButton1"):
+            back_button = getattr(Qt, button_name, None)
+            if back_button is not None and button == back_button:
+                return True
+        return False
 
     def _sync_single_selection(self, index: QModelIndex, file_info: Dict[str, Any]) -> None:
         model = self.model()
@@ -1343,6 +1529,12 @@ class FileListView(QListView):
         self._cleanup_press_state()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self._is_back_navigation_button(event.button()):
+            self._cleanup_press_state()
+            self.navigate_parent_requested.emit()
+            event.accept()
+            return
+
         index = self.indexAt(event.pos())
         logical_button = self._current_action_button(event.button())
 
@@ -1472,10 +1664,12 @@ class FileListView(QListView):
         event.accept()
 
     def hideEvent(self, event) -> None:
+        self.cancel_path_transition(update=False)
         self._cleanup_drag_state()
         super().hideEvent(event)
 
     def closeEvent(self, event) -> None:
+        self.cancel_path_transition(update=False)
         self._cleanup_drag_state()
         super().closeEvent(event)
 

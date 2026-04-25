@@ -381,6 +381,8 @@ class CustomFileSelector(QWidget):
         self._refresh_request_id = 0
         self._cached_local_drives = []
         self._cached_network_locations = []
+        self._pending_path_transition_direction = 0
+        self._pending_path_transition_token = 0
         
         # 首次显示标志位，用于避免初始化时卡片重叠
         self._first_show = True
@@ -750,6 +752,7 @@ class CustomFileSelector(QWidget):
         self.files_scroll_area.file_selection_changed.connect(self._handle_card_selection_changed_signal)
         self.files_scroll_area.file_drag_started.connect(self._on_card_drag_started)
         self.files_scroll_area.file_drag_ended.connect(self._on_card_drag_ended)
+        self.files_scroll_area.navigate_parent_requested.connect(self.go_to_parent)
         
         # 安装事件过滤器
         self.files_scroll_area.viewport().installEventFilter(self)
@@ -1675,8 +1678,11 @@ class CustomFileSelector(QWidget):
         """
         跳转到上次退出时的目录
         """
+        previous_path = self.current_path
         self.load_last_path()
-        self.refresh_files()
+        target_path = self.current_path
+        self.current_path = previous_path
+        self._navigate_to_path(target_path)
 
     def _is_valid_selector_path(self, path):
         if path == "All":
@@ -1709,6 +1715,7 @@ class CustomFileSelector(QWidget):
         self.save_current_path(path=recovery_path)
 
     def _navigate_to_path(self, target_path, callback=None, scroll_to_top=True, update_path_edit=True):
+        self._begin_files_path_transition(target_path)
         self._remember_navigation_source(target_path)
         self.current_path = target_path
 
@@ -2052,6 +2059,7 @@ class CustomFileSelector(QWidget):
             self._file_loader_thread.start()
         except Exception as e:
             self._is_loading = False
+            self._cancel_files_path_transition()
             error(f"刷新文件列表失败: {e}")
 
     def _on_files_loaded(self, request_id, loaded_path, files, callback, scroll_to_top):
@@ -2077,7 +2085,9 @@ class CustomFileSelector(QWidget):
 
             if callback:
                 callback()
+            self._finish_files_path_transition()
         except Exception as e:
+            self._cancel_files_path_transition()
             error(f"应用文件列表失败: {e}")
 
     def _on_files_load_failed(self, request_id, failed_path, message):
@@ -2085,6 +2095,7 @@ class CustomFileSelector(QWidget):
             return
 
         self._is_loading = False
+        self._cancel_files_path_transition()
         error(f"读取目录失败: {message}")
 
         allow_elevated_restart = sys.platform == 'win32' and self._looks_like_permission_denied(message)
@@ -2144,6 +2155,95 @@ class CustomFileSelector(QWidget):
             return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
         except (TypeError, ValueError):
             return False
+
+    def _is_descendant_selector_path(self, candidate_path, base_path):
+        if not candidate_path or not base_path or candidate_path == "All" or base_path == "All":
+            return False
+
+        try:
+            candidate = os.path.normcase(os.path.normpath(candidate_path))
+            base = os.path.normcase(os.path.normpath(base_path))
+            if candidate == base:
+                return False
+            return os.path.commonpath([candidate, base]) == base
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _infer_navigation_direction(self, source_path, target_path):
+        if self._same_selector_path(source_path, target_path):
+            return 0
+        if source_path == "All" and target_path != "All":
+            return 1
+        if target_path == "All":
+            return -1
+        if self._is_descendant_selector_path(target_path, source_path):
+            return 1
+        if self._is_descendant_selector_path(source_path, target_path):
+            return -1
+        return 1
+
+    def _begin_files_path_transition(self, target_path):
+        self._pending_path_transition_direction = 0
+
+        list_view = getattr(self, "files_scroll_area", None)
+        if not list_view or not hasattr(list_view, "begin_path_transition"):
+            return
+
+        direction = self._infer_navigation_direction(getattr(self, "current_path", "All"), target_path)
+        if direction == 0:
+            return
+
+        try:
+            if list_view.begin_path_transition(direction):
+                self._pending_path_transition_direction = direction
+                self._pending_path_transition_token += 1
+        except Exception as transition_error:
+            debug(f"启动文件选择器路径切换动画失败: {transition_error}")
+
+    def _finish_files_path_transition(self):
+        direction = getattr(self, "_pending_path_transition_direction", 0)
+        if direction == 0:
+            return
+
+        self._pending_path_transition_direction = 0
+        list_view = getattr(self, "files_scroll_area", None)
+        if not list_view or not hasattr(list_view, "finish_path_transition"):
+            return
+
+        try:
+            token = getattr(self, "_pending_path_transition_token", 0)
+            list_view.doItemsLayout()
+            list_view.viewport().update()
+            QTimer.singleShot(0, lambda: self._finish_files_path_transition_deferred(token, direction))
+        except Exception as transition_error:
+            debug(f"完成文件选择器路径切换动画失败: {transition_error}")
+
+    def _finish_files_path_transition_deferred(self, token, direction):
+        if direction == 0:
+            return
+
+        if token != getattr(self, "_pending_path_transition_token", 0):
+            return
+
+        list_view = getattr(self, "files_scroll_area", None)
+        if not list_view or not hasattr(list_view, "finish_path_transition"):
+            return
+
+        try:
+            list_view.doItemsLayout()
+            list_view.finish_path_transition(direction)
+        except Exception as transition_error:
+            debug(f"延迟完成文件选择器路径切换动画失败: {transition_error}")
+
+    def _cancel_files_path_transition(self):
+        self._pending_path_transition_direction = 0
+        self._pending_path_transition_token += 1
+        list_view = getattr(self, "files_scroll_area", None)
+        if list_view and hasattr(list_view, "cancel_path_transition"):
+            try:
+                list_view.cancel_path_transition()
+            except Exception as transition_error:
+                debug(f"取消文件选择器路径切换动画失败: {transition_error}")
 
     def _get_directory_load_failure_recovery_path(self, failed_path):
         recovery_path = (
@@ -2546,11 +2646,19 @@ class CustomFileSelector(QWidget):
         处理鼠标硬件按钮事件
         """
         if event.type() == QEvent.MouseButtonPress:
-            if event.button() == Qt.BackButton:
+            if self._is_back_navigation_button(event.button()):
                 # 鼠标后退按钮事件 - 返回上级文件夹
                 self.go_to_parent()
                 return True
         return super().event(event)
+
+    @staticmethod
+    def _is_back_navigation_button(button):
+        for button_name in ("BackButton", "XButton1", "ExtraButton1"):
+            back_button = getattr(Qt, button_name, None)
+            if back_button is not None and button == back_button:
+                return True
+        return False
     
     def _on_card_drag_started(self, file_info):
         """

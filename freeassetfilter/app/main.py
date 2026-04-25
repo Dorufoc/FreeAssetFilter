@@ -1770,7 +1770,6 @@ class FreeAssetFilterApp(QMainWindow):
         """
         if hasattr(self, 'file_selector_a') and self.file_selector_a:
             path = os.path.normpath(path)
-            self.file_selector_a.current_path = path
 
             def on_files_refreshed():
                 if file_info:
@@ -1780,7 +1779,11 @@ class FreeAssetFilterApp(QMainWindow):
                 if file_info:
                     self.file_selector_a.scroll_to_file(file_info)
 
-            self.file_selector_a.refresh_files(callback=on_files_refreshed, scroll_to_top=not file_info)
+            self.file_selector_a._navigate_to_path(
+                path,
+                callback=on_files_refreshed,
+                scroll_to_top=not file_info,
+            )
 
     def handle_file_added_to_pool(self, file_info):
         """
