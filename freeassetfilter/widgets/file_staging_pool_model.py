@@ -574,6 +574,7 @@ class FileStagingPoolListView(FileListView):
         self._card_motion_capturing = False
         self._card_motion_enabled = True
         self._card_motion_duration_ms = 105
+        self._card_motion_last_update_rect = QRect()
         super().__init__(parent)
         self._card_motion_timer = QTimer(self)
         self._card_motion_timer.setInterval(16)
@@ -816,6 +817,60 @@ class FileStagingPoolListView(FileListView):
         elapsed = self._card_motion_now_ms() - self._card_motion_start_ms
         return max(0.0, min(1.0, elapsed / duration))
 
+    def _card_motion_bounds_for_rects(self, start_rect: QRect, end_rect: QRect) -> QRect:
+        if not start_rect.isValid() and not end_rect.isValid():
+            return QRect()
+        if not start_rect.isValid():
+            bounds = QRect(end_rect)
+        elif not end_rect.isValid():
+            bounds = QRect(start_rect)
+        else:
+            bounds = QRect(start_rect).united(end_rect)
+
+        # Card shadows can extend outside the item rect; include that edge so
+        # dirty-region repainting does not leave stale pixels during motion.
+        return bounds.adjusted(-24, -24, 24, 24)
+
+    def _card_motion_update_rect(self) -> QRect:
+        update_rect = QRect()
+        for animation in self._card_motion_items.values():
+            bounds = self._card_motion_bounds_for_rects(
+                animation.get("start_rect", QRect()),
+                animation.get("end_rect", QRect()),
+            )
+            if bounds.isValid():
+                update_rect = bounds if update_rect.isNull() else update_rect.united(bounds)
+
+        for item in self._card_motion_exit_items:
+            start_rect = item.get("rect", QRect())
+            if not start_rect.isValid():
+                continue
+            end_rect = QRect(start_rect)
+            end_rect.translate(-self._slide_offset_for_rect(start_rect), 0)
+            bounds = self._card_motion_bounds_for_rects(start_rect, end_rect)
+            if bounds.isValid():
+                update_rect = bounds if update_rect.isNull() else update_rect.united(bounds)
+
+        viewport = self.viewport()
+        if viewport is None or update_rect.isNull():
+            return update_rect
+        return update_rect.intersected(viewport.rect())
+
+    def _request_card_motion_repaint(self) -> None:
+        viewport = self.viewport()
+        if viewport is None:
+            return
+
+        current_rect = self._card_motion_update_rect()
+        if current_rect.isNull():
+            current_rect = viewport.rect()
+
+        update_rect = QRect(current_rect)
+        if self._card_motion_last_update_rect.isValid():
+            update_rect = update_rect.united(self._card_motion_last_update_rect)
+        self._card_motion_last_update_rect = QRect(current_rect)
+        viewport.update(update_rect.intersected(viewport.rect()))
+
     def _render_exit_pixmap(self, index: QModelIndex, source_rect: QRect) -> QPixmap:
         if not index.isValid() or not source_rect.isValid() or source_rect.width() <= 0 or source_rect.height() <= 0:
             return QPixmap()
@@ -876,7 +931,8 @@ class FileStagingPoolListView(FileListView):
         self._card_motion_start_ms = self._card_motion_now_ms()
         if not self._card_motion_timer.isActive():
             self._card_motion_timer.start()
-        self.viewport().update()
+        self._card_motion_last_update_rect = QRect()
+        self._request_card_motion_repaint()
 
     def cancel_card_motion(self, update: bool = True) -> None:
         timer = getattr(self, "_card_motion_timer", None)
@@ -892,7 +948,11 @@ class FileStagingPoolListView(FileListView):
         self._card_motion_manual_finalize_active = False
         self._card_motion_start_ms = 0.0
         if update and self.viewport() is not None:
-            self.viewport().update()
+            update_rect = self._card_motion_last_update_rect
+            self._card_motion_last_update_rect = QRect()
+            self.viewport().update(update_rect if update_rect.isValid() else self.viewport().rect())
+        else:
+            self._card_motion_last_update_rect = QRect()
 
     def _advance_card_motion(self) -> None:
         if not self._card_motion_items and not self._card_motion_exit_items:
@@ -903,7 +963,7 @@ class FileStagingPoolListView(FileListView):
             self.cancel_card_motion(update=True)
             return
 
-        self.viewport().update()
+        self._request_card_motion_repaint()
 
     def card_motion_paint_parameters(self, index: QModelIndex, current_rect: QRect):
         if self._card_motion_capturing or not self._card_motion_items:
@@ -1028,7 +1088,10 @@ class FileStagingPoolListView(FileListView):
             grid_height = self.gridSize().height()
             removed_span_height = max(1, grid_height or int((last - first + 1) * (self.spacing() + 1)))
 
-        for row in range(max(0, last + 1), model.rowCount()):
+        first_visible, last_visible = self._visible_row_window(extra_rows=1)
+        move_first = max(0, last + 1, first_visible)
+        move_last = min(model.rowCount() - 1, last_visible)
+        for row in range(move_first, move_last + 1):
             index = model.index(row, 0)
             key = self._motion_key_for_index(index)
             start_rect = old_rects.get(key)
