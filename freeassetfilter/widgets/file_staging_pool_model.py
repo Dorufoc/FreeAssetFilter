@@ -21,6 +21,7 @@ class FileStagingPoolListModel(FileSelectorListModel):
     InfoTextRole = SizeCalculatingRole + 1
     ItemHeightRole = InfoTextRole + 1
     ItemSizeRole = ItemHeightRole + 1
+    IsRemovingRole = ItemSizeRole + 1
 
     def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
         super().__init__(dpi_scale=dpi_scale, global_font=global_font, parent=parent)
@@ -121,6 +122,7 @@ class FileStagingPoolListModel(FileSelectorListModel):
         prepared["suffix"] = self._extract_suffix(prepared)
         prepared["is_selected"] = False
         prepared["is_previewing"] = bool(prepared.get("is_previewing", False))
+        prepared["is_removing"] = bool(prepared.get("is_removing", False))
 
         if "is_missing" in file_info:
             prepared["is_missing"] = bool(file_info.get("is_missing", False))
@@ -209,6 +211,8 @@ class FileStagingPoolListModel(FileSelectorListModel):
             return self._card_height
         if role == self.ItemSizeRole:
             return self.item_size()
+        if role == self.IsRemovingRole:
+            return bool(file_info.get("is_removing", False))
         return super().data(index, role)
 
     def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:
@@ -223,10 +227,14 @@ class FileStagingPoolListModel(FileSelectorListModel):
             return self.update_file(path, {"is_missing": bool(value)})
         if role == self.SizeCalculatingRole:
             return self.update_file(path, {"size_calculating": bool(value)})
+        if role == self.IsRemovingRole:
+            return self.update_file(path, {"is_removing": bool(value)})
         return super().setData(index, value, role)
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlags:
         if not index.isValid():
+            return Qt.NoItemFlags
+        if bool(index.data(self.IsRemovingRole)):
             return Qt.NoItemFlags
         return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled
 
@@ -241,6 +249,7 @@ class FileStagingPoolListModel(FileSelectorListModel):
             self.InfoTextRole: b"infoText",
             self.ItemHeightRole: b"itemHeight",
             self.ItemSizeRole: b"itemSize",
+            self.IsRemovingRole: b"isRemoving",
         })
         return roles
 
@@ -304,6 +313,18 @@ class FileStagingPoolListModel(FileSelectorListModel):
         return added
 
     def remove_file(self, file_path: str) -> Dict[str, Any]:
+        row = self.get_row(file_path)
+        if row < 0:
+            return {}
+        if self._files[row].get("is_removing", False):
+            return {}
+        self._files[row]["is_removing"] = True
+        removed_info = self._files[row].copy()
+        idx = self.index(row, 0)
+        self.dataChanged.emit(idx, idx, [self.IsRemovingRole])
+        return removed_info
+
+    def finalize_remove_file(self, file_path: str) -> Dict[str, Any]:
         row = self.get_row(file_path)
         if row < 0:
             return {}
@@ -546,10 +567,12 @@ class FileStagingPoolListView(FileListView):
         self._card_motion_pending_insert_keys = set()
         self._card_motion_insert_finalize_scheduled = False
         self._card_motion_pending_removals: List[Dict[str, Any]] = []
+        self._card_motion_pending_finalize_keys = set()
+        self._card_motion_manual_finalize_active = False
         self._card_motion_start_ms = 0.0
         self._card_motion_capturing = False
         self._card_motion_enabled = True
-        self._card_motion_duration_ms = 210
+        self._card_motion_duration_ms = 105
         super().__init__(parent)
         self._card_motion_timer = QTimer(self)
         self._card_motion_timer.setInterval(16)
@@ -692,6 +715,7 @@ class FileStagingPoolListView(FileListView):
         model.rowsInserted.connect(self._on_rows_inserted)
         model.rowsAboutToBeRemoved.connect(self._on_rows_about_to_be_removed)
         model.rowsRemoved.connect(self._on_rows_removed)
+        model.dataChanged.connect(self._on_model_data_changed)
         model.modelAboutToBeReset.connect(self._on_model_about_to_reset)
 
     def _disconnect_card_motion_model(self) -> None:
@@ -704,6 +728,7 @@ class FileStagingPoolListView(FileListView):
             (model.rowsInserted, self._on_rows_inserted),
             (model.rowsAboutToBeRemoved, self._on_rows_about_to_be_removed),
             (model.rowsRemoved, self._on_rows_removed),
+            (model.dataChanged, self._on_model_data_changed),
             (model.modelAboutToBeReset, self._on_model_about_to_reset),
         ):
             try:
@@ -857,6 +882,8 @@ class FileStagingPoolListView(FileListView):
         self._card_motion_pending_insert_keys.clear()
         self._card_motion_insert_finalize_scheduled = False
         self._card_motion_pending_removals.clear()
+        self._card_motion_pending_finalize_keys.clear()
+        self._card_motion_manual_finalize_active = False
         self._card_motion_start_ms = 0.0
         if update and self.viewport() is not None:
             self.viewport().update()
@@ -939,20 +966,41 @@ class FileStagingPoolListView(FileListView):
         self._start_card_motion()
 
     def _on_rows_about_to_be_removed(self, _parent: QModelIndex, first: int, last: int) -> None:
+        if self._card_motion_manual_finalize_active:
+            return
+
         self.cancel_card_motion(update=False)
+        self._card_motion_pending_removals.append(
+            self._build_remove_card_motion_pending(first, last, capture_exit=True)
+        )
+
+    def _build_remove_card_motion_pending(self, first: int, last: int, capture_exit: bool) -> Dict[str, Any]:
+        pending = {
+            "old_rects": {},
+            "exit_items": [],
+            "move_items": {},
+        }
 
         model = self.model()
         if not isinstance(model, FileStagingPoolListModel):
-            return
+            return pending
 
         old_rects = self._snapshot_visible_item_rects()
         guard = self.viewport().rect().adjusted(0, -self.gridSize().height(), 0, self.gridSize().height())
         exit_items = []
+        removed_span_height = 0
+        move_items: Dict[str, Dict[str, QRect]] = {}
         for row in range(max(0, first), min(model.rowCount() - 1, last) + 1):
             index = model.index(row, 0)
+            if capture_exit is False or bool(model.data(index, FileStagingPoolListModel.IsRemovingRole)):
+                rect = self.visualRect(index)
+                if rect.isValid():
+                    removed_span_height += max(1, rect.height() + self.spacing())
+                continue
             rect = self.visualRect(index)
             if not rect.isValid() or not rect.intersects(guard):
                 continue
+            removed_span_height += max(1, rect.height() + self.spacing())
             pixmap = self._render_exit_pixmap(index, rect)
             if not pixmap.isNull():
                 exit_items.append({
@@ -961,14 +1009,39 @@ class FileStagingPoolListView(FileListView):
                     "easing": "in_cubic",
                 })
 
-        self._card_motion_pending_removals.append({
+        if removed_span_height <= 0:
+            grid_height = self.gridSize().height()
+            removed_span_height = max(1, grid_height or int((last - first + 1) * (self.spacing() + 1)))
+
+        for row in range(max(0, last + 1), model.rowCount()):
+            index = model.index(row, 0)
+            key = self._motion_key_for_index(index)
+            start_rect = old_rects.get(key)
+            if start_rect is None:
+                start_rect = QRect(self.visualRect(index))
+            if not key or start_rect is None or not start_rect.isValid() or not start_rect.intersects(guard):
+                continue
+            end_rect = QRect(start_rect)
+            end_rect.translate(0, -removed_span_height)
+            move_items[key] = {
+                "start_rect": QRect(start_rect),
+                "end_rect": end_rect,
+            }
+
+        pending = {
             "old_rects": old_rects,
             "exit_items": exit_items,
-        })
+            "move_items": move_items,
+        }
+        return pending
 
     def _on_rows_removed(self, _parent: QModelIndex, _first: int, _last: int) -> None:
+        if self._card_motion_manual_finalize_active:
+            return
+
         pending = self._card_motion_pending_removals.pop(0) if self._card_motion_pending_removals else {"old_rects": {}, "exit_items": []}
-        QTimer.singleShot(0, lambda pending=pending: self._finish_remove_card_motion(pending))
+        self.doItemsLayout()
+        self._finish_remove_card_motion(pending)
 
     def _finish_remove_card_motion(self, pending: Dict[str, Any]) -> None:
         model = self.model()
@@ -976,9 +1049,18 @@ class FileStagingPoolListView(FileListView):
             return
 
         animations: Dict[str, Dict[str, Any]] = {}
+        move_items = pending.get("move_items", {})
+        for key, rects in move_items.items():
+            start_rect = rects.get("start_rect")
+            end_rect = rects.get("end_rect")
+            if start_rect is not None and end_rect is not None and start_rect != end_rect:
+                animations[key] = self._make_move_animation(start_rect, end_rect)
+
         old_rects = pending.get("old_rects", {})
         new_rects = self._snapshot_visible_item_rects()
         for key, end_rect in new_rects.items():
+            if key in animations:
+                continue
             start_rect = old_rects.get(key)
             if start_rect is not None and start_rect != end_rect:
                 animations[key] = self._make_move_animation(start_rect, end_rect)
@@ -986,6 +1068,71 @@ class FileStagingPoolListView(FileListView):
         self._card_motion_items = animations
         self._card_motion_exit_items = list(pending.get("exit_items", []))
         self._start_card_motion()
+
+    def _make_exit_animation(self, start_rect: QRect) -> Dict[str, Any]:
+        end_rect = QRect(start_rect)
+        end_rect.translate(-self._slide_offset_for_rect(start_rect), 0)
+        return {
+            "start_rect": QRect(start_rect),
+            "end_rect": end_rect,
+            "start_opacity": 1.0,
+            "end_opacity": 0.0,
+            "easing": "in_cubic",
+        }
+
+    def _on_model_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles=None) -> None:
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return
+
+        if roles and FileStagingPoolListModel.IsRemovingRole not in roles:
+            return
+
+        animations = dict(self._card_motion_items)
+        needs_motion = False
+        for row in range(top_left.row(), bottom_right.row() + 1):
+            index = model.index(row, 0)
+            if not index.isValid() or not bool(model.data(index, FileStagingPoolListModel.IsRemovingRole)):
+                continue
+
+            key = self._motion_key_for_index(index)
+            if not key or key in self._card_motion_pending_finalize_keys:
+                continue
+
+            rect = self.visualRect(index)
+            if rect.isValid():
+                animations[key] = self._make_exit_animation(rect)
+                needs_motion = True
+            self._card_motion_pending_finalize_keys.add(key)
+            file_path = str(model.data(index, FileStagingPoolListModel.FilePathRole) or "")
+            QTimer.singleShot(
+                self._card_motion_duration_ms,
+                lambda path=file_path, key=key: self._finalize_marked_removal(path, key),
+            )
+
+        if needs_motion:
+            self._card_motion_items = animations
+            self._card_motion_exit_items = []
+            self._start_card_motion()
+
+    def _finalize_marked_removal(self, file_path: str, key: str) -> None:
+        self._card_motion_pending_finalize_keys.discard(key)
+        model = self.model()
+        if not isinstance(model, FileStagingPoolListModel):
+            return
+
+        row = model.get_row(file_path)
+        if row < 0:
+            return
+
+        pending = self._build_remove_card_motion_pending(row, row, capture_exit=False)
+        self._card_motion_manual_finalize_active = True
+        try:
+            model.finalize_remove_file(file_path)
+        finally:
+            self._card_motion_manual_finalize_active = False
+        self.doItemsLayout()
+        self._finish_remove_card_motion(pending)
 
     def _on_model_about_to_reset(self) -> None:
         self.cancel_card_motion(update=False)

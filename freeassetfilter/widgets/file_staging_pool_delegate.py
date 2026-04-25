@@ -214,6 +214,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
             "is_selected": model.data(index, FileStagingPoolListModel.IsSelectedRole) or False,
             "is_previewing": model.data(index, FileStagingPoolListModel.IsPreviewingRole) or False,
             "is_missing": model.data(index, FileStagingPoolListModel.IsMissingRole) or False,
+            "is_removing": model.data(index, FileStagingPoolListModel.IsRemovingRole) or False,
             "size_calculating": model.data(index, FileStagingPoolListModel.SizeCalculatingRole) or False,
             "info_text": model.data(index, FileStagingPoolListModel.InfoTextRole) or "",
             "icon_pixmap": model.data(index, FileStagingPoolListModel.IconPixmapRole),
@@ -449,6 +450,8 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
 
         file_info = self._get_file_info(index)
         if not file_info:
+            return False
+        if file_info.get("is_removing", False):
             return False
 
         file_path = self._normalize_path(file_info.get("path", ""))

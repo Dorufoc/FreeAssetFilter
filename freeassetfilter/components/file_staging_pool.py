@@ -336,7 +336,11 @@ class FileStagingPool(QWidget):
         """
         从模型同步当前文件列表，保持对外 items 接口兼容。
         """
-        self.items = [file_info.copy() for file_info in self.pool_model._files]
+        self.items = [
+            file_info.copy()
+            for file_info in self.pool_model._files
+            if not file_info.get("is_removing", False)
+        ]
 
     def refresh_interaction_settings(self):
         """
