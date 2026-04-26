@@ -163,7 +163,7 @@ class FileStagingPoolListModel(FileSelectorListModel):
         if row < 0 or row >= len(self._files):
             return
         idx = self.index(row, 0)
-        self.dataChanged.emit(idx, idx, roles or [Qt.DisplayRole, Qt.DecorationRole, Qt.SizeHintRole, Qt.ToolTipRole, self.IsSelectedRole, self.IsPreviewingRole, self.IsMissingRole, self.InfoTextRole, self.DisplayNameRole])
+        self.dataChanged.emit(idx, idx, roles or [Qt.DisplayRole, Qt.DecorationRole, Qt.SizeHintRole, self.IsSelectedRole, self.IsPreviewingRole, self.IsMissingRole, self.InfoTextRole, self.DisplayNameRole])
 
     def _resolve_icon_source(self, file_info: Dict[str, Any]):
         file_path = str(file_info.get("path", "") or "")
@@ -192,10 +192,6 @@ class FileStagingPoolListModel(FileSelectorListModel):
             return self._get_icon_pixmap(file_info)
         if role == Qt.SizeHintRole:
             return self.item_size()
-        if role == Qt.ToolTipRole:
-            display_name = self._visible_display_name(file_info)
-            info_text = str(file_info.get("info_text", "") or file_info.get("path", "") or "")
-            return f"{display_name}\n{info_text}" if info_text and info_text != display_name else display_name
         if role == self.DisplayNameRole:
             return str(file_info.get("display_name", "") or "")
         if role == self.OriginalNameRole:

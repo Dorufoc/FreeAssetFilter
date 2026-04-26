@@ -757,6 +757,8 @@ class CustomFileSelector(QWidget):
         # 安装事件过滤器
         self.files_scroll_area.viewport().installEventFilter(self)
         self.files_scroll_area.installEventFilter(self)
+        self.hover_tooltip.set_target_widget(self.files_scroll_area)
+        self.hover_tooltip.set_target_widget(self.files_scroll_area.viewport())
 
         return self.files_scroll_area
     

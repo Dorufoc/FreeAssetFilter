@@ -34,6 +34,7 @@ from PySide6.QtGui import (
 
 from .D_hover_menu import D_HoverMenu
 from .button_widgets import CustomButton
+from .hover_tooltip import HoverTooltip
 from .smooth_scroller import D_ScrollBar, SmoothScroller
 from freeassetfilter.utils.app_logger import debug
 
@@ -157,9 +158,7 @@ class _DropdownMenuItem(QPushButton):
         self.setEnabled(self._enabled_state)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        tooltip = str(item_info.get("tooltip", "") or "")
-        if tooltip:
-            self.setToolTip(tooltip)
+        self._tooltip_text = str(item_info.get("tooltip", "") or "")
 
         self.clicked.connect(self._emit_clicked_with_index)
         self._apply_stylesheet()
@@ -278,6 +277,7 @@ class _DropdownMenuList(QWidget):
 
         self._items: List[Dict[str, Any]] = []
         self._item_widgets: List[_DropdownMenuItem] = []
+        self._hover_tooltip = HoverTooltip(self)
         self._current_index = -1
         self._fixed_width: Optional[int] = None
         self._max_visible_items = 6
@@ -373,6 +373,8 @@ class _DropdownMenuList(QWidget):
             item_widget.clickedWithIndex.connect(self.itemClicked.emit)
             self.content_layout.addWidget(item_widget)
             self._item_widgets.append(item_widget)
+            if item_widget._tooltip_text:
+                self._hover_tooltip.set_target_widget(item_widget)
 
         if self._item_widgets:
             self.set_current_index(0)

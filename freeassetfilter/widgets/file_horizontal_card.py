@@ -223,6 +223,7 @@ class CustomFileHorizontalCard(QWidget):
         self._is_dragging = False
         self._drag_visual_active = False
         self._file_info = None
+        self._hover_tooltip = None
 
         self._geometry_cache_signature = None
         self._geometry_cache = {}
@@ -240,12 +241,21 @@ class CustomFileHorizontalCard(QWidget):
         self._init_colors()
         self._init_fonts()
         self.init_ui()
+        self._init_hover_tooltip()
         self._init_animations()
         self._apply_text_palette()
         self._update_card_surface()
 
         if file_path:
             self.set_file_path(file_path, display_name)
+
+    def _init_hover_tooltip(self):
+        """接入项目自定义 HoverTooltip，避免使用 Qt 默认 tooltip 样式。"""
+        from .hover_tooltip import HoverTooltip
+
+        self._hover_tooltip = HoverTooltip(self)
+        self._hover_tooltip.set_target_widget(self)
+        self._hover_tooltip.set_target_widget(self.card_container)
 
     def _init_colors(self):
         try:
@@ -1249,6 +1259,8 @@ class CustomFileHorizontalCard(QWidget):
             self._drag_card.hide()
             self._drag_card.deleteLater()
             self._drag_card = None
+        if self._hover_tooltip:
+            self._hover_tooltip.cleanup()
         self._stop_all_animations()
         super().closeEvent(event)
 

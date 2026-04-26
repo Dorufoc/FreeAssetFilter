@@ -294,6 +294,8 @@ class FileStagingPool(QWidget):
         self.hover_tooltip.set_target_widget(self.import_export_btn)
         self.hover_tooltip.set_target_widget(self.export_btn)
         self.hover_tooltip.set_target_widget(clear_btn)
+        self.hover_tooltip.set_target_widget(self.pool_view)
+        self.hover_tooltip.set_target_widget(self.pool_view.viewport())
 
     def _get_theme_colors(self):
         """

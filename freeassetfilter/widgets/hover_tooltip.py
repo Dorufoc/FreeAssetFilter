@@ -782,68 +782,102 @@ class HoverTooltip(QWidget):
         except RuntimeError:
             return ""
 
-    def _build_horizontal_card_tooltip(self, card):
-        """构建横向卡片的统一 tooltip 文本"""
-        file_path = card.file_path
-        if card._display_name:
-            file_name = card._display_name
-        else:
-            import os
-
-            file_name = os.path.basename(file_path)
-
+    def _build_file_card_tooltip(self, file_path, display_name="", file_info=None):
+        """构建文件卡片统一 tooltip 文本。"""
+        import os
         from PySide6.QtCore import QFileInfo
 
-        file_info = QFileInfo(file_path)
-        is_dir = file_info.isDir()
+        file_info = file_info or {}
+        file_path = str(file_path or file_info.get("path", "") or "")
+        qfile_info = QFileInfo(file_path)
+        file_name = (
+            str(display_name or "")
+            or str(file_info.get("display_name", "") or "")
+            or str(file_info.get("name", "") or "")
+            or os.path.basename(file_path)
+            or file_path
+        )
 
-        if is_dir:
-            size_str = "文件夹"
-        else:
-            file_size = file_info.size()
-            if file_size < 1024:
-                size_str = f"{file_size} B"
-            elif file_size < 1024 * 1024:
-                size_str = f"{file_size / 1024:.2f} KB"
-            elif file_size < 1024 * 1024 * 1024:
-                size_str = f"{file_size / (1024 * 1024):.2f} MB"
-            else:
-                size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
+        exists = qfile_info.exists()
+        is_dir = bool(file_info.get("is_dir", False)) if "is_dir" in file_info else qfile_info.isDir()
+        suffix = str(file_info.get("suffix", "") or qfile_info.suffix() or "").lstrip(".")
+        file_type = "文件夹" if is_dir else (f".{suffix}" if suffix else "文件")
+        abs_path = os.path.normpath(qfile_info.absoluteFilePath()) if file_path else ""
 
-        file_type = "文件夹" if is_dir else f".{file_info.suffix()}"
-        abs_path = file_info.absoluteFilePath()
-
-        if file_info.exists():
-            if is_dir:
-                created_time = "文件夹"
-                modified_time = (
-                    file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
-                    if file_info.lastModified().isValid()
-                    else "未知"
-                )
-            else:
-                created_time = (
-                    file_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
-                    if file_info.birthTime().isValid()
-                    else "未知"
-                )
-                modified_time = (
-                    file_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
-                    if file_info.lastModified().isValid()
-                    else "未知"
-                )
+        if exists:
+            created_time = (
+                qfile_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
+                if qfile_info.birthTime().isValid()
+                else "未知"
+            )
+            modified_time = (
+                qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+                if qfile_info.lastModified().isValid()
+                else "未知"
+            )
         else:
             created_time = "文件不存在"
             modified_time = "文件不存在"
 
         tooltip_text = f"名称: {file_name}\n"
-        tooltip_text += f"路径: {abs_path}\n"
         tooltip_text += f"类型: {file_type}\n"
-        tooltip_text += f"大小: {size_str}\n"
+        tooltip_text += f"创建时间: {created_time}\n"
         tooltip_text += f"修改时间: {modified_time}\n"
-        tooltip_text += f"创建时间: {created_time}"
+        tooltip_text += f"路径: {abs_path}"
 
         return tooltip_text
+
+    def _build_horizontal_card_tooltip(self, card):
+        """构建横向卡片的统一 tooltip 文本"""
+        return self._build_file_card_tooltip(
+            getattr(card, "file_path", ""),
+            display_name=getattr(card, "_display_name", "") or "",
+        )
+
+    def _build_view_index_tooltip(self, widget):
+        """从虚拟化 QListView 命中的 index 构建文件 tooltip。"""
+        from PySide6.QtWidgets import QListView
+
+        view = widget if isinstance(widget, QListView) else None
+        if view is None and widget is not None:
+            parent = widget.parent()
+            if isinstance(parent, QListView):
+                view = parent
+        if view is None or view.model() is None:
+            return ""
+
+        viewport = view.viewport()
+        if viewport is None:
+            return ""
+
+        pos = viewport.mapFromGlobal(self.last_mouse_pos)
+        if not viewport.rect().contains(pos):
+            return ""
+
+        index = view.indexAt(pos)
+        if not index.isValid():
+            return ""
+
+        model = view.model()
+        if hasattr(model, "get_file_info"):
+            file_info = model.get_file_info(index)
+        else:
+            file_info = {}
+
+        file_path = file_info.get("path", "")
+        if not file_path and hasattr(model, "FilePathRole"):
+            file_path = index.data(model.FilePathRole) or ""
+
+        display_name = (
+            file_info.get("display_name", "")
+            or file_info.get("name", "")
+            or index.data()
+            or ""
+        )
+        if not file_path:
+            return ""
+
+        return self._build_file_card_tooltip(file_path, display_name=display_name, file_info=file_info)
 
     def _get_text_at_position_internal(self, widget=None):
         """获取鼠标位置的文本内容（内部实现）"""
@@ -853,6 +887,10 @@ class HoverTooltip(QWidget):
                 _ = direct_widget.objectName()
             except RuntimeError:
                 return ""
+
+            index_tooltip = self._build_view_index_tooltip(direct_widget)
+            if index_tooltip:
+                return index_tooltip
 
             from .file_horizontal_card import CustomFileHorizontalCard
 
@@ -922,59 +960,11 @@ class HoverTooltip(QWidget):
                 card = direct_widget if direct_widget.objectName() == "FileBlockCard" else direct_widget.parent()
                 if hasattr(card, "file_info"):
                     file_info = card.file_info
-                    file_name = file_info["name"]
-                    file_path = file_info["path"]
-                    file_size = file_info["size"]
-                    is_dir = file_info["is_dir"]
-                    file_type = "文件夹" if is_dir else f".{file_info['suffix']}"
-
-                    if is_dir:
-                        size_str = "文件夹"
-                    else:
-                        if file_size < 1024:
-                            size_str = f"{file_size} B"
-                        elif file_size < 1024 * 1024:
-                            size_str = f"{file_size / 1024:.2f} KB"
-                        elif file_size < 1024 * 1024 * 1024:
-                            size_str = f"{file_size / (1024 * 1024):.2f} MB"
-                        else:
-                            size_str = f"{file_size / (1024 * 1024 * 1024):.2f} GB"
-
-                    from PySide6.QtCore import QFileInfo
-
-                    qfile_info = QFileInfo(file_path)
-
-                    if qfile_info.exists():
-                        if is_dir:
-                            created_time = "文件夹"
-                            modified_time = (
-                                qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
-                                if qfile_info.lastModified().isValid()
-                                else "未知"
-                            )
-                        else:
-                            created_time = (
-                                qfile_info.birthTime().toString("yyyy-MM-dd HH:mm:ss")
-                                if qfile_info.birthTime().isValid()
-                                else "未知"
-                            )
-                            modified_time = (
-                                qfile_info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
-                                if qfile_info.lastModified().isValid()
-                                else "未知"
-                            )
-                    else:
-                        created_time = "文件不存在"
-                        modified_time = "文件不存在"
-
-                    tooltip_text = f"名称: {file_name}\n"
-                    tooltip_text += f"路径: {file_path}\n"
-                    tooltip_text += f"类型: {file_type}\n"
-                    tooltip_text += f"大小: {size_str}\n"
-                    tooltip_text += f"修改时间: {modified_time}\n"
-                    tooltip_text += f"创建时间: {created_time}"
-
-                    return tooltip_text
+                    return self._build_file_card_tooltip(
+                        file_info.get("path", ""),
+                        display_name=file_info.get("name", ""),
+                        file_info=file_info,
+                    )
 
             if hasattr(direct_widget, "text"):
                 text_attr = direct_widget.text
