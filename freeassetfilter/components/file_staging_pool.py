@@ -81,7 +81,6 @@ class FileStagingPool(QWidget):
     _BACKUP_BOOL_FIELDS = (
         "is_dir",
         "is_selected",
-        "is_previewing",
         "is_missing",
         "size_calculating",
     )

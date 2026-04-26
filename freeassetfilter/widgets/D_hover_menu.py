@@ -50,7 +50,7 @@ class D_HoverMenu(QWidget):
 
     closed = Signal()
 
-    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None, background_alpha=1.0, enable_vertical_animation=False):
+    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None, background_alpha=1.0, enable_vertical_animation=False, content_padding: tuple = (0, 0, 0, 0)):
         """
         初始化悬浮菜单
 
@@ -65,9 +65,10 @@ class D_HoverMenu(QWidget):
             border_radius: 圆角半径（像素），默认为None表示使用默认值4像素
             background_alpha: 背景透明度，范围 0.0-1.0，默认 1.0（不透明）
             enable_vertical_animation: 是否启用垂直位移动画，默认 False（仅透明度动画）
+            content_padding: 内容内边距 (左, 上, 右, 下) 像素，默认 (0, 0, 0, 0)
         """
         super().__init__(parent)
-        
+
         self._stay_on_top = stay_on_top
         self._hide_on_window_move = hide_on_window_move
         self._use_sub_widget_mode = use_sub_widget_mode
@@ -76,6 +77,7 @@ class D_HoverMenu(QWidget):
         self._border_radius = border_radius if border_radius is not None else 8
         self._background_alpha = max(0.0, min(1.0, background_alpha))
         self._enable_vertical_animation = enable_vertical_animation
+        self._content_padding = content_padding
         
         if use_sub_widget_mode:
             # 子控件模式：作为父窗口的子控件
@@ -174,7 +176,8 @@ class D_HoverMenu(QWidget):
         self._content_widget = None
 
         self._content_layout = QVBoxLayout(self)
-        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        left, top, right, bottom = self._content_padding
+        self._content_layout.setContentsMargins(left, top, right, bottom)
         self._content_layout.setSpacing(0)
 
         self.hide()
@@ -1023,6 +1026,29 @@ class D_HoverMenu(QWidget):
             int: 圆角半径（像素）
         """
         return self._border_radius
+
+    def set_content_padding(self, left: int = 0, top: int = 0, right: int = 0, bottom: int = 0):
+        """
+        设置内容内边距
+
+        Args:
+            left: 左内边距（像素）
+            top: 上内边距（像素）
+            right: 右内边距（像素）
+            bottom: 下内边距（像素）
+        """
+        self._content_padding = (left, top, right, bottom)
+        if hasattr(self, '_content_layout'):
+            self._content_layout.setContentsMargins(left, top, right, bottom)
+
+    def get_content_padding(self) -> tuple:
+        """
+        获取当前内容内边距
+
+        Returns:
+            tuple: (左, 上, 右, 下) 像素值
+        """
+        return self._content_padding
 
     def closeEvent(self, event):
         """

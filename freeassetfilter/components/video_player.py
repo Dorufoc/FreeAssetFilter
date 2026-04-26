@@ -661,7 +661,7 @@ class VideoPlayer(QWidget):
         # 注意：不使用子控件模式，因为MPV原生窗口可能会覆盖子控件
         parent_widget = self._detached_window if self._detached_window else self
         self._floating_control_bar = D_HoverMenu(
-            parent_widget, 
+            parent_widget,
             position=D_HoverMenu.Position_Bottom,
             stay_on_top=False,  # 禁用强制置顶
             hide_on_window_move=False,  # 窗口移动时不隐藏
@@ -670,7 +670,8 @@ class VideoPlayer(QWidget):
             margin=30,  # 添加30像素的外边距
             border_radius=self._control_bar_border_radius if self._control_bar_border_radius is not None else 8,  # 圆角半径
             background_alpha=0.8,  # 浮动控制栏保留半透明背景
-            enable_vertical_animation=True  # 浮动控制栏启用位移动画
+            enable_vertical_animation=True,  # 浮动控制栏启用位移动画
+            content_padding=(10, 0, 10, 0)  # 左右10px内边距，上下0px
         )
         self._floating_control_bar.set_content(self._control_bar)
 
