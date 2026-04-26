@@ -2,8 +2,8 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
 from freeassetfilter.core.settings_manager import SettingsManager
@@ -954,6 +954,32 @@ class FileStagingPoolListView(FileListView):
         else:
             self._card_motion_last_update_rect = QRect()
 
+    def _refresh_hover_under_cursor(self) -> None:
+        viewport = self.viewport()
+        if viewport is None or not self.isVisible():
+            return
+        if QApplication.mouseButtons() != Qt.NoButton:
+            return
+
+        try:
+            global_pos = QCursor.pos()
+            pos = viewport.mapFromGlobal(global_pos)
+        except RuntimeError:
+            return
+
+        if not viewport.rect().contains(pos):
+            return
+
+        event = QMouseEvent(
+            QEvent.MouseMove,
+            QPointF(pos),
+            QPointF(global_pos),
+            Qt.NoButton,
+            Qt.NoButton,
+            QApplication.keyboardModifiers(),
+        )
+        QApplication.sendEvent(viewport, event)
+
     def _advance_card_motion(self) -> None:
         if not self._card_motion_items and not self._card_motion_exit_items:
             self.cancel_card_motion(update=False)
@@ -961,6 +987,7 @@ class FileStagingPoolListView(FileListView):
 
         if self._card_motion_progress() >= 1.0:
             self.cancel_card_motion(update=True)
+            self._refresh_hover_under_cursor()
             return
 
         self._request_card_motion_repaint()

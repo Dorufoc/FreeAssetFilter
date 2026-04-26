@@ -83,6 +83,9 @@ class SilentUpdateCheckWorker(QThread):
     """
     
     update_available = Signal(dict)
+    success = Signal(dict)
+    failure = Signal(str)
+    cancelled = Signal()
     check_finished = Signal()
     
     def run(self):
@@ -97,10 +100,12 @@ class SilentUpdateCheckWorker(QThread):
             
             if self.isInterruptionRequested():
                 debug("SilentUpdateCheckWorker: 检查完成后已被中断，忽略结果")
+                self.cancelled.emit()
                 self.check_finished.emit()
                 return
             
             debug("SilentUpdateCheckWorker: 静默检查完成")
+            self.success.emit(result)
             
             if result.get("update_available", False):
                 debug("SilentUpdateCheckWorker: 发现新版本")
@@ -110,14 +115,18 @@ class SilentUpdateCheckWorker(QThread):
         except UpdateError as e:
             if self.isInterruptionRequested():
                 debug("SilentUpdateCheckWorker: 静默检查已中断")
+                self.cancelled.emit()
             else:
                 debug(f"SilentUpdateCheckWorker: 静默检查失败: {e}")
+                self.failure.emit(str(e))
             self.check_finished.emit()
         except Exception as e:
             if self.isInterruptionRequested():
                 debug("SilentUpdateCheckWorker: 静默检查已中断")
+                self.cancelled.emit()
             else:
                 debug(f"SilentUpdateCheckWorker: 静默检查异常: {e}")
+                self.failure.emit(f"检查更新失败：{e}")
             self.check_finished.emit()
 
 
@@ -303,6 +312,10 @@ class UpdateController(QObject):
         # 静默检查更新相关状态
         self._silent_check_worker = None
         self._silent_check_cancelled = False
+        self._manual_check_uses_silent = False
+        self._silent_check_claimed_by_manual = False
+        self._retired_check_workers = []
+        self._retired_silent_workers = []
 
     def start_silent_update_check(self):
         """
@@ -317,31 +330,39 @@ class UpdateController(QObject):
             return
             
         self._silent_check_cancelled = False
+        self._manual_check_uses_silent = False
+        self._silent_check_claimed_by_manual = False
         self._silent_check_worker = SilentUpdateCheckWorker(self)
         self._silent_check_worker.update_available.connect(self._on_silent_check_update_available)
+        self._silent_check_worker.success.connect(self._on_silent_check_success)
+        self._silent_check_worker.failure.connect(self._on_silent_check_failure)
+        self._silent_check_worker.cancelled.connect(self._on_silent_check_cancelled)
         self._silent_check_worker.check_finished.connect(self._on_silent_check_finished)
         self._silent_check_worker.start()
         debug("UpdateController: 静默更新检查已启动")
 
-    def cancel_silent_check(self):
+    def cancel_silent_check(self, retire=False):
         """
         取消静默检查（例如用户手动触发检查更新时）
-        使用协作式取消机制，避免强制终止线程导致的资源泄漏
+        retire=True 用于交互取消，不在主线程等待网络请求结束；
+        默认路径保留关闭窗口时的短等待，避免退出时销毁仍在运行的线程。
         """
         if self._silent_check_worker and self._silent_check_worker.isRunning():
             debug("UpdateController: 取消静默检查")
             self._silent_check_cancelled = True
-            
-            # 使用 Qt 标准的 requestInterruption() 请求线程中断
-            self._silent_check_worker.requestInterruption()
-            
-            # 等待线程自然退出，最多等待3秒
-            if not self._silent_check_worker.wait(3000):
-                warning("UpdateController: 线程未在3秒内正常退出，使用强制终止")
-                self._silent_check_worker.terminate()
-                self._silent_check_worker.wait(2000)
-            
-            self._silent_check_worker = None
+            self._manual_check_uses_silent = False
+            self._silent_check_claimed_by_manual = False
+            if retire:
+                self._retire_silent_worker(self._silent_check_worker)
+                self._silent_check_worker = None
+            else:
+                self._silent_check_worker.requestInterruption()
+                if self._silent_check_worker.wait(3000):
+                    self._silent_check_worker = None
+                else:
+                    warning("UpdateController: 静默检查未在关闭前退出，保留后台引用等待自然结束")
+                    self._retire_silent_worker(self._silent_check_worker)
+                    self._silent_check_worker = None
 
     def bind_button(self, button):
         """
@@ -361,14 +382,48 @@ class UpdateController(QObject):
             self.update_button.clicked.connect(self.on_check_updates_clicked)
             debug("UpdateController: 更新按钮绑定成功")
 
+    def _retire_worker(self, worker, retired_workers):
+        """
+        请求后台检查线程停止，并保留引用直到线程结束，避免 UI 等待。
+        """
+        if worker is None:
+            return
+
+        try:
+            worker.requestInterruption()
+        except Exception:
+            pass
+
+        if worker not in retired_workers:
+            retired_workers.append(worker)
+
+        try:
+            worker.finished.connect(lambda w=worker, workers=retired_workers: self._forget_retired_worker(w, workers))
+        except Exception:
+            pass
+
+    def _retire_check_worker(self, worker):
+        self._retire_worker(worker, self._retired_check_workers)
+
+    def _retire_silent_worker(self, worker):
+        self._retire_worker(worker, self._retired_silent_workers)
+
+    def _forget_retired_worker(self, worker, retired_workers):
+        try:
+            retired_workers.remove(worker)
+        except ValueError:
+            pass
+
     def on_check_updates_clicked(self):
         """
         点击"检查更新"
         """
         debug("UpdateController: 用户点击检查更新")
-        
-        # 取消正在进行的静默检查
-        self.cancel_silent_check()
+
+        if self._silent_check_worker and self._silent_check_worker.isRunning():
+            debug("UpdateController: 手动检查接管正在运行的静默检查")
+            self._start_manual_check_from_silent()
+            return
         
         if self._check_worker and self._check_worker.isRunning():
             if self._check_cancelled or self._check_worker.isInterruptionRequested():
@@ -387,12 +442,7 @@ class UpdateController(QObject):
 
         self._start_manual_check()
 
-    def _start_manual_check(self):
-        self._current_release_info = None
-        self._current_ready_package = None
-        self._check_cancelled = False
-        self._pending_check_restart = False
-
+    def _show_check_progress_dialog(self):
         self._show_progress_dialog(
             title="检查更新",
             text="正在检查更新…",
@@ -404,6 +454,25 @@ class UpdateController(QObject):
             callback=self._on_check_dialog_clicked,
             allow_close=False,
         )
+
+    def _start_manual_check_from_silent(self):
+        self._current_release_info = None
+        self._current_ready_package = None
+        self._check_cancelled = False
+        self._pending_check_restart = False
+        self._silent_check_cancelled = False
+        self._manual_check_uses_silent = True
+        self._silent_check_claimed_by_manual = False
+        self._show_check_progress_dialog()
+
+    def _start_manual_check(self):
+        self._current_release_info = None
+        self._current_ready_package = None
+        self._check_cancelled = False
+        self._pending_check_restart = False
+        self._manual_check_uses_silent = False
+        self._silent_check_claimed_by_manual = False
+        self._show_check_progress_dialog()
 
         self._check_worker = UpdateCheckWorker(self)
         self._check_worker.success.connect(self._on_check_success)
@@ -424,14 +493,30 @@ class UpdateController(QObject):
         if index != 0:
             return
 
+        if self._manual_check_uses_silent and self._silent_check_worker and self._silent_check_worker.isRunning():
+            debug("UpdateController: 用户取消已接管的静默检查")
+            self._check_cancelled = True
+            self._silent_check_cancelled = True
+            self._manual_check_uses_silent = False
+            self._silent_check_claimed_by_manual = False
+            self._retire_silent_worker(self._silent_check_worker)
+            self._silent_check_worker = None
+            self._close_current_dialog()
+            return
+
         if self._check_worker and self._check_worker.isRunning():
             debug("UpdateController: 用户取消检查更新")
             self._check_cancelled = True
-            self._set_dialog_text("正在取消检查，请稍候…")
-            self._set_dialog_buttons([])
-            self._check_worker.requestInterruption()
+            self._retire_check_worker(self._check_worker)
+            self._check_worker = None
+            self._close_current_dialog()
 
     def _on_check_success(self, result):
+        sender = self.sender()
+        if sender in self._retired_check_workers:
+            debug("UpdateController: 忽略已取消检查的成功结果")
+            return
+
         debug("UpdateController: 检查更新成功，处理结果")
         self._check_worker = None
 
@@ -442,6 +527,9 @@ class UpdateController(QObject):
             self._restart_manual_check_if_needed()
             return
 
+        self._show_check_result(result)
+
+    def _show_check_result(self, result):
         if not result.get("update_available", False):
             local_info = result.get("local_info", {})
             latest_release = result.get("latest_release", {})
@@ -487,6 +575,11 @@ class UpdateController(QObject):
         )
 
     def _on_check_failure(self, message):
+        sender = self.sender()
+        if sender in self._retired_check_workers:
+            debug("UpdateController: 忽略已取消检查的失败结果")
+            return
+
         warning(f"检查更新失败: {message}")
         self._check_worker = None
 
@@ -505,6 +598,11 @@ class UpdateController(QObject):
         )
 
     def _on_check_cancelled(self):
+        sender = self.sender()
+        if sender in self._retired_check_workers:
+            debug("UpdateController: 已取消检查线程结束")
+            return
+
         debug("UpdateController: 检查更新已取消")
         self._check_worker = None
         self._check_cancelled = False
@@ -724,16 +822,19 @@ class UpdateController(QObject):
         app = QApplication.instance()
         settings_manager = getattr(app, "settings_manager", None)
 
+        base_color = "#FFFFFF"
         secondary_color = "#333333"
         accent_color = "#007AFF"
         auxiliary_color = "#f1f3f5"
 
         if settings_manager is not None:
+            base_color = settings_manager.get_setting("appearance.colors.base_color", base_color)
             secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", secondary_color)
             accent_color = settings_manager.get_setting("appearance.colors.accent_color", accent_color)
             auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
 
         return {
+            "base": base_color,
             "secondary": secondary_color,
             "accent": accent_color,
             "auxiliary": auxiliary_color,
@@ -1175,7 +1276,6 @@ hr {{ border: none; border-top: 1px solid {border_color}; margin: 1em 0; }}
         dialog = CustomMessageBox(self.main_window)
         dialog.setModal(True)
         dialog.set_title(title)
-        dialog.set_text(text)
 
         progress_container = QWidget()
         progress_container_layout = QVBoxLayout(progress_container)
@@ -1197,11 +1297,13 @@ hr {{ border: none; border-top: 1px solid {border_color}; margin: 1em 0; }}
             dialog.body_layout.removeWidget(dialog.progress_widget)
 
             self._current_loading_spinner = LoadingSpinner(icon_size=48, dpi_scale=1.0)
+            self._current_loading_spinner.set_background_color(self._get_theme_colors()["base"])
             self._current_loading_spinner.start()
             progress_container_layout.addWidget(self._current_loading_spinner, 0, Qt.AlignCenter)
             self._current_progress_bar = None
             self._current_progress_info_label = None
         else:
+            dialog.set_text(text)
             progress_bar = D_ProgressBar(is_interactive=False)
             progress_bar.setInteractive(False)
             progress_bar.setRange(progress_min, progress_max)
@@ -1300,6 +1402,15 @@ hr {{ border: none; border-top: 1px solid {border_color}; margin: 1em 0; }}
         """
         静默检查发现新版本后的回调
         """
+        sender = self.sender()
+        if sender in self._retired_silent_workers:
+            debug("UpdateController: 忽略已取消静默检查的更新提示")
+            return
+
+        if self._manual_check_uses_silent or self._silent_check_claimed_by_manual:
+            debug("UpdateController: 静默检查结果已由手动检查接管，不显示静默提示")
+            return
+
         if self._silent_check_cancelled:
             debug("UpdateController: 静默检查已被取消，忽略更新提示")
             self._silent_check_cancelled = False
@@ -1331,9 +1442,67 @@ hr {{ border: none; border-top: 1px solid {border_color}; margin: 1em 0; }}
             installer_ready=installer_ready,
         )
 
+    def _on_silent_check_success(self, result):
+        sender = self.sender()
+        if sender in self._retired_silent_workers:
+            debug("UpdateController: 忽略已取消静默检查的成功结果")
+            return
+
+        if not self._manual_check_uses_silent:
+            return
+
+        debug("UpdateController: 使用静默检查结果完成手动检查展示")
+        self._manual_check_uses_silent = False
+        self._silent_check_claimed_by_manual = True
+        self._silent_check_cancelled = False
+
+        if self._check_cancelled:
+            debug("UpdateController: 手动检查已取消，忽略静默检查结果")
+            self._check_cancelled = False
+            self._close_current_dialog()
+            return
+
+        self._show_check_result(result)
+
+    def _on_silent_check_failure(self, message):
+        sender = self.sender()
+        if sender in self._retired_silent_workers:
+            debug("UpdateController: 忽略已取消静默检查的失败结果")
+            return
+
+        if not self._manual_check_uses_silent:
+            return
+
+        debug("UpdateController: 已接管的静默检查失败")
+        self._manual_check_uses_silent = False
+        self._silent_check_claimed_by_manual = True
+        self._on_check_failure(message)
+
+    def _on_silent_check_cancelled(self):
+        sender = self.sender()
+        if sender in self._retired_silent_workers:
+            debug("UpdateController: 已取消静默检查线程结束")
+            return
+
+        if not self._manual_check_uses_silent:
+            return
+
+        debug("UpdateController: 已接管的静默检查被取消")
+        self._manual_check_uses_silent = False
+        self._silent_check_claimed_by_manual = False
+        self._on_check_cancelled()
+
     def _on_silent_check_finished(self):
         """
         静默检查完成的回调（无论成功失败）
         """
+        sender = self.sender()
+        if sender in self._retired_silent_workers:
+            self._forget_retired_worker(sender, self._retired_silent_workers)
+            return
+
         debug("UpdateController: 静默检查已完成")
-        self._silent_check_worker = None
+        if sender is None or sender is self._silent_check_worker:
+            self._silent_check_worker = None
+            self._manual_check_uses_silent = False
+            self._silent_check_claimed_by_manual = False

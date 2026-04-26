@@ -498,7 +498,9 @@ class FreeAssetFilterApp(QMainWindow):
 
             # 重置当前预览状态，确保主程序继续退出前界面已被清空
             self.unified_previewer.current_file_info = None
-            if hasattr(self.unified_previewer, 'default_label') and self.unified_previewer.default_label:
+            if hasattr(self.unified_previewer, '_show_default_placeholder'):
+                self.unified_previewer._show_default_placeholder()
+            elif hasattr(self.unified_previewer, 'default_label') and self.unified_previewer.default_label:
                 self.unified_previewer.default_label.show()
             if hasattr(self.unified_previewer, 'clear_preview_button'):
                 self.unified_previewer.clear_preview_button.hide()
@@ -755,7 +757,9 @@ class FreeAssetFilterApp(QMainWindow):
 
         try:
             unified_previewer.current_file_info = None
-            if hasattr(unified_previewer, "default_label") and unified_previewer.default_label:
+            if hasattr(unified_previewer, "_show_default_placeholder"):
+                unified_previewer._show_default_placeholder()
+            elif hasattr(unified_previewer, "default_label") and unified_previewer.default_label:
                 unified_previewer.default_label.show()
             if hasattr(unified_previewer, "clear_preview_button"):
                 unified_previewer.clear_preview_button.hide()
@@ -974,20 +978,23 @@ class FreeAssetFilterApp(QMainWindow):
         from freeassetfilter.components.unified_previewer import UnifiedPreviewer
         self.unified_previewer = UnifiedPreviewer(self)
         right_layout.addWidget(self.unified_previewer, 1)
+        right_margins = right_layout.contentsMargins()
+        right_min_width = (
+            self.unified_previewer.minimumWidth()
+            + right_margins.left()
+            + right_margins.right()
+        )
+        self.right_column.setMinimumWidth(right_min_width)
 
         # 将三列添加到分割器，调整初始比例
         splitter.addWidget(self.left_column)
         splitter.addWidget(self.middle_column)
         splitter.addWidget(self.right_column)
+        splitter.setCollapsible(2, False)
 
-        # 设置分割器初始大小，将三个板块宽度默认值设定为比值334（3:3:4）
-        # 计算总宽度（使用逻辑像素）
-        total_width = self.window_width - 40  # 减去边距和边框宽度
-        # 根据3:3:4的比例分配宽度
-        left_width = int(total_width * (3 / 10))
-        middle_width = int(total_width * (3 / 10))
-        right_width = int(total_width * (4 / 10))
-        sizes = [left_width, middle_width, right_width]
+        # 设置分割器初始大小，每个栏目宽度定义为420
+        column_width = 420
+        sizes = [column_width, column_width, column_width]
         splitter.setSizes(sizes)
 
         # 连接文件选择器的左键点击信号到预览器
@@ -1407,16 +1414,21 @@ class FreeAssetFilterApp(QMainWindow):
         from freeassetfilter.components.unified_previewer import UnifiedPreviewer
         self.unified_previewer = UnifiedPreviewer(self)
         right_layout.addWidget(self.unified_previewer, 1)
+        right_margins = right_layout.contentsMargins()
+        right_min_width = (
+            self.unified_previewer.minimumWidth()
+            + right_margins.left()
+            + right_margins.right()
+        )
+        self.right_column.setMinimumWidth(right_min_width)
 
         splitter.addWidget(self.left_column)
         splitter.addWidget(self.middle_column)
         splitter.addWidget(self.right_column)
+        splitter.setCollapsible(2, False)
 
-        total_width = self.window_width - 40
-        left_width = int(total_width * (3 / 10))
-        middle_width = int(total_width * (3 / 10))
-        right_width = int(total_width * (4 / 10))
-        splitter.setSizes([left_width, middle_width, right_width])
+        column_width = 420
+        splitter.setSizes([column_width, column_width, column_width])
 
         self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
         self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)

@@ -13,6 +13,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
     QRectF,
+    QPoint,
 )
 from PySide6.QtWidgets import (
     QScrollArea,
@@ -22,11 +23,27 @@ from PySide6.QtWidgets import (
     QScrollerProperties,
     QApplication,
     QScrollBar,
+    QGraphicsEffect,
 )
 from PySide6.QtGui import QColor, QWheelEvent, QPainter
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 import time
+
+
+def _calculate_damped_elastic_offset(current_offset, previous_target_offset, direction, strength, minimum_strength, limit):
+    direction = -1.0 if direction < 0 else 1.0
+    current_abs = abs(float(current_offset)) if current_offset * direction > 0 else 0.0
+    previous_target_abs = abs(float(previous_target_offset)) if previous_target_offset * direction > 0 else 0.0
+    base_abs = min(float(limit), max(current_abs, previous_target_abs))
+    if base_abs >= limit:
+        return direction * float(limit)
+
+    raw_strength = max(float(minimum_strength), float(strength))
+    remaining_ratio = max(0.0, (float(limit) - base_abs) / float(limit))
+    elastic_factor = max(0.08, remaining_ratio * remaining_ratio)
+    target_abs = min(float(limit), base_abs + raw_strength * elastic_factor)
+    return direction * target_abs
 
 
 def _coerce_scrollbar_args(arg1, arg2):
@@ -91,6 +108,7 @@ class D_ScrollBar(QScrollBar):
         self._visual_handle_ratio_value = 1.0
         self._visual_position_ratio_value = 0.0
         self._elastic_overscroll_value = 0.0
+        self._elastic_overscroll_target_value = 0.0
         self._updating_style = False
         self._last_style = ""
         self._suppress_jump_animation_until = 0.0
@@ -212,8 +230,9 @@ class D_ScrollBar(QScrollBar):
         self._handle_position_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self._elastic_overscroll_anim = QPropertyAnimation(self, b"_elastic_overscroll")
-        self._elastic_overscroll_anim.setDuration(260)
+        self._elastic_overscroll_anim.setDuration(380)
         self._elastic_overscroll_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._elastic_overscroll_anim.finished.connect(self._on_elastic_overscroll_finished)
 
     def _get_actual_handle_ratio(self):
         page_step = max(0, self.pageStep())
@@ -461,12 +480,24 @@ class D_ScrollBar(QScrollBar):
 
         return max(4.0 * self._dpi_scale, min(18.0 * self._dpi_scale, available_length * 0.08))
 
+    def _on_elastic_overscroll_finished(self):
+        if abs(self._elastic_overscroll_value) < 0.01:
+            self._elastic_overscroll_target_value = 0.0
+
+    def _reset_elastic_overscroll(self):
+        self._elastic_overscroll_anim.stop()
+        self._elastic_overscroll_target_value = 0.0
+        if abs(self._elastic_overscroll_value) >= 0.01:
+            self._elastic_overscroll_value = 0.0
+            self.update()
+
     def trigger_elastic_overscroll(self, direction, strength=1.0):
         """
         在真实滚动值到达边界后，为继续滚动的输入提供轻量回弹反馈。
         direction: -1 表示顶端/左端，1 表示底端/右端。
         """
         if not self._is_smooth_scrolling_enabled() or self.maximum() <= self.minimum():
+            self._reset_elastic_overscroll()
             return
 
         direction = -1.0 if direction < 0 else 1.0
@@ -474,7 +505,15 @@ class D_ScrollBar(QScrollBar):
         if limit <= 0:
             return
 
-        target_offset = direction * min(limit, max(4.0 * self._dpi_scale, float(strength)))
+        target_offset = _calculate_damped_elastic_offset(
+            self._elastic_overscroll_value,
+            self._elastic_overscroll_target_value,
+            direction,
+            strength,
+            4.0 * self._dpi_scale,
+            limit,
+        )
+        self._elastic_overscroll_target_value = target_offset
 
         self._elastic_overscroll_anim.stop()
         self._elastic_overscroll_anim.setStartValue(self._elastic_overscroll_value)
@@ -715,6 +754,163 @@ def _get_target_widget(widget):
     return widget
 
 
+class _ContentOverscrollEffect(QGraphicsEffect):
+    """
+    只在边界回弹期间临时平移目标控件的绘制结果，不改变真实滚动值或布局。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._offset = QPoint(0, 0)
+
+    def set_offset(self, x=0.0, y=0.0):
+        new_offset = QPoint(int(round(x)), int(round(y)))
+        if new_offset == self._offset:
+            return
+        self._offset = new_offset
+        self.update()
+
+    @staticmethod
+    def _split_source_pixmap_result(source_pixmap_result):
+        if isinstance(source_pixmap_result, tuple):
+            return source_pixmap_result
+        return source_pixmap_result, QPoint(0, 0)
+
+    def draw(self, painter):
+        pixmap, source_offset = self._split_source_pixmap_result(
+            self.sourcePixmap(Qt.LogicalCoordinates)
+        )
+        if pixmap.isNull():
+            return
+        painter.drawPixmap(source_offset + self._offset, pixmap)
+
+
+class _ElasticContentOverscrollController(QObject):
+    """
+    管理滚动内容本身的边界弹性位移。
+    """
+
+    def __init__(self, target_widget, duration=380):
+        super().__init__(target_widget)
+        self._target_widget = target_widget
+        self._dpi_scale = 1.0
+        self._offset_value = 0.0
+        self._target_offset_value = 0.0
+        self._orientation = Qt.Vertical
+        self._effect = None
+
+        app = QApplication.instance()
+        if app:
+            self._dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
+
+        self._animation = QPropertyAnimation(self, b"_offset")
+        self._animation.setDuration(duration)
+        self._animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._animation.finished.connect(self._release_effect_if_idle)
+
+    def _get_offset(self):
+        return self._offset_value
+
+    def _set_offset(self, offset):
+        new_offset = float(offset)
+        if abs(new_offset) < 0.01:
+            new_offset = 0.0
+        if new_offset != 0.0 and abs(new_offset - self._offset_value) < 0.25:
+            return
+
+        self._offset_value = new_offset
+        if self._ensure_effect():
+            if self._orientation == Qt.Vertical:
+                self._effect.set_offset(0.0, self._offset_value)
+            else:
+                self._effect.set_offset(self._offset_value, 0.0)
+
+    _offset = Property(float, fget=_get_offset, fset=_set_offset)
+
+    def _ensure_effect(self):
+        if self._target_widget is None:
+            return False
+
+        current_effect = self._target_widget.graphicsEffect()
+        if current_effect is not None and current_effect is not self._effect:
+            return False
+
+        if self._effect is None:
+            self._effect = _ContentOverscrollEffect(self._target_widget)
+
+        if current_effect is None:
+            self._target_widget.setGraphicsEffect(self._effect)
+
+        return True
+
+    def _release_effect_if_idle(self):
+        if abs(self._offset_value) >= 0.01:
+            return
+        self._target_offset_value = 0.0
+        if self._target_widget and self._target_widget.graphicsEffect() is self._effect:
+            self._target_widget.setGraphicsEffect(None)
+        self._effect = None
+
+    def _get_overscroll_limit(self, orientation):
+        if self._target_widget is None:
+            return 0.0
+
+        rect = self._target_widget.rect()
+        if rect.isEmpty():
+            return 0.0
+
+        available_length = rect.height() if orientation == Qt.Vertical else rect.width()
+        if available_length <= 0:
+            return 0.0
+
+        return max(6.0 * self._dpi_scale, min(34.0 * self._dpi_scale, available_length * 0.10))
+
+    def reset(self):
+        self._animation.stop()
+        self._target_offset_value = 0.0
+        self._offset_value = 0.0
+        if self._effect is not None:
+            self._effect.set_offset(0.0, 0.0)
+        if self._target_widget and self._target_widget.graphicsEffect() is self._effect:
+            self._target_widget.setGraphicsEffect(None)
+        self._effect = None
+
+    def trigger(self, orientation, boundary_direction, strength=1.0):
+        """
+        boundary_direction: -1 表示顶端/左端，1 表示底端/右端。
+        内容需要朝相反方向位移，形成被拉出边界后的回弹感。
+        """
+        if not is_animation_enabled("smooth_scrolling", default=True):
+            self.reset()
+            return False
+
+        limit = self._get_overscroll_limit(orientation)
+        if limit <= 0:
+            return False
+
+        self._orientation = orientation
+        direction = -1.0 if boundary_direction < 0 else 1.0
+        target_offset = _calculate_damped_elastic_offset(
+            self._offset_value,
+            self._target_offset_value,
+            -direction,
+            strength,
+            6.0 * self._dpi_scale,
+            limit,
+        )
+        self._target_offset_value = target_offset
+
+        if not self._ensure_effect():
+            return False
+
+        self._animation.stop()
+        self._animation.setStartValue(self._offset_value)
+        self._animation.setKeyValueAt(0.36, target_offset)
+        self._animation.setEndValue(0.0)
+        self._animation.start()
+        return True
+
+
 class _WheelSmoothScrollFilter(QObject):
     """
     统一处理鼠标滚轮 / 触控板滚轮平滑动画。
@@ -733,6 +929,7 @@ class _WheelSmoothScrollFilter(QObject):
         self._last_wheel_time = 0.0
         self._wheel_boost = 1.0
         self._max_wheel_boost = 2.5
+        self._content_overscroll = _ElasticContentOverscrollController(target_widget)
 
     def eventFilter(self, obj, event):
         if event.type() != QEvent.Wheel:
@@ -821,6 +1018,7 @@ class _WheelSmoothScrollFilter(QObject):
 
         direction = -1 if scrolling_past_minimum else 1
         scrollbar.trigger_elastic_overscroll(direction, strength=abs(step) * 0.35)
+        self._content_overscroll.trigger(scrollbar.orientation(), direction, strength=abs(step) * 0.55)
         return True
 
     def _normalize_delta(self, delta, is_pixel_delta):
@@ -988,6 +1186,9 @@ class SmoothScroller:
 
             wheel_filter = getattr(target, "_smooth_wheel_filter", None)
             if wheel_filter is not None:
+                content_overscroll = getattr(wheel_filter, "_content_overscroll", None)
+                if content_overscroll is not None:
+                    content_overscroll.reset()
                 try:
                     target.removeEventFilter(wheel_filter)
                 except RuntimeError:

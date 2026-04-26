@@ -46,6 +46,7 @@ from freeassetfilter.utils.subprocess_utils import run_with_limited_output
 
 DOCUMENT_CONVERT_TIMEOUT = 300
 DOCUMENT_CONVERT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+VIDEO_REFERENCE_PREVIEW_MIN_WIDTH = 420
 
 
 class UnifiedPreviewer(QWidget):
@@ -252,6 +253,8 @@ class UnifiedPreviewer(QWidget):
         self.preview_area.setObjectName("PreviewArea")
         self.preview_area.setStyleSheet(f"#PreviewArea {{ background-color: {background_color}; border: 1px solid {normal_color}; }}")
         self.preview_layout = QVBoxLayout(self.preview_area)
+        self.preview_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
+        self._apply_preview_area_width_policy(main_layout)
         
         # 创建预览控制栏（右上角按钮）- 放在预览组件上方
         self.control_layout = QHBoxLayout()
@@ -261,13 +264,30 @@ class UnifiedPreviewer(QWidget):
         self.preview_layout.addLayout(self.control_layout)
         
         # 添加默认提示信息
+        self.default_placeholder = QWidget()
+        self.default_placeholder.setMinimumWidth(self._preview_content_min_width())
+        self.default_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        default_placeholder_layout = QVBoxLayout(self.default_placeholder)
+        default_placeholder_layout.setContentsMargins(
+            int(8 * self.dpi_scale),
+            int(8 * self.dpi_scale),
+            int(8 * self.dpi_scale),
+            int(8 * self.dpi_scale),
+        )
+        default_placeholder_layout.addStretch(1)
+
         self.default_label = QLabel("请选择一个文件进行预览")
         self.default_label.setAlignment(Qt.AlignCenter)
+        self.default_label.setWordWrap(True)
+        self.default_label.setMinimumWidth(0)
+        self.default_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
         # 使用全局字体，让Qt6自动处理DPI缩放
         self.default_label.setFont(self.global_font)
         self.default_label.setStyleSheet("color: #999;")
-        self.preview_layout.addWidget(self.default_label)
+        default_placeholder_layout.addWidget(self.default_label)
+        default_placeholder_layout.addStretch(1)
+        self.preview_layout.addWidget(self.default_placeholder, 1)
         
         # 将预览区域添加到分割器
         self.content_splitter.addWidget(self.preview_area)
@@ -330,6 +350,79 @@ class UnifiedPreviewer(QWidget):
         buttons_layout.addWidget(self.clear_preview_button)
 
         main_layout.addLayout(buttons_layout)
+
+    def _preview_content_min_width(self):
+        """
+        统一预览内容的横向最小宽度，以 VideoPlayer.minimumSizeHint().width() 为基准。
+        """
+        return VIDEO_REFERENCE_PREVIEW_MIN_WIDTH
+
+    def _layout_horizontal_margins(self, layout):
+        """
+        获取布局左右边距，用于把内容最小宽度换算成外层容器最小宽度。
+        """
+        margins = layout.contentsMargins()
+        return margins.left() + margins.right()
+
+    def _preview_area_min_width(self):
+        """
+        预览区域外框需要包含内部预览内容宽度和 preview_layout 的左右边距。
+        """
+        return self._preview_content_min_width() + self._layout_horizontal_margins(self.preview_layout)
+
+    def _unified_previewer_min_width(self, main_layout):
+        """
+        统一预览器整体最小宽度需要继续包含自身主布局左右边距。
+        """
+        return self._preview_area_min_width() + self._layout_horizontal_margins(main_layout)
+
+    def _apply_preview_area_width_policy(self, main_layout):
+        """
+        将内容最小宽度逐层换算到 preview_area、splitter 和统一预览器本体。
+        """
+        preview_area_min_width = self._preview_area_min_width()
+        self.preview_area.setMinimumWidth(preview_area_min_width)
+        self.content_splitter.setMinimumWidth(preview_area_min_width)
+        self.setMinimumWidth(self._unified_previewer_min_width(main_layout))
+
+    def _apply_preview_width_policy(self, widget):
+        """
+        给所有嵌入统一预览区的内容应用一致的横向宽度限制。
+        """
+        if widget is None:
+            return
+
+        min_width = self._preview_content_min_width()
+        widget.setMinimumWidth(min_width)
+
+        size_policy = widget.sizePolicy()
+        if size_policy.horizontalPolicy() not in (QSizePolicy.Expanding, QSizePolicy.MinimumExpanding):
+            widget.setSizePolicy(QSizePolicy.Expanding, size_policy.verticalPolicy())
+
+    def _add_preview_widget(self, widget, stretch=1):
+        """
+        添加预览内容，并统一应用横向最小宽度策略。
+        """
+        self._apply_preview_width_policy(widget)
+        self.preview_layout.addWidget(widget, stretch)
+
+    def _show_default_placeholder(self):
+        """
+        显示默认占位提示，并确保它占用预览区域的剩余空间。
+        """
+        if self.preview_layout.indexOf(self.default_placeholder) < 0:
+            self.preview_layout.addWidget(self.default_placeholder, 1)
+        self.default_placeholder.show()
+        self.default_label.show()
+
+    def _hide_default_placeholder(self):
+        """
+        隐藏默认占位提示，避免它参与具体预览内容的布局。
+        """
+        if self.preview_layout.indexOf(self.default_placeholder) >= 0:
+            self.preview_layout.removeWidget(self.default_placeholder)
+        self.default_placeholder.hide()
+        self.default_label.hide()
     
     def set_file(self, file_info):
         """
@@ -380,8 +473,7 @@ class UnifiedPreviewer(QWidget):
         
         if not self.current_file_info:
             self._clear_preview()
-            self.preview_layout.addWidget(self.default_label)
-            self.default_label.show()
+            self._show_default_placeholder()
             self.open_with_system_button.hide()
             self.copy_to_clipboard_button.hide()
             self.locate_in_selector_button.hide()
@@ -613,7 +705,7 @@ class UnifiedPreviewer(QWidget):
         self.current_file_info = None
         
         # 显示默认提示
-        self.default_label.show()
+        self._show_default_placeholder()
 
     def _on_copy_to_clipboard_button_clicked(self):
         """
@@ -660,9 +752,7 @@ class UnifiedPreviewer(QWidget):
         """
         self._cleanup_preview_thread()
 
-        if hasattr(self, 'default_label') and self.default_label and self.default_label.parent() is self.preview_area:
-            self.preview_layout.removeWidget(self.default_label)
-            self.default_label.hide()
+        self._hide_default_placeholder()
 
         widget = self.current_preview_widget
         is_detached_video_player = False
@@ -886,7 +976,7 @@ class UnifiedPreviewer(QWidget):
         copy_button_layout.addStretch()
         error_layout.addLayout(copy_button_layout)
         
-        self.preview_layout.addWidget(error_container)
+        self._add_preview_widget(error_container)
         self.current_preview_widget = error_container
         self.current_preview_type = "error"
     
@@ -904,7 +994,7 @@ class UnifiedPreviewer(QWidget):
                 from freeassetfilter.components.photo_viewer import GifViewer
                 gif_viewer = GifViewer()
                 if gif_viewer.load_gif(file_path):
-                    self.preview_layout.addWidget(gif_viewer, 1)
+                    self._add_preview_widget(gif_viewer)
                     self.current_preview_widget = gif_viewer
                     self.current_preview_type = "image"
                     return
@@ -914,7 +1004,7 @@ class UnifiedPreviewer(QWidget):
                     from freeassetfilter.components.photo_viewer import GifViewer
                     gif_viewer = GifViewer()
                     if gif_viewer.load_gif(file_path):
-                        self.preview_layout.addWidget(gif_viewer, 1)
+                        self._add_preview_widget(gif_viewer)
                         self.current_preview_widget = gif_viewer
                         self.current_preview_type = "image"
                         return
@@ -924,7 +1014,7 @@ class UnifiedPreviewer(QWidget):
             photo_viewer = PhotoViewer()
             photo_viewer.load_image_from_path(file_path)
             
-            self.preview_layout.addWidget(photo_viewer, 1)
+            self._add_preview_widget(photo_viewer)
             self.current_preview_widget = photo_viewer
             self.current_preview_type = "image"
         except Exception as e:
@@ -979,7 +1069,7 @@ class UnifiedPreviewer(QWidget):
                 initial_speed=initial_speed
             )
             
-            self.preview_layout.addWidget(video_player, 1)
+            self._add_preview_widget(video_player)
             self.current_preview_widget = video_player
             self.current_preview_type = "video"
 
@@ -1044,7 +1134,7 @@ class UnifiedPreviewer(QWidget):
             
             # 先添加到布局，确保widget被正确初始化
             debug("添加到布局")
-            self.preview_layout.addWidget(audio_player, 1)
+            self._add_preview_widget(audio_player)
             self.current_preview_widget = audio_player
             self.current_preview_type = "audio"
 
@@ -1080,7 +1170,7 @@ class UnifiedPreviewer(QWidget):
             # 加载PDF文件，开始渲染
             pdf_previewer.load_file_from_path(file_path)
             
-            self.preview_layout.addWidget(pdf_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
+            self._add_preview_widget(pdf_previewer)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = pdf_previewer
             self.current_preview_type = "pdf"
         except Exception as e:
@@ -1274,14 +1364,14 @@ class UnifiedPreviewer(QWidget):
                 
                 info_layout.addWidget(info_label)
                 
-                self.preview_layout.addWidget(info_container)
+                self._add_preview_widget(info_container)
                 self.current_preview_widget = info_container
                 self.current_preview_type = "info"
                 return
 
             # 添加创建的组件到布局
             if created_widget:
-                self.preview_layout.addWidget(created_widget, 1)  # 设置伸展因子1，使预览组件占据剩余空间
+                self._add_preview_widget(created_widget)  # 设置伸展因子1，使预览组件占据剩余空间
                 self.current_preview_widget = created_widget
             
         except Exception as e:
@@ -1310,7 +1400,7 @@ class UnifiedPreviewer(QWidget):
             copy_button_layout.addStretch()
             error_layout.addLayout(copy_button_layout)
             
-            self.preview_layout.addWidget(error_container)
+            self._add_preview_widget(error_container)
             self.current_preview_widget = error_container
             self.current_preview_type = "error"
         finally:
@@ -1360,7 +1450,7 @@ class UnifiedPreviewer(QWidget):
             copy_button_layout.addStretch()
             error_layout.addLayout(copy_button_layout)
             
-            self.preview_layout.addWidget(error_container)
+            self._add_preview_widget(error_container)
             self.current_preview_widget = error_container
             self.current_preview_type = "error"
         finally:
@@ -1478,7 +1568,7 @@ class UnifiedPreviewer(QWidget):
             # 设置文件，开始异步读取
             text_previewer.set_file(file_path)
             
-            self.preview_layout.addWidget(text_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
+            self._add_preview_widget(text_previewer)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = text_previewer
             self.current_preview_type = "text"
         except Exception as e:
@@ -1504,7 +1594,7 @@ class UnifiedPreviewer(QWidget):
             # 设置字体文件
             font_previewer.set_font(file_path)
 
-            self.preview_layout.addWidget(font_previewer, 1)  # 设置伸展因子1，使预览组件占据剩余空间
+            self._add_preview_widget(font_previewer)  # 设置伸展因子1，使预览组件占据剩余空间
             self.current_preview_widget = font_previewer
             self.current_preview_type = "font"
         except Exception as e:
@@ -1584,7 +1674,7 @@ class UnifiedPreviewer(QWidget):
                     
                     info_layout.addWidget(info_label)
                     
-                    self.preview_layout.addWidget(info_container)
+                    self._add_preview_widget(info_container)
                     self.current_preview_widget = info_container
                     self.current_preview_type = "info"
                     return
@@ -1720,7 +1810,7 @@ class UnifiedPreviewer(QWidget):
             error_label = QLabel(f"文档预览失败: {str(e)}\n\n详细错误:\n{traceback.format_exc()}")
             error_label.setAlignment(Qt.AlignCenter)
             error_label.setStyleSheet("color: red; font-weight: bold;")
-            self.preview_layout.addWidget(error_label)
+            self._add_preview_widget(error_label)
             self.current_preview_widget = error_label
 
     def pause_active_media_preview(self) -> bool:
@@ -1946,7 +2036,7 @@ class UnifiedPreviewer(QWidget):
                     )
                     self.current_preview_type = "video"
 
-                self.preview_layout.addWidget(player, 1)
+                self._add_preview_widget(player)
                 self.current_preview_widget = player
 
                 if hasattr(player, "load_media"):

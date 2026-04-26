@@ -38,6 +38,7 @@ class LoadingSpinner(QWidget):
         
         self._loading_pixmap = QPixmap()
         self._accent_color = QColor("#0a59f7")
+        self._background_color = None
         
         self._init_widget()
         self._load_svg_icon()
@@ -188,6 +189,13 @@ class LoadingSpinner(QWidget):
         self._accent_color = QColor(color)
         self._load_svg_icon()
         self.update()
+
+    def set_background_color(self, color):
+        """
+        设置绘制前用于清除旧帧的背景色。
+        """
+        self._background_color = QColor(color) if color else None
+        self.update()
     
     def paintEvent(self, event):
         """
@@ -199,6 +207,9 @@ class LoadingSpinner(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(self.rect(), self._background_color or Qt.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         
         painter.translate(self.width() / 2, self.height() / 2)
         painter.rotate(self._rotation_value)
