@@ -442,6 +442,7 @@ class CustomMessageBox(QDialog):
         self._show_animation_duration = 220
         self._hide_animation_duration = 170
         self._has_played_show_animation = False
+        self._show_animation_pending = False
         
         # 初始化UI
         self.init_ui()
@@ -937,7 +938,8 @@ class CustomMessageBox(QDialog):
         """
         启动显示动画
         """
-        if self._is_hide_animating:
+        self._show_animation_pending = False
+        if self._is_hide_animating or self._is_show_animating or self._has_played_show_animation:
             return
         
         self._stop_animations()
@@ -1002,6 +1004,7 @@ class CustomMessageBox(QDialog):
         
         self._pending_result = result
         self._close_after_hide = True
+        self._show_animation_pending = False
         self._start_hide_animation()
     
     def _on_show_animation_finished(self):
@@ -1029,6 +1032,7 @@ class CustomMessageBox(QDialog):
         should_close = self._close_after_hide
         self._close_after_hide = False
         self._has_played_show_animation = False
+        self._show_animation_pending = False
         
         if should_close:
             if pending_result is None:
@@ -1098,7 +1102,14 @@ class CustomMessageBox(QDialog):
         if hasattr(self, 'shadow_effect') and self.shadow_effect:
             self.window_body.update()
         
-        if not self._has_played_show_animation and not self._is_show_animating and not self._is_hide_animating:
+        if (
+            not self._has_played_show_animation
+            and not self._is_show_animating
+            and not self._is_hide_animating
+            and not self._show_animation_pending
+        ):
+            self._show_animation_pending = True
+            self.setWindowOpacity(0.0)
             QTimer.singleShot(0, self._start_show_animation)
     
     def center(self):
