@@ -336,22 +336,23 @@ class StartupWarmupThread(QThread):
             error(f"FFmpeg 预热失败: {e}")
         except Exception as e:
             error(f"FFmpeg 预热失败: {e}")
-try:
-    from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
-    debug("LUT C++ 模块预热开始")
-    lut_cpp_warmup()
 
-    from freeassetfilter.core.lut_preview_generator import get_preview_generator
-    get_preview_generator()
-    debug("LUT 模块预热完成")
-except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-    error(f"LUT 预热失败: {e}")
-except (ValueError, TypeError) as e:
-    error(f"LUT 预热失败: {e}")
-except (ImportError, ModuleNotFoundError) as e:
-    error(f"LUT 预热失败: {e}")
-except Exception as e:
-    error(f"LUT 预热失败: {e}")
+        try:
+            from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
+            debug("LUT C++ 模块预热开始")
+            lut_cpp_warmup()
+
+            from freeassetfilter.core.lut_preview_generator import get_preview_generator
+            get_preview_generator()
+            debug("LUT 模块预热完成")
+        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+            error(f"LUT 预热失败: {e}")
+        except (ValueError, TypeError) as e:
+            error(f"LUT 预热失败: {e}")
+        except (ImportError, ModuleNotFoundError) as e:
+            error(f"LUT 预热失败: {e}")
+        except Exception as e:
+            error(f"LUT 预热失败: {e}")
 
 
 
@@ -473,7 +474,8 @@ class FreeAssetFilterApp(QMainWindow):
                         logger.warning("预览线程未在2秒内退出，可能需要更长时间")
                         # 不再使用 terminate()，允许线程自然结束
                         # 标记为后台线程，让进程退出时自动清理
-                        self.unified_previewer._preview_thread.setDaemon(True)
+                        # QThread 没有 setDaemon 方法，改为记录日志并继续清理
+                        logger.warning("预览线程仍在运行，将由进程退出时自动回收")
 
             # 显式清理视频播放器（如果存在）
             if hasattr(self.unified_previewer, 'video_player') and self.unified_previewer.video_player:
@@ -584,7 +586,7 @@ class FreeAssetFilterApp(QMainWindow):
             except (OSError, PermissionError) as e:
                 logger.warning(f"删除临时文件夹失败: {e}")
 
-        # 停止后台预热线程
+        # 停止后台预热线程（兼容旧逻辑，_cleanup_all_qthreads_before_exit 已处理）
         if self._startup_warmup_thread and self._startup_warmup_thread.isRunning():
             self._startup_warmup_thread.quit()
             # 增加等待时间
@@ -592,11 +594,120 @@ class FreeAssetFilterApp(QMainWindow):
                 logger.warning("预热线程未在2秒内退出")
                 # 不再强制终止，允许其自然结束
 
-        cleanup_fault_handler_tee()
+        # === 新增：在调用父类 closeEvent 之前，安全停止所有 QThread ===
+        self._cleanup_all_qthreads_before_exit()
+
         debug_exit_threads()
 
         # 调用父类的closeEvent
         super().closeEvent(event)
+
+    def _safe_stop_qthread(self, thread, name="QThread", timeout=2000):
+        """
+        安全停止一个 QThread：requestInterruption -> quit -> wait。
+        如果线程仍在运行则记录警告，但不会调用 deleteLater（避免 Destroyed while thread is still running）。
+        """
+        if thread is None:
+            return
+        try:
+            if thread.isRunning():
+                debug(f"[QThreadCleanup] 正在停止 {name} (isRunning={thread.isRunning()})...")
+                thread.requestInterruption()
+                thread.quit()
+                if not thread.wait(timeout):
+                    logger.warning(f"[QThreadCleanup] {name} 未在 {timeout}ms 内退出，将由进程退出时自动回收")
+                    return False
+                else:
+                    debug(f"[QThreadCleanup] {name} 已正常退出")
+            else:
+                debug(f"[QThreadCleanup] {name} 未在运行，无需停止")
+            return True
+        except Exception as e:
+            logger.debug(f"[QThreadCleanup] 停止 {name} 时发生异常: {e}")
+            return False
+
+    def _cleanup_all_qthreads_before_exit(self):
+        """
+        在 closeEvent 中调用，确保所有已知的 QThread 子对象被安全停止。
+        避免在父窗口销毁时 Qt 报 "Destroyed while thread is still running"。
+        """
+        debug("[QThreadCleanup] 开始清理所有后台 QThread...")
+        # 1) 启动预热线程
+        if hasattr(self, '_startup_warmup_thread') and self._startup_warmup_thread:
+            self._safe_stop_qthread(self._startup_warmup_thread, "StartupWarmupThread")
+
+        # 2) 更新控制器相关线程
+        if hasattr(self, 'update_controller') and self.update_controller:
+            # 在调用 cancel_silent_check() 之前保留静默检查线程的引用
+            # cancel_silent_check() 会断开 Qt 父子关系(setParent(None))并释放 Python 引用(self._silent_check_worker = None)
+            # 但 HTTP 请求是同步阻塞的，requestInterruption() 无法中断，线程仍在运行
+            # 若不保留引用，当 super().closeEvent() 销毁 UpdateController 时信号连接断开，
+            # QThread Python 包装器被 GC 时底层线程还在运行 → "QThread: Destroyed while thread '' is still running"
+            _silent_worker = getattr(self.update_controller, '_silent_check_worker', None)
+            self.update_controller.cancel_silent_check()
+            if _silent_worker and _silent_worker.isRunning():
+                if not hasattr(self, '_retired_worker_refs'):
+                    self._retired_worker_refs = []
+                self._retired_worker_refs.append(_silent_worker)
+                debug(f"[QThreadCleanup] 已保留静默检查线程引用，防止 GC 提前销毁")
+            if hasattr(self.update_controller, '_check_worker') and self.update_controller._check_worker:
+                self._safe_stop_qthread(self.update_controller._check_worker, "UpdateCheckWorker")
+            if hasattr(self.update_controller, '_download_worker') and self.update_controller._download_worker:
+                self._safe_stop_qthread(self.update_controller._download_worker, "UpdateDownloadWorker")
+
+        # 3) 统一预览器线程
+        if hasattr(self, 'unified_previewer') and self.unified_previewer:
+            if hasattr(self.unified_previewer, '_preview_thread') and self.unified_previewer._preview_thread:
+                self._safe_stop_qthread(self.unified_previewer._preview_thread, "PreviewLoaderThread")
+
+        # 4) 文件选择器相关线程
+        for attr in ('_drive_list_thread', '_file_loader_thread', '_thumbnail_thread'):
+            if hasattr(self, 'file_selector_a') and hasattr(self.file_selector_a, attr):
+                t = getattr(self.file_selector_a, attr)
+                if t:
+                    self._safe_stop_qthread(t, attr)
+            if hasattr(self, 'file_selector_b') and hasattr(self.file_selector_b, attr):
+                t = getattr(self.file_selector_b, attr)
+                if t:
+                    self._safe_stop_qthread(t, attr)
+
+        # 5) 文件夹内容列表线程
+        if hasattr(self, 'folder_content_list') and hasattr(self.folder_content_list, '_load_thread'):
+            t = self.folder_content_list._load_thread
+            if t:
+                self._safe_stop_qthread(t, "FolderContentLoaderThread")
+
+        # 6) 文件信息预览器线程
+        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'file_info_viewer'):
+            fv = self.unified_previewer.file_info_viewer
+            if hasattr(fv, 'load_thread') and fv.load_thread:
+                self._safe_stop_qthread(fv.load_thread, "FileInfoLoadThread")
+
+        # 7) 图片查看器处理线程
+        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'photo_viewer'):
+            pv = self.unified_previewer.photo_viewer
+            for attr in ('raw_processor', 'heif_avif_processor', 'ico_processor', 'psd_processor'):
+                if hasattr(pv, attr):
+                    t = getattr(pv, attr)
+                    if t:
+                        self._safe_stop_qthread(t, attr)
+
+        # 8) 字体预览线程
+        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'font_previewer'):
+            fp = self.unified_previewer.font_previewer
+            if hasattr(fp, '_thread') and fp._thread:
+                self._safe_stop_qthread(fp._thread, "FontLoadThread")
+
+        # 9) 音频背景线程池
+        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, 'audio_background'):
+            ab = self.unified_previewer.audio_background
+            if hasattr(ab, '_thread_pool') and ab._thread_pool:
+                try:
+                    ab._thread_pool.waitForDone(1500)
+                except Exception as e:
+                    debug(f"[QThreadCleanup] 等待音频背景线程池结束失败: {e}")
+
+        debug("[QThreadCleanup] QThread 清理完成")
 
     def _apply_title_bar_theme(self):
         """

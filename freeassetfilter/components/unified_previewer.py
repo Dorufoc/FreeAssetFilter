@@ -593,9 +593,9 @@ class UnifiedPreviewer(QWidget):
                     # 增加等待时间到2000ms，确保线程有足够时间自然退出
                     if not thread.wait(2000):
                         # 不再使用 terminate() 强制终止，避免资源泄漏
-                        # 标记为守护线程，让进程退出时自动清理
-                        thread.setDaemon(True)
-                        get_logger().warning("[UnifiedPreviewer] 预览线程未在2秒内退出，标记为守护线程")
+                        # QThread 没有 setDaemon 方法，改为记录日志
+                        # 线程仍运行中，保留引用由进程退出时自动回收
+                        get_logger().warning("[UnifiedPreviewer] 预览线程未在2秒内退出，将由进程退出时自动回收")
                 
                 # 断开所有信号连接
                 try:
@@ -605,8 +605,12 @@ class UnifiedPreviewer(QWidget):
                 except (RuntimeError, TypeError) as e:
                     debug(f'[UnifiedPreviewer] 断开信号连接时出错: {e}')
                 
-                # 安全删除线程对象
-                thread.deleteLater()
+                # 安全删除线程对象：仅当线程已停止时才调用 deleteLater
+                # 避免 "Destroyed while thread is still running" 警告
+                if not thread.isRunning():
+                    thread.deleteLater()
+                else:
+                    get_logger().warning("[UnifiedPreviewer] 预览线程仍在运行，跳过 deleteLater，避免 Qt 警告")
             except Exception as e:
                 # 忽略清理过程中的异常
                 pass

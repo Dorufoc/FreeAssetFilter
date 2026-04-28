@@ -88,6 +88,10 @@ class SilentUpdateCheckWorker(QThread):
     cancelled = Signal()
     check_finished = Signal()
     
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SilentUpdateCheckWorker")
+    
     def run(self):
         debug("SilentUpdateCheckWorker: 开始静默检查更新")
         try:
