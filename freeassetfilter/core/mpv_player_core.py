@@ -568,7 +568,8 @@ class MPVPlayerCore(QObject):
                 # debug(f"发送quit命令失败: {e}")
                 pass
 
-            time.sleep(0.05)
+            # 短暂等待让quit命令生效，但避免长时间阻塞
+            time.sleep(0.01)
 
             try:
                 self._dll_loader.dll.mpv_terminate_destroy(mpv_handle)
@@ -2458,11 +2459,21 @@ class MPVPlayerCore(QObject):
         try:
             # 1. 先暂停播放（停止解码器工作）- 使用命令队列
             self._send_command(MPVCommandType.PAUSE, timeout=0.5)
-            time.sleep(0.03)  # 给30ms让解码器停止
+            # 等待暂停状态生效（通过状态检查替代硬等待）
+            for _ in range(5):
+                with self._state_lock:
+                    if self._is_paused:
+                        break
+                time.sleep(0.005)  # 5ms轮询
             
             # 2. 停止播放（释放文件句柄）- 使用命令队列
             self._send_command(MPVCommandType.STOP, timeout=0.5)
-            time.sleep(0.02)  # 给20ms释放文件
+            # 等待停止状态生效
+            for _ in range(5):
+                with self._state_lock:
+                    if not self._is_playing:
+                        break
+                time.sleep(0.005)  # 5ms轮询
             
             # 3. 清除视频滤镜/LUT（如果有）- 使用命令队列
             try:

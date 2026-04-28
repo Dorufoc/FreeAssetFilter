@@ -317,6 +317,10 @@ class StartupWarmupThread(QThread):
     避免 LUT/C++ 与 FFmpeg 相关初始化阻塞主线程首屏展示
     """
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("StartupWarmupThread")
+
     def run(self):
         try:
             from freeassetfilter.core.media_probe import warmup_ffmpeg_tools
@@ -332,23 +336,23 @@ class StartupWarmupThread(QThread):
             error(f"FFmpeg 预热失败: {e}")
         except Exception as e:
             error(f"FFmpeg 预热失败: {e}")
+try:
+    from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
+    debug("LUT C++ 模块预热开始")
+    lut_cpp_warmup()
 
-        try:
-            from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
-            debug("LUT C++ 模块预热开始")
-            lut_cpp_warmup()
+    from freeassetfilter.core.lut_preview_generator import get_preview_generator
+    get_preview_generator()
+    debug("LUT 模块预热完成")
+except (OSError, IOError, PermissionError, FileNotFoundError) as e:
+    error(f"LUT 预热失败: {e}")
+except (ValueError, TypeError) as e:
+    error(f"LUT 预热失败: {e}")
+except (ImportError, ModuleNotFoundError) as e:
+    error(f"LUT 预热失败: {e}")
+except Exception as e:
+    error(f"LUT 预热失败: {e}")
 
-            from freeassetfilter.core.lut_preview_generator import get_preview_generator
-            get_preview_generator()
-            debug("LUT 模块预热完成")
-        except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-            error(f"LUT 预热失败: {e}")
-        except (ValueError, TypeError) as e:
-            error(f"LUT 预热失败: {e}")
-        except (ImportError, ModuleNotFoundError) as e:
-            error(f"LUT 预热失败: {e}")
-        except Exception as e:
-            error(f"LUT 预热失败: {e}")
 
 
 class FreeAssetFilterApp(QMainWindow):
@@ -464,10 +468,12 @@ class FreeAssetFilterApp(QMainWindow):
             if hasattr(self.unified_previewer, '_preview_thread') and self.unified_previewer._preview_thread:
                 if self.unified_previewer._preview_thread.isRunning():
                     self.unified_previewer._preview_thread.cancel()
-                    self.unified_previewer._preview_thread.wait(500)
-                    if self.unified_previewer._preview_thread.isRunning():
-                        self.unified_previewer._preview_thread.terminate()
-                        self.unified_previewer._preview_thread.wait(100)
+                    # 增加等待时间，避免强制终止
+                    if not self.unified_previewer._preview_thread.wait(2000):
+                        logger.warning("预览线程未在2秒内退出，可能需要更长时间")
+                        # 不再使用 terminate()，允许线程自然结束
+                        # 标记为后台线程，让进程退出时自动清理
+                        self.unified_previewer._preview_thread.setDaemon(True)
 
             # 显式清理视频播放器（如果存在）
             if hasattr(self.unified_previewer, 'video_player') and self.unified_previewer.video_player:
@@ -526,6 +532,17 @@ class FreeAssetFilterApp(QMainWindow):
         if app is not None:
             setattr(app, "_faf_restore_safe_mode", False)
 
+        # 提前停止鼠标监控器，避免阻塞退出
+        try:
+            from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
+            GlobalMouseMonitor.stop_all()
+        except ImportError:
+            pass  # 模块不存在，忽略
+        except (RuntimeError, AttributeError, OSError) as e:
+            logger.debug(f"停止全局鼠标监控器失败（正常情况）: {e}")
+        except Exception as e:
+            logger.error(f"停止全局鼠标监控器时系统错误: {e}")
+
         # 终止静默检查更新线程
         if hasattr(self, "update_controller") and self.update_controller:
             self.update_controller.cancel_silent_check()
@@ -570,18 +587,10 @@ class FreeAssetFilterApp(QMainWindow):
         # 停止后台预热线程
         if self._startup_warmup_thread and self._startup_warmup_thread.isRunning():
             self._startup_warmup_thread.quit()
-            self._startup_warmup_thread.wait(500)
-
-        # 停止所有全局鼠标监控器，卸载 Windows 钩子，清理 _DummyThread
-        try:
-            from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
-            GlobalMouseMonitor.stop_all()
-        except ImportError:
-            pass  # 模块不存在，忽略
-        except (RuntimeError, AttributeError) as e:
-            logger.debug(f"停止全局鼠标监控器失败（正常情况）: {e}")
-        except OSError as e:
-            logger.error(f"停止全局鼠标监控器时系统错误: {e}")
+            # 增加等待时间
+            if not self._startup_warmup_thread.wait(2000):
+                logger.warning("预热线程未在2秒内退出")
+                # 不再强制终止，允许其自然结束
 
         cleanup_fault_handler_tee()
         debug_exit_threads()

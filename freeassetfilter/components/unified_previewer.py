@@ -22,7 +22,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
+from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details, get_logger
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
@@ -590,10 +590,12 @@ class UnifiedPreviewer(QWidget):
             try:
                 if thread.isRunning():
                     thread.cancel()
-                    # 增加等待时间到1000ms，确保线程有足够时间终止
-                    if not thread.wait(1000):
-                        thread.terminate()  # 强制终止
-                        thread.wait(500)
+                    # 增加等待时间到2000ms，确保线程有足够时间自然退出
+                    if not thread.wait(2000):
+                        # 不再使用 terminate() 强制终止，避免资源泄漏
+                        # 标记为守护线程，让进程退出时自动清理
+                        thread.setDaemon(True)
+                        get_logger().warning("[UnifiedPreviewer] 预览线程未在2秒内退出，标记为守护线程")
                 
                 # 断开所有信号连接
                 try:
@@ -842,13 +844,15 @@ class UnifiedPreviewer(QWidget):
 
         try:
             if hasattr(video_player_widget, 'cleanup'):
-                video_player_widget.cleanup(async_mode=True)
+                # 退出时使用同步清理，确保资源完全释放
+                video_player_widget.cleanup(async_mode=not app_closing)
         except Exception as e:
             error(f"调用VideoPlayer.cleanup()时出错: {e}")
 
         self._preview_cleanup_sequence += 1
         callback_token = self._preview_cleanup_sequence
 
+        # 如果是应用退出，立即完成清理；否则延迟120ms
         delay_ms = 0 if app_closing else 120
         QTimer.singleShot(delay_ms, lambda: _finish_clear(callback_token))
     

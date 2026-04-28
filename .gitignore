@@ -92,3 +92,5 @@ freeassetfilter/widgets/file_block_card_backup_before_refactor.py
 freeassetfilter/components/file_selector_backup_before_refactor.py
 freeassetfilter/components/file_staging_pool.重构前备份.py
 freeassetfilter/widgets/file_horizontal_card.重构前备份.py
+EXIT_BLOCK_FIX_SUMMARY.md
+FIX_SUMMARY.md

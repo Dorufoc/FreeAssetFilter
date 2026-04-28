@@ -2782,13 +2782,13 @@ class VideoPlayer(QWidget):
         """
         return self._control_bar_border_radius if self._control_bar_border_radius is not None else 8
 
-    def cleanup(self, async_mode: bool = True):
+    def cleanup(self, async_mode: bool = False):
         """
         清理资源，用于在组件被销毁前进行完整的资源释放
         这是关键方法：必须确保MPV完全销毁后才能创建新的播放器，否则会导致访问冲突
         
         Args:
-            async_mode: 是否异步关闭（默认True，不阻塞UI）
+            async_mode: 是否异步关闭（默认False，同步清理确保资源释放）
         """
         debug(f"开始清理资源 (async={async_mode})")
 
@@ -2859,9 +2859,9 @@ class VideoPlayer(QWidget):
             self._seek_debounce_timer.stop()
         self._pending_seek_value = None
 
-        # 使用异步模式关闭MPV管理器，避免阻塞UI
+        # 使用同步模式关闭MPV管理器，确保资源完全释放
         if self._mpv_manager:
-            self._mpv_manager.close(async_mode=True, timeout=2.0)
+            self._mpv_manager.close(async_mode=False, timeout=5.0)
 
         super().closeEvent(event)
     

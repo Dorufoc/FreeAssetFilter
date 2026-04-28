@@ -364,9 +364,10 @@ def build_request_headers(accept_header=REQUEST_ACCEPT_HEADER):
     }
 
 
-def _http_get_text(url, timeout=30, cancel_check=None):
+def _http_get_text(url, timeout=10, cancel_check=None):
     """
     通过标准库执行 HTTP GET，请求文本内容
+    使用较短的超时时间，确保取消请求时能快速响应
     """
     _raise_if_cancelled(cancel_check)
 
@@ -403,7 +404,7 @@ def fetch_github_releases(cancel_check=None):
     """
     info("获取 GitHub Releases (API)")
 
-    raw_text = _http_get_text(GITHUB_RELEASES_API_URL, timeout=30, cancel_check=cancel_check)
+    raw_text = _http_get_text(GITHUB_RELEASES_API_URL, timeout=10, cancel_check=cancel_check)
 
     try:
         releases = json.loads(raw_text)
@@ -524,7 +525,7 @@ def _extract_latest_tag_from_redirect(cancel_check=None):
     )
 
     try:
-        with request.urlopen(req, timeout=30) as response:
+        with request.urlopen(req, timeout=10) as response:
             _raise_if_cancelled(cancel_check)
             final_url = response.geturl()
     except UpdateCancelled:
@@ -572,7 +573,7 @@ def _fetch_release_metadata_from_atom(tag_name, cancel_check=None):
     """
     info(f"获取版本元数据: {tag_name}")
 
-    atom_text = _http_get_text(GITHUB_RELEASES_ATOM_URL, timeout=30, cancel_check=cancel_check)
+    atom_text = _http_get_text(GITHUB_RELEASES_ATOM_URL, timeout=10, cancel_check=cancel_check)
 
     try:
         root = ElementTree.fromstring(atom_text)
@@ -635,7 +636,7 @@ def _fetch_installer_info_from_expanded_assets(tag_name, cancel_check=None):
 
     html_text = _http_get_text(
         f"{GITHUB_RELEASES_EXPANDED_ASSETS_URL}/{tag_name}",
-        timeout=30,
+        timeout=10,
         cancel_check=cancel_check,
     )
 

@@ -345,7 +345,7 @@ class UpdateController(QObject):
         """
         取消静默检查（例如用户手动触发检查更新时）
         retire=True 用于交互取消，不在主线程等待网络请求结束；
-        默认路径保留关闭窗口时的短等待，避免退出时销毁仍在运行的线程。
+        默认路径不等待线程（因 HTTP 请求无法被中断），直接退休避免阻塞关闭流程。
         """
         if self._silent_check_worker and self._silent_check_worker.isRunning():
             debug("UpdateController: 取消静默检查")
@@ -357,12 +357,17 @@ class UpdateController(QObject):
                 self._silent_check_worker = None
             else:
                 self._silent_check_worker.requestInterruption()
-                if self._silent_check_worker.wait(3000):
-                    self._silent_check_worker = None
-                else:
-                    warning("UpdateController: 静默检查未在关闭前退出，保留后台引用等待自然结束")
-                    self._retire_silent_worker(self._silent_check_worker)
-                    self._silent_check_worker = None
+                # 不等待线程结束：HTTP 请求是同步阻塞的，无法被中断
+                # 直接退休线程，保留引用直到完成信号触发，避免阻塞关闭流程
+                self._retire_silent_worker(self._silent_check_worker)
+                # 断开 Qt 父子关系，防止 QThread 对象随父窗口销毁时触发 "Destroyed while thread is still running"
+                try:
+                    self._silent_check_worker.setParent(None)
+                except Exception:
+                    pass
+                self._silent_check_worker = None
+        elif self._silent_check_worker:
+            debug("UpdateController: 取消静默检查 - worker 存在但已不在运行")
 
     def bind_button(self, button):
         """
@@ -406,6 +411,13 @@ class UpdateController(QObject):
         self._retire_worker(worker, self._retired_check_workers)
 
     def _retire_silent_worker(self, worker):
+        """
+        退休静默检查工作线程，断开 Qt 父子关系防止销毁时触发警告
+        """
+        try:
+            worker.setParent(None)
+        except Exception:
+            pass
         self._retire_worker(worker, self._retired_silent_workers)
 
     def _forget_retired_worker(self, worker, retired_workers):
