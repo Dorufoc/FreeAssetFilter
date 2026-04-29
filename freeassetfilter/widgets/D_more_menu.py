@@ -71,7 +71,7 @@ class D_MoreMenuItem(QPushButton):
         border_radius_item = 0
         padding_left = int(8 * self.dpi_scale)
         padding_right = int(20 * self.dpi_scale)  # 20dx右边距
-        padding_v = int(6 * self.dpi_scale)
+        padding_v = int(3 * self.dpi_scale)
         # hover效果比内容小一圈的边距（更小）
         hover_margin = int(1 * self.dpi_scale)
 

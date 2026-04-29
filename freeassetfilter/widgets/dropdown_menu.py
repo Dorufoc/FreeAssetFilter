@@ -50,7 +50,7 @@ class _DropdownHoverMenu(D_HoverMenu):
     """
 
     def paintEvent(self, event):
-        """绘制 dropdown 专用圆角卡片。"""
+        """绘制 dropdown 专用圆角卡片，与 D_HoverMenu 保持一致的卡片样式。"""
         app = QApplication.instance()
 
         if hasattr(app, "settings_manager"):
@@ -62,13 +62,15 @@ class _DropdownHoverMenu(D_HoverMenu):
 
         current_colors = settings_manager.get_setting("appearance.colors", {})
         base_color = current_colors.get("base_color", "#ffffff")
-        normal_color = current_colors.get("normal_color", "#d0d0d0")
+        # 使用 auxiliary_color 作为边框色，比 normal_color 更柔和，与卡片控件风格一致
+        border_color = current_colors.get("auxiliary_color", "#f1f3f5")
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        border_pen = QPen(QColor(normal_color))
-        border_pen.setWidth(1)
+        # 更纤细柔和的边框
+        border_pen = QPen(QColor(border_color))
+        border_pen.setWidthF(0.8)
         painter.setPen(border_pen)
 
         base_qcolor = QColor(base_color)
@@ -169,6 +171,7 @@ class _DropdownMenuItem(QPushButton):
             "normal_color": "#f0f0f0",
             "secondary_color": "#333333",
             "accent_color": "#B036EE",
+            "auxiliary_color": "#f1f3f5",
         }
 
         if self.settings_manager:
@@ -186,23 +189,31 @@ class _DropdownMenuItem(QPushButton):
         colors = self._colors()
 
         text_color = colors.get("secondary_color", "#333333")
-        hover_color = colors.get("normal_color", "#f0f0f0")
         accent_color = colors.get("accent_color", "#B036EE")
+        auxiliary_color = colors.get("auxiliary_color", "#f1f3f5")
+        base_color = colors.get("base_color", "#ffffff")
         selected_bg = self._selected_background(accent_color)
 
-        border_radius = int(6 * self.dpi_scale)
-        padding_left = int(10 * self.dpi_scale)
-        padding_right = int(20 * self.dpi_scale)
-        padding_v = int(6 * self.dpi_scale)
+        # 使用更大的圆角，与整体 UI 风格保持一致
+        border_radius = int(8 * self.dpi_scale)
+        padding_left = int(6 * self.dpi_scale)
+        padding_right = int(24 * self.dpi_scale)
+        padding_v = int(3 * self.dpi_scale)
+
+        # 悬停背景使用辅助色，比 normal_color 更柔和现代
+        hover_qcolor = QColor(auxiliary_color)
+        hover_background = (
+            f"rgba({hover_qcolor.red()}, {hover_qcolor.green()}, {hover_qcolor.blue()}, 255)"
+            if self._enabled_state
+            else "transparent"
+        )
 
         base_background = "transparent"
-        hover_background = hover_color if self._enabled_state else "transparent"
-        border = "1px solid transparent"
 
         if self._selected:
+            # 选中态：背景使用强调色半透明，去掉硬边框，更简洁
             base_background = selected_bg
             hover_background = selected_bg
-            border = f"1px solid {accent_color}"
 
         disabled_text_color = QColor(text_color)
         disabled_text_color.setAlpha(110)
@@ -213,13 +224,13 @@ class _DropdownMenuItem(QPushButton):
                 color: {text_color if self._enabled_state else disabled_text_color.name(QColor.HexArgb)};
                 padding: {padding_v}px {padding_right}px {padding_v}px {padding_left}px;
                 background-color: {base_background};
-                border: {border};
+                border: none;
                 border-radius: {border_radius}px;
                 text-align: left;
             }}
             QPushButton:hover {{
                 background-color: {hover_background};
-                border: {border};
+                border: none;
                 border-radius: {border_radius}px;
             }}
             """
@@ -284,9 +295,10 @@ class _DropdownMenuList(QWidget):
         self._max_height = int(140 * self.dpi_scale)
         self._use_scroll_layout = True
 
-        self._padding = int(4 * self.dpi_scale)
+        # 增大内部边距以配合更大的容器圆角（8px），视觉上更加通透
+        self._padding = int(6 * self.dpi_scale)
         self._item_spacing = int(4 * self.dpi_scale)
-        self._row_min_height = int(24 * self.dpi_scale)
+        self._row_min_height = int(22 * self.dpi_scale)
         self._scrollbar_reserved_width = int(10 * self.dpi_scale)
 
         # 兼容旧调用链：
@@ -438,7 +450,8 @@ class _DropdownMenuList(QWidget):
     def _row_height(self) -> int:
         font_metrics = QFontMetrics(self.global_font)
         text_height = font_metrics.height()
-        padding_v = int(6 * self.dpi_scale)
+        # 与 _DropdownMenuItem 的 padding_v 保持一致
+        padding_v = int(3 * self.dpi_scale)
         border_allowance = int(2 * self.dpi_scale)
         return max(self._row_min_height, text_height + padding_v * 2 + border_allowance)
 
@@ -463,8 +476,9 @@ class _DropdownMenuList(QWidget):
             if text:
                 max_text_width = max(max_text_width, font_metrics.horizontalAdvance(text))
 
-        padding_left = int(10 * self.dpi_scale)
-        padding_right = int(20 * self.dpi_scale)
+        # 与 _DropdownMenuItem 的 padding 值保持一致
+        padding_left = int(6 * self.dpi_scale)
+        padding_right = int(24 * self.dpi_scale)
 
         return max(1, max_text_width + padding_left + padding_right)
 
@@ -641,8 +655,8 @@ class Ddropmenu(QWidget):
             hide_on_window_move=True,
             use_sub_widget_mode=False,
             fill_width=False,
-            margin=int(2 * self.dpi_scale),
-            border_radius=int(4 * self.dpi_scale),
+            margin=int(4 * self.dpi_scale),
+            border_radius=int(8 * self.dpi_scale),
         )
         self.hover_menu.set_content(self.list_widget)
         self.hover_menu.set_timeout_enabled(False)
