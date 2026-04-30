@@ -83,8 +83,8 @@ def _create_fault_output_tee(stderr_stream, log_file_path):
     - 后台线程将内容同时转发到 stderr 和日志文件
 
     Returns:
-        tuple[file | None, file | None, threading.Thread | None]:
-            (提供给 faulthandler 的写端, 日志文件句柄, 转发线程)
+        tuple[file | None, file | None, threading.Thread | None, int | None]:
+            (提供给 faulthandler 的写端, 日志文件句柄, 转发线程, 原始写端 fd)
     """
     import os
 
@@ -128,7 +128,7 @@ def _create_fault_output_tee(stderr_stream, log_file_path):
     )
     tee_thread.start()
 
-    return write_stream, log_file, tee_thread
+    return write_stream, log_file, tee_thread, write_fd
 
 
 # 启用 faulthandler：
@@ -138,6 +138,7 @@ def _create_fault_output_tee(stderr_stream, log_file_path):
 _fault_handler_file = None
 _fault_handler_output = None
 _fault_handler_tee_thread = None
+_fault_handler_write_fd = None  # 保存原始写端 fd，用于彻底关闭管道
 _fault_handler_enabled = False
 
 fault_stream = _get_available_stderr_stream()
@@ -149,7 +150,7 @@ except (AttributeError, OSError, IOError, PermissionError, FileNotFoundError, Va
 
 if fault_stream is not None and log_file_path:
     try:
-        _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread = _create_fault_output_tee(
+        _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread, _fault_handler_write_fd = _create_fault_output_tee(
             fault_stream, log_file_path
         )
         faulthandler.enable(file=_fault_handler_output, all_threads=True)
@@ -217,10 +218,17 @@ def debug_exit_threads():
 def cleanup_fault_handler_tee():
     """
     退出前主动关闭 faulthandler 双写通道，促使 FaultHandlerTee 线程自然退出
+
+    关闭顺序：
+    1. 关闭 Python 文件对象 (_fault_handler_output)
+    2. 关闭原始管道写端 fd (_fault_handler_write_fd)，确保读端收到 EOF
+    3. 等待线程退出
+    4. 关闭日志文件
     """
-    global _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread
+    global _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread, _fault_handler_write_fd
 
     try:
+        # 1. 关闭 Python 文件对象
         if _fault_handler_output is not None:
             try:
                 _fault_handler_output.close()
@@ -228,9 +236,20 @@ def cleanup_fault_handler_tee():
                 pass
             _fault_handler_output = None
 
+        # 2. 关闭原始管道写端 fd，确保读端收到 EOF 信号
+        if _fault_handler_write_fd is not None:
+            try:
+                import os
+                os.close(_fault_handler_write_fd)
+            except OSError:
+                pass
+            _fault_handler_write_fd = None
+
+        # 3. 等待线程退出
         if _fault_handler_tee_thread is not None and _fault_handler_tee_thread.is_alive():
             _fault_handler_tee_thread.join(timeout=1.0)
 
+        # 4. 关闭日志文件
         if _fault_handler_file is not None:
             try:
                 _fault_handler_file.flush()
@@ -546,8 +565,10 @@ class FreeAssetFilterApp(QMainWindow):
             logger.error(f"停止全局鼠标监控器时系统错误: {e}")
 
         # 终止静默检查更新线程
-        if hasattr(self, "update_controller") and self.update_controller:
-            self.update_controller.cancel_silent_check()
+        # 注意：不在这里调用 cancel_silent_check()，因为会释放 _silent_check_worker 引用
+        # 导致后续 _cleanup_all_qthreads_before_exit() 无法获取线程对象进行等待
+        # 取消和等待逻辑统一在 _cleanup_all_qthreads_before_exit() 中处理
+        pass
 
         # 用户尝试关闭程序时，优先清理预览区域
         self._cleanup_preview_before_close()
@@ -597,6 +618,10 @@ class FreeAssetFilterApp(QMainWindow):
         # === 新增：在调用父类 closeEvent 之前，安全停止所有 QThread ===
         self._cleanup_all_qthreads_before_exit()
 
+        # 关闭 faulthandler 双写通道，促使 FaultHandlerTee 线程退出
+        # 必须在 debug_exit_threads() 之前调用，否则调试输出会显示 FaultHandlerTee 仍在运行
+        cleanup_fault_handler_tee()
+
         debug_exit_threads()
 
         # 调用父类的closeEvent
@@ -644,12 +669,36 @@ class FreeAssetFilterApp(QMainWindow):
             # 若不保留引用，当 super().closeEvent() 销毁 UpdateController 时信号连接断开，
             # QThread Python 包装器被 GC 时底层线程还在运行 → "QThread: Destroyed while thread '' is still running"
             _silent_worker = getattr(self.update_controller, '_silent_check_worker', None)
+            debug(f"[QThreadCleanup] 获取静默检查线程: {_silent_worker}, isRunning={_silent_worker.isRunning() if _silent_worker else 'N/A'}")
             self.update_controller.cancel_silent_check()
+            
+            # 保留所有静默检查线程引用（包括当前线程和已退休的线程）
+            if not hasattr(self, '_retired_worker_refs'):
+                self._retired_worker_refs = []
+            
+            # 保留当前线程引用
             if _silent_worker and _silent_worker.isRunning():
-                if not hasattr(self, '_retired_worker_refs'):
-                    self._retired_worker_refs = []
                 self._retired_worker_refs.append(_silent_worker)
-                debug(f"[QThreadCleanup] 已保留静默检查线程引用，防止 GC 提前销毁")
+                debug(f"[QThreadCleanup] 已保留当前静默检查线程引用，防止 GC 提前销毁")
+            
+            # 保留已退休的线程引用
+            _retired_workers = getattr(self.update_controller, '_retired_silent_workers', [])
+            for w in _retired_workers:
+                if w and w.isRunning() and w not in self._retired_worker_refs:
+                    self._retired_worker_refs.append(w)
+                    debug(f"[QThreadCleanup] 已保留已退休静默检查线程引用")
+            
+            # 等待所有静默检查线程退出
+            _workers_to_wait = [w for w in self._retired_worker_refs if w.isRunning()]
+            if _workers_to_wait:
+                debug(f"[QThreadCleanup] 等待 {len(_workers_to_wait)} 个静默检查线程退出...")
+                for w in _workers_to_wait:
+                    if not w.wait(15000):
+                        debug(f"[QThreadCleanup] SilentUpdateCheckWorker 未在 15 秒内退出，将由进程退出时自动回收")
+                    else:
+                        debug(f"[QThreadCleanup] SilentUpdateCheckWorker 已正常退出")
+            else:
+                debug(f"[QThreadCleanup] SilentUpdateCheckWorker 未在运行或已取消，无需等待")
             if hasattr(self.update_controller, '_check_worker') and self.update_controller._check_worker:
                 self._safe_stop_qthread(self.update_controller._check_worker, "UpdateCheckWorker")
             if hasattr(self.update_controller, '_download_worker') and self.update_controller._download_worker:
@@ -2926,7 +2975,9 @@ def main():
 
     exit_code = app.exec()
 
-    # 安全退出机制
+    # 安全退出机制（closeEvent 中已调用 cleanup_fault_handler_tee()，此处作为兜底）
+    cleanup_fault_handler_tee()
+
     import threading
     non_daemon_alive = [
         t for t in threading.enumerate()

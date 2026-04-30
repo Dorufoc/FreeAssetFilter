@@ -364,10 +364,11 @@ def build_request_headers(accept_header=REQUEST_ACCEPT_HEADER):
     }
 
 
-def _http_get_text(url, timeout=10, cancel_check=None):
+def _http_get_text(url, timeout=5, cancel_check=None):
     """
     通过标准库执行 HTTP GET，请求文本内容
-    使用较短的超时时间，确保取消请求时能快速响应
+    使用较短的超时时间（5秒），确保取消请求时能快速响应
+    配合 cancel_check 参数，在读取数据块间隙检查中断状态
     """
     _raise_if_cancelled(cancel_check)
 
@@ -525,7 +526,7 @@ def _extract_latest_tag_from_redirect(cancel_check=None):
     )
 
     try:
-        with request.urlopen(req, timeout=10) as response:
+        with request.urlopen(req, timeout=5) as response:
             _raise_if_cancelled(cancel_check)
             final_url = response.geturl()
     except UpdateCancelled:
