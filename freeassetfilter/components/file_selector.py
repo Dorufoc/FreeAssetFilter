@@ -328,7 +328,7 @@ class CustomFileSelector(QWidget):
         
         # 计算卡片基础宽度（与 FileBlockCard 保持一致）
         card_width = self._calculate_card_base_width()
-        spacing = int(5 * self.dpi_scale)  # 卡片间距
+        spacing = int(4 * self.dpi_scale)  # 卡片间距
         margin = int(5 * self.dpi_scale)  # 单边边距
         scrollbar_width = int(10 * self.dpi_scale)  # 滚动条宽度估计值
         
@@ -365,11 +365,13 @@ class CustomFileSelector(QWidget):
         os.makedirs(os.path.dirname(self.save_path_file), exist_ok=True)
         os.makedirs(os.path.dirname(self.favorites_file), exist_ok=True)
         
-        # 添加防抖定时器，用于减少刷新频率
         self.resize_timer = QTimer(self)
         self.resize_timer.setSingleShot(True)
-        self.resize_timer.setInterval(300)
+        self.resize_timer.setInterval(16)
         self.resize_timer.timeout.connect(self._on_resize_timeout)
+        self._grid_size_sync_timer = QTimer(self)
+        self._grid_size_sync_timer.setSingleShot(True)
+        self._grid_size_sync_timer.timeout.connect(self._update_grid_size)
         
         # 文件选择器 Model/View 架构相关
         self.file_model = FileSelectorListModel(self.dpi_scale, self.global_font)
@@ -692,8 +694,7 @@ class CustomFileSelector(QWidget):
             secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
             accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
         
-        self._card_spacing = int(5 * self.dpi_scale)
-        self._card_margin = int(3 * self.dpi_scale)
+        self._card_spacing = int(4 * self.dpi_scale)
 
         # 使用 QListView 替代 QScrollArea + QGridLayout
         self.files_scroll_area = FileListView(self)
@@ -706,7 +707,7 @@ class CustomFileSelector(QWidget):
         
         # 配置 QListView 属性
         self.files_scroll_area.setViewMode(QListView.IconMode)
-        self.files_scroll_area.setResizeMode(QListView.Adjust)
+        self.files_scroll_area.setResizeMode(QListView.Fixed)
         self.files_scroll_area.setMovement(QListView.Static)
         self.files_scroll_area.setSelectionMode(QListView.ExtendedSelection)
         self.files_scroll_area.setUniformItemSizes(True)
@@ -720,7 +721,10 @@ class CustomFileSelector(QWidget):
         
         # 替换垂直滚动条为 D_ScrollBar
         self.files_scroll_area.setVerticalScrollBar(D_ScrollBar(self.files_scroll_area, Qt.Vertical))
-        self.files_scroll_area.verticalScrollBar().apply_theme_from_settings()
+        scrollbar = self.files_scroll_area.verticalScrollBar()
+        scrollbar.apply_theme_from_settings()
+        if isinstance(scrollbar, D_ScrollBar):
+            scrollbar.effective_extent_changed.connect(self._schedule_grid_size_update)
         
         # 应用平滑滚动
         # 注意：这里必须禁用 LeftMouseButtonGesture，
@@ -2520,22 +2524,12 @@ class CustomFileSelector(QWidget):
         card_width = self._calculate_card_base_width()
         spacing = self._card_spacing
         cell_width = card_width + spacing
-        margin = self._card_margin * 2
-
-        available_width = max(0, viewport_width - margin)
-
-        columns = 1
-        max_possible_columns = 0
-
-        while True:
-            total_width = columns * cell_width
-            if total_width <= available_width:
-                max_possible_columns = columns
-                columns += 1
-            else:
-                break
-
-        return max(1, max_possible_columns)
+        leading_edge = spacing // 2
+        # QListView 在首个卡片前会保留约半个 spacing 的起始偏移。
+        # 列数阈值必须按这条真实布局规则计算，否则会出现列数先切换，
+        # 又因卡片宽度重算被挤回原列数的抖动。
+        available_width = max(0, viewport_width - leading_edge)
+        return max(1, available_width // max(1, cell_width))
     
     def _calculate_card_width(self):
         """
@@ -2550,18 +2544,20 @@ class CustomFileSelector(QWidget):
 
         card_base_width = self._calculate_card_base_width()
         spacing = self._card_spacing
-        margin = self._card_margin * 2
-
-        available_width = max(0, viewport_width - margin)
-        total_spacing = max_cols * spacing
+        leading_edge = spacing // 2
+        available_width = max(0, viewport_width - leading_edge)
 
         if max_cols <= 0:
             return card_base_width
 
-        card_width = (available_width - total_spacing) // max_cols
-
-        return max(card_width, card_base_width)
+        cell_base_width = card_base_width + spacing
+        cell_width = max(cell_base_width, available_width // max_cols)
+        return max(card_base_width, cell_width - spacing)
     
+    def _schedule_grid_size_update(self, *_args):
+        if hasattr(self, "_grid_size_sync_timer") and self._grid_size_sync_timer:
+            self._grid_size_sync_timer.start(16)
+
     def _on_resize_timeout(self):
         if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
             self._update_grid_size()
@@ -2584,30 +2580,21 @@ class CustomFileSelector(QWidget):
         if viewport_width <= 0:
             return
 
-        # 计算边距（与 _card_margin 保持一致）
-        margin = self._card_margin * 2
-        available_width = viewport_width - margin
-
         # 计算卡片基础宽度
         card_base_width = self._calculate_card_base_width()
         spacing = self._card_spacing
+        leading_edge = spacing // 2
+        # 列数阈值与卡片宽度都必须按 QListView 的真实起始偏移计算，
+        # 这样 resize 时不会出现“先换列，再因宽度变化切回去”的反馈抖动。
+        available_width = max(0, viewport_width - leading_edge)
 
-        # 计算最大列数
-        max_cols = 1
-        while True:
-            total_width = max_cols * (card_base_width + spacing)
-            if total_width > available_width:
-                max_cols -= 1
-                break
-            max_cols += 1
-            if max_cols > 100:  # 防止死循环
-                break
-        
-        max_cols = max(1, max_cols)
+        cell_base_width = card_base_width + spacing
+        max_cols = max(1, available_width // max(1, cell_base_width))
 
-        # 计算每个卡片的实际宽度
-        total_spacing = max_cols * spacing
-        card_width = max((available_width - total_spacing) // max_cols, card_base_width)
+        # 先确定列数，再在该列数内部平滑放大卡片。
+        # 这样宽度变化不会反过来重新触发列数回跳。
+        cell_width = max(cell_base_width, available_width // max_cols)
+        card_width = max(card_base_width, cell_width - spacing)
 
         # 卡片高度
         card_height = int(75 * self.dpi_scale)

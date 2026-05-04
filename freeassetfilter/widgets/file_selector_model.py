@@ -999,7 +999,7 @@ class FileListView(QListView):
     def _setup_view(self) -> None:
         """配置视图属性"""
         self.setViewMode(QListView.IconMode)
-        self.setResizeMode(QListView.Adjust)
+        self.setResizeMode(QListView.Fixed)
         self.setMovement(QListView.Static)
         self.setSelectionMode(QListView.ExtendedSelection)
         self.setUniformItemSizes(True)

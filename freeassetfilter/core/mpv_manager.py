@@ -746,12 +746,12 @@ class MPVManager(QObject):
 
         return True
 
-    def _do_seek(self, position: float) -> bool:
+    def _do_seek(self, position: float, exact: bool = True) -> bool:
         """执行跳转操作"""
         if self._mpv_core is None:
             raise RuntimeError("MPV核心未初始化")
 
-        self._mpv_core.seek(position)
+        self._mpv_core.seek(position, exact=exact)
         return True
 
     def _do_set_position(self, position: float) -> bool:
@@ -1574,6 +1574,39 @@ class MPVManager(QObject):
             if not self._is_shutting_down:
                 error(f"跳转失败: {e}")
             return False
+
+    def seek_async(
+        self,
+        position: float,
+        component_id: str = "unknown",
+        exact: bool = False
+    ) -> Future:
+        """
+        异步跳转到指定位置。
+
+        用于进度条拖动这类高频交互。提交后立即返回 Future，仍复用
+        _submit_operation 的同组件同类型合并逻辑，避免旧 seek 堆积。
+        默认使用关键帧 seek，松手落点可传 exact=True 再做精确 seek。
+        """
+        future = Future()
+
+        if self._is_shutting_down:
+            future.set_result(False)
+            return future
+
+        try:
+            return self._submit_operation(
+                MPVOperationType.SEEK,
+                position,
+                component_id=component_id,
+                priority=3,
+                exact=exact,
+            )
+        except RuntimeError as e:
+            if not self._is_shutting_down:
+                error(f"异步跳转失败: {e}")
+            future.set_result(False)
+            return future
 
     def set_position(
         self,

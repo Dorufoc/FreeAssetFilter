@@ -220,15 +220,24 @@ def cleanup_fault_handler_tee():
     退出前主动关闭 faulthandler 双写通道，促使 FaultHandlerTee 线程自然退出
 
     关闭顺序：
-    1. 关闭 Python 文件对象 (_fault_handler_output)
-    2. 关闭原始管道写端 fd (_fault_handler_write_fd)，确保读端收到 EOF
+    1. 禁用 faulthandler，避免继续写入即将关闭的文件对象
+    2. 关闭 Python 文件对象 (_fault_handler_output)，它拥有管道写端 fd
     3. 等待线程退出
     4. 关闭日志文件
     """
     global _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread, _fault_handler_write_fd
+    global _fault_handler_enabled
 
     try:
-        # 1. 关闭 Python 文件对象
+        # 1. 禁用 faulthandler，避免它持有或写入即将关闭的输出对象
+        if _fault_handler_enabled:
+            try:
+                faulthandler.disable()
+            except (OSError, ValueError):
+                pass
+            _fault_handler_enabled = False
+
+        # 2. 关闭 Python 文件对象；os.fdopen() 后 fd 所有权属于该对象。
         if _fault_handler_output is not None:
             try:
                 _fault_handler_output.close()
@@ -236,14 +245,7 @@ def cleanup_fault_handler_tee():
                 pass
             _fault_handler_output = None
 
-        # 2. 关闭原始管道写端 fd，确保读端收到 EOF 信号
-        if _fault_handler_write_fd is not None:
-            try:
-                import os
-                os.close(_fault_handler_write_fd)
-            except OSError:
-                pass
-            _fault_handler_write_fd = None
+        _fault_handler_write_fd = None
 
         # 3. 等待线程退出
         if _fault_handler_tee_thread is not None and _fault_handler_tee_thread.is_alive():

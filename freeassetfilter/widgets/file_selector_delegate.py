@@ -649,7 +649,9 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         target_width = min(rect.width(), target_size.width())
         target_height = min(rect.height(), target_size.height())
 
-        offset_x = max(0, (rect.width() - target_width) // 2)
+        # 当单元格空白为奇数像素时，向右侧多分配 1px，
+        # 这样首尾留白更接近对称，避免视觉上右侧总是更宽。
+        offset_x = max(0, (rect.width() - target_width + 1) // 2)
         offset_y = max(0, (rect.height() - target_height) // 2)
 
         return QRect(

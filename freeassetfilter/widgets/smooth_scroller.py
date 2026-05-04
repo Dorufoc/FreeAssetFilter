@@ -79,6 +79,7 @@ class D_ScrollBar(QScrollBar):
     """
 
     scroll_finished = Signal()
+    effective_extent_changed = Signal(int)
 
     def __init__(self, arg1=Qt.Vertical, arg2=None):
         """
@@ -160,6 +161,9 @@ class D_ScrollBar(QScrollBar):
 
         self._current_width = target_width
         self._update_style()
+        self.updateGeometry()
+        self._request_parent_geometry_refresh()
+        self.effective_extent_changed.emit(self._effective_extent())
 
     def _needs_scroll(self):
         """
@@ -190,6 +194,9 @@ class D_ScrollBar(QScrollBar):
         """立即更新滚动条宽度（无动画）"""
         self._current_width = self._default_width if self._needs_scroll() else 0
         self._update_style()
+        self.updateGeometry()
+        self._request_parent_geometry_refresh()
+        self.effective_extent_changed.emit(self._effective_extent())
 
     def set_periodic_check_interval(self, interval_ms):
         """
@@ -417,6 +424,52 @@ class D_ScrollBar(QScrollBar):
             self._last_style = style
 
         self._updating_style = False
+
+    def _effective_extent(self):
+        return max(0, int(round(self._current_width * self._dpi_scale)))
+
+    def _request_parent_geometry_refresh(self):
+        parent = self.parentWidget()
+        if parent is None:
+            return
+
+        update_geometries = getattr(parent, "updateGeometries", None)
+        if callable(update_geometries):
+            try:
+                update_geometries()
+            except RuntimeError:
+                pass
+
+        viewport_getter = getattr(parent, "viewport", None)
+        if callable(viewport_getter):
+            try:
+                viewport = viewport_getter()
+            except RuntimeError:
+                viewport = None
+            if viewport is not None:
+                viewport.updateGeometry()
+                viewport.update()
+
+        parent.updateGeometry()
+        parent.update()
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        extent = self._effective_extent()
+        if self.orientation() == Qt.Vertical:
+            hint.setWidth(extent)
+        else:
+            hint.setHeight(extent)
+        return hint
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        extent = self._effective_extent()
+        if self.orientation() == Qt.Vertical:
+            hint.setWidth(extent)
+        else:
+            hint.setHeight(extent)
+        return hint
 
     def _get_anim_handle_color(self):
         return self._anim_handle_color_value

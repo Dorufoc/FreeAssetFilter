@@ -711,6 +711,28 @@ class Ddropmenu(QWidget):
     def _target_widget(self):
         return self._external_target_widget or self.main_button
 
+    def _object_belongs_to_widget(self, obj, widget) -> bool:
+        if widget is None or not isinstance(obj, QWidget):
+            return False
+
+        return obj is widget or widget.isAncestorOf(obj)
+
+    def _is_click_outside_active_menu(self, obj, event) -> bool:
+        if not self.is_menu_visible() or event.type() != QEvent.MouseButtonPress:
+            return False
+
+        if not isinstance(obj, QWidget):
+            return False
+
+        if self._object_belongs_to_widget(obj, self.hover_menu):
+            return False
+
+        target = self._target_widget()
+        if self._object_belongs_to_widget(obj, target):
+            return False
+
+        return True
+
     def _update_target_event_filter(self):
         target = self._target_widget()
 
@@ -1114,19 +1136,26 @@ class Ddropmenu(QWidget):
 
     def eventFilter(self, obj, event):
         app = QApplication.instance()
+        list_widget = getattr(self, "list_widget", None)
+        hover_menu = getattr(self, "hover_menu", None)
+        scroll_area = getattr(list_widget, "scroll_area", None)
+        content_widget = getattr(list_widget, "content_widget", None)
 
         if (
             obj in (
-                self.list_widget,
-                self.list_widget.scroll_area,
-                self.list_widget.content_widget,
-                self.hover_menu,
+                list_widget,
+                scroll_area,
+                content_widget,
+                hover_menu,
             )
             and event.type() in (QEvent.Resize, QEvent.Show, QEvent.LayoutRequest)
             and self._items
         ):
             delay_ms = 16 if event.type() == QEvent.Show else 0
             self._schedule_layout_refresh(delay_ms)
+
+        if self._is_click_outside_active_menu(obj, event):
+            self.hide_menu()
 
         if obj is self._target_widget() and self.is_menu_visible() and event.type() == QEvent.MouseButtonPress:
             self.hide_menu()
@@ -1171,3 +1200,6 @@ class CustomDropdownMenu(Ddropmenu):
     """
 
     pass
+
+
+DropdownMenu = CustomDropdownMenu

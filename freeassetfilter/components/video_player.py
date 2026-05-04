@@ -459,6 +459,9 @@ class VideoPlayer(QWidget):
         self._user_interacting = False
         self._pending_seek_value: Optional[int] = None
         self._last_committed_seek_value: Optional[int] = None
+        self._last_committed_seek_exact = False
+        self._seek_future = None
+        self._seek_in_flight = False
         self._awaiting_initial_play_state = False
         self._initial_play_state_deadline_ms = 0.0
         
@@ -504,7 +507,7 @@ class VideoPlayer(QWidget):
         # 拖动进度条时的 seek 节流，兼顾实时预览与稳定性
         self._seek_debounce_timer = QTimer(self)
         self._seek_debounce_timer.setSingleShot(True)
-        self._seek_debounce_timer.setInterval(45)
+        self._seek_debounce_timer.setInterval(250)
         self._seek_debounce_timer.timeout.connect(self._flush_pending_seek)
 
         # 初始化设置管理器并读取初始设置
@@ -957,8 +960,7 @@ class VideoPlayer(QWidget):
                 position = (value / 1000.0) * duration
                 self._update_time_display(position, duration)
 
-            # 节流而不是纯防抖：拖动期间持续按固定频率提交 seek，
-            # 让用户尽可能看到接近实时的画面反馈，同时避免请求风暴。
+            # 拖动阶段以较低频率提交关键帧 seek，保留实时预览但避免请求风暴。
             if not self._seek_debounce_timer.isActive():
                 self._seek_debounce_timer.start()
     
@@ -1156,6 +1158,8 @@ class VideoPlayer(QWidget):
 
     def _flush_pending_seek(self):
         """提交最后一次待处理的 seek，避免拖动进度条时高频请求堆积"""
+        self._refresh_seek_future_state()
+
         # 第一重快速检查：防止在退出时执行
         if (
             self._pending_seek_value is None
@@ -1167,6 +1171,9 @@ class VideoPlayer(QWidget):
         # 检查管理器是否正在关闭
         if hasattr(self._mpv_manager, '_is_shutting_down') and self._mpv_manager._is_shutting_down:
             self._pending_seek_value = None
+            self._last_committed_seek_exact = False
+            self._seek_future = None
+            self._seek_in_flight = False
             return
 
         duration = self._mpv_manager.get_duration_direct() or 0.0
@@ -1174,13 +1181,38 @@ class VideoPlayer(QWidget):
             return
 
         pending_value = int(self._pending_seek_value)
-        if self._last_committed_seek_value == pending_value:
+        exact_seek = not self._user_interacting
+        if (
+            self._last_committed_seek_value == pending_value
+            and (not exact_seek or self._last_committed_seek_exact)
+        ):
+            return
+
+        if self._seek_in_flight:
+            if (
+                self._pending_seek_value != self._last_committed_seek_value
+                or (exact_seek and not self._last_committed_seek_exact)
+            ):
+                if not self._seek_debounce_timer.isActive():
+                    self._seek_debounce_timer.start()
             return
 
         position = (pending_value / 1000.0) * duration
-        success = self._mpv_manager.seek(position, component_id=self._component_id)
-        if success:
+        seek_future = self._mpv_manager.seek_async(
+            position,
+            component_id=self._component_id,
+            exact=exact_seek,
+        )
+        self._seek_future = seek_future
+        self._seek_in_flight = not seek_future.done()
+        if seek_future.done():
+            if self._seek_future_succeeded(seek_future):
+                self._last_committed_seek_value = pending_value
+                self._last_committed_seek_exact = exact_seek
+                self._update_time_display(position, duration)
+        else:
             self._last_committed_seek_value = pending_value
+            self._last_committed_seek_exact = exact_seek
             self._update_time_display(position, duration)
 
         # 如果用户仍在拖动，并且在本次发送期间又产生了新的目标位置，
@@ -1193,6 +1225,36 @@ class VideoPlayer(QWidget):
         ):
             if not self._seek_debounce_timer.isActive():
                 self._seek_debounce_timer.start()
+
+    def _refresh_seek_future_state(self):
+        """更新异步 seek 完成状态，避免拖动阶段阻塞 UI 线程。"""
+        seek_future = self._seek_future
+        if seek_future is None:
+            self._seek_in_flight = False
+            return
+
+        if not seek_future.done():
+            self._seek_in_flight = True
+            return
+
+        self._seek_future = None
+        self._seek_in_flight = False
+        if not self._seek_future_succeeded(seek_future):
+            self._last_committed_seek_value = None
+            self._last_committed_seek_exact = False
+
+    def _seek_future_succeeded(self, seek_future) -> bool:
+        try:
+            return bool(seek_future.result(timeout=0))
+        except Exception:
+            return False
+
+    def _clear_pending_seek_state(self):
+        self._pending_seek_value = None
+        self._last_committed_seek_value = None
+        self._last_committed_seek_exact = False
+        self._seek_future = None
+        self._seek_in_flight = False
 
     def _initialize_progress_display(self):
         """
@@ -2370,8 +2432,7 @@ class VideoPlayer(QWidget):
         self._reset_audio_state()
         if self._seek_debounce_timer.isActive():
             self._seek_debounce_timer.stop()
-        self._pending_seek_value = None
-        self._last_committed_seek_value = None
+        self._clear_pending_seek_state()
         was_detached_mode = bool(self._detached_window)
         if was_detached_mode:
             self._stop_cursor_auto_hide_monitor()
@@ -2798,7 +2859,7 @@ class VideoPlayer(QWidget):
         self._reset_audio_state()
         if self._seek_debounce_timer.isActive():
             self._seek_debounce_timer.stop()
-        self._pending_seek_value = None
+        self._clear_pending_seek_state()
 
         if self._sync_timer.isActive():
             self._sync_timer.stop()
@@ -2857,7 +2918,7 @@ class VideoPlayer(QWidget):
         self._stop_cursor_auto_hide_monitor()
         if self._seek_debounce_timer.isActive():
             self._seek_debounce_timer.stop()
-        self._pending_seek_value = None
+        self._clear_pending_seek_state()
 
         # 使用同步模式关闭MPV管理器，确保资源完全释放
         if self._mpv_manager:

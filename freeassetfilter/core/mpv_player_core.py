@@ -467,6 +467,9 @@ class MPVPlayerCore(QObject):
         
         self._initialized = False
         self._signal_timer = None
+        self._signal_process_interval_ms = 100
+        self._signal_schedule_lock = threading.Lock()
+        self._signal_processing_scheduled = False
     
     def _worker_thread_func(self):
         """MPV工作线程主函数 - 所有MPV操作都在此线程执行"""
@@ -505,7 +508,10 @@ class MPVPlayerCore(QObject):
                     if self._stop_event.is_set():
                         break
                         
-                    # 使用 try-except 包装每个操作，防止单个操作失败导致整个循环崩溃
+                    # 先清空已入队命令，避免拖动进度条时旧 seek 堆积。
+                    self._drain_command_queue(mpv_handle)
+
+                    # 使用 try-except 包装事件处理，防止单个事件失败导致整个循环崩溃。
                     try:
                         if not self._stop_event.is_set() and mpv_handle:
                             event_ptr = self._dll_loader.dll.mpv_wait_event(mpv_handle, 0.01)
@@ -515,23 +521,6 @@ class MPVPlayerCore(QObject):
                     except Exception as e:
                         if not self._stop_event.is_set():
                             error(f"事件处理错误: {e}")
-
-                    try:
-                        # 在获取命令前再次检查停止信号
-                        if self._stop_event.is_set():
-                            break
-                            
-                        command = self._command_queue.get(block=False)
-                        # 在处理命令前再次检查停止信号和句柄有效性
-                        if not self._stop_event.is_set() and mpv_handle:
-                            self._process_command(mpv_handle, command)
-                        else:
-                            self._resolve_command_result(command, None)
-                    except queue.Empty:
-                        pass
-                    except Exception as e:
-                        if not self._stop_event.is_set():
-                            error(f"命令处理错误: {e}")
 
                     # 移除了位置轮询，完全依赖 MPV 的事件驱动属性观察
 
@@ -547,6 +536,33 @@ class MPVPlayerCore(QObject):
             with self._state_lock:
                 self._initialized = False
             self._initialized_event.clear()
+
+    def _drain_command_queue(self, mpv_handle: c_void_p) -> bool:
+        """处理当前已入队的全部命令，避免空闲循环反复 non-blocking 轮询。"""
+        processed_any = False
+
+        while not self._stop_event.is_set():
+            try:
+                command = self._command_queue.get(block=False)
+            except queue.Empty:
+                break
+            except Exception as e:
+                if not self._stop_event.is_set():
+                    error(f"命令队列读取错误: {e}")
+                break
+
+            processed_any = True
+            try:
+                if not self._stop_event.is_set() and mpv_handle:
+                    self._process_command(mpv_handle, command)
+                else:
+                    self._resolve_command_result(command, None)
+            except Exception as e:
+                if not self._stop_event.is_set():
+                    error(f"命令处理错误: {e}")
+                self._resolve_command_result(command, None)
+
+        return processed_any
 
     def _cleanup_mpv_handle(self, mpv_handle: c_void_p):
         """安全清理MPV句柄"""
@@ -712,22 +728,47 @@ class MPVPlayerCore(QObject):
         """非阻塞入队信号，队列满时丢弃最旧项，避免工作线程卡死"""
         signal_data = (signal_name, *args)
 
+        enqueued = False
         try:
             self._signal_queue.put_nowait(signal_data)
+            enqueued = True
+        except queue.Full:
+            pass
+
+        if not enqueued:
+            try:
+                self._signal_queue.get_nowait()
+            except queue.Empty:
+                pass
+
+            try:
+                self._signal_queue.put_nowait(signal_data)
+                enqueued = True
+            except queue.Full:
+                # debug(f"信号队列拥塞，丢弃信号: {signal_name}")
+                pass
+
+        if enqueued:
+            self._schedule_signal_processing()
+
+    def _schedule_signal_processing(self):
+        """请求主线程按批处理信号队列；空闲时不保留常驻定时器 tick。"""
+        should_invoke = False
+        with self._signal_schedule_lock:
+            if not self._signal_processing_scheduled:
+                self._signal_processing_scheduled = True
+                should_invoke = True
+
+        if not should_invoke:
             return
-        except queue.Full:
-            pass
 
         try:
-            self._signal_queue.get_nowait()
-        except queue.Empty:
-            pass
-
-        try:
-            self._signal_queue.put_nowait(signal_data)
-        except queue.Full:
-            # debug(f"信号队列拥塞，丢弃信号: {signal_name}")
-            pass
+            QMetaObject.invokeMethod(self, "_ensure_signal_timer", Qt.QueuedConnection)
+        except (RuntimeError, AttributeError) as e:
+            with self._signal_schedule_lock:
+                self._signal_processing_scheduled = False
+            # 对象销毁过程中可能无法投递，丢弃本次 UI 信号即可。
+            debug(f"调度MPV信号处理失败: {e}")
 
     def _queue_signal_if_changed(self, signal_name: str, *args):
         """仅在值发生变化时入队信号，减少高频重复发射"""
@@ -1122,7 +1163,7 @@ class MPVPlayerCore(QObject):
                 error(f"停止操作异常: {e}")
             return False
     
-    def _seek_internal(self, mpv_handle: c_void_p, position: float, **kwargs) -> bool:
+    def _seek_internal(self, mpv_handle: c_void_p, position: float, exact: bool = True, **kwargs) -> bool:
         """内部跳转实现"""
         if not mpv_handle:
             return False
@@ -1130,7 +1171,8 @@ class MPVPlayerCore(QObject):
             # 检查停止事件
             if self._stop_event.is_set():
                 return False
-            cmd_args = [b"seek", str(position).encode('utf-8'), b"absolute", None]
+            seek_mode = b"absolute+exact" if exact else b"absolute+keyframes"
+            cmd_args = [b"seek", str(position).encode('utf-8'), seek_mode, None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             return self._dll_loader.dll.mpv_command(mpv_handle, cmd_array) >= 0
         except Exception as e:
@@ -1784,8 +1826,10 @@ class MPVPlayerCore(QObject):
                 'result_holder': result_holder,
             }
 
+            command_enqueued = False
             try:
                 self._command_queue.put(command, block=False)
+                command_enqueued = True
             except queue.Full:
                 warning(f"命令队列已满({self._command_queue_maxsize})，丢弃最旧命令")
                 try:
@@ -1809,6 +1853,7 @@ class MPVPlayerCore(QObject):
 
                 try:
                     self._command_queue.put(command, block=False)
+                    command_enqueued = True
                 except queue.Full:
                     error("命令队列仍然满，放弃执行命令")
                     self._resolve_command_result(command, None)
@@ -1852,13 +1897,25 @@ class MPVPlayerCore(QObject):
     
     @Slot()
     def _start_signal_timer(self):
-        """启动信号处理定时器"""
-        if self._signal_timer is not None:
-            return
+        """初始化信号处理定时器；实际处理由 _ensure_signal_timer 按需启动。"""
+        if self._signal_timer is None:
+            self._signal_timer = QTimer(self)
+            self._signal_timer.setSingleShot(True)
+            self._signal_timer.timeout.connect(self._process_signal_queue)
 
-        self._signal_timer = QTimer(self)
-        self._signal_timer.timeout.connect(self._process_signal_queue)
-        self._signal_timer.start(100)  # 每100ms处理一次信号队列（从50ms优化为100ms，降低CPU占用）
+        if not self._signal_queue.empty():
+            self._ensure_signal_timer()
+
+    @Slot()
+    def _ensure_signal_timer(self):
+        """有信号待处理时启动一次性批处理定时器。"""
+        if self._signal_timer is None:
+            self._signal_timer = QTimer(self)
+            self._signal_timer.setSingleShot(True)
+            self._signal_timer.timeout.connect(self._process_signal_queue)
+
+        if not self._signal_timer.isActive():
+            self._signal_timer.start(self._signal_process_interval_ms)
 
     @Slot()
     def _stop_signal_timer(self):
@@ -1870,6 +1927,8 @@ class MPVPlayerCore(QObject):
                 # debug(f"停止信号定时器失败: {e}")
                 pass
             self._signal_timer = None
+        with self._signal_schedule_lock:
+            self._signal_processing_scheduled = False
     
     def _process_signal_queue(self):
         """处理信号队列（在主线程中执行）"""
@@ -1918,6 +1977,14 @@ class MPVPlayerCore(QObject):
                     break
         except (RuntimeError, TypeError) as e:
             error(f"处理信号队列时出错: {e}")
+
+        with self._signal_schedule_lock:
+            has_pending_signal = not self._signal_queue.empty()
+            if not has_pending_signal:
+                self._signal_processing_scheduled = False
+
+        if self._signal_timer is not None and has_pending_signal:
+            self._signal_timer.start(self._signal_process_interval_ms)
     
     def load_file(self, file_path: str) -> bool:
         """
@@ -1977,17 +2044,18 @@ class MPVPlayerCore(QObject):
         result = self._send_command(MPVCommandType.STOP, timeout=5.0)
         return result if result is not None else False
     
-    def seek(self, position: float) -> bool:
+    def seek(self, position: float, exact: bool = True) -> bool:
         """
         跳转到指定位置
         
         Args:
             position: 目标位置（秒）
+            exact: 是否精确跳转。拖动预览可设为 False 使用关键帧 seek 降低解码压力。
             
         Returns:
             bool: 操作是否成功
         """
-        result = self._send_command(MPVCommandType.SEEK, position, timeout=5.0)
+        result = self._send_command(MPVCommandType.SEEK, position, timeout=5.0, exact=exact)
         return result if result is not None else False
     
     def seek_relative(self, seconds: float) -> bool:
