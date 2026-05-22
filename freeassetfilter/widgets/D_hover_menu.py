@@ -419,7 +419,7 @@ class D_HoverMenu(QWidget):
         """执行向下隐藏 + 淡出的非线性动画"""
         from freeassetfilter.utils.app_logger import debug
         debug(f"[D_HoverMenu] _animate_hide called: _is_visible={self._is_visible}, _is_animating={self._is_animating}")
-        if not self._is_visible or self._is_animating:
+        if not self._is_visible:
             debug(f"[D_HoverMenu] _animate_hide returned early")
             return
 
@@ -567,10 +567,10 @@ class D_HoverMenu(QWidget):
 
         if event.type() == QEvent.Move and self._hide_on_window_move:
             if obj == self._target_widget:
-                if self._is_visible and not self._is_animating:
+                if self._is_visible:
                     self._animate_hide()
             elif self._target_widget and obj == self._target_widget.window():
-                if self._is_visible and not self._is_animating:
+                if self._is_visible:
                     self._animate_hide()
 
         return super().eventFilter(obj, event)
@@ -628,7 +628,7 @@ class D_HoverMenu(QWidget):
 
     def hide(self):
         """隐藏菜单（带向下隐藏 + 淡出动画）"""
-        if self._is_visible and not self._is_animating:
+        if self._is_visible:
             self._animate_hide()
         elif not self._is_animating:
             super().hide()

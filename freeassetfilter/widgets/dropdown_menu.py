@@ -114,7 +114,7 @@ class _DropdownHoverMenu(D_HoverMenu):
 
     def _animate_hide(self):
         """下拉菜单隐藏动画：仅透明度动画，不执行位移。"""
-        if not self._is_visible or self._is_animating:
+        if not self._is_visible:
             return
 
         self._is_animating = True

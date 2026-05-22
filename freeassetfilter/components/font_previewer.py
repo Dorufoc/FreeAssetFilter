@@ -208,17 +208,21 @@ class FontPreviewWidget(QWidget):
     
     def _init_toolbar(self, parent_layout):
         """初始化工具栏 - 只包含字体大小滑块"""
-        toolbar = QWidget()
-        toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(10, 5, 10, 5)
-        toolbar_layout.setSpacing(10)
+        self.toolbar = QWidget()
+        self.toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
         app = QApplication.instance()
+        auxiliary_color = "#3D3D3D"
         text_color = "#333333"
         if hasattr(app, 'settings_manager'):
+            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
             text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        
+        self.toolbar.setStyleSheet(f"background-color: {auxiliary_color};")
+        
+        toolbar_layout = QHBoxLayout(self.toolbar)
+        toolbar_layout.setContentsMargins(10, 5, 10, 5)
+        toolbar_layout.setSpacing(10)
         
         # 字体大小标签和滑块
         size_label = QLabel("大小")
@@ -242,7 +246,7 @@ class FontPreviewWidget(QWidget):
         
         toolbar_layout.addStretch()
         
-        parent_layout.addWidget(toolbar)
+        parent_layout.addWidget(self.toolbar)
     
     def _init_text_edit(self, parent_layout):
         """初始化文本编辑区"""
@@ -318,6 +322,9 @@ class FontPreviewWidget(QWidget):
         self.setStyleSheet(f"""
             background-color: {bg_color};
         """)
+
+        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        self.toolbar.setStyleSheet(f"background-color: {auxiliary_color};")
 
         self.text_edit.setStyleSheet(f"""
             QTextEdit {{
