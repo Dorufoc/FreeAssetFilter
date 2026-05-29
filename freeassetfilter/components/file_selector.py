@@ -406,12 +406,15 @@ class CustomFileSelector(QWidget):
         from freeassetfilter.core.settings_manager import SettingsManager
         settings_manager = getattr(app, 'settings_manager', SettingsManager())
         
-        # 根据设置决定是否加载上次的路径
-        if settings_manager.get_setting("file_selector.restore_last_path", True):
-            # 加载上次保存的路径
+        # 检查是否有右键菜单传入的初始导航路径
+        initial_navigate_path = getattr(app, 'initial_navigate_path', None)
+        if initial_navigate_path and self._is_valid_selector_path(initial_navigate_path):
+            self.current_path = initial_navigate_path
+            self._last_accessible_path = initial_navigate_path
+            self._navigation_recovery_path = initial_navigate_path
+        elif settings_manager.get_setting("file_selector.restore_last_path", True):
             self.load_last_path()
         else:
-            # 默认显示"All"界面
             self.current_path = "All"
         
         # 为路径输入框添加悬浮信息功能

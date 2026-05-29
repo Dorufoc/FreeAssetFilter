@@ -2311,6 +2311,25 @@ def _extract_associated_file_path(argv):
     return candidate
 
 
+def _extract_open_path_arg(argv):
+    """
+    解析 --open-path 命令行参数，用于从右键菜单接收路径
+
+    Args:
+        argv: 命令行参数列表
+
+    Returns:
+        str | None: 解析出的路径，如果不存在则返回 None
+    """
+    try:
+        idx = argv.index("--open-path")
+        if idx + 1 < len(argv):
+            return argv[idx + 1]
+    except ValueError:
+        pass
+    return None
+
+
 def _get_runtime_info_file_path():
     """
     获取运行实例信息文件路径
@@ -2754,6 +2773,18 @@ def main():
     if associated_file_path:
         debug(f"接收到关联文件: {associated_file_path}")
 
+    # 获取通过右键菜单 --open-path 传递的路径
+    open_path = _extract_open_path_arg(sys.argv)
+    initial_navigate_path = None
+    if open_path:
+        open_path = os.path.normpath(open_path)
+        if os.path.isfile(open_path):
+            initial_navigate_path = os.path.dirname(open_path)
+        elif os.path.isdir(open_path):
+            initial_navigate_path = open_path
+        if initial_navigate_path:
+            debug(f"接收到右键菜单路径: {open_path}，初始导航目录: {initial_navigate_path}")
+
     # 修改sys.argv[0]以确保Windows任务栏显示正确图标
     sys.argv[0] = os.path.abspath(__file__)
 
@@ -2790,6 +2821,8 @@ def main():
 
     # 将关联文件路径存储到app对象，供其他组件访问
     app.associated_file_path = associated_file_path
+    # 将右键菜单初始导航路径存储到app对象，供文件选择器使用
+    app.initial_navigate_path = initial_navigate_path
 
     # 设置全局DPI缩放因子为系统缩放的1.4倍
     from PySide6.QtGui import QCursor, QFontDatabase, QFont
