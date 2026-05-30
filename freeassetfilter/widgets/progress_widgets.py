@@ -1306,6 +1306,7 @@ class D_ProgressBar(QWidget):
             self._is_dragging = False
             self._press_pos = event.pos()
             self._last_pos = event.pos().x() if self._orientation == self.Horizontal else event.pos().y()
+            self.grabMouse()
             self.userInteracting.emit()
             self.update(self._get_handle_rect_for_value(self._display_value_storage).adjusted(-2, -2, 2, 2))
 
@@ -1342,6 +1343,7 @@ class D_ProgressBar(QWidget):
             was_dragging = self._is_dragging
             self._is_pressed = False
             self._is_dragging = False
+            self.releaseMouse()
 
             if was_dragging:
                 self._animation_suspended = False

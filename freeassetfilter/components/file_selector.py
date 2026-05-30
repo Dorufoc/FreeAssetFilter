@@ -93,6 +93,7 @@ from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path, is_media_file
 from freeassetfilter.widgets.file_selector_model import FileSelectorListModel, FileListView
 from freeassetfilter.widgets.file_selector_delegate import FileBlockCardDelegate
+from freeassetfilter.widgets.file_horizontal_card_delegate import FileHorizontalCardDelegate
 
 
 class ThumbnailGeneratorThread(QThread):
@@ -376,6 +377,7 @@ class CustomFileSelector(QWidget):
         # 文件选择器 Model/View 架构相关
         self.file_model = FileSelectorListModel(self.dpi_scale, self.global_font)
         self.card_delegate = FileBlockCardDelegate(self.dpi_scale, self.global_font)
+        self.list_delegate = FileHorizontalCardDelegate(self.dpi_scale, self.global_font)
         self.files_scroll_area = None
         self._is_loading = False
         self._drive_list_thread = None
@@ -672,6 +674,11 @@ class CustomFileSelector(QWidget):
         self.timeline_btn.clicked.connect(self._show_timeline_window)
         nav_layout.addWidget(self.timeline_btn)
 
+        # 视图模式切换按钮
+        self.view_mode_btn = CustomButton("列表", button_type="primary")
+        self.view_mode_btn.clicked.connect(self._toggle_view_mode)
+        nav_layout.addWidget(self.view_mode_btn)
+
         # 根据设置控制时间线按钮的显示/隐藏
         self._update_timeline_button_visibility()
         
@@ -707,6 +714,7 @@ class CustomFileSelector(QWidget):
         self.files_scroll_area.setModel(self.file_model)
         self.files_scroll_area.setItemDelegate(self.card_delegate)
         self.card_delegate.set_view(self.files_scroll_area)
+        self.list_delegate.set_view(self.files_scroll_area)
         
         # 配置 QListView 属性
         self.files_scroll_area.setViewMode(QListView.IconMode)
@@ -837,6 +845,7 @@ class CustomFileSelector(QWidget):
         FileBlockCard._clear_shared_caches()
         self.file_model.clear_caches(emit_change=True)
         self.card_delegate.update_theme()
+        self.list_delegate.update_theme()
         colors = self._get_theme_colors()
 
         self.setStyleSheet(f"background-color: {colors['secondary_color']};")
@@ -887,6 +896,7 @@ class CustomFileSelector(QWidget):
             "filter_btn",
             "sort_btn",
             "timeline_btn",
+            "view_mode_btn",
             "generate_thumbnails_btn",
             "clear_thumbnails_btn",
         ):
@@ -2018,7 +2028,56 @@ class CustomFileSelector(QWidget):
         """
         view_options = ["card", "list"]
         self.view_mode = view_options[index]
+        self._apply_view_mode()
         self.refresh_files()
+
+    def _toggle_view_mode(self):
+        """切换视图模式"""
+        index = 1 if self.view_mode == "card" else 0
+        self.change_view_mode(index)
+
+    def _set_view_mode_button_text(self):
+        """更新视图模式按钮的文本"""
+        if not hasattr(self, "view_mode_btn"):
+            return
+        if self.view_mode == "list":
+            self.view_mode_btn.setText("网格")
+        else:
+            self.view_mode_btn.setText("列表")
+
+    def _apply_view_mode(self):
+        """应用当前视图模式的 delegate 和 QListView 设置"""
+        if not self.files_scroll_area:
+            return
+        if self.view_mode == "list":
+            self.files_scroll_area.setItemDelegate(self.list_delegate)
+            self.files_scroll_area.setWrapping(False)
+            self.files_scroll_area.setFlow(QListView.TopToBottom)
+        else:
+            self.files_scroll_area.setItemDelegate(self.card_delegate)
+            self.files_scroll_area.setWrapping(True)
+            self.files_scroll_area.setFlow(QListView.LeftToRight)
+        self.files_scroll_area.update()
+        self._set_view_mode_button_text()
+
+    def _update_list_layout(self):
+        """列表模式下更新卡片宽度为视口全宽"""
+        list_view = self.files_scroll_area
+        if not list_view or not self.file_model:
+            return
+        viewport_width = list_view.viewport().width()
+        if viewport_width <= 0:
+            return
+        sb = list_view.verticalScrollBar()
+        sb_width = sb.width() if sb and sb.isVisible() else 0
+        card_width = max(200, viewport_width - sb_width - int(8 * self.dpi_scale))
+        border_w = max(1, int(1 * self.dpi_scale))
+        icon_lm = int(4 * self.dpi_scale)
+        icon_sz = int(28 * self.dpi_scale)
+        card_height = int(2 * border_w + 2 * icon_lm + icon_sz)
+        gap = int(4 * self.dpi_scale)
+        list_view.setGridSize(QSize(card_width, card_height + gap))
+        self.file_model.set_card_width(card_width, card_height, 1)
     
     def _update_drive_selector(self):
         """
@@ -2575,6 +2634,9 @@ class CustomFileSelector(QWidget):
         2. 计算每个卡片的实际宽度
         3. 更新 gridSize 和 Model 的卡片宽度
         """
+        if getattr(self, 'view_mode', 'card') == 'list':
+            self._update_list_layout()
+            return
         list_view = getattr(self, 'files_scroll_area', None)
         if not list_view or not self.file_model:
             return

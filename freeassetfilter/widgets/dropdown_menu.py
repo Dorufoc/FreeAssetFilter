@@ -1118,7 +1118,7 @@ class Ddropmenu(QWidget):
             self.show_menu()
 
     def is_menu_visible(self):
-        return self._menu_visible or self.hover_menu.is_visible()
+        return self._menu_visible
 
     def enterEvent(self, event):
         super().enterEvent(event)
@@ -1156,11 +1156,6 @@ class Ddropmenu(QWidget):
 
         if self._is_click_outside_active_menu(obj, event):
             self.hide_menu()
-
-        if obj is self._target_widget() and self.is_menu_visible() and event.type() == QEvent.MouseButtonPress:
-            self.hide_menu()
-            event.accept()
-            return True
 
         if obj is app and event.type() in (QEvent.ApplicationDeactivate, QEvent.WindowDeactivate):
             if self.is_menu_visible():

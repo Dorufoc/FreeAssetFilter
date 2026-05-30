@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FileSelectorDelegate - 文件选择器列表视图的自定义委托
+FileHorizontalCardDelegate - 文件选择器列表视图的横向卡片委托
 
-基于 FileBlockCard._paint_card() 的视觉与动画语义实现，
-为 QListView 提供与 FileBlockCard 接近一致的卡片渲染效果。
+以 Windows 文件资源管理器详细信息视图为参照，
+单列显示，文件名左对齐，文件类型/日期/大小右对齐。
 """
 
 from datetime import datetime
@@ -25,134 +25,11 @@ from PySide6.QtWidgets import (
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
-
-_FILE_TYPE_MAP = {
-    "py": "Python 源文件", "js": "JavaScript 源文件",
-    "ts": "TypeScript 源文件", "jsx": "JSX 源文件", "tsx": "TSX 源文件",
-    "html": "HTML 文档", "css": "CSS 样式表", "scss": "SCSS 样式表",
-    "less": "LESS 样式表", "json": "JSON 文件",
-    "xml": "XML 文件", "yaml": "YAML 文件", "yml": "YAML 文件",
-    "sh": "Shell 脚本", "bat": "批处理文件", "cmd": "批处理文件",
-    "ps1": "PowerShell 脚本", "psm1": "PowerShell 模块",
-    "cpp": "C++ 源文件", "c": "C 源文件", "h": "C 头文件",
-    "hpp": "C++ 头文件", "java": "Java 源文件",
-    "rs": "Rust 源文件", "go": "Go 源文件",
-    "rb": "Ruby 源文件", "php": "PHP 源文件",
-    "swift": "Swift 源文件", "kt": "Kotlin 源文件",
-    "kts": "Kotlin 脚本", "cs": "C# 源文件", "lua": "Lua 源文件",
-    "dart": "Dart 源文件", "r": "R 源文件",
-    "m": "Objective-C 源文件", "mm": "Objective-C++ 源文件",
-    "pl": "Perl 脚本", "pm": "Perl 模块",
-    "sql": "SQL 文件", "vue": "Vue 组件",
-    "svelte": "Svelte 组件", "astro": "Astro 组件",
-    "txt": "文本文档", "md": "MD 源文件",
-    "rst": "reStructuredText 文件", "tex": "LaTeX 文档",
-    "pdf": "PDF 文档",
-    "doc": "Word 文档", "docx": "Word 文档", "docm": "Word 文档",
-    "dotx": "Word 模板",
-    "xls": "Excel 表格", "xlsx": "Excel 表格", "xlsm": "Excel 表格",
-    "xlsb": "Excel 二进制工作簿", "csv": "CSV 表格",
-    "ppt": "PowerPoint 演示文稿", "pptx": "PowerPoint 演示文稿",
-    "pptm": "PowerPoint 启用宏的演示文稿", "potx": "PowerPoint 模板",
-    "rtf": "RTF 文档", "odt": "ODT 文本文档",
-    "ods": "ODS 电子表格", "odp": "ODP 演示文稿",
-    "jpg": "JPEG 图像", "jpeg": "JPEG 图像", "jpe": "JPEG 图像",
-    "png": "PNG 图像", "gif": "GIF 图像", "bmp": "BMP 图像",
-    "webp": "WebP 图像", "tiff": "TIFF 图像", "tif": "TIFF 图像",
-    "svg": "SVG 图像", "avif": "AVIF 图像",
-    "ico": "图标", "cur": "光标",
-    "heic": "HEIC 图像", "heif": "HEIF 图像",
-    "cr2": "CR2 图像", "cr3": "CR3 图像",
-    "nef": "NEF 图像", "nrw": "NRW 图像",
-    "arw": "ARW 图像", "srf": "SRF 图像",
-    "dng": "DNG 图像", "orf": "ORF 图像",
-    "raf": "RAF 图像", "rw2": "RW2 图像",
-    "pef": "PEF 图像", "x3f": "X3F 图像",
-    "psd": "PSD 图像", "psb": "PSB 图像",
-    "ai": "Adobe Illustrator 文档",
-    "eps": "EPS 文件",
-    "mp4": "MP4 视频", "mov": "MOV 视频", "avi": "AVI 视频",
-    "mkv": "MKV 视频", "wmv": "WMV 视频", "flv": "FLV 视频",
-    "webm": "WebM 视频", "m4v": "M4V 视频",
-    "mpeg": "MPEG 视频", "mpg": "MPG 视频",
-    "mxf": "MXF 视频", "3gp": "3GP 视频",
-    "vob": "VOB 视频", "m2ts": "M2TS 视频",
-    "ts": "TS 视频", "mts": "MTS 视频", "divx": "DivX 视频",
-    "mp3": "MP3 音频", "wav": "WAV 音频",
-    "flac": "FLAC 音频", "ogg": "OGG 音频",
-    "wma": "WMA 音频", "aac": "AAC 音频",
-    "m4a": "M4A 音频", "opus": "Opus 音频",
-    "mid": "MIDI 序列", "midi": "MIDI 序列",
-    "ape": "APE 音频", "ac3": "AC3 音频",
-    "tta": "TTA 音频", "dts": "DTS 音频",
-    "aiff": "AIFF 音频",
-    "zip": "Zip 压缩文件", "rar": "RAR 压缩文件",
-    "7z": "7z 压缩文件", "tar": "TAR 压缩文件",
-    "gz": "GZip 压缩文件", "bz2": "BZip2 压缩文件",
-    "xz": "XZ 压缩文件", "lzma": "LZMA 压缩文件",
-    "zst": "Zstd 压缩文件", "lz4": "LZ4 压缩文件",
-    "iso": "ISO 镜像", "cab": "CAB 压缩文件",
-    "arj": "ARJ 压缩文件", "tgz": "TGZ 压缩文件",
-    "ttf": "TTF 字体", "otf": "OTF 字体",
-    "woff": "WOFF 字体", "woff2": "WOFF2 字体",
-    "eot": "EOT 字体",
-    "exe": "应用程序", "dll": "应用程序扩展",
-    "msi": "Windows Installer 包",
-    "lnk": "快捷方式", "url": "Internet 快捷方式",
-    "torrent": "BitTorrent 文件",
-    "apk": "APK 安装包",
-    "dmg": "DMG 磁盘映像",
-    "deb": "DEB 安装包", "rpm": "RPM 安装包",
-    "appimage": "AppImage 映像",
-    "db": "数据库文件", "sqlite": "SQLite 数据库",
-    "srt": "SRT 字幕", "ass": "ASS 字幕", "ssa": "SSA 字幕",
-    "vtt": "WebVTT 字幕",
-    "log": "日志文件", "ini": "INI 配置",
-    "cfg": "配置文件", "conf": "配置文件",
-    "reg": "注册表项",
-}
+from .file_selector_delegate import _get_file_type_display, _format_file_size_compact
 
 
-def _get_file_type_display(suffix, is_dir=False):
-    if is_dir:
-        return "文件夹"
-    if not suffix:
-        return "文件"
-    suffix_lower = suffix.lower()
-    if suffix_lower in _FILE_TYPE_MAP:
-        return _FILE_TYPE_MAP[suffix_lower]
-    return f"{suffix_lower.upper()} 文件"
-
-
-def _format_file_size_compact(size_bytes):
-    if size_bytes < 0:
-        size_bytes = 0
-    if size_bytes < 1024:
-        return f"{int(size_bytes)} B"
-    if size_bytes < 1024 * 1024:
-        import math
-        return f"{int(math.ceil(size_bytes / 1024))} KB"
-    if size_bytes < 1024 * 1024 * 1024:
-        import math
-        return f"{int(math.ceil(size_bytes / (1024 * 1024)))} MB"
-    import math
-    value = int(math.ceil(size_bytes / (1024 * 1024 * 1024)))
-    if value >= 10000:
-        return f"{value // 1024} TB"
-    return f"{value} GB"
-
-
-class FileBlockCardDelegate(QStyledItemDelegate):
+class FileHorizontalCardDelegate(QStyledItemDelegate):
     _SHADOW_CACHE_MAX_ENTRIES = 96
-
-    """
-    文件块卡片委托
-
-    特性：
-    - 复现 FileBlockCard 的 hover / selected / preview 颜色与切换节奏
-    - 动画状态以 file path 为 key，避免排序/筛选/刷新导致串状态
-    - 动画定时器仅在存在活动动画时运行，空闲时自动停止
-    """
 
     def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
         super().__init__(parent)
@@ -172,13 +49,11 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self._init_fonts()
 
     def set_view(self, view):
-        """设置关联的视图"""
         self._view = view
         if view:
             view.setMouseTracking(True)
 
     def clear_caches(self):
-        """清理委托内部动画缓存"""
         self._animation_states.clear()
         self._active_animation_keys.clear()
         self._dragging_file_path = None
@@ -188,7 +63,6 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             self._view.viewport().update()
 
     def update_theme(self):
-        """主题更新后刷新颜色和字体缓存"""
         self._init_colors()
         self._init_fonts()
         self.clear_caches()
@@ -197,32 +71,27 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         return is_animation_enabled("file_card_state", default=True)
 
     def set_dragging_file_path(self, file_path):
-        """设置当前处于拖拽中的文件路径"""
         import os
-
         normalized_path = os.path.normpath(file_path) if file_path else None
         if self._dragging_file_path == normalized_path:
             return
-
         self._dragging_file_path = normalized_path
         if self._view:
             self._view.viewport().update()
 
     def _init_colors(self):
-        """初始化颜色配置"""
         try:
             app = QApplication.instance()
             settings_manager = getattr(app, "settings_manager", None) if app else None
             if settings_manager is None:
                 settings_manager = SettingsManager()
-
             self.base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
             self.auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
             self.normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
             self.accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
             self.secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
         except Exception as error:
-            debug(f"初始化委托颜色配置失败，使用默认颜色: {error}")
+            debug(f"初始化横向委托颜色失败: {error}")
             self.base_color = "#212121"
             self.auxiliary_color = "#3D3D3D"
             self.normal_color = "#717171"
@@ -246,11 +115,13 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self._idle_shadow = QColor(0, 0, 0, 0)
 
     def _init_fonts(self):
-        """初始化字体配置"""
         app = QApplication.instance()
         self.global_font = getattr(app, "global_font", self._global_font or QFont()) if app else (self._global_font or QFont())
 
         self.name_font = QFont(self.global_font)
+        name_font_size = max(1, int(self.global_font.pointSize() * 1.1))
+        self.name_font.setPointSize(name_font_size)
+        self.name_font.setBold(True)
         self.small_font = QFont(self.global_font)
         small_font_size = max(1, int(self.global_font.pointSize() * 0.85))
         self.small_font.setPointSize(small_font_size)
@@ -258,42 +129,26 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self.name_font_metrics = QFontMetrics(self.name_font)
         self.small_font_metrics = QFontMetrics(self.small_font)
 
-    def _normalize_path(self, file_path: str) -> str:
+    def _normalize_path(self, file_path):
         import os
-
         return os.path.normpath(file_path) if file_path else ""
 
-    def _format_created_text(self, created: str) -> str:
+    def _format_created_text(self, created):
         if not created:
             return ""
-
         try:
             from PySide6.QtCore import QDateTime
-
             dt = QDateTime.fromString(created, Qt.ISODate)
             if dt.isValid():
                 return dt.toString("yyyy-MM-dd")
         except (RuntimeError, TypeError, ValueError):
             pass
-
         return created[:10] if len(created) >= 10 else created
-
-    def _format_file_size(self, size_bytes):
-        if size_bytes < 0:
-            size_bytes = 0
-        if size_bytes < 1024:
-            return f"{int(size_bytes)} B"
-        if size_bytes < 1024 * 1024:
-            return f"{size_bytes / 1024:.1f} KB"
-        if size_bytes < 1024 * 1024 * 1024:
-            return f"{size_bytes / (1024 * 1024):.1f} MB"
-        return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
 
     def _get_file_info(self, index):
         model = index.model()
         if not model:
             return {}
-
         return {
             "path": model.data(index, Qt.UserRole + 1) or "",
             "name": model.data(index, Qt.UserRole + 2) or "",
@@ -307,54 +162,68 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         }
 
     def _calculate_geometry(self, rect):
-        dpi_scale = self._dpi_scale
+        dpi = self._dpi_scale
 
-        border_width = max(1, int(1 * dpi_scale))
+        border_width = max(1, int(1 * dpi))
         preview_border_width = border_width * 2
-        radius = max(1, int(8 * dpi_scale))
-        icon_size = int(38 * dpi_scale)
-        spacing = int(2 * dpi_scale)
-        margins = int(4 * dpi_scale)
+        radius = max(1, int(8 * dpi))
 
-        content_rect = rect.adjusted(margins, margins, -margins, -margins)
+        icon_size = int(28 * dpi)
+        icon_left_margin = int(4 * dpi)
+        icon_text_spacing = int(8 * dpi)
+
+        right_margin = int(4 * dpi)
+        inner_spacing = int(6 * dpi)
+
+        content_rect = rect.adjusted(border_width, border_width, -border_width, -border_width)
+        content_top = content_rect.y() + (content_rect.height() - icon_size) // 2
 
         icon_rect = QRect(
-            content_rect.x() + max(0, (content_rect.width() - icon_size) // 2),
-            content_rect.y(),
-            min(icon_size, max(0, content_rect.width())),
+            content_rect.x() + icon_left_margin,
+            content_top,
+            icon_size,
             icon_size,
         )
 
         name_h = self.name_font_metrics.height()
         small_h = self.small_font_metrics.height()
 
-        name_rect = QRect(
-            content_rect.x(),
-            icon_rect.bottom() + 1 + spacing,
-            content_rect.width(),
-            name_h,
-        )
-        size_rect = QRect(
-            content_rect.x(),
-            name_rect.bottom() + 1 + spacing,
-            content_rect.width(),
-            small_h,
-        )
-        time_rect = QRect(
-            content_rect.x(),
-            size_rect.bottom() + 1 + spacing,
-            content_rect.width(),
-            small_h,
-        )
+        right_group_base_x = content_rect.right() - right_margin
 
         return {
             "border_width": border_width,
             "preview_border_width": preview_border_width,
             "radius": radius,
             "icon_rect": icon_rect,
-            "name_rect": name_rect,
+            "content_rect": content_rect,
+            "right_group_base_x": right_group_base_x,
+            "inner_spacing": inner_spacing,
+            "icon_text_spacing": icon_text_spacing,
+            "right_margin": right_margin,
+            "name_font_height": name_h,
+            "small_font_height": small_h,
+        }
+
+    def _calculate_right_item_rects(self, geometry, type_text, size_text, date_text):
+        type_width = self.small_font_metrics.horizontalAdvance(type_text) if type_text else 0
+        date_width = self.small_font_metrics.horizontalAdvance(date_text) if date_text else 0
+        size_width = self.small_font_metrics.horizontalAdvance(size_text) if size_text else 0
+
+        spacing = geometry["inner_spacing"]
+        right_base = geometry["right_group_base_x"]
+
+        size_rect = QRect(right_base - size_width, 0, size_width, 0)
+        date_rect = QRect(size_rect.x() - spacing - date_width, 0, date_width, 0)
+        type_rect = QRect(date_rect.x() - spacing - type_width, 0, type_width, 0)
+
+        icon_right_plus_margin = geometry["icon_rect"].right() + geometry["icon_text_spacing"]
+        name_max_width = max(30, geometry["right_group_base_x"] - icon_right_plus_margin)
+
+        return {
+            "type_rect": type_rect,
+            "date_rect": date_rect,
             "size_rect": size_rect,
-            "time_rect": time_rect,
+            "name_max_width": name_max_width,
         }
 
     def _default_anim_state(self):
@@ -394,7 +263,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         if not self._animation_timer.isActive():
             self._animation_timer.start()
 
-    def _ease(self, curve_name: str, t: float) -> float:
+    def _ease(self, curve_name, t):
         t = max(0.0, min(1.0, t))
         if curve_name == "in_out_quad":
             if t < 0.5:
@@ -415,22 +284,19 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         a = int(c1.alpha() + (c2.alpha() - c1.alpha()) * t)
         return QColor(r, g, b, a)
 
-    def _interpolate_value(self, start: float, end: float, t: float) -> float:
+    def _interpolate_value(self, start, end, t):
         return start + (end - start) * t
 
-    def _target_visuals_for_flags(self, is_hovered: bool, is_selected: bool, is_previewing: bool):
+    def _target_visuals_for_flags(self, is_hovered, is_selected, is_previewing):
         if is_previewing:
             target_bg = QColor(self._selected_bg) if is_selected else QColor(self._normal_bg)
             return target_bg, QColor(self._preview_border), QColor(self._preview_shadow), 8.0 * self._dpi_scale
-
         if is_selected:
             selected_shadow = QColor(self._selected_border)
             selected_shadow.setAlpha(72)
             return QColor(self._selected_bg), QColor(self._selected_border), selected_shadow, 8.0 * self._dpi_scale
-
         if is_hovered:
             return QColor(self._hover_bg), QColor(self._hover_border), QColor(self._hover_shadow), 8.0 * self._dpi_scale
-
         return QColor(self._normal_bg), QColor(self._normal_border), QColor(self._idle_shadow), 0.0
 
     def _transition_meta(self, prev_hovered, prev_selected, prev_previewing, is_hovered, is_selected, is_previewing):
@@ -450,15 +316,12 @@ class FileBlockCardDelegate(QStyledItemDelegate):
 
     def _sync_animation_state(self, key, file_info, is_hovered, is_selected, is_previewing):
         state = self._get_animation_state(key)
-
         prev_hovered = state["is_hovered"]
         prev_selected = state["is_selected"]
         prev_previewing = state["is_previewing"]
 
         target_bg, target_border, target_shadow, target_shadow_blur = self._target_visuals_for_flags(
-            is_hovered,
-            is_selected,
-            is_previewing,
+            is_hovered, is_selected, is_previewing,
         )
 
         needs_transition = (
@@ -492,12 +355,8 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             return state
 
         duration, easing = self._transition_meta(
-            prev_hovered,
-            prev_selected,
-            prev_previewing,
-            is_hovered,
-            is_selected,
-            is_previewing,
+            prev_hovered, prev_selected, prev_previewing,
+            is_hovered, is_selected, is_previewing,
         )
 
         state["start_bg"] = QColor(state["bg_color"])
@@ -513,16 +372,13 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         state["animation_start_time"] = datetime.now().timestamp() * 1000.0
         state["animating"] = True
         self._active_animation_keys.add(key)
-
         self._ensure_animation_timer_running()
-
         return state
 
     def _stop_animation_timer_if_idle(self):
         if self._active_animation_keys:
             self._ensure_animation_timer_running()
             return
-
         if self._animation_timer.isActive():
             self._animation_timer.stop()
 
@@ -548,7 +404,6 @@ class FileBlockCardDelegate(QStyledItemDelegate):
 
         now = datetime.now().timestamp() * 1000.0
         needs_repaint = False
-
         completed_keys = []
 
         for key in tuple(self._active_animation_keys):
@@ -581,7 +436,6 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             self._active_animation_keys.discard(key)
 
         self._stop_animation_timer_if_idle()
-
         if needs_repaint and self._view:
             self._view.viewport().update()
 
@@ -589,10 +443,8 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         if is_dragging_source:
             bg_color = QColor(self.base_color)
             bg_color.setAlpha(102)
-
             border_color = QColor(self.auxiliary_color)
             border_color.setAlpha(102)
-
             shadow_color = QColor(self._idle_shadow)
             return bg_color, border_color, shadow_color, 0.0, geometry["border_width"], 0.4
 
@@ -606,10 +458,9 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         shadow_blur = max(0.0, float(anim_state["shadow_blur"]))
         return bg_color, border_color, shadow_color, shadow_blur, border_width, 1.0
 
-    def _draw_shadow(self, painter, rect: QRect, radius: float, shadow_color: QColor, shadow_blur: float):
+    def _draw_shadow(self, painter, rect, radius, shadow_color, shadow_blur):
         if shadow_blur <= 0.5 or shadow_color.alpha() <= 0:
             return
-
         dpr = 1.0
         paint_device = painter.device()
         if paint_device is not None and hasattr(paint_device, "devicePixelRatioF"):
@@ -619,30 +470,16 @@ class FileBlockCardDelegate(QStyledItemDelegate):
                 dpr = 1.0
 
         shadow_pixmap, margin = self._get_real_shadow_pixmap(
-            rect.width(),
-            rect.height(),
-            radius,
-            shadow_color,
-            shadow_blur,
-            dpr,
+            rect.width(), rect.height(), radius, shadow_color, shadow_blur, dpr,
         )
         if shadow_pixmap.isNull():
             return
-
         painter.save()
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.drawPixmap(rect.x() - margin, rect.y() - margin, shadow_pixmap)
         painter.restore()
 
-    def _get_real_shadow_pixmap(
-        self,
-        width: int,
-        height: int,
-        radius: float,
-        shadow_color: QColor,
-        shadow_blur: float,
-        dpr: float,
-    ):
+    def _get_real_shadow_pixmap(self, width, height, radius, shadow_color, shadow_blur, dpr):
         width = max(1, int(width))
         height = max(1, int(height))
         radius = max(0.0, float(radius))
@@ -650,14 +487,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         dpr = max(1.0, float(dpr))
 
         margin = max(2, int(round(shadow_blur * 2.0)))
-        cache_key = (
-            width,
-            height,
-            round(radius, 2),
-            shadow_color.rgba(),
-            round(shadow_blur, 2),
-            round(dpr, 2),
-        )
+        cache_key = (width, height, round(radius, 2), shadow_color.rgba(), round(shadow_blur, 2), round(dpr, 2))
 
         cached = self._shadow_pixmap_cache.get(cache_key)
         if cached is not None:
@@ -680,11 +510,7 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         source_painter.setRenderHint(QPainter.Antialiasing, True)
         source_painter.setPen(Qt.NoPen)
         source_painter.setBrush(shadow_color)
-        source_painter.drawRoundedRect(
-            QRectF(margin, margin, width, height),
-            radius,
-            radius,
-        )
+        source_painter.drawRoundedRect(QRectF(margin, margin, width, height), radius, radius)
         source_painter.end()
 
         blur_effect = QGraphicsBlurEffect()
@@ -711,16 +537,13 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         self._shadow_pixmap_cache.move_to_end(cache_key)
         while len(self._shadow_pixmap_cache) > self._SHADOW_CACHE_MAX_ENTRIES:
             self._shadow_pixmap_cache.popitem(last=False)
-
         return cache_value
 
     def _draw_scaled_pixmap(self, painter, rect, pixmap, opacity=1.0):
         if pixmap.isNull() or rect.width() <= 0 or rect.height() <= 0:
             return
-
         physical_width = max(1, pixmap.width())
         physical_height = max(1, pixmap.height())
-
         dpr = pixmap.devicePixelRatio()
         if dpr and dpr > 0:
             logical_width = max(1, int(round(physical_width / dpr)))
@@ -730,7 +553,6 @@ class FileBlockCardDelegate(QStyledItemDelegate):
             logical_height = physical_height
 
         same_size = logical_width == rect.width() and logical_height == rect.height()
-
         if same_size:
             target_rect = QRectF(rect)
         else:
@@ -756,19 +578,13 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         rect = QRect(option.rect)
         if for_drag_preview:
             return rect
-
         target_size = self.sizeHint(option, index)
         if not target_size.isValid():
             return rect
-
         target_width = min(rect.width(), target_size.width())
         target_height = min(rect.height(), target_size.height())
-
-        # 当单元格空白为奇数像素时，向右侧多分配 1px，
-        # 这样首尾留白更接近对称，避免视觉上右侧总是更宽。
         offset_x = max(0, (rect.width() - target_width + 1) // 2)
         offset_y = max(0, (rect.height() - target_height) // 2)
-
         return QRect(
             rect.x() + offset_x,
             rect.y() + offset_y,
@@ -795,35 +611,22 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         is_hovered = bool(option.state & QStyle.State_MouseOver) and not is_selected and not is_previewing and not for_drag_preview
 
         anim_key = self._get_animation_key(file_info)
-        anim_state = self._sync_animation_state(
-            anim_key,
-            file_info,
-            is_hovered,
-            is_selected,
-            is_previewing,
-        )
+        anim_state = self._sync_animation_state(anim_key, file_info, is_hovered, is_selected, is_previewing)
 
         file_path = self._normalize_path(file_info.get("path", ""))
         is_dragging_source = bool(self._dragging_file_path and file_path == self._dragging_file_path and not for_drag_preview)
 
         bg_color, border_color, shadow_color, shadow_blur, border_width, content_opacity = self._get_paint_colors(
-            geometry,
-            is_selected,
-            is_previewing,
-            anim_state,
-            is_dragging_source=is_dragging_source,
-            for_drag_preview=for_drag_preview,
+            geometry, is_selected, is_previewing, anim_state,
+            is_dragging_source=is_dragging_source, for_drag_preview=for_drag_preview,
         )
 
         self._draw_shadow(painter, rect, geometry["radius"], shadow_color, shadow_blur)
 
         draw_rect = QRectF(rect).adjusted(
-            border_width / 2.0,
-            border_width / 2.0,
-            -border_width / 2.0,
-            -border_width / 2.0,
+            border_width / 2.0, border_width / 2.0,
+            -border_width / 2.0, -border_width / 2.0,
         )
-
         painter.setPen(QPen(border_color, border_width))
         painter.setBrush(bg_color)
         painter.drawRoundedRect(draw_rect, geometry["radius"], geometry["radius"])
@@ -832,40 +635,57 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         if icon_pixmap and not icon_pixmap.isNull():
             self._draw_scaled_pixmap(painter, geometry["icon_rect"], icon_pixmap, content_opacity)
 
-        painter.setPen(self._text_color)
         painter.setOpacity(content_opacity)
-        painter.setFont(self.name_font)
 
+        is_dir = file_info.get("is_dir", False)
+        type_text = _get_file_type_display(file_info.get("suffix", ""), is_dir)
+        if is_dir:
+            size_text = "文件夹"
+        else:
+            size_text = _format_file_size_compact(file_info.get("size", 0))
+        date_text = self._format_created_text(file_info.get("created", ""))
+
+        right_items = self._calculate_right_item_rects(geometry, type_text, size_text, date_text)
+
+        icon_right = geometry["icon_rect"].right()
+        text_x_start = icon_right + int(8 * self._dpi_scale)
+
+        ct = geometry["content_rect"]
+        name_h = geometry["name_font_height"]
+        small_h = geometry["small_font_height"]
+
+        name_y = ct.y() + int(4 * self._dpi_scale)
+        info_y = ct.bottom() - small_h - int(4 * self._dpi_scale)
+
+        # --- File name (line 1, left-aligned, elided) ---
+        painter.setPen(self._text_color)
+        painter.setFont(self.name_font)
         name_text = file_info.get("name", "")
-        elided_name = self.name_font_metrics.elidedText(
-            name_text,
-            Qt.ElideRight,
-            geometry["name_rect"].width(),
-        )
+        elided_name = self.name_font_metrics.elidedText(name_text, Qt.ElideRight, right_items["name_max_width"])
         painter.drawText(
-            geometry["name_rect"],
-            Qt.AlignCenter | Qt.TextSingleLine,
+            text_x_start, name_y,
+            right_items["name_max_width"], name_h,
+            Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine,
             elided_name,
         )
 
+        # --- Right-side info items (line 2, right-aligned) ---
         painter.setFont(self.small_font)
+        painter.setPen(self._text_color)
 
-        if file_info.get("is_dir", False):
-            size_text = "文件夹"
-        else:
-            size_text = self._format_file_size(file_info.get("size", 0))
-        painter.drawText(
-            geometry["size_rect"],
-            Qt.AlignCenter | Qt.TextSingleLine,
-            size_text,
-        )
+        def draw_right_rect(rect_item, text, y):
+            if not text or rect_item is None:
+                return
+            r = rect_item
+            painter.drawText(
+                r.x(), y, r.width(), small_h,
+                Qt.AlignRight | Qt.AlignVCenter | Qt.TextSingleLine,
+                text,
+            )
 
-        created_time = self._format_created_text(file_info.get("created", ""))
-        painter.drawText(
-            geometry["time_rect"],
-            Qt.AlignCenter | Qt.TextSingleLine,
-            created_time,
-        )
+        draw_right_rect(right_items["size_rect"], size_text, info_y)
+        draw_right_rect(right_items["date_rect"], date_text, info_y)
+        draw_right_rect(right_items["type_rect"], type_text, info_y)
 
         painter.restore()
 
@@ -879,43 +699,23 @@ class FileBlockCardDelegate(QStyledItemDelegate):
         option.rect = QRect(0, 0, size.width(), size.height())
         option.palette = palette
         option.state |= QStyle.State_Enabled
-
         pixmap = QPixmap(size)
         pixmap.fill(Qt.transparent)
-
         painter = QPainter(pixmap)
         self._paint_card(painter, option, index, for_drag_preview=True)
         painter.end()
         return pixmap
 
     def sizeHint(self, option, index):
-        dpi_scale = self._dpi_scale
-
-        min_height = int(75 * dpi_scale)
-        icon_size = int(38 * dpi_scale)
-        name_font_height = self.name_font_metrics.height()
-        small_font_height = self.small_font_metrics.height()
-
-        labels_height = name_font_height + (small_font_height * 2)
-        spacing = int(2 * dpi_scale)
-        total_spacing = spacing * 3
-        vertical_margins = int(4 * dpi_scale) * 2
-        border_width = int(1 * dpi_scale) * 2
-
-        required_height = icon_size + labels_height + total_spacing + vertical_margins + border_width
-        height = max(required_height, min_height)
-
+        dpi = self._dpi_scale
+        border_width = max(1, int(1 * dpi))
+        icon_left_margin = int(4 * dpi)
+        icon_size = int(28 * dpi)
+        height = int(2 * border_width + 2 * icon_left_margin + icon_size)
         model = index.model()
         card_width = model.data(index, Qt.UserRole + 10) if model else None
         if card_width and card_width > 0:
             width = card_width
         else:
-            base_min_width = int(50 * dpi_scale)
-            date_text_width = self.small_font_metrics.horizontalAdvance("2024-12-31")
-            char_width = self.small_font_metrics.horizontalAdvance("W")
-            horizontal_margins = int(4 * dpi_scale) * 2
-            border_w = int(1 * dpi_scale) * 2
-            required_width = date_text_width + char_width + horizontal_margins + border_w
-            width = max(required_width, base_min_width)
-
+            width = max(int(200 * dpi), int(150 * dpi))
         return QSize(width, height)

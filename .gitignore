@@ -98,3 +98,10 @@ freeassetfilter/widgets/file_horizontal_card.重构前备份.py
 EXIT_BLOCK_FIX_SUMMARY.md
 FIX_SUMMARY.md
 .*
+
+# Development/test files (not tracked)
+test_file_horizontal_card_demo.py
+test_file_selector_view_mode.py
+test_loading_spinner.py
+test_volume_slider_fix.py
+AGENTS.md

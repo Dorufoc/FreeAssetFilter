@@ -330,6 +330,25 @@ class GlobalMouseMonitor(QObject):
         finally:
             self._stopping = False
 
+    def pause_hide_timer(self):
+        """
+        暂停隐藏计时器，但不停止全局鼠标钩子
+        """
+        if self._is_monitoring:
+            self._hide_timer.stop()
+
+    def resume_hide_timer(self, timeout_ms=None):
+        """
+        恢复隐藏计时器
+
+        Args:
+            timeout_ms: 自定义超时时间（毫秒），None 则使用当前 _timeout
+        """
+        if self._is_monitoring:
+            t = timeout_ms if timeout_ms is not None else self._timeout
+            self._hide_timer.stop()
+            self._hide_timer.start(t)
+
     def reset_timer(self):
         """
         重置空闲计时器

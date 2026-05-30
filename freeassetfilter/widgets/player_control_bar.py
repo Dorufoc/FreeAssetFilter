@@ -615,9 +615,12 @@ class PlayerControlBar(QWidget):
         self.muteChanged.emit(muted)
 
     def _on_speed_button_clicked(self):
-        """倍速按钮点击处理"""
-        self._speed_menu.set_target_button(self._speed_button)
-        self._speed_menu.show_menu()
+        """倍速按钮点击处理 - toggle 显示/隐藏"""
+        if self._speed_menu.is_menu_visible():
+            self._speed_menu.hide_menu()
+        else:
+            self._speed_menu.set_target_button(self._speed_button)
+            self._speed_menu.show_menu()
 
     def _on_speed_item_clicked(self, speed: float):
         """

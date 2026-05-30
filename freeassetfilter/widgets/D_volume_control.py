@@ -7,7 +7,7 @@ FreeAssetFilter 自定义音量控制组件
 """
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QApplication
-from PySide6.QtCore import Qt, Signal, QPoint, QEvent
+from PySide6.QtCore import Qt, Signal, QPoint, QEvent, QTimer
 from PySide6.QtGui import QFont
 
 from .button_widgets import CustomButton
@@ -78,8 +78,13 @@ class DVolumeControl(QWidget):
 
         self._volume_button.clicked.connect(self._toggle_volume_menu)
         self._d_volume._progress_bar.valueChanged.connect(self._on_volume_slider_changed)
+        self._d_volume._progress_bar.userInteractionEnded.connect(self._on_slider_interaction_ended)
 
         self._top_window = None
+        self._focus_restore_timer = QTimer(self)
+        self._focus_restore_timer.setSingleShot(True)
+        self._focus_restore_timer.setInterval(50)
+        self._focus_restore_timer.timeout.connect(self._restore_parent_focus)
 
     def _update_volume_icon(self):
         """更新音量图标"""
@@ -104,18 +109,27 @@ class DVolumeControl(QWidget):
             self._top_window = self.window()
             if self._top_window:
                 self._top_window.installEventFilter(self)
+            # 安装全局事件过滤器，检测点击外部区域关闭菜单
+            app = QApplication.instance()
+            if app:
+                app.installEventFilter(self)
             self._d_volume.show()
             self._menu_visible = True
+            QTimer.singleShot(0, self._restore_parent_focus)
 
     def _hide_volume_menu(self):
         """隐藏音量菜单"""
         if self._menu_visible:
+            app = QApplication.instance()
+            if app:
+                app.removeEventFilter(self)
             self._volume_button.removeEventFilter(self)
             if self._top_window:
                 self._top_window.removeEventFilter(self)
                 self._top_window = None
             self._d_volume.hide()
             self._menu_visible = False
+            self._restore_parent_focus()
 
     def _on_volume_slider_changed(self, value):
         """
@@ -125,6 +139,22 @@ class DVolumeControl(QWidget):
             value: 新的音量值
         """
         self.set_volume(value)
+        if self._menu_visible:
+            self._focus_restore_timer.start()
+
+    def _on_slider_interaction_ended(self):
+        """滑动条交互结束后恢复全屏窗口焦点"""
+        self._focus_restore_timer.stop()
+        self._restore_parent_focus()
+
+    def _restore_parent_focus(self):
+        """恢复顶层窗口焦点，防止音量弹窗导致全屏窗口失焦"""
+        top_window = self.window()
+        if top_window and hasattr(top_window, 'activateWindow'):
+            top_window.raise_()
+            top_window.activateWindow()
+            if hasattr(top_window, 'setFocus'):
+                top_window.setFocus()
 
     def set_volume(self, volume):
         """
@@ -212,8 +242,23 @@ class DVolumeControl(QWidget):
         """鼠标离开事件 - 禁用hover检测退出"""
         pass
 
+    def _is_click_on_menu_or_button(self, obj):
+        """检查点击目标是否在音量按钮或音量弹出菜单上"""
+        if obj is self._volume_button or (self._volume_button and self._volume_button.isAncestorOf(obj)):
+            return True
+        menu_widget = getattr(self._d_volume, '_menu', None)
+        if menu_widget:
+            if obj is menu_widget or menu_widget.isAncestorOf(obj):
+                return True
+        return False
+
     def eventFilter(self, obj, event):
-        """事件过滤器 - 监听按钮和顶层窗口的移动事件"""
+        """事件过滤器 - 监听全局点击外部关闭，以及按钮/窗口移动关闭"""
+        # 点击音量菜单外部区域时关闭菜单
+        if event.type() == QEvent.MouseButtonPress and self._menu_visible:
+            if not self._is_click_on_menu_or_button(obj):
+                self._hide_volume_menu()
+        # 按钮或窗口移动时关闭菜单
         if event.type() == QEvent.Move and self._menu_visible:
             if obj == self._volume_button or (self._top_window and obj == self._top_window):
                 self._hide_volume_menu()

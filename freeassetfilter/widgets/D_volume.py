@@ -90,6 +90,7 @@ class D_Volume(QWidget):
 
         self._menu.set_content(container)
         self._menu.set_timeout_enabled(False)
+        self._menu.setWindowFlags(self._menu.windowFlags() | Qt.WindowDoesNotAcceptFocus)
 
     def enterEvent(self, event):
         """鼠标进入事件 - 禁用hover检测"""

@@ -1405,6 +1405,8 @@ class FreeAssetFilterApp(QMainWindow):
                         new_file_selector.sort_order = file_selector_state["sort_order"]
                     if "view_mode" in file_selector_state:
                         new_file_selector.view_mode = file_selector_state["view_mode"]
+                        if hasattr(new_file_selector, "_apply_view_mode"):
+                            new_file_selector._apply_view_mode()
 
                     if hasattr(new_file_selector, "_update_filter_button_style"):
                         new_file_selector._update_filter_button_style()
