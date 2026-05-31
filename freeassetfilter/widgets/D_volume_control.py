@@ -8,7 +8,7 @@ FreeAssetFilter 自定义音量控制组件
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QApplication
 from PySide6.QtCore import Qt, Signal, QPoint, QEvent, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QCursor
 
 from .button_widgets import CustomButton
 from .D_volume import D_Volume
@@ -31,6 +31,8 @@ class DVolumeControl(QWidget):
 
     valueChanged = Signal(int)
     mutedChanged = Signal(bool)
+    menuShown = Signal()
+    menuHidden = Signal()
 
     def __init__(self, parent=None):
         """
@@ -86,6 +88,12 @@ class DVolumeControl(QWidget):
         self._focus_restore_timer.setInterval(50)
         self._focus_restore_timer.timeout.connect(self._restore_parent_focus)
 
+        self._debounce_hide_on_move = False
+        self._debounce_timer = QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.setInterval(300)
+        self._debounce_timer.timeout.connect(self._clear_move_debounce)
+
     def _update_volume_icon(self):
         """更新音量图标"""
         icon_path = self._mute_icon_path if (self._muted or self._volume == 0) else self._volume_icon_path
@@ -115,11 +123,16 @@ class DVolumeControl(QWidget):
                 app.installEventFilter(self)
             self._d_volume.show()
             self._menu_visible = True
+            self.menuShown.emit()
+            self._debounce_hide_on_move = True
+            self._debounce_timer.start()
             QTimer.singleShot(0, self._restore_parent_focus)
 
     def _hide_volume_menu(self):
         """隐藏音量菜单"""
         if self._menu_visible:
+            self._debounce_hide_on_move = False
+            self._debounce_timer.stop()
             app = QApplication.instance()
             if app:
                 app.removeEventFilter(self)
@@ -129,6 +142,7 @@ class DVolumeControl(QWidget):
                 self._top_window = None
             self._d_volume.hide()
             self._menu_visible = False
+            self.menuHidden.emit()
             self._restore_parent_focus()
 
     def _on_volume_slider_changed(self, value):
@@ -151,10 +165,13 @@ class DVolumeControl(QWidget):
         """恢复顶层窗口焦点，防止音量弹窗导致全屏窗口失焦"""
         top_window = self.window()
         if top_window and hasattr(top_window, 'activateWindow'):
-            top_window.raise_()
             top_window.activateWindow()
             if hasattr(top_window, 'setFocus'):
                 top_window.setFocus()
+
+    def _clear_move_debounce(self):
+        """清除 Move 事件防抖标志"""
+        self._debounce_hide_on_move = False
 
     def set_volume(self, volume):
         """
@@ -244,6 +261,13 @@ class DVolumeControl(QWidget):
 
     def _is_click_on_menu_or_button(self, obj):
         """检查点击目标是否在音量按钮或音量弹出菜单上"""
+        # WindowDoesNotAcceptFocus 会导致点击事件被路由到父窗口，obj 参数不可靠，
+        # 改用 QApplication.widgetAt() 获取光标下实际控件
+        clicked = QApplication.widgetAt(QCursor.pos())
+        if clicked:
+            obj = clicked
+        if not isinstance(obj, QWidget):
+            return False
         if obj is self._volume_button or (self._volume_button and self._volume_button.isAncestorOf(obj)):
             return True
         menu_widget = getattr(self._d_volume, '_menu', None)
@@ -258,8 +282,11 @@ class DVolumeControl(QWidget):
         if event.type() == QEvent.MouseButtonPress and self._menu_visible:
             if not self._is_click_on_menu_or_button(obj):
                 self._hide_volume_menu()
-        # 按钮或窗口移动时关闭菜单
-        if event.type() == QEvent.Move and self._menu_visible:
+        # 按钮或窗口移动时关闭菜单（300ms 防抖，与 D_HoverMenu 同步）
+        if event.type() == QEvent.Move and self._menu_visible and not self._debounce_hide_on_move:
             if obj == self._volume_button or (self._top_window and obj == self._top_window):
+                # 过滤 _restore_parent_focus() → activateWindow() 触发的虚假 Move 事件
+                if hasattr(event, 'oldPos') and event.pos() == event.oldPos():
+                    return super().eventFilter(obj, event)
                 self._hide_volume_menu()
         return super().eventFilter(obj, event)

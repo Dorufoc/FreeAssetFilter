@@ -112,6 +112,10 @@ class _DropdownHoverMenu(D_HoverMenu):
 
         self._is_visible = True
 
+        # 防抖：设置 300ms 内不响应 hide_on_window_move 的 Move 事件
+        self._debounce_hide_on_move = True
+        self._debounce_timer.start(300)
+
     def _animate_hide(self):
         """下拉菜单隐藏动画：仅透明度动画，不执行位移。"""
         if not self._is_visible:
@@ -651,12 +655,13 @@ class Ddropmenu(QWidget):
         self.hover_menu = _DropdownHoverMenu(
             parent=self,
             position=self.POSITION_MAP[self._position],
-            stay_on_top=True,
+            stay_on_top=False,
             hide_on_window_move=True,
             use_sub_widget_mode=False,
             fill_width=False,
             margin=int(4 * self.dpi_scale),
             border_radius=int(8 * self.dpi_scale),
+            no_focus=True,
         )
         self.hover_menu.set_content(self.list_widget)
         self.hover_menu.set_timeout_enabled(False)

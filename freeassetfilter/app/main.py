@@ -597,6 +597,13 @@ class FreeAssetFilterApp(QMainWindow):
             except Exception as e:
                 logger.warning(f"关闭主窗口时清理文件存储池失败: {e}")
 
+        # 保存文件选择器视图模式（列表/网格）
+        if hasattr(self, 'file_selector_a') and hasattr(self.file_selector_a, 'save_view_mode'):
+            try:
+                self.file_selector_a.save_view_mode()
+            except Exception as e:
+                logger.warning(f"保存视图模式失败: {e}")
+
         # 统一清理：删除整个temp文件夹
         import shutil
         import os

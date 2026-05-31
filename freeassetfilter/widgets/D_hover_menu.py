@@ -13,9 +13,11 @@ FreeAssetFilter 自定义悬浮菜单组件
 - 支持目标控件移动时自动隐藏
 """
 
+from typing import Set
+
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QApplication
 from PySide6.QtCore import Qt, QPoint, QRect, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QEvent
-from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPainterPath
+from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPainterPath, QCursor
 
 from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
 from freeassetfilter.utils.app_logger import info, debug, warning, error
@@ -50,7 +52,7 @@ class D_HoverMenu(QWidget):
 
     closed = Signal()
 
-    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None, background_alpha=1.0, enable_vertical_animation=False, content_padding: tuple = (0, 0, 0, 0)):
+    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None, background_alpha=1.0, enable_vertical_animation=False, content_padding: tuple = (0, 0, 0, 0), no_focus=False):
         """
         初始化悬浮菜单
 
@@ -66,6 +68,7 @@ class D_HoverMenu(QWidget):
             background_alpha: 背景透明度，范围 0.0-1.0，默认 1.0（不透明）
             enable_vertical_animation: 是否启用垂直位移动画，默认 False（仅透明度动画）
             content_padding: 内容内边距 (左, 上, 右, 下) 像素，默认 (0, 0, 0, 0)
+            no_focus: 是否不接受焦点（WindowDoesNotAcceptFocus），避免后续 setWindowFlags 重建窗口
         """
         super().__init__(parent)
 
@@ -88,6 +91,8 @@ class D_HoverMenu(QWidget):
             window_flags = Qt.Tool | Qt.FramelessWindowHint
             if stay_on_top:
                 window_flags |= Qt.WindowStaysOnTopHint
+            if no_focus:
+                window_flags |= Qt.WindowDoesNotAcceptFocus
             self.setWindowFlags(window_flags)
             self.setAttribute(Qt.WA_TranslucentBackground)
             # 显示时不激活窗口，不获取焦点，确保键盘事件传递给父窗口
@@ -110,6 +115,8 @@ class D_HoverMenu(QWidget):
         self._is_animating = False
         self._timeout_enabled = True
         self._timeout_duration = 5000
+        self._mouse_outside_timeout = 3000   # 鼠标在控制栏区域外 → 3 秒
+        self._mouse_inside_timeout = 6000    # 鼠标在控制栏区域内 → 6 秒
         self._fade_duration = 300
 
         self._fade_animation = None
@@ -129,11 +136,18 @@ class D_HoverMenu(QWidget):
         self._bar_idle_timer.setSingleShot(True)
         self._bar_idle_timer.timeout.connect(self._on_bar_idle_timeout)
 
+        self._debounce_hide_on_move = False
+        self._debounce_timer = QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.timeout.connect(self._clear_debounce)
         self._auto_hide_enabled = False
         self._mouse_activity_monitor = GlobalMouseMonitor(self, timeout=5000)
         self._mouse_activity_monitor.mouse_moved.connect(self._show_control_bar)
         self._mouse_activity_monitor.timeout_reached.connect(self._hide_control_bar)
         self._mouse_monitor_active = False
+
+        self._popup_menu_visible = False      # 弹出菜单（速度/音量等）是否可见
+        self._popup_widgets: Set[QWidget] = set()  # 关联的弹出窗口，用于光标区域检测
         
         self._target_widget_clicked = False
 
@@ -146,6 +160,10 @@ class D_HoverMenu(QWidget):
 
         # 启用鼠标跟踪，用于控制栏空闲检测
         self._start_mouse_tracking()
+
+    def _clear_debounce(self):
+        """清除隐藏防抖标记"""
+        self._debounce_hide_on_move = False
 
     def _install_event_filter_to_children(self):
         """为所有子控件安装事件过滤器，捕获键盘事件并传递给父窗口"""
@@ -179,11 +197,14 @@ class D_HoverMenu(QWidget):
         event.accept()
 
     def mouseMoveEvent(self, event):
-        """鼠标在控制栏自身范围移动时重置空闲定时器"""
+        """鼠标在控制栏自身范围移动时重置区域内空闲定时器"""
         super().mouseMoveEvent(event)
         if self._auto_hide_enabled and self._is_visible:
-            self._bar_idle_timer.stop()
-            self._bar_idle_timer.start(self._timeout_duration * 2)
+            if self._popup_menu_visible:
+                self._bar_idle_timer.stop()
+            else:
+                self._bar_idle_timer.stop()
+                self._bar_idle_timer.start(self._mouse_inside_timeout)
 
     def _init_ui(self):
         """初始化UI组件"""
@@ -257,6 +278,8 @@ class D_HoverMenu(QWidget):
             duration: 超时时间（毫秒），默认5000ms
         """
         self._timeout_duration = max(1000, duration)
+        self._mouse_outside_timeout = max(1000, duration)
+        self._mouse_inside_timeout = self._mouse_outside_timeout * 2
         if self._is_visible:
             self._start_timeout_timer()
 
@@ -290,11 +313,49 @@ class D_HoverMenu(QWidget):
                 self._mouse_monitor_active = False
                 debug(f"[D_HoverMenu] GlobalMouseMonitor stopped")
 
+    def register_popup_widget(self, widget):
+        """
+        注册关联的弹出窗口，用于光标区域检测。
+        当光标在已注册的弹出窗口上时，视为在控制栏区域内。
+
+        Args:
+            widget: 弹出窗口 QWidget
+        """
+        if widget is not None:
+            self._popup_widgets.add(widget)
+
+    def unregister_popup_widget(self, widget):
+        """取消注册弹出窗口"""
+        self._popup_widgets.discard(widget)
+
+    def set_popup_menu_visible(self, visible: bool):
+        """
+        设置弹出菜单可见状态。
+        当速度/音量等弹出菜单打开时，不应自动隐藏控制栏。
+
+        Args:
+            visible: 是否有弹出菜单可见
+        """
+        from freeassetfilter.utils.app_logger import debug
+        debug(f"[D_HoverMenu] set_popup_menu_visible: visible={visible}, _mouse_monitor_active={self._mouse_monitor_active}, _is_visible={self._is_visible}")
+        self._popup_menu_visible = visible
+        if not visible:
+            self._update_hide_timer_after_show()
+        else:
+            self._stop_timeout_timer()
+            if self._mouse_monitor_active:
+                self._mouse_activity_monitor.pause_hide_timer()
+            self._bar_idle_timer.stop()
+
+    def is_popup_menu_visible(self) -> bool:
+        """检查是否有弹出菜单可见"""
+        return self._popup_menu_visible
+
     def _start_timeout_timer(self):
-        """启动超时定时器"""
+        """启动超时定时器（使用区域外超时时间）"""
         if self._timeout_enabled and self._is_visible:
             self._timeout_timer.stop()
-            self._timeout_timer.start(self._timeout_duration)
+            self._timeout_timer.start(self._mouse_outside_timeout)
 
     def _stop_timeout_timer(self):
         """停止超时定时器"""
@@ -304,36 +365,58 @@ class D_HoverMenu(QWidget):
         """
         重置自动隐藏计时器（喂狗）
         用于在非经典模式下，每次用户操作后调用以延迟隐藏
+        根据鼠标是否在控制栏区域内使用不同的超时时间
         """
         from freeassetfilter.utils.app_logger import debug
-        debug(f"[D_HoverMenu] reset_auto_hide_timer called: _timeout_enabled={self._timeout_enabled}, _is_visible={self._is_visible}, _mouse_monitor_active={self._mouse_monitor_active}")
+        debug(f"[D_HoverMenu] reset_auto_hide_timer called: _timeout_enabled={self._timeout_enabled}, _is_visible={self._is_visible}")
         if self._timeout_enabled and self._is_visible:
-            self._timeout_timer.stop()
-            self._timeout_timer.start(self._timeout_duration)
-            debug(f"[D_HoverMenu] Timer started with duration {self._timeout_duration}ms")
+            if self._is_cursor_in_control_bar_area():
+                self._bar_idle_timer.stop()
+                self._bar_idle_timer.start(self._mouse_inside_timeout)
+                debug(f"[D_HoverMenu] Inside bar area, using inside timeout: {self._mouse_inside_timeout}ms")
+            else:
+                self._timeout_timer.stop()
+                self._timeout_timer.start(self._mouse_outside_timeout)
+                debug(f"[D_HoverMenu] Outside bar area, using outside timeout: {self._mouse_outside_timeout}ms")
         else:
             debug(f"[D_HoverMenu] Timer NOT started due to condition check failed")
 
     def _on_timeout(self):
-        """超时处理"""
+        """超时处理（区域外定时器 _timeout_timer 触发）"""
         from freeassetfilter.utils.app_logger import debug
-        debug(f"[D_HoverMenu] _on_timeout called: _is_visible={self._is_visible}, _is_animating={self._is_animating}")
-        if self._is_visible and not self._is_animating:
+        debug(f"[D_HoverMenu] _on_timeout called: _is_visible={self._is_visible}, _is_animating={self._is_animating}, _popup_menu_visible={self._popup_menu_visible}")
+        # 控制栏已隐藏，忽略
+        if not self._is_visible:
+            return
+        # 如果有弹出菜单可见，不隐藏控制栏，重新计时
+        if self._popup_menu_visible:
+            debug(f"[D_HoverMenu] Popup menu visible, restarting timer")
+            self._start_timeout_timer()
+            return
+        if not self._is_animating:
             debug(f"[D_HoverMenu] Calling _hide_control_bar()")
             self._hide_control_bar()
-        elif self._is_visible and self._is_animating:
+        else:
             debug(f"[D_HoverMenu] Animation in progress, restarting timer")
             self._start_timeout_timer()
 
     def _on_bar_idle_timeout(self):
-        """控制栏空闲超时：鼠标在栏上静止超过 2×_timeout_duration 后隐藏"""
+        """控制栏空闲超时：鼠标在控制栏区域静止超过 _mouse_inside_timeout 后隐藏"""
         from freeassetfilter.utils.app_logger import debug
-        debug(f"[D_HoverMenu] _on_bar_idle_timeout: 控制栏空闲超时，隐藏")
-        if self._is_visible and not self._is_animating:
+        debug(f"[D_HoverMenu] _on_bar_idle_timeout: _is_visible={self._is_visible}, _popup_menu_visible={self._popup_menu_visible}")
+        # 控制栏已隐藏，忽略
+        if not self._is_visible:
+            return
+        # 如果有弹出菜单可见，不隐藏控制栏，统一使用 _update_hide_timer_after_show 重新评估
+        if self._popup_menu_visible:
+            debug(f"[D_HoverMenu] Popup menu visible, re-evaluating via _update_hide_timer_after_show")
+            self._update_hide_timer_after_show()
+            return
+        if not self._is_animating:
             self._hide_control_bar()
-        elif self._is_visible and self._is_animating:
+        else:
             self._bar_idle_timer.stop()
-            self._bar_idle_timer.start(self._timeout_duration * 2)
+            self._bar_idle_timer.start(self._mouse_inside_timeout)
 
     def _start_mouse_tracking(self):
         """递归启用鼠标跟踪，用于检测控制栏上的鼠标移动"""
@@ -346,8 +429,9 @@ class D_HoverMenu(QWidget):
 
     def _is_mouse_over_descendant(self) -> bool:
         """检查鼠标当前是否在本控件或任一子控件（含弹出窗口）上"""
-        from PySide6.QtGui import QCursor
         w = QApplication.widgetAt(QCursor.pos())
+
+        # 检查是否在本控件或其子控件上
         while w is not None:
             if w is self:
                 return True
@@ -355,29 +439,78 @@ class D_HoverMenu(QWidget):
                 w = w.parentWidget()
             except RuntimeError:
                 break
+
+        # 检查是否在已注册的弹出窗口上
+        w = QApplication.widgetAt(QCursor.pos())
+        while w is not None:
+            if w in self._popup_widgets:
+                return True
+            try:
+                w = w.parentWidget()
+            except RuntimeError:
+                break
+
         return False
 
-    def _is_cursor_in_widget(self) -> bool:
-        """检查鼠标光标是否在本控件的屏幕矩形区域内"""
-        from PySide6.QtGui import QCursor
+    def _is_cursor_in_control_bar_area(self) -> bool:
+        """
+        检查鼠标光标是否在控制栏区域内。
+        控制栏区域包括：
+        - D_HoverMenu 自身（控制栏容器）
+        - 所有已注册的弹出菜单（音量弹窗、倍速弹窗等）
+
+        Returns:
+            bool: 光标是否在控制栏区域内
+        """
+        cursor_pos = QCursor.pos()
+
+        # 检查控制栏自身
         global_tl = self.mapToGlobal(self.rect().topLeft())
-        widget_rect = QRect(global_tl, self.size())
-        return widget_rect.contains(QCursor.pos())
+        if QRect(global_tl, self.size()).contains(cursor_pos):
+            return True
+
+        # 检查所有注册的弹出窗口
+        for popup in self._popup_widgets:
+            try:
+                if popup and popup.isVisible():
+                    popup_rect = popup.frameGeometry()
+                    if popup_rect.contains(cursor_pos):
+                        return True
+            except RuntimeError:
+                continue
+
+        return False
 
     def _update_hide_timer_after_show(self):
-        """控制栏显示后，根据鼠标位置决定定时器策略"""
+        """
+        控制栏显示后或鼠标活动后，根据鼠标位置和弹窗状态决定定时器策略：
+        - 弹出菜单可见 → 暂停所有隐藏计时
+        - 光标在控制栏区域内 → 使用 _mouse_inside_timeout（6s）
+        - 光标在控制栏区域外 → 使用 _mouse_outside_timeout（3s）
+        """
         if not self._auto_hide_enabled or not self._is_visible:
             return
-        if self._is_cursor_in_widget():
+
+        # 弹出菜单可见时不自动隐藏
+        if self._popup_menu_visible:
             self._stop_timeout_timer()
             if self._mouse_monitor_active:
                 self._mouse_activity_monitor.pause_hide_timer()
             self._bar_idle_timer.stop()
-            self._bar_idle_timer.start(self._timeout_duration * 2)
+            return
+
+        if self._is_cursor_in_control_bar_area():
+            self._stop_timeout_timer()
+            if self._mouse_monitor_active:
+                self._mouse_activity_monitor.pause_hide_timer()
+            self._bar_idle_timer.stop()
+            self._bar_idle_timer.start(self._mouse_inside_timeout)
         elif self._mouse_monitor_active:
+            self._mouse_activity_monitor.timeout = self._mouse_outside_timeout
             self._mouse_activity_monitor.resume_hide_timer()
         else:
-            self._start_timeout_timer()
+            self._timeout_timer.stop()
+            self._timeout_timer.start(self._mouse_outside_timeout)
 
     def _on_animation_finished(self):
         """动画结束处理"""
@@ -479,6 +612,10 @@ class D_HoverMenu(QWidget):
 
         self._is_visible = True
 
+        # 防抖：设置 300ms 内不响应 hide_on_window_move 的 Move 事件
+        self._debounce_hide_on_move = True
+        self._debounce_timer.start(300)
+
     def _fade_in(self):
         """兼容旧接口：统一走显示动画"""
         self._animate_show()
@@ -529,6 +666,8 @@ class D_HoverMenu(QWidget):
             widget.setParent(self)
             self._content_layout.addWidget(widget)
             self._update_size()
+            self._install_event_filter_to_children()
+            self._start_mouse_tracking()
 
     def add_widget(self, widget):
         """
@@ -540,6 +679,8 @@ class D_HoverMenu(QWidget):
         if widget:
             self._content_layout.addWidget(widget)
             self._update_size()
+            self._install_event_filter_to_children()
+            self._start_mouse_tracking()
 
     def add_layout(self, layout):
         """
@@ -634,13 +775,20 @@ class D_HoverMenu(QWidget):
             self.keyPressed.emit(event)
             return True
 
-        # 鼠标在控制栏子控件上移动时重置栏上空闲定时器
-        if event.type() == QEvent.MouseMove and self._auto_hide_enabled and self._is_visible:
+        # 鼠标在控制栏子控件上移动、点击、释放时重置区域内空闲定时器
+        if event.type() in (QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.MouseButtonRelease) and self._auto_hide_enabled and self._is_visible:
             if self._is_menu_widget(obj) and obj is not self:
-                self._bar_idle_timer.stop()
-                self._bar_idle_timer.start(self._timeout_duration * 2)
+                if self._popup_menu_visible:
+                    self._bar_idle_timer.stop()
+                else:
+                    self._bar_idle_timer.stop()
+                    self._bar_idle_timer.start(self._mouse_inside_timeout)
 
         if event.type() == QEvent.Move and self._hide_on_window_move:
+            # 防抖：菜单刚显示后的 300ms 内不响应 Move 事件，
+            # 防止 _restore_parent_focus 等操作触发 raise_() 产生的错误 Move 事件导致菜单立即隐藏
+            if self._debounce_hide_on_move:
+                return super().eventFilter(obj, event)
             if obj == self._target_widget:
                 if self._is_visible:
                     self._animate_hide()
@@ -750,25 +898,40 @@ class D_HoverMenu(QWidget):
         return self._is_visible
 
     def enterEvent(self, event):
-        """鼠标进入事件：停止所有隐藏定时器，启动 2× 空闲定时器"""
+        """鼠标进入事件：停止所有隐藏定时器，启动区域内空闲定时器（_mouse_inside_timeout = 6s）"""
         super().enterEvent(event)
+        if self._popup_menu_visible:
+            return
         self._stop_timeout_timer()
         if self._mouse_monitor_active:
             self._mouse_activity_monitor.pause_hide_timer()
         self._bar_idle_timer.stop()
-        self._bar_idle_timer.start(self._timeout_duration * 2)
+        self._bar_idle_timer.start(self._mouse_inside_timeout)
 
     def leaveEvent(self, event):
-        """鼠标离开事件：停止空闲定时器，恢复常规隐藏定时器"""
+        """
+        鼠标离开事件：
+        1. 停止区域内空闲定时器
+        2. 如果光标仍在控制栏区域（含弹出菜单），仅在无弹窗时启动区域内定时器
+        3. 否则恢复区域外隐藏定时器（_mouse_outside_timeout = 3s）
+        """
         super().leaveEvent(event)
         self._bar_idle_timer.stop()
-        # 如果鼠标移到属于我们的弹出菜单上，不启动隐藏定时器
-        if self._is_mouse_over_descendant():
+        # 如果鼠标移到弹出菜单上，不启动隐藏定时器
+        if self._is_cursor_in_control_bar_area() or self._is_mouse_over_descendant():
+            if self._popup_menu_visible:
+                return
+            self._bar_idle_timer.start(self._mouse_inside_timeout)
+            return
+        if self._popup_menu_visible:
             return
         if self._mouse_monitor_active:
+            # 以区域外超时恢复全局监控器的隐藏计时
+            self._mouse_activity_monitor.timeout = self._mouse_outside_timeout
             self._mouse_activity_monitor.resume_hide_timer()
         else:
-            self._start_timeout_timer()
+            self._timeout_timer.stop()
+            self._timeout_timer.start(self._mouse_outside_timeout)
 
     def _calculate_position(self):
         """计算菜单显示位置"""
@@ -998,8 +1161,16 @@ class D_HoverMenu(QWidget):
     def _hide_control_bar(self):
         """
         隐藏控制栏：将垂直偏移量设置为20像素，同时淡出
+        如果弹出菜单可见则不隐藏，重新启动正确的计时器
         """
         if not self._auto_hide_enabled:
+            return
+
+        # 如果有弹出菜单可见，不隐藏控制栏，重新评估计时器策略
+        if self._popup_menu_visible:
+            from freeassetfilter.utils.app_logger import debug
+            debug(f"[D_HoverMenu] _hide_control_bar: popup visible, re-evaluating timer")
+            self._update_hide_timer_after_show()
             return
 
         # 使用节流机制，避免过于频繁的动画触发
@@ -1138,6 +1309,7 @@ class D_HoverMenu(QWidget):
         if self._mouse_monitor_active:
             self._mouse_activity_monitor.stop()
             self._mouse_monitor_active = False
+        self._popup_widgets.clear()
         super().closeEvent(event)
 
     def __del__(self):

@@ -77,6 +77,7 @@ class PlayerControlBar(QWidget):
     subtitleClicked = Signal()
     audioClicked = Signal()
     keyPressed = Signal(object)  # 键盘按键信号，用于传递键盘事件到父窗口
+    popupMenuVisibilityChanged = Signal(bool)  # 弹出菜单（速度/音量等）可见性变化信号
     
     def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True):
         """
@@ -113,6 +114,7 @@ class PlayerControlBar(QWidget):
 
         self._show_lut_controls = show_lut_controls
         self._show_detach_button = show_detach_button
+        self._lut_dialog_open = False
         
         # 从设置管理器读取按钮可见性设置
         self._load_control_bar_settings()
@@ -391,6 +393,11 @@ class PlayerControlBar(QWidget):
         if self._show_speed_button and hasattr(self, '_speed_button'):
             self._speed_button.clicked.connect(self._on_speed_button_clicked)
         
+        # 倍速菜单可见性变化
+        if self._show_speed_button and hasattr(self, '_speed_menu'):
+            self._speed_menu.menuShown.connect(self._on_popup_menu_visibility_changed)
+            self._speed_menu.menuHidden.connect(self._on_popup_menu_visibility_changed)
+        
         if self._show_subtitle_button and hasattr(self, '_subtitle_button'):
             self._subtitle_button.clicked.connect(self._on_subtitle_button_clicked)
 
@@ -402,6 +409,11 @@ class PlayerControlBar(QWidget):
 
         if self._show_detach_button and self._show_fullscreen_button and hasattr(self, '_detach_button'):
             self._detach_button.clicked.connect(self._on_detach_button_clicked)
+        
+        # 音量菜单可见性变化
+        if self._show_volume_button and hasattr(self, '_volume_control'):
+            self._volume_control.menuShown.connect(self._on_popup_menu_visibility_changed)
+            self._volume_control.menuHidden.connect(self._on_popup_menu_visibility_changed)
     
     def _update_style(self):
         """更新样式"""
@@ -543,7 +555,13 @@ class PlayerControlBar(QWidget):
         dialog.lutSelected.connect(self._on_lut_selected)
         dialog.lutCleared.connect(self._on_lut_cleared)
         
+        self._lut_dialog_open = True
+        self._on_popup_menu_visibility_changed()
+        
         dialog.exec()
+        
+        self._lut_dialog_open = False
+        self._on_popup_menu_visibility_changed()
     
     def _on_lut_selected(self, lut_path: str):
         """LUT选择处理"""
@@ -585,6 +603,14 @@ class PlayerControlBar(QWidget):
     def _on_detach_button_clicked(self):
         """分离窗口按钮点击处理"""
         self.detachClicked.emit()
+
+    def _on_popup_menu_visibility_changed(self):
+        """弹出菜单可见性变化处理：汇总所有弹窗状态，发射 popupMenuVisibilityChanged 信号"""
+        speed_visible = hasattr(self, '_speed_menu') and self._speed_menu.is_menu_visible()
+        volume_visible = hasattr(self, '_volume_control') and self._volume_control._menu_visible
+        lut_visible = self._lut_dialog_open
+        any_visible = speed_visible or volume_visible or lut_visible
+        self.popupMenuVisibilityChanged.emit(any_visible)
 
     def _on_volume_value_changed(self, value: int):
         """
@@ -991,6 +1017,8 @@ class PlayerControlBar(QWidget):
         # 收起音量菜单
         if hasattr(self, '_volume_control'):
             self._volume_control._hide_volume_menu()
+        
+        self._on_popup_menu_visibility_changed()
     
     def keyPressEvent(self, event):
         """

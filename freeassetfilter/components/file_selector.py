@@ -354,6 +354,8 @@ class CustomFileSelector(QWidget):
         self.sort_by = "name"  # 默认按名称排序
         self.sort_order = "asc"  # 默认升序
         self.view_mode = "card"  # 默认卡片视图
+        self.save_view_mode_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "view_mode.json")
+        self._load_view_mode()
         
         # 保存当前路径到文件
         self.save_path_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "last_path.json")
@@ -397,6 +399,9 @@ class CustomFileSelector(QWidget):
         
         # 初始化UI
         self.init_ui()
+        
+        # 应用已恢复的视图模式（列表/网格）
+        self._apply_view_mode()
         
         # 启用拖拽功能
         self.setAcceptDrops(True)
@@ -485,7 +490,26 @@ class CustomFileSelector(QWidget):
                 }, f)
         except Exception as e:
             warning(f"保存路径失败: {e}")
-    
+
+    def _load_view_mode(self):
+        try:
+            if os.path.exists(self.save_view_mode_file):
+                with open(self.save_view_mode_file, 'r') as f:
+                    data = json.load(f)
+                    mode = data.get("view_mode", "card")
+                    if mode in ("card", "list"):
+                        self.view_mode = mode
+        except Exception as e:
+            warning(f"加载视图模式失败: {e}")
+
+    def save_view_mode(self):
+        try:
+            os.makedirs(os.path.dirname(self.save_view_mode_file), exist_ok=True)
+            with open(self.save_view_mode_file, 'w') as f:
+                json.dump({"view_mode": self.view_mode}, f)
+        except Exception as e:
+            warning(f"保存视图模式失败: {e}")
+
     def init_ui(self):
         """
         初始化用户界面
@@ -675,9 +699,13 @@ class CustomFileSelector(QWidget):
         nav_layout.addWidget(self.timeline_btn)
 
         # 视图模式切换按钮
-        self.view_mode_btn = CustomButton("列表", button_type="primary")
+        grid_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "表格.svg")
+        self.view_mode_btn = CustomButton(grid_icon_path, button_type="normal", display_mode="icon", tooltip_text="网格视图")
+        self.view_mode_btn._primary_icon_name = "表格.svg"
+        self.view_mode_btn._alt_icon_name = "list_bullet.svg"
         self.view_mode_btn.clicked.connect(self._toggle_view_mode)
         nav_layout.addWidget(self.view_mode_btn)
+        self.hover_tooltip.set_target_widget(self.view_mode_btn)
 
         # 根据设置控制时间线按钮的显示/隐藏
         self._update_timeline_button_visibility()
@@ -2037,13 +2065,21 @@ class CustomFileSelector(QWidget):
         self.change_view_mode(index)
 
     def _set_view_mode_button_text(self):
-        """更新视图模式按钮的文本"""
+        """更新视图模式按钮的图标"""
         if not hasattr(self, "view_mode_btn"):
             return
+        icon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'icons')
         if self.view_mode == "list":
-            self.view_mode_btn.setText("网格")
+            icon_name = self.view_mode_btn._primary_icon_name or "表格.svg"
+            self.view_mode_btn._tooltip_text = "网格视图"
         else:
-            self.view_mode_btn.setText("列表")
+            icon_name = self.view_mode_btn._alt_icon_name or "list_bullet.svg"
+            self.view_mode_btn._tooltip_text = "列表视图"
+        icon_path = os.path.join(icon_dir, icon_name)
+        self.view_mode_btn._icon_path = icon_path
+        self.view_mode_btn._icon_render_signature = None
+        self.view_mode_btn._render_icon(force=True)
+        self.view_mode_btn.update()
 
     def _apply_view_mode(self):
         """应用当前视图模式的 delegate 和 QListView 设置"""

@@ -143,6 +143,8 @@ class GlobalMouseMonitor(QObject):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._on_timeout)
 
+        self._hide_timer_paused = False
+
     @property
     def timeout(self):
         """
@@ -335,6 +337,7 @@ class GlobalMouseMonitor(QObject):
         暂停隐藏计时器，但不停止全局鼠标钩子
         """
         if self._is_monitoring:
+            self._hide_timer_paused = True
             self._hide_timer.stop()
 
     def resume_hide_timer(self, timeout_ms=None):
@@ -345,6 +348,7 @@ class GlobalMouseMonitor(QObject):
             timeout_ms: 自定义超时时间（毫秒），None 则使用当前 _timeout
         """
         if self._is_monitoring:
+            self._hide_timer_paused = False
             t = timeout_ms if timeout_ms is not None else self._timeout
             self._hide_timer.stop()
             self._hide_timer.start(t)
@@ -353,7 +357,7 @@ class GlobalMouseMonitor(QObject):
         """
         重置空闲计时器
         """
-        if self._is_monitoring:
+        if self._is_monitoring and not self._hide_timer_paused:
             self._hide_timer.stop()
             self._hide_timer.start(self._timeout)
 
@@ -365,7 +369,7 @@ class GlobalMouseMonitor(QObject):
             except Exception as e:
                 error("活动回调函数执行失败: %s", e)
 
-        if self._is_monitoring:
+        if self._is_monitoring and not self._hide_timer_paused:
             self._hide_timer.stop()
             self._hide_timer.start(self._timeout)
 
