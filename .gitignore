@@ -105,3 +105,4 @@ test_file_selector_view_mode.py
 test_loading_spinner.py
 test_volume_slider_fix.py
 AGENTS.md
+.kagent/

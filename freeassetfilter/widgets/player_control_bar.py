@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QFrame, QGraphicsDropShadowEffect
 )
 from PySide6.QtGui import QEnterEvent
-from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QSize, QEvent
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, Property, QSize, QEvent
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPixmap
 
 from .progress_widgets import D_ProgressBar
@@ -118,12 +118,6 @@ class PlayerControlBar(QWidget):
         
         # 从设置管理器读取按钮可见性设置
         self._load_control_bar_settings()
-
-        # 音量控制防抖定时器
-        self._volume_debounce_timer = QTimer(self)
-        self._volume_debounce_timer.setSingleShot(True)
-        self._volume_debounce_timer.timeout.connect(self._emit_volume_changed)
-        self._pending_volume = None
 
         self._init_ui()
         self._hover_tooltip = HoverTooltip(self)
@@ -614,21 +608,14 @@ class PlayerControlBar(QWidget):
 
     def _on_volume_value_changed(self, value: int):
         """
-        音量值变化处理（带防抖机制）
+        音量值变化处理（用户拖动滑块时触发）
 
         Args:
             value: 新的音量值（0-100）
         """
         self._volume = value
-        self._pending_volume = value
-        # 使用防抖定时器，延迟50ms发射信号，避免高频操作导致卡顿
-        self._volume_debounce_timer.start(50)
-
-    def _emit_volume_changed(self):
-        """发射音量变化信号（防抖后）"""
-        if self._pending_volume is not None:
-            self.volumeChanged.emit(self._pending_volume)
-            self._pending_volume = None
+        if not self._block_volume_signal:
+            self.volumeChanged.emit(value)
 
     def _on_mute_changed(self, muted: bool):
         """
@@ -812,14 +799,13 @@ class PlayerControlBar(QWidget):
         volume = max(0, min(100, volume))
         if self._volume != volume:
             self._volume = volume
-            # 停止防抖定时器，避免外部设置音量时与防抖信号冲突
-            self._volume_debounce_timer.stop()
-            self._pending_volume = None
-            # 同步更新音量控制组件显示
+            # 同步更新音量控制组件显示（阻止信号循环）
+            self._block_volume_signal = True
             if hasattr(self, '_volume_control'):
                 self._volume_control.set_volume(volume)
-            # 仅在允许时发射信号，避免循环触发
-            if emit_signal and not self._block_volume_signal:
+            self._block_volume_signal = False
+            # 仅在允许时发射信号
+            if emit_signal:
                 self.volumeChanged.emit(volume)
 
     def set_muted(self, muted: bool):

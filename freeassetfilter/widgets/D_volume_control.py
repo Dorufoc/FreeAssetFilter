@@ -79,8 +79,8 @@ class DVolumeControl(QWidget):
         main_layout.addWidget(self._volume_button)
 
         self._volume_button.clicked.connect(self._toggle_volume_menu)
-        self._d_volume._progress_bar.valueChanged.connect(self._on_volume_slider_changed)
-        self._d_volume._progress_bar.userInteractionEnded.connect(self._on_slider_interaction_ended)
+        self._d_volume.progressValueChanged.connect(self._on_volume_slider_changed)
+        self._d_volume.progressInteractionEnded.connect(self._on_slider_interaction_ended)
 
         self._top_window = None
         self._focus_restore_timer = QTimer(self)
@@ -217,13 +217,15 @@ class DVolumeControl(QWidget):
             self.mutedChanged.emit(self._muted)
 
     def muted(self):
-        """
-        获取当前静音状态
-
-        Returns:
-            bool: 是否静音
-        """
         return self._muted
+
+    @property
+    def volume_button(self):
+        return self._volume_button
+
+    @property
+    def volume_widget(self):
+        return self._d_volume
 
     def toggle_mute(self):
         """切换静音状态"""
@@ -270,7 +272,7 @@ class DVolumeControl(QWidget):
             return False
         if obj is self._volume_button or (self._volume_button and self._volume_button.isAncestorOf(obj)):
             return True
-        menu_widget = getattr(self._d_volume, '_menu', None)
+        menu_widget = self._d_volume.hover_menu
         if menu_widget:
             if obj is menu_widget or menu_widget.isAncestorOf(obj):
                 return True

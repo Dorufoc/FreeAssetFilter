@@ -26,6 +26,8 @@ class D_Volume(QWidget):
     """
 
     valueChanged = Signal(int)
+    progressValueChanged = Signal(int)
+    progressInteractionEnded = Signal()
 
     def __init__(self, parent=None):
         """
@@ -79,10 +81,15 @@ class D_Volume(QWidget):
         )
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(self._volume)
+        self._progress_bar.set_signal_deadband(1)
+        self._progress_bar.set_drag_threshold(1)
+
+        self._progress_bar.valueChanged.connect(self.progressValueChanged.emit)
+        self._progress_bar.userInteractionEnded.connect(self.progressInteractionEnded.emit)
 
         button_size = int(18 * self.dpi_scale)
         slider_width = button_size
-        slider_height = int(50 * self.dpi_scale)
+        slider_height = int(120 * self.dpi_scale)
         self._progress_bar.setFixedSize(slider_width, slider_height)
 
         container_layout.addWidget(self._percentage_label)
@@ -100,13 +107,24 @@ class D_Volume(QWidget):
         pass
 
     def set_target_widget(self, widget):
-        """
-        设置目标控件，音量菜单将显示在该控件附近
-
-        Args:
-            widget: 目标控件
-        """
         self._menu.set_target_widget(widget)
+
+    @property
+    def hover_menu(self):
+        return self._menu
+
+    def hide_menu_immediately(self):
+        self._menu.hide_immediately()
+
+    def recreate_native_handle(self, target_widget=None):
+        menu = self._menu
+        menu.hide()
+        menu.destroy()
+        menu.create()
+        menu.setAttribute(Qt.WA_TranslucentBackground, True)
+        menu.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        if target_widget is not None:
+            menu.set_target_widget(target_widget)
 
     def show(self):
         """显示音量菜单"""

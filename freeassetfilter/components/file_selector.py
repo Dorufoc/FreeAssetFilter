@@ -664,8 +664,8 @@ class CustomFileSelector(QWidget):
         
         # 排序方式按钮
         import os
-        list_bullet_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "list_bullet.svg")
-        self.sort_btn = CustomButton(list_bullet_icon_path, button_type="normal", display_mode="icon", tooltip_text="排序方式")
+        sort_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "sort.svg")
+        self.sort_btn = CustomButton(sort_icon_path, button_type="normal", display_mode="icon", tooltip_text="排序方式")
         nav_layout.addWidget(self.sort_btn)
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.sort_btn)
@@ -699,10 +699,10 @@ class CustomFileSelector(QWidget):
         nav_layout.addWidget(self.timeline_btn)
 
         # 视图模式切换按钮
-        grid_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "表格.svg")
-        self.view_mode_btn = CustomButton(grid_icon_path, button_type="normal", display_mode="icon", tooltip_text="网格视图")
-        self.view_mode_btn._primary_icon_name = "表格.svg"
-        self.view_mode_btn._alt_icon_name = "list_bullet.svg"
+        card_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "card.svg")
+        self.view_mode_btn = CustomButton(card_icon_path, button_type="normal", display_mode="icon", tooltip_text="网格视图")
+        self.view_mode_btn._primary_icon_name = "list.svg"
+        self.view_mode_btn._alt_icon_name = "card.svg"
         self.view_mode_btn.clicked.connect(self._toggle_view_mode)
         nav_layout.addWidget(self.view_mode_btn)
         self.hover_tooltip.set_target_widget(self.view_mode_btn)
@@ -2105,8 +2105,8 @@ class CustomFileSelector(QWidget):
         if viewport_width <= 0:
             return
         sb = list_view.verticalScrollBar()
-        sb_width = sb.width() if sb and sb.isVisible() else 0
-        card_width = max(200, viewport_width - sb_width - int(8 * self.dpi_scale))
+        extra_gap = int(3 * self.dpi_scale) if (sb and sb.isVisible()) else 0
+        card_width = max(200, viewport_width - extra_gap)
         border_w = max(1, int(1 * self.dpi_scale))
         icon_lm = int(4 * self.dpi_scale)
         icon_sz = int(28 * self.dpi_scale)
@@ -2694,7 +2694,7 @@ class CustomFileSelector(QWidget):
 
         # 先确定列数，再在该列数内部平滑放大卡片。
         # 这样宽度变化不会反过来重新触发列数回跳。
-        cell_width = max(cell_base_width, available_width // max_cols)
+        cell_width = max(cell_base_width, viewport_width // max_cols)
         card_width = max(card_base_width, cell_width - spacing)
 
         # 卡片高度

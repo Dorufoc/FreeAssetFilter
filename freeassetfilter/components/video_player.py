@@ -751,8 +751,8 @@ class VideoPlayer(QWidget):
         # 再调用各自的规范隐藏方法清理事件过滤器及内部状态
         if hasattr(self._control_bar, '_volume_control'):
             vc = self._control_bar._volume_control
-            if hasattr(vc, '_d_volume') and hasattr(vc._d_volume, '_menu'):
-                vc._d_volume._menu.hide_immediately()
+            if hasattr(vc, 'volume_widget'):
+                vc.volume_widget.hide_menu_immediately()
             vc._hide_volume_menu()
         if hasattr(self._control_bar, '_speed_menu'):
             sm = self._control_bar._speed_menu
@@ -2295,15 +2295,9 @@ class VideoPlayer(QWidget):
         """退出全屏后强制重建弹出菜单的原生窗口句柄，更新 Qt.Tool 窗口的 owner"""
         if hasattr(self._control_bar, '_volume_control'):
             vc = self._control_bar._volume_control
-            if hasattr(vc, '_d_volume') and hasattr(vc._d_volume, '_menu'):
-                menu = vc._d_volume._menu
+            if hasattr(vc, 'volume_widget') and hasattr(vc, 'volume_button'):
                 try:
-                    menu.hide()
-                    menu.destroy()
-                    menu.create()
-                    menu.setAttribute(Qt.WA_TranslucentBackground, True)
-                    menu.setAttribute(Qt.WA_ShowWithoutActivating, True)
-                    menu.set_target_widget(vc._volume_button)
+                    vc.volume_widget.recreate_native_handle(target_widget=vc.volume_button)
                 except (RuntimeError, TypeError):
                     warning("音量菜单窗口句柄刷新失败")
 

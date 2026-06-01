@@ -616,6 +616,7 @@ class D_ProgressBar(QWidget):
         self._is_dragging = False
         self._press_pos = QPoint()
         self._drag_threshold = max(3, int(4 * self.dpi_scale))
+        self._signal_deadband = 5
         self._animation_suspended = False
         self._is_hovered = False
         self._last_pos = 0
@@ -654,6 +655,12 @@ class D_ProgressBar(QWidget):
         self._init_sizes()
         self._init_colors()
         self._init_icons()
+
+    def set_drag_threshold(self, threshold: int):
+        self._drag_threshold = threshold
+
+    def set_signal_deadband(self, deadband: int):
+        self._signal_deadband = deadband
 
     def _get_display_value(self):
         return self._display_value_storage
@@ -1178,7 +1185,7 @@ class D_ProgressBar(QWidget):
             if not should_use_animation:
                 self._animation.stop()
                 self._display_value = value
-                if self._last_emitted_value is None or abs(value - self._last_emitted_value) >= 5:
+                if self._last_emitted_value is None or abs(value - self._last_emitted_value) >= self._signal_deadband:
                     self._last_emitted_value = value
                     self.valueChanged.emit(value)
             else:
