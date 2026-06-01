@@ -45,6 +45,7 @@ class HoverTooltip(QWidget):
         # 设置窗口标志
         self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
 
         # 生命周期与安全控制
         self._safe_mode = False

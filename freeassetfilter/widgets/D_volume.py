@@ -46,7 +46,7 @@ class D_Volume(QWidget):
 
     def _init_ui(self):
         """初始化UI组件"""
-        self._menu = D_HoverMenu(self, position=D_HoverMenu.Position_Top)
+        self._menu = D_HoverMenu(self, position=D_HoverMenu.Position_Top, no_focus=True)
 
         container = QWidget()
         container.setStyleSheet("QWidget { background-color: transparent; border: none; }")
@@ -90,7 +90,6 @@ class D_Volume(QWidget):
 
         self._menu.set_content(container)
         self._menu.set_timeout_enabled(False)
-        self._menu.setWindowFlags(self._menu.windowFlags() | Qt.WindowDoesNotAcceptFocus)
 
     def enterEvent(self, event):
         """鼠标进入事件 - 禁用hover检测"""

@@ -695,6 +695,9 @@ class VideoPlayer(QWidget):
         self._floating_control_bar.controlBarShown.connect(self._on_control_bar_shown)
         self._floating_control_bar.controlBarHidden.connect(self._on_control_bar_hidden)
 
+        # 连接控制栏弹出菜单可见性变化信号
+        self._control_bar.popupMenuVisibilityChanged.connect(self._on_control_bar_popup_menu_changed)
+
         # 获取屏幕尺寸并直接设置目标矩形区域
         # 分离窗口是全屏的，使用屏幕几何信息更可靠
         screen = QApplication.primaryScreen()
@@ -714,6 +717,9 @@ class VideoPlayer(QWidget):
         if self._detached_window:
             self._detached_window.activateWindow()
             self._detached_window.setFocus()
+
+        # 注册弹出菜单窗口，用于控制栏区域检测
+        self._register_control_bar_popup_widgets()
     
     def _switch_to_fixed_mode(self):
         """切换回固定控制栏模式"""
@@ -738,6 +744,27 @@ class VideoPlayer(QWidget):
             main_layout.addWidget(self._control_bar)
         
         self._control_bar.show()
+
+        # 确保音量/倍速弹窗在切换后能正确关闭并重置状态
+        # 先用 hide_immediately() 彻底重置 D_HoverMenu（停止动画、调用 super().hide()，
+        # 使下次 show() 时 isVisible() 正确返回 False，从而重建原生窗口句柄），
+        # 再调用各自的规范隐藏方法清理事件过滤器及内部状态
+        if hasattr(self._control_bar, '_volume_control'):
+            vc = self._control_bar._volume_control
+            if hasattr(vc, '_d_volume') and hasattr(vc._d_volume, '_menu'):
+                vc._d_volume._menu.hide_immediately()
+            vc._hide_volume_menu()
+        if hasattr(self._control_bar, '_speed_menu'):
+            sm = self._control_bar._speed_menu
+            if hasattr(sm, 'hover_menu'):
+                sm.hover_menu.hide_immediately()
+            sm.hide_menu()
+
+        # 断开浮动控制栏的弹出菜单可见性信号，避免信号泄漏
+        try:
+            self._control_bar.popupMenuVisibilityChanged.disconnect(self._on_control_bar_popup_menu_changed)
+        except (RuntimeError, TypeError):
+            pass
     
     def _init_video_mode_ui(self, main_layout: QVBoxLayout):
         """初始化视频模式UI布局"""
@@ -1624,6 +1651,7 @@ class VideoPlayer(QWidget):
 
         dialog.buttonClicked.connect(on_dialog_button_clicked)
         dialog.finished.connect(clear_dialog_reference)
+
         dialog.exec()
 
     def _open_audio_track_dialog(self, state: Optional[Dict[str, Any]] = None):
@@ -1713,6 +1741,7 @@ class VideoPlayer(QWidget):
 
         dialog.buttonClicked.connect(on_dialog_button_clicked)
         dialog.finished.connect(clear_dialog_reference)
+
         dialog.exec()
 
     def _on_manager_file_loaded(self, file_path: str):
@@ -1815,67 +1844,81 @@ class VideoPlayer(QWidget):
 
     def _on_subtitle_clicked(self):
         """字幕按钮点击处理"""
-        if not self._current_file:
-            self.errorOccurred.emit("请先加载视频文件后再操作字幕")
-            return
+        try:
+            if self._is_floating_mode and self._floating_control_bar:
+                self._floating_control_bar.set_popup_menu_visible(True)
 
-        if not self._mpv_manager or not self._mpv_manager.is_initialized():
-            self.errorOccurred.emit("播放器未初始化")
-            return
+            if not self._current_file:
+                self.errorOccurred.emit("请先加载视频文件后再操作字幕")
+                return
 
-        subtitle_state = self._refresh_subtitle_state()
-        is_subtitle_loaded = bool(
-            subtitle_state.get("has_active_subtitle") and subtitle_state.get("is_subtitle_visible")
-        )
+            if not self._mpv_manager or not self._mpv_manager.is_initialized():
+                self.errorOccurred.emit("播放器未初始化")
+                return
 
-        if is_subtitle_loaded:
-            success = self._mpv_manager.hide_subtitle(component_id=self._component_id)
-            if success:
-                info("当前字幕已隐藏")
-                self._refresh_subtitle_state()
-                QTimer.singleShot(100, self._refresh_subtitle_state)
-                if self._detached_window:
-                    self._detached_window.show_osd("字幕已隐藏")
-            else:
-                error("隐藏字幕失败")
-                self.errorOccurred.emit("隐藏字幕失败")
-            return
+            subtitle_state = self._refresh_subtitle_state()
+            is_subtitle_loaded = bool(
+                subtitle_state.get("has_active_subtitle") and subtitle_state.get("is_subtitle_visible")
+            )
 
-        if self._get_embedded_subtitle_tracks(subtitle_state):
-            self._open_subtitle_track_dialog(subtitle_state)
-            return
+            if is_subtitle_loaded:
+                success = self._mpv_manager.hide_subtitle(component_id=self._component_id)
+                if success:
+                    info("当前字幕已隐藏")
+                    self._refresh_subtitle_state()
+                    QTimer.singleShot(100, self._refresh_subtitle_state)
+                    if self._detached_window:
+                        self._detached_window.show_osd("字幕已隐藏")
+                else:
+                    error("隐藏字幕失败")
+                    self.errorOccurred.emit("隐藏字幕失败")
+                return
 
-        self._open_external_subtitle_picker()
+            if self._get_embedded_subtitle_tracks(subtitle_state):
+                self._open_subtitle_track_dialog(subtitle_state)
+                return
+
+            self._open_external_subtitle_picker()
+        finally:
+            if self._is_floating_mode and self._floating_control_bar:
+                self._floating_control_bar.set_popup_menu_visible(False)
 
     def _on_audio_clicked(self):
         """音轨按钮点击处理"""
-        if not self._current_file:
-            self._show_audio_message("提示", "请先加载媒体文件后再操作音轨")
-            return
+        try:
+            if self._is_floating_mode and self._floating_control_bar:
+                self._floating_control_bar.set_popup_menu_visible(True)
 
-        if not self._mpv_manager or not self._mpv_manager.is_initialized():
-            self._show_audio_message("提示", "播放器未初始化")
-            return
+            if not self._current_file:
+                self._show_audio_message("提示", "请先加载媒体文件后再操作音轨")
+                return
 
-        audio_state = self._refresh_audio_state()
-        all_audio_tracks = audio_state.get("tracks") or []
-        valid_audio_tracks = self._get_available_audio_tracks(audio_state)
-        total_track_count = len([track for track in all_audio_tracks if isinstance(track, dict)])
-        valid_track_count = len(valid_audio_tracks)
+            if not self._mpv_manager or not self._mpv_manager.is_initialized():
+                self._show_audio_message("提示", "播放器未初始化")
+                return
 
-        if total_track_count <= 1:
-            self._show_audio_message("提示", "当前视频暂无其他音轨")
-            return
+            audio_state = self._refresh_audio_state()
+            all_audio_tracks = audio_state.get("tracks") or []
+            valid_audio_tracks = self._get_available_audio_tracks(audio_state)
+            total_track_count = len([track for track in all_audio_tracks if isinstance(track, dict)])
+            valid_track_count = len(valid_audio_tracks)
 
-        if valid_track_count <= 0:
-            self._show_audio_message("提示", "当前视频其他音轨暂无音频")
-            return
+            if total_track_count <= 1:
+                self._show_audio_message("提示", "当前视频暂无其他音轨")
+                return
 
-        if valid_track_count == 1:
-            self._show_audio_message("提示", "当前视频其他音轨暂无音频")
-            return
+            if valid_track_count <= 0:
+                self._show_audio_message("提示", "当前视频其他音轨暂无音频")
+                return
 
-        self._open_audio_track_dialog(audio_state)
+            if valid_track_count == 1:
+                self._show_audio_message("提示", "当前视频其他音轨暂无音频")
+                return
+
+            self._open_audio_track_dialog(audio_state)
+        finally:
+            if self._is_floating_mode and self._floating_control_bar:
+                self._floating_control_bar.set_popup_menu_visible(False)
 
     def _on_detach_clicked(self):
         """分离窗口按钮点击处理"""
@@ -1990,6 +2033,36 @@ class VideoPlayer(QWidget):
         鼠标指针显隐由独立计时器控制，此处仅保留日志
         """
         debug("控制栏隐藏")
+
+    def _on_control_bar_popup_menu_changed(self, visible: bool):
+        """
+        控制栏弹出菜单（速度/音量）可见性变化处理
+
+        Args:
+            visible: 是否有弹出菜单可见
+        """
+        debug(f"[VideoPlayer] popup menu visibility changed: visible={visible}")
+        if self._floating_control_bar:
+            self._floating_control_bar.set_popup_menu_visible(visible)
+
+    def _register_control_bar_popup_widgets(self):
+        """注册控制栏的弹出菜单窗口到浮动控制栏，用于光标区域检测"""
+        if not self._floating_control_bar:
+            return
+
+        # 注册倍速弹出菜单的 hover_menu 窗口
+        if hasattr(self._control_bar, '_speed_menu'):
+            speed_menu = self._control_bar._speed_menu
+            if hasattr(speed_menu, 'hover_menu'):
+                self._floating_control_bar.register_popup_widget(speed_menu.hover_menu)
+
+        # 注册音量弹出菜单的 _menu 窗口
+        if hasattr(self._control_bar, '_volume_control'):
+            volume_control = self._control_bar._volume_control
+            if hasattr(volume_control, '_d_volume'):
+                d_volume = volume_control._d_volume
+                if hasattr(d_volume, '_menu'):
+                    self._floating_control_bar.register_popup_widget(d_volume._menu)
 
     def _save_playback_state(self):
         """
@@ -2139,6 +2212,12 @@ class VideoPlayer(QWidget):
             # 重新连接MPV窗口到新的渲染区域
             self._reconnect_mpv_window()
 
+            # 刷新音量/倍速弹出菜单的 Windows 原生窗口 owner
+            # 这些 popup 在 app 启动时创建，native handle 的 owner 仍指向主窗口，
+            # 此处强制重建使其 owner 重新计算为 DetachedVideoWindow，
+            # 避免弹出时激活主窗口导致遮挡全屏
+            self._refresh_popup_menu_owners()
+
             # 再次确保焦点在分离窗口上（MPV嵌入后可能会抢占焦点）
             self._detached_window.activateWindow()
             self._detached_window.setFocus()
@@ -2195,7 +2274,13 @@ class VideoPlayer(QWidget):
         if self._original_parent and self._original_layout:
             self.setParent(self._original_parent)
             self._original_layout.addWidget(self)
-        
+
+        # 强制重建弹出菜单的原生窗口句柄
+        # 全屏模式下音量/倍速菜单的 Qt.Tool 窗口 owner 指向已隐藏的分离窗口/浮动控制栏，
+        # Windows 上 owner 隐藏后其拥有的 tool 窗口也无法显示，
+        # 必须在播放器重新添加到原父窗口之后执行，此时 window() 才返回正确的主窗口
+        self._refresh_popup_menu_owners()
+
         # 延迟执行，重新连接MPV窗口
         def delayed_reconnect():
             debug("延迟重新连接MPV窗口")
@@ -2205,7 +2290,37 @@ class VideoPlayer(QWidget):
         QTimer.singleShot(100, delayed_reconnect)
         
         debug("窗口恢复完成")
-    
+
+    def _refresh_popup_menu_owners(self):
+        """退出全屏后强制重建弹出菜单的原生窗口句柄，更新 Qt.Tool 窗口的 owner"""
+        if hasattr(self._control_bar, '_volume_control'):
+            vc = self._control_bar._volume_control
+            if hasattr(vc, '_d_volume') and hasattr(vc._d_volume, '_menu'):
+                menu = vc._d_volume._menu
+                try:
+                    menu.hide()
+                    menu.destroy()
+                    menu.create()
+                    menu.setAttribute(Qt.WA_TranslucentBackground, True)
+                    menu.setAttribute(Qt.WA_ShowWithoutActivating, True)
+                    menu.set_target_widget(vc._volume_button)
+                except (RuntimeError, TypeError):
+                    warning("音量菜单窗口句柄刷新失败")
+
+        if hasattr(self._control_bar, '_speed_menu'):
+            sm = self._control_bar._speed_menu
+            if hasattr(sm, 'hover_menu'):
+                try:
+                    sm.hover_menu.hide()
+                    sm.hover_menu.destroy()
+                    sm.hover_menu.create()
+                    sm.hover_menu.setAttribute(Qt.WA_TranslucentBackground, True)
+                    sm.hover_menu.setAttribute(Qt.WA_ShowWithoutActivating, True)
+                    sm.set_target_button(sm._speed_button)
+                except (RuntimeError, TypeError):
+                    warning("倍速菜单窗口句柄刷新失败")
+
+
 
 
 
