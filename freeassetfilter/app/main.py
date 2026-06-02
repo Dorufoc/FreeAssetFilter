@@ -50,130 +50,46 @@ except (ValueError, TypeError) as e:
     warning(f"控制台捕获启用失败: {e}")
 
 
-def _get_available_stderr_stream():
-    """
-    获取可用于 faulthandler 的 stderr 流
-    优先使用 sys.__stderr__，确保尽量绕过可能被包装/替换的 sys.stderr
-    """
-    for stream_name in ("__stderr__", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        if stream is None:
-            continue
-
-        try:
-            if stream.closed:
-                continue
-        except (AttributeError, ValueError):
-            pass
-
-        try:
-            stream.fileno()
-        except (AttributeError, OSError, ValueError, TypeError):
-            continue
-
-        return stream
-
-    return None
+# ──────────────────────────────────────────────────────────────
+# faulthandler 输出目标
+#
+# faulthandler 只写入日志文件，不输出到终端。
+# 所有异常（含 VEH/UEF 触发的栈跟踪）的 dump 内容
+# 均写至下方 faulthandler.enable() 指定的文件对象。
+# 日志中 faulthandler 输出以「=== FAULTHANDLER OUTPUT START
+# ===」和「=== FAULTHANDLER OUTPUT END ===」界定。
+#
+# faulthandler 注册的两个 Windows 异常处理机制：
+#   - AddVectoredExceptionHandler (VEH): 捕获所有首次异常
+#   - SetUnhandledExceptionFilter (UEF): 仅捕获未处理异常
+# 由于 VEH 的存在，0xe24c4a02 (LuaJIT 的 SEH 异常) 也会触发
+# 堆栈 dump，但这些异常会被 LuaJIT 自身捕获并恢复，
+# 不会导致程序崩溃。
+#
+# 输出策略：直接写入日志文件（不经过管道/tee/行过滤器）
+# ──────────────────────────────────────────────────────────────
 
 
-def _create_fault_output_tee(stderr_stream, log_file_path):
-    """
-    创建 faulthandler 的双写输出通道：
-    - 一个写端提供给 faulthandler
-    - 后台线程将内容同时转发到 stderr 和日志文件
-
-    Returns:
-        tuple[file | None, file | None, threading.Thread | None, int | None]:
-            (提供给 faulthandler 的写端, 日志文件句柄, 转发线程, 原始写端 fd)
-    """
-    import os
-
-    stderr_fd = stderr_stream.fileno()
-    log_file = open(log_file_path, "ab", buffering=0)
-
-    read_fd, write_fd = os.pipe()
-    write_stream = os.fdopen(write_fd, "wb", buffering=0)
-
-    def _tee_worker():
-        try:
-            while True:
-                chunk = os.read(read_fd, 4096)
-                if not chunk:
-                    break
-
-                try:
-                    os.write(stderr_fd, chunk)
-                except OSError:
-                    pass
-
-                try:
-                    log_file.write(chunk)
-                except (OSError, ValueError):
-                    pass
-        finally:
-            try:
-                os.close(read_fd)
-            except OSError:
-                pass
-
-            try:
-                log_file.flush()
-            except (OSError, ValueError):
-                pass
-
-    tee_thread = threading.Thread(
-        target=_tee_worker,
-        name="FaultHandlerTee",
-        daemon=True
-    )
-    tee_thread.start()
-
-    return write_stream, log_file, tee_thread, write_fd
-
-
-# 启用 faulthandler：
-# - 有 stderr 且日志文件可用时，尽量同时输出到终端和日志
-# - 只有 stderr 时输出到 stderr
-# - 没有控制台终端时仅写入日志
+# 启用 faulthandler（仅写入日志文件，不输出终端）
 _fault_handler_file = None
-_fault_handler_output = None
-_fault_handler_tee_thread = None
-_fault_handler_write_fd = None  # 保存原始写端 fd，用于彻底关闭管道
 _fault_handler_enabled = False
 
-fault_stream = _get_available_stderr_stream()
 log_file_path = None
 try:
     log_file_path = logger.get_log_file_path()
 except (AttributeError, OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
     log_file_path = None
 
-if fault_stream is not None and log_file_path:
+if log_file_path:
     try:
-        _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread, _fault_handler_write_fd = _create_fault_output_tee(
-            fault_stream, log_file_path
+        _fault_handler_file = open(log_file_path, "ab", buffering=0)
+        _fault_handler_file.write(
+            "\n=== FAULTHANDLER OUTPUT START ===\n"
+            "以下栈跟踪由 faulthandler (VEH/UEF handler) 写入\n"
+            "=== FAULTHANDLER OUTPUT START ===\n"
+            .encode("utf-8")
         )
-        faulthandler.enable(file=_fault_handler_output, all_threads=True)
-        debug("faulthandler 已启用")
-        _fault_handler_enabled = True
-    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        warning(f"faulthandler 启用失败: {e}")
-    except (ValueError, TypeError) as e:
-        warning(f"faulthandler 启用失败: {e}")
-
-if not _fault_handler_enabled and fault_stream is not None:
-    try:
-        faulthandler.enable(file=fault_stream, all_threads=True)
-        debug("faulthandler 已启用 (stderr)")
-        _fault_handler_enabled = True
-    except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        warning(f"faulthandler 启用失败: {e}")
-    except (ValueError, TypeError) as e:
-        warning(f"faulthandler 启用失败: {e}")
-
-if not _fault_handler_enabled and log_file_path:
-    try:
-        _fault_handler_file = open(log_file_path, "a", encoding="utf-8")
+        _fault_handler_file.flush()
         faulthandler.enable(file=_fault_handler_file, all_threads=True)
         debug("faulthandler 已启用 (日志)")
         _fault_handler_enabled = True
@@ -215,21 +131,18 @@ def debug_exit_threads():
         debug(f"枚举活跃线程失败: {e}")
 
 
-def cleanup_fault_handler_tee():
+def cleanup_faulthandler():
     """
-    退出前主动关闭 faulthandler 双写通道，促使 FaultHandlerTee 线程自然退出
+    退出前关闭 faulthandler，写入结束标记并关闭日志文件。
 
     关闭顺序：
     1. 禁用 faulthandler，避免继续写入即将关闭的文件对象
-    2. 关闭 Python 文件对象 (_fault_handler_output)，它拥有管道写端 fd
-    3. 等待线程退出
-    4. 关闭日志文件
+    2. 写入结束标记
+    3. 关闭日志文件
     """
-    global _fault_handler_output, _fault_handler_file, _fault_handler_tee_thread, _fault_handler_write_fd
-    global _fault_handler_enabled
+    global _fault_handler_file, _fault_handler_enabled
 
     try:
-        # 1. 禁用 faulthandler，避免它持有或写入即将关闭的输出对象
         if _fault_handler_enabled:
             try:
                 faulthandler.disable()
@@ -237,23 +150,11 @@ def cleanup_fault_handler_tee():
                 pass
             _fault_handler_enabled = False
 
-        # 2. 关闭 Python 文件对象；os.fdopen() 后 fd 所有权属于该对象。
-        if _fault_handler_output is not None:
-            try:
-                _fault_handler_output.close()
-            except (OSError, ValueError):
-                pass
-            _fault_handler_output = None
-
-        _fault_handler_write_fd = None
-
-        # 3. 等待线程退出
-        if _fault_handler_tee_thread is not None and _fault_handler_tee_thread.is_alive():
-            _fault_handler_tee_thread.join(timeout=1.0)
-
-        # 4. 关闭日志文件
         if _fault_handler_file is not None:
             try:
+                _fault_handler_file.write(
+                    b"\n=== FAULTHANDLER OUTPUT END ===\n"
+                )
                 _fault_handler_file.flush()
             except (OSError, ValueError):
                 pass
@@ -263,7 +164,7 @@ def cleanup_fault_handler_tee():
                 pass
             _fault_handler_file = None
     except Exception as e:
-        debug(f"清理 faulthandler 双写线程失败: {e}")
+        debug(f"清理 faulthandler 失败: {e}")
 
 
 # 定义异常处理函数
@@ -629,7 +530,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 关闭 faulthandler 双写通道，促使 FaultHandlerTee 线程退出
         # 必须在 debug_exit_threads() 之前调用，否则调试输出会显示 FaultHandlerTee 仍在运行
-        cleanup_fault_handler_tee()
+        cleanup_faulthandler()
 
         debug_exit_threads()
 
@@ -3019,8 +2920,8 @@ def main():
 
     exit_code = app.exec()
 
-    # 安全退出机制（closeEvent 中已调用 cleanup_fault_handler_tee()，此处作为兜底）
-    cleanup_fault_handler_tee()
+    # 安全退出机制（closeEvent 中已调用 cleanup_faulthandler()，此处作为兜底）
+    cleanup_faulthandler()
 
     import threading
     non_daemon_alive = [

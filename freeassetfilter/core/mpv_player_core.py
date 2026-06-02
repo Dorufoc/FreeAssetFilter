@@ -517,7 +517,11 @@ class MPVPlayerCore(QObject):
                             event_ptr = self._dll_loader.dll.mpv_wait_event(mpv_handle, 0.01)
                             if event_ptr and not self._stop_event.is_set():
                                 event = event_ptr.contents
-                                self._handle_mpv_event(mpv_handle, event)
+                                # 立即深拷贝 event.data，防止 mpv 后续回收缓冲区导致野指针
+                                extracted = None
+                                if event.event_id == MpvEventId.PROPERTY_CHANGE:
+                                    extracted = self._extract_property_data(event.data)
+                                self._handle_mpv_event(mpv_handle, event, extracted)
                     except Exception as e:
                         if not self._stop_event.is_set():
                             error(f"事件处理错误: {e}")
@@ -701,7 +705,7 @@ class MPVPlayerCore(QObject):
                 mpv_handle, 0, prop_name.encode('utf-8'), prop_format
             )
     
-    def _handle_mpv_event(self, mpv_handle: c_void_p, event: MpvEvent):
+    def _handle_mpv_event(self, mpv_handle: c_void_p, event: MpvEvent, extracted=None):
         """处理MPV事件（在工作线程中执行）"""
         event_id = event.event_id
         
@@ -709,7 +713,7 @@ class MPVPlayerCore(QObject):
             return
         
         if event_id == MpvEventId.PROPERTY_CHANGE:
-            self._handle_property_change_event(mpv_handle, event)
+            self._handle_property_change_event(mpv_handle, event, extracted)
         elif event_id == MpvEventId.FILE_LOADED:
             self._handle_file_loaded_event(mpv_handle)
         elif event_id == MpvEventId.END_FILE:
@@ -829,29 +833,36 @@ class MPVPlayerCore(QObject):
         if should_emit:
             self._enqueue_signal(signal_name, *args)
 
-    def _handle_property_change_event(self, mpv_handle: c_void_p, event: MpvEvent):
-        """处理属性变化事件"""
-        if not event.data:
-            return
-        
-        prop_event = ctypes.cast(event.data, POINTER(MpvEventProperty)).contents
-        prop_name = prop_event.name.decode('utf-8') if prop_event.name else ""
-        
-        value = None
-        if prop_event.format == MpvFormat.STRING and prop_event.data:
-            value_ptr = ctypes.cast(prop_event.data, POINTER(c_char_p))
-            if value_ptr.contents:
-                value = value_ptr.contents.value.decode('utf-8')
-        elif prop_event.format == MpvFormat.DOUBLE and prop_event.data:
-            value_ptr = ctypes.cast(prop_event.data, POINTER(c_double))
-            value = value_ptr.contents.value
-        elif prop_event.format == MpvFormat.FLAG and prop_event.data:
-            value_ptr = ctypes.cast(prop_event.data, POINTER(ctypes.c_int))
-            value = bool(value_ptr.contents.value)
-        elif prop_event.format == MpvFormat.INT64 and prop_event.data:
-            value_ptr = ctypes.cast(prop_event.data, POINTER(c_int64))
-            value = value_ptr.contents.value
-        
+    def _handle_property_change_event(self, mpv_handle: c_void_p, event: MpvEvent, extracted=None):
+        """处理属性变化事件（使用预提取的 Python 值，避免野指针）"""
+        # 优先使用已在 worker 循环中深拷贝好的数据
+        if extracted is not None:
+            prop_name, value = extracted
+        else:
+            # 保底：从 event.data 原地提取（正常情况下不会走到这里）
+            if not event.data:
+                return
+            try:
+                prop_event = ctypes.cast(event.data, POINTER(MpvEventProperty)).contents
+                prop_name = prop_event.name.decode('utf-8') if prop_event.name else ""
+
+                value = None
+                if prop_event.format == MpvFormat.STRING and prop_event.data:
+                    value_ptr = ctypes.cast(prop_event.data, POINTER(c_char_p))
+                    if value_ptr.contents:
+                        value = value_ptr.contents.value.decode('utf-8')
+                elif prop_event.format == MpvFormat.DOUBLE and prop_event.data:
+                    value_ptr = ctypes.cast(prop_event.data, POINTER(c_double))
+                    value = value_ptr.contents.value
+                elif prop_event.format == MpvFormat.FLAG and prop_event.data:
+                    value_ptr = ctypes.cast(prop_event.data, POINTER(ctypes.c_int))
+                    value = bool(value_ptr.contents.value)
+                elif prop_event.format == MpvFormat.INT64 and prop_event.data:
+                    value_ptr = ctypes.cast(prop_event.data, POINTER(c_int64))
+                    value = value_ptr.contents.value
+            except Exception:
+                return
+
         with self._state_lock:
             if prop_name == "time-pos" and value is not None:
                 self._position = float(value)
@@ -891,7 +902,35 @@ class MPVPlayerCore(QObject):
         elif prop_name == "video-params/w" and value is not None:
             if self._video_width > 0 and self._video_height > 0:
                 self._queue_signal_if_changed('videoSizeChanged', self._video_width, self._video_height)
-    
+
+    @staticmethod
+    def _extract_property_data(event_data_ptr):
+        """从 mpv 事件数据中深拷贝属性名和值到 Python 类型，避免野指针"""
+        if not event_data_ptr:
+            return None
+        try:
+            prop_event = ctypes.cast(event_data_ptr, POINTER(MpvEventProperty)).contents
+            prop_name = prop_event.name.decode('utf-8') if prop_event.name else ""
+
+            value = None
+            if prop_event.format == MpvFormat.STRING and prop_event.data:
+                value_ptr = ctypes.cast(prop_event.data, POINTER(c_char_p))
+                if value_ptr.contents:
+                    value = value_ptr.contents.value.decode('utf-8')
+            elif prop_event.format == MpvFormat.DOUBLE and prop_event.data:
+                value_ptr = ctypes.cast(prop_event.data, POINTER(c_double))
+                value = value_ptr.contents.value
+            elif prop_event.format == MpvFormat.FLAG and prop_event.data:
+                value_ptr = ctypes.cast(prop_event.data, POINTER(ctypes.c_int))
+                value = bool(value_ptr.contents.value)
+            elif prop_event.format == MpvFormat.INT64 and prop_event.data:
+                value_ptr = ctypes.cast(prop_event.data, POINTER(c_int64))
+                value = value_ptr.contents.value
+
+            return (prop_name, value)
+        except Exception:
+            return None
+
     def _handle_file_loaded_event(self, mpv_handle: c_void_p):
         """处理文件加载完成事件"""
         duration = self._get_property_double(mpv_handle, "duration")

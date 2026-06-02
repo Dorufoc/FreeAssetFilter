@@ -2658,7 +2658,7 @@ class VideoPlayer(QWidget):
             result = self._mpv_manager.stop(component_id=self._component_id)
             if result:
                 # 卸载音频背景（如果已创建）
-                if self._audio_background is not None:
+                if hasattr(self, '_audio_background') and self._audio_background is not None:
                     self._audio_background.unload()
             return result
         return False

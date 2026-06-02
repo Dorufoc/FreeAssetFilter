@@ -505,8 +505,7 @@ class PlayerControlBar(QWidget):
 
         icon_path = os.path.join(icon_dir, icon_name)
         self._play_button._icon_path = icon_path
-        self._play_button._icon_render_signature = None
-        self._play_button._render_icon(force=True)
+        self._play_button._render_icon(force=False)
         self._play_button.update()
     
     def _on_play_button_clicked(self):
@@ -723,9 +722,9 @@ class PlayerControlBar(QWidget):
         Args:
             is_playing: 是否正在播放
         """
+        if self._is_playing == is_playing:
+            return
         self._is_playing = is_playing
-        # 即使状态值未变化，也强制刷新一次图标，
-        # 避免初始化/样式刷新/异步状态同步后图标残留旧状态。
         self._update_play_button_icon()
     
     def set_progress(self, value: int, use_animation: bool = True):
