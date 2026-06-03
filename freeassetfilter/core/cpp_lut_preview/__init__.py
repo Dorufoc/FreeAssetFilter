@@ -106,9 +106,6 @@ def get_version() -> str:
     return "Python (fallback)"
 
 
-# 初始化尝试导入
-_try_import_cpp_module()
-
 __all__ = [
     'warmup',
     'generate_preview',

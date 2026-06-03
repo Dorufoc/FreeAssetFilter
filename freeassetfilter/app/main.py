@@ -209,11 +209,6 @@ threading.excepthook = handle_thread_exception
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="PySide6")
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*sipPyTypeDict.*")
 
-try:
-    import pillow_avif
-except ImportError:
-    pass
-
 from freeassetfilter.utils.path_utils import (
     contains_injection_chars,
     get_resource_path,
@@ -222,14 +217,12 @@ from freeassetfilter.utils.path_utils import (
     is_sensitive_path,
     validate_safe_path,
 )
-from freeassetfilter.core.update_manager import get_app_version
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QGridLayout, QSizePolicy, QSplitter, QMessageBox
 )
 from PySide6.QtCore import Qt, QUrl, QEvent, QTimer, QThread
-from freeassetfilter.components.update_controller import UpdateController
 from PySide6.QtGui import QFont, QIcon
 
 
@@ -353,13 +346,21 @@ class FreeAssetFilterApp(QMainWindow):
         self._pending_restore_unlinked_files = []
         self._restore_total_count = 0
         self._restore_success_count = 0
-        self._restore_batch_size = 20
+        self._restore_batch_size = 50
         self._restore_safe_mode = False
         self._startup_warmup_thread = None
         self._is_closing = False
         self._is_startup_phase = True  # 启动阶段标志，防止启动时重建UI
 
-        # 更新控制器
+        # 启动任务完成标志，全部完成后触发更新检查
+        self._startup_flags = {
+            "restore_done": False,
+            "warmup_done": False,
+            "cleanup_done": False,
+        }
+
+        # 更新控制器（延迟导入，避免连锁加载 urllib/subprocess 等模块）
+        from freeassetfilter.components.update_controller import UpdateController
         self.update_controller = UpdateController(self)
 
         # 获取全局字体
@@ -1129,6 +1130,7 @@ class FreeAssetFilterApp(QMainWindow):
         status_layout.addStretch()
 
         # 状态标签
+        from freeassetfilter.core.update_manager import get_app_version
         self.status_label = QLabel(
             f"FreeAssetFilter {get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
         )
@@ -1541,6 +1543,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         status_layout.addStretch()
 
+        from freeassetfilter.core.update_manager import get_app_version
         self.status_label = QLabel(
             f"FreeAssetFilter {get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
         )
@@ -1696,11 +1699,75 @@ class FreeAssetFilterApp(QMainWindow):
     def schedule_startup_tasks(self):
         """
         在首屏显示后分阶段执行启动任务，避免阻塞窗口显示
+        更新检查延迟到所有后台任务（备份恢复、预热、清理）完成后触发
         """
+        QTimer.singleShot(0, self._load_fonts_async)
+        QTimer.singleShot(0, self._lazy_import_pillow_avif)
         QTimer.singleShot(100, self.check_and_restore_backup)
         QTimer.singleShot(400, self._start_background_warmup)
-        QTimer.singleShot(600, self._start_silent_update_check)
         QTimer.singleShot(800, self._schedule_thumbnail_cleanup)
+
+    def _load_fonts_async(self):
+        """
+        窗口显示后延迟加载字体，避免 QFontDatabase.families() 阻塞首屏显示
+        """
+        try:
+            from PySide6.QtGui import QFontDatabase
+            app = QApplication.instance()
+            if app is None:
+                return
+
+            font_families = QFontDatabase.families()
+
+            # 加载 FiraCode-VF 字体（用于代码高亮显示）
+            firacode_font_path = get_resource_path('freeassetfilter/icons/FiraCode-VF.ttf')
+            firacode_font_family = None
+            if os.path.exists(firacode_font_path):
+                font_id = QFontDatabase.addApplicationFont(firacode_font_path)
+                if font_id != -1:
+                    firacode_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+            app.firacode_font_family = firacode_font_family
+
+            # 检查保存的字体是否可用
+            saved_font_style = getattr(app, '_deferred_font_style', "Microsoft YaHei")
+            DEFAULT_FONT_SIZE = app.default_font_size
+            selected_font = saved_font_style
+            if selected_font not in font_families:
+                yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
+                for font_name in yahei_fonts:
+                    if font_name in font_families:
+                        selected_font = font_name
+                        break
+                if selected_font not in font_families:
+                    selected_font = None
+
+            if selected_font:
+                app.setFont(QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal))
+                global_font = QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal)
+            else:
+                global_font = QFont()
+                global_font.setPointSize(DEFAULT_FONT_SIZE)
+                global_font.setWeight(QFont.Normal)
+
+            app.global_font = global_font
+
+            # 更新主窗口中已有控件的字体
+            if hasattr(self, 'central_widget') and self.central_widget:
+                self.central_widget.setFont(global_font)
+        except Exception as e:
+            warning(f"延迟加载字体失败: {e}")
+
+    def _lazy_import_pillow_avif(self):
+        """延迟导入 pillow_avif（仅在 AVIF 图像被打开前注册即可）"""
+        try:
+            import pillow_avif
+        except ImportError:
+            pass
+
+    def _try_start_update_check(self):
+        """所有后台启动任务完成后，启动静默更新检查"""
+        if all(self._startup_flags.values()):
+            self._start_silent_update_check()
 
     def _start_silent_update_check(self):
         """
@@ -1725,6 +1792,8 @@ class FreeAssetFilterApp(QMainWindow):
         后台预热完成回调
         """
         info("[预热] 启动阶段后台预热任务结束")
+        self._startup_flags["warmup_done"] = True
+        self._try_start_update_check()
 
     def _schedule_thumbnail_cleanup(self):
         """
@@ -1733,9 +1802,13 @@ class FreeAssetFilterApp(QMainWindow):
         app = QApplication.instance()
         settings_manager = getattr(app, 'settings_manager', None)
         if settings_manager is None:
+            self._startup_flags["cleanup_done"] = True
+            self._try_start_update_check()
             return
 
         if not settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
+            self._startup_flags["cleanup_done"] = True
+            self._try_start_update_check()
             return
 
         cache_cleanup_period = settings_manager.get_setting("file_selector.cache_cleanup_period", 7)
@@ -1744,6 +1817,9 @@ class FreeAssetFilterApp(QMainWindow):
 
         if last_cleanup_time is None or (current_time - last_cleanup_time) > (cache_cleanup_period * 86400):
             QTimer.singleShot(0, lambda: self._run_thumbnail_cleanup(cache_cleanup_period, current_time))
+        else:
+            self._startup_flags["cleanup_done"] = True
+            self._try_start_update_check()
 
     def _run_thumbnail_cleanup(self, cache_cleanup_period, current_time):
         """
@@ -1760,6 +1836,9 @@ class FreeAssetFilterApp(QMainWindow):
                 app.settings_manager.save_settings()
         except Exception as e:
             warning(f"[启动] 缩略图缓存清理失败: {e}")
+        finally:
+            self._startup_flags["cleanup_done"] = True
+            self._try_start_update_check()
 
     def show_custom_window_demo(self):
         """
@@ -1941,6 +2020,11 @@ class FreeAssetFilterApp(QMainWindow):
             self.file_staging_pool.clear_previewing_state()
             self.file_staging_pool.previewing_file_path = None
 
+    def _mark_restore_done(self):
+        """标记备份恢复任务完成并尝试触发更新检查"""
+        self._startup_flags["restore_done"] = True
+        self._try_start_update_check()
+
     def check_and_restore_backup(self):
         """
         检查是否存在备份文件，并根据设置决定是否自动恢复或询问用户
@@ -1955,17 +2039,20 @@ class FreeAssetFilterApp(QMainWindow):
         else:
             backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
             if not os.path.exists(backup_file):
+                self._mark_restore_done()
                 return
             try:
                 with open(backup_file, 'r', encoding='utf-8') as f:
                     backup_data = json.load(f)
             except (OSError, IOError, ValueError, TypeError) as e:
                 warning(f"读取备份文件失败: {e}")
+                self._mark_restore_done()
                 return
 
         items = backup_data.get('items', []) if isinstance(backup_data, dict) else backup_data
 
         if not items:
+            self._mark_restore_done()
             return
 
         auto_restore = True
@@ -1993,6 +2080,8 @@ class FreeAssetFilterApp(QMainWindow):
 
             if is_confirmed:
                 self.start_restore_backup(backup_data)
+            else:
+                self._mark_restore_done()
 
     def start_restore_backup(self, backup_data):
         """
@@ -2104,6 +2193,8 @@ class FreeAssetFilterApp(QMainWindow):
                 0,
                 lambda: self.file_staging_pool.show_unlinked_files_dialog(self._pending_restore_unlinked_files)
             )
+
+        self._mark_restore_done()
 
     def restore_backup(self, backup_data):
         """
@@ -2752,17 +2843,6 @@ def main():
     # 导入设置管理器
     from freeassetfilter.core.settings_manager import SettingsManager
 
-    # 检测并设置全局字体
-    font_families = QFontDatabase.families()
-
-    # 加载 FiraCode-VF 字体（用于代码高亮显示）
-    firacode_font_path = get_resource_path('freeassetfilter/icons/FiraCode-VF.ttf')
-    firacode_font_family = None
-    if os.path.exists(firacode_font_path):
-        font_id = QFontDatabase.addApplicationFont(firacode_font_path)
-        if font_id != -1:
-            firacode_font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-
     # 初始化设置管理器
     settings_manager = SettingsManager()
 
@@ -2770,25 +2850,9 @@ def main():
     DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 10)
     saved_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
 
-    # 检查保存的字体是否可用，如果不可用则回退到微软雅黑
-    selected_font = saved_font_style
-    if selected_font not in font_families:
-        yahei_fonts = ["Microsoft YaHei", "Microsoft YaHei UI"]
-        for font_name in yahei_fonts:
-            if font_name in font_families:
-                selected_font = font_name
-                break
-
-        if selected_font not in font_families:
-            selected_font = None
-
-    if selected_font:
-        app.setFont(QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal))
-        global_font = QFont(selected_font, DEFAULT_FONT_SIZE, QFont.Normal)
-    else:
-        global_font = QFont()
-        global_font.setPointSize(DEFAULT_FONT_SIZE)
-        global_font.setWeight(QFont.Normal)
+    # 启动阶段先用默认系统字体，完整的字体检测与 FiraCode 加载延迟到 show() 后
+    app.setFont(QFont("Microsoft YaHei", DEFAULT_FONT_SIZE, QFont.Normal))
+    global_font = QFont("Microsoft YaHei", DEFAULT_FONT_SIZE, QFont.Normal)
 
     # 将默认字体大小存储到app对象中，方便其他组件访问
     app.default_font_size = DEFAULT_FONT_SIZE
@@ -2799,8 +2863,9 @@ def main():
     # 将全局字体存储到app对象中，方便其他组件访问
     app.global_font = global_font
 
-    # 将 FiraCode 字体族名存储到app对象中，供代码高亮模式使用
-    app.firacode_font_family = firacode_font_family
+    # 保存延迟字体设置，供 _load_fonts_async 使用
+    app.firacode_font_family = None
+    app._deferred_font_style = saved_font_style
 
     # 根据当前主题动态设置全局滚动条样式
     theme = settings_manager.get_setting("appearance.theme", "default")
@@ -2869,11 +2934,10 @@ def main():
     app.setStyleSheet(scrollbar_style)
 
     window = FreeAssetFilterApp()
-    # 先轻量级应用一次主题设置（不重建UI）
-    if hasattr(window, "central_widget") and window.central_widget:
-        window._apply_theme_to_existing_widgets()
     # 窗口启动时窗口化显示
     window.show()
+    # 首帧渲染后轻量级应用主题设置（不阻塞首屏）
+    QTimer.singleShot(0, window._apply_theme_to_existing_widgets)
     # 窗口显示后清除启动阶段标志，允许后续主题更新重建UI
     window._is_startup_phase = False
     # 首屏显示后再分阶段执行恢复/预热/清理，避免阻塞启动

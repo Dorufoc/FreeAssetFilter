@@ -243,17 +243,13 @@ class ThumbnailManager:
         self._frame_caches: Dict[str, VideoFrameCache] = {}
         self._frame_cache_lock = threading.Lock()
 
-        # Rust 原生缩略图引擎（统一承担高性能生成、调度与缓存）
-        self._rust_bridge = RustThumbnailBridge()
+        # Rust 原生缩略图引擎（延迟加载，首次使用时初始化）
+        self._rust_bridge = None
         self._native_cache_limit = 200 * 1024 * 1024
         self._available_hwaccels: List[str] = []
-        self._native_batch_workers_image = self._get_native_batch_workers_image()
-        self._native_batch_workers_video = self._get_native_batch_workers_video()
+        self._native_batch_workers_image = self._get_cpu_count_safe()
+        self._native_batch_workers_video = self.DEFAULT_NATIVE_BATCH_WORKERS_VIDEO
         self._python_batch_workers_video = self._get_python_batch_workers_video()
-        if self._rust_bridge.available:
-            self._rust_bridge.set_cache_limit(self._native_cache_limit)
-            self._available_hwaccels = self._rust_bridge.get_available_hwaccels()
-            self._rust_bridge.set_max_concurrent_hw_video_decodes(self._native_batch_workers_video)
 
         # 父进程聚合子进程 stderr 中的解码路径日志，
         # 解决“批量视频在子进程执行而父进程内 Rust decode_stats 为 0”的统计缺口。
@@ -284,9 +280,32 @@ class ThumbnailManager:
         debug(
             f"初始化完成: thumb_dir={self._thumb_dir}, "
             f"img_workers={self._native_batch_workers_image}, "
-            f"video_workers={self._native_batch_workers_video}, "
-            f"hwaccels={self._available_hwaccels}"
+            f"video_workers={self._native_batch_workers_video}"
         )
+
+    def _ensure_rust_bridge(self):
+        """延迟加载 Rust 原生引擎，首次实际使用时才初始化"""
+        if self._rust_bridge is None:
+            from freeassetfilter.core.rust_thumbnail_bridge import RustThumbnailBridge
+            self._rust_bridge = RustThumbnailBridge()
+            if self._is_native_available():
+                self._native_batch_workers_video = self._get_native_batch_workers_video()
+                self._available_hwaccels = self._rust_bridge.get_available_hwaccels()
+                self._rust_bridge.set_cache_limit(self._native_cache_limit)
+                self._rust_bridge.set_max_concurrent_hw_video_decodes(self._native_batch_workers_video)
+                debug(
+                    f"Rust 原生引擎延迟加载完成: "
+                    f"hwaccels={self._available_hwaccels}, "
+                    f"img_workers={self._native_batch_workers_image}, "
+                    f"video_workers={self._native_batch_workers_video}"
+                )
+        return self._rust_bridge
+
+    def _is_native_available(self) -> bool:
+        """检查 Rust 原生引擎是否可用（首次检查时触发延迟加载）"""
+        if self._rust_bridge is None:
+            self._ensure_rust_bridge()
+        return self._rust_bridge is not None and self._rust_bridge.available
 
     def _get_cpu_count_safe(self) -> int:
         """安全获取 CPU 核心数"""
@@ -300,7 +319,7 @@ class ThumbnailManager:
     def _get_native_batch_workers_video(self) -> int:
         """按硬解后端数量做更积极的启发式估算，避免仅按后端类型数导致硬件利用率偏低"""
         cpu_count = self._get_cpu_count_safe()
-        if not self._rust_bridge.available:
+        if not self._is_native_available():
             return self.DEFAULT_NATIVE_BATCH_WORKERS_VIDEO
 
         try:
@@ -898,13 +917,13 @@ class ThumbnailManager:
         if total_count == 0:
             return 0, 0
 
-        set_perf_metadata("thumbnail.create_thumbnails_batch", "native_bridge_available", self._rust_bridge.available)
+        set_perf_metadata("thumbnail.create_thumbnails_batch", "native_bridge_available", self._is_native_available())
         increment_perf_counter("thumbnail.create_thumbnails_batch", "batch_invocations")
 
         success_count = 0
         processed_count = 0
 
-        native_stats_enabled = self._rust_bridge.available
+        native_stats_enabled = self._is_native_available()
         video_decode_submitted_count = 0
         self._reset_subprocess_decode_stats()
         if native_stats_enabled:
@@ -985,7 +1004,7 @@ class ThumbnailManager:
             batch_jpgs: List[Optional[bytes]] = []
 
             try:
-                if self._rust_bridge.available:
+                if self._is_native_available():
                     batch_jpgs = self._rust_bridge.generate_jpg_batch(file_paths, dpi_scaled_size, dpi_scaled_size)
             except Exception as e:
                 warning(f"Rust批量生成失败，逐项回退: {e}")
@@ -1085,7 +1104,7 @@ class ThumbnailManager:
                 if is_video_file:
                     increment_perf_counter("thumbnail.create_thumbnails_batch", "video_submitted")
                     video_decode_submitted_count += 1
-                    if self._rust_bridge.available:
+                    if self._is_native_available():
                         native_load = len(task_queues["native_video"]) / max(1, queue_limits["native_video"])
                         python_load = len(task_queues["python_video"]) / max(1, queue_limits["python_video"])
                         if native_load <= python_load:
@@ -1097,7 +1116,7 @@ class ThumbnailManager:
                     else:
                         increment_perf_counter("thumbnail.create_thumbnails_batch", "queue_python_video")
                         task_queues["python_video"].append(item)
-                elif self._rust_bridge.available and not use_python_dedicated:
+                elif self._is_native_available() and not use_python_dedicated:
                     increment_perf_counter("thumbnail.create_thumbnails_batch", "queue_native_image")
                     task_queues["native_image"].append(item)
                 else:
@@ -1431,7 +1450,7 @@ class ThumbnailManager:
             Optional[str]: 成功返回缩略图路径，失败返回None
         """
         with track_perf("thumbnail.create_native_thumbnail"):
-            if not self._rust_bridge.available:
+            if not self._is_native_available():
                 increment_perf_counter("thumbnail.create_native_thumbnail", "bridge_unavailable")
                 return None
 
@@ -2266,7 +2285,7 @@ class ThumbnailManager:
                 self._svg_render_cache.clear()
                 self._set_svg_cache_metadata_locked()
 
-            if self._rust_bridge.available:
+            if self._is_native_available():
                 self._rust_bridge.clear_cache()
 
             self._clear_path_exists_cache()

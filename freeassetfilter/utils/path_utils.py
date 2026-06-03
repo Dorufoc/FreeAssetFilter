@@ -527,17 +527,20 @@ def get_resource_path(relative_path):
         return os.path.abspath(relative_path)
 
 
+_APP_DATA_PATH_CACHE = None
+
 def get_app_data_path():
-    """获取应用程序数据目录（用于存储配置、数据等）"""
+    """获取应用程序数据目录（用于存储配置、数据等），结果缓存"""
+    global _APP_DATA_PATH_CACHE
+    if _APP_DATA_PATH_CACHE is not None:
+        return _APP_DATA_PATH_CACHE
+
     if getattr(sys, 'frozen', False):
-        # 打包环境：使用exe所在目录下的data文件夹
         app_dir = os.path.dirname(sys.executable)
         data_dir = os.path.join(app_dir, 'data')
     else:
-        # 开发环境：使用项目根目录下的data文件夹
         data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data')
     
-    # 确保目录存在
     try:
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(os.path.join(data_dir, 'thumbnails'), exist_ok=True)
@@ -550,6 +553,7 @@ def get_app_data_path():
             logger.error(f"创建应用数据目录失败: {e}")
         raise
     
+    _APP_DATA_PATH_CACHE = data_dir
     return data_dir
 
 

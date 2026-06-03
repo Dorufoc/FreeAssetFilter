@@ -22,18 +22,24 @@ from PIL import Image
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
-# 尝试导入 Rust DLL 包装模块
+# Rust DLL 包装模块（延迟加载，首次使用时才尝试导入）
 _RUST_AVAILABLE = False
 _RUST_MODULE = None
 
-try:
-    from .native import rust_color_extractor
-    _RUST_AVAILABLE = True
-    _RUST_MODULE = rust_color_extractor
-    info("Rust DLL 扩展模块加载成功")
-except ImportError as e:
-    warning(f"Rust DLL 扩展模块加载失败: {e}")
-    info("使用纯 Python 实现")
+def _ensure_rust_module():
+    """延迟加载 Rust DLL，首次调用时尝试导入"""
+    global _RUST_AVAILABLE, _RUST_MODULE
+    if _RUST_MODULE is not None:
+        return _RUST_AVAILABLE
+    try:
+        from .native import rust_color_extractor
+        _RUST_AVAILABLE = True
+        _RUST_MODULE = rust_color_extractor
+        info("Rust DLL 扩展模块加载成功")
+    except ImportError as e:
+        warning(f"Rust DLL 扩展模块加载失败: {e}")
+        info("使用纯 Python 实现")
+    return _RUST_AVAILABLE
 
 # 用于处理音频文件元数据
 try:
@@ -94,7 +100,7 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
         return []
     
     # 优先使用 Rust DLL 实现
-    if _RUST_AVAILABLE:
+    if _ensure_rust_module():
         try:
             start_time = time.time()
             
@@ -476,12 +482,12 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
 
 
 def is_rust_available() -> bool:
-    """检查 Rust DLL 扩展模块是否可用"""
-    return _RUST_AVAILABLE
+    """检查 Rust DLL 扩展模块是否可用（首次调用时尝试加载）"""
+    return _ensure_rust_module()
 
 
 def get_extractor_version() -> str:
     """获取当前使用的提取器版本信息"""
-    if _RUST_AVAILABLE:
+    if _ensure_rust_module():
         return f"Rust ({_RUST_MODULE.__version__})"
     return "Python (fallback)"

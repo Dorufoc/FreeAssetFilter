@@ -355,14 +355,15 @@ class CustomFileSelector(QWidget):
         self.sort_order = "asc"  # 默认升序
         self.view_mode = "card"  # 默认卡片视图
         self.save_view_mode_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "view_mode.json")
-        self._load_view_mode()
+        self._view_mode_loaded = False
         
         # 保存当前路径到文件
         self.save_path_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "last_path.json")
         
-        # 收藏夹配置文件
+        # 收藏夹配置文件（延迟加载）
         self.favorites_file = os.path.join(os.path.dirname(__file__), "..", "..", "config", "favorites.json")
-        self.favorites = self._load_favorites()
+        self.favorites = []
+        self._favorites_loaded = False
         
         # 确保数据目录存在
         os.makedirs(os.path.dirname(self.save_path_file), exist_ok=True)
@@ -492,6 +493,9 @@ class CustomFileSelector(QWidget):
             warning(f"保存路径失败: {e}")
 
     def _load_view_mode(self):
+        if self._view_mode_loaded:
+            return
+        self._view_mode_loaded = True
         try:
             if os.path.exists(self.save_view_mode_file):
                 with open(self.save_view_mode_file, 'r') as f:
@@ -1280,25 +1284,28 @@ class CustomFileSelector(QWidget):
     
     def _load_favorites(self):
         """
-        从文件中加载收藏夹列表
+        从文件中加载收藏夹列表（延迟加载，首次访问时读取文件）
         """
+        if self._favorites_loaded:
+            return self.favorites
+        self._favorites_loaded = True
         try:
             if os.path.exists(self.favorites_file):
                 with open(self.favorites_file, 'r', encoding='utf-8') as f:
                     favorites_data = json.load(f)
-                    # 确保返回的数据是列表类型
                     if isinstance(favorites_data, list):
-                        return favorites_data
+                        self.favorites = favorites_data
                     else:
                         warning(f"收藏夹数据格式错误，预期列表类型，实际为 {type(favorites_data).__name__}")
         except Exception as e:
             warning(f"加载收藏夹失败: {e}")
-        return []
+        return self.favorites
     
     def _save_favorites(self):
         """
-        保存收藏夹列表到文件
+        保存收藏夹列表到文件（先确保已加载）
         """
+        self._load_favorites()
         try:
             with open(self.favorites_file, 'w', encoding='utf-8') as f:
                 json.dump(self.favorites, f, ensure_ascii=False, indent=2)
@@ -1309,6 +1316,7 @@ class CustomFileSelector(QWidget):
         """
         显示收藏夹对话框
         """
+        self._load_favorites()
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 9)
         scaled_font_size = int(default_font_size * self.dpi_scale)
@@ -2082,7 +2090,8 @@ class CustomFileSelector(QWidget):
         self.view_mode_btn.update()
 
     def _apply_view_mode(self):
-        """应用当前视图模式的 delegate 和 QListView 设置"""
+        """应用当前视图模式的 delegate 和 QListView 设置（先确保已加载）"""
+        self._load_view_mode()
         if not self.files_scroll_area:
             return
         if self.view_mode == "list":
