@@ -681,7 +681,6 @@ class CustomFileHorizontalCard(QWidget):
         self._init_fonts()
         self._init_animations()
         CustomFileHorizontalCard._clear_shared_caches()
-        SvgRenderer._invalidate_color_cache()
         self._invalidate_geometry_cache()
         self._update_text_cache(force=True)
         self._update_icon(force=True)

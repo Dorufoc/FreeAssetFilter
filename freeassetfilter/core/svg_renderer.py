@@ -22,7 +22,6 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication
 from PySide6.QtGui import QGuiApplication
 import os
-import threading
 
 from .settings_manager import SettingsManager
 
@@ -32,61 +31,6 @@ from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_
 
 
 class SvgRenderer:
-    _cached_colors = {}
-    _color_cache_valid = False
-    _cache_lock = threading.Lock()
-
-    @staticmethod
-    def _invalidate_color_cache():
-        with SvgRenderer._cache_lock:
-            SvgRenderer._color_cache_valid = False
-            SvgRenderer._cached_colors.clear()
-
-    @staticmethod
-    def _ensure_color_cache():
-        with SvgRenderer._cache_lock:
-            if SvgRenderer._color_cache_valid:
-                return
-
-            try:
-                settings_manager = SettingsManager()
-                SvgRenderer._cached_colors = {
-                    "accent_color": settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
-                    "base_color": settings_manager.get_setting("appearance.colors.base_color", "#f1f3f5"),
-                    "secondary_color": settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
-                    "normal_color": settings_manager.get_setting("appearance.colors.normal_color", "#CECECE")
-                }
-                SvgRenderer._color_cache_valid = True
-            except (OSError, ValueError, TypeError) as e:
-                warning(f"颜色设置获取失败: {e}")
-                SvgRenderer._cached_colors = {
-                    "accent_color": "#007AFF",
-                    "base_color": "#f1f3f5",
-                    "secondary_color": "#333333",
-                    "normal_color": "#CECECE"
-                }
-                SvgRenderer._color_cache_valid = True
-
-    @staticmethod
-    def _get_accent_color():
-        SvgRenderer._ensure_color_cache()
-        return SvgRenderer._cached_colors.get("accent_color", "#007AFF")
-
-    @staticmethod
-    def _get_base_color():
-        SvgRenderer._ensure_color_cache()
-        return SvgRenderer._cached_colors.get("base_color", "#f1f3f5")
-
-    @staticmethod
-    def _get_secondary_color():
-        SvgRenderer._ensure_color_cache()
-        return SvgRenderer._cached_colors.get("secondary_color", "#333333")
-
-    @staticmethod
-    def _get_normal_color():
-        SvgRenderer._ensure_color_cache()
-        return SvgRenderer._cached_colors.get("normal_color", "#CECECE")
-
     @staticmethod
     def _replace_svg_colors(svg_content, invert_white_to_black=False, force_black_to_base=False):
         """
@@ -109,10 +53,11 @@ class SvgRenderer:
                 import re
 
                 increment_perf_counter("svg.replace_colors", "invocations")
-                accent_color = SvgRenderer._get_accent_color()
-                base_color = SvgRenderer._get_base_color()
-                secondary_color = SvgRenderer._get_secondary_color()
-                normal_color = SvgRenderer._get_normal_color()
+                settings_manager = SettingsManager()
+                accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+                base_color = settings_manager.get_setting("appearance.colors.base_color", "#f1f3f5")
+                secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+                normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#CECECE")
 
                 black_replacement_color = base_color if force_black_to_base else secondary_color
                 processed_svg = svg_content
@@ -845,7 +790,7 @@ class SvgRenderer:
                 is_unified_style = " – 2.svg" in icon_path
                 is_textured_archive = "压缩文件 – 1.svg" in icon_path
                 if is_unified_style:
-                    base_color = SvgRenderer._get_base_color()
+                    base_color = SettingsManager().get_setting("appearance.colors.base_color", "#f1f3f5")
                     text_color = QColor(base_color)
                 elif icon_path.endswith("压缩文件.svg") or is_textured_archive:
                     text_color = QColor(255, 255, 255)

@@ -164,8 +164,6 @@ class CustomSwitch(QWidget):
         """
         更新开关样式，用于主题更新
         """
-        # 清除SVG颜色缓存，确保使用最新颜色
-        SvgRenderer._invalidate_color_cache()
         # 更新图标
         self._update_switch_icon()
     

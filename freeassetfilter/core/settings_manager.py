@@ -246,6 +246,8 @@ class SettingsManager:
 
             SettingsManager._initialized = True
             self._settings_lock = threading.RLock()
+            self._color_cache: dict[str, str] = {}
+            self._color_cache_lock = threading.Lock()
             self._save_timer = None
             self._save_delay_seconds = 0.35
             self._save_pending = False
@@ -493,6 +495,9 @@ class SettingsManager:
                 delay = self._save_delay_seconds
 
             self._save_pending = True
+            # 重置时也清除颜色缓存
+            with self._color_cache_lock:
+                self._color_cache.clear()
 
             if self._save_timer is not None:
                 self._save_timer.cancel()
@@ -586,22 +591,33 @@ class SettingsManager:
                     except OSError:
                         pass
     
-    def get_setting(self, key_path, default=None, use_file_for_colors=False):
+    def get_setting(self, key_path, default=None):
         """
         获取设置值
 
         Args:
             key_path: 设置键路径，如 "appearance.colors.accent_color"
             default: 默认值
-            use_file_for_colors: 如果为True，颜色设置直接从JSON文件读取，绕过内存缓存
 
         Returns:
             设置值
         """
-        # 如果是颜色设置且要求从文件读取，直接读取文件
-        if use_file_for_colors and "appearance.colors." in key_path:
-            color_key = key_path.replace("appearance.colors.", "")
-            return self.get_color_from_file(color_key, default)
+        # 颜色快速路径：使用内存缓存，避免字典遍历
+        if key_path.startswith("appearance.colors."):
+            color_key = key_path.split(".")[-1]
+            with self._color_cache_lock:
+                if color_key in self._color_cache:
+                    return self._color_cache[color_key]
+
+            # 缓存未命中，从内存设置中读取
+            with self._settings_lock:
+                if self.settings is None:
+                    return default
+                color_value = self.settings.get("appearance", {}).get("colors", {}).get(color_key, default)
+
+                with self._color_cache_lock:
+                    self._color_cache[color_key] = color_value
+            return color_value
 
         with self._settings_lock:
             if self.settings is None:
@@ -615,11 +631,10 @@ class SettingsManager:
                     value = value[key]
                 return value
             except (KeyError, TypeError):
-                if default is not None and not key_path.startswith("appearance.colors."):
+                if default is not None:
                     # 使用auto_save=True确保默认值被持久化
                     self.set_setting(key_path, default, auto_save=True)
                 return default
-    
     def set_setting(self, key_path, value, auto_save=False):
         """
         设置配置值
@@ -645,6 +660,11 @@ class SettingsManager:
 
             settings[keys[-1]] = value
             self._dirty_keys.add(key_path)
+
+            # 颜色变更时清除缓存
+            if key_path.startswith("appearance.colors."):
+                with self._color_cache_lock:
+                    self._color_cache.clear()
 
             if key_path == "appearance.theme" or key_path == "appearance.preset_theme":
                 debug(f"主题变更: {key_path}={value}")
@@ -712,50 +732,18 @@ class SettingsManager:
             self._dirty_keys.add("__reset_to_defaults__")
             self._save_pending = True
 
-    def get_color_from_file(self, color_key, default=None):
+    def get_colors_dict(self):
         """
-        直接从JSON文件读取颜色值，绕过内存缓存
-        用于前端获取颜色，确保获取到的是持久化的颜色值
-
-        Args:
-            color_key: 颜色键名，如 "accent_color", "secondary_color" 等
-            default: 默认值，如果文件中没有该颜色则返回此值
+        从内存中读取所有颜色值
 
         Returns:
-            str: 颜色值（十六进制格式）
+            dict: 颜色字典，包含所有颜色键值对
         """
         with self._settings_lock:
-            try:
-                if os.path.exists(self._settings_file):
-                    # 使用安全的JSON加载
-                    file_settings = safe_json_load(
-                        self._settings_file,
-                        max_depth=self.MAX_JSON_DEPTH,
-                        max_size_bytes=self.MAX_JSON_SIZE_BYTES
-                    )
-                    colors = file_settings.get("appearance", {}).get("colors", {})
-                    return colors.get(color_key, default)
-                else:
-                    # 文件不存在时返回默认值
-                    return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
-            except FileNotFoundError:
-                warning(f"设置文件不存在，使用默认颜色: {self._settings_file}")
-                return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
-            except (JSONSizeExceededError, JSONDepthExceededError, JSONValueExceededError) as e:
-                error(f"设置文件超出安全限制，无法读取颜色: {e}")
-                return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
-            except json.JSONDecodeError as e:
-                error(f"设置文件JSON格式错误，无法读取颜色: {e}")
-                return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
-            except PermissionError as e:
-                error(f"读取设置文件权限不足: {e}")
-                return default
-            except KeyError:
-                debug(f"颜色键 '{color_key}' 不存在，使用默认值")
-                return default
-            except UnicodeDecodeError as e:
-                error(f"设置文件编码错误: {e}")
-                return self.default_settings.get("appearance", {}).get("colors", {}).get(color_key, default)
+            if self.settings is None:
+                return self.default_settings["appearance"]["colors"].copy()
+            return self.settings.get("appearance", {}).get("colors", self.default_settings["appearance"]["colors"]).copy()
+
 
     def get_all_colors_from_file(self):
         """

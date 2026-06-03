@@ -54,16 +54,16 @@ class ThemeManager(QObject):
     def _load_theme_colors(self):
         """
         加载主题颜色设置
-        使用use_file_for_colors=True直接从JSON文件读取，绕过内存缓存
+        从内存设置中读取所有主题颜色值
         """
         debug("加载主题颜色")
 
         self.theme_colors = {
-            "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF", use_file_for_colors=True),
-            "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333", use_file_for_colors=True),
-            "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0", use_file_for_colors=True),
-            "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5", use_file_for_colors=True),
-            "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF", use_file_for_colors=True)
+            "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
+            "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
+            "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
+            "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),
+            "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
         }
 
         # 计算辅助色加深2%和5%的颜色
@@ -169,7 +169,7 @@ class ThemeManager(QObject):
             dict: 主题颜色字典
         """
         # 每次获取时都从文件读取最新颜色
-        return self.settings_manager.get_all_colors_from_file()
+        return self.settings_manager.get_colors_dict()
     
     def get_darkened_auxiliary_colors(self):
         """

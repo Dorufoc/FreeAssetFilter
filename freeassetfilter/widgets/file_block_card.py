@@ -981,7 +981,6 @@ class FileBlockCard(QWidget):
         self._init_fonts()
         self._init_animations()
         FileBlockCard._clear_shared_caches()
-        SvgRenderer._invalidate_color_cache()
         self._text_color = QColor(self.secondary_color)
         self._label_palette.setColor(QPalette.WindowText, self._text_color)
         self._invalidate_geometry_cache()
