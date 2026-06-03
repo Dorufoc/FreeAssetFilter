@@ -19,7 +19,6 @@ import os
 import time
 from pathlib import Path
 from typing import Optional, Tuple
-import numpy as np
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtCore import Qt
 
@@ -62,6 +61,7 @@ class LUTPreviewGenerator:
     
     def preload(self):
         """预加载参考图像和相关资源"""
+        import numpy as np
         debug("预加载参考图像")
         self.load_reference_image()
         if self._reference_image is not None:
@@ -73,6 +73,7 @@ class LUTPreviewGenerator:
     
     def load_reference_image(self) -> bool:
         """
+        import numpy as np
         加载参考图像
         
         Returns:

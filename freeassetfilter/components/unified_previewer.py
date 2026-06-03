@@ -36,7 +36,6 @@ from PySide6.QtGui import QFont
 
 from freeassetfilter.components.file_info_previewer import FileInfoPreviewer
 from freeassetfilter.components.folder_content_list import FolderContentList
-from freeassetfilter.components.archive_browser import ArchiveBrowser
 from freeassetfilter.widgets.D_widgets import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager

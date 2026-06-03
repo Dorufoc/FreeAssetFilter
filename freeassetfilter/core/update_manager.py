@@ -21,7 +21,7 @@ import hashlib
 from datetime import datetime
 from xml.etree import ElementTree
 
-from urllib import request, error as urllib_error
+
 
 from freeassetfilter.utils.app_logger import info, warning, error
 from freeassetfilter.utils.path_utils import get_app_data_path, get_resource_path
@@ -371,6 +371,7 @@ def _http_get_text(url, timeout=5, cancel_check=None):
     配合 cancel_check 参数，在读取数据块间隙检查中断状态
     """
     _raise_if_cancelled(cancel_check)
+    from urllib import request, error as urllib_error
 
     req = request.Request(url, headers=build_request_headers(), method="GET")
     try:
@@ -519,6 +520,7 @@ def _extract_latest_tag_from_redirect(cancel_check=None):
 
     _raise_if_cancelled(cancel_check)
 
+    from urllib import request, error as urllib_error
     req = request.Request(
         GITHUB_RELEASES_LATEST_URL,
         headers=build_request_headers("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),

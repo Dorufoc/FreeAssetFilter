@@ -14,7 +14,7 @@ import os
 import sys
 import time
 import subprocess
-from urllib import request, error as urllib_error
+
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea, QSizePolicy, QTextBrowser
@@ -93,6 +93,7 @@ class SilentUpdateCheckWorker(QThread):
         self.setObjectName("SilentUpdateCheckWorker")
     
     def run(self):
+        from urllib import request, error as urllib_error
         debug("SilentUpdateCheckWorker: 开始静默检查更新")
         try:
             if self.isInterruptionRequested():
@@ -154,6 +155,7 @@ class UpdateDownloadWorker(QThread):
         self._cancel_requested = True
 
     def run(self):
+        from urllib import request, error as urllib_error
         temp_path = None
         debug("UpdateDownloadWorker: 开始下载更新")
         try:

@@ -6,11 +6,10 @@ C++ LUT 预览生成器 Python 包装器
 提供与 Python 版本相同的 API，但使用 C++ 实现以获得更高性能。
 如果 C++ 模块编译失败或未安装，自动降级到纯 Python 实现。
 """
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional, Tuple
-import numpy as np
-
 from freeassetfilter.utils.app_logger import info, warning
 
 CPP_LUT_PREVIEW_AVAILABLE = False
@@ -50,6 +49,7 @@ def warmup():
     预热 C++ 模块
     首次调用时触发 JIT 编译和一些初始化工作
     """
+    import numpy as np
     if not CPP_LUT_PREVIEW_AVAILABLE:
         _try_import_cpp_module()
     

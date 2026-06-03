@@ -43,7 +43,6 @@ from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QPen, QCursor
 
 from freeassetfilter.core.mpv_player_core import MPVPlayerCore, MpvEndFileReason
 from freeassetfilter.core.mpv_manager import MPVManager, MPVState
-from freeassetfilter.widgets.player_control_bar import PlayerControlBar
 from freeassetfilter.widgets.D_hover_menu import D_HoverMenu
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.message_box import CustomMessageBox
@@ -546,6 +545,7 @@ class VideoPlayer(QWidget):
         else:
             self._init_audio_mode_ui(main_layout)
         
+        from freeassetfilter.widgets.player_control_bar import PlayerControlBar
         self._control_bar = PlayerControlBar(
             self,
             show_lut_controls=self._show_lut_controls

@@ -361,7 +361,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 更新控制器（延迟导入，避免连锁加载 urllib/subprocess 等模块）
         from freeassetfilter.components.update_controller import UpdateController
-        self.update_controller = UpdateController(self)
+        self.update_controller = None  # 延迟到 schedule_startup_tasks 中创建
 
         # 获取全局字体
         global_font = getattr(app, 'global_font', QFont())
@@ -1030,7 +1030,8 @@ class FreeAssetFilterApp(QMainWindow):
         self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # 设置边框圆角
         border_radius = 8
-        self.left_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        column_qss = f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;"
+        self.left_column.setStyleSheet(column_qss)
         left_layout = QVBoxLayout(self.left_column)
 
         # 内嵌文件选择器A
@@ -1040,7 +1041,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 中间列：文件临时存储池
         self.middle_column = QWidget()
         self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.middle_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        self.middle_column.setStyleSheet(column_qss)
         middle_layout = QVBoxLayout(self.middle_column)
 
         # 添加文件临时存储池组件
@@ -1051,7 +1052,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 右侧列：统一文件预览器
         self.right_column = QWidget()
         self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.right_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        self.right_column.setStyleSheet(column_qss)
         right_layout = QVBoxLayout(self.right_column)
 
         # 统一文件预览器
@@ -1474,7 +1475,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         self.left_column = QWidget()
         self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.left_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        self.left_column.setStyleSheet(column_qss)
         left_layout = QVBoxLayout(self.left_column)
 
         self.file_selector_a = self._create_file_selector_widget()
@@ -1482,7 +1483,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         self.middle_column = QWidget()
         self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.middle_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        self.middle_column.setStyleSheet(column_qss)
         middle_layout = QVBoxLayout(self.middle_column)
 
         from freeassetfilter.components.file_staging_pool import FileStagingPool
@@ -1491,7 +1492,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         self.right_column = QWidget()
         self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.right_column.setStyleSheet(f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;")
+        self.right_column.setStyleSheet(column_qss)
         right_layout = QVBoxLayout(self.right_column)
 
         from freeassetfilter.components.unified_previewer import UnifiedPreviewer
@@ -1706,6 +1707,8 @@ class FreeAssetFilterApp(QMainWindow):
         QTimer.singleShot(100, self.check_and_restore_backup)
         QTimer.singleShot(400, self._start_background_warmup)
         QTimer.singleShot(800, self._schedule_thumbnail_cleanup)
+        # 延迟创建 UpdateController，避免 urllib/http import 链阻塞首帧
+        QTimer.singleShot(600, self._init_update_controller_deferred)
 
     def _load_fonts_async(self):
         """
@@ -1763,6 +1766,10 @@ class FreeAssetFilterApp(QMainWindow):
             import pillow_avif
         except ImportError:
             pass
+
+    def _init_update_controller_deferred(self):
+        from freeassetfilter.components.update_controller import UpdateController
+        self.update_controller = UpdateController(self)
 
     def _try_start_update_check(self):
         """所有后台启动任务完成后，启动静默更新检查"""

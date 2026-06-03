@@ -30,7 +30,6 @@ from .progress_widgets import D_ProgressBar
 from .button_widgets import CustomButton
 from .D_volume_control import DVolumeControl
 from .dropdown_menu import CustomDropdownMenu
-from .lut_manager_dialog import LutManagerDialog
 from .hover_tooltip import HoverTooltip
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
@@ -538,6 +537,7 @@ class PlayerControlBar(QWidget):
         self._open_lut_manager_dialog()
     
     def _open_lut_manager_dialog(self):
+        from .lut_manager_dialog import LutManagerDialog
         """打开LUT管理弹窗"""
         # 获取设置管理器
         app = QApplication.instance()
