@@ -199,27 +199,15 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         model = index.model()
         if not model:
             return {}
-
-        return {
-            "path": model.data(index, FileStagingPoolListModel.FilePathRole) or "",
-            "name": model.data(index, FileStagingPoolListModel.FileNameRole) or "",
-            "display_name": model.data(index, FileStagingPoolListModel.DisplayNameRole) or "",
-            "visible_name": model.data(index, Qt.DisplayRole) or "",
-            "original_name": model.data(index, FileStagingPoolListModel.OriginalNameRole) or "",
-            "is_dir": model.data(index, FileStagingPoolListModel.IsDirRole) or False,
-            "size": model.data(index, FileStagingPoolListModel.FileSizeRole),
-            "created": model.data(index, FileStagingPoolListModel.CreatedRole) or "",
-            "modified": model.data(index, FileStagingPoolListModel.ModifiedRole) or "",
-            "suffix": (model.data(index, FileStagingPoolListModel.SuffixRole) or "").lower(),
-            "is_selected": model.data(index, FileStagingPoolListModel.IsSelectedRole) or False,
-            "is_previewing": model.data(index, FileStagingPoolListModel.IsPreviewingRole) or False,
-            "is_missing": model.data(index, FileStagingPoolListModel.IsMissingRole) or False,
-            "is_removing": model.data(index, FileStagingPoolListModel.IsRemovingRole) or False,
-            "size_calculating": model.data(index, FileStagingPoolListModel.SizeCalculatingRole) or False,
-            "info_text": model.data(index, FileStagingPoolListModel.InfoTextRole) or "",
-            "icon_pixmap": model.data(index, FileStagingPoolListModel.IconPixmapRole),
-            "item_size": model.data(index, FileStagingPoolListModel.ItemSizeRole),
-        }
+        if not isinstance(model, FileStagingPoolListModel):
+            return {}
+        info = model.get_file_info(index)
+        if not info:
+            return {}
+        info["suffix"] = (str(info.get("suffix", "")) or "").lower()
+        info["visible_name"] = model.data(index, Qt.DisplayRole) or ""
+        info["icon_pixmap"] = model.data(index, model.IconPixmapRole)
+        return info
 
     def _button_layout_metrics(self) -> dict[str, int]:
         dpi_scale = self._dpi_scale

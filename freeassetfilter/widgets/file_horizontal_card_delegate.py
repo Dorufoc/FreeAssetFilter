@@ -26,6 +26,7 @@ from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 from .file_selector_delegate import _get_file_type_display, _format_file_size_compact
+from freeassetfilter.widgets.file_selector_model import FileSelectorListModel
 
 
 class FileHorizontalCardDelegate(QStyledItemDelegate):
@@ -149,17 +150,14 @@ class FileHorizontalCardDelegate(QStyledItemDelegate):
         model = index.model()
         if not model:
             return {}
-        return {
-            "path": model.data(index, Qt.UserRole + 1) or "",
-            "name": model.data(index, Qt.UserRole + 2) or "",
-            "is_dir": model.data(index, Qt.UserRole + 3) or False,
-            "size": model.data(index, Qt.UserRole + 4) or 0,
-            "created": model.data(index, Qt.UserRole + 5) or "",
-            "suffix": (model.data(index, Qt.UserRole + 6) or "").lower(),
-            "is_selected": model.data(index, Qt.UserRole + 7) or False,
-            "is_previewing": model.data(index, Qt.UserRole + 8) or False,
-            "icon_pixmap": model.data(index, Qt.UserRole + 9),
-        }
+        if not isinstance(model, FileSelectorListModel):
+            return {}
+        info = model.get_file_info(index)
+        if not info:
+            return {}
+        info["suffix"] = (str(info.get("suffix", "")) or "").lower()
+        info["icon_pixmap"] = model.data(index, model.IconPixmapRole)
+        return info
 
     def _calculate_geometry(self, rect):
         dpi = self._dpi_scale
