@@ -51,6 +51,7 @@ class FileScrollBar(QWidget):
         self._bar_width_hovered = max(3, int(self._bar_width_normal * 1.5))
         self._bar_width = self._bar_width_normal
         self._thumb_min_height = max(20, int(20 * self._dpi_scale))
+        self._thumb_max_ratio = 0.75
         self._padding = max(1, int(2 * self._dpi_scale))
 
         self._thumb_color = QColor("#666666")
@@ -75,7 +76,7 @@ class FileScrollBar(QWidget):
 
     def _start_hover_animation(self, hovered):
         target = self._bar_width_hovered if hovered else self._bar_width_normal
-        if self._bar_width == target:
+        if self._bar_width == target and self._hover_animation.state() != QPropertyAnimation.Running:
             return
         self._hover_animation.stop()
         self._hover_animation.setStartValue(self._bar_width)
@@ -128,7 +129,10 @@ class FileScrollBar(QWidget):
         total = self._maximum - self._minimum
         track_height = max(0, self.height() - 2 * self._padding)
         ratio = self._page_step / max(total, 1)
-        return max(self._thumb_min_height, int(track_height * min(ratio, 1.0)))
+        return min(
+            max(self._thumb_min_height, int(track_height * min(ratio, 1.0))),
+            int(track_height * self._thumb_max_ratio)
+        )
 
     def _value_to_y(self, value):
         if self._maximum <= self._minimum:
@@ -248,7 +252,7 @@ class FileScrollBar(QWidget):
         thumb_y = self._value_to_y(self._value)
         thumb_h = self._thumb_length()
         radius = max(1, int(self._bar_width // 2))
-        pos = self.mapFromGlobal(self.cursor().pos())
+        pos = event.position().toPoint()
         hovered = self._is_point_in_pill(
             pos.x(), pos.y(),
             self.width() - self._padding - self._bar_width,
