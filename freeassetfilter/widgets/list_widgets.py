@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QColor, QPixmap, QIcon
 
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.core.svg_renderer import SvgRenderer
 
 
@@ -83,11 +83,9 @@ class CustomSelectList(QWidget):
         self.list_widget.setFont(self.global_font)
         self.list_widget.setFocusPolicy(Qt.NoFocus)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.list_widget.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
-
-        self.list_widget.setVerticalScrollBar(D_ScrollBar(self.list_widget, Qt.Vertical))
-        self.list_widget.verticalScrollBar().apply_theme_from_settings()
 
         SmoothScroller.apply(self.list_widget, enable_mouse_drag=False)
         self.list_widget.setAttribute(Qt.WA_AcceptTouchEvents, False)

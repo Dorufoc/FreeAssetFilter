@@ -33,7 +33,7 @@ from PySide6.QtPdf import QPdfDocument
 # 导入自定义控件
 from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
-from freeassetfilter.widgets.smooth_scroller import SmoothScroller, D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
 
 class PDFPageWidget(QWidget):
@@ -335,10 +335,10 @@ class PDFPreviewer(QWidget):
         # 创建滚动区域
         self.scroll_area = QScrollArea(self.scroll_container)
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 设置整个滚动区域的背景色（包括视口和滚动条区域）
+        # 设置整个滚动区域的背景色（包括视口）
         self.scroll_area.setStyleSheet(f"""
             QScrollArea {{
                 background-color: {self.base_color};
@@ -354,12 +354,6 @@ class PDFPreviewer(QWidget):
 
         # 应用丝滑滚动
         SmoothScroller.apply(self.scroll_area, enable_mouse_drag=False)
-
-        # 设置自定义滚动条
-        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
-        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
-        self.scroll_area.setHorizontalScrollBar(D_ScrollBar(self.scroll_area, Qt.Horizontal))
-        self.scroll_area.horizontalScrollBar().apply_theme_from_settings()
 
         # 为滚动区域的 viewport 安装事件过滤器，用于处理鼠标中键拖动
         self.scroll_area.viewport().installEventFilter(self)

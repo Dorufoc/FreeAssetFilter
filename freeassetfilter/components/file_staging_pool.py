@@ -40,7 +40,7 @@ from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.file_staging_pool_model import FileStagingPoolListModel, FileStagingPoolListView
 from freeassetfilter.widgets.file_staging_pool_delegate import FileStagingPoolCardDelegate
 from PySide6.QtCore import (
@@ -68,6 +68,7 @@ class FileStagingPool(QWidget):
     folder_size_calculated = Signal(dict)  # 文件夹体积计算完成信号
     folder_size_result_ready = Signal(object)  # 线程完成后的文件夹大小结果投递信号
     navigate_to_path = Signal(str, dict)  # 当需要导航到某个路径时发出，第二个参数是可选的文件信息
+    preview_cancel_requested = Signal()  # 当左键点击正在预览的卡片时发出，用于取消预览
 
     _BACKUP_STRING_FIELDS = (
         "name",
@@ -184,7 +185,7 @@ class FileStagingPool(QWidget):
 
         main_layout = QVBoxLayout(self)
         colors = self._get_theme_colors()
-        self.setStyleSheet(f"background-color: {colors['window_background']};")
+        self.setStyleSheet(f"background-color: {colors['panel_background']};")
         main_layout.setSpacing(scaled_margin)
         main_layout.setContentsMargins(scaled_h_margin, scaled_margin, scaled_h_margin, scaled_margin)
 
@@ -210,21 +211,18 @@ class FileStagingPool(QWidget):
         self.pool_delegate = FileStagingPoolCardDelegate(
             dpi_scale=self.dpi_scale,
             global_font=self.global_font,
-            single_line_mode=False,
-            enable_delete_action=True,
             parent=self.pool_view,
         )
         self.pool_view.setModel(self.pool_model)
         self.pool_view.setItemDelegate(self.pool_delegate)
         self.pool_delegate.set_view(self.pool_view)
-        self.pool_view.setVerticalScrollBar(D_ScrollBar(self.pool_view, Qt.Vertical))
-        self.pool_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.pool_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.pool_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.pool_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.pool_view.setSpacing(int(3 * self.dpi_scale))
         SmoothScroller.apply(self.pool_view)
 
-        self.pool_view.item_left_clicked.connect(self.item_left_clicked.emit)
-        self.pool_view.item_right_clicked.connect(self.item_right_clicked.emit)
+        self.pool_view.item_left_clicked.connect(self._handle_item_left_clicked)
+        self.pool_view.item_right_clicked.connect(self._handle_item_right_clicked)
         self.pool_view.item_double_clicked.connect(self._on_list_item_double_clicked)
         self.pool_view.drag_started.connect(self.on_card_drag_started)
         self.pool_view.drag_ended.connect(self.on_card_drag_ended)
@@ -303,18 +301,15 @@ class FileStagingPool(QWidget):
         """
         app = QApplication.instance()
         colors = {
-            "window_background": "#2D2D2D",
             "base_color": "#212121",
-            "auxiliary_color": "#313131",
+            "auxiliary_color": "#f1f3f5",
             "normal_color": "#717171",
             "secondary_color": "#FFFFFF",
             "accent_color": "#F0C54D",
+            "panel_background": "#f1f3f5",
         }
 
         if hasattr(app, "settings_manager"):
-            colors["window_background"] = app.settings_manager.get_setting(
-                "appearance.colors.window_background", colors["window_background"]
-            )
             colors["base_color"] = app.settings_manager.get_setting(
                 "appearance.colors.base_color", colors["base_color"]
             )
@@ -329,6 +324,9 @@ class FileStagingPool(QWidget):
             )
             colors["accent_color"] = app.settings_manager.get_setting(
                 "appearance.colors.accent_color", colors["accent_color"]
+            )
+            colors["panel_background"] = app.settings_manager.get_setting(
+                "appearance.colors.panel_background", colors["panel_background"]
             )
 
         return colors
@@ -362,11 +360,11 @@ class FileStagingPool(QWidget):
         scaled_border_width = int(1 * self.dpi_scale)
         scaled_padding = int(3 * self.dpi_scale)
 
-        scrollbar_style = f"""
+        container_style = f"""
             QListView {{
                 border: {scaled_border_width}px solid {colors['normal_color']};
                 border-radius: {scaled_border_radius}px;
-                background-color: {colors['base_color']};
+                background-color: {colors['panel_background']};
                 padding: {scaled_padding}px;
                 outline: none;
             }}
@@ -374,79 +372,8 @@ class FileStagingPool(QWidget):
                 background: transparent;
                 border: none;
             }}
-            QScrollBar:vertical {{
-                width: 6px;
-                background-color: {colors['auxiliary_color']};
-                border: 0px solid transparent;
-                border-radius: 0px;
-            }}
-            QScrollBar::handle:vertical {{
-                background-color: {colors['normal_color']};
-                min-height: 15px;
-                border-radius: 3px;
-                border: none;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background-color: {colors['secondary_color']};
-                border: none;
-            }}
-            QScrollBar::handle:vertical:pressed {{
-                background-color: {colors['accent_color']};
-                border: none;
-            }}
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {{
-                height: 0px;
-                border: none;
-            }}
-            QScrollBar::add-page:vertical,
-            QScrollBar::sub-page:vertical {{
-                background: none;
-                border: 0px solid transparent;
-                border: none;
-            }}
-            QScrollBar:horizontal {{
-                height: 6px;
-                background-color: {colors['auxiliary_color']};
-                border: 0px solid transparent;
-                border-radius: 0px;
-            }}
-            QScrollBar::handle:horizontal {{
-                background-color: {colors['normal_color']};
-                min-width: 15px;
-                border-radius: 3px;
-                border: none;
-            }}
-            QScrollBar::handle:horizontal:hover {{
-                background-color: {colors['secondary_color']};
-                border: none;
-            }}
-            QScrollBar::handle:horizontal:pressed {{
-                background-color: {colors['accent_color']};
-                border: none;
-            }}
-            QScrollBar::add-line:horizontal,
-            QScrollBar::sub-line:horizontal {{
-                width: 0px;
-                border: none;
-            }}
-            QScrollBar::add-page:horizontal,
-            QScrollBar::sub-page:horizontal {{
-                background: none;
-                border: 0px solid transparent;
-                border: none;
-            }}
         """
-        self.pool_view.setStyleSheet(scrollbar_style)
-
-        scrollbar = self.pool_view.verticalScrollBar()
-        if hasattr(scrollbar, "set_colors"):
-            scrollbar.set_colors(
-                colors["normal_color"],
-                colors["secondary_color"],
-                colors["accent_color"],
-                colors["auxiliary_color"],
-            )
+        self.pool_view.setStyleSheet(container_style)
 
         self.pool_model.clear_caches()
         self.pool_view.viewport().update()
@@ -457,7 +384,7 @@ class FileStagingPool(QWidget):
         """
         colors = self._get_theme_colors()
 
-        self.setStyleSheet(f"background-color: {colors['window_background']};")
+        self.setStyleSheet(f"background-color: {colors['panel_background']};")
         self._apply_scroll_area_theme(colors)
 
         if hasattr(self, "stats_label") and self.stats_label:
@@ -537,14 +464,37 @@ class FileStagingPool(QWidget):
         if not removed_file:
             return
 
+        if (self.previewing_file_path and
+            os.path.normcase(normalized_path) == os.path.normcase(self.previewing_file_path)):
+            self.previewing_file_path = None
+            self.preview_cancel_requested.emit()
+
         self._sync_items_from_model()
         self.remove_from_selector.emit(removed_file)
         self.update_stats()
         self._save_backup_if_needed()
 
+    def _handle_item_left_clicked(self, file_info):
+        """
+        处理存储池卡片左键点击：如果该卡片正在被预览则取消预览，否则开始预览。
+        """
+        file_path = os.path.normpath(file_info.get("path", ""))
+        if file_path and self.previewing_file_path and os.path.normcase(file_path) == os.path.normcase(self.previewing_file_path):
+            self.preview_cancel_requested.emit()
+        else:
+            self.item_left_clicked.emit(file_info)
+
+    def _handle_item_right_clicked(self, file_info):
+        """
+        处理存储池卡片右键点击：从储存池删除该卡片。
+        """
+        file_path = file_info.get("path", "")
+        if file_path:
+            self.remove_file(file_path)
+
     def clear_all(self):
         """
-        清空所有项目。
+         清空所有项目。
         """
         debug(f"清空存储池所有项目，当前共 {len(self.items)} 项")
         confirm_msg = CustomMessageBox(self)
@@ -1725,7 +1675,8 @@ class FileStagingPool(QWidget):
         """
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
-            self.setStyleSheet(f"background-color: #e8f4fc; border: 2px dashed #4a7abc; border-radius: {int(8 * self.dpi_scale)}px;")
+            colors = self._get_theme_colors()
+            self.setStyleSheet(f"background-color: {colors['panel_background']}; border: 2px dashed #4a7abc; border-radius: {int(8 * self.dpi_scale)}px;")
 
     def dragMoveEvent(self, event):
         """
@@ -1744,7 +1695,8 @@ class FileStagingPool(QWidget):
         Args:
             event (QDragLeaveEvent): 拖拽离开事件
         """
-        self.setStyleSheet("background-color: #ffffff;")
+        colors = self._get_theme_colors()
+        self.setStyleSheet(f"background-color: {colors['panel_background']};")
 
     def dropEvent(self, event):
         """
@@ -1753,7 +1705,8 @@ class FileStagingPool(QWidget):
         Args:
             event (QDropEvent): 拖拽释放事件
         """
-        self.setStyleSheet("background-color: #ffffff;")
+        colors = self._get_theme_colors()
+        self.setStyleSheet(f"background-color: {colors['panel_background']};")
 
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
@@ -2355,7 +2308,7 @@ class FileStagingPool(QWidget):
             on_cancel_callback (callable): 取消时的回调函数
         """
         from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
-        from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+        from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 9)
@@ -2382,14 +2335,11 @@ class FileStagingPool(QWidget):
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
-        scroll_area.verticalScrollBar().apply_theme_from_settings()
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         SmoothScroller.apply_to_scroll_area(scroll_area)
 
-        scrollbar_style = f"""
+        container_style = f"""
             QScrollArea {{
                 border: 1px solid {normal_color};
                 border-radius: 8px;
@@ -2400,7 +2350,7 @@ class FileStagingPool(QWidget):
                 background-color: {base_color};
             }}
         """
-        scroll_area.setStyleSheet(scrollbar_style)
+        scroll_area.setStyleSheet(container_style)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll_area.setMinimumWidth(int(400 * self.dpi_scale))
         scroll_area.setMaximumHeight(int(300 * self.dpi_scale))

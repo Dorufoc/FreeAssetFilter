@@ -63,7 +63,11 @@ class ThemeManager(QObject):
             "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
             "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
             "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),
-            "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF"),
+            "panel_background": self.settings_manager.get_setting(
+                "appearance.colors.panel_background",
+                "#f1f3f5"
+            )
         }
 
         # 计算辅助色加深2%和5%的颜色
@@ -133,14 +137,16 @@ class ThemeManager(QObject):
                 "base_color": "#212121",          # 深色底层色
                 "secondary_color": "#FFFFFF",      # 深色模式下文字颜色为白色
                 "normal_color": "#8C8C8C",        # 深色模式下普通色
-                "auxiliary_color": "#515151"      # 深色模式下辅助色
+                "auxiliary_color": "#515151",      # 深色模式下辅助色
+                "panel_background": "#2D2D2D"     # 深色模式下面板背景色
             }
         else:  # 浅色主题
             dark_colors = {
                 "base_color": "#FFFFFF",          # 浅色底层色
                 "secondary_color": "#3F3F3F",      # 浅色模式下文字颜色为黑色
                 "normal_color": "#808080",        # 浅色模式下普通色
-                "auxiliary_color": "#E6E6E6"      # 浅色模式下辅助色
+                "auxiliary_color": "#E6E6E6",      # 浅色模式下辅助色
+                "panel_background": "#f1f3f5"     # 浅色模式下面板背景色
             }
 
         # 更新当前设置中的所有颜色

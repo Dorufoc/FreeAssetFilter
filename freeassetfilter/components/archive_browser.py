@@ -40,7 +40,7 @@ from freeassetfilter.widgets.button_widgets import CustomButton
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
+
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from PySide6.QtCore import Qt, Signal, QFileInfo
 from PySide6.QtGui import QFont, QIcon
@@ -110,7 +110,7 @@ class ArchiveBrowser(QWidget):
         
         # 设置背景色
         app = QApplication.instance()
-        background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        background_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#2D2D2D")
         self.setStyleSheet(f"background-color: {background_color};")
         
         # 创建主布局
@@ -314,9 +314,9 @@ class ArchiveBrowser(QWidget):
         self.files_list.itemClicked.connect(self.on_item_clicked)
         # 双击事件通过重载 mouseDoubleClickEvent 处理，以区分鼠标按键
 
-        # 为 QListWidget 设置自定义丝滑滚动条
-        self.files_list.setVerticalScrollBar(D_ScrollBar(self.files_list, Qt.Vertical))
-        self.files_list.verticalScrollBar().apply_theme_from_settings()
+        # 禁用所有滚动条
+        self.files_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.files_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         # 启用 QListWidget 的像素级滚动模式以实现平滑滚动
         self.files_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)

@@ -27,7 +27,7 @@ class FileStagingPoolListModel(FileSelectorListModel):
     def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
         super().__init__(dpi_scale=dpi_scale, global_font=global_font, parent=parent)
         self._card_width = max(240, int(320 * float(dpi_scale or 1.0)))
-        self._card_height = max(52, int(64 * float(dpi_scale or 1.0)))
+        self._card_height = max(30, int(30 * float(dpi_scale or 1.0)))
         self._max_cols = 1
 
     def _normalize_path(self, file_path: str) -> str:
@@ -482,8 +482,7 @@ class FileStagingPoolItemDelegate(QStyledItemDelegate):
             bg.setAlpha(36)
             border = QColor(colors["accent"])
         if is_previewing:
-            bg = QColor(colors["accent"])
-            bg.setAlpha(52)
+            bg = QColor(colors["base"])
             border = QColor(colors["secondary"])
         if is_missing:
             sub_text = QColor(colors["secondary"])

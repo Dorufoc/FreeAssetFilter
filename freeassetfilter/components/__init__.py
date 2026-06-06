@@ -2,7 +2,6 @@
 # Export all components
 
 from .archive_browser import ArchiveBrowser
-from .auto_timeline import AutoTimeline
 from .file_selector import CustomFileSelector
 from .file_staging_pool import FileStagingPool
 from .file_info_previewer import FileInfoPreviewer
@@ -16,7 +15,6 @@ from .theme_editor import ThemeEditor
 
 __all__ = [
     'ArchiveBrowser',
-    'AutoTimeline',
     'CustomFileSelector',
     'FileStagingPool',
     'FileInfoPreviewer',

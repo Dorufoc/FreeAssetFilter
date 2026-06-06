@@ -15,7 +15,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 用于获取和显示各种文件类型的详细信息
 特点：
 - 文本内容根据窗口大小自适应换行显示
-- 使用项目自定义控件（D_MoreMenu、D_ScrollBar、CustomButton等）
+- 使用项目自定义控件（D_MoreMenu、CustomButton等）
 - 平滑滚动体验
 - 异步加载详细信息，避免阻塞主线程
 """
@@ -52,7 +52,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QRunnable, QThreadPool, QObject
 from PySide6.QtGui import QFont, QCursor, QTextOption
 
 # 导入项目自定义控件
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.D_more_menu import D_MoreMenu
 from freeassetfilter.widgets.D_widgets import CustomButton, CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
@@ -397,19 +397,9 @@ class FileInfoPreviewer(QObject):
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # 使用动画滚动条
-        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
-        scroll_area.setHorizontalScrollBar(D_ScrollBar(scroll_area, Qt.Horizontal))
-        scroll_area.verticalScrollBar().set_colors(
-            self.normal_color, self.secondary_color, self.accent_color, self.auxiliary_color
-        )
-        scroll_area.horizontalScrollBar().set_colors(
-            self.normal_color, self.secondary_color, self.accent_color, self.auxiliary_color
-        )
-        
         # 保存滚动区域引用，用于后续滚动控制
         self.scroll_area = scroll_area
 
@@ -1381,18 +1371,7 @@ class FileInfoPreviewer(QObject):
                     background-color: {self.auxiliary_color};
                 }}
             """)
-            if hasattr(self.scroll_area, "verticalScrollBar") and self.scroll_area.verticalScrollBar():
-                scrollbar = self.scroll_area.verticalScrollBar()
-                if hasattr(scrollbar, "set_colors"):
-                    scrollbar.set_colors(
-                        self.normal_color, self.secondary_color, self.accent_color, self.auxiliary_color
-                    )
-            if hasattr(self.scroll_area, "horizontalScrollBar") and self.scroll_area.horizontalScrollBar():
-                scrollbar = self.scroll_area.horizontalScrollBar()
-                if hasattr(scrollbar, "set_colors"):
-                    scrollbar.set_colors(
-                        self.normal_color, self.secondary_color, self.accent_color, self.auxiliary_color
-                    )
+
 
         if hasattr(self, "main_widget") and self.main_widget:
             self.main_widget.setStyleSheet(f"background-color: {self.background_color};")

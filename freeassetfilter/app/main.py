@@ -786,13 +786,13 @@ class FreeAssetFilterApp(QMainWindow):
         获取当前主题相关颜色，优先使用设置管理器缓存接口
         """
         app = QApplication.instance()
-        auxiliary_color = "#f1f3f5"
+        panel_background = "#f1f3f5"
         normal_color = "#e0e0e0"
         base_color = "#212121"
 
         if hasattr(app, "settings_manager"):
-            auxiliary_color = app.settings_manager.get_setting(
-                "appearance.colors.auxiliary_color", "#f1f3f5"
+            panel_background = app.settings_manager.get_setting(
+                "appearance.colors.panel_background", "#f1f3f5"
             )
             normal_color = app.settings_manager.get_setting(
                 "appearance.colors.normal_color", "#e0e0e0"
@@ -801,7 +801,7 @@ class FreeAssetFilterApp(QMainWindow):
                 "appearance.colors.base_color", "#212121"
             )
 
-        return auxiliary_color, normal_color, base_color
+        return panel_background, normal_color, base_color
 
     def _capture_preview_state_for_theme_update(self):
         """
@@ -944,12 +944,12 @@ class FreeAssetFilterApp(QMainWindow):
         """
         对当前已存在的控件树执行增量主题刷新，避免整棵布局重建
         """
-        auxiliary_color, normal_color, base_color = self._get_theme_colors()
+        panel_background, normal_color, base_color = self._get_theme_colors()
         border_radius = 8
         visited = set()
 
         if hasattr(self, "central_widget") and self.central_widget:
-            self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
+            self.central_widget.setStyleSheet(f"background-color: {panel_background};")
 
         column_style = (
             f"background-color: {base_color}; "
@@ -971,7 +971,7 @@ class FreeAssetFilterApp(QMainWindow):
             getattr(self, "unified_previewer", None),
             getattr(self, "github_button", None),
             getattr(self, "update_button", None),
-            getattr(self, "global_settings_button", None),
+
             getattr(self, "hover_tooltip", None),
         ]
 
@@ -1010,8 +1010,8 @@ class FreeAssetFilterApp(QMainWindow):
         # 创建中央部件
         self.central_widget = QWidget()
         # 获取主题颜色
-        auxiliary_color, normal_color, base_color = self._get_theme_colors()
-        self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
+        panel_background, normal_color, base_color = self._get_theme_colors()
+        self.central_widget.setStyleSheet(f"background-color: {panel_background};")
         self.setCentralWidget(self.central_widget)
 
         # 创建主布局：标题 + 三列
@@ -1080,6 +1080,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         # 连接文件选择器的左键点击信号到预览器
         self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
+        self.file_selector_a.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
 
         # 连接文件选择器的选中状态变化信号到存储池（自动添加/移除）
         self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
@@ -1088,9 +1089,8 @@ class FreeAssetFilterApp(QMainWindow):
         self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
 
         # 连接文件临时存储池的信号到预览器
-        self.file_staging_pool.item_right_clicked.connect(self.unified_previewer.set_file)
-        # 添加左键点击信号连接，用于预览
         self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
+        self.file_staging_pool.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
 
         # 连接文件临时存储池的信号到处理方法，用于从文件选择器中删除文件
         self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
@@ -1153,17 +1153,6 @@ class FreeAssetFilterApp(QMainWindow):
         self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         status_layout.addWidget(self.update_button)
 
-        # 创建全局设置按钮，使用svg图标
-        setting_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
-        self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
-        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        # 连接到全局设置函数
-        self.global_settings_button.clicked.connect(self._open_global_settings)
-        status_layout.addWidget(self.global_settings_button)
-
-        if hasattr(self, "update_controller") and self.update_controller:
-            self.update_controller.bind_button(self.update_button)
-
         # 将水平布局添加到容器的垂直布局中
         status_container_layout.addLayout(status_layout)
 
@@ -1176,17 +1165,11 @@ class FreeAssetFilterApp(QMainWindow):
         # 将底部按钮添加为目标控件
         self.hover_tooltip.set_target_widget(self.github_button)
         self.hover_tooltip.set_target_widget(self.update_button)
-        self.hover_tooltip.set_target_widget(self.global_settings_button)
 
     def _open_github(self):
         """打开GitHub项目主页"""
         import webbrowser
         webbrowser.open("https://github.com/Dorufoc/FreeAssetFilter")
-
-    def _open_global_settings(self):
-        """打开全局设置窗口"""
-        if hasattr(self, 'unified_previewer') and hasattr(self.unified_previewer, '_open_global_settings'):
-            self.unified_previewer._open_global_settings()
 
     def show_info(self, title, message):
         """
@@ -1321,8 +1304,6 @@ class FreeAssetFilterApp(QMainWindow):
 
                     if hasattr(new_file_selector, "_update_filter_button_style"):
                         new_file_selector._update_filter_button_style()
-                    if hasattr(new_file_selector, "_update_timeline_button_visibility"):
-                        new_file_selector._update_timeline_button_visibility()
                     if hasattr(new_file_selector, "_update_file_selection_state"):
                         new_file_selector._update_file_selection_state()
                     if (
@@ -1412,9 +1393,9 @@ class FreeAssetFilterApp(QMainWindow):
         old_hover_tooltip = getattr(self, 'hover_tooltip', None)
 
         # 颜色直接从JSON文件读取，绕过内存缓存
-        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5", use_file_for_colors=True)
-        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0", use_file_for_colors=True)
-        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121", use_file_for_colors=True)
+        panel_background = app.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
+        normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
+        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
         border_radius = 8
 
         old_central_widget = getattr(self, 'central_widget', None)
@@ -1462,7 +1443,7 @@ class FreeAssetFilterApp(QMainWindow):
             logger.debug(f"隐藏旧中央部件时出错: {e}")
 
         self.central_widget = QWidget()
-        self.central_widget.setStyleSheet(f"background-color: {auxiliary_color};")
+        self.central_widget.setStyleSheet(f"background-color: {panel_background};")
         self.setCentralWidget(self.central_widget)
 
         main_layout = QVBoxLayout(self.central_widget)
@@ -1515,10 +1496,11 @@ class FreeAssetFilterApp(QMainWindow):
         splitter.setSizes([column_width, column_width, column_width])
 
         self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
+        self.file_selector_a.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
         self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
         self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
-        self.file_staging_pool.item_right_clicked.connect(self.unified_previewer.set_file)
         self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
+        self.file_staging_pool.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
         self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
         self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
         self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
@@ -1562,12 +1544,6 @@ class FreeAssetFilterApp(QMainWindow):
         self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         status_layout.addWidget(self.update_button)
 
-        setting_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
-        self.global_settings_button = CustomButton(setting_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
-        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.global_settings_button.clicked.connect(self._open_global_settings)
-        status_layout.addWidget(self.global_settings_button)
-
         if hasattr(self, "update_controller") and self.update_controller:
             self.update_controller.bind_button(self.update_button)
 
@@ -1600,7 +1576,6 @@ class FreeAssetFilterApp(QMainWindow):
         self.hover_tooltip = HoverTooltip(self)
         self.hover_tooltip.set_target_widget(self.github_button)
         self.hover_tooltip.set_target_widget(self.update_button)
-        self.hover_tooltip.set_target_widget(self.global_settings_button)
 
         self._restore_ui_state()
         
@@ -1770,6 +1745,8 @@ class FreeAssetFilterApp(QMainWindow):
     def _init_update_controller_deferred(self):
         from freeassetfilter.components.update_controller import UpdateController
         self.update_controller = UpdateController(self)
+        if hasattr(self, "update_button"):
+            self.update_controller.bind_button(self.update_button)
 
     def _try_start_update_check(self):
         """所有后台启动任务完成后，启动静默更新检查"""
@@ -2874,71 +2851,7 @@ def main():
     app.firacode_font_family = None
     app._deferred_font_style = saved_font_style
 
-    # 根据当前主题动态设置全局滚动条样式
-    theme = settings_manager.get_setting("appearance.theme", "default")
-    if theme == "dark":
-        scroll_area_bg = "#2D2D2D"
-        scrollbar_bg = "#3C3C3C"
-        scrollbar_handle = "#555555"
-        scrollbar_handle_hover = "#666666"
-    else:
-        scroll_area_bg = "#ffffff"
-        scrollbar_bg = "#f0f0f0"
-        scrollbar_handle = "#c0c0c0"
-        scrollbar_handle_hover = "#a0a0a0"
-
-    scrollbar_style = """
-        /* 滚动区域样式 */
-        QScrollArea {
-            background-color: %s;
-            border: none;
-        }
-
-        /* 垂直滚动条样式 */
-        QScrollBar:vertical {
-            width: 8px;
-            background: %s;
-            border-radius: 3px;
-        }
-
-        QScrollBar::handle:vertical {
-            background: %s;
-            border-radius: 3px;
-        }
-
-        QScrollBar::handle:vertical:hover {
-            background: %s;
-        }
-
-        QScrollBar::sub-line:vertical,
-        QScrollBar::add-line:vertical {
-            height: 0px;
-        }
-
-        /* 水平滚动条样式 */
-        QScrollBar:horizontal {
-            height: 8px;
-            background: %s;
-            border-radius: 3px;
-        }
-
-        QScrollBar::handle:horizontal {
-            background: %s;
-            border-radius: 3px;
-        }
-
-        QScrollBar::handle:horizontal:hover {
-            background: %s;
-        }
-
-        QScrollBar::sub-line:horizontal,
-        QScrollBar::add-line:horizontal {
-            width: 0px;
-        }
-    """ % (scroll_area_bg, scrollbar_bg, scrollbar_handle, scrollbar_handle_hover,
-           scrollbar_bg, scrollbar_handle, scrollbar_handle_hover)
-
-    app.setStyleSheet(scrollbar_style)
+    # 全局滚动条样式不再需要（所有滚动条已隐藏）
 
     window = FreeAssetFilterApp()
     # 窗口启动时窗口化显示

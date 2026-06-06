@@ -5,54 +5,50 @@ FreeAssetFilter 现代主题编辑器
 实现主题的预设选择和自定义功能
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout, QScrollArea, QApplication, QLabel
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QGroupBox, QGridLayout, QScrollArea, QApplication, QLabel
 from PySide6.QtCore import Qt, Signal, QTimer, QEvent
 from PySide6.QtGui import QFont
 
 from freeassetfilter.widgets.theme_card import ThemeCard
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import debug, warning
+
+def _get_sm(key, default):
+    app = QApplication.instance()
+    sm = getattr(app, "settings_manager", None)
+    return sm.get_setting(key, default) if sm else default
+
 
 class ThemeEditor(QScrollArea):
-    """
-    现代主题编辑器
-    包含预设组和自定义组的滚动布局窗口
-    """
-    
-    theme_selected = Signal(dict)  # 主题选中信号
-    add_new_design = Signal()  # 添加新设计信号
-    theme_applied = Signal()  # 主题应用完成信号，用于关闭窗口
-    
+    theme_selected = Signal(dict)
+    add_new_design = Signal()
+    theme_applied = Signal()
+
     def __init__(self, parent=None):
-        """初始化主题编辑器"""
         super().__init__(parent)
-        
+
         debug("初始化主题编辑器")
-        
+
         self.app = QApplication.instance()
         self.settings_manager = getattr(self.app, 'settings_manager', None)
         self.dpi_scale = getattr(self.app, 'dpi_scale_factor', 1.0)
         self.global_font = getattr(self.app, 'global_font', QFont())
-        self.global_font_size = getattr(self.app, 'default_font_size', 8)
-        
+
         self.preset_themes = [
             {"name": "活力蓝", "colors": ["#007AFF"]},
             {"name": "热情红", "colors": ["#DD5940"]},
             {"name": "蜂蜜黄", "colors": ["#EAB348"]},
             {"name": "清新绿", "colors": ["#78B86C"]},
             {"name": "魅力紫", "colors": ["#9554CF"]},
-            {"name": "清雅墨", "colors": ["#5A6C8B"]}
+            {"name": "清雅墨", "colors": ["#5A6C8B"]},
         ]
-        
+
         self.custom_themes = [
             {"name": "自定义设计1", "colors": ["#27BE24"]}
         ]
-        
+
         self.current_theme = self._load_current_theme()
-        
         self.is_dark_mode = self._is_dark_mode()
-        
         self.selected_theme = None
         self._last_max_cols = 0
         self._last_container_width = 0
@@ -61,11 +57,8 @@ class ThemeEditor(QScrollArea):
         self._layout_initialized = False
 
         self._check_current_theme_match()
-        
         self.init_ui()
-        
         QTimer.singleShot(0, self._on_layout_initialized)
-        
         debug("主题编辑器初始化完成")
     
     def _get_theme_colors(self, accent_color):
@@ -76,7 +69,7 @@ class ThemeEditor(QScrollArea):
             accent_color (str): 强调色
             
         返回：
-            list: 包含完整主题颜色的列表 [accent_color, secondary_color, normal_color, auxiliary_color]
+            list: 包含完整主题颜色的列表 [accent_color, secondary_color, normal_color, auxiliary_color, panel_background]
         """
         if self.is_dark_mode:
             # 深色模式颜色
@@ -84,7 +77,8 @@ class ThemeEditor(QScrollArea):
                 accent_color,       # 强调色保持不变
                 "#FFFFFF",        # secondary_color (文字颜色)
                 "#717171",        # normal_color
-                "#313131"         # auxiliary_color
+                "#313131",        # auxiliary_color
+                "#2D2D2D"         # panel_background
             ]
         else:
             # 浅色模式颜色
@@ -92,7 +86,8 @@ class ThemeEditor(QScrollArea):
                 accent_color,       # 强调色保持不变
                 "#333333",        # secondary_color (文字颜色)
                 "#e0e0e0",        # normal_color
-                "#f3f3f3"         # auxiliary_color
+                "#f3f3f3",        # auxiliary_color
+                "#f3f3f3"         # panel_background
             ]
     
     def _load_slider_color(self):
@@ -193,149 +188,90 @@ class ThemeEditor(QScrollArea):
                 "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
                 "normal_color": self.settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0"),
                 "auxiliary_color": self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5"),
-                "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+                "base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF"),
+                "panel_background": self.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
             }
         return None
     
+    def _make_group_box(self, title):
+        """创建 QGroupBox + 标题标签。"""
+        gb = QGroupBox(self.scroll_widget)
+        font = QFont(self.global_font)
+        font.setPointSize(int(self.global_font.pointSize() * 1.6))
+        gb.setFont(font)
+        base = _get_sm("appearance.colors.base_color", "#FFFFFF")
+        d = self.dpi_scale
+        gb.setStyleSheet(f"QGroupBox {{ border: 1px solid {base}; border-radius: {int(3 * d)}px; margin-top: {int(3 * d)}px; margin-bottom: {int(6 * d)}px; }}")
+
+        title_label = QLabel(title, gb)
+        title_label.setFont(font)
+        sec = _get_sm("appearance.colors.secondary_color", "#333333")
+        title_label.setStyleSheet(f"color: {sec};")
+        title_label.setContentsMargins(0, 0, 0, int(3 * d))
+
+        # Ensure the title label is positioned via layout
+        gb_layout = QVBoxLayout(gb)
+        gb_layout.setContentsMargins(int(6 * d), int(6 * d), int(6 * d), int(6 * d))
+        gb_layout.setSpacing(int(6 * d))
+        gb_layout.addWidget(title_label)
+        return gb
+
     def init_ui(self):
-        """初始化UI"""
         self.setWidgetResizable(True)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
-        # 创建并设置自定义滚动条
-        scrollbar = D_ScrollBar(self, Qt.Vertical)
-        self.setVerticalScrollBar(scrollbar)
-        # 延迟应用主题设置，确保滚动条完全初始化
-        from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: scrollbar.apply_theme_from_settings() if scrollbar else None)
-        
+
         SmoothScroller.apply(self)
-        
-        base_color = "#FFFFFF"
-        if self.settings_manager:
-            base_color = self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-        
-        self.setStyleSheet(f"background-color: {base_color};")
-        
+
+        base = _get_sm("appearance.colors.base_color", "#FFFFFF")
+        self.setStyleSheet(f"background-color: {base};")
         self.scroll_widget = QWidget()
-        self.scroll_widget.setStyleSheet(f"background-color: {base_color};")
+        self.scroll_widget.setStyleSheet(f"background-color: {base};")
         self.scroll_layout = QVBoxLayout(self.scroll_widget)
         self.scroll_layout.setContentsMargins(int(6 * self.dpi_scale), int(6 * self.dpi_scale), int(6 * self.dpi_scale), int(6 * self.dpi_scale))
         self.scroll_layout.setSpacing(int(12 * self.dpi_scale))
-        
-        self.preset_group = QGroupBox(self.scroll_widget)
-        # 使用全局字体，让Qt6自动处理DPI缩放
-        font = QFont(self.global_font)
-        font.setPointSize(int(self.global_font.pointSize() * 1.6))
-        self.preset_group.setFont(font)
-        
-        base_color = "#FFFFFF"
-        if self.settings_manager:
-            base_color = self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-        self.preset_group.setStyleSheet(f"QGroupBox {{ border: 1px solid {base_color}; border-radius: {int(3 * self.dpi_scale)}px; margin-top: {int(3 * self.dpi_scale)}px; margin-bottom: {int(6 * self.dpi_scale)}px; }}")
-        
-        self.preset_title_label = QLabel("预设", self.preset_group)
-        self.preset_title_label.setFont(font)
-        secondary_color = "#333333"
-        if self.settings_manager:
-            secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-        self.preset_title_label.setStyleSheet(f"color: {secondary_color};")
-        self.preset_title_label.setContentsMargins(0, 0, 0, int(3 * self.dpi_scale))
-        
+
+        self.preset_group = self._make_group_box("预设")
         self.preset_group_layout = QVBoxLayout(self.preset_group)
         self.preset_group_layout.setContentsMargins(int(6 * self.dpi_scale), int(6 * self.dpi_scale), int(6 * self.dpi_scale), int(6 * self.dpi_scale))
         self.preset_group_layout.setSpacing(int(6 * self.dpi_scale))
-        self.preset_group_layout.addWidget(self.preset_title_label)
-        
+
         self.preset_grid = QGridLayout()
         self.preset_grid.setContentsMargins(0, 0, 0, 0)
         self.preset_grid.setSpacing(int(6 * self.dpi_scale))
-        
-        # 添加预设主题卡片
+
         for index, theme in enumerate(self.preset_themes):
             row = index // 3
             col = index % 3
-            
-            # 根据当前深色模式获取完整颜色集
             card_colors = self._get_theme_colors(theme["colors"][0])
-            
-            # 检查是否是当前选中的主题
             is_selected = self.selected_theme and self.selected_theme["colors"] == card_colors
-            
-            card = ThemeCard(
-                theme["name"], 
-                card_colors, 
-                is_selected=is_selected,
-                parent=self.preset_group
-            )
+            card = ThemeCard(theme["name"], card_colors, is_selected=is_selected, parent=self.preset_group)
             card.clicked.connect(self.on_theme_card_clicked)
             self.preset_grid.addWidget(card, row, col)
-        
-        self.preset_group_layout.addLayout(self.preset_grid)
-        self.scroll_layout.addWidget(self.preset_group)
-        
-        self.custom_group = QGroupBox(self.scroll_widget)
-        # 使用全局字体，让Qt6自动处理DPI缩放
-        font = QFont(self.global_font)
-        font.setPointSize(int(self.global_font.pointSize() * 1.6))
-        self.custom_group.setFont(font)
-        
-        base_color = "#FFFFFF"
-        if self.settings_manager:
-            base_color = self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-        self.custom_group.setStyleSheet(f"QGroupBox {{ border: 1px solid {base_color}; border-radius: {int(3 * self.dpi_scale)}px; margin-top: {int(3 * self.dpi_scale)}px; margin-bottom: {int(6 * self.dpi_scale)}px; }}")
-        
-        self.custom_title_label = QLabel("自定义", self.custom_group)
-        self.custom_title_label.setFont(font)
-        secondary_color = "#333333"
-        if self.settings_manager:
-            secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-        self.custom_title_label.setStyleSheet(f"color: {secondary_color};")
-        self.custom_title_label.setContentsMargins(0, 0, 0, int(3 * self.dpi_scale))
-        
+
+        self.custom_group = self._make_group_box("自定义")
         self.custom_group_layout = QVBoxLayout(self.custom_group)
         self.custom_group_layout.setContentsMargins(int(6 * self.dpi_scale), int(6 * self.dpi_scale), int(6 * self.dpi_scale), int(6 * self.dpi_scale))
         self.custom_group_layout.setSpacing(int(6 * self.dpi_scale))
-        self.custom_group_layout.addWidget(self.custom_title_label)
-        
+
         self.custom_grid = QGridLayout()
         self.custom_grid.setContentsMargins(0, 0, 0, 0)
         self.custom_grid.setSpacing(int(6 * self.dpi_scale))
-        
+
         self.custom_design_card = None
-        
-        # 添加自定义主题卡片
+
         for index, theme in enumerate(self.custom_themes):
-            # 根据当前深色模式获取完整颜色集
             card_colors = self._get_theme_colors(theme["colors"][0])
-            
-            # 对于自定义设计1，使用用户保存的滑条颜色
             if theme["name"] == "自定义设计1":
                 card_colors = self._get_theme_colors(self._slider_color)
-            
-            # 检查是否是当前选中的主题
             is_selected = self.selected_theme and self.selected_theme["colors"] == card_colors
-            
-            card = ThemeCard(
-                theme["name"], 
-                card_colors,
-                is_selected=is_selected,
-                parent=self.custom_group
-            )
+            card = ThemeCard(theme["name"], card_colors, is_selected=is_selected, parent=self.custom_group)
             card.clicked.connect(self.on_theme_card_clicked)
             self.custom_grid.addWidget(card, 0, index)
-            
             if theme["name"] == "自定义设计1":
                 self.custom_design_card = card
-        
-        # 添加新设计卡片
-        self.add_card = ThemeCard(
-            "", 
-            [],
-            is_add_card=True,
-            parent=self.custom_group
-        )
+
+        self.add_card = ThemeCard("", [], is_add_card=True, parent=self.custom_group)
         self.add_card.color_changed.connect(self._on_add_card_color_changed)
         self.custom_grid.addWidget(self.add_card, 0, len(self.custom_themes))
         

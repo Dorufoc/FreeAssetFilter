@@ -34,7 +34,7 @@ from freeassetfilter.utils.app_logger import info, warning, error, debug
 from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.loading_widget import LoadingSpinner
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 
 
 class UpdateCheckWorker(QThread):
@@ -1112,7 +1112,7 @@ hr {{ border: none; border-top: 1px solid {border_color}; margin: 1em 0; }}
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll_area.setMinimumSize(450, 260)
 
@@ -1132,10 +1132,7 @@ hr {{ border: none; border-top: 1px solid {border_color}; margin: 1em 0; }}
             """
         )
         
-        vertical_scrollbar = D_ScrollBar(Qt.Vertical, scroll_area)
-        vertical_scrollbar.apply_theme_from_settings()
-        scroll_area.setVerticalScrollBar(vertical_scrollbar)
-        SmoothScroller.apply_to_scroll_area(scroll_area, enable_mouse_drag=False, enable_smart_width=True)
+        SmoothScroller.apply_to_scroll_area(scroll_area, enable_mouse_drag=False)
 
         main_layout.addWidget(scroll_area)
 

@@ -7,206 +7,20 @@ FreeAssetFilter 设置管理模块
 
 import os
 import json
-import copy
 import threading
 import tempfile
-from functools import lru_cache
 
-# 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
-class JSONDepthExceededError(Exception):
-    """JSON解析深度超出限制错误"""
-    pass
-
-
-class JSONSizeExceededError(Exception):
-    """JSON文件大小超出限制错误"""
-    pass
-
-
-class JSONValueExceededError(Exception):
-    """JSON单个值或集合大小超出限制错误"""
-    pass
-
-
-DEFAULT_MAX_JSON_STRING_LENGTH = 1024 * 1024
-DEFAULT_MAX_JSON_COLLECTION_ITEMS = 50000
-
-
-def _precheck_json_text(
-    json_str,
-    max_depth=50,
-    max_string_length=DEFAULT_MAX_JSON_STRING_LENGTH,
-):
-    """
-    在 json.loads 前做轻量扫描，提前拒绝极深嵌套和超长字符串。
-
-    这不是完整 JSON 校验；格式校验仍交给 json.loads。这里的目标是避免
-    恶意输入在解析阶段才暴露资源风险。
-    """
-    if not isinstance(json_str, str):
-        raise TypeError("JSON内容必须是字符串")
-
-    depth = 0
-    in_string = False
-    escape = False
-    string_length = 0
-
-    for char in json_str:
-        if in_string:
-            if escape:
-                escape = False
-                string_length += 1
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_string = False
-            else:
-                string_length += 1
-
-            if string_length > max_string_length:
-                raise JSONValueExceededError(
-                    f"JSON字符串长度超过最大限制 ({max_string_length} 字符)"
-                )
-            continue
-
-        if char == '"':
-            in_string = True
-            escape = False
-            string_length = 0
-        elif char in "{[":
-            depth += 1
-            if depth > max_depth:
-                raise JSONDepthExceededError(f"JSON嵌套深度超过最大限制 ({max_depth}层)")
-        elif char in "}]":
-            depth = max(0, depth - 1)
-
-
-def _check_json_depth(
-    obj,
-    current_depth=0,
-    max_depth=50,
-    max_string_length=DEFAULT_MAX_JSON_STRING_LENGTH,
-    max_collection_items=DEFAULT_MAX_JSON_COLLECTION_ITEMS,
-):
-    """
-    递归检查JSON对象的嵌套深度和单个值大小
-
-    Args:
-        obj: 要检查的对象
-        current_depth: 当前深度
-        max_depth: 最大允许深度
-
-    Raises:
-        JSONDepthExceededError: 如果深度超过限制
-    """
-    if current_depth > max_depth:
-        raise JSONDepthExceededError(f"JSON嵌套深度超过最大限制 ({max_depth}层)")
-
-    if isinstance(obj, dict):
-        if len(obj) > max_collection_items:
-            raise JSONValueExceededError(
-                f"JSON对象成员数量超过最大限制 ({max_collection_items} 项)"
-            )
-        for value in obj.values():
-            _check_json_depth(
-                value,
-                current_depth + 1,
-                max_depth,
-                max_string_length,
-                max_collection_items,
-            )
-    elif isinstance(obj, list):
-        if len(obj) > max_collection_items:
-            raise JSONValueExceededError(
-                f"JSON数组长度超过最大限制 ({max_collection_items} 项)"
-            )
-        for item in obj:
-            _check_json_depth(
-                item,
-                current_depth + 1,
-                max_depth,
-                max_string_length,
-                max_collection_items,
-            )
-    elif isinstance(obj, str) and len(obj) > max_string_length:
-        raise JSONValueExceededError(
-            f"JSON字符串长度超过最大限制 ({max_string_length} 字符)"
-        )
-
-
-def safe_json_loads(
-    json_str,
-    max_depth=50,
-    max_string_length=DEFAULT_MAX_JSON_STRING_LENGTH,
-    max_collection_items=DEFAULT_MAX_JSON_COLLECTION_ITEMS,
-):
-    """
-    安全地解析JSON字符串，带有深度和值大小限制
-
-    Args:
-        json_str: JSON字符串
-        max_depth: 最大允许深度
-
-    Returns:
-        解析后的Python对象
-
-    Raises:
-        JSONDepthExceededError: 如果深度超过限制
-        json.JSONDecodeError: 如果JSON格式错误
-    """
-    _precheck_json_text(json_str, max_depth=max_depth, max_string_length=max_string_length)
-    data = json.loads(json_str)
-    _check_json_depth(
-        data,
-        current_depth=0,
-        max_depth=max_depth,
-        max_string_length=max_string_length,
-        max_collection_items=max_collection_items,
-    )
-    return data
-
-
-def safe_json_load(
-    file_path,
-    max_depth=50,
-    max_size_bytes=10*1024*1024,
-    max_string_length=DEFAULT_MAX_JSON_STRING_LENGTH,
-    max_collection_items=DEFAULT_MAX_JSON_COLLECTION_ITEMS,
-):
-    """
-    安全地从文件加载JSON，带有深度和大小限制
-
-    Args:
-        file_path: JSON文件路径
-        max_depth: 最大允许深度
-        max_size_bytes: 最大允许文件大小（字节）
-
-    Returns:
-        解析后的Python对象
-
-    Raises:
-        JSONSizeExceededError: 如果文件大小超过限制
-        JSONDepthExceededError: 如果深度超过限制
-        json.JSONDecodeError: 如果JSON格式错误
-    """
-    # 检查文件大小
+def _load_json_file(file_path):
+    """从文件加载 JSON，附带基础文件大小保护。"""
+    MAX_SIZE = 10 * 1024 * 1024
     file_size = os.path.getsize(file_path)
-    if file_size > max_size_bytes:
-        raise JSONSizeExceededError(
-            f"JSON文件大小 ({file_size} 字节) 超过最大限制 ({max_size_bytes} 字节, {max_size_bytes//1024//1024}MB)"
-        )
-
+    if file_size > MAX_SIZE:
+        raise ValueError(f"JSON 文件大小 ({file_size} 字节) 超过最大限制 ({MAX_SIZE} 字节)")
     with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
-        return safe_json_loads(
-            content,
-            max_depth=max_depth,
-            max_string_length=max_string_length,
-            max_collection_items=max_collection_items,
-        )
+        return json.load(f)
 
 
 def _apply_private_file_permissions(file_path):
@@ -218,20 +32,14 @@ def _apply_private_file_permissions(file_path):
 
 
 class SettingsManager:
-    """
-    设置管理类
-    用于加载、保存和管理用户设置
-    """
     _instance = None
     _lock = threading.Lock()
     _initialized = False
 
-    # JSON解析安全限制
-    MAX_JSON_DEPTH = 50          # 最大JSON解析深度
-    MAX_JSON_SIZE_MB = 10        # 最大JSON文件大小（MB）
-    MAX_JSON_SIZE_BYTES = MAX_JSON_SIZE_MB * 1024 * 1024  # 转换为字节
-    MAX_JSON_STRING_LENGTH = DEFAULT_MAX_JSON_STRING_LENGTH
-    MAX_JSON_COLLECTION_ITEMS = DEFAULT_MAX_JSON_COLLECTION_ITEMS
+    BASE_COLOR_KEYS = [
+        "accent_color", "secondary_color", "normal_color",
+        "auxiliary_color", "base_color", "custom_design_color", "panel_background",
+    ]
 
     def __new__(cls, settings_file=None):
         with cls._lock:
@@ -255,6 +63,7 @@ class SettingsManager:
             self.settings = None
             self._settings_file = settings_file
             self._initialize_settings()
+
     def _initialize_settings(self):
         if self._settings_file is None:
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -288,7 +97,8 @@ class SettingsManager:
                     "normal_color": "#e0e0e0",
                     "auxiliary_color": "#f1f3f5",
                     "base_color": "#FFFFFF",
-                    "custom_design_color": "#27BE24"
+                    "custom_design_color": "#27BE24",
+                    "panel_background": "#f1f3f5"
                 }
             },
             "file_selector": {
@@ -356,63 +166,23 @@ class SettingsManager:
         self.settings = self.load_settings()
     
     def load_settings(self):
-        try:
-            with self._settings_lock:
-                if os.path.exists(self._settings_file):
-                    # 使用安全的JSON加载，带有深度和大小限制
-                    loaded_settings = safe_json_load(
-                        self._settings_file,
-                        max_depth=self.MAX_JSON_DEPTH,
-                        max_size_bytes=self.MAX_JSON_SIZE_BYTES
-                    )
-                    merged_settings = self._merge_settings(self.default_settings, loaded_settings)
-                    self.settings = merged_settings
-                    if merged_settings != loaded_settings:
-                        self.save_settings()
-                    return merged_settings
-                else:
-                    default_settings = self._create_default_settings_copy()
-                    self.settings = default_settings
-                    self.save_settings()
-                    return default_settings
-        except FileNotFoundError:
-            warning(f"设置文件不存在，使用默认设置: {self._settings_file}")
-            default_settings = self._create_default_settings_copy()
-            self.settings = default_settings
-            self.save_settings()
-            return default_settings
-        except JSONSizeExceededError as e:
-            error(f"设置文件大小超出安全限制: {e}")
-            default_settings = self._create_default_settings_copy()
-            self.settings = default_settings
-            return default_settings
-        except JSONDepthExceededError as e:
-            error(f"设置文件嵌套深度超出安全限制: {e}")
-            default_settings = self._create_default_settings_copy()
-            self.settings = default_settings
-            return default_settings
-        except JSONValueExceededError as e:
-            error(f"设置文件单个值超出安全限制: {e}")
-            default_settings = self._create_default_settings_copy()
-            self.settings = default_settings
-            return default_settings
-        except json.JSONDecodeError as e:
-            error(f"设置文件JSON格式错误: {e}")
-            default_settings = self._create_default_settings_copy()
-            self.settings = default_settings
-            self.save_settings()
-            return default_settings
-        except PermissionError as e:
-            error(f"读取设置文件权限不足: {e}")
-            default_settings = self._create_default_settings_copy()
-            self.settings = default_settings
-            return default_settings
-        except UnicodeDecodeError as e:
-            error(f"设置文件编码错误: {e}")
-            default_settings = self._create_default_settings_copy()
-            self.settings = default_settings
-            self.save_settings()
-            return default_settings
+        with self._settings_lock:
+            if not os.path.exists(self._settings_file):
+                defaults = self._create_default_settings_copy()
+                self.settings = defaults
+                self.save_settings()
+                return defaults
+            try:
+                loaded = _load_json_file(self._settings_file)
+                merged = self._merge_settings(self.default_settings, loaded)
+                self.settings = merged
+                return merged
+            except (FileNotFoundError, json.JSONDecodeError, PermissionError, UnicodeDecodeError, ValueError) as e:
+                warning(f"读取设置文件失败 ({type(e).__name__}: {e})，使用默认设置")
+                defaults = self._create_default_settings_copy()
+                self.settings = defaults
+                self.save_settings()
+                return defaults
 
     def _create_default_settings_copy(self):
         return {
@@ -422,7 +192,7 @@ class SettingsManager:
                 "icon_style": self.default_settings["appearance"]["icon_style"],
                 "preset_theme": self.default_settings["appearance"].get("preset_theme", ""),
                 "animations": self.default_settings["appearance"]["animations"].copy(),
-                "colors": self.default_settings["appearance"]["colors"].copy()
+                "colors": self.default_settings["appearance"]["colors"].copy(),
             },
             "file_selector": self.default_settings["file_selector"].copy(),
             "file_staging": self.default_settings["file_staging"].copy(),
@@ -430,9 +200,12 @@ class SettingsManager:
             "developer": self.default_settings["developer"].copy(),
             "text_preview": self.default_settings["text_preview"].copy(),
             "video": {
-                "lut_files": [],
-                "active_lut_id": None
-            }
+                "lut_files": list(self.default_settings["video"]["lut_files"]),
+                "active_lut_id": self.default_settings["video"]["active_lut_id"],
+            },
+            "photo_viewer": {
+                "style": dict(self.default_settings["photo_viewer"]["style"]),
+            },
         }
 
     def get_player_volume(self):
@@ -518,41 +291,13 @@ class SettingsManager:
     def save_settings(self):
         with self._settings_lock:
             dirty_keys = sorted(self._dirty_keys)
-            pending_before_save = self._save_pending
-            theme_dirty = any(
-                key == "appearance.theme"
-                or key == "appearance.preset_theme"
-                or key.startswith("appearance.colors.")
-                for key in dirty_keys
-            )
-
             if dirty_keys:
                 debug(f"保存设置，变更项: {', '.join(dirty_keys)}")
-            elif pending_before_save:
-                debug("保存设置")
 
             self._save_pending = False
             if self._save_timer is not None:
                 self._save_timer.cancel()
                 self._save_timer = None
-
-            if "appearance" in self.settings and "colors" in self.settings["appearance"]:
-                base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color", "custom_design_color"]
-                filtered_colors = {}
-                for color_key in base_color_keys:
-                    if color_key in self.settings["appearance"]["colors"]:
-                        filtered_colors[color_key] = self.settings["appearance"]["colors"][color_key]
-                self.settings["appearance"]["colors"] = filtered_colors
-
-            if "appearance" in self.settings:
-                preset_theme = self.settings["appearance"].get("preset_theme", "")
-                if preset_theme:
-                    self.settings["appearance"]["preset_theme"] = preset_theme
-                else:
-                    self.settings["appearance"].pop("preset_theme", None)
-
-            if theme_dirty and "appearance" in self.settings and "colors" in self.settings["appearance"]:
-                debug(f"主题颜色: {self.settings['appearance']['colors']}")
 
             try:
                 settings_dir = os.path.dirname(self._settings_file) or "."
@@ -678,49 +423,32 @@ class SettingsManager:
             return True
     
     def _merge_settings(self, default, loaded):
-        base_color_keys = ["accent_color", "secondary_color", "normal_color", "auxiliary_color", "base_color", "custom_design_color"]
-
-        merged = {
-            "font": default["font"].copy(),
-            "appearance": {
-                "theme": default["appearance"]["theme"],
-                "icon_style": default["appearance"]["icon_style"],
-                "preset_theme": default["appearance"].get("preset_theme", ""),
-                "animations": default["appearance"]["animations"].copy(),
-                "colors": default["appearance"]["colors"].copy()
-            },
-            "file_selector": default["file_selector"].copy(),
-            "file_staging": default["file_staging"].copy(),
-            "player": default["player"].copy(),
-            "developer": default["developer"].copy(),
-            "text_preview": default["text_preview"].copy()
-        }
+        merged = self._create_default_settings_copy()
 
         for key, value in loaded.items():
-            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-                if key == "appearance":
-                    if "theme" in value:
-                        merged[key]["theme"] = value["theme"]
-                    if "icon_style" in value:
-                        merged[key]["icon_style"] = value["icon_style"]
-                    if "preset_theme" in value:
-                        merged[key]["preset_theme"] = value["preset_theme"]
-                    if "animations" in value and isinstance(value["animations"], dict):
-                        for animation_key, animation_enabled in value["animations"].items():
-                            if animation_key in merged[key]["animations"]:
-                                merged[key]["animations"][animation_key] = animation_enabled
-                    if "colors" in value:
-                        for color_key in base_color_keys:
-                            if color_key in value["colors"]:
-                                merged[key]["colors"][color_key] = value["colors"][color_key]
-                elif key == "colors":
-                    for color_key in base_color_keys:
-                        if color_key in value:
-                            merged["appearance"]["colors"][color_key] = value[color_key]
-                elif key in ("font", "file_selector", "file_staging", "player", "developer", "text_preview"):
-                    merged[key] = value.copy()
-                else:
-                    merged[key] = value
+            if key not in merged:
+                merged[key] = value
+                continue
+            if not isinstance(merged[key], dict) or not isinstance(value, dict):
+                merged[key] = value
+                continue
+
+            if key == "appearance":
+                for sub_key in ("theme", "icon_style", "preset_theme"):
+                    if sub_key in value:
+                        merged["appearance"][sub_key] = value[sub_key]
+                if "animations" in value and isinstance(value["animations"], dict):
+                    for ak, av in value["animations"].items():
+                        if ak in merged["appearance"]["animations"]:
+                            merged["appearance"]["animations"][ak] = av
+                if "colors" in value:
+                    for ck in self.BASE_COLOR_KEYS:
+                        if ck in value["colors"]:
+                            merged["appearance"]["colors"][ck] = value["colors"][ck]
+            elif key in ("font", "file_selector", "file_staging", "player", "developer", "text_preview"):
+                for sub_key, sub_val in value.items():
+                    if sub_key in merged[key]:
+                        merged[key][sub_key] = sub_val
             else:
                 merged[key] = value
 
@@ -745,37 +473,4 @@ class SettingsManager:
             return self.settings.get("appearance", {}).get("colors", self.default_settings["appearance"]["colors"]).copy()
 
 
-    def get_all_colors_from_file(self):
-        """
-        直接从JSON文件读取所有颜色值，绕过内存缓存
 
-        Returns:
-            dict: 颜色字典，包含所有颜色键值对
-        """
-        with self._settings_lock:
-            try:
-                if os.path.exists(self._settings_file):
-                    # 使用安全的JSON加载
-                    file_settings = safe_json_load(
-                        self._settings_file,
-                        max_depth=self.MAX_JSON_DEPTH,
-                        max_size_bytes=self.MAX_JSON_SIZE_BYTES
-                    )
-                    return file_settings.get("appearance", {}).get("colors", self.default_settings["appearance"]["colors"].copy())
-                else:
-                    return self.default_settings["appearance"]["colors"].copy()
-            except FileNotFoundError:
-                warning(f"设置文件不存在，使用默认颜色: {self._settings_file}")
-                return self.default_settings["appearance"]["colors"].copy()
-            except (JSONSizeExceededError, JSONDepthExceededError, JSONValueExceededError) as e:
-                error(f"设置文件超出安全限制，无法读取颜色: {e}")
-                return self.default_settings["appearance"]["colors"].copy()
-            except json.JSONDecodeError as e:
-                error(f"设置文件JSON格式错误，无法读取颜色: {e}")
-                return self.default_settings["appearance"]["colors"].copy()
-            except PermissionError as e:
-                error(f"读取设置文件权限不足: {e}")
-                return self.default_settings["appearance"]["colors"].copy()
-            except UnicodeDecodeError as e:
-                error(f"设置文件编码错误: {e}")
-                return self.default_settings["appearance"]["colors"].copy()

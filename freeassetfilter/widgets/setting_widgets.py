@@ -8,22 +8,24 @@ FreeAssetFilter 设置项类自定义控件
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QSizePolicy, QApplication, QLineEdit,
-    QSpacerItem, QLayout
+    QLayout,
 )
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QColor
 
-# 导入现有自定义控件
 from .input_widgets import CustomInputBox
 from .button_widgets import CustomButton
 from .progress_widgets import D_ProgressBar
 from .switch_widgets import CustomSwitch
 from .hover_tooltip import HoverTooltip
+from freeassetfilter.utils.app_logger import warning, error
 
-# 用于SVG渲染
-from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.utils.app_logger import info, debug, warning, error
-import os
+
+def _get_sm_color(key, default):
+    app = QApplication.instance()
+    if app and hasattr(app, "settings_manager"):
+        return app.settings_manager.get_setting(f"appearance.colors.{key}", default)
+    return default
 
 
 class CustomSettingItem(QWidget):
@@ -105,60 +107,22 @@ class CustomSettingItem(QWidget):
             self._hover_tooltip.set_target_widget(self)
 
     def init_ui(self):
-        """初始化UI组件"""
-        # 设置主布局
         main_layout = QHBoxLayout(self)
-        # 应用DPI缩放因子到边距
-        scaled_margin = int(3 * self.dpi_scale)
-        scaled_spacing = int(2 * self.dpi_scale)
-        main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
-        main_layout.setSpacing(scaled_spacing)
-        
-        # 设置背景色、圆角、边框和阴影，创建完整的卡片效果
+        m = int(3 * self.dpi_scale)
+        main_layout.setContentsMargins(m, m, m, m)
+        main_layout.setSpacing(int(2 * self.dpi_scale))
+
         self.setObjectName("CustomSettingItem")
-        # 应用DPI缩放因子到卡片样式参数
-        scaled_border_radius = int(2 * self.dpi_scale)
-        scaled_border_width = int(1 * self.dpi_scale)
-        
-        # 添加阴影效果，增强视觉层次感
-        from PySide6.QtWidgets import QGraphicsDropShadowEffect
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(int(1 * self.dpi_scale))
-        shadow.setOffset(0, int(1 * self.dpi_scale))
-        shadow.setColor(QColor(0, 0, 0, 15))
-        self.setGraphicsEffect(shadow)
-        
-        # 获取主题颜色
-        app = QApplication.instance()
-        background_color = "#2D2D2D"  # 默认列表项正常背景色
-        border_color = "#3C3C3C"  # 默认窗口边框色
-        hover_background = "#3C3C3C"  # 默认列表项悬停背景色
-        hover_border = "#4ECDC4"  # 默认高亮颜色
-        
-        # 尝试从应用实例获取主题颜色
-        if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.list_item_normal", "#2D2D2D")
-            border_color = app.settings_manager.get_setting("appearance.colors.window_border", "#3C3C3C")
-            hover_background = app.settings_manager.get_setting("appearance.colors.list_item_hover", "#3C3C3C")
-            hover_border = app.settings_manager.get_setting("appearance.colors.text_highlight", "#4ECDC4")
-        
-        self.setObjectName("CustomSettingItem")
-        self.setStyleSheet("""
-            QWidget#CustomSettingItem {
-                background-color: %s;
-                border: %dpx solid %s;
-                border-radius: %dpx;
-            }
-            QWidget#CustomSettingItem:hover {
-                background-color: %s;
-                border-color: %s;
-            }
-            QWidget#CustomSettingItem > QWidget {
+        br = int(2 * self.dpi_scale)
+        base = _get_sm_color("base_color", "#FFFFFF")
+        sc = _get_sm_color("secondary_color", "#333333")
+        nc = _get_sm_color("normal_color", "#e0e0e0")
+        self.setStyleSheet(f"""
+            QWidget#CustomSettingItem {{
                 background-color: transparent;
-                border: none;
-                border-radius: 0;
-            }
-        """ % (background_color, scaled_border_width, border_color, scaled_border_radius, hover_background, hover_border))
+                border-radius: {br}px;
+            }}
+        """)
         
         # 设置主控件大小策略，允许自适应内容
         # 使用 Preferred 而不是 Fixed，允许控件根据内容自动调整高度
@@ -178,71 +142,32 @@ class CustomSettingItem(QWidget):
         main_layout.activate()
         
     def _create_text_widget(self):
-        """创建左侧文本区域"""
         widget = QWidget()
-        # 设置文本区域的大小策略，允许垂直方向扩展以适应多行文本
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(int(1 * self.dpi_scale))  # 添加适当间距，避免文字重叠
+        layout.setSpacing(int(1 * self.dpi_scale))
 
-        # 主文本
+        sc = _get_sm_color("secondary_color", "#333333")
+        nc = _get_sm_color("normal_color", "#e0e0e0")
+
         self.main_text_label = QLabel(self.text)
         self.main_text_label.setFont(self.global_font)
-        # 获取主题文本颜色
-        app = QApplication.instance()
-        text_color = "#333333"  # 默认使用secondary_color作为默认值
-
-        # 尝试从应用实例获取主题颜色
-        if hasattr(app, 'settings_manager'):
-            # 优先获取secondary_color
-            text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-
-        self.main_text_label.setStyleSheet("""
-            QLabel {
-                color: %s;
-                text-align: left;
-            }
-        """ % text_color)
-        self.main_text_label.setWordWrap(True)  # 允许文字换行
-        self.main_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 顶部对齐，避免垂直居中导致的重叠
-        # 设置大小策略，允许标签根据内容调整高度
+        self.main_text_label.setStyleSheet(f"color: {sc}; text-align: left;")
+        self.main_text_label.setWordWrap(True)
+        self.main_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.main_text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # 确保标签能够根据内容自动调整高度
         self.main_text_label.setMinimumHeight(0)
         layout.addWidget(self.main_text_label)
 
-        # 如果有辅助文本，则显示双行模式
         if self.secondary_text:
             self.secondary_text_label = QLabel(self.secondary_text)
             self.secondary_text_label.setFont(self.global_font)
-            # 获取主题辅助文本颜色
-            app = QApplication.instance()
-
-            # 尝试获取normal_color
-            normal_color_str = "#808080"  # 默认值
-
-            # 优先从应用实例获取设置管理器
-            if hasattr(app, 'settings_manager'):
-                normal_color_str = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
-
-            # 使用QColor将颜色加深30%
-            from PySide6.QtGui import QColor
-            normal_color = QColor(normal_color_str)
-            # darker(130)表示加深30%（100=不变，>100=加深，<100=变亮）
-            secondary_text_color = normal_color.darker(130).name()
-
-            self.secondary_text_label.setStyleSheet("""
-                QLabel {
-                    color: %s;
-                    text-align: left;
-                }
-            """ % secondary_text_color)
-            self.secondary_text_label.setWordWrap(True)  # 允许文字换行
-            self.secondary_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 顶部对齐
-            # 设置大小策略，允许标签根据内容调整高度
+            darker = QColor(nc).darker(130).name()
+            self.secondary_text_label.setStyleSheet(f"color: {darker}; text-align: left;")
+            self.secondary_text_label.setWordWrap(True)
+            self.secondary_text_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             self.secondary_text_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            # 确保标签能够根据内容自动调整高度
             self.secondary_text_label.setMinimumHeight(0)
             layout.addWidget(self.secondary_text_label)
 
@@ -296,80 +221,42 @@ class CustomSettingItem(QWidget):
         return widget
 
     def _create_folder_button_widget(self):
-        """创建文件夹选择按钮控件"""
         from PySide6.QtWidgets import QFileDialog
-        
+
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
-        scaled_spacing = int(2 * self.dpi_scale)
-        layout.setSpacing(scaled_spacing)
-        
+        layout.setSpacing(int(2 * self.dpi_scale))
+
+        nc = _get_sm_color("normal_color", "#e0e0e0")
+        sc = _get_sm_color("secondary_color", "#333333")
         initial_path = self.kwargs.get('initial_text', "")
-        
+
         self.folder_path_label = QLabel(initial_path if initial_path else "未设置")
         self.folder_path_label.setFont(self.global_font)
-        self.folder_path_label.setStyleSheet("""
-            QLabel {
-                color: #808080;
-                padding-left: 5px;
-            }
-        """)
+        self.folder_path_label.setStyleSheet(f"color: {nc}; padding-left: 5px;")
         self.folder_path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        
+
         self.folder_button = CustomButton("选择文件夹", button_type="normal")
         self.folder_button.clicked.connect(self._on_folder_button_clicked)
-        
+
         layout.addWidget(self.folder_path_label)
         layout.addWidget(self.folder_button)
-
-        # 设置容器大小策略，垂直方向使用 Preferred 以允许随内容扩展
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         widget.setMinimumWidth(0)
         widget.setMaximumWidth(16777215)
         return widget
 
     def _on_folder_button_clicked(self):
-        """文件夹按钮点击处理"""
         from PySide6.QtWidgets import QFileDialog
-        
         current_path = self.folder_path_label.text() if self.folder_path_label.text() != "未设置" else ""
-        folder_path = QFileDialog.getExistingDirectory(
-            self, "选择文件夹", current_path if current_path else ""
-        )
-        
+        folder_path = QFileDialog.getExistingDirectory(self, "选择文件夹", current_path)
         if folder_path:
             self.folder_path_label.setText(folder_path)
-            self.folder_path_label.setStyleSheet("""
-                QLabel {
-                    color: #333333;
-                    padding-left: 5px;
-                }
-            """)
+            sc = _get_sm_color("secondary_color", "#333333")
+            self.folder_path_label.setStyleSheet(f"color: {sc}; padding-left: 5px;")
             self.folder_selected.emit(folder_path)
-    
-    def set_input_text(self, text):
-        """设置输入框文本（兼容方法）"""
-        if self.interaction_type == self.FOLDER_BUTTON_TYPE and hasattr(self, 'folder_path_label'):
-            if text:
-                self.folder_path_label.setText(text)
-                self.folder_path_label.setStyleSheet("""
-                    QLabel {
-                        color: #333333;
-                        padding-left: 5px;
-                    }
-                """)
-            else:
-                self.folder_path_label.setText("未设置")
-                self.folder_path_label.setStyleSheet("""
-                    QLabel {
-                        color: #808080;
-                        padding-left: 5px;
-                    }
-                """)
-        elif hasattr(self, 'input_box'):
-            self.input_box.setText(text)
     
     def _on_switch_toggled(self, checked):
         """开关状态变化处理"""
@@ -465,53 +352,30 @@ class CustomSettingItem(QWidget):
         self.input_submitted.emit(text)
     
     def _create_value_bar_widget(self):
-        """创建数值控制条控件"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
-        # 设置布局约束，允许完全自适应内容大小 (Qt6中使用SizeConstraint枚举)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
-        # 应用DPI缩放因子到组件间距
-        scaled_spacing = int(4 * self.dpi_scale)
-        layout.setSpacing(scaled_spacing)
+        layout.setSpacing(int(4 * self.dpi_scale))
 
-        # 数值控制条
         min_value = self.kwargs.get('min_value', 0)
         max_value = self.kwargs.get('max_value', 100)
         initial_value = self.kwargs.get('initial_value', 50)
-        
+
         self.value_bar = D_ProgressBar(orientation=D_ProgressBar.Horizontal)
         self.value_bar.setRange(min_value, max_value)
         self.value_bar.setValue(initial_value)
-        
-        # 数值显示
+
+        sc = _get_sm_color("secondary_color", "#333333")
         self.value_label = QLabel(str(initial_value))
         self.value_label.setFont(self.global_font)
-        # 获取主题文本颜色
-        app = QApplication.instance()
-        text_color = "#333333"  # 默认使用secondary_color作为默认值
+        self.value_label.setStyleSheet(f"color: {sc}; text-align: center;")
 
-        # 尝试从应用实例获取主题颜色
-        if hasattr(app, 'settings_manager'):
-            # 优先获取secondary_color
-            text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-
-        self.value_label.setStyleSheet("""
-            QLabel {
-                color: %s;
-                text-align: center;
-            }
-        """ % text_color)
-        
-        # 连接信号
         self.value_bar.valueChanged.connect(self._on_value_changed)
-        
+
         layout.addWidget(self.value_bar)
         layout.addWidget(self.value_label)
-
-        # 设置容器大小策略，垂直方向使用 Preferred 以允许随内容扩展
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # 确保容器没有宽度限制，允许完全自适应内容
         widget.setMinimumWidth(0)
         widget.setMaximumWidth(16777215)
         return widget
@@ -547,16 +411,10 @@ class CustomSettingItem(QWidget):
         return False
     
     def get_input_text(self):
-        """获取输入框文本"""
         if self.interaction_type == self.INPUT_BUTTON_TYPE:
             return self.input_box.get_text()
         return ""
-    
-    def set_input_text(self, text):
-        """设置输入框文本"""
-        if self.interaction_type == self.INPUT_BUTTON_TYPE:
-            self.input_box.set_text(text)
-    
+
     def set_value(self, value):
         """设置数值条值"""
         if self.interaction_type == self.VALUE_BAR_TYPE:
@@ -587,7 +445,3 @@ class CustomSettingItem(QWidget):
             str: 提示文本内容
         """
         return self._tooltip_text
-
-
-# 更新 __init__.py 文件，导出新控件
-# 注意：在实际使用时，需要手动更新 custom_widgets.py 文件，将新控件添加到导入和导出列表中

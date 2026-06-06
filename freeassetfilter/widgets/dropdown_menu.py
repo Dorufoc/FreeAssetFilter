@@ -35,7 +35,7 @@ from PySide6.QtGui import (
 from .D_hover_menu import D_HoverMenu
 from .button_widgets import CustomButton
 from .hover_tooltip import HoverTooltip
-from .smooth_scroller import D_ScrollBar, SmoothScroller
+from .smooth_scroller import SmoothScroller
 from freeassetfilter.utils.app_logger import debug
 
 
@@ -303,8 +303,6 @@ class _DropdownMenuList(QWidget):
         self._padding = int(6 * self.dpi_scale)
         self._item_spacing = int(4 * self.dpi_scale)
         self._row_min_height = int(22 * self.dpi_scale)
-        self._scrollbar_reserved_width = int(10 * self.dpi_scale)
-
         # 兼容旧调用链：
         # 过去外部代码会访问 dropdown.list_widget.list_widget.sizeHintForRow(0)
         # 这里将 list_widget 指回自身，并补齐少量兼容方法。
@@ -323,9 +321,7 @@ class _DropdownMenuList(QWidget):
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.scroll_area.setVerticalScrollBar(D_ScrollBar(self.scroll_area, Qt.Vertical))
-        self.scroll_area.verticalScrollBar().apply_theme_from_settings()
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         SmoothScroller.apply_to_scroll_area(self.scroll_area)
         self.scroll_area.setAttribute(Qt.WA_AcceptTouchEvents, False)
         if self.scroll_area.viewport():
@@ -353,17 +349,6 @@ class _DropdownMenuList(QWidget):
         self.content_layout.setSpacing(self._item_spacing)
 
         self.scroll_area.setWidget(self.content_widget)
-
-        # 下拉菜单列表只允许垂直滚动：
-        # QScroller 在 QScrollArea 上默认可产生二维平移，即使横向滚动条被隐藏，
-        # 内容宽度与视口宽度稍有抖动时仍可能出现“左右还能拖动一点”的错觉。
-        # 这里强制将横向滚动值钳制为 0，彻底禁止横向滚动偏移。
-        horizontal_scrollbar = self.scroll_area.horizontalScrollBar()
-        horizontal_scrollbar.setDisabled(True)
-        horizontal_scrollbar.rangeChanged.connect(lambda *_: horizontal_scrollbar.setValue(0))
-        horizontal_scrollbar.valueChanged.connect(
-            lambda value: horizontal_scrollbar.setValue(0) if value != 0 else None
-        )
 
         main_layout.addWidget(self.scroll_area)
 
@@ -486,21 +471,9 @@ class _DropdownMenuList(QWidget):
 
         return max(1, max_text_width + padding_left + padding_right)
 
-    def _has_vertical_scrollbar(self) -> bool:
-        return self._use_scroll_layout and len(self._item_widgets) > self._max_visible_items
-
-    def _effective_scrollbar_width(self) -> int:
-        scrollbar = self.scroll_area.verticalScrollBar() if hasattr(self, "scroll_area") else None
-        if scrollbar is not None:
-            hint_width = scrollbar.sizeHint().width()
-            if hint_width > 0:
-                return hint_width
-        return self._scrollbar_reserved_width
-
     def _calculate_total_width(self) -> int:
         content_width = self._calculate_content_width()
-        scrollbar_width = self._effective_scrollbar_width() if self._has_vertical_scrollbar() else 0
-        return content_width + scrollbar_width + self._padding * 2
+        return content_width + self._padding * 2
 
     def _calculate_visible_height(self) -> int:
         item_count = len(self._item_widgets)
@@ -536,36 +509,21 @@ class _DropdownMenuList(QWidget):
         if self._use_scroll_layout:
             visible_items = min(item_count, self._max_visible_items) if item_count > 0 else 1
             self.scroll_area.setWidgetResizable(True)
-            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         else:
             visible_items = item_count if item_count > 0 else 1
             self.scroll_area.setWidgetResizable(False)
-            self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         scroll_content_height = item_count * row_height if item_count > 0 else row_height
         if item_count > 1:
             scroll_content_height += (item_count - 1) * self._item_spacing
 
-        needs_scrollbar = self._has_vertical_scrollbar()
-        scrollbar_width = self._effective_scrollbar_width() if needs_scrollbar else 0
-        scroll_width = content_width + scrollbar_width
-
         self._sync_item_text_and_size(content_width, row_height)
 
-        self.scroll_area.setFixedWidth(scroll_width)
+        self.scroll_area.setFixedWidth(content_width)
         self.scroll_area.setFixedHeight(max(1, visible_height - self._padding * 2))
         self.content_widget.setFixedWidth(content_width)
         self.content_widget.setFixedHeight(max(1, scroll_content_height))
-        self.setFixedSize(scroll_width + self._padding * 2, visible_height)
-
-        vertical_scrollbar = self.scroll_area.verticalScrollBar()
-        if vertical_scrollbar is not None:
-            vertical_scrollbar.setDisabled(not self._use_scroll_layout)
-            vertical_scrollbar.setValue(0)
-
-        horizontal_scrollbar = self.scroll_area.horizontalScrollBar()
-        if horizontal_scrollbar is not None:
-            horizontal_scrollbar.setValue(0)
+        self.setFixedSize(content_width + self._padding * 2, visible_height)
 
     def sizeHint(self):
         return QSize(self._calculate_total_width(), self._calculate_visible_height())

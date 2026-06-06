@@ -96,7 +96,7 @@ class UnifiedPreviewer(QWidget):
         # 保存主窗口引用，避免循环导入和运行时查找
         self.main_window = parent
         
-        self._current_settings_window = None
+
         self._scheduled_preview_cleanup = False
         self._preview_cleanup_sequence = 0
 
@@ -109,14 +109,14 @@ class UnifiedPreviewer(QWidget):
         """
         app = QApplication.instance()
         colors = {
-            "window_background": "#f1f3f5",
+            "panel_background": "#f1f3f5",
             "base_color": "#212121",
             "normal_color": "#717171",
             "secondary_color": "#FFFFFF",
         }
 
         if hasattr(app, "settings_manager"):
-            colors["window_background"] = app.settings_manager.get_setting("appearance.colors.auxiliary_color", colors["window_background"])
+            colors["panel_background"] = app.settings_manager.get_setting("appearance.colors.panel_background", colors["panel_background"])
             colors["base_color"] = app.settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
             colors["normal_color"] = app.settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
             colors["secondary_color"] = app.settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
@@ -130,7 +130,7 @@ class UnifiedPreviewer(QWidget):
         colors = self._get_theme_colors()
         border_radius = int(8 * self.dpi_scale)
 
-        self.setStyleSheet(f"background-color: {colors['window_background']}; border: none;")
+        self.setStyleSheet(f"background-color: {colors['panel_background']}; border: none;")
 
         if hasattr(self, "content_splitter") and self.content_splitter:
             self.content_splitter.setStyleSheet(
@@ -140,12 +140,12 @@ class UnifiedPreviewer(QWidget):
 
         if hasattr(self, "preview_area") and self.preview_area:
             self.preview_area.setStyleSheet(
-                f"#PreviewArea {{ background-color: {colors['window_background']}; border: 1px solid {colors['normal_color']}; }}"
+                f"#PreviewArea {{ background-color: {colors['panel_background']}; border: 1px solid {colors['normal_color']}; }}"
             )
 
         if hasattr(self, "info_group") and self.info_group:
             self.info_group.setStyleSheet(
-                f"#InfoGroup {{ background-color: {colors['window_background']}; border: 1px solid {colors['normal_color']}; }}"
+                f"#InfoGroup {{ background-color: {colors['panel_background']}; border: 1px solid {colors['normal_color']}; }}"
             )
 
         if hasattr(self, "default_label") and self.default_label:
@@ -233,7 +233,7 @@ class UnifiedPreviewer(QWidget):
         base_color = "#212121"
         normal_color = "#717171"
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+            background_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
             base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
             normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
         self.setStyleSheet(f"background-color: {background_color}; border: none;")
@@ -711,6 +711,10 @@ class UnifiedPreviewer(QWidget):
         
         # 显示默认提示
         self._show_default_placeholder()
+
+    def clear_preview(self):
+        """公开方法：清除当前预览"""
+        self._on_clear_preview_button_clicked()
 
     def _on_copy_to_clipboard_button_clicked(self):
         """
@@ -1874,276 +1878,6 @@ class UnifiedPreviewer(QWidget):
                 error(f"[UnifiedPreviewer] 执行延迟预览清理失败: {e}")
 
         QTimer.singleShot(max(0, delay_ms), _do_cleanup)
-
-    def _open_global_settings(self):
-        """
-        打开全局设置窗口
-        使用ModernSettingsWindow替代原来的设置窗口
-        """
-        from freeassetfilter.components.settings_window import ModernSettingsWindow
-
-        parent_widget = None
-        try:
-            if self.main_window is not None:
-                try:
-                    if hasattr(self.main_window, 'isVisible') and self.main_window.isVisible():
-                        parent_widget = self.main_window
-                except (RuntimeError, AttributeError) as e:
-                    debug(f'[UnifiedPreviewer] 检查主窗口可见性时出错: {e}')
-        except (AttributeError, TypeError) as e:
-            debug(f'[UnifiedPreviewer] 访问主窗口时出错: {e}')
-        
-        if parent_widget is None:
-            try:
-                if hasattr(self, 'isVisible') and self.isVisible():
-                    parent_widget = self
-            except (RuntimeError, AttributeError):
-                pass
-        
-        if parent_widget is None:
-            app = QApplication.instance()
-            if app is not None:
-                try:
-                    for widget in app.topLevelWidgets():
-                        if hasattr(widget, 'isVisible') and widget.isVisible():
-                            parent_widget = widget
-                            break
-                except (RuntimeError, AttributeError):
-                    pass
-        
-        if parent_widget is None:
-            return
-
-        try:
-            self.pause_active_media_preview()
-
-            if self._current_settings_window is not None:
-                try:
-                    if self._current_settings_window.isVisible():
-                        self._current_settings_window.close()
-                except (RuntimeError, AttributeError):
-                    pass
-                self._current_settings_window = None
-            
-            self._current_settings_window = ModernSettingsWindow(parent_widget)
-            self._current_settings_window.settings_saved.connect(self._update_appearance_after_settings_change)
-            self._current_settings_window.player_restart_requested.connect(self._restart_current_media_preview)
-            self._current_settings_window.finished.connect(self._on_settings_window_closed)
-            self._current_settings_window.exec()
-        except (RuntimeError, AttributeError):
-            self._current_settings_window = None
-        except Exception as e:
-            exception_details("[UnifiedPreviewer] 打开设置窗口失败", e)
-            self._current_settings_window = None
-    
-    def _on_settings_window_closed(self, result):
-        """设置窗口关闭时的处理"""
-        try:
-            self._current_settings_window = None
-        except (RuntimeError, AttributeError):
-            pass
-    
-    def _update_appearance_after_settings_change(self, settings=None):
-        """
-        设置更新后更新应用外观
-
-        参数:
-            settings (dict, optional): 保存的设置字典，由settings_saved信号传递
-        """
-        try:
-            app = QApplication.instance()
-
-            if hasattr(app, 'update_theme') and callable(app.update_theme):
-                app.update_theme()
-
-            if hasattr(self, 'parent') and self.parent() and hasattr(self.parent(), 'update_theme'):
-                self.parent().update_theme()
-
-            # 更新时间线按钮的可见性
-            self._update_timeline_button_visibility()
-
-            # 刷新文件选择器和文件存储池的图标显示
-            self._refresh_file_selector_and_staging_pool()
-
-            if self._current_settings_window is not None:
-                try:
-                    if self._current_settings_window.isVisible():
-                        self._refresh_settings_window()
-                except (RuntimeError, AttributeError):
-                    pass
-        except (RuntimeError, AttributeError):
-            pass
-
-    def _capture_current_media_session(self):
-        """
-        抓取当前媒体播放器会话，用于重启后恢复播放内容。
-        """
-        try:
-            if not self.current_preview_widget:
-                return None
-
-            from freeassetfilter.components.video_player import VideoPlayer
-
-            if not isinstance(self.current_preview_widget, VideoPlayer):
-                return None
-
-            player = self.current_preview_widget
-            current_file = getattr(player, "_current_file", "")
-            if not current_file:
-                return None
-
-            state = player._save_playback_state() if hasattr(player, "_save_playback_state") else {}
-            state.update({
-                "file_path": current_file,
-                "playback_mode": getattr(player, "_playback_mode", "video"),
-            })
-            return state
-        except Exception as e:
-            error(f"[UnifiedPreviewer] 抓取当前媒体会话失败: {e}")
-            return None
-
-    def _restart_current_media_preview(self, settings=None):
-        """
-        安全重启当前媒体预览，并恢复播放内容与进度。
-        """
-        session = self._capture_current_media_session()
-        if not session:
-            return
-
-        file_path = session.get("file_path")
-        playback_mode = session.get("playback_mode", "video")
-        if not file_path:
-            return
-
-        def _rebuild_player():
-            try:
-                from freeassetfilter.components.video_player import VideoPlayer
-                from freeassetfilter.core.settings_manager import SettingsManager
-
-                settings_manager = SettingsManager()
-                enable_detach = settings_manager.get_setting("player.enable_fullscreen", False)
-                initial_volume = settings_manager.get_player_volume()
-                initial_speed = settings_manager.get_player_speed()
-
-                if playback_mode == VideoPlayer.AUDIO_MODE:
-                    player = VideoPlayer(
-                        playback_mode="audio",
-                        show_lut_controls=False,
-                        show_detach_button=False,
-                        initial_volume=initial_volume,
-                        initial_speed=initial_speed
-                    )
-                    self.current_preview_type = "audio"
-                else:
-                    player = VideoPlayer(
-                        playback_mode="video",
-                        show_detach_button=enable_detach,
-                        initial_volume=initial_volume,
-                        initial_speed=initial_speed
-                    )
-                    self.current_preview_type = "video"
-
-                self._add_preview_widget(player)
-                self.current_preview_widget = player
-
-                if hasattr(player, "load_media"):
-                    player.load_media(file_path, is_audio=(playback_mode == VideoPlayer.AUDIO_MODE))
-
-                def _restore():
-                    try:
-                        if hasattr(player, "_restore_playback_state"):
-                            player._restore_playback_state(session)
-                    except Exception as restore_error:
-                        error(f"[UnifiedPreviewer] 恢复媒体会话失败: {restore_error}")
-
-                QTimer.singleShot(350, _restore)
-            except Exception as e:
-                error(f"[UnifiedPreviewer] 重建媒体播放器失败: {e}")
-
-        if self.current_preview_widget:
-            self._clear_preview(emit_signal=False, on_cleared=_rebuild_player)
-            return
-
-        QTimer.singleShot(0, _rebuild_player)
-
-    def _refresh_file_selector_and_staging_pool(self):
-        """
-        刷新文件选择器和文件存储池的图标显示
-        在设置保存后调用，确保图标样式等设置变更生效
-        """
-        try:
-            main_window = None
-            if hasattr(self, 'main_window') and self.main_window is not None:
-                main_window = self.main_window
-            elif hasattr(self.parent(), 'main_window') and self.parent().main_window is not None:
-                main_window = self.parent().main_window
-
-            # 刷新文件选择器
-            if main_window is not None and hasattr(main_window, 'file_selector_a'):
-                file_selector = main_window.file_selector_a
-                # 刷新文件列表以更新图标显示
-                if hasattr(file_selector, 'refresh_files'):
-                    file_selector.refresh_files()
-
-            # 刷新文件存储池
-            if main_window is not None and hasattr(main_window, 'file_staging_pool'):
-                staging_pool = main_window.file_staging_pool
-                # 完全重载所有卡片，类似于应用启动时的初始化
-                if hasattr(staging_pool, 'reload_all_cards'):
-                    staging_pool.reload_all_cards()
-        except Exception as e:
-            error(f"[ERROR] 刷新文件选择器和存储池失败: {e}")
-    
-    def _update_timeline_button_visibility(self):
-        """
-        更新时间线按钮的可见性
-        根据设置中的 file_selector.timeline_view_enabled 控制文件选择器中时间线按钮的显示/隐藏
-        """
-        try:
-            app = QApplication.instance()
-            if not hasattr(app, 'settings_manager'):
-                return
-
-            timeline_enabled = app.settings_manager.get_setting("file_selector.timeline_view_enabled", False)
-
-            # 通过主窗口访问文件选择器并更新时间线按钮可见性
-            main_window = None
-            if hasattr(self, 'main_window') and self.main_window is not None:
-                main_window = self.main_window
-            elif hasattr(self.parent(), 'main_window') and self.parent().main_window is not None:
-                main_window = self.parent().main_window
-
-            if main_window is not None and hasattr(main_window, 'file_selector_a'):
-                file_selector = main_window.file_selector_a
-                if hasattr(file_selector, '_update_timeline_button_visibility'):
-                    file_selector._update_timeline_button_visibility()
-        except Exception as e:
-            error(f"[ERROR] 更新时间线按钮可见性失败: {e}")
-
-    def _refresh_settings_window(self):
-        """刷新设置窗口样式"""
-        try:
-            if self._current_settings_window is None or not self._current_settings_window.isVisible():
-                return
-
-            settings_window = self._current_settings_window
-
-            app = QApplication.instance()
-            if app is None:
-                return
-
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-
-            try:
-                settings_window.setStyleSheet(f"""
-                    QDialog {{
-                        background-color: {auxiliary_color};
-                    }}
-                """)
-            except (RuntimeError, AttributeError):
-                pass
-        except (RuntimeError, AttributeError):
-            pass
 
 # 测试代码
 if __name__ == "__main__":

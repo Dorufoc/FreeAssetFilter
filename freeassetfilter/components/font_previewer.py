@@ -17,7 +17,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 - 加载指定字体文件作为显示字体
 - 纯文本预览模式
 - 字体大小缩放控制
-- 集成平滑滚动（D_ScrollBar）
+- 集成平滑滚动
 - 线程安全设计
 """
 
@@ -40,7 +40,7 @@ from PySide6.QtCore import (
     Qt, Signal, QThread, QMutex, QMutexLocker
 )
 
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 
 
@@ -294,15 +294,9 @@ class FontPreviewWidget(QWidget):
             }}
         """)
         
-        # 设置滚动条
-        scroll_bar = D_ScrollBar(self.text_edit, Qt.Vertical)
-        self.text_edit.setVerticalScrollBar(scroll_bar)
-        scroll_bar.apply_theme_from_settings()
-        
-        horizontal_scroll_bar = D_ScrollBar(self.text_edit, Qt.Horizontal)
-        self.text_edit.setHorizontalScrollBar(horizontal_scroll_bar)
-        horizontal_scroll_bar.apply_theme_from_settings()
-        
+        self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         container_layout.addWidget(self.text_edit)
 
         parent_layout.addWidget(container)
@@ -315,7 +309,7 @@ class FontPreviewWidget(QWidget):
         if not hasattr(app, 'settings_manager'):
             return
 
-        bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
+        bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
         base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
         secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
 
@@ -578,7 +572,7 @@ class FontPreviewer(QWidget):
         if not hasattr(app, 'settings_manager'):
             return
         
-        bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
+        bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
         self.setStyleSheet(f"background-color: {bg_color};")
     
     def set_file(self, file_path):

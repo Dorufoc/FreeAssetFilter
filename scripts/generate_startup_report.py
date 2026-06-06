@@ -133,7 +133,7 @@ def cat(m):
     if m == "freeassetfilter": return "项目核心"
     if m in ("PySide6","shiboken6","shibokensupport"): return "Qt 框架"
     if m == "numpy": return "数值计算"
-    if m in ("archive_browser","player_control_bar","lut_manager_dialog","color_extractor","file_staging_pool","file_selector","file_horizontal_card","text_previewer","file_info_previewer","unified_previewer","theme_editor","auto_timeline","folder_content_list","icon_utils","path_utils","global_mouse_monitor","settings_manager","core"): return "项目组件"
+    if m in ("archive_browser","player_control_bar","lut_manager_dialog","color_extractor","file_staging_pool","file_selector","file_horizontal_card","text_previewer","file_info_previewer","unified_previewer","theme_editor","folder_content_list","icon_utils","path_utils","global_mouse_monitor","settings_manager","core"): return "项目组件"
     if m == "exifread": return "图像元数据"
     if m == "mutagen": return "音频元数据"
     if m in ("PIL","pillow_avif"): return "图像处理"
@@ -205,7 +205,7 @@ L("- cProfile 显示 `QWidget.setStyleSheet` 调用 **150次** 独占 **300ms**"
 L("- `QBoxLayout.addWidget` 64次独占 129ms")
 L("- `nt.stat` 5526次调用独占 322ms（大量文件系统 stat 操作）")
 L("**建议**:")
-L("1. **延迟初始化**: 非首屏必需组件 (ThemeEditor, UpdateController, ColorExtractor, AutoTimeline) 改为 `LazyImport` 惰性构造")
+L("1. **延迟初始化**: 非首屏必需组件 (ThemeEditor, UpdateController, ColorExtractor) 改为 `LazyImport` 惰性构造")
 L("2. **QSS 批量应用**: 对同类控件集中调用 setStyleSheet，或使用 `setProperty()` + 全局 QSS")
 L("3. **子组件 import 局部化**: 从模块顶层移入方法内")
 L("4. **预估收益: 800-1200ms** | 难度: 中")

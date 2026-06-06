@@ -30,7 +30,7 @@ from PySide6.QtGui import QPixmap
 
 from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
-from freeassetfilter.widgets.smooth_scroller import SmoothScroller, D_ScrollBar
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.utils.lut_utils import (
     LUTInfo, validate_lut_file, copy_lut_file, remove_lut_file,
     get_lut_display_name, load_lut_from_settings, save_lut_to_settings,
@@ -133,17 +133,13 @@ class LutManagerDialog(CustomMessageBox):
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        
-        # 设置滚动条
-        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
-        scroll_area.verticalScrollBar().apply_theme_from_settings()
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         # 应用平滑滚动
         SmoothScroller.apply_to_scroll_area(scroll_area)
         
         # 设置样式
-        scrollbar_style = f"""
+        container_style = f"""
             QScrollArea {{
                 border: 1px solid {normal_color};
                 border-radius: 8px;
@@ -154,7 +150,7 @@ class LutManagerDialog(CustomMessageBox):
                 background-color: {base_color};
             }}
         """
-        scroll_area.setStyleSheet(scrollbar_style)
+        scroll_area.setStyleSheet(container_style)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll_area.setMinimumWidth(0)  # 允许滚动区域随窗口缩小
         

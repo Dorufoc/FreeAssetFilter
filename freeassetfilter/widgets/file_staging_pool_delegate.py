@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple, Union
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, Signal
@@ -24,17 +25,22 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         self,
         dpi_scale: float = 1.0,
         global_font=None,
-        single_line_mode: bool = False,
-        enable_delete_action: bool = True,
+        single_line_mode: bool = True,
+        enable_delete_action: bool = False,
         parent=None,
     ):
-        self._single_line_mode = bool(single_line_mode)
-        self._enable_delete_action = bool(enable_delete_action)
+        self._single_line_mode = True
+        self._enable_delete_action = False
+        self._enable_actions = True
         self._pressed_action_key: Optional[Tuple[str, str]] = None
+        self._action_slide_states: Dict[str, dict] = {}
+        self._active_action_slide_keys: set = set()
         super().__init__(dpi_scale=dpi_scale, global_font=global_font, parent=parent)
 
     def clear_caches(self):
         self._pressed_action_key = None
+        self._action_slide_states.clear()
+        self._active_action_slide_keys.clear()
         super().clear_caches()
 
     def set_single_line_mode(self, enabled: bool) -> None:
@@ -150,8 +156,6 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         self._missing_info_color = QColor(self.normal_color)
         self._hover_shadow = QColor(self.secondary_color)
         self._hover_shadow.setAlpha(55)
-        self._preview_shadow = QColor(self.accent_color)
-        self._preview_shadow.setAlpha(110)
         self._idle_shadow = QColor(0, 0, 0, 0)
 
     def _init_fonts(self):
@@ -165,14 +169,10 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         self.name_font = QFont(self.global_font)
         self.name_font.setBold(True)
 
-        self.info_font = QFont(self.global_font)
-        self.info_font.setWeight(QFont.Normal)
-
         self.button_font = QFont(self.global_font)
-        self.button_font.setWeight(QFont.DemiBold)
+        self.button_font.setPointSize(max(1, int(self.global_font.pointSize() * 0.75)))
 
         self.name_font_metrics = QFontMetrics(self.name_font)
-        self.info_font_metrics = QFontMetrics(self.info_font)
         self.button_font_metrics = QFontMetrics(self.button_font)
 
     @staticmethod
@@ -212,22 +212,22 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
     def _button_layout_metrics(self) -> dict[str, int]:
         dpi_scale = self._dpi_scale
         return {
-            "margin_x": int(2.5 * dpi_scale),
-            "margin_y": int(6.25 * dpi_scale),
+            "margin_x": int(4 * dpi_scale),
+            "margin_y": int(2 * dpi_scale),
             "spacing": int(2.5 * dpi_scale),
         }
 
     def _button_metrics(self, text: str, button_type: str) -> dict[str, float]:
         border_width = 0.0 if button_type == "primary" else 1.5
-        min_height = int(20 * self._dpi_scale)
-        vertical_padding = int(4 * self._dpi_scale) * 2
-        horizontal_padding = int(6 * self._dpi_scale)
-        safety_margin = int(4 * self._dpi_scale)
+        min_height = int(14 * self._dpi_scale)
+        vertical_padding = int(2 * self._dpi_scale) * 2
+        horizontal_padding = int(4 * self._dpi_scale)
+        safety_margin = int(2 * self._dpi_scale)
         text_width = self.button_font_metrics.horizontalAdvance(text)
         text_height = self.button_font_metrics.height()
         height = max(min_height, int(text_height + vertical_padding + border_width * 2))
         width = max(
-            int(25 * self._dpi_scale),
+            int(20 * self._dpi_scale),
             int(text_width + horizontal_padding * 2 + border_width * 2 + safety_margin),
         )
         return {
@@ -237,55 +237,30 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         }
 
     def _calculate_geometry(self, rect: QRect):
-        dpi_scale = self._dpi_scale
+        dpi = self._dpi_scale
 
-        border_width = max(1, int(1 * dpi_scale))
+        border_width = max(1, int(1 * dpi))
         preview_border_width = border_width * 2
-        radius = max(1, int(8 * dpi_scale))
+        radius = max(1, int(6 * dpi))
 
-        margin_x = int(7.5 * dpi_scale)
-        margin_y = int(6.25 * dpi_scale)
-        content_spacing = int(7.5 * dpi_scale)
-        icon_size = int(40 * dpi_scale)
-        text_spacing = 0 if self._single_line_mode else int(4 * dpi_scale)
+        icon_size = int(12 * dpi)
+        v_margin = int(3 * dpi)
+        h_margin = int(4 * dpi)
+        icon_text_spacing = int(6 * dpi)
 
-        content_rect = rect.adjusted(margin_x, margin_y, -margin_x, -margin_y)
+        content_rect = rect.adjusted(border_width, border_width, -border_width, -border_width)
 
-        icon_side = min(icon_size, max(0, content_rect.width()), max(0, content_rect.height()))
         icon_rect = QRect(
-            content_rect.x(),
-            content_rect.y() + max(0, (content_rect.height() - icon_side) // 2),
-            icon_side,
-            icon_side,
+            content_rect.x() + h_margin,
+            content_rect.y() + (content_rect.height() - icon_size) // 2,
+            icon_size,
+            icon_size,
         )
 
-        text_x = icon_rect.right() + 1 + content_spacing
-        text_width = max(0, content_rect.right() - text_x + 1)
-        text_rect = QRect(text_x, content_rect.y(), text_width, content_rect.height())
+        text_x = icon_rect.right() + 1 + icon_text_spacing
+        text_width = max(0, content_rect.right() - h_margin - text_x + 1)
 
-        name_height = self.name_font_metrics.height()
-        info_height = self.info_font_metrics.height()
-
-        if self._single_line_mode:
-            total_height = name_height
-            start_y = text_rect.y() + max(0, (text_rect.height() - total_height) // 2)
-            name_rect = QRect(text_rect.x(), start_y, text_rect.width(), name_height)
-            info_rect = QRect(text_rect.x(), start_y, text_rect.width(), 0)
-        else:
-            total_height = name_height + text_spacing + info_height
-            start_y = text_rect.y() + max(0, (text_rect.height() - total_height) // 2)
-            name_rect = QRect(text_rect.x(), start_y, text_rect.width(), name_height)
-            info_rect = QRect(
-                text_rect.x(),
-                name_rect.bottom() + 1 + text_spacing,
-                text_rect.width(),
-                info_height,
-            )
-
-        text_max_width = max(
-            int(50 * dpi_scale),
-            rect.width() - margin_x * 2 - icon_size - content_spacing - int(10 * dpi_scale),
-        )
+        name_rect = QRect(text_x, content_rect.y(), text_width, content_rect.height())
 
         return {
             "border_width": border_width,
@@ -293,8 +268,6 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
             "radius": radius,
             "icon_rect": icon_rect,
             "name_rect": name_rect,
-            "info_rect": info_rect,
-            "text_max_width": max(0, min(text_rect.width(), text_max_width)),
         }
 
     def _visible_display_name(self, file_info: dict[str, Any]) -> str:
@@ -326,15 +299,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
 
     def _compose_texts(self, file_info: dict[str, Any]) -> tuple[str, str]:
         name_text = self._visible_display_name(file_info)
-        info_text = str(file_info.get("info_text", "") or "")
-
-        if self._single_line_mode:
-            inline_size = self._inline_size_text(file_info)
-            if inline_size and not file_info.get("is_missing", False):
-                return f"{name_text} ({inline_size})", ""
-            return name_text, ""
-
-        return name_text, info_text
+        return name_text, ""
 
     def _action_sequence(self) -> list[str]:
         actions = [self.ACTION_RENAME]
@@ -351,6 +316,116 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         if action == self.ACTION_DELETE:
             return "warning"
         return "primary"
+
+    def _sync_action_slide(self, key: str, should_show: bool, btn_width: int) -> None:
+        now = datetime.now().timestamp() * 1000.0
+        state = self._action_slide_states.get(key)
+        margin_x = int(4 * self._dpi_scale)
+        hidden_offset = float(btn_width + margin_x)
+
+        if state is None:
+            state = {
+                "current_offset": hidden_offset,
+                "animating": False,
+                "is_visible": False,
+                "to_offset": hidden_offset,
+            }
+            self._action_slide_states[key] = state
+
+        if not should_show:
+            state["current_offset"] = hidden_offset
+            state["is_visible"] = False
+            if state.get("animating", False):
+                state["animating"] = False
+                self._active_action_slide_keys.discard(key)
+            return
+
+        is_visible = state.get("is_visible", False)
+        if is_visible and not state.get("animating", False):
+            return
+
+        state["from_offset"] = state.get("current_offset", hidden_offset)
+        state["to_offset"] = 0.0
+        state["duration"] = 150
+        state["easing"] = "out_quint"
+        state["is_visible"] = True
+        state["animating"] = True
+        state["start_time"] = now
+        self._active_action_slide_keys.add(key)
+        self._ensure_animation_timer_running()
+
+    def _get_action_slide_offset(self, key: str) -> float:
+        state = self._action_slide_states.get(key)
+        if not state:
+            return 0.0
+        return state.get("current_offset", 0.0)
+
+    def _ensure_animation_timer_running(self):
+        if not self._active_animation_keys and not self._active_action_slide_keys:
+            return
+        if not self._animation_timer.isActive():
+            self._animation_timer.start()
+
+    def _stop_animation_timer_if_idle(self):
+        if self._active_animation_keys or self._active_action_slide_keys:
+            if not self._animation_timer.isActive():
+                self._animation_timer.start()
+            return
+        if self._animation_timer.isActive():
+            self._animation_timer.stop()
+
+    def _tick_action_slide_animations(self) -> None:
+        if not self._are_state_animations_enabled():
+            for key in tuple(self._active_action_slide_keys):
+                state = self._action_slide_states.get(key)
+                if state:
+                    state["current_offset"] = state.get("to_offset", 0.0)
+                    state["animating"] = False
+            self._active_action_slide_keys.clear()
+            if self._view:
+                self._view.viewport().update()
+            return
+
+        if not self._active_action_slide_keys:
+            return
+
+        now = datetime.now().timestamp() * 1000.0
+        needs_repaint = False
+        completed = []
+
+        for key in tuple(self._active_action_slide_keys):
+            state = self._action_slide_states.get(key)
+            if not state or not state.get("animating", False):
+                completed.append(key)
+                continue
+            elapsed = now - state["start_time"]
+            duration = max(1, int(state["duration"]))
+            if elapsed >= duration:
+                state["current_offset"] = state["to_offset"]
+                state["animating"] = False
+                completed.append(key)
+            else:
+                t = elapsed / duration
+                eased = self._ease(state.get("easing", "out_cubic"), t)
+                state["current_offset"] = state["from_offset"] + (state["to_offset"] - state["from_offset"]) * eased
+            needs_repaint = True
+
+        for key in completed:
+            self._active_action_slide_keys.discard(key)
+
+        if needs_repaint and self._view:
+            self._view.viewport().update()
+
+    def _on_animation_tick(self) -> None:
+        super()._on_animation_tick()
+        self._tick_action_slide_animations()
+
+    def _lookup_current_slide_offset(self, index) -> float:
+        file_info = self._get_file_info(index)
+        if not file_info:
+            return 0.0
+        key = self._get_animation_key(file_info)
+        return self._get_action_slide_offset(key)
 
     def get_action_rects(
         self,
@@ -397,6 +472,11 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         for action in self._action_sequence():
             if action in rects:
                 ordered_rects[action] = rects[action]
+
+        slide_offset = self._lookup_current_slide_offset(index)
+        if slide_offset != 0:
+            for r in ordered_rects.values():
+                r.translate(int(slide_offset), 0)
         return ordered_rects
 
     def get_action_rect(
@@ -433,6 +513,8 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         index,
         for_drag_preview: bool = False,
     ) -> bool:
+        if not self._enable_actions:
+            return False
         if for_drag_preview:
             return False
 
@@ -481,6 +563,8 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         index,
         for_drag_preview: bool = False,
     ) -> Optional[str]:
+        if not self._enable_actions:
+            return None
         if not self.should_show_action_area(option, index, for_drag_preview=for_drag_preview):
             return None
         if option.widget is None:
@@ -611,16 +695,28 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
                 opacity=opacity,
             )
 
+    def _target_visuals_for_flags(self, is_hovered, is_selected, is_previewing):
+        if is_previewing:
+            return QColor(self._normal_bg), QColor(self._preview_border), QColor(self._idle_shadow), 0.0
+        if is_selected:
+            selected_shadow = QColor(self._selected_border)
+            selected_shadow.setAlpha(72)
+            return QColor(self._selected_bg), QColor(self._selected_border), selected_shadow, 8.0 * self._dpi_scale
+        if is_hovered:
+            return QColor(self._hover_bg), QColor(self._hover_border), QColor(self._hover_shadow), 8.0 * self._dpi_scale
+        return QColor(self._normal_bg), QColor(self._normal_border), QColor(self._idle_shadow), 0.0
+
     def _paint_texts(
         self,
         painter: QPainter,
         geometry: dict[str, Any],
         file_info: dict[str, Any],
         opacity: float,
+        max_text_width: Optional[int] = None,
     ) -> None:
-        name_text, info_text = self._compose_texts(file_info)
-        text_width = max(0, int(geometry.get("text_max_width", 0)))
+        name_text, _ = self._compose_texts(file_info)
         is_missing = bool(file_info.get("is_missing", False))
+        text_width = geometry["name_rect"].width() if max_text_width is None else max_text_width
 
         painter.save()
         painter.setOpacity(opacity)
@@ -636,15 +732,6 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
             self.name_font_metrics.elidedText(name_text, Qt.ElideRight, text_width),
         )
 
-        if not self._single_line_mode and geometry["info_rect"].height() > 0:
-            painter.setFont(self.info_font)
-            painter.setPen(self._missing_info_color if is_missing else self._info_color)
-            painter.drawText(
-                geometry["info_rect"],
-                Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine,
-                self.info_font_metrics.elidedText(info_text, Qt.ElideRight, text_width),
-            )
-
         painter.restore()
 
     def _paint_card(self, painter, option, index, for_drag_preview: bool = False):
@@ -657,7 +744,8 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-        rect = option.rect
+        margin = min(int(10 * self._dpi_scale), option.rect.width() // 2)
+        rect = option.rect.adjusted(margin, 0, -margin, 0)
         geometry = self._calculate_geometry(rect)
         file_info = self._get_file_info(index)
 
@@ -666,7 +754,6 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         is_hovered = (
             bool(option.state & QStyle.State_MouseOver)
             and not is_selected
-            and not is_previewing
             and not for_drag_preview
         )
 
@@ -709,14 +796,28 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         if icon_pixmap and not icon_pixmap.isNull():
             self._draw_scaled_pixmap(painter, geometry["icon_rect"], icon_pixmap, content_opacity)
 
-        self._paint_texts(painter, geometry, file_info, content_opacity)
-        self.paint_action_area(
-            painter,
-            option,
-            index,
-            opacity=content_opacity,
-            for_drag_preview=for_drag_preview,
-        )
+        text_available_width = geometry["name_rect"].width()
+        if self._enable_actions and not for_drag_preview and not is_dragging_source:
+            should_show = is_hovered and not is_selected
+            btn_metrics = self._button_metrics(self._action_text(self.ACTION_RENAME), "primary")
+            btn_width = int(btn_metrics["width"])
+            self._sync_action_slide(anim_key, should_show, btn_width)
+            btn_rects = self.get_action_rects(option, index)
+            if self.ACTION_RENAME in btn_rects:
+                btn_left = btn_rects[self.ACTION_RENAME].x()
+                margin_x_val = int(4 * self._dpi_scale)
+                available = btn_left - margin_x_val - geometry["name_rect"].x()
+                text_available_width = max(10, min(text_available_width, available))
+
+        self._paint_texts(painter, geometry, file_info, content_opacity, text_available_width)
+        if self._enable_actions and not for_drag_preview and not is_dragging_source:
+            self.paint_action_area(
+                painter,
+                option,
+                index,
+                opacity=content_opacity,
+                for_drag_preview=for_drag_preview,
+            )
         painter.restore()
 
     def paint(self, painter, option, index):
@@ -752,7 +853,11 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
                 return item_size
 
         dpi_scale = self._dpi_scale
-        return QSize(max(240, int(320 * dpi_scale)), max(52, int(64 * dpi_scale)))
+        icon_size = int(12 * dpi_scale)
+        v_margin = int(3 * dpi_scale)
+        border = max(1, int(1 * dpi_scale))
+        height = int(2 * border + 2 * v_margin + icon_size)
+        return QSize(max(160, int(200 * dpi_scale)), height)
 
     def _event_pos(self, event) -> QPoint:
         if hasattr(event, "position"):
@@ -788,6 +893,9 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
 
     def editorEvent(self, event, model, option, index):
         if not index.isValid() or option.widget is None:
+            return False
+
+        if not self._enable_actions:
             return False
 
         event_type = event.type()

@@ -109,8 +109,6 @@ class BaseCardDelegate(QStyledItemDelegate):
         self._text_color = QColor(self.secondary_color)
         self._hover_shadow = QColor(self.secondary_color)
         self._hover_shadow.setAlpha(55)
-        self._preview_shadow = QColor(self.accent_color)
-        self._preview_shadow.setAlpha(110)
         self._idle_shadow = QColor(0, 0, 0, 0)
 
     def _init_fonts(self):
@@ -205,8 +203,8 @@ class BaseCardDelegate(QStyledItemDelegate):
 
     def _target_visuals_for_flags(self, is_hovered, is_selected, is_previewing):
         if is_previewing:
-            target_bg = QColor(self._selected_bg) if is_selected else QColor(self._normal_bg)
-            return target_bg, QColor(self._preview_border), QColor(self._preview_shadow), 8.0 * self._dpi_scale
+            bg = QColor(self._selected_bg) if is_selected else QColor(self._normal_bg)
+            return bg, QColor(self._preview_border), QColor(self._idle_shadow), 0.0
         if is_selected:
             selected_shadow = QColor(self._selected_border)
             selected_shadow.setAlpha(72)
@@ -501,8 +499,10 @@ class BaseCardDelegate(QStyledItemDelegate):
         target_height = min(rect.height(), target_size.height())
         offset_x = max(0, (rect.width() - target_width + 1) // 2)
         offset_y = max(0, (rect.height() - target_height) // 2)
+        model = index.model()
+        grid_offset = model.data(index, model.GridOffsetRole) if model else 0
         return QRect(
-            rect.x() + offset_x,
+            rect.x() + offset_x + grid_offset,
             rect.y() + offset_y,
             target_width,
             target_height,

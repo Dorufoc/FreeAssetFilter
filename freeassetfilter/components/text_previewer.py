@@ -18,7 +18,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 - Markdown渲染支持
 - 代码语法高亮（Python/JSON/XML等）
 - 大文件分块加载和渲染优化
-- 集成平滑滚动（D_ScrollBar）
+- 集成平滑滚动
 - 线程安全设计
 - 查找和高亮功能
 - 完整的控制栏（字体/大小/编码/查找）
@@ -58,7 +58,7 @@ import colorsys
 
 from freeassetfilter.widgets.D_widgets import CustomButton
 from freeassetfilter.widgets.D_more_menu import D_MoreMenu
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
@@ -1195,13 +1195,8 @@ class TextPreviewWidget(QWidget):
         
         self.text_edit.setPalette(palette)
         
-        scroll_bar = D_ScrollBar(self.text_edit, Qt.Vertical)
-        self.text_edit.setVerticalScrollBar(scroll_bar)
-        scroll_bar.apply_theme_from_settings()
-        
-        horizontal_scroll_bar = D_ScrollBar(self.text_edit, Qt.Horizontal)
-        self.text_edit.setHorizontalScrollBar(horizontal_scroll_bar)
-        horizontal_scroll_bar.apply_theme_from_settings()
+        self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         # 创建行号区域
         self.line_number_area = LineNumberArea(self.text_edit)
@@ -1228,10 +1223,8 @@ class TextPreviewWidget(QWidget):
             word_wrap = app.settings_manager.get_setting("text_preview.word_wrap", True)
             if word_wrap:
                 self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-                self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             else:
                 self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
-                self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     
     def _update_line_number_width(self):
         """更新行号区域宽度"""
@@ -1350,7 +1343,7 @@ class TextPreviewWidget(QWidget):
         if not hasattr(app, 'settings_manager'):
             return
 
-        bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
+        bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
         base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
         secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
@@ -1509,10 +1502,8 @@ class TextPreviewWidget(QWidget):
         
         if word_wrap:
             self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         else:
             self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
-            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
         # 清除搜索状态
         self._clear_search()
@@ -1854,10 +1845,8 @@ class TextPreviewWidget(QWidget):
             
         if markdown_word_wrap:
             self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         else:
             self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
-            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             
         self.text_edit.setHtml(html)
         self.is_markdown = True
@@ -1884,10 +1873,8 @@ class TextPreviewWidget(QWidget):
 
         if word_wrap:
             self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         else:
             self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
-            self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             
         self.text_edit.setPlainText(content)
         self.is_markdown = False
@@ -2261,7 +2248,7 @@ class TextPreviewer(QWidget):
         if not hasattr(app, 'settings_manager'):
             return
         
-        bg_color = app.settings_manager.get_setting("appearance.colors.window_background", "#F5F5F5")
+        bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
         self.setStyleSheet(f"background-color: {bg_color};")
     
     def set_file(self, file_path):

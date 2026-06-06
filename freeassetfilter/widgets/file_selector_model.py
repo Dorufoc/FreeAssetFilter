@@ -36,6 +36,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QBitmap,
+    QColor,
     QPixmap,
     QPainter,
     QMouseEvent,
@@ -50,12 +51,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QStyle,
     QStyleOptionViewItem,
+    QWidget,
 )
 
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path
 from freeassetfilter.utils.animation_settings import is_animation_enabled
+from freeassetfilter.widgets.custom_scrollbar import FileScrollBar
 from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.utils.app_logger import debug
@@ -88,6 +91,7 @@ class FileSelectorListModel(QAbstractListModel):
     IsPreviewingRole = Qt.UserRole + 8
     IconPixmapRole = Qt.UserRole + 9
     CardWidthRole = Qt.UserRole + 10
+    GridOffsetRole = Qt.UserRole + 11
 
     _ICON_CACHE_MAX_ENTRIES = 256
     _SYSTEM_ICON_RETRY_DELAY_MS = 1000
@@ -107,6 +111,7 @@ class FileSelectorListModel(QAbstractListModel):
         self._card_width: int = 150
         self._card_height: int = 75
         self._max_cols: int = 3
+        self._grid_offset_x: int = 0
         self._dpi_scale = dpi_scale
         self._global_font = global_font
         self._path_to_row: Dict[str, int] = {}
@@ -313,6 +318,16 @@ class FileSelectorListModel(QAbstractListModel):
             bottom = self.index(self.rowCount() - 1, 0)
             self.dataChanged.emit(top, bottom, [self.CardWidthRole])
 
+    def set_grid_offset_x(self, offset: int) -> None:
+        """设置卡片网格水平偏移量，用于居中"""
+        if self._grid_offset_x == offset:
+            return
+        self._grid_offset_x = offset
+        if self.rowCount() > 0:
+            top = self.index(0, 0)
+            bottom = self.index(self.rowCount() - 1, 0)
+            self.dataChanged.emit(top, bottom, [self.GridOffsetRole])
+
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         if parent.isValid():
             return 0
@@ -346,6 +361,8 @@ class FileSelectorListModel(QAbstractListModel):
             return self._get_icon_pixmap(file_info)
         if role == self.CardWidthRole:
             return self._card_width
+        if role == self.GridOffsetRole:
+            return self._grid_offset_x
 
         return None
 
@@ -382,6 +399,7 @@ class FileSelectorListModel(QAbstractListModel):
             self.IsPreviewingRole: b"isPreviewing",
             self.IconPixmapRole: b"iconPixmap",
             self.CardWidthRole: b"cardWidth",
+            self.GridOffsetRole: b"gridOffsetX",
         }
 
     def set_selected(self, file_path: str, is_selected: bool) -> bool:
@@ -960,15 +978,7 @@ class FileListView(QListView):
         self._touch_optimization_enabled = True
         self._mouse_buttons_swapped = False
         self._pending_click_file_info = None
-        self._connected_vertical_scrollbar = None
-        self._connected_horizontal_scrollbar = None
-        self._scrollbar_drag_active = False
         self._defer_icon_loading = False
-        self._last_slider_value = None
-        self._last_slider_value_timestamp = 0.0
-        self._defer_icon_loading_enter_velocity = 2600.0
-        self._defer_icon_loading_exit_velocity = 1200.0
-        self._defer_icon_loading_resume_delay_ms = 120
         self._path_transition_enabled = True
         self._path_transition_direction = 0
         self._path_transition_duration_ms = 100
@@ -984,17 +994,26 @@ class FileListView(QListView):
         self._long_press_timer.setSingleShot(True)
         self._long_press_timer.timeout.connect(self._start_long_press_drag)
 
-        self._defer_icon_loading_timer = QTimer(self)
-        self._defer_icon_loading_timer.setSingleShot(True)
-        self._defer_icon_loading_timer.timeout.connect(self._resume_icon_loading)
-
         self._path_transition_timer = QTimer(self)
         self._path_transition_timer.setInterval(16)
         self._path_transition_timer.timeout.connect(self._advance_path_transition)
 
         self._setup_view()
         self._load_interaction_settings()
-        self.configure_scrollbar_tracking()
+
+        # 自定义滚动条
+        self._dpi_scale = getattr(
+            QApplication.instance(), 'dpi_scale_factor', 1.0
+        ) if QApplication.instance() else 1.0
+
+        self._custom_scrollbar = FileScrollBar(self)
+        self._custom_scrollbar.setVisible(False)
+
+        self._mouse_inside = False
+
+        self.verticalScrollBar().valueChanged.connect(self._custom_scrollbar.setValue)
+        self.verticalScrollBar().rangeChanged.connect(self._on_scrollbar_range_changed)
+        self._custom_scrollbar.valueChanged.connect(self.verticalScrollBar().setValue)
 
     def _setup_view(self) -> None:
         """配置视图属性"""
@@ -1035,8 +1054,42 @@ class FileListView(QListView):
         self._long_press_duration = 500
         self._path_transition_enabled = self._is_path_transition_enabled()
 
+    def _on_scrollbar_range_changed(self, min_val, max_val):
+        sb = self.verticalScrollBar()
+        self._custom_scrollbar.setRange(sb.minimum(), sb.maximum())
+        self._custom_scrollbar.setPageStep(sb.pageStep())
+        self._custom_scrollbar.setSingleStep(sb.singleStep())
+        self._update_scrollbar_visibility()
+
+    def _update_custom_scrollbar_geometry(self):
+        if not self._custom_scrollbar.isVisible():
+            return
+        vp = self.viewport()
+        sw = self._custom_scrollbar.sizeHint().width()
+        self._custom_scrollbar.setGeometry(
+            self.width() - sw, vp.y(), sw, vp.height()
+        )
+
+    def _update_scrollbar_visibility(self):
+        sb = self.verticalScrollBar()
+        content_overflows = sb.maximum() > sb.minimum()
+        visible = self._mouse_inside and content_overflows
+        if self._custom_scrollbar.isVisible() != visible:
+            self._custom_scrollbar.setVisible(visible)
+            self._update_custom_scrollbar_geometry()
+
     def refresh_interaction_settings(self) -> None:
         self._load_interaction_settings()
+
+    def enterEvent(self, event):
+        self._mouse_inside = True
+        self._update_scrollbar_visibility()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._mouse_inside = False
+        self._update_scrollbar_visibility()
+        super().leaveEvent(event)
 
     def _is_path_transition_enabled(self) -> bool:
         return is_animation_enabled("directory_transition", default=True)
@@ -1195,60 +1248,10 @@ class FileListView(QListView):
         finally:
             painter.end()
 
-    def _set_deferred_icon_loading(self, active: bool) -> None:
-        active = bool(active)
-        if self._defer_icon_loading == active:
-            return
-        self._defer_icon_loading = active
-        self.viewport().update()
-
-    def _resume_icon_loading(self) -> None:
-        self._set_deferred_icon_loading(False)
-
-    def _schedule_icon_loading_resume(self) -> None:
-        self._defer_icon_loading_timer.start(self._defer_icon_loading_resume_delay_ms)
-
-    def _connect_scrollbar(self, scrollbar, orientation: str) -> None:
-        if scrollbar is None:
-            return
-
-        current_attr = f"_connected_{orientation}_scrollbar"
-        previous_scrollbar = getattr(self, current_attr, None)
-        if previous_scrollbar is scrollbar:
-            return
-
-        if previous_scrollbar is not None:
-            for signal, slot in (
-                (previous_scrollbar.sliderPressed, self._on_scrollbar_slider_pressed),
-                (previous_scrollbar.sliderMoved, self._on_scrollbar_slider_moved),
-                (previous_scrollbar.sliderReleased, self._on_scrollbar_slider_released),
-            ):
-                try:
-                    signal.disconnect(slot)
-                except (RuntimeError, TypeError):
-                    pass
-
-        scrollbar.sliderPressed.connect(self._on_scrollbar_slider_pressed)
-        scrollbar.sliderMoved.connect(self._on_scrollbar_slider_moved)
-        scrollbar.sliderReleased.connect(self._on_scrollbar_slider_released)
-        setattr(self, current_attr, scrollbar)
-
-    def configure_scrollbar_tracking(self) -> None:
-        self._connect_scrollbar(self.verticalScrollBar(), "vertical")
-        self._connect_scrollbar(self.horizontalScrollBar(), "horizontal")
-
     def setModel(self, model) -> None:
         super().setModel(model)
         if isinstance(model, FileSelectorListModel):
             model.attach_view(self)
-
-    def setVerticalScrollBar(self, scrollbar) -> None:
-        super().setVerticalScrollBar(scrollbar)
-        self.configure_scrollbar_tracking()
-
-    def setHorizontalScrollBar(self, scrollbar) -> None:
-        super().setHorizontalScrollBar(scrollbar)
-        self.configure_scrollbar_tracking()
 
     def paintEvent(self, event) -> None:
         if self._path_transition_capturing_base:
@@ -1266,43 +1269,7 @@ class FileListView(QListView):
         if self._path_transition_active:
             self.cancel_path_transition(update=False)
         super().resizeEvent(event)
-
-    def _on_scrollbar_slider_pressed(self) -> None:
-        scrollbar = self.sender()
-        self._scrollbar_drag_active = True
-        self._last_slider_value = scrollbar.value() if scrollbar is not None else None
-        self._last_slider_value_timestamp = self._get_monotonic_time_ms()
-        self._defer_icon_loading_timer.stop()
-
-    def _on_scrollbar_slider_moved(self, value: int, now_ms: float = None) -> None:
-        if not self._scrollbar_drag_active:
-            return
-
-        current_time_ms = self._get_monotonic_time_ms() if now_ms is None else float(now_ms)
-        previous_value = self._last_slider_value
-        previous_time_ms = self._last_slider_value_timestamp
-
-        self._last_slider_value = value
-        self._last_slider_value_timestamp = current_time_ms
-
-        if previous_value is None or previous_time_ms <= 0:
-            return
-
-        delta_value = abs(int(value) - int(previous_value))
-        delta_time_ms = max(1.0, current_time_ms - previous_time_ms)
-        velocity = (delta_value * 1000.0) / delta_time_ms
-
-        if velocity >= self._defer_icon_loading_enter_velocity:
-            self._defer_icon_loading_timer.stop()
-            self._set_deferred_icon_loading(True)
-        elif self._defer_icon_loading and velocity <= self._defer_icon_loading_exit_velocity:
-            self._schedule_icon_loading_resume()
-
-    def _on_scrollbar_slider_released(self) -> None:
-        self._scrollbar_drag_active = False
-        self._last_slider_value = None
-        self._last_slider_value_timestamp = 0.0
-        self._schedule_icon_loading_resume()
+        self._update_custom_scrollbar_geometry()
 
     def _get_file_info_from_index(self, index: QModelIndex) -> Dict[str, Any]:
         model = self.model()
@@ -1548,9 +1515,6 @@ class FileListView(QListView):
         if not index.isValid():
             if logical_button == Qt.LeftButton:
                 self.clearSelection()
-                model = self.model()
-                if isinstance(model, FileSelectorListModel):
-                    model.deselect_all()
             self._cleanup_press_state()
             super().mousePressEvent(event)
             return

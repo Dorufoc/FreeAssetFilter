@@ -38,7 +38,7 @@ from PySide6.QtGui import (
 )
 
 # 导入自定义滚动条
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar, SmoothScroller
+from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 # 导入自定义输入框
 from freeassetfilter.widgets.input_widgets import CustomInputBox
 # 导入自定义按钮
@@ -146,7 +146,7 @@ class FolderContentList(QWidget):
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
 
         # 设置背景色
-        background_color = app.settings_manager.get_setting("appearance.colors.window_background", "#2D2D2D")
+        background_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#2D2D2D")
         self.setStyleSheet(f"background-color: {background_color};")
 
         # 使用统一的按钮高度（与压缩包预览器保持一致）
@@ -177,11 +177,9 @@ class FolderContentList(QWidget):
         self.content_list = QListWidget()
         self.content_list.setFont(self.global_font)
 
-        # 为 QListWidget 设置自定义丝滑滚动条
-        self.content_list.setVerticalScrollBar(D_ScrollBar(self.content_list, Qt.Vertical))
-        self.content_list.verticalScrollBar().apply_theme_from_settings()
-        # 禁用水平滚动条
+        # 禁用所有滚动条
         self.content_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.content_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         # 启用 QListWidget 的像素级滚动模式以实现平滑滚动
         self.content_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)

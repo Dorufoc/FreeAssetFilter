@@ -161,7 +161,7 @@ class FileHorizontalCardDelegate(BaseCardDelegate):
         is_dir = file_info.get("is_dir", False)
         type_text = _get_file_type_display(file_info.get("suffix", ""), is_dir)
         if is_dir:
-            size_text = "文件夹"
+            size_text = ""
         else:
             size_text = _format_file_size_compact(file_info.get("size", 0))
         date_text = self._format_created_text(file_info.get("created", ""))
@@ -207,6 +207,30 @@ class FileHorizontalCardDelegate(BaseCardDelegate):
         draw_right_rect(right_items["type_rect"], type_text, info_y)
 
         painter.restore()
+
+    def _resolve_card_rect(self, option, index, for_drag_preview=False):
+        rect = QRect(option.rect)
+        if for_drag_preview:
+            return rect
+        target_size = self.sizeHint(option, index)
+        if not target_size.isValid():
+            return rect
+
+        if self._view and hasattr(self._view, 'viewport'):
+            container_width = self._view.viewport().width()
+        else:
+            container_width = rect.width()
+
+        target_width = min(container_width, target_size.width())
+        target_height = min(rect.height(), target_size.height())
+        offset_x = max(0, (container_width - target_width) // 2)
+        offset_y = max(0, (rect.height() - target_height) // 2)
+        return QRect(
+            rect.x() + offset_x,
+            rect.y() + offset_y,
+            target_width,
+            target_height,
+        )
 
     def sizeHint(self, option, index):
         dpi = self._dpi_scale

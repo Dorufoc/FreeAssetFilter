@@ -102,7 +102,7 @@ class ThemeCard(QWidget):
             self.main_layout.insertWidget(0, self.color_slider, 1)
             self.main_layout.removeItem(self.main_layout.takeAt(self.main_layout.count() - 1))
         else:
-            while len(self.colors) < 4:
+            while len(self.colors) < 5:
                 self.colors.append("#D9D9D9")
             
             self.color_layout = QHBoxLayout()
@@ -114,7 +114,7 @@ class ThemeCard(QWidget):
             self.theme_color.setStyleSheet(f"background-color: {self.colors[0]}; border: 1px solid {auxiliary_color}; border-radius: {int(3 * self.dpi_scale)}px;")
             self.color_layout.addWidget(self.theme_color)
             
-            for i, color in enumerate(self.colors[1:4]):
+            for i, color in enumerate(self.colors[1:5]):
                 color_label = QLabel(self)
                 color_label.setFixedSize(int(9 * self.dpi_scale), int(9 * self.dpi_scale))
                 color_label.setStyleSheet(f"background-color: {color}; border: 1px solid {auxiliary_color}; border-radius: {int(3 * self.dpi_scale)}px;")
@@ -146,7 +146,7 @@ class ThemeCard(QWidget):
             colors (list): 颜色列表 [主题色, 文本颜色, 次选颜色, 不可用颜色]
         """
         self.colors = colors.copy()
-        while len(self.colors) < 4:
+        while len(self.colors) < 5:
             self.colors.append("#D9D9D9")
         
         auxiliary_color = "#f1f3f5"

@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QSizePolicy,
     QApplication,
+    QGraphicsOpacityEffect,
 )
 
 from .button_widgets import CustomButton
@@ -182,6 +183,7 @@ class CustomFileHorizontalCard(QWidget):
         display_name=None,
         single_line_mode=False,
         enable_delete_button=True,
+        compact_mode=False,
     ):
         super().__init__(parent)
 
@@ -198,7 +200,8 @@ class CustomFileHorizontalCard(QWidget):
         self._thumbnail_mode = "icon"
         self._enable_multiselect = enable_multiselect
         self._display_name = display_name
-        self._single_line_mode = single_line_mode
+        self._single_line_mode = single_line_mode if not compact_mode else True
+        self._compact_mode = compact_mode
         self._path_exists = True
         self._custom_info_text = None
         self._enable_delete_button = enable_delete_button
@@ -341,19 +344,27 @@ class CustomFileHorizontalCard(QWidget):
         self.card_container.setMouseTracking(True)
 
         card_content_layout = QHBoxLayout(self.card_container)
-        card_content_layout.setSpacing(int(7.5 * self.dpi_scale))
-        min_height_margin = int(6.25 * self.dpi_scale)
-        card_content_layout.setContentsMargins(
-            int(7.5 * self.dpi_scale),
-            min_height_margin,
-            int(7.5 * self.dpi_scale),
-            min_height_margin,
-        )
+
+        if self._compact_mode:
+            icon_size = int(12 * self.dpi_scale)
+            card_spacing = int(5 * self.dpi_scale)
+            h_margin = int(3 * self.dpi_scale)
+            v_margin = int(3 * self.dpi_scale)
+        else:
+            icon_size = int(40 * self.dpi_scale)
+            card_spacing = int(7.5 * self.dpi_scale)
+            h_margin = int(7.5 * self.dpi_scale)
+            v_margin = int(6.25 * self.dpi_scale)
+
+        self._icon_size = icon_size
+
+        card_content_layout.setSpacing(card_spacing)
+        card_content_layout.setContentsMargins(h_margin, v_margin, h_margin, v_margin)
         card_content_layout.setAlignment(Qt.AlignVCenter)
 
         self.icon_display = QLabel()
         self.icon_display.setAlignment(Qt.AlignCenter)
-        self.icon_display.setFixedSize(int(40 * self.dpi_scale), int(40 * self.dpi_scale))
+        self.icon_display.setFixedSize(icon_size, icon_size)
         self.icon_display.setStyleSheet("background: transparent; border: none;")
         self.icon_display.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         card_content_layout.addWidget(self.icon_display, alignment=Qt.AlignVCenter)
@@ -392,9 +403,9 @@ class CustomFileHorizontalCard(QWidget):
         overlay_layout = QHBoxLayout(self.overlay_widget)
         overlay_layout.setContentsMargins(
             int(2.5 * self.dpi_scale),
-            min_height_margin,
+            v_margin,
             int(2.5 * self.dpi_scale),
-            min_height_margin,
+            v_margin,
         )
         overlay_layout.setSpacing(int(2.5 * self.dpi_scale))
         overlay_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -424,8 +435,16 @@ class CustomFileHorizontalCard(QWidget):
 
         main_layout.addWidget(self.card_container)
 
-        self.overlay_widget.setWindowOpacity(0.0)
+        # 为 overlay 添加渐隐渐显效果
+        self._overlay_opacity_effect = QGraphicsOpacityEffect(self.overlay_widget)
+        self._overlay_opacity_effect.setOpacity(0.0)
+        self.overlay_widget.setGraphicsEffect(self._overlay_opacity_effect)
         self.overlay_widget.hide()
+
+        self._overlay_fade_anim = QPropertyAnimation(self._overlay_opacity_effect, b"opacity")
+        self._overlay_fade_anim.setDuration(180)
+        self._overlay_fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._overlay_fade_is_showing = False
 
         self.card_container.installEventFilter(self)
         self.overlay_widget.installEventFilter(self)
@@ -719,8 +738,8 @@ class CustomFileHorizontalCard(QWidget):
             self._is_previewing = previewing
             if previewing:
                 self._is_mouse_over = False
+                self._overlay_opacity_effect.setOpacity(0.0)
                 self.overlay_widget.hide()
-                self.overlay_widget.setWindowOpacity(0.0)
                 self._trigger_preview_animation()
             else:
                 self._trigger_unpreview_animation()
@@ -734,8 +753,7 @@ class CustomFileHorizontalCard(QWidget):
             return
         if not self._is_state_animation_enabled():
             colors = self._style_colors
-            target_bg = colors["selected_bg"] if self._is_selected else colors["normal_bg"]
-            self._apply_state_without_animation(target_bg, QColor(self.secondary_color))
+            self._apply_state_without_animation(colors["normal_bg"], QColor(self.secondary_color))
             return
 
         self._hover_anim_group.stop()
@@ -745,7 +763,7 @@ class CustomFileHorizontalCard(QWidget):
 
         colors = self._style_colors
         secondary_qcolor = QColor(self.secondary_color)
-        target_bg = colors["selected_bg"] if self._is_selected else colors["normal_bg"]
+        target_bg = colors["normal_bg"]
 
         self._anim_preview_bg.setStartValue(self._anim_bg_color)
         self._anim_preview_bg.setEndValue(target_bg)
@@ -831,7 +849,7 @@ class CustomFileHorizontalCard(QWidget):
         card_layout = self.card_container.layout()
         layout_margins = card_layout.contentsMargins()
 
-        icon_width = int(40 * self.dpi_scale)
+        icon_width = getattr(self, "_icon_size", int(40 * self.dpi_scale))
         layout_spacing = card_layout.spacing()
         horizontal_margin = layout_margins.left() + layout_margins.right()
         max_width = self.width() - horizontal_margin - icon_width - layout_spacing - int(10 * self.dpi_scale)
@@ -932,16 +950,14 @@ class CustomFileHorizontalCard(QWidget):
                 if self.overlay_widget.layout() is not None:
                     self.overlay_widget.layout().invalidate()
                     self.overlay_widget.layout().activate()
-                self.overlay_widget.setWindowOpacity(1.0)
-                self.overlay_widget.show()
+                self._fade_in_overlay()
                 CustomFileHorizontalCard._current_card_with_visible_buttons = self
         elif event.type() == QEvent.Leave:
             if self._is_mouse_over:
                 self._is_mouse_over = False
                 if not self._is_dragging:
                     self._trigger_leave_animation()
-                self.overlay_widget.hide()
-                self.overlay_widget.setWindowOpacity(0.0)
+                self._fade_out_overlay()
                 if CustomFileHorizontalCard._current_card_with_visible_buttons is self:
                     CustomFileHorizontalCard._current_card_with_visible_buttons = None
             if not self._is_dragging:
@@ -957,11 +973,37 @@ class CustomFileHorizontalCard(QWidget):
                 if current_card.isVisible():
                     current_card._is_mouse_over = False
                     current_card._trigger_leave_animation()
-                    current_card.overlay_widget.hide()
-                    current_card.overlay_widget.setWindowOpacity(0.0)
+                    current_card._fade_out_overlay()
             except RuntimeError:
                 pass
             CustomFileHorizontalCard._current_card_with_visible_buttons = None
+
+    def _fade_in_overlay(self):
+        """渐显 overlay 按钮"""
+        self._overlay_fade_anim.stop()
+        self._overlay_fade_is_showing = True
+        self._overlay_fade_anim.setStartValue(self._overlay_opacity_effect.opacity())
+        self._overlay_fade_anim.setEndValue(1.0)
+        self.overlay_widget.show()
+        self._overlay_fade_anim.start()
+
+    def _fade_out_overlay(self):
+        """渐隐 overlay 按钮，动画结束后隐藏"""
+        self._overlay_fade_anim.stop()
+        self._overlay_fade_is_showing = False
+        self._overlay_fade_anim.setStartValue(self._overlay_opacity_effect.opacity())
+        self._overlay_fade_anim.setEndValue(0.0)
+        self._overlay_fade_anim.finished.connect(self._on_overlay_fade_out_done)
+        self._overlay_fade_anim.start()
+
+    def _on_overlay_fade_out_done(self):
+        """渐隐动画完成后的回调"""
+        try:
+            self._overlay_fade_anim.finished.disconnect(self._on_overlay_fade_out_done)
+        except (RuntimeError, TypeError):
+            pass
+        if not self._overlay_fade_is_showing:
+            self.overlay_widget.hide()
 
     def _trigger_hover_animation(self):
         if not hasattr(self, "_style_colors"):
@@ -1671,7 +1713,7 @@ class CustomFileHorizontalCard(QWidget):
         file_path = self._file_path or ""
         file_info = QFileInfo(file_path) if file_path else QFileInfo()
         suffix = file_info.suffix().lower() if file_path else ""
-        icon_size = int(40 * self.dpi_scale)
+        icon_size = getattr(self, "_icon_size", int(40 * self.dpi_scale))
         device_pixel_ratio = round(self._get_device_pixel_ratio(), 4)
         icon_source_signature = self._build_icon_source_signature()
 

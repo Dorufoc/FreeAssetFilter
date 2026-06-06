@@ -82,13 +82,12 @@ from PySide6.QtSvgWidgets import QSvgWidget
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
 from freeassetfilter.widgets.file_block_card import FileBlockCard
-from freeassetfilter.widgets.file_horizontal_card import CustomFileHorizontalCard
+from freeassetfilter.widgets.file_staging_pool_model import FileStagingPoolListModel
+from freeassetfilter.widgets.file_staging_pool_delegate import FileStagingPoolCardDelegate
 from freeassetfilter.widgets.list_widgets import CustomSelectList
 from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-from freeassetfilter.widgets.smooth_scroller import D_ScrollBar
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from freeassetfilter.components.auto_timeline import AutoTimeline
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path, is_media_file
 from freeassetfilter.widgets.file_selector_model import FileSelectorListModel, FileListView
@@ -313,6 +312,7 @@ class CustomFileSelector(QWidget):
     file_selected = Signal(dict)  # 当文件被选中时发出
     file_right_clicked = Signal(dict)  # 当文件被右键点击时发出
     file_selection_changed = Signal(dict, bool)  # 当文件选择状态改变时发出
+    preview_cancel_requested = Signal()  # 当点击正在预览的卡片时发出，用于取消预览
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -331,14 +331,12 @@ class CustomFileSelector(QWidget):
         card_width = self._calculate_card_base_width()
         spacing = int(4 * self.dpi_scale)  # 卡片间距
         margin = int(5 * self.dpi_scale)  # 单边边距
-        scrollbar_width = int(10 * self.dpi_scale)  # 滚动条宽度估计值
-        
         # 3列卡片总宽度 = 3*卡片宽度 + 2*间距（因为3列只有2个间距）
         cards_total_width = 3 * card_width + 2 * spacing
         # 左右边距总和
         margins_total = 2 * margin
-        # 总最小宽度 = 卡片总宽度 + 边距总和 + 滚动条宽度
-        min_three_columns_width = cards_total_width + margins_total + scrollbar_width
+        # 总最小宽度 = 卡片总宽度 + 边距总和
+        min_three_columns_width = cards_total_width + margins_total
         
         # 设置文件选择器的最小宽度，确保能显示3列卡片
         self.setMinimumWidth(min_three_columns_width)
@@ -524,7 +522,7 @@ class CustomFileSelector(QWidget):
         app = QApplication.instance()
         background_color = "#f1f3f5"  # 默认窗口背景色
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#f1f3f5")
+            background_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
         self.setStyleSheet(f"background-color: {background_color};")
         # 应用DPI缩放因子到布局参数
         scaled_spacing = int(2.5 * self.dpi_scale)
@@ -613,6 +611,13 @@ class CustomFileSelector(QWidget):
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(go_btn)
         
+        # 添加当前路径到收藏夹按钮（路径栏最右侧）
+        star_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "star.svg")
+        self.add_fav_btn = CustomButton(star_icon_path, button_type="normal", display_mode="icon", tooltip_text="添加当前路径到收藏夹")
+        self.add_fav_btn.clicked.connect(self._add_current_path_to_favorites_standalone)
+        dir_layout.addWidget(self.add_fav_btn)
+        self.hover_tooltip.set_target_widget(self.add_fav_btn)
+        
         main_layout.addLayout(dir_layout)
         
         # 第二行：返回上级和刷新按钮
@@ -646,16 +651,6 @@ class CustomFileSelector(QWidget):
         nav_layout.addWidget(self.favorites_btn)
         # 添加到悬浮信息目标控件
         self.hover_tooltip.set_target_widget(self.favorites_btn)
-        
-        # 返回上一次退出所在目录按钮
-        # 使用arrow_counterclockwise_clock.svg图标替换文字，样式为普通样式
-        import os
-        last_path_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "arrow_counterclockwise_clock.svg")
-        self.last_path_btn = CustomButton(last_path_icon_path, button_type="normal", display_mode="icon", tooltip_text="返回上一次退出程序时的目录")
-        self.last_path_btn.clicked.connect(self._go_to_last_path)
-        nav_layout.addWidget(self.last_path_btn)
-        # 添加到悬浮信息目标控件
-        self.hover_tooltip.set_target_widget(self.last_path_btn)
         
         # 筛选按钮
         import os
@@ -697,11 +692,6 @@ class CustomFileSelector(QWidget):
         
         self.sort_btn.clicked.connect(show_sort_menu)
         
-        # 时间线按钮 - 移到第二行最后
-        self.timeline_btn = CustomButton("时间线", button_type="primary")
-        self.timeline_btn.clicked.connect(self._show_timeline_window)
-        nav_layout.addWidget(self.timeline_btn)
-
         # 视图模式切换按钮
         card_icon_path = os.path.join(os.path.dirname(__file__), "..", "icons", "card.svg")
         self.view_mode_btn = CustomButton(card_icon_path, button_type="normal", display_mode="icon", tooltip_text="网格视图")
@@ -711,9 +701,6 @@ class CustomFileSelector(QWidget):
         nav_layout.addWidget(self.view_mode_btn)
         self.hover_tooltip.set_target_widget(self.view_mode_btn)
 
-        # 根据设置控制时间线按钮的显示/隐藏
-        self._update_timeline_button_visibility()
-        
         main_layout.addLayout(nav_layout)
         
         return panel
@@ -723,14 +710,14 @@ class CustomFileSelector(QWidget):
         创建文件列表区域 - 使用 Model/View 架构
         """
         app = QApplication.instance()
-        base_color = "#212121"
+        panel_bg_color = "#f1f3f5"
         auxiliary_color = "#313131"
         normal_color = "#717171"
         secondary_color = "#FFFFFF"
         accent_color = "#F0C54D"
         
         if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+            panel_bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
             auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
             normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
             secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
@@ -762,12 +749,8 @@ class CustomFileSelector(QWidget):
         self.files_scroll_area.setSpacing(0)
         self.files_scroll_area.setBatchSize(50)
         
-        # 替换垂直滚动条为 D_ScrollBar
-        self.files_scroll_area.setVerticalScrollBar(D_ScrollBar(self.files_scroll_area, Qt.Vertical))
-        scrollbar = self.files_scroll_area.verticalScrollBar()
-        scrollbar.apply_theme_from_settings()
-        if isinstance(scrollbar, D_ScrollBar):
-            scrollbar.effective_extent_changed.connect(self._schedule_grid_size_update)
+        # 禁用垂直滚动条
+        self.files_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         # 应用平滑滚动
         # 注意：这里必须禁用 LeftMouseButtonGesture，
@@ -780,15 +763,15 @@ class CustomFileSelector(QWidget):
 
         # 滚动区域样式（与原来保持一致）
         scaled_padding = int(3 * self.dpi_scale)
-        scrollbar_style = f"""
+        container_style = f"""
             QListView {{
                 border: 1px solid {normal_color};
                 border-radius: 8px;
-                background-color: {base_color};
+                background-color: {panel_bg_color};
                 padding: {scaled_padding}px;
             }}
         """
-        self.files_scroll_area.setStyleSheet(scrollbar_style)
+        self.files_scroll_area.setStyleSheet(container_style)
 
         self.files_container = self.files_scroll_area
         
@@ -855,10 +838,11 @@ class CustomFileSelector(QWidget):
         app = QApplication.instance()
         colors = {
             "base_color": "#212121",
-            "auxiliary_color": "#313131",
+            "auxiliary_color": "#f1f3f5",
             "normal_color": "#717171",
             "secondary_color": "#FFFFFF",
             "accent_color": "#F0C54D",
+            "panel_background": "#f1f3f5",
         }
 
         if hasattr(app, "settings_manager"):
@@ -867,6 +851,7 @@ class CustomFileSelector(QWidget):
             colors["normal_color"] = app.settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
             colors["secondary_color"] = app.settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
             colors["accent_color"] = app.settings_manager.get_setting("appearance.colors.accent_color", colors["accent_color"])
+            colors["panel_background"] = app.settings_manager.get_setting("appearance.colors.panel_background", colors["panel_background"])
 
         return colors
 
@@ -880,7 +865,7 @@ class CustomFileSelector(QWidget):
         self.list_delegate.update_theme()
         colors = self._get_theme_colors()
 
-        self.setStyleSheet(f"background-color: {colors['secondary_color']};")
+        self.setStyleSheet(f"background-color: {colors['panel_background']};")
 
         if hasattr(self, "control_panel") and self.control_panel:
             self.control_panel.setStyleSheet(
@@ -900,18 +885,15 @@ class CustomFileSelector(QWidget):
 
         if hasattr(self, "files_scroll_area") and self.files_scroll_area:
             scaled_padding = int(3 * self.dpi_scale)
-            scrollbar_style = f"""
+            container_style = f"""
                 QListView {{
                     border: 1px solid {colors['normal_color']};
                     border-radius: 8px;
-                    background-color: {colors['base_color']};
+                    background-color: {colors['panel_background']};
                     padding: {scaled_padding}px;
                 }}
             """
-            self.files_scroll_area.setStyleSheet(scrollbar_style)
-            scrollbar = self.files_scroll_area.verticalScrollBar()
-            if hasattr(scrollbar, "apply_theme_from_settings"):
-                scrollbar.apply_theme_from_settings()
+            self.files_scroll_area.setStyleSheet(container_style)
             if hasattr(self.files_scroll_area, "refresh_interaction_settings"):
                 try:
                     self.files_scroll_area.refresh_interaction_settings()
@@ -924,10 +906,8 @@ class CustomFileSelector(QWidget):
             "parent_btn",
             "refresh_btn",
             "favorites_btn",
-            "last_path_btn",
             "filter_btn",
             "sort_btn",
-            "timeline_btn",
             "view_mode_btn",
             "generate_thumbnails_btn",
             "clear_thumbnails_btn",
@@ -1336,121 +1316,92 @@ class CustomFileSelector(QWidget):
         
         dialog = CustomMessageBox(self)
         dialog.set_title("收藏夹")
-        
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        
-        scroll_area.setVerticalScrollBar(D_ScrollBar(scroll_area, Qt.Vertical))
-        scroll_area.verticalScrollBar().apply_theme_from_settings()
-        
-        SmoothScroller.apply_to_scroll_area(scroll_area)
-        
-        scrollbar_style = f"""
-            QScrollArea {{
-                border: 1px solid {normal_color};
-                border-radius: 8px;
-                background-color: {base_color};
-                padding: 3px;
-            }}
-            QScrollArea > QWidget > QWidget {{
-                background-color: {base_color};
-            }}
-        """
-        scroll_area.setStyleSheet(scrollbar_style)
-        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        scroll_area.setMinimumWidth(int(400 * self.dpi_scale))
-        
-        list_content = QWidget()
-        list_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        list_content_layout = QVBoxLayout(list_content)
-        list_content_layout.setContentsMargins(0, 0, 0, 0)
-        list_content_layout.setSpacing(int(4 * self.dpi_scale))
-        
-        favorites_cards = []
+        dialog.setMinimumSize(int(300 * self.dpi_scale), int(400 * self.dpi_scale))
+        dialog.resize(int(300 * self.dpi_scale), int(450 * self.dpi_scale))
 
-        for favorite in self.favorites:
-            # 检查路径是否存在
-            path_exists = os.path.exists(favorite['path'])
+        # 创建模型 — 使用 FileStagingPoolListModel
+        model = FileStagingPoolListModel(
+            dpi_scale=self.dpi_scale,
+            global_font=self.global_font,
+            parent=dialog,
+        )
+        fav_items = []
+        for fav in self.favorites:
+            fav_items.append({
+                "path": fav["path"],
+                "name": fav["name"],
+                "display_name": fav["name"],
+            })
+        model.set_files(fav_items)
 
-            card = CustomFileHorizontalCard(
-                file_path=favorite['path'],
-                parent=list_content,
-                enable_multiselect=False,
-                display_name=favorite['name'],
-                single_line_mode=False
-            )
-            # 设置路径存在状态
-            card.set_path_exists(path_exists)
+        # 创建视图 — 可滚动
+        view = QListView()
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        view.setViewMode(QListView.ListMode)
+        view.setResizeMode(QListView.Adjust)
+        view.setSelectionMode(QListView.NoSelection)
+        view.setMouseTracking(True)
+        view.setVerticalScrollMode(QListView.ScrollPerPixel)
+        view.setSpacing(int(3 * self.dpi_scale))
+        view.setUniformItemSizes(True)
+        view.setEditTriggers(QListView.NoEditTriggers)
+        view.setDragEnabled(False)
+        SmoothScroller.apply(view)
 
-            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            list_content_layout.addWidget(card)
-            favorites_cards.append({'card': card, 'favorite': favorite})
+        # 创建委托 — 使用文件储存池卡片样式
+        delegate = FileStagingPoolCardDelegate(
+            dpi_scale=self.dpi_scale,
+            global_font=self.global_font,
+            enable_delete_action=True,
+            parent=view,
+        )
+        view.setModel(model)
+        view.setItemDelegate(delegate)
+        delegate.set_view(view)
 
-            card.clicked.connect(lambda path, fav=favorite, d=dialog: self._on_favorite_card_clicked(path, fav, d, favorites_cards))
-            card.renameRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_rename(f, d, fc))
-            card.deleteRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_delete(f, d, fc))
-        
-        list_content.setLayout(list_content_layout)
-        
-        scroll_area.setWidget(list_content)
-        dialog.list_layout.addWidget(scroll_area)
+        # 点击收藏项 → 跳转路径
+        view.clicked.connect(lambda idx: self._on_favorite_clicked(
+            model.data(idx, model.FilePathRole), dialog
+        ))
+
+        # 重命名 / 删除
+        delegate.renameRequested.connect(
+            lambda path: self._on_favorite_rename_dlg(path, model, dialog)
+        )
+        delegate.deleteRequested.connect(
+            lambda path: self._on_favorite_delete_dlg(path, model, dialog)
+        )
+
+        dialog.list_layout.addWidget(view)
         dialog.list_widget.show()
-        
-        def refresh_favorites_display():
-            while list_content_layout.count():
-                item = list_content_layout.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            favorites_cards.clear()
 
-            for favorite in self.favorites:
-                # 检查路径是否存在
-                path_exists = os.path.exists(favorite['path'])
-
-                card = CustomFileHorizontalCard(
-                    file_path=favorite['path'],
-                    parent=list_content,
-                    enable_multiselect=False,
-                    display_name=favorite['name'],
-                    single_line_mode=False
-                )
-                # 设置路径存在状态
-                card.set_path_exists(path_exists)
-
-                card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-                list_content_layout.addWidget(card)
-                favorites_cards.append({'card': card, 'favorite': favorite})
-
-                card.clicked.connect(lambda path, fav=favorite, d=dialog: self._on_favorite_card_clicked(path, fav, d, favorites_cards))
-                card.renameRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_rename(f, d, fc))
-                card.deleteRequested.connect(lambda p, f=favorite, d=dialog, fc=favorites_cards: self._on_favorite_delete(f, d, fc))
-        
-        dialog.set_buttons(["添加当前路径到收藏夹", "关闭"], Qt.Horizontal, ["primary", "secondary"])
+        dialog.set_buttons(["关闭"], Qt.Horizontal, ["secondary"])
         
         def on_button_clicked(button_index):
             if button_index == 0:
-                self._add_current_path_to_favorites_custom(dialog, refresh_favorites_display)
-            elif button_index == 1:
                 dialog.close()
         
         dialog.buttonClicked.connect(on_button_clicked)
         
         dialog.exec()
     
-    def _on_favorite_card_clicked(self, path, favorite, dialog, favorites_cards):
+    def _on_favorite_clicked(self, file_path, dialog):
         """
-        点击收藏夹卡片时跳转到对应路径
+        点击收藏夹项时跳转到对应路径
         """
-        if os.path.exists(favorite['path']):
-            self._navigate_to_path(favorite['path'])
+        if file_path and os.path.exists(file_path):
+            self._navigate_to_path(file_path)
             dialog.close()
-    
-    def _on_favorite_rename(self, favorite, dialog, favorites_cards):
+
+    def _on_favorite_rename_dlg(self, file_path, model, dialog):
         """
         重命名收藏夹项
         """
+        favorite = self._find_favorite_by_path(file_path)
+        if not favorite:
+            return
+
         input_dialog = CustomMessageBox(self)
         input_dialog.set_title("重命名收藏夹")
         input_dialog.set_text("请输入新名称:")
@@ -1474,17 +1425,16 @@ class CustomFileSelector(QWidget):
                         f['name'] = new_name.strip()
                         break
                 self._save_favorites()
-                
-                for item in favorites_cards:
-                    if item['favorite']['path'] == favorite['path'] and item['favorite']['name'] == favorite['name']:
-                        item['favorite']['name'] = new_name.strip()
-                        item['card'].set_file_path(favorite['path'], new_name.strip())
-                        break
-    
-    def _on_favorite_delete(self, favorite, dialog, favorites_cards):
+                model.update_file(file_path, {"display_name": new_name.strip()})
+
+    def _on_favorite_delete_dlg(self, file_path, model, dialog):
         """
         删除收藏夹项
         """
+        favorite = self._find_favorite_by_path(file_path)
+        if not favorite:
+            return
+
         msg_box = CustomMessageBox(self)
         msg_box.set_title("删除收藏夹")
         msg_box.set_text(f"确定要删除收藏夹项 '{favorite['name']}' 吗?")
@@ -1502,22 +1452,25 @@ class CustomFileSelector(QWidget):
         if result == 0:
             self.favorites = [f for f in self.favorites if not (f['path'] == favorite['path'] and f['name'] == favorite['name'])]
             self._save_favorites()
-            
-            for item in favorites_cards:
-                if item['favorite']['path'] == favorite['path'] and item['favorite']['name'] == favorite['name']:
-                    item['card'].deleteLater()
-                    favorites_cards.remove(item)
-                    break
+            model.finalize_remove_file(file_path)
+
+    def _find_favorite_by_path(self, file_path):
+        """根据路径在收藏夹列表中查找对应项"""
+        normalized = os.path.normpath(file_path) if file_path else ""
+        for f in self.favorites:
+            if os.path.normpath(f['path']) == normalized:
+                return f
+        return None
     
-    def _add_current_path_to_favorites_custom(self, dialog, refresh_callback):
+    def _add_current_path_to_favorites_standalone(self):
         """
-        添加当前路径到收藏夹（卡片版本）
+        添加当前路径到收藏夹（独立版本，从路径栏星标按钮触发）
         """
         current_path = self.current_path
+        self._load_favorites()
         
         for favorite in self.favorites:
             if favorite['path'] == current_path:
-                from freeassetfilter.widgets.D_widgets import CustomMessageBox
                 msg_box = CustomMessageBox(self)
                 msg_box.set_title("提示")
                 msg_box.set_text("该路径已在收藏夹中")
@@ -1528,7 +1481,6 @@ class CustomFileSelector(QWidget):
         
         default_name = os.path.basename(current_path) or current_path
         
-        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         input_dialog = CustomMessageBox(self)
         input_dialog.set_title("添加到收藏夹")
         input_dialog.set_text("请输入收藏名称:")
@@ -1552,18 +1504,12 @@ class CustomFileSelector(QWidget):
                     'path': current_path
                 })
                 self._save_favorites()
-                refresh_callback()
                 
                 success_msg = CustomMessageBox(self)
                 success_msg.set_title("添加成功")
                 success_msg.set_text(f"已添加 '{name.strip()}' 到收藏夹")
                 success_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-                
-                def on_success_ok():
-                    success_msg.close()
-                    dialog.close()
-                
-                success_msg.buttonClicked.connect(on_success_ok)
+                success_msg.buttonClicked.connect(success_msg.close)
                 success_msg.exec()
     
     def _on_favorite_double_clicked(self, item, dialog):
@@ -1729,16 +1675,6 @@ class CustomFileSelector(QWidget):
                 # 更新列表
                 favorites_list.addItem(name + ' - ' + current_path)
     
-    def _go_to_last_path(self):
-        """
-        跳转到上次退出时的目录
-        """
-        previous_path = self.current_path
-        self.load_last_path()
-        target_path = self.current_path
-        self.current_path = previous_path
-        self._navigate_to_path(target_path)
-
     def _is_valid_selector_path(self, path):
         if path == "All":
             return True
@@ -2106,22 +2042,22 @@ class CustomFileSelector(QWidget):
         self._set_view_mode_button_text()
 
     def _update_list_layout(self):
-        """列表模式下更新卡片宽度为视口全宽"""
+        """列表模式下卡片居中显示，左右各留 10px 间距，滚动条覆盖在卡片之上"""
         list_view = self.files_scroll_area
         if not list_view or not self.file_model:
             return
         viewport_width = list_view.viewport().width()
         if viewport_width <= 0:
             return
-        sb = list_view.verticalScrollBar()
-        extra_gap = int(3 * self.dpi_scale) if (sb and sb.isVisible()) else 0
-        card_width = max(200, viewport_width - extra_gap)
+        edge_padding = int(10 * self.dpi_scale)
+        card_width = max(200, viewport_width - 2 * edge_padding)
         border_w = max(1, int(1 * self.dpi_scale))
         icon_lm = int(4 * self.dpi_scale)
         icon_sz = int(28 * self.dpi_scale)
         card_height = int(2 * border_w + 2 * icon_lm + icon_sz)
         gap = int(4 * self.dpi_scale)
-        list_view.setGridSize(QSize(card_width, card_height + gap))
+        list_view.setGridSize(QSize(viewport_width, card_height + gap))
+        self.file_model.set_grid_offset_x(0)
         self.file_model.set_card_width(card_width, card_height, 1)
     
     def _update_drive_selector(self):
@@ -2190,8 +2126,7 @@ class CustomFileSelector(QWidget):
             self._check_and_apply_preview_state()
 
             if scroll_to_top and hasattr(self, 'files_scroll_area') and self.files_scroll_area:
-                scrollbar = self.files_scroll_area.verticalScrollBar()
-                scrollbar.setValue(0)
+                self.files_scroll_area.scrollToTop()
 
             self._update_grid_size()
             self.files_scroll_area.update()
@@ -2690,20 +2625,21 @@ class CustomFileSelector(QWidget):
         if viewport_width <= 0:
             return
 
-        # 计算卡片基础宽度
+        # 卡片网格使用完整视口宽度，滚动条为覆盖层，不占用布局空间
+        edge_padding = int(10 * self.dpi_scale)
         card_base_width = self._calculate_card_base_width()
         spacing = self._card_spacing
-        leading_edge = spacing // 2
+        margin = edge_padding
         # 列数阈值与卡片宽度都必须按 QListView 的真实起始偏移计算，
-        # 这样 resize 时不会出现“先换列，再因宽度变化切回去”的反馈抖动。
-        available_width = max(0, viewport_width - leading_edge)
+        # 这样 resize 时不会出现"先换列，再因宽度变化切回去"的反馈抖动。
+        available_width = max(0, viewport_width - 2 * margin)
 
         cell_base_width = card_base_width + spacing
         max_cols = max(1, available_width // max(1, cell_base_width))
 
         # 先确定列数，再在该列数内部平滑放大卡片。
         # 这样宽度变化不会反过来重新触发列数回跳。
-        cell_width = max(cell_base_width, viewport_width // max_cols)
+        cell_width = max(cell_base_width, available_width // max_cols)
         card_width = max(card_base_width, cell_width - spacing)
 
         # 卡片高度
@@ -2714,6 +2650,12 @@ class CustomFileSelector(QWidget):
         list_view.setSpacing(0)
         grid_size = QSize(card_width + spacing, card_height + spacing)
         list_view.setGridSize(grid_size)
+
+        # 计算网格水平居中偏移
+        total_grid_width = max_cols * (card_width + spacing) - spacing
+        left_margin = max(edge_padding, (viewport_width - total_grid_width) // 2)
+        grid_offset_x = left_margin - spacing // 2
+        self.file_model.set_grid_offset_x(grid_offset_x)
 
         # 更新 Model 的卡片宽度，以便 Delegate 绘制时使用
         self.file_model.set_card_width(card_width, card_height, max_cols)
@@ -2829,7 +2771,11 @@ class CustomFileSelector(QWidget):
         if file_info.get("is_dir"):
             self._on_folder_clicked(file_info["path"])
         else:
-            self.file_selected.emit(file_info)
+            file_path = os.path.normpath(file_info.get("path", ""))
+            if self.previewing_file_path and file_path == self.previewing_file_path:
+                self.preview_cancel_requested.emit()
+            else:
+                self.file_selected.emit(file_info)
     
     def _on_folder_clicked(self, file_path):
         """处理文件夹左键点击 - 直接进入目录"""
@@ -3534,87 +3480,6 @@ class CustomFileSelector(QWidget):
 
         # debug(f"完成处理拖拽的文件: {file_path}")
     
-    def _update_timeline_button_visibility(self):
-        """
-        根据设置更新时间线按钮的显示/隐藏状态
-        """
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager') and hasattr(self, 'timeline_btn'):
-            timeline_enabled = app.settings_manager.get_setting("file_selector.timeline_view_enabled", False)
-            self.timeline_btn.setVisible(timeline_enabled)
-
-    def _show_timeline_window(self):
-        """
-        显示时间线窗口：先生成CSV文件，再显示时间线
-        """
-        from freeassetfilter.components.auto_timeline import AutoTimeline
-        from freeassetfilter.widgets.progress_widgets import D_ProgressBar
-        from freeassetfilter.core.timeline_generator import FolderScanner
-        
-        # 创建自定义提示弹窗
-        progress_dialog = CustomMessageBox(self)
-        progress_dialog.setModal(True)
-        progress_dialog.set_title("生成CSV文件")
-        progress_dialog.set_text("正在生成CSV文件，请稍候...")
-        
-        # 创建进度条
-        progress_bar = D_ProgressBar(is_interactive=False)
-        progress_bar.setRange(0, 1000)
-        progress_bar.setValue(0)
-        progress_dialog.set_progress(progress_bar)
-        
-        # 添加取消按钮
-        progress_dialog.set_buttons(["取消"], orientations=Qt.Horizontal)
-        
-        # 初始化结果变量
-        csv_path = ""
-        events = []
-        cancel_flag = False
-        
-        def on_progress_update(current, total):
-            """更新进度条"""
-            if total > 0:
-                progress = int((current / total) * 100)
-                progress_bar.setValue(progress)
-        
-        def on_csv_generated(result_events, result_csv_path, json_path):
-            """CSV文件生成完成"""
-            nonlocal csv_path, events
-            if not cancel_flag:
-                csv_path = result_csv_path
-                events = result_events
-                progress_dialog.close()
-        
-        def on_button_clicked(button_index):
-            """处理按钮点击事件"""
-            nonlocal cancel_flag
-            if button_index == 0:  # 取消按钮
-                cancel_flag = True
-                scanner.terminate()  # 停止FolderScanner线程
-                progress_dialog.close()
-        
-        # 连接按钮点击信号
-        progress_dialog.buttonClicked.connect(on_button_clicked)
-        
-        # 创建并启动FolderScanner线程
-        scanner = FolderScanner(self.current_path)
-        scanner.scan_finished.connect(on_csv_generated)
-        scanner.progress.connect(on_progress_update)
-        scanner.start()
-        
-        # 显示进度对话框
-        progress_dialog.exec()
-        
-        # 如果CSV文件生成成功，显示时间线组件
-        if csv_path:
-            # 创建并显示时间线窗口 - 使用实例变量防止垃圾回收
-            self.timeline_window = AutoTimeline()
-            self.timeline_window.setWindowFlags(Qt.Window)
-            self.timeline_window.show()
-            
-            # 直接导入生成的CSV文件
-            self.timeline_window.import_csv(csv_path)
-    
     def set_previewing_file(self, file_path):
         self.previewing_file_path = os.path.normpath(file_path) if file_path else None
         self.clear_previewing_state()
@@ -3625,15 +3490,10 @@ class CustomFileSelector(QWidget):
         self.file_model.clear_previewing()
     
     def scroll_to_file(self, file_info):
-        """
-        滚动到指定文件的位置，将目标卡片滚动到显示区域的第一行
-        如果滚动范围不足，则滚动到最底部
-        """
         if not file_info or 'path' not in file_info:
             return
 
         target_path = os.path.normpath(file_info['path'])
-
         row = self.file_model.get_row(target_path)
         if row < 0:
             return
@@ -3642,40 +3502,8 @@ class CustomFileSelector(QWidget):
         if not list_view:
             return
 
-        vertical_scrollbar = list_view.verticalScrollBar()
-        max_cols = self._calculate_max_columns()
-        if max_cols <= 0:
-            max_cols = 3
-
-        # 计算目标视觉行号
-        target_row = row // max_cols
-        spacing = int(5 * self.dpi_scale)
-        card_height = int(75 * self.dpi_scale)
-
-        # 计算滚动位置：目标行 * (卡片高度 + 间距)
-        desired_scroll_pos = target_row * (card_height + spacing)
-
-        viewport_height = list_view.viewport().height()
-        max_scroll = vertical_scrollbar.maximum()
-
-        # 如果卡片高度大于视口高度（单卡片超出一屏），调整滚动位置
-        if card_height > viewport_height:
-            desired_scroll_pos = target_row * (card_height + spacing) + card_height - viewport_height
-
-        # 限制在有效范围内
-        desired_scroll_pos = max(0, min(desired_scroll_pos, max_scroll))
-
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
-
-        if hasattr(self, "_scroll_to_file_animation") and self._scroll_to_file_animation:
-            self._scroll_to_file_animation.stop()
-
-        self._scroll_to_file_animation = QPropertyAnimation(vertical_scrollbar, b"value", self)
-        self._scroll_to_file_animation.setDuration(220)
-        self._scroll_to_file_animation.setEasingCurve(QEasingCurve.OutCubic)
-        self._scroll_to_file_animation.setStartValue(vertical_scrollbar.value())
-        self._scroll_to_file_animation.setEndValue(desired_scroll_pos)
-        self._scroll_to_file_animation.start()
+        index = self.file_model.index(row, 0)
+        list_view.scrollTo(index, QAbstractItemView.PositionAtTop)
 
 # 使用项目中的自定义提示弹窗实现CSV生成进度显示
 
