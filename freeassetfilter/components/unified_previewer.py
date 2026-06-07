@@ -110,6 +110,7 @@ class UnifiedPreviewer(QWidget):
         app = QApplication.instance()
         colors = {
             "panel_background": "#f1f3f5",
+            "window_background": "#f1f3f5",
             "base_color": "#212121",
             "normal_color": "#717171",
             "secondary_color": "#FFFFFF",
@@ -117,6 +118,7 @@ class UnifiedPreviewer(QWidget):
 
         if hasattr(app, "settings_manager"):
             colors["panel_background"] = app.settings_manager.get_setting("appearance.colors.panel_background", colors["panel_background"])
+            colors["window_background"] = app.settings_manager.get_setting("appearance.colors.auxiliary_color", colors["window_background"])
             colors["base_color"] = app.settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
             colors["normal_color"] = app.settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
             colors["secondary_color"] = app.settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
@@ -140,12 +142,12 @@ class UnifiedPreviewer(QWidget):
 
         if hasattr(self, "preview_area") and self.preview_area:
             self.preview_area.setStyleSheet(
-                f"#PreviewArea {{ background-color: {colors['panel_background']}; border: 1px solid {colors['normal_color']}; }}"
+                f"#PreviewArea {{ background-color: {colors['window_background']}; border: 1px solid {colors['normal_color']}; }}"
             )
 
         if hasattr(self, "info_group") and self.info_group:
             self.info_group.setStyleSheet(
-                f"#InfoGroup {{ background-color: {colors['panel_background']}; border: 1px solid {colors['normal_color']}; }}"
+                f"#InfoGroup {{ background-color: {colors['window_background']}; border: 1px solid {colors['normal_color']}; }}"
             )
 
         if hasattr(self, "default_label") and self.default_label:
