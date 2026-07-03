@@ -22,12 +22,46 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout, QApplication
 from PySide6.QtGui import QGuiApplication
 import os
+import re
 
 from .settings_manager import SettingsManager
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
+
+
+# ── 编译正则表达式（模块级，只编译一次） ──────────────────────────────
+# 为 SVG 颜色替换优化：将 24 个 re.sub() 调用合并为模块级编译模式
+_RE_PATH_NO_FILL = re.compile(
+    r'<path\b(?!.*\bfill\s*=)(?!.*\bclass\s*=)',
+    re.IGNORECASE,
+)
+_RE_STROKE_WHITE = re.compile(r'stroke="#FFFFFF"', re.IGNORECASE)
+_RE_STROKE_WHITE_SHORT = re.compile(r'stroke="#FFF"', re.IGNORECASE)
+_RE_STROKE_BLACK = re.compile(r'stroke="#000000"', re.IGNORECASE)
+_RE_STROKE_BLACK_SHORT = re.compile(r'stroke="#000"', re.IGNORECASE)
+_RE_FILL_WHITE = re.compile(r'fill="#FFFFFF"', re.IGNORECASE)
+_RE_FILL_WHITE_SHORT = re.compile(r'fill="#FFF"', re.IGNORECASE)
+_RE_FILL_BLACK = re.compile(r'fill="#000000"', re.IGNORECASE)
+_RE_FILL_BLACK_SHORT = re.compile(r'fill="#000"', re.IGNORECASE)
+_RE_CSS_FILL_WHITE = re.compile(r'(fill:\s*)#FFFFFF', re.IGNORECASE)
+_RE_CSS_FILL_WHITE_SHORT = re.compile(r'(fill:\s*)#FFF', re.IGNORECASE)
+_RE_CSS_FILL_BLACK = re.compile(r'(fill:\s*)#000000', re.IGNORECASE)
+_RE_CSS_FILL_BLACK_SHORT = re.compile(r'(fill:\s*)#000\b', re.IGNORECASE)
+_RE_ACCENT = re.compile(r'#0a59f7', re.IGNORECASE)
+_RE_STROKE_NORMAL = re.compile(r'stroke="#cecece"', re.IGNORECASE)
+_RE_FILL_NORMAL = re.compile(r'fill="#cecece"', re.IGNORECASE)
+_RE_CSS_FILL_NORMAL = re.compile(r'(fill:\s*)#cecece', re.IGNORECASE)
+_RE_CSS_STROKE_NORMAL = re.compile(r'(stroke:\s*)#cecece', re.IGNORECASE)
+
+
+def _smart_render_size(target_width: int, target_height: int, dpr: float) -> int:
+    """
+    根据目标尺寸和设备像素比计算智能渲染尺寸。
+    保证至少 64px 以避免小图标模糊，同时不超过必要大小以提升性能。
+    """
+    return max(max(target_width, target_height), 64) * dpr
 
 
 class SvgRenderer:
@@ -50,8 +84,6 @@ class SvgRenderer:
         """
         with track_perf("svg.replace_colors"):
             try:
-                import re
-
                 increment_perf_counter("svg.replace_colors", "invocations")
                 settings_manager = SettingsManager()
                 accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
@@ -62,45 +94,41 @@ class SvgRenderer:
                 black_replacement_color = base_color if force_black_to_base else secondary_color
                 processed_svg = svg_content
 
-                processed_svg = re.sub(
-                    r'<path\b(?!.*\bfill\s*=)(?!.*\bclass\s*=)',
-                    r'<path fill="#000000"',
-                    processed_svg,
-                    flags=re.IGNORECASE,
-                )
+                # 使用模块级编译的正则表达式，避免重复编译
+                processed_svg = _RE_PATH_NO_FILL.sub(r'<path fill="#000000"', processed_svg)
 
                 if invert_white_to_black:
-                    processed_svg = re.sub(r'stroke="#FFFFFF"', 'stroke="#000000"', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'stroke="#FFF"', 'stroke="#000000"', processed_svg, flags=re.IGNORECASE)
+                    processed_svg = _RE_STROKE_WHITE.sub('stroke="#000000"', processed_svg)
+                    processed_svg = _RE_STROKE_WHITE_SHORT.sub('stroke="#000000"', processed_svg)
                 else:
-                    processed_svg = re.sub(r'stroke="#FFFFFF"', f'stroke="{base_color}"', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'stroke="#FFF"', f'stroke="{base_color}"', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'stroke="#000000"', f'stroke="{black_replacement_color}"', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'stroke="#000"', f'stroke="{black_replacement_color}"', processed_svg, flags=re.IGNORECASE)
+                    processed_svg = _RE_STROKE_WHITE.sub(f'stroke="{base_color}"', processed_svg)
+                    processed_svg = _RE_STROKE_WHITE_SHORT.sub(f'stroke="{base_color}"', processed_svg)
+                    processed_svg = _RE_STROKE_BLACK.sub(f'stroke="{black_replacement_color}"', processed_svg)
+                    processed_svg = _RE_STROKE_BLACK_SHORT.sub(f'stroke="{black_replacement_color}"', processed_svg)
 
                 if invert_white_to_black:
-                    processed_svg = re.sub(r'fill="#FFFFFF"', 'fill="#000000"', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'fill="#FFF"', 'fill="#000000"', processed_svg, flags=re.IGNORECASE)
+                    processed_svg = _RE_FILL_WHITE.sub('fill="#000000"', processed_svg)
+                    processed_svg = _RE_FILL_WHITE_SHORT.sub('fill="#000000"', processed_svg)
                 else:
-                    processed_svg = re.sub(r'fill="#FFFFFF"', f'fill="{base_color}"', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'fill="#FFF"', f'fill="{base_color}"', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'fill="#000000"', f'fill="{black_replacement_color}"', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'fill="#000"', f'fill="{black_replacement_color}"', processed_svg, flags=re.IGNORECASE)
+                    processed_svg = _RE_FILL_WHITE.sub(f'fill="{base_color}"', processed_svg)
+                    processed_svg = _RE_FILL_WHITE_SHORT.sub(f'fill="{base_color}"', processed_svg)
+                    processed_svg = _RE_FILL_BLACK.sub(f'fill="{black_replacement_color}"', processed_svg)
+                    processed_svg = _RE_FILL_BLACK_SHORT.sub(f'fill="{black_replacement_color}"', processed_svg)
 
                 if invert_white_to_black:
-                    processed_svg = re.sub(r'(fill:\s*)#FFFFFF', r'\1#000000', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'(fill:\s*)#FFF', r'\1#000000', processed_svg, flags=re.IGNORECASE)
+                    processed_svg = _RE_CSS_FILL_WHITE.sub(r'\1#000000', processed_svg)
+                    processed_svg = _RE_CSS_FILL_WHITE_SHORT.sub(r'\1#000000', processed_svg)
                 else:
-                    processed_svg = re.sub(r'(fill:\s*)#FFFFFF', f'fill: {base_color}', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'(fill:\s*)#FFF', f'fill: {base_color}', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'(fill:\s*)#000000', f'fill: {black_replacement_color}', processed_svg, flags=re.IGNORECASE)
-                    processed_svg = re.sub(r'(fill:\s*)#000\b', f'fill: {black_replacement_color}', processed_svg, flags=re.IGNORECASE)
+                    processed_svg = _RE_CSS_FILL_WHITE.sub(f'fill: {base_color}', processed_svg)
+                    processed_svg = _RE_CSS_FILL_WHITE_SHORT.sub(f'fill: {base_color}', processed_svg)
+                    processed_svg = _RE_CSS_FILL_BLACK.sub(f'fill: {black_replacement_color}', processed_svg)
+                    processed_svg = _RE_CSS_FILL_BLACK_SHORT.sub(f'fill: {black_replacement_color}', processed_svg)
 
-                processed_svg = re.sub(r'#0a59f7', accent_color, processed_svg, flags=re.IGNORECASE)
-                processed_svg = re.sub(r'stroke="#cecece"', f'stroke="{normal_color}"', processed_svg, flags=re.IGNORECASE)
-                processed_svg = re.sub(r'fill="#cecece"', f'fill="{normal_color}"', processed_svg, flags=re.IGNORECASE)
-                processed_svg = re.sub(r'(fill:\s*)#cecece', f'fill: {normal_color}', processed_svg, flags=re.IGNORECASE)
-                processed_svg = re.sub(r'(stroke:\s*)#cecece', f'stroke: {normal_color}', processed_svg, flags=re.IGNORECASE)
+                processed_svg = _RE_ACCENT.sub(accent_color, processed_svg)
+                processed_svg = _RE_STROKE_NORMAL.sub(f'stroke="{normal_color}"', processed_svg)
+                processed_svg = _RE_FILL_NORMAL.sub(f'fill="{normal_color}"', processed_svg)
+                processed_svg = _RE_CSS_FILL_NORMAL.sub(f'fill: {normal_color}', processed_svg)
+                processed_svg = _RE_CSS_STROKE_NORMAL.sub(f'stroke: {normal_color}', processed_svg)
 
                 return processed_svg
             except (OSError, ValueError) as e:
@@ -433,8 +461,9 @@ class SvgRenderer:
             # 使用QSvgRenderer渲染
             svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
             
-            # 使用256x256的超分辨率进行渲染，确保图标清晰
-            render_size = 256
+            # 使用智能渲染尺寸，保证小图标清晰同时避免不必要的开销
+            dpr = QGuiApplication.primaryScreen().devicePixelRatio()
+            render_size = _smart_render_size(icon_size, icon_size, dpr)
             
             # 创建一个QImage，使用ARGB32_Premultiplied格式以支持正确的透明度
             image = QImage(render_size, render_size, QImage.Format_ARGB32_Premultiplied)
@@ -542,7 +571,8 @@ class SvgRenderer:
                     target_width = icon_size
                     target_height = icon_size
 
-                render_size = 256
+                dpr = QGuiApplication.primaryScreen().devicePixelRatio()
+                render_size = _smart_render_size(target_width, target_height, dpr)
                 is_main_thread = QThread.currentThread() == QApplication.instance().thread()
                 increment_perf_counter(
                     "svg.render_pixmap",
@@ -725,7 +755,7 @@ class SvgRenderer:
                     is_unified_style = " – 2.svg" in icon_path
                     is_textured_archive = "压缩文件 – 1.svg" in icon_path
                     if is_unified_style:
-                        base_color = SvgRenderer._get_base_color()
+                        base_color = SettingsManager().get_setting("appearance.colors.base_color", "#f1f3f5")
                         text_label.setStyleSheet(
                             f'color: {base_color}; font: {base_font_size}pt "{font.family()}"; '
                             'font-weight: bold; background: transparent;'
@@ -889,12 +919,13 @@ class SvgRenderer:
             # 使用预处理后的SVG内容创建渲染器
             svg_renderer = QSvgRenderer(processed_svg.encode('utf-8'))
             
-            # 使用256x256的超分辨率进行渲染，确保图标清晰
-            render_size = 256
+            # 使用智能渲染尺寸，保证小图标清晰同时避免不必要的开销
+            dpr = QGuiApplication.primaryScreen().devicePixelRatio()
+            render_size = _smart_render_size(icon_size, icon_size, dpr)
             
             # 创建一个透明背景的QPixmap
             pixmap = QPixmap(render_size, render_size)
-            pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
+            pixmap.setDevicePixelRatio(dpr)
             pixmap.fill(Qt.transparent)
             
             # 创建画家，设置透明背景和高质量渲染

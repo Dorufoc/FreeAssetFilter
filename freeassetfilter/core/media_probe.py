@@ -7,13 +7,14 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from freeassetfilter.utils.app_logger import debug, info, warning
 from freeassetfilter.utils.path_utils import contains_injection_chars, is_sensitive_path, validate_safe_path
@@ -114,68 +115,64 @@ def warmup_ffmpeg_tools(force: bool = False) -> Dict[str, bool]:
     - ffprobe 版本查询：提前拉起探测进程与依赖
     - ffmpeg 版本查询：提前拉起 ffmpeg 主体
     - ffmpeg -hwaccels：提前触发硬解能力枚举相关初始化
+
+    优化：使用 ThreadPoolExecutor 并行执行 3 个子进程调用，
+    锁 _FFMPEG_WARMUP_LOCK 仅保护写入 _FFMPEG_WARMUP_RESULT 的临界区。
     """
     global _FFMPEG_WARMUP_RESULT
 
-    with _FFMPEG_WARMUP_LOCK:
-        if _FFMPEG_WARMUP_RESULT is not None and not force:
-            debug("使用缓存的预热结果")
-            return dict(_FFMPEG_WARMUP_RESULT)
+    # 快速路径：不带锁检查缓存（CPython GIL 保证原子性）
+    if not force and _FFMPEG_WARMUP_RESULT is not None:
+        debug("使用缓存的预热结果")
+        return dict(_FFMPEG_WARMUP_RESULT)
 
-        ffprobe_path = get_ffprobe_path()
-        ffmpeg_path = get_ffmpeg_path()
+    ffprobe_path = get_ffprobe_path()
+    ffmpeg_path = get_ffmpeg_path()
 
-        result = {
-            "ffprobe_version": _run_warmup_command(
-                [ffprobe_path, "-version"],
-                label="ffprobe -version",
-                timeout=min(5, FFPROBE_TIMEOUT),
-            ),
-            "ffmpeg_version": _run_warmup_command(
-                [ffmpeg_path, "-hide_banner", "-version"],
-                label="ffmpeg -version",
-                timeout=min(5, FFMPEG_TIMEOUT),
-            ),
-            "ffmpeg_hwaccels": _run_warmup_command(
-                [ffmpeg_path, "-hide_banner", "-hwaccels"],
-                label="ffmpeg -hwaccels",
-                timeout=min(5, FFMPEG_TIMEOUT),
-            ),
+    # 并行执行 3 个子进程预热任务
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    tasks: Dict[str, tuple] = {
+        "ffprobe_version": ([ffprobe_path, "-version"], "ffprobe -version", min(5, FFPROBE_TIMEOUT)),
+        "ffmpeg_version": ([ffmpeg_path, "-hide_banner", "-version"], "ffmpeg -version", min(5, FFMPEG_TIMEOUT)),
+        "ffmpeg_hwaccels": ([ffmpeg_path, "-hide_banner", "-hwaccels"], "ffmpeg -hwaccels", min(5, FFMPEG_TIMEOUT)),
+    }
+
+    result: Dict[str, bool] = {}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_map = {
+            executor.submit(_run_warmup_command, *args): name
+            for name, args in tasks.items()
         }
+        for future in as_completed(future_map):
+            name = future_map[future]
+            try:
+                result[name] = future.result()
+            except Exception as e:
+                debug(f"预热任务 {name} 异常: {e}")
+                result[name] = False
 
-        _FFMPEG_WARMUP_RESULT = dict(result)
-        debug(f"预热完成: ffprobe={result['ffprobe_version']}, ffmpeg={result['ffmpeg_version']}")
-        return dict(result)
+    # 窄锁：仅保护写入缓存
+    with _FFMPEG_WARMUP_LOCK:
+        if _FFMPEG_WARMUP_RESULT is None or force:
+            _FFMPEG_WARMUP_RESULT = dict(result)
+
+    debug(f"预热完成: ffprobe={result.get('ffprobe_version')}, ffmpeg={result.get('ffmpeg_version')}")
+    return dict(result)
 
 
-def run_ffprobe_json(
+@functools.lru_cache(maxsize=128)
+def _run_ffprobe_json_cached(
     file_path: str,
-    *,
-    show_format: bool = True,
-    show_streams: bool = True,
-    extra_entries: Optional[List[str]] = None,
-    timeout: int = FFPROBE_TIMEOUT,
+    show_format: bool,
+    show_streams: bool,
+    extra_entries: Optional[Tuple[str, ...]],
+    timeout: int,
+    file_mtime: float,
 ) -> Optional[Dict[str, Any]]:
     """
-    运行 ffprobe 并返回 JSON 结果
+    缓存的 ffprobe 执行逻辑（cache key 包含文件 mtime 以自动失效）
     """
-    try:
-        file_path = validate_safe_path(file_path)
-    except ValueError as e:
-        increment_perf_counter("media_probe.run_ffprobe_json", "invalid_path")
-        debug(f"路径验证失败: {e}")
-        return None
-
-    if contains_injection_chars(file_path):
-        increment_perf_counter("media_probe.run_ffprobe_json", "injection_blocked")
-        debug("ffprobe 路径包含命令注入风险字符")
-        return None
-
-    if is_sensitive_path(file_path):
-        increment_perf_counter("media_probe.run_ffprobe_json", "sensitive_path_blocked")
-        debug("ffprobe 路径命中敏感系统路径，已拒绝")
-        return None
-
     debug(f"开始探测媒体: {file_path}")
     with track_perf("media_probe.run_ffprobe_json"):
         set_perf_metadata("media_probe.run_ffprobe_json", "last_timeout", timeout)
@@ -255,6 +252,48 @@ def run_ffprobe_json(
             increment_perf_counter("media_probe.run_ffprobe_json", "json_parse_failure")
             debug(f"解析 ffprobe JSON 失败: {file_path}, 错误: {e}")
             return None
+
+
+def run_ffprobe_json(
+    file_path: str,
+    *,
+    show_format: bool = True,
+    show_streams: bool = True,
+    extra_entries: Optional[List[str]] = None,
+    timeout: int = FFPROBE_TIMEOUT,
+) -> Optional[Dict[str, Any]]:
+    """
+    运行 ffprobe 并返回 JSON 结果
+
+    使用 LRU 缓存避免对同一文件重复执行子进程。
+    """
+    try:
+        file_path = validate_safe_path(file_path)
+    except ValueError as e:
+        increment_perf_counter("media_probe.run_ffprobe_json", "invalid_path")
+        debug(f"路径验证失败: {e}")
+        return None
+
+    if contains_injection_chars(file_path):
+        increment_perf_counter("media_probe.run_ffprobe_json", "injection_blocked")
+        debug("ffprobe 路径包含命令注入风险字符")
+        return None
+
+    if is_sensitive_path(file_path):
+        increment_perf_counter("media_probe.run_ffprobe_json", "sensitive_path_blocked")
+        debug("ffprobe 路径命中敏感系统路径，已拒绝")
+        return None
+
+    # 获取文件 mtime 作为缓存失效依据
+    try:
+        file_mtime = os.path.getmtime(file_path)
+    except OSError:
+        file_mtime = 0.0
+
+    extra_tuple = tuple(extra_entries) if extra_entries else None
+    return _run_ffprobe_json_cached(
+        file_path, show_format, show_streams, extra_tuple, timeout, file_mtime,
+    )
 
 
 def _safe_float(value: Any) -> Optional[float]:

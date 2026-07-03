@@ -44,7 +44,7 @@ from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.file_staging_pool_model import FileStagingPoolListModel, FileStagingPoolListView
 from freeassetfilter.widgets.file_staging_pool_delegate import FileStagingPoolCardDelegate
 from PySide6.QtCore import (
-    Qt, Signal, Slot, QFileInfo, QThread, QMetaObject, Q_ARG, QObject, QRunnable, QTimer
+    Qt, Signal, Slot, QFileInfo, QThread, QMetaObject, Q_ARG, QObject, QRunnable, QTimer, QEventLoop
 )
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QAction
 
@@ -2197,8 +2197,6 @@ class FileStagingPool(QWidget):
         Returns:
             int: 总大小字节数
         """
-        import time
-
         total_size = 0
         calculating_folders = []
 
@@ -2218,39 +2216,87 @@ class FileStagingPool(QWidget):
                 except (OSError, PermissionError, FileNotFoundError) as e:
                     warning(f"计算文件大小失败: {e}")
 
-        # 等待正在计算中的文件夹
-        max_wait_time = 30
-        wait_interval = 0.5
-        elapsed_time = 0
+        if not calculating_folders:
+            return total_size
 
-        while calculating_folders and elapsed_time < max_wait_time:
-            time.sleep(wait_interval)
-            elapsed_time += wait_interval
+        # 使用工作线程 + QEventLoop 等待计算完成，避免阻塞UI
+        import time
 
-            still_calculating = []
-            for folder_path in calculating_folders:
-                for item in self.items:
-                    if item["path"] == folder_path:
-                        if item.get("size_calculating") is True:
-                            still_calculating.append(folder_path)
-                        elif item.get("size") is not None:
-                            total_size += item["size"]
-                        break
-                else:
-                    try:
-                        if os.path.isdir(folder_path):
-                            folder_size = self._sum_folder_file_sizes(folder_path)
-                            if folder_size is not None:
-                                total_size += folder_size
-                    except (OSError, PermissionError, FileNotFoundError) as e:
-                        warning(f"同步计算文件夹大小时失败: {e}")
+        class _SizeWorker(QObject):
+            finished = Signal()
 
-            calculating_folders = still_calculating
+            def __init__(self, pool, initial_folders, base_size, result_ref, timeout_ref):
+                super().__init__()
+                self.pool = pool
+                self.folders = initial_folders
+                self.base_size = base_size
+                self.result_ref = result_ref
+                self.timeout_ref = timeout_ref
 
-        if calculating_folders:
-            warning(f"警告: {len(calculating_folders)}个文件夹体积计算超时，这些文件夹大小将被忽略")
+            def run(self):
+                max_wait_time = 30
+                wait_interval = 0.5
+                elapsed_time = 0
+                folders = list(self.folders)
+                accum_size = self.base_size
 
-        return total_size
+                while folders and elapsed_time < max_wait_time:
+                    time.sleep(wait_interval)
+                    elapsed_time += wait_interval
+
+                    still_calculating = []
+                    for folder_path in folders:
+                        for item in self.pool.items:
+                            if item["path"] == folder_path:
+                                if item.get("size_calculating") is True:
+                                    still_calculating.append(folder_path)
+                                elif item.get("size") is not None:
+                                    accum_size += item["size"]
+                                break
+                        else:
+                            try:
+                                if os.path.isdir(folder_path):
+                                    folder_size = FileStagingPool._sum_folder_file_sizes(folder_path)
+                                    if folder_size is not None:
+                                        accum_size += folder_size
+                            except (OSError, PermissionError, FileNotFoundError) as e:
+                                warning(f"同步计算文件夹大小时失败: {e}")
+
+                    folders = still_calculating
+
+                self.result_ref[0] = accum_size
+                self.timeout_ref[0] = folders
+                self.finished.emit()
+
+        result_holder = [0]
+        timeout_holder = [[]]
+        worker = _SizeWorker(self, calculating_folders, total_size, result_holder, timeout_holder)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+
+        # 等待期间禁用用户交互，防止重入
+        widgets_to_disable = [self.pool_view, self.export_btn, self.import_export_btn, self.clear_btn]
+        for w in widgets_to_disable:
+            w.setEnabled(False)
+
+        thread.start()
+        loop.exec()
+
+        for w in widgets_to_disable:
+            w.setEnabled(True)
+
+        thread.quit()
+        thread.wait()
+
+        timeout_folders = timeout_holder[0]
+        if timeout_folders:
+            warning(f"警告: {len(timeout_folders)}个文件夹体积计算超时，这些文件夹大小将被忽略")
+
+        return result_holder[0]
 
     def copy_files(self, files, target_dir):
         """

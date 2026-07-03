@@ -38,6 +38,7 @@ from PySide6.QtGui import (
     QBitmap,
     QColor,
     QPixmap,
+    QPixmapCache,
     QPainter,
     QMouseEvent,
     QContextMenuEvent,
@@ -614,10 +615,15 @@ class FileSelectorListModel(QAbstractListModel):
             return fallback
 
         try:
+            dpr = self._get_device_pixel_ratio()
+            qp_cache_key = f"faf_norm_{pixmap.cacheKey()}_{icon_size}_{dpr}"
+            cached = QPixmap()
+            if QPixmapCache.find(qp_cache_key, cached) and not cached.isNull():
+                return cached
+
             clean_pixmap = QPixmap.fromImage(pixmap.toImage())
             clean_pixmap.setDevicePixelRatio(1.0)
 
-            dpr = self._get_device_pixel_ratio()
             physical_canvas_size = max(1, int(round(icon_size * dpr)))
 
             image = clean_pixmap.toImage()
@@ -653,6 +659,7 @@ class FileSelectorListModel(QAbstractListModel):
             painter.end()
 
             normalized.setDevicePixelRatio(dpr)
+            QPixmapCache.insert(qp_cache_key, normalized)
             return normalized
         except (RuntimeError, TypeError, ValueError) as error:
             debug(f"规范化图标 Pixmap 失败: {error}")
@@ -891,6 +898,14 @@ class FileSelectorListModel(QAbstractListModel):
         if cached is not None and not cached.isNull():
             return cached
 
+        # QPixmapCache 查找（L2 缓存）
+        qp_cache_key = f"faf_icon_{hash(str(cache_key))}"
+        qp_cached = QPixmap()
+        if QPixmapCache.find(qp_cache_key, qp_cached) and not qp_cached.isNull():
+            # 提升到 L1 缓存
+            self._store_cached_icon(cache_key, qp_cached)
+            return qp_cached
+
         normalized_path = self._normalize_path(file_path)
         is_scroll_optimizing = self._is_scroll_optimizing()
         if source_type == "system_icon":
@@ -911,6 +926,7 @@ class FileSelectorListModel(QAbstractListModel):
             if pixmap and not pixmap.isNull():
                 normalized_pixmap = self._normalize_icon_pixmap(pixmap, icon_size)
                 self._store_cached_icon(cache_key, normalized_pixmap)
+                QPixmapCache.insert(qp_cache_key, normalized_pixmap)
                 return normalized_pixmap
 
         icon_path = resolved_source["icon_path"]
@@ -937,6 +953,7 @@ class FileSelectorListModel(QAbstractListModel):
             if pixmap and not pixmap.isNull():
                 normalized_pixmap = self._normalize_icon_pixmap(pixmap, icon_size)
                 self._store_cached_icon(cache_key, normalized_pixmap)
+                QPixmapCache.insert(qp_cache_key, normalized_pixmap)
                 return normalized_pixmap
 
         placeholder = QPixmap(icon_size, icon_size)

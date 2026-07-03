@@ -562,6 +562,14 @@ class FreeAssetFilterApp(QMainWindow):
             logger.debug(f"[QThreadCleanup] 停止 {name} 时发生异常: {e}")
             return False
 
+    def _cleanup_retired_worker(self, worker):
+        """QThread.finished 信号回调：从 _retired_worker_refs 中自动移除已完成的线程。"""
+        if hasattr(self, '_retired_worker_refs') and worker in self._retired_worker_refs:
+            try:
+                self._retired_worker_refs.remove(worker)
+            except (ValueError, RuntimeError):
+                pass
+
     def _cleanup_all_qthreads_before_exit(self):
         """
         在 closeEvent 中调用，确保所有已知的 QThread 子对象被安全停止。
@@ -590,6 +598,7 @@ class FreeAssetFilterApp(QMainWindow):
             # 保留当前线程引用
             if _silent_worker and _silent_worker.isRunning():
                 self._retired_worker_refs.append(_silent_worker)
+                _silent_worker.finished.connect(lambda w=_silent_worker: self._cleanup_retired_worker(w))
                 debug(f"[QThreadCleanup] 已保留当前静默检查线程引用，防止 GC 提前销毁")
             
             # 保留已退休的线程引用
@@ -597,6 +606,7 @@ class FreeAssetFilterApp(QMainWindow):
             for w in _retired_workers:
                 if w and w.isRunning() and w not in self._retired_worker_refs:
                     self._retired_worker_refs.append(w)
+                    w.finished.connect(lambda worker=w: self._cleanup_retired_worker(worker))
                     debug(f"[QThreadCleanup] 已保留已退休静默检查线程引用")
             
             # 等待所有静默检查线程退出
@@ -608,6 +618,8 @@ class FreeAssetFilterApp(QMainWindow):
                         debug(f"[QThreadCleanup] SilentUpdateCheckWorker 未在 15 秒内退出，将由进程退出时自动回收")
                     else:
                         debug(f"[QThreadCleanup] SilentUpdateCheckWorker 已正常退出")
+                # 清理已完成的线程引用，防止 _retired_worker_refs 无限增长
+                self._retired_worker_refs = [w for w in self._retired_worker_refs if w.isRunning()]
             else:
                 debug(f"[QThreadCleanup] SilentUpdateCheckWorker 未在运行或已取消，无需等待")
             if hasattr(self.update_controller, '_check_worker') and self.update_controller._check_worker:
@@ -1034,8 +1046,9 @@ class FreeAssetFilterApp(QMainWindow):
         self.left_column.setStyleSheet(column_qss)
         left_layout = QVBoxLayout(self.left_column)
 
-        # 内嵌文件选择器A
-        self.file_selector_a = self._create_file_selector_widget()
+        # 内嵌文件选择器A（轻量占位，首帧后替换为真实控件）
+        self.file_selector_a = QWidget()
+        self.file_selector_a.setEnabled(False)
         left_layout.addWidget(self.file_selector_a)
 
         # 中间列：文件临时存储池
@@ -1044,9 +1057,9 @@ class FreeAssetFilterApp(QMainWindow):
         self.middle_column.setStyleSheet(column_qss)
         middle_layout = QVBoxLayout(self.middle_column)
 
-        # 添加文件临时存储池组件
-        from freeassetfilter.components.file_staging_pool import FileStagingPool
-        self.file_staging_pool = FileStagingPool()
+        # 添加文件临时存储池组件（轻量占位，首帧后替换为真实控件）
+        self.file_staging_pool = QWidget()
+        self.file_staging_pool.setEnabled(False)
         middle_layout.addWidget(self.file_staging_pool)
 
         # 右侧列：统一文件预览器
@@ -1055,17 +1068,10 @@ class FreeAssetFilterApp(QMainWindow):
         self.right_column.setStyleSheet(column_qss)
         right_layout = QVBoxLayout(self.right_column)
 
-        # 统一文件预览器
-        from freeassetfilter.components.unified_previewer import UnifiedPreviewer
-        self.unified_previewer = UnifiedPreviewer(self)
+        # 统一文件预览器（轻量占位，首帧后替换为真实控件）
+        self.unified_previewer = QWidget()
+        self.unified_previewer.setEnabled(False)
         right_layout.addWidget(self.unified_previewer, 1)
-        right_margins = right_layout.contentsMargins()
-        right_min_width = (
-            self.unified_previewer.minimumWidth()
-            + right_margins.left()
-            + right_margins.right()
-        )
-        self.right_column.setMinimumWidth(right_min_width)
 
         # 将三列添加到分割器，调整初始比例
         splitter.addWidget(self.left_column)
@@ -1077,33 +1083,6 @@ class FreeAssetFilterApp(QMainWindow):
         column_width = 420
         sizes = [column_width, column_width, column_width]
         splitter.setSizes(sizes)
-
-        # 连接文件选择器的左键点击信号到预览器
-        self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
-        self.file_selector_a.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
-
-        # 连接文件选择器的选中状态变化信号到存储池（自动添加/移除）
-        self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
-
-        # 连接预览器的信号：请求在文件选择器中打开路径，同时传递文件信息以便滚动定位
-        self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
-
-        # 连接文件临时存储池的信号到预览器
-        self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
-        self.file_staging_pool.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
-
-        # 连接文件临时存储池的信号到处理方法，用于从文件选择器中删除文件
-        self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
-
-        # 连接文件临时存储池的信号到处理方法，用于通知文件选择器文件已被添加到储存池
-        self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
-
-        # 连接文件临时存储池的导航信号到处理方法，用于更新文件选择器的路径
-        self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
-
-        # 连接统一预览器的预览状态信号
-        self.unified_previewer.preview_started.connect(self.handle_preview_started)
-        self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
 
         # 添加分割器到主布局
         main_layout.addWidget(splitter, 1)
@@ -1672,15 +1651,66 @@ class FreeAssetFilterApp(QMainWindow):
         # 第二阶段：下一轮事件循环再执行主窗口主题刷新
         QTimer.singleShot(0, lambda: self._perform_theme_update_refresh(preview_file_info))
 
+    def _create_real_widgets_deferred(self):
+        """在窗口显示后创建真实重量级控件（延迟加载以加速首帧渲染）"""
+        if self._is_closing:
+            return
+
+        try:
+            # 1. 从布局中移除占位控件
+            left_layout = self.left_column.layout()
+            middle_layout = self.middle_column.layout()
+            right_layout = self.right_column.layout()
+
+            left_layout.removeWidget(self.file_selector_a)
+            middle_layout.removeWidget(self.file_staging_pool)
+            right_layout.removeWidget(self.unified_previewer)
+
+            # 2. 创建真实的 file_selector
+            from freeassetfilter.components.file_selector import CustomFileSelector
+            self.file_selector_a = CustomFileSelector()
+            self.file_selector_a.setEnabled(True)
+            left_layout.addWidget(self.file_selector_a)
+
+            # 3. 创建真实的 file_staging_pool
+            from freeassetfilter.components.file_staging_pool import FileStagingPool
+            self.file_staging_pool = FileStagingPool()
+            self.file_staging_pool.setEnabled(True)
+            middle_layout.addWidget(self.file_staging_pool)
+
+            # 4. 创建真实的 unified_previewer
+            from freeassetfilter.components.unified_previewer import UnifiedPreviewer
+            self.unified_previewer = UnifiedPreviewer(self)
+            self.unified_previewer.setEnabled(True)
+            right_layout.addWidget(self.unified_previewer, 1)
+
+            # 5. 重建信号连接
+            self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
+            self.file_selector_a.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
+            self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
+            self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
+            self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
+            self.file_staging_pool.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
+            self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
+            self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
+            self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
+            self.unified_previewer.preview_started.connect(self.handle_preview_started)
+            self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
+
+            debug("延迟控件创建完成")
+        except Exception as e:
+            error(f"延迟创建控件失败: {e}")
+
     def schedule_startup_tasks(self):
         """
         在首屏显示后分阶段执行启动任务，避免阻塞窗口显示
         更新检查延迟到所有后台任务（备份恢复、预热、清理）完成后触发
         """
+        QTimer.singleShot(0, self._create_real_widgets_deferred)  # 首帧后立即创建真实控件
         QTimer.singleShot(0, self._load_fonts_async)
         QTimer.singleShot(0, self._lazy_import_pillow_avif)
         QTimer.singleShot(100, self.check_and_restore_backup)
-        QTimer.singleShot(400, self._start_background_warmup)
+        QTimer.singleShot(0, self._start_background_warmup)
         QTimer.singleShot(800, self._schedule_thumbnail_cleanup)
         # 延迟创建 UpdateController，避免 urllib/http import 链阻塞首帧
         QTimer.singleShot(600, self._init_update_controller_deferred)
@@ -2218,6 +2248,9 @@ def _parse_internal_worker_args(argv):
 def _wait_for_process_exit(pid, timeout_seconds=30):
     """
     等待指定进程退出
+
+    NOTE: 仅在 --faf-run-installer 子进程中调用，不在 GUI 主线程中运行，
+    因此 time.sleep() 轮询在这里是可接受的，不会阻塞 UI。
     """
     try:
         pid = int(pid)
@@ -2803,6 +2836,10 @@ def main():
                 pass
 
     app = QApplication(sys.argv)
+
+    # 设置 QPixmapCache 全局缓存上限为 50MB（L2 缓存层，配合各组件 L1 缓存使用）
+    from PySide6.QtGui import QPixmapCache
+    QPixmapCache.setCacheLimit(50 * 1024 * 1024)
 
     # 将关联文件路径存储到app对象，供其他组件访问
     app.associated_file_path = associated_file_path

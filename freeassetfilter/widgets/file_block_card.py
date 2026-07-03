@@ -36,6 +36,7 @@ from PySide6.QtCore import (
     QRectF,
 )
 from PySide6.QtGui import (
+    QBitmap,
     QFont,
     QFontMetrics,
     QPixmap,
@@ -45,6 +46,7 @@ from PySide6.QtGui import (
     QPen,
     QFontDatabase,
     QPalette,
+    QRegion,
 )
 
 from freeassetfilter.core.svg_renderer import SvgRenderer
@@ -409,7 +411,7 @@ class FileBlockCard(QWidget):
     @classmethod
     def _process_deferred_icon_updates(cls):
         processed = 0
-        max_batch = 4
+        max_batch = 30
 
         while cls._deferred_icon_queue and processed < max_batch:
             ref = cls._deferred_icon_queue.pop(0)
@@ -1503,27 +1505,15 @@ class FileBlockCard(QWidget):
             image_width = source_image.width()
             image_height = source_image.height()
 
-            min_x = image_width
-            min_y = image_height
-            max_x = -1
-            max_y = -1
-
-            for y in range(image_height):
-                for x in range(image_width):
-                    if QColor.fromRgba(source_image.pixel(x, y)).alpha() > 0:
-                        if x < min_x:
-                            min_x = x
-                        if y < min_y:
-                            min_y = y
-                        if x > max_x:
-                            max_x = x
-                        if y > max_y:
-                            max_y = y
-
-            if max_x < min_x or max_y < min_y:
+            alpha_mask = source_image.createAlphaMask()
+            if alpha_mask.isNull():
                 return pixmap
 
-            source_rect = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+            bounds = QRegion(QBitmap.fromImage(alpha_mask)).boundingRect()
+            if bounds.isNull() or bounds.width() <= 0 or bounds.height() <= 0:
+                return pixmap
+
+            source_rect = bounds
             full_rect = QRect(0, 0, image_width, image_height)
             if source_rect == full_rect:
                 return pixmap
@@ -1581,25 +1571,11 @@ class FileBlockCard(QWidget):
             # 自动裁掉纯透明边缘，确保视觉内容真正居中
             try:
                 image = clean_pixmap.toImage()
-                min_x = image.width()
-                min_y = image.height()
-                max_x = -1
-                max_y = -1
-
-                for y in range(image.height()):
-                    for x in range(image.width()):
-                        if QColor.fromRgba(image.pixel(x, y)).alpha() > 0:
-                            if x < min_x:
-                                min_x = x
-                            if y < min_y:
-                                min_y = y
-                            if x > max_x:
-                                max_x = x
-                            if y > max_y:
-                                max_y = y
-
-                if max_x >= min_x and max_y >= min_y:
-                    source_rect = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+                alpha_mask = image.createAlphaMask()
+                if not alpha_mask.isNull():
+                    bounds = QRegion(QBitmap.fromImage(alpha_mask)).boundingRect()
+                    if not bounds.isNull() and bounds.width() > 0 and bounds.height() > 0:
+                        source_rect = bounds
             except (RuntimeError, ValueError, TypeError) as crop_error:
                 debug(f"裁切图标透明边缘失败，回退使用完整区域: {crop_error}")
 

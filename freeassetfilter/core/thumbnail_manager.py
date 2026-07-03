@@ -43,13 +43,18 @@ from freeassetfilter.utils.perf_metrics import (
 )
 from freeassetfilter.utils.subprocess_utils import run_with_limited_output
 
-# 尝试导入PIL库
-PIL_AVAILABLE = False
-try:
-    from PIL import Image, ImageDraw
-    PIL_AVAILABLE = True
-except ImportError:
-    warning("PIL库未安装，缩略图功能受限")
+# 惰性导入 PIL（启动时不再加载）
+_PIL_AVAILABLE = None
+
+def _ensure_pil():
+    global _PIL_AVAILABLE
+    if _PIL_AVAILABLE is None:
+        try:
+            from PIL import Image, ImageDraw
+            _PIL_AVAILABLE = True
+        except ImportError:
+            _PIL_AVAILABLE = False
+    return _PIL_AVAILABLE
 
 
 @dataclass
@@ -273,9 +278,18 @@ class ThumbnailManager:
         self._processing_lock = threading.Lock()
 
         # 进程内直连视频解码限流：
-        # 批量模式下的视频任务已经通过“1条硬解队列 + 2条软解队列 + 子进程隔离”调度，
+        # 批量模式下的视频任务已经通过"1条硬解队列 + 2条软解队列 + 子进程隔离"调度，
         # 这里仅限制非批量直连路径，避免同一进程内过多软解任务争抢资源。
         self._video_semaphore = threading.Semaphore(1)
+
+        # 单次缩略图创建轻量级缓存限制计数器
+        # 避免每次调用 create_thumbnail() 时都执行 glob+stat 磁盘扫描，
+        # 每 N 次创建才触发一次完整的检查
+        self._thumbnail_create_counter = 0
+        self._thumbnail_create_check_threshold = 50
+
+        # 前一批缩略图的线程池引用，用于在创建新批次前确保旧池已关闭
+        self._prev_batch_executor: Optional[ThreadPoolExecutor] = None
 
         debug(
             f"初始化完成: thumb_dir={self._thumb_dir}, "
@@ -729,7 +743,7 @@ class ThumbnailManager:
         suffix = os.path.splitext(file_path)[1].lower()
         return suffix in self.VIDEO_FORMATS
 
-    def _check_image_size_limit(self, img: Image.Image) -> bool:
+    def _check_image_size_limit(self, img: 'Image.Image') -> bool:
         """
         检查图像尺寸是否在限制范围内
 
@@ -845,8 +859,13 @@ class ThumbnailManager:
                 increment_perf_counter("thumbnail.create_thumbnail", "non_media_skipped")
                 return None
 
-            # 在创建新缩略图前检查缓存限制
-            self._check_and_enforce_limits_before_create()
+            # 在创建新缩略图前检查缓存限制（轻量版）
+            # 使用计数器避免每次调用都执行 glob+stat+sort 磁盘扫描，
+            # 仅在累计达到阈值时执行一次完整检查。
+            self._thumbnail_create_counter += 1
+            if self._thumbnail_create_counter >= self._thumbnail_create_check_threshold:
+                self._thumbnail_create_counter = 0
+                self._check_and_enforce_limits_before_create()
 
             # 生成缩略图
             try:
@@ -922,6 +941,12 @@ class ThumbnailManager:
 
         success_count = 0
         processed_count = 0
+
+        # 缓存限制检查：批量创建前执行一次完整的 glob+stat 扫描，
+        # 避免对每个文件都重复调用（create_thumbnail 中的 O(N²) 问题）。
+        self._check_and_enforce_limits_before_create()
+        # 重置单次创建计数器，防止紧跟着的单次创建再次触发全量检查
+        self._thumbnail_create_counter = 0
 
         native_stats_enabled = self._is_native_available()
         video_decode_submitted_count = 0
@@ -1285,6 +1310,14 @@ class ThumbnailManager:
             if consumed_any and not future_to_queue:
                 completed_signal.clear()
 
+        # 确保前一批线程池已关闭，避免快速连续调用时累积多个 ThreadPoolExecutor
+        if self._prev_batch_executor is not None:
+            try:
+                self._prev_batch_executor.shutdown(wait=False, cancel_futures=True)
+            except RuntimeError:
+                pass  # 池已关闭
+            self._prev_batch_executor = None
+
         executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="thumb_batch")
         try:
             while True:
@@ -1361,8 +1394,10 @@ class ThumbnailManager:
                         cancel_futures=True,
                         reason="cancelled",
                     )
+                    self._prev_batch_executor = executor
                 else:
                     executor.shutdown(wait=False, cancel_futures=True)
+                    self._prev_batch_executor = None
             else:
                 if remaining_futures:
                     warning(f"批量生成结束时仍有未完成任务，转异步关闭线程池: remaining={len(remaining_futures)}")
@@ -1371,8 +1406,10 @@ class ThumbnailManager:
                         cancel_futures=False,
                         reason="drain",
                     )
+                    self._prev_batch_executor = executor
                 else:
                     executor.shutdown(wait=False)
+                    self._prev_batch_executor = None
 
         increment_perf_counter("thumbnail.create_thumbnails_batch", "processed", processed_count)
         increment_perf_counter("thumbnail.create_thumbnails_batch", "success", success_count)
@@ -1476,9 +1513,10 @@ class ThumbnailManager:
                     return thumbnail_path
 
                 # 回退到 RGBA 路径
-                if not PIL_AVAILABLE:
+                if not _ensure_pil():
                     increment_perf_counter("thumbnail.create_native_thumbnail", "pil_unavailable")
                     return None
+                from PIL import Image
 
                 generated = self._rust_bridge.generate_rgba(file_path, dpi_scaled_size, dpi_scaled_size)
                 if not generated:
@@ -1520,9 +1558,10 @@ class ThumbnailManager:
         Returns:
             Optional[str]: 缩略图路径，失败返回None
         """
-        if not PIL_AVAILABLE:
+        if not _ensure_pil():
             warning("PIL未安装，无法生成图片缩略图")
             return None
+        from PIL import Image
 
         img = None
         thumbnail = None
@@ -2000,7 +2039,7 @@ class ThumbnailManager:
 
             return None
 
-    def _load_image(self, file_path: str, suffix: str) -> Tuple[Optional[Image.Image], bool]:
+    def _load_image(self, file_path: str, suffix: str) -> Tuple[Optional['Image.Image'], bool]:
         """
         加载图像文件（带尺寸限制和下采样）
 
@@ -2011,8 +2050,9 @@ class ThumbnailManager:
         Returns:
             Tuple[Optional[Image.Image], bool]: (图像对象, 是否成功)
         """
-        if not PIL_AVAILABLE:
+        if not _ensure_pil():
             return None, False
+        from PIL import Image
 
         img = None
 
@@ -2022,7 +2062,7 @@ class ThumbnailManager:
                 try:
                     img = load_raw_image(
                         file_path,
-                        half_size=False,
+                        half_size=True,
                         use_camera_wb=True,
                         no_auto_bright=True,
                         output_bps=8,
@@ -2079,7 +2119,7 @@ class ThumbnailManager:
                     pass
             return None, False
 
-    def _apply_image_size_limit(self, img: Image.Image, file_path: str) -> Image.Image:
+    def _apply_image_size_limit(self, img: 'Image.Image', file_path: str) -> 'Image.Image':
         """
         应用图像尺寸限制，对超大图像进行下采样
 
@@ -2120,7 +2160,7 @@ class ThumbnailManager:
 
         return img
 
-    def _load_svg_image(self, file_path: str) -> Tuple[Optional[Image.Image], bool]:
+    def _load_svg_image(self, file_path: str) -> Tuple[Optional['Image.Image'], bool]:
         """
         加载SVG图像
 
@@ -2130,6 +2170,10 @@ class ThumbnailManager:
         Returns:
             Tuple[Optional[Image.Image], bool]: (图像对象, 是否成功)
         """
+        if not _ensure_pil():
+            return None, False
+        from PIL import Image
+
         img = None
         qimage = None
         painter = None

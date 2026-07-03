@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from freeassetfilter.widgets.D_more_menu import D_MoreMenu
 from PySide6.QtGui import (
-    QImage, QPixmap, QPainter, QPen, QColor, QCursor,
+    QImage, QImageReader, QPixmap, QPainter, QPen, QColor, QCursor,
     QFont, QIcon, QTransform
 )
 from PySide6.QtGui import QMovie
@@ -54,6 +54,13 @@ class RawProcessor(QThread):
     def __init__(self, image_path):
         super().__init__()
         self.image_path = image_path
+        self._is_cancelled = False
+    
+    def cancel(self):
+        """请求取消当前处理。rawpy.imread 无法中断，但解码后会检查此标志。"""
+        self._is_cancelled = True
+        self.quit()
+        self.wait()
     
     def run(self):
         try:
@@ -67,6 +74,10 @@ class RawProcessor(QThread):
                 no_auto_bright=True,
                 output_bps=8,
             )
+
+            # rawpy.imread 不能被中断，但解码完成后立即检查取消标志
+            if self._is_cancelled:
+                return
 
             height, width, channel = rgb.shape
             bytes_per_line = 3 * width
@@ -687,12 +698,13 @@ class ImageWidget(QWidget):
         error(error_msg)
         self.raw_processor = None
     
-    def set_image(self, image_path):
+    def set_image(self, image_path, force_full_resolution=False):
         """
         设置要显示的图片
         
         Args:
             image_path (str): 图片文件路径
+            force_full_resolution (bool): 强制全分辨率解码（用于全屏模式）
         
         Returns:
             bool: 是否成功启动加载
@@ -709,8 +721,7 @@ class ImageWidget(QWidget):
 
             if file_ext in raw_formats:
                 if self.raw_processor is not None and self.raw_processor.isRunning():
-                    self.raw_processor.quit()
-                    self.raw_processor.wait()
+                    self.raw_processor.cancel()
 
                 self.raw_processor = RawProcessor(image_path)
                 self.raw_processor.processing_complete.connect(self._on_raw_processing_complete, Qt.QueuedConnection)
@@ -753,7 +764,18 @@ class ImageWidget(QWidget):
 
                 return True
             else:
-                image = QImage(image_path)
+                # 大图片使用 QImageReader 降分辨率解码，避免全分辨率内存爆炸
+                if not force_full_resolution:
+                    reader = QImageReader(image_path)
+                    orig_size = reader.size()
+                    if orig_size.isValid() and (orig_size.width() > 4096 or orig_size.height() > 4096):
+                        scaled = orig_size.scaled(4096, 4096, Qt.KeepAspectRatio)
+                        reader.setScaledSize(scaled)
+                        image = reader.read()
+                    else:
+                        image = QImage(image_path)
+                else:
+                    image = QImage(image_path)
                 if not image.isNull():
                     self._set_loaded_image(image, image_path)
                     return True

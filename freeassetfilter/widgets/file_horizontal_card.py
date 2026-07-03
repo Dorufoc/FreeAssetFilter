@@ -13,6 +13,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import os
 import sys
+from collections import OrderedDict
 
 from PySide6.QtCore import (
     Qt,
@@ -30,6 +31,7 @@ from PySide6.QtCore import (
     QPoint,
 )
 from PySide6.QtGui import (
+    QBitmap,
     QFont,
     QFontMetrics,
     QPixmap,
@@ -39,6 +41,7 @@ from PySide6.QtGui import (
     QPen,
     QFontDatabase,
     QPalette,
+    QRegion,
 )
 from PySide6.QtWidgets import (
     QWidget,
@@ -114,7 +117,8 @@ class CustomFileHorizontalCard(QWidget):
     drag_ended = Signal(dict, str)
 
     _current_card_with_visible_buttons = None
-    _icon_cache = {}
+    _ICON_CACHE_MAX_ENTRIES = 256
+    _icon_cache = OrderedDict()
     _font_family_cache = None
 
     @classmethod
@@ -877,6 +881,9 @@ class CustomFileHorizontalCard(QWidget):
                     "is_dir": False,
                     "suffix": QFileInfo(self._file_path).suffix().lower(),
                 }
+                self._cached_display_name = display_name
+                self._cached_info_text = info_text
+                self._cached_deleted = True
                 self._update_text_cache(display_name=display_name, info_text=info_text, deleted=True, force=True)
                 self._apply_text_palette()
                 return
@@ -903,12 +910,27 @@ class CustomFileHorizontalCard(QWidget):
                 "suffix": file_info.suffix().lower(),
             }
 
+            self._cached_display_name = display_name
+            self._cached_info_text = info_text
+            self._cached_deleted = False
             self._update_text_cache(display_name=display_name, info_text=info_text, deleted=False, force=True)
             self._apply_text_palette()
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             error(f"加载文件信息失败 - 文件操作错误: {e}")
         except (ValueError, TypeError, RuntimeError) as e:
             error(f"加载文件信息失败 - 数据转换或Qt错误: {e}")
+
+    def _reflow_text(self):
+        """仅重新计算文本布局（用于resize），不使用文件stat操作"""
+        if not hasattr(self, '_cached_display_name'):
+            return
+        self._update_text_cache(
+            display_name=self._cached_display_name,
+            info_text=self._cached_info_text,
+            deleted=self._cached_deleted,
+            force=True,
+        )
+        self._apply_text_palette()
 
     def _update_text_cache(self, display_name=None, info_text=None, deleted=False, force=False):
         if display_name is None:
@@ -937,7 +959,7 @@ class CustomFileHorizontalCard(QWidget):
         super().resizeEvent(event)
         self._invalidate_geometry_cache()
         if self._file_path:
-            self._load_file_info()
+            self._reflow_text()
         self.on_card_container_resize(None)
 
     def eventFilter(self, obj, event):
@@ -1426,23 +1448,15 @@ class CustomFileHorizontalCard(QWidget):
             image_width = source_image.width()
             image_height = source_image.height()
 
-            min_x = image_width
-            min_y = image_height
-            max_x = -1
-            max_y = -1
-
-            for y in range(image_height):
-                for x in range(image_width):
-                    if QColor.fromRgba(source_image.pixel(x, y)).alpha() > 0:
-                        min_x = min(min_x, x)
-                        min_y = min(min_y, y)
-                        max_x = max(max_x, x)
-                        max_y = max(max_y, y)
-
-            if max_x < min_x or max_y < min_y:
+            alpha_mask = source_image.createAlphaMask()
+            if alpha_mask.isNull():
                 return pixmap
 
-            source_rect = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+            bounds = QRegion(QBitmap.fromImage(alpha_mask)).boundingRect()
+            if bounds.isNull() or bounds.width() <= 0 or bounds.height() <= 0:
+                return pixmap
+
+            source_rect = bounds
             full_rect = QRect(0, 0, image_width, image_height)
             if source_rect == full_rect:
                 return pixmap
@@ -1496,21 +1510,11 @@ class CustomFileHorizontalCard(QWidget):
 
             try:
                 image = clean_pixmap.toImage()
-                min_x = image.width()
-                min_y = image.height()
-                max_x = -1
-                max_y = -1
-
-                for y in range(image.height()):
-                    for x in range(image.width()):
-                        if QColor.fromRgba(image.pixel(x, y)).alpha() > 0:
-                            min_x = min(min_x, x)
-                            min_y = min(min_y, y)
-                            max_x = max(max_x, x)
-                            max_y = max(max_y, y)
-
-                if max_x >= min_x and max_y >= min_y:
-                    source_rect = QRect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+                alpha_mask = image.createAlphaMask()
+                if not alpha_mask.isNull():
+                    bounds = QRegion(QBitmap.fromImage(alpha_mask)).boundingRect()
+                    if not bounds.isNull() and bounds.width() > 0 and bounds.height() > 0:
+                        source_rect = bounds
             except (RuntimeError, ValueError, TypeError) as crop_error:
                 debug(f"裁切横向卡片图标透明边缘失败: {crop_error}")
 
@@ -1746,6 +1750,8 @@ class CustomFileHorizontalCard(QWidget):
         self._icon_pixmap = self._build_icon_pixmap()
         if not self._icon_pixmap.isNull():
             CustomFileHorizontalCard._icon_cache[cache_key] = self._icon_pixmap
+            while len(CustomFileHorizontalCard._icon_cache) > CustomFileHorizontalCard._ICON_CACHE_MAX_ENTRIES:
+                CustomFileHorizontalCard._icon_cache.popitem(last=False)
 
         self._set_icon_pixmap(self._icon_pixmap, icon_size)
 

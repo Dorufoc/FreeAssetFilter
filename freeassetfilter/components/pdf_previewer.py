@@ -211,8 +211,17 @@ class PDFPreviewer(QWidget):
         
         # 页面渲染设置
         self.page_widgets = []  # 存储所有页面控件
-        self.page_pixmaps = []  # 存储所有页面的原始pixmap
+        self.page_pixmaps = []  # 存储所有页面的原始pixmap（懒加载后不再使用，保留兼容）
         self.render_options = None
+
+        # 懒加载支持
+        self._render_cache = {}  # page_num -> QPixmap (LRU缓存)
+        self._render_cache_max = 20  # 最大缓存页数（100页PDF仅渲染≤20页）
+        self._render_cache_order = []  # LRU顺序列表
+        self._page_size_cache = {}  # page_num -> (width_pt, height_pt) 预缓存页面尺寸
+        self._render_dpi = None
+        self._device_pixel_ratio = None
+        self._lazy_loaded = False  # 标记是否使用懒加载模式
 
         # 渲染DPI设置
         # 基础DPI为72（PDF标准），根据设备DPI和设备像素比计算实际渲染DPI
@@ -431,15 +440,32 @@ class PDFPreviewer(QWidget):
             self._show_error(f"加载PDF失败: {str(e)}")
     
     def _clear_pages(self):
-        """清空所有页面控件"""
+        """清空所有页面控件和懒加载缓存"""
+        # 断开滚动信号连接
+        try:
+            self.scroll_area.verticalScrollBar().valueChanged.disconnect(self._on_scroll_changed)
+        except (TypeError, RuntimeError, AttributeError):
+            pass
+
         # 清除布局中的所有控件
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             if item.widget():
+                item.widget().setParent(None)
                 item.widget().deleteLater()
-        
+
+        # 处理事件确保删除完成
+        QApplication.processEvents()
+
+        # 清空页面数据
         self.page_widgets.clear()
         self.page_pixmaps.clear()
+        self._render_cache.clear()
+        self._render_cache_order.clear()
+        self._page_size_cache.clear()
+        self._render_dpi = None
+        self._device_pixel_ratio = None
+        self._lazy_loaded = False
     
     def _get_device_pixel_ratio(self) -> float:
         """获取设备像素比"""
@@ -478,56 +504,131 @@ class PDFPreviewer(QWidget):
         return render_dpi
     
     def _render_all_pages(self):
-        """渲染所有PDF页面"""
+        """懒加载渲染PDF页面 - 只创建占位控件，页面内容在滚动时按需渲染（LRU缓存最多20页）"""
         if self.total_pages == 0:
             return
-        
-        # 获取渲染DPI
-        render_dpi = self._get_render_dpi()
-        
-        # 获取设备像素比
-        dpr = self._get_device_pixel_ratio()
-        
+
+        # 预先获取渲染参数
+        self._render_dpi = self._get_render_dpi()
+        self._device_pixel_ratio = self._get_device_pixel_ratio()
+
+        # 预先缓存所有页面的尺寸（轻量操作，不涉及像素渲染）
         for page_num in range(self.total_pages):
-            # 获取页面尺寸（点，1/72英寸）
             page_size = self.pdf_document.pagePointSize(page_num)
-            if not page_size:
+            if page_size:
+                self._page_size_cache[page_num] = (page_size.width(), page_size.height())
+
+        # 为所有页面创建占位控件，确保布局正确计算滚动范围
+        for page_num in range(self.total_pages):
+            page_widget = PDFPageWidget(self.content_container)
+            page_widget.page_number = page_num
+            self.page_widgets.append(page_widget)
+            self.content_layout.addWidget(page_widget)
+
+        # 标记为懒加载模式
+        self._lazy_loaded = True
+
+        # 初始渲染前3页（可见区域 + 预加载）
+        self._render_page_range(0, min(3, self.total_pages) - 1)
+
+        # 连接滚动信号，滚动时按需渲染其他页面
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
+
+    def _render_page_range(self, start: int, end: int):
+        """
+        按需渲染指定范围内的PDF页面（带LRU缓存）
+
+        Args:
+            start: 起始页码（含）
+            end: 结束页码（含）
+        """
+        if self._render_dpi is None or self.total_pages == 0:
+            return
+
+        start = max(0, start)
+        end = min(end, self.total_pages - 1)
+
+        for page_num in range(start, end + 1):
+            # 跳过已渲染的页面（更新LRU顺序）
+            if page_num in self._render_cache:
+                self._render_cache_order.remove(page_num)
+                self._render_cache_order.append(page_num)
                 continue
-            
-            # 计算渲染尺寸（物理像素）
-            # PDF使用72 DPI作为基础，需要转换到目标渲染DPI
-            page_width_pt = page_size.width()
-            page_height_pt = page_size.height()
-            
-            # 计算物理像素尺寸
-            render_width_px = int(page_width_pt * render_dpi / 72.0)
-            render_height_px = int(page_height_pt * render_dpi / 72.0)
-            
+
+            # 获取页面尺寸
+            if page_num not in self._page_size_cache:
+                continue
+            page_width_pt, page_height_pt = self._page_size_cache[page_num]
+
+            # 计算渲染尺寸
+            render_width_px = int(page_width_pt * self._render_dpi / 72.0)
+            render_height_px = int(page_height_pt * self._render_dpi / 72.0)
+
             # 渲染页面到 QImage
             image = self.pdf_document.render(page_num, QSize(render_width_px, render_height_px))
 
             if image.isNull():
                 warning(f"PDF页面 {page_num + 1} 渲染失败")
                 continue
-            
-            # 设置图像的设备像素比
-            # 这样Qt会正确处理高DPI显示
-            image.setDevicePixelRatio(dpr)
-            
+
+            # 设置高DPI支持
+            image.setDevicePixelRatio(self._device_pixel_ratio)
+
             # 转换为 QPixmap
             pixmap = QPixmap.fromImage(image)
-            
-            # 设置pixmap的设备像素比
-            pixmap.setDevicePixelRatio(dpr)
-            
-            self.page_pixmaps.append(pixmap)
-            
-            # 创建页面控件
-            page_widget = PDFPageWidget(self.content_container)
-            page_widget.set_page_pixmap(pixmap, page_num)
-            
-            self.page_widgets.append(page_widget)
-            self.content_layout.addWidget(page_widget)
+            pixmap.setDevicePixelRatio(self._device_pixel_ratio)
+
+            # 存入LRU缓存
+            self._render_cache[page_num] = pixmap
+            self._render_cache_order.append(page_num)
+
+            # LRU淘汰：超出最大缓存数时，淘汰最久未使用的页面
+            while len(self._render_cache) > self._render_cache_max:
+                oldest_page = self._render_cache_order.pop(0)
+                self._render_cache.pop(oldest_page, None)
+
+            # 更新对应页面的控件显示
+            if page_num < len(self.page_widgets):
+                self.page_widgets[page_num].set_page_pixmap(pixmap, page_num)
+
+    def _on_scroll_changed(self, value: int):
+        """
+        滚动条值变化时，检测可见页面并按需渲染
+
+        Args:
+            value: 滚动条当前值（未使用，通过视口矩形计算可见范围）
+        """
+        if not self._lazy_loaded or self.total_pages == 0 or not self.page_widgets:
+            return
+
+        # 获取视口可见矩形
+        viewport_rect = self.scroll_area.viewport().rect()
+        if viewport_rect.isEmpty():
+            return
+
+        # 扫描可见页面范围
+        visible_start = self.total_pages
+        visible_end = -1
+
+        for page_num in range(self.total_pages):
+            if page_num >= len(self.page_widgets):
+                break
+            widget = self.page_widgets[page_num]
+            # 计算控件在内容容器中的位置
+            widget_pos = widget.mapTo(self.content_container, QPoint(0, 0))
+            widget_rect = widget.rect()
+            widget_rect.moveTopLeft(widget_pos)
+
+            # 如果控件与视口相交，则为可见
+            if viewport_rect.intersects(widget_rect):
+                visible_start = min(visible_start, page_num)
+                visible_end = max(visible_end, page_num)
+
+        if visible_start <= visible_end:
+            # 渲染可见页 + 前后各2页作为预加载缓冲
+            render_start = max(0, visible_start - 2)
+            render_end = min(self.total_pages - 1, visible_end + 2)
+            self._render_page_range(render_start, render_end)
     
     def _calculate_fit_to_width_zoom(self, force=False):
         """计算适合页面显示的缩放因子，并将其设为100%基准
@@ -608,9 +709,10 @@ class PDFPreviewer(QWidget):
             self._apply_zoom_to_all_pages(1.0)
     
     def _apply_zoom_to_all_pages(self, zoom_factor: float):
-        """应用缩放到所有页面"""
+        """应用缩放到所有已渲染的页面（未渲染页面会在渲染时自动应用缩放）"""
         for page_widget in self.page_widgets:
-            page_widget.set_zoom(zoom_factor)
+            if page_widget.page_pixmap:
+                page_widget.set_zoom(zoom_factor)
     
     def _close_document(self):
         """关闭当前PDF文档并清理资源"""
@@ -639,6 +741,12 @@ class PDFPreviewer(QWidget):
             return
 
         self.current_page = page_num
+
+        # 懒加载：确保目标页面已渲染
+        if self._lazy_loaded:
+            render_start = max(0, page_num - 1)
+            render_end = min(self.total_pages - 1, page_num + 1)
+            self._render_page_range(render_start, render_end)
 
         # 滚动到指定页面顶部
         if page_num < len(self.page_widgets):

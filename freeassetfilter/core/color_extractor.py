@@ -9,10 +9,10 @@
 """
 
 import io
-import math
 import os
 import time
 import struct
+import threading
 from collections import Counter
 from typing import List, Optional, Tuple
 
@@ -25,20 +25,25 @@ from freeassetfilter.utils.app_logger import info, debug, warning, error
 # Rust DLL 包装模块（延迟加载，首次使用时才尝试导入）
 _RUST_AVAILABLE = False
 _RUST_MODULE = None
+_RUST_INIT_LOCK = threading.Lock()
 
 def _ensure_rust_module():
-    """延迟加载 Rust DLL，首次调用时尝试导入"""
+    """延迟加载 Rust DLL，首次调用时尝试导入（线程安全）"""
     global _RUST_AVAILABLE, _RUST_MODULE
     if _RUST_MODULE is not None:
         return _RUST_AVAILABLE
-    try:
-        from .native import rust_color_extractor
-        _RUST_AVAILABLE = True
-        _RUST_MODULE = rust_color_extractor
-        info("Rust DLL 扩展模块加载成功")
-    except ImportError as e:
-        warning(f"Rust DLL 扩展模块加载失败: {e}")
-        info("使用纯 Python 实现")
+    with _RUST_INIT_LOCK:
+        # 双重检查：在锁内再次判断，防止并发竞态
+        if _RUST_MODULE is not None:
+            return _RUST_AVAILABLE
+        try:
+            from .native import rust_color_extractor
+            _RUST_AVAILABLE = True
+            _RUST_MODULE = rust_color_extractor
+            info("Rust DLL 扩展模块加载成功")
+        except ImportError as e:
+            warning(f"Rust DLL 扩展模块加载失败: {e}")
+            info("使用纯 Python 实现")
     return _RUST_AVAILABLE
 
 # 用于处理音频文件元数据
@@ -61,6 +66,8 @@ def _prepare_image_data_for_rust(cover_data: bytes) -> bytes:
     将图像数据转换为 Rust 模块可用的格式
 
     格式：前4字节宽度 + 4字节高度 + RGBA 像素数据
+
+    使用 numpy 视图避免 .tobytes() + 拼接两次内存拷贝。
     """
     try:
         image = Image.open(io.BytesIO(cover_data))
@@ -69,12 +76,18 @@ def _prepare_image_data_for_rust(cover_data: bytes) -> bytes:
         if image.mode != 'RGBA':
             image = image.convert('RGBA')
         
-        width, height = image.size
-        pixels = image.tobytes()
+        import numpy as np
         
-        # 打包数据：宽度(4字节) + 高度(4字节) + 像素数据
+        width, height = image.size
+        # numpy 视图与 PIL 共享内存，避免 .tobytes() 拷贝
+        arr = np.asarray(image, dtype=np.uint8)  # shape (H, W, 4)
         header = struct.pack('ii', width, height)
-        return header + pixels
+        
+        # 单次拷贝：将 header + 像素数据写入同一输出缓冲区
+        out = bytearray(8 + arr.nbytes)
+        out[:8] = header
+        out[8:] = memoryview(arr)
+        return bytes(out)
     except (OSError, IOError, ValueError) as e:
         error(f"图像数据准备失败: {e}")
         raise ValueError(f"图像解码失败: {e}")
@@ -186,6 +199,8 @@ def extract_cover_colors_from_path(image_path: str, num_colors: int = 5,
                                    min_distance: float = 50.0) -> List[QColor]:
     """
     从封面图像文件路径中提取主色调
+
+    优先使用 PIL 流式打开（避免 f.read() 全文件加载），失败时降级为全量加载。
     
     Args:
         image_path: 封面图像文件路径
@@ -196,8 +211,15 @@ def extract_cover_colors_from_path(image_path: str, num_colors: int = 5,
         提取的主色调列表（QColor对象）
     """
     try:
-        with open(image_path, 'rb') as f:
-            cover_data = f.read()
+        # 流式打开：PIL 直接读取文件头，避免将整个文件加载为 bytes
+        with Image.open(image_path) as img:
+            # 预缩小到 100x100 后再转为 bytes，大幅降低峰值内存
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            img = img.resize((100, 100), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=85)
+            cover_data = buf.getvalue()
         return extract_cover_colors(cover_data, num_colors, min_distance)
     except FileNotFoundError as e:
         error(f"封面文件不存在: {e}")
@@ -205,9 +227,22 @@ def extract_cover_colors_from_path(image_path: str, num_colors: int = 5,
     except PermissionError as e:
         error(f"无权限读取封面文件: {e}")
         return []
-    except (OSError, IOError) as e:
-        error(f"从文件读取封面失败: {e}")
-        return []
+    except (OSError, IOError, ValueError) as e:
+        # 降级：使用传统全量读取
+        debug(f"流式打开失败，降级为全量读取: {e}")
+        try:
+            with open(image_path, 'rb') as f:
+                cover_data = f.read()
+            return extract_cover_colors(cover_data, num_colors, min_distance)
+        except FileNotFoundError as e2:
+            error(f"封面文件不存在: {e2}")
+            return []
+        except PermissionError as e2:
+            error(f"无权限读取封面文件: {e2}")
+            return []
+        except (OSError, IOError) as e2:
+            error(f"从文件读取封面失败: {e2}")
+            return []
 
 
 def _is_valid_color(color: QColor) -> bool:
@@ -219,15 +254,16 @@ def _is_valid_color(color: QColor) -> bool:
 
 def _is_color_different(color: QColor, existing_colors: List[QColor], 
                         min_distance: float) -> bool:
-    """检查颜色是否与已有颜色差异足够大"""
+    """检查颜色是否与已有颜色差异足够大（使用平方距离比较避免 sqrt）"""
+    min_distance_sq = min_distance * min_distance
     for existing in existing_colors:
-        if color_distance(color, existing) < min_distance:
+        if color_distance(color, existing) < min_distance_sq:
             return False
     return True
 
 
 def color_distance(color1: QColor, color2: QColor) -> float:
-    """计算两个颜色之间的欧氏距离"""
+    """计算两个颜色之间的欧氏距离（平方距离，避免 sqrt 开销）"""
     r1, g1, b1 = color1.red(), color1.green(), color1.blue()
     r2, g2, b2 = color2.red(), color2.green(), color2.blue()
     
@@ -235,7 +271,7 @@ def color_distance(color1: QColor, color2: QColor) -> float:
     dg = g1 - g2
     db = b1 - b2
     
-    return math.sqrt(dr * dr + dg * dg + db * db)
+    return float(dr * dr + dg * dg + db * db)
 
 
 def rgb_to_hex(color: QColor) -> str:
@@ -463,7 +499,7 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
 
                 avg_distance = total_distance / count if count > 0 else 0
 
-                if avg_distance >= 40.0:  # 平均距离阈值
+                if avg_distance >= 1600.0:  # 平均距离阈值（平方距离，对应原 40.0）
                     debug(f"从封面提取 {len(colors)} 种颜色，平均距离: {avg_distance:.1f}")
                     return colors
                 else:

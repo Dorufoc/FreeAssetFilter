@@ -99,6 +99,10 @@ class UnifiedPreviewer(QWidget):
 
         self._scheduled_preview_cleanup = False
         self._preview_cleanup_sequence = 0
+        # 待处理的预览请求（Todo 7快速切换队列）
+        self._pending_file_info = None
+        self._preview_sequence = 0
+        self._pending_preview_sequence = 0
 
         # 初始化UI
         self.init_ui()
@@ -441,10 +445,17 @@ class UnifiedPreviewer(QWidget):
         
         debug(f"接收到file_selected信号，文件信息: {file_info}")
         
-        # 检查是否正在加载预览，如果是则忽略新的请求
+        # 检查是否正在加载预览
         debug(f"is_loading_preview: {self.is_loading_preview}")
         if self.is_loading_preview:
-            debug("正在加载预览中，忽略新的预览请求")
+            # 不直接丢弃，而是存储待处理的预览请求，当前加载完成后自动加载
+            debug("正在加载预览中，存储为待处理请求，完成后自动加载")
+            self._pending_file_info = file_info
+            # 增加序列号以追踪最新的请求
+            if not hasattr(self, '_preview_sequence'):
+                self._preview_sequence = 0
+            self._preview_sequence += 1
+            self._pending_preview_sequence = self._preview_sequence
             return
         
         self.current_file_info = file_info
@@ -614,6 +625,42 @@ class UnifiedPreviewer(QWidget):
                     get_logger().warning("[UnifiedPreviewer] 预览线程仍在运行，跳过 deleteLater，避免 Qt 警告")
             except Exception as e:
                 # 忽略清理过程中的异常
+                pass
+
+    def _safe_delete_thread(self, thread):
+        """
+        安全删除 QThread：检查 isRunning() 避免 "Destroyed while thread is still running" 警告
+
+        Args:
+            thread: 要删除的 QThread 对象
+        """
+        if thread is None:
+            return
+        try:
+            if thread.isRunning():
+                thread.cancel()
+                if not thread.wait(2000):
+                    get_logger().warning("[UnifiedPreviewer] 线程未在2秒内退出，跳过 deleteLater")
+                    return
+            thread.deleteLater()
+        except (RuntimeError, AttributeError) as e:
+            debug(f'[UnifiedPreviewer] 安全删除线程时出错: {e}')
+
+    def closeEvent(self, event):
+        """窗口关闭时确保清理预览线程"""
+        self._safe_delete_thread(getattr(self, '_preview_thread', None))
+        self._preview_thread = None
+        super().closeEvent(event)
+
+    def __del__(self):
+        """析构时确保清理预览线程"""
+        thread = getattr(self, '_preview_thread', None)
+        if thread is not None:
+            try:
+                if thread.isRunning():
+                    thread.cancel()
+                    thread.wait(1000)
+            except (RuntimeError, AttributeError):
                 pass
 
     def _open_file_with_system(self):
@@ -801,6 +848,8 @@ class UnifiedPreviewer(QWidget):
                     self.preview_layout.removeWidget(layout_widget)
                     if layout_widget is video_player_widget:
                         layout_widget.hide()
+                    # 防止小部件积累：先断开父子关系，再排队删除
+                    layout_widget.setParent(None)
                     layout_widget.deleteLater()
 
                 while self.preview_layout.count() > 1:
@@ -809,7 +858,12 @@ class UnifiedPreviewer(QWidget):
                         continue
                     layout_widget = item.widget()
                     if layout_widget is not None:
+                        layout_widget.setParent(None)
                         layout_widget.deleteLater()
+
+                # 处理待处理事件，确保 deleteLater 即刻生效，避免新部件创建时旧部件尚未销毁
+                from PySide6.QtWidgets import QApplication
+                QApplication.processEvents()
 
                 self.current_preview_widget = None
                 self.current_preview_type = None
@@ -993,27 +1047,41 @@ class UnifiedPreviewer(QWidget):
         self.current_preview_widget = error_container
         self.current_preview_type = "error"
     
-    def _show_image_preview(self, file_path):
+    def _show_image_preview(self, file_path, loaded_data=None):
         """
         显示图片预览
-        
+
         Args:
             file_path (str): 图片文件路径
+            loaded_data (dict, optional): 后台线程预加载的图片元数据
         """
         try:
-            file_ext = os.path.splitext(file_path)[1].lower()
+            # 使用后台预加载的元数据快速判断动画格式
+            is_gif_path = file_path.lower().endswith('.gif')
+            is_webp_path = file_path.lower().endswith('.webp')
 
-            if file_ext == '.gif':
-                from freeassetfilter.components.photo_viewer import GifViewer
-                gif_viewer = GifViewer()
-                if gif_viewer.load_gif(file_path):
-                    self._add_preview_widget(gif_viewer)
-                    self.current_preview_widget = gif_viewer
-                    self.current_preview_type = "image"
-                    return
+            if loaded_data:
+                is_animated = loaded_data.get('is_animated', False)
+                is_animated_webp = loaded_data.get('is_animated_webp', False)
+            else:
+                is_animated = False
+                is_animated_webp = False
 
-            elif file_ext == '.webp':
-                if self._is_animated_image(file_path):
+            if is_gif_path or (is_webp_path and (is_animated_webp or is_animated)):
+                # 实际检测动画
+                if not loaded_data or not loaded_data.get('is_animated', False):
+                    if not self._is_animated_image(file_path):
+                        # 不是动画，走普通图片路径
+                        pass
+                    else:
+                        from freeassetfilter.components.photo_viewer import GifViewer
+                        gif_viewer = GifViewer()
+                        if gif_viewer.load_gif(file_path):
+                            self._add_preview_widget(gif_viewer)
+                            self.current_preview_widget = gif_viewer
+                            self.current_preview_type = "image"
+                            return
+                else:
                     from freeassetfilter.components.photo_viewer import GifViewer
                     gif_viewer = GifViewer()
                     if gif_viewer.load_gif(file_path):
@@ -1023,10 +1091,10 @@ class UnifiedPreviewer(QWidget):
                         return
 
             from freeassetfilter.components.photo_viewer import PhotoViewer
-            
+
             photo_viewer = PhotoViewer()
             photo_viewer.load_image_from_path(file_path)
-            
+
             self._add_preview_widget(photo_viewer)
             self.current_preview_widget = photo_viewer
             self.current_preview_type = "image"
@@ -1056,24 +1124,25 @@ class UnifiedPreviewer(QWidget):
             debug(f'[UnifiedPreviewer] 检查GIF动画时出错: {e}')
             return False
     
-    def _show_video_preview(self, file_path):
+    def _show_video_preview(self, file_path, loaded_data=None):
         """
         显示视频预览
         进度条已在_show_preview中显示，将在PDF渲染完成后关闭
-        
+
         Args:
             file_path (str): 视频文件路径
+            loaded_data (dict, optional): 后台线程预加载的媒体信息
         """
         try:
             from freeassetfilter.components.video_player import VideoPlayer
             from freeassetfilter.core.settings_manager import SettingsManager
-            
+
             # 从设置中读取播放器配置
             settings_manager = SettingsManager()
             enable_detach = settings_manager.get_setting("player.enable_fullscreen", False)
             initial_volume = settings_manager.get_player_volume()
             initial_speed = settings_manager.get_player_speed()
-            
+
             # 创建视频播放器，传递初始设置
             video_player = VideoPlayer(
                 playback_mode="video",
@@ -1081,14 +1150,14 @@ class UnifiedPreviewer(QWidget):
                 initial_volume=initial_volume,
                 initial_speed=initial_speed
             )
-            
+
             self._add_preview_widget(video_player)
             self.current_preview_widget = video_player
             self.current_preview_type = "video"
 
             video_player.load_media(file_path, is_audio=False)
             video_player.play()
-            
+
             debug(f"[DEBUG] 视频预览组件已创建并开始播放: {file_path}")
         except Exception as e:
             exception_details("[UnifiedPreviewer] 视频预览失败", e)
@@ -1108,32 +1177,33 @@ class UnifiedPreviewer(QWidget):
         """
         super().focusInEvent(event)
     
-    def _show_audio_preview(self, file_path):
+    def _show_audio_preview(self, file_path, loaded_data=None):
         """
         显示音频预览
         进度条已在_show_preview中显示并在_on_preview_created中关闭
-        
+
         Args:
             file_path (str): 音频文件路径
+            loaded_data (dict, optional): 后台线程预加载的媒体信息
         """
         import datetime
         from freeassetfilter.utils.app_logger import debug as logger_debug
         def debug(msg):
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
             logger_debug(f"[{timestamp}] [_show_audio_preview] {msg}")
-        
+
         debug(f"开始加载音频: {file_path}")
         try:
             # 使用视频播放器组件处理音频文件，因为它已经支持音频播放
             from freeassetfilter.components.video_player import VideoPlayer
             from freeassetfilter.core.settings_manager import SettingsManager
-            
+
             # 从设置中读取播放器配置
             settings_manager = SettingsManager()
             enable_detach = settings_manager.get_setting("player.enable_fullscreen", False)
             initial_volume = settings_manager.get_player_volume()
             initial_speed = settings_manager.get_player_speed()
-            
+
             # 创建视频播放器（支持音频播放），传递初始设置
             # 音频模式下隐藏LUT按钮和分离窗口按钮
             debug("创建VideoPlayer实例")
@@ -1144,7 +1214,7 @@ class UnifiedPreviewer(QWidget):
                 initial_volume=initial_volume,
                 initial_speed=initial_speed
             )
-            
+
             # 先添加到布局，确保widget被正确初始化
             debug("添加到布局")
             self._add_preview_widget(audio_player)
@@ -1163,13 +1233,14 @@ class UnifiedPreviewer(QWidget):
             debug(f"设置is_loading_preview=False")
             self.is_loading_preview = False
     
-    def _show_pdf_preview(self, file_path):
+    def _show_pdf_preview(self, file_path, loaded_data=None):
         """
         显示PDF预览
         进度条已在_show_preview中显示并在_on_preview_created中关闭
-        
+
         Args:
             file_path (str): PDF文件路径
+            loaded_data (dict, optional): 后台线程预加载的PDF信息
         """
         try:
             # 尝试导入PDF预览器组件
@@ -1294,12 +1365,12 @@ class UnifiedPreviewer(QWidget):
         clipboard = QApplication.clipboard()
         clipboard.setText(text)
     
-    def _on_preview_created(self, preview_widget, preview_type):
+    def _on_preview_created(self, loaded_data, preview_type):
         """
         预览准备完成，在主线程中创建预览组件并添加到布局中
-        
+
         Args:
-            preview_widget: 预览组件实例（不再使用，改为在主线程创建）
+            loaded_data (dict): 后台线程预加载的数据（文件内容、元数据等）
             preview_type (str): 预览类型
         """
         try:
@@ -1307,13 +1378,13 @@ class UnifiedPreviewer(QWidget):
             if preview_type != "document":
                 # 关闭进度条弹窗
                 self._on_file_read_finished()
-            
+
             # 获取文件路径
             file_path = self.current_file_info["path"]
-            
+
             # 在主线程中创建预览组件
             created_widget = None
-            
+
             if preview_type == "dir":
                 # 文件夹预览
                 from freeassetfilter.components.folder_content_list import FolderContentList
@@ -1322,24 +1393,24 @@ class UnifiedPreviewer(QWidget):
                 # 连接信号：请求在文件选择器中打开路径
                 created_widget.open_in_selector_requested.connect(self.open_in_selector_requested.emit)
             elif preview_type == "image":
-                # 图片预览
-                self._show_image_preview(file_path)
+                # 图片预览（传递后台预加载的元数据）
+                self._show_image_preview(file_path, loaded_data=loaded_data)
                 return  # _show_image_preview已经处理了组件添加
             elif preview_type == "video":
                 # 视频预览
-                self._show_video_preview(file_path)
+                self._show_video_preview(file_path, loaded_data=loaded_data)
                 return  # _show_video_preview已经处理了组件添加
             elif preview_type == "audio":
                 # 音频预览
-                self._show_audio_preview(file_path)
+                self._show_audio_preview(file_path, loaded_data=loaded_data)
                 return  # _show_audio_preview已经处理了组件添加
             elif preview_type == "pdf":
                 # PDF预览
-                self._show_pdf_preview(file_path)
+                self._show_pdf_preview(file_path, loaded_data=loaded_data)
                 return  # _show_pdf_preview已经处理了组件添加
             elif preview_type == "text":
-                # 文本预览
-                self._show_text_preview(file_path)
+                # 文本预览（使用后台线程预读取的内容）
+                self._show_text_preview(file_path, loaded_data=loaded_data)
                 return  # _show_text_preview已经处理了组件添加
             elif preview_type == "archive":
                 # 压缩包预览
@@ -1362,21 +1433,21 @@ class UnifiedPreviewer(QWidget):
                 info_layout = QVBoxLayout(info_container)
                 info_layout.setSpacing(10)
                 info_layout.setContentsMargins(0, 0, 0, 0)
-                
+
                 # 显示普通信息
                 info_message = f"暂不支持预览该文件类型\n\n文件路径：{file_path}"
                 info_label = QLabel(info_message)
                 info_label.setAlignment(Qt.AlignCenter)
-                
+
                 # 启用自动换行，确保文本根据宽度调整
                 info_label.setWordWrap(True)
 
                 # 使用全局字体，让Qt6自动处理DPI缩放
                 info_label.setFont(self.global_font)
                 info_label.setStyleSheet("color: #999;")
-                
+
                 info_layout.addWidget(info_label)
-                
+
                 self._add_preview_widget(info_container)
                 self.current_preview_widget = info_container
                 self.current_preview_type = "info"
@@ -1386,7 +1457,10 @@ class UnifiedPreviewer(QWidget):
             if created_widget:
                 self._add_preview_widget(created_widget)  # 设置伸展因子1，使预览组件占据剩余空间
                 self.current_preview_widget = created_widget
-            
+
+            # 检查是否有待处理的预览请求
+            self._process_pending_preview()
+
         except Exception as e:
             exception_details("[UnifiedPreviewer] 创建预览组件失败", e)
             # 创建错误信息容器
@@ -1395,14 +1469,14 @@ class UnifiedPreviewer(QWidget):
             error_layout = QVBoxLayout(error_container)
             error_layout.setSpacing(10)
             error_layout.setContentsMargins(0, 0, 0, 0)
-            
+
             # 显示错误信息
             full_error_message = f"创建预览组件失败: {str(e)}"
             error_label = QLabel(full_error_message)
             error_label.setAlignment(Qt.AlignCenter)
             error_label.setStyleSheet("color: red; font-weight: bold;")
             error_layout.addWidget(error_label)
-            
+
             # 添加复制按钮
             copy_button = CustomButton("复制错误信息", button_type="secondary")
             copy_button.setFixedWidth(int(120 * self.dpi_scale))
@@ -1412,21 +1486,20 @@ class UnifiedPreviewer(QWidget):
             copy_button_layout.addWidget(copy_button)
             copy_button_layout.addStretch()
             error_layout.addLayout(copy_button_layout)
-            
+
             self._add_preview_widget(error_container)
             self.current_preview_widget = error_container
             self.current_preview_type = "error"
         finally:
             # 无论成功还是失败，都将加载状态设置为False，恢复接收新的预览请求
             self.is_loading_preview = False
-            
+
             # 清理线程资源
-            if hasattr(self, '_preview_thread') and self._preview_thread:
-                try:
-                    self._preview_thread.deleteLater()
-                except (RuntimeError, AttributeError) as e:
-                    debug(f'[UnifiedPreviewer] 删除预览线程时出错: {e}')
-                self._preview_thread = None
+            self._safe_delete_thread(getattr(self, '_preview_thread', None))
+            self._preview_thread = None
+
+            # 检查并处理待处理的预览请求
+            self._process_pending_preview()
     
     def _on_preview_error(self, error_message):
         """
@@ -1469,14 +1542,33 @@ class UnifiedPreviewer(QWidget):
         finally:
             # 无论成功还是失败，都将加载状态设置为False，恢复接收新的预览请求
             self.is_loading_preview = False
-            
+
             # 清理线程资源
-            if hasattr(self, '_preview_thread') and self._preview_thread:
-                try:
-                    self._preview_thread.deleteLater()
-                except (RuntimeError, AttributeError) as e:
-                    debug(f'[UnifiedPreviewer] 删除预览线程时出错: {e}')
-                self._preview_thread = None
+            self._safe_delete_thread(getattr(self, '_preview_thread', None))
+            self._preview_thread = None
+
+            # 检查并处理待处理的预览请求
+            self._process_pending_preview()
+
+    def _process_pending_preview(self):
+        """
+        检查是否有待处理的预览请求，如果当前没有加载中的预览则自动加载
+        使用序列号确保只有最新的待处理请求被加载（快速切换时不丢弃请求）
+        """
+        if self.is_loading_preview:
+            return
+        pending = getattr(self, '_pending_file_info', None)
+        if pending is not None:
+            # 读取当前待处理信息并重置（此时主线程串行执行，不会有竞争）
+            self._pending_file_info = None
+            current_seq = getattr(self, '_pending_preview_sequence', 0)
+            self._pending_preview_sequence = 0
+
+            # 保存序列号用于后续检查（其实在单线程中不需要，但保留防御性逻辑）
+            _ = current_seq  # 保留以备将来扩展
+
+            # 加载待处理的文件
+            self.set_file(pending)
 
     class PreviewLoaderThread(QThread):
         """
@@ -1507,38 +1599,161 @@ class UnifiedPreviewer(QWidget):
         def run(self):
             """
             后台线程执行逻辑
-            注意：PyQt的UI组件必须在主线程中创建，所以我们只在后台线程中处理媒体加载
+            PyQt的UI组件必须在主线程中创建，所以我们只在后台线程中处理媒体加载
+            将文件I/O操作移到后台线程执行，避免阻塞主线程
             """
             try:
                 self.preview_progress.emit(10, "正在准备预览...")
 
-                # 注意：UI组件必须在主线程中创建，所以我们只在后台线程中处理非UI逻辑
-                # 实际的UI组件创建将在主线程中完成
+                # 文件加载数据容器，传递给主线程避免重复I/O
+                loaded_data = {}
 
-                # 对于不同的预览类型，执行不同的预处理逻辑
                 if self.preview_type in ["video", "audio", "pdf", "archive", "image", "text", "dir", "document", "font", "unknown"]:
-                    # 模拟进度更新，确保UI能响应
-                    import time
-                    for i in range(20, 100, 10):
-                        if self.is_cancelled:
-                            self.preview_error.emit("预览已取消")
-                            return
-                        self.preview_progress.emit(i, "正在准备预览...")
-                        # 短暂休眠，让主线程有机会处理事件
-                        time.sleep(0.1)
+                    if self.is_cancelled:
+                        self.preview_error.emit("预览已取消")
+                        return
+
+                    self.preview_progress.emit(20, "正在读取文件信息...")
+
+                    # 执行文件I/O操作（在后台线程进行，不阻塞主线程）
+                    if self.preview_type == "text":
+                        self._load_text_file_data(loaded_data)
+                    elif self.preview_type == "image":
+                        self._load_image_metadata(loaded_data)
+                    elif self.preview_type == "pdf":
+                        self._load_pdf_info(loaded_data)
+                    elif self.preview_type in ("video", "audio"):
+                        self._load_media_info(loaded_data)
+
+                    if self.is_cancelled:
+                        self.preview_error.emit("预览已取消")
+                        return
 
                     # 标记预览准备完成
                     self.preview_progress.emit(100, "预览准备完成")
 
-                    # 发送信号，通知主线程创建预览组件
-                    # 注意：我们不在后台线程中创建UI组件，而是让主线程创建
-                    self.preview_created.emit(None, self.preview_type)
+                    # 发送信号，通知主线程创建预览组件并传递已加载的数据
+                    self.preview_created.emit(loaded_data, self.preview_type)
                 else:
                     self.preview_error.emit("不支持的预览类型")
 
             except Exception as e:
                 exception_details("[UnifiedPreviewer.PreviewLoaderThread] 后台预览线程执行失败", e)
                 self.preview_error.emit(str(e))
+
+        def _load_text_file_data(self, loaded_data: dict):
+            """在后台线程加载文本文件内容"""
+            try:
+                self.preview_progress.emit(40, "正在读取文本文件...")
+                file_size = os.path.getsize(self.file_path)
+                loaded_data['file_size'] = file_size
+
+                # 编码检测+读取（限最大10MB避免内存溢出）
+                read_limit = 10 * 1024 * 1024
+                try:
+                    import chardet
+                    with open(self.file_path, 'rb') as f:
+                        raw_data = f.read(min(file_size, read_limit))
+                    encoding = 'utf-8'
+                    try:
+                        detect_result = chardet.detect(raw_data)
+                        encoding = detect_result.get('encoding', 'utf-8') or 'utf-8'
+                    except Exception:
+                        pass
+                    text_content = raw_data.decode(encoding, errors='replace')
+                    loaded_data['text_content'] = text_content
+                    loaded_data['encoding'] = encoding
+                    loaded_data['truncated'] = file_size > read_limit
+                    # 如果文件被截断，标记需要完整读取
+                    if file_size > read_limit:
+                        loaded_data['partial'] = True
+                    self.preview_progress.emit(80, "文本读取完成")
+                except ImportError:
+                    # 无chardet时用UTF-8直接尝试
+                    with open(self.file_path, 'r', encoding='utf-8', errors='replace') as f:
+                        loaded_data['text_content'] = f.read(read_limit)
+                    loaded_data['encoding'] = 'utf-8'
+                    loaded_data['truncated'] = file_size > read_limit
+            except Exception as e:
+                loaded_data['text_content'] = f"[读取文件失败] {e}"
+                loaded_data['encoding'] = 'utf-8'
+
+        def _load_image_metadata(self, loaded_data: dict):
+            """在后台线程提取图片元数据（不加载像素数据）"""
+            try:
+                self.preview_progress.emit(40, "正在读取图片信息...")
+                from PIL import Image
+                with Image.open(self.file_path) as img:
+                    loaded_data['image_format'] = img.format
+                    loaded_data['image_width'] = img.width
+                    loaded_data['image_height'] = img.height
+                    loaded_data['image_mode'] = img.mode
+                    loaded_data['is_animated'] = getattr(img, 'is_animated', False)
+                    try:
+                        loaded_data['image_frames'] = img.n_frames if hasattr(img, 'n_frames') else 1
+                    except Exception:
+                        loaded_data['image_frames'] = 1
+                    # 检查是否为动画WebP
+                    ext = os.path.splitext(self.file_path)[1].lower()
+                    loaded_data['is_animated_webp'] = (
+                        ext == '.webp' and loaded_data.get('is_animated', False)
+                    )
+                self.preview_progress.emit(80, "图片信息读取完成")
+            except ImportError:
+                debug("[PreviewLoaderThread] PIL未安装，跳过图片元数据提取")
+            except Exception as e:
+                debug(f"[PreviewLoaderThread] 提取图片元数据失败: {e}")
+
+        def _load_pdf_info(self, loaded_data: dict):
+            """在后台线程提取PDF基本信息"""
+            try:
+                self.preview_progress.emit(40, "正在读取PDF信息...")
+                from PySide6.QtPdf import QPdfDocument
+                # 注意：QPdfDocument 是 Qt 对象，不能跨线程使用
+                # 改用 Python pdfinfo 或 pikepdf 库获取元数据
+                try:
+                    import pikepdf
+                    with pikepdf.open(self.file_path) as pdf:
+                        loaded_data['pdf_page_count'] = len(pdf.pages)
+                        loaded_data['pdf_version'] = str(pdf.pdf_version)
+                except ImportError:
+                    # 没有 pikepdf 时，用 PyMuPDF (fitz)
+                    try:
+                        import fitz
+                        doc = fitz.open(self.file_path)
+                        loaded_data['pdf_page_count'] = doc.page_count
+                        doc.close()
+                    except ImportError:
+                        # 兜底：仅记录文件大小
+                        loaded_data['pdf_page_count'] = 0
+                loaded_data['file_size'] = os.path.getsize(self.file_path)
+                self.preview_progress.emit(80, "PDF信息读取完成")
+            except Exception as e:
+                debug(f"[PreviewLoaderThread] 提取PDF信息失败: {e}")
+
+        def _load_media_info(self, loaded_data: dict):
+            """在后台线程提取音视频文件基本信息"""
+            try:
+                self.preview_progress.emit(40, "正在读取媒体信息...")
+                loaded_data['file_size'] = os.path.getsize(self.file_path)
+
+                # 尝试提取基础元数据（仅文件级信息，不初始化播放器）
+                try:
+                    import mutagen
+                    mf = mutagen.File(self.file_path, easy=True)
+                    if mf:
+                        info = mf.info
+                        loaded_data['media_duration'] = getattr(info, 'length', 0)
+                        loaded_data['media_bitrate'] = getattr(info, 'bitrate', 0)
+                        loaded_data['media_sample_rate'] = getattr(info, 'sample_rate', 0)
+                except ImportError:
+                    pass
+                except Exception:
+                    pass
+
+                self.preview_progress.emit(80, "媒体信息读取完成")
+            except Exception as e:
+                debug(f"[PreviewLoaderThread] 提取媒体信息失败: {e}")
 
         def cancel(self):
             """
@@ -1562,26 +1777,40 @@ class UnifiedPreviewer(QWidget):
         # 更新进度条
         self._on_progress_updated(self._progress, f"正在加载视频... {self._progress}%")
     
-    def _show_text_preview(self, file_path):
+    def _show_text_preview(self, file_path, loaded_data=None):
         """
         显示文本预览
         进度条已在_show_preview中显示并在_on_preview_created中关闭
-        
+
         Args:
             file_path (str): 文本文件路径
+            loaded_data (dict, optional): 后台线程预加载的数据，包含text_content
         """
         try:
             # 尝试导入文本预览器组件
             from freeassetfilter.components.text_previewer import TextPreviewWidget
-            
+
             # 创建文本预览部件（注意：使用TextPreviewWidget而不是TextPreviewer）
             # TextPreviewer是QMainWindow，不能嵌入到布局中；TextPreviewWidget才是QWidget
             text_previewer = TextPreviewWidget()
-            
-            # 设置文件，开始异步读取
-            text_previewer.set_file(file_path)
-            
-            self._add_preview_widget(text_previewer)  # 设置伸展因子1，使预览组件占据剩余空间
+
+            # 检查是否有后台线程预读取的文本内容
+            if loaded_data and loaded_data.get('text_content'):
+                # 后台线程已读取内容，直接设置到预览器（跳过文件I/O）
+                if hasattr(text_previewer, 'set_text_content'):
+                    text_previewer.set_text_content(
+                        loaded_data['text_content'],
+                        file_path=file_path,
+                        encoding=loaded_data.get('encoding', 'utf-8')
+                    )
+                else:
+                    # 回退：让预览器自己读取文件
+                    text_previewer.set_file(file_path)
+            else:
+                # 正常路径：让预览器自己读取文件
+                text_previewer.set_file(file_path)
+
+            self._add_preview_widget(text_previewer)
             self.current_preview_widget = text_previewer
             self.current_preview_type = "text"
         except Exception as e:

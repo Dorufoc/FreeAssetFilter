@@ -11,25 +11,34 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Optional
 
 from freeassetfilter.utils.app_logger import debug, info, warning
 
-try:
-    from PIL import Image, ImageCms, ImageOps
-    PIL_AVAILABLE = True
-except ImportError:
-    Image = None
-    ImageCms = None
-    ImageOps = None
-    PIL_AVAILABLE = False
+# 惰性加载 PIL ImageOps（模块级）
+ImageOps = None
+_IMAGE_OPS_AVAILABLE = None
+
+def _ensure_image_ops():
+    global _IMAGE_OPS_AVAILABLE, ImageOps
+    if _IMAGE_OPS_AVAILABLE is None:
+        try:
+            from PIL import ImageOps
+            _IMAGE_OPS_AVAILABLE = True
+        except ImportError:
+            _IMAGE_OPS_AVAILABLE = False
+    return _IMAGE_OPS_AVAILABLE
 
 
 def apply_exif_orientation(image: "Image.Image") -> "Image.Image":
     """
     应用 EXIF 方向校正。
     """
-    if not PIL_AVAILABLE or image is None:
+    if image is None:
+        return image
+
+    if not _ensure_image_ops():
         return image
 
     try:
@@ -39,11 +48,23 @@ def apply_exif_orientation(image: "Image.Image") -> "Image.Image":
         return image
 
 
+@functools.lru_cache(maxsize=1)
+def _get_srgb_profile():
+    """获取缓存的 sRGB ICC Profile，避免反复创建。"""
+    from PIL import ImageCms
+    return ImageCms.createProfile("sRGB")
+
+
 def convert_pil_to_srgb(image: "Image.Image") -> "Image.Image":
     """
     若图像带有 ICC Profile，则尽量转换到 sRGB。
     """
-    if not PIL_AVAILABLE or image is None or ImageCms is None:
+    try:
+        from PIL import Image, ImageCms
+    except ImportError:
+        return image
+
+    if image is None:
         return image
 
     try:
@@ -52,7 +73,7 @@ def convert_pil_to_srgb(image: "Image.Image") -> "Image.Image":
             return image
 
         src_profile = ImageCms.ImageCmsProfile(icc_profile)
-        dst_profile = ImageCms.createProfile("sRGB")
+        dst_profile = _get_srgb_profile()
         converted = ImageCms.profileToProfile(image, src_profile, dst_profile, outputMode=image.mode)
         debug("ICC配置转换为sRGB完成")
         return converted
@@ -65,7 +86,7 @@ def normalize_pil_image(image: "Image.Image") -> "Image.Image":
     """
     对普通 PIL 图像执行方向与色彩空间标准化。
     """
-    if not PIL_AVAILABLE or image is None:
+    if image is None:
         return image
 
     normalized = apply_exif_orientation(image)
@@ -109,8 +130,10 @@ def load_raw_image(
 
     rgb = np.ascontiguousarray(rgb)
 
-    if not PIL_AVAILABLE:
-        raise RuntimeError("PIL 不可用，无法构建 RAW 图像对象")
+    try:
+        from PIL import Image
+    except ImportError:
+        raise RuntimeError("PIL 不可用，无法构建 RAW 图像对象") from None
 
     debug("RAW图像解码完成")
     return Image.fromarray(rgb, mode="RGB")
@@ -149,7 +172,6 @@ def load_raw_rgb_array(
 
 
 __all__ = [
-    "PIL_AVAILABLE",
     "apply_exif_orientation",
     "convert_pil_to_srgb",
     "normalize_pil_image",

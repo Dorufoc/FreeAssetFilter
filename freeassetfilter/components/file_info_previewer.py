@@ -98,6 +98,43 @@ except ImportError:
     chardet = None
 
 
+class _CacheJsonSignals(QObject):
+    finished = Signal(object)
+
+
+class _CacheReadRunnable(QRunnable):
+    """JSON 缓存读取后台任务"""
+    def __init__(self, filepath, signals):
+        super().__init__()
+        self._filepath = filepath
+        self._signals = signals
+
+    def run(self):
+        try:
+            data = None
+            if os.path.exists(self._filepath):
+                with open(self._filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+        except Exception:
+            data = None
+        self._signals.finished.emit(data)
+
+
+class _CacheWriteRunnable(QRunnable):
+    """JSON 缓存写入后台任务"""
+    def __init__(self, filepath, data_func):
+        super().__init__()
+        self._filepath = filepath
+        self._data_func = data_func
+
+    def run(self):
+        try:
+            with open(self._filepath, "w", encoding="utf-8") as f:
+                json.dump(self._data_func(), f, ensure_ascii=False, indent=2)
+        except (OSError, IOError, PermissionError, FileNotFoundError, TypeError, ValueError):
+            pass
+
+
 class AudioInfoTask(QRunnable):
     """
     音频信息获取任务
@@ -1273,7 +1310,7 @@ class FileInfoPreviewer(QObject):
         return cache_dir
 
     def _get_cached_info(self, file_path):
-        """从缓存中获取信息"""
+        """从缓存中获取信息（同步读取，文件很小且调用频率低）"""
         try:
             cache_file = os.path.join(self._get_cache_dir(), "file_info_cache.json")
             if not os.path.exists(cache_file):
@@ -1285,40 +1322,42 @@ class FileInfoPreviewer(QObject):
             if file_path in cache_data:
                 return cache_data[file_path]
         except (OSError, IOError, PermissionError, FileNotFoundError, json.JSONDecodeError):
-            # debug(f"读取缓存失败: {e}")
             pass
 
         return None
 
     def _save_to_cache(self, file_path, info):
-        """保存信息到缓存"""
-        try:
-            cache_file = os.path.join(self._get_cache_dir(), "file_info_cache.json")
+        """异步保存信息到缓存（后台线程写入）"""
+        cache_file = os.path.join(self._get_cache_dir(), "file_info_cache.json")
 
-            cache_data = {}
-            if os.path.exists(cache_file):
+        # 读取现有缓存（同步，但文件很小）
+        cache_data = {}
+        if os.path.exists(cache_file):
+            try:
                 with open(cache_file, "r", encoding="utf-8") as f:
                     cache_data = json.load(f)
+            except Exception:
+                pass
 
-            # 过滤掉音频的"加载中..."状态和元数据，避免缓存无效数据
-            info_to_cache = {
-                "basic": info.get("basic", {}),
-                "details": {}
-            }
-            for key, value in info.get("details", {}).items():
-                if key == "元数据":
-                    continue  # 不缓存元数据
-                if value == "加载中...":
-                    continue  # 不缓存"加载中..."状态
-                info_to_cache["details"][key] = value
+        # 过滤掉音频的"加载中..."状态和元数据，避免缓存无效数据
+        info_to_cache = {
+            "basic": info.get("basic", {}),
+            "details": {}
+        }
+        for key, value in info.get("details", {}).items():
+            if key == "元数据":
+                continue
+            if value == "加载中...":
+                continue
+            info_to_cache["details"][key] = value
 
-            cache_data[file_path] = info_to_cache
+        cache_data[file_path] = info_to_cache
 
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(cache_data, f, ensure_ascii=False, indent=2)
-        except (OSError, IOError, PermissionError, FileNotFoundError, TypeError, ValueError):
-            # error(f"保存缓存失败: {e}")
-            pass
+        # 后台写入（确保目录存在）
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        QThreadPool.globalInstance().start(
+            _CacheWriteRunnable(cache_file, lambda: cache_data)
+        )
 
     def _format_size(self, size: int) -> str:
         """格式化文件大小"""

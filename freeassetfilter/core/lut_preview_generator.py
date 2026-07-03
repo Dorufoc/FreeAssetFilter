@@ -19,6 +19,7 @@ import os
 import time
 from pathlib import Path
 from typing import Optional, Tuple
+import numpy as np
 from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtCore import Qt
 
@@ -218,28 +219,17 @@ class LUTPreviewGenerator:
             preview_image = self._reference_image.copy()
             preview_image = preview_image.resize(output_size, Image.Resampling.LANCZOS)
             
-            # 应用LUT
-            pixels = preview_image.load()
-            width, height = preview_image.size
+            # 使用 numpy 向量化操作加速 LUT 应用（替代逐像素循环）
+            img_array = np.asarray(preview_image, dtype=np.float32) / 255.0  # (H, W, 3), [0, 1]
             
-            for y in range(height):
-                for x in range(width):
-                    r, g, b = pixels[x, y]
-                    
-                    # 归一化到0-1范围
-                    r_norm = r / 255.0
-                    g_norm = g / 255.0
-                    b_norm = b / 255.0
-                    
-                    # 应用LUT
-                    r_out, g_out, b_out = parser.apply_to_pixel(r_norm, g_norm, b_norm)
-                    
-                    # 转换回0-255范围
-                    r_out = max(0, min(255, int(r_out * 255)))
-                    g_out = max(0, min(255, int(g_out * 255)))
-                    b_out = max(0, min(255, int(b_out * 255)))
-                    
-                    pixels[x, y] = (r_out, g_out, b_out)
+            if parser.is_3d:
+                result = self._apply_3d_lut_numpy(img_array, parser)
+            else:
+                result = self._apply_1d_lut_numpy(img_array, parser)
+            
+            # 转换回 PIL，确保像素值合法
+            result = np.clip(result, 0.0, 1.0)
+            preview_image = Image.fromarray((result * 255).astype(np.uint8), mode="RGB")
             
             # 保存缓存
             if cache_path:
@@ -261,6 +251,113 @@ class LUTPreviewGenerator:
             error(f"生成LUT预览失败: {e}")
             return None
     
+    def _apply_1d_lut_numpy(self, img_array: np.ndarray, parser) -> np.ndarray:
+        """
+        使用 numpy.interp 向量化应用 1D LUT。
+        
+        Args:
+            img_array: 输入图像数组 (H, W, 3), float32, [0, 1]
+            parser: CubeLUTParser 实例
+        
+        Returns:
+            输出图像数组 (H, W, 3), float32, [0, 1]
+        """
+        size = parser.lut_size
+        data = np.array(parser.data, dtype=np.float32)  # (size*3, 3)
+
+        # 1D LUT 数据排布：R0..Rn, G0..Gn, B0..Bn，每个三元组的 [0] 分量是实际值
+        r_lut = data[0:size, 0]
+        g_lut = data[size:2*size, 0]
+        b_lut = data[2*size:3*size, 0]
+
+        xp = np.linspace(0.0, 1.0, size, dtype=np.float32)
+
+        r_out = np.interp(img_array[:, :, 0], xp, r_lut)
+        g_out = np.interp(img_array[:, :, 1], xp, g_lut)
+        b_out = np.interp(img_array[:, :, 2], xp, b_lut)
+
+        return np.stack([r_out, g_out, b_out], axis=-1)
+
+    def _apply_3d_lut_numpy(self, img_array: np.ndarray, parser) -> np.ndarray:
+        """
+        使用 numpy 向量化三线性插值应用 3D LUT。
+        
+        Args:
+            img_array: 输入图像数组 (H, W, 3), float32, [0, 1]
+            parser: CubeLUTParser 实例
+        
+        Returns:
+            输出图像数组 (H, W, 3), float32, [0, 1]
+        """
+        size = parser.lut_size
+        lut_data = np.array(parser.data, dtype=np.float32)  # (size^3, 3)
+
+        # 映射到 LUT 网格坐标
+        coords = img_array * (size - 1)  # (H, W, 3)
+        r_coord = coords[:, :, 0]
+        g_coord = coords[:, :, 1]
+        b_coord = coords[:, :, 2]
+
+        # 整数部分（低索引）
+        r0 = np.floor(r_coord).astype(np.intp)
+        g0 = np.floor(g_coord).astype(np.intp)
+        b0 = np.floor(b_coord).astype(np.intp)
+        # 高索引（防止越界）
+        r1 = np.clip(r0 + 1, 0, size - 1)
+        g1 = np.clip(g0 + 1, 0, size - 1)
+        b1 = np.clip(b0 + 1, 0, size - 1)
+
+        # 小数部分（插值权重）
+        fr = r_coord - r0
+        fg = g_coord - g0
+        fb = b_coord - b0
+
+        # 计算 8 个角点在 lut_data 中的索引: idx = (z * size + y) * size + x
+        def _idx(x, y, z):
+            return (z * size + y) * size + x
+
+        idx000 = _idx(r0, g0, b0)
+        idx001 = _idx(r0, g0, b1)
+        idx010 = _idx(r0, g1, b0)
+        idx011 = _idx(r0, g1, b1)
+        idx100 = _idx(r1, g0, b0)
+        idx101 = _idx(r1, g0, b1)
+        idx110 = _idx(r1, g1, b0)
+        idx111 = _idx(r1, g1, b1)
+
+        # 批量查表：lut_data[idx] -> (H, W, 3)
+        c000 = lut_data[idx000]
+        c001 = lut_data[idx001]
+        c010 = lut_data[idx010]
+        c011 = lut_data[idx011]
+        c100 = lut_data[idx100]
+        c101 = lut_data[idx101]
+        c110 = lut_data[idx110]
+        c111 = lut_data[idx111]
+
+        # 三线性插值（广播权重到 3 通道）
+        w000 = (1 - fr) * (1 - fg) * (1 - fb)
+        w001 = (1 - fr) * (1 - fg) * fb
+        w010 = (1 - fr) * fg * (1 - fb)
+        w011 = (1 - fr) * fg * fb
+        w100 = fr * (1 - fg) * (1 - fb)
+        w101 = fr * (1 - fg) * fb
+        w110 = fr * fg * (1 - fb)
+        w111 = fr * fg * fb
+
+        result = (
+            c000 * w000[:, :, None] +
+            c001 * w001[:, :, None] +
+            c010 * w010[:, :, None] +
+            c011 * w011[:, :, None] +
+            c100 * w100[:, :, None] +
+            c101 * w101[:, :, None] +
+            c110 * w110[:, :, None] +
+            c111 * w111[:, :, None]
+        )
+
+        return result
+
     def _pil_image_to_qpixmap(self, pil_image) -> QPixmap:
         """
         将PIL图像转换为QPixmap

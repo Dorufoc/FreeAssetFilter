@@ -470,6 +470,8 @@ class MPVPlayerCore(QObject):
         self._signal_process_interval_ms = 100
         self._signal_schedule_lock = threading.Lock()
         self._signal_processing_scheduled = False
+        self._max_signals_per_tick = 20
+        self._signal_process_count = 0
     
     def _worker_thread_func(self):
         """MPV工作线程主函数 - 所有MPV操作都在此线程执行"""
@@ -1971,13 +1973,19 @@ class MPVPlayerCore(QObject):
     
     def _process_signal_queue(self):
         """处理信号队列（在主线程中执行）"""
+        self._signal_process_count = 0
         try:
-            while True:
+            while self._signal_process_count < self._max_signals_per_tick:
                 try:
                     signal_data = self._signal_queue.get(block=False)
                     signal_name = signal_data[0]
+                    self._signal_process_count += 1
                     
                     if signal_name == 'positionChanged':
+                        # 丢弃策略：如果队列中还有待处理的 positionChanged，跳过本次发射
+                        # 只保留最新的位置信号，防止 seek 时大量位置信号冻结 UI
+                        if self._has_pending_signal('positionChanged'):
+                            continue
                         _, position, duration = signal_data
                         self.positionChanged.emit(position, duration)
                     elif signal_name == 'seekFinished':
@@ -2024,6 +2032,17 @@ class MPVPlayerCore(QObject):
 
         if self._signal_timer is not None and has_pending_signal:
             self._signal_timer.start(self._signal_process_interval_ms)
+
+    def _has_pending_signal(self, signal_name: str) -> bool:
+        """检查队列中是否还有指定类型的待处理信号（用于丢弃策略）"""
+        try:
+            with self._signal_queue.mutex:
+                for item in self._signal_queue.queue:
+                    if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] == signal_name:
+                        return True
+        except Exception:
+            pass
+        return False
     
     def load_file(self, file_path: str) -> bool:
         """
@@ -2549,11 +2568,23 @@ class MPVPlayerCore(QObject):
         """
         return False
     
+    @staticmethod
+    def _process_events_for(ms: int) -> None:
+        """
+        非阻塞等待：使用 QEventLoop + QTimer 处理 Qt 事件，保持主线程响应。
+        替代 time.sleep() 以避免冻结 UI。
+        """
+        from PySide6.QtCore import QEventLoop, QTimer
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
     def pre_cleanup(self):
         """
         预清理 - 让 MPV 进入空闲状态，加速后续销毁
         在调用 close() 之前先调用此方法，可以显著缩短销毁时间
         注意：所有操作都通过命令队列发送，避免在工作线程外直接操作MPV句柄
+        使用 QEventLoop 代替 time.sleep，保持主线程响应
         """
         with self._state_lock:
             if not self._initialized:
@@ -2566,12 +2597,12 @@ class MPVPlayerCore(QObject):
         try:
             # 1. 先暂停播放（停止解码器工作）- 使用命令队列
             self._send_command(MPVCommandType.PAUSE, timeout=0.5)
-            # 等待暂停状态生效（通过状态检查替代硬等待）
+            # 等待暂停状态生效 - 使用事件循环代替 time.sleep
             for _ in range(5):
                 with self._state_lock:
                     if self._is_paused:
                         break
-                time.sleep(0.005)  # 5ms轮询
+                self._process_events_for(5)
             
             # 2. 停止播放（释放文件句柄）- 使用命令队列
             self._send_command(MPVCommandType.STOP, timeout=0.5)
@@ -2580,7 +2611,7 @@ class MPVPlayerCore(QObject):
                 with self._state_lock:
                     if not self._is_playing:
                         break
-                time.sleep(0.005)  # 5ms轮询
+                self._process_events_for(5)
             
             # 3. 清除视频滤镜/LUT（如果有）- 使用命令队列
             try:

@@ -37,7 +37,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QThread, QObject, QEvent, QTimer,
-    QFileInfo, QDateTime, QPoint, QSize, QRect, QRectF, QUrl
+    QFileInfo, QDateTime, QPoint, QSize, QRect, QRectF, QUrl,
+    QRunnable, QThreadPool,
 )
 
 class ProgressThrottler(QObject):
@@ -302,6 +303,44 @@ class FileListLoaderThread(QThread):
             self.failed.emit(self.current_path, str(e))
 
 
+class _JsonWriteRunnable(QRunnable):
+    """JSON 写操作后台任务（fire-and-forget）"""
+    def __init__(self, filepath, data_func):
+        super().__init__()
+        self._filepath = filepath
+        self._data_func = data_func
+
+    def run(self):
+        try:
+            os.makedirs(os.path.dirname(self._filepath), exist_ok=True)
+            with open(self._filepath, 'w', encoding='utf-8') as f:
+                json.dump(self._data_func(), f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            warning(f"后台JSON写入失败 {self._filepath}: {e}")
+
+
+class _JsonReadSignals(QObject):
+    finished = Signal(object)  # data dict or None
+
+
+class _JsonReadRunnable(QRunnable):
+    """JSON 读操作后台任务"""
+    def __init__(self, filepath, signals):
+        super().__init__()
+        self._filepath = filepath
+        self._signals = signals
+
+    def run(self):
+        try:
+            data = None
+            if os.path.exists(self._filepath):
+                with open(self._filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+        except Exception:
+            data = None
+        self._signals.finished.emit(data)
+
+
 class CustomFileSelector(QWidget):
     """
     自定义文件选择器组件
@@ -374,6 +413,25 @@ class CustomFileSelector(QWidget):
         self._grid_size_sync_timer = QTimer(self)
         self._grid_size_sync_timer.setSingleShot(True)
         self._grid_size_sync_timer.timeout.connect(self._update_grid_size)
+
+        # JSON I/O 防抖定时器
+        self._path_save_timer = QTimer(self)
+        self._path_save_timer.setSingleShot(True)
+        self._path_save_timer.setInterval(200)
+        self._path_save_timer.timeout.connect(self._flush_path_save)
+        self._view_mode_save_timer = QTimer(self)
+        self._view_mode_save_timer.setSingleShot(True)
+        self._view_mode_save_timer.setInterval(200)
+        self._view_mode_save_timer.timeout.connect(self._flush_view_mode_save)
+        self._favorites_save_timer = QTimer(self)
+        self._favorites_save_timer.setSingleShot(True)
+        self._favorites_save_timer.setInterval(300)
+        self._favorites_save_timer.timeout.connect(self._flush_favorites_save)
+
+        # JSON 读取信号对象
+        self._json_read_signals = None
+        self._pending_path_data = None
+        self._pending_view_mode = None
         
         # 文件选择器 Model/View 架构相关
         self.file_model = FileSelectorListModel(self.dpi_scale, self.global_font)
@@ -445,72 +503,95 @@ class CustomFileSelector(QWidget):
     
     def load_last_path(self):
         """
-        从文件中加载上次打开的路径
+        从文件中异步加载上次打开的路径（后台线程读取）
         """
-        try:
-            if os.path.exists(self.save_path_file):
-                with open(self.save_path_file, 'r') as f:
-                    data = json.load(f)
-                    last_accessible_path = data.get("last_accessible_path")
-                    if self._is_valid_selector_path(last_accessible_path):
-                        self._last_accessible_path = last_accessible_path
-                        self._navigation_recovery_path = last_accessible_path
+        signals = _JsonReadSignals()
+        # 保持强引用直到信号触发
+        signals.finished.connect(self._on_last_path_loaded)
+        QThreadPool.globalInstance().start(_JsonReadRunnable(self.save_path_file, signals))
 
-                    # 只有当上次保存的路径存在且不是无效路径时才使用
-                    if "last_path" in data:
-                        last_path = data["last_path"]
-                        # 检查路径是否有效（普通路径需要存在，"All"是特殊路径）
-                        if self._is_valid_selector_path(last_path):
-                            self.current_path = last_path
+    def _on_last_path_loaded(self, data):
+        """处理异步加载的上次路径结果"""
+        if data is None:
+            return
+        try:
+            last_accessible_path = data.get("last_accessible_path")
+            if self._is_valid_selector_path(last_accessible_path):
+                self._last_accessible_path = last_accessible_path
+                self._navigation_recovery_path = last_accessible_path
+
+            if "last_path" in data:
+                last_path = data["last_path"]
+                if self._is_valid_selector_path(last_path):
+                    self.current_path = last_path
         except Exception as e:
-            warning(f"加载上次路径失败: {e}")
-            # 如果加载失败，确保默认显示"All"
-            self.current_path = "All"
-    
+            warning(f"处理上次路径数据失败: {e}")
+
     def save_current_path(self, path=None):
         """
-        保存当前路径到文件
+        异步防抖保存当前路径到文件（后台线程写入）
         """
-        try:
-            last_accessible_path = getattr(self, "_last_accessible_path", "All")
-            if path is None:
-                current_path = getattr(self, "current_path", "All")
-                if self._same_selector_path(current_path, last_accessible_path):
-                    path_to_save = current_path
-                else:
-                    path_to_save = getattr(self, "_navigation_recovery_path", None) or last_accessible_path or "All"
+        last_accessible_path = getattr(self, "_last_accessible_path", "All")
+        if path is None:
+            current_path = getattr(self, "current_path", "All")
+            if self._same_selector_path(current_path, last_accessible_path):
+                path_to_save = current_path
             else:
-                path_to_save = path
+                path_to_save = getattr(self, "_navigation_recovery_path", None) or last_accessible_path or "All"
+        else:
+            path_to_save = path
 
-            with open(self.save_path_file, 'w') as f:
-                json.dump({
-                    "last_path": path_to_save,
-                    "last_accessible_path": last_accessible_path,
-                }, f)
-        except Exception as e:
-            warning(f"保存路径失败: {e}")
+        self._pending_path_data = {
+            "last_path": path_to_save,
+            "last_accessible_path": last_accessible_path,
+        }
+        self._path_save_timer.start()
+
+    def _flush_path_save(self):
+        """防抖到期后实际执行路径保存"""
+        data = self._pending_path_data
+        if data is None:
+            return
+        self._pending_path_data = None
+        QThreadPool.globalInstance().start(
+            _JsonWriteRunnable(self.save_path_file, lambda: data)
+        )
 
     def _load_view_mode(self):
         if self._view_mode_loaded:
             return
         self._view_mode_loaded = True
+        signals = _JsonReadSignals()
+        signals.finished.connect(self._on_view_mode_loaded)
+        QThreadPool.globalInstance().start(_JsonReadRunnable(self.save_view_mode_file, signals))
+
+    def _on_view_mode_loaded(self, data):
+        """处理异步加载的视图模式结果"""
+        if data is None:
+            return
         try:
-            if os.path.exists(self.save_view_mode_file):
-                with open(self.save_view_mode_file, 'r') as f:
-                    data = json.load(f)
-                    mode = data.get("view_mode", "card")
-                    if mode in ("card", "list"):
-                        self.view_mode = mode
+            mode = data.get("view_mode", "card")
+            if mode in ("card", "list"):
+                self.view_mode = mode
         except Exception as e:
-            warning(f"加载视图模式失败: {e}")
+            warning(f"处理视图模式数据失败: {e}")
 
     def save_view_mode(self):
-        try:
-            os.makedirs(os.path.dirname(self.save_view_mode_file), exist_ok=True)
-            with open(self.save_view_mode_file, 'w') as f:
-                json.dump({"view_mode": self.view_mode}, f)
-        except Exception as e:
-            warning(f"保存视图模式失败: {e}")
+        """
+        异步防抖保存视图模式到文件（后台线程写入）
+        """
+        self._pending_view_mode = self.view_mode
+        self._view_mode_save_timer.start()
+
+    def _flush_view_mode_save(self):
+        """防抖到期后实际执行视图模式保存"""
+        mode = self._pending_view_mode
+        if mode is None:
+            return
+        self._pending_view_mode = None
+        QThreadPool.globalInstance().start(
+            _JsonWriteRunnable(self.save_view_mode_file, lambda: {"view_mode": mode})
+        )
 
     def init_ui(self):
         """
@@ -1265,6 +1346,7 @@ class CustomFileSelector(QWidget):
     def _load_favorites(self):
         """
         从文件中加载收藏夹列表（延迟加载，首次访问时读取文件）
+        首次读取同步执行（一次性的小文件开销）。
         """
         if self._favorites_loaded:
             return self.favorites
@@ -1283,14 +1365,17 @@ class CustomFileSelector(QWidget):
     
     def _save_favorites(self):
         """
-        保存收藏夹列表到文件（先确保已加载）
+        异步防抖保存收藏夹列表到文件（后台线程写入）
         """
-        self._load_favorites()
-        try:
-            with open(self.favorites_file, 'w', encoding='utf-8') as f:
-                json.dump(self.favorites, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            warning(f"保存收藏夹失败: {e}")
+        self._favorites_save_timer.start()
+
+    def _flush_favorites_save(self):
+        """防抖到期后实际执行收藏夹保存"""
+        if not self._favorites_loaded:
+            self._load_favorites()
+        QThreadPool.globalInstance().start(
+            _JsonWriteRunnable(self.favorites_file, lambda: self.favorites.copy())
+        )
     
     def _show_favorites_dialog(self):
         """
@@ -2122,6 +2207,11 @@ class CustomFileSelector(QWidget):
             files = self._sort_files(files)
             files = self._filter_files(files)
             self.file_model.set_files(files)
+
+            # 目录已变更，清除动画状态字典以防 _animation_states 无限增长
+            self.card_delegate.clear_caches()
+            self.list_delegate.clear_caches()
+
             self._update_file_selection_state()
             self._check_and_apply_preview_state()
 

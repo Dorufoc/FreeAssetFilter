@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QFileDialog, QLineEdit, QSizePolicy, QApplication
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QThread
 from PySide6.QtGui import QPixmap
 
 from freeassetfilter.widgets.message_box import CustomMessageBox
@@ -38,6 +38,58 @@ from freeassetfilter.utils.lut_utils import (
 )
 from freeassetfilter.core.lut_preview_generator import generate_lut_preview, create_default_reference_image
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+
+
+class LutImportWorker(QThread):
+    """LUT 文件导入工作线程，后台执行文件操作不阻塞 UI"""
+    progress_updated = Signal(int)
+    import_finished = Signal(dict)
+    import_error = Signal(str)
+
+    def __init__(self, file_path: str, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+
+    def run(self):
+        try:
+            lut_id = str(uuid.uuid4())
+            self.progress_updated.emit(1)
+
+            success, result = copy_lut_file(self.file_path, lut_id)
+            if not success:
+                self.import_error.emit(result)
+                return
+
+            self.progress_updated.emit(2)
+
+            from freeassetfilter.utils.lut_utils import CubeLUTParser
+            parser = CubeLUTParser(result)
+            parser.parse()
+            info = parser.get_info()
+
+            self.progress_updated.emit(3)
+
+            try:
+                from freeassetfilter.core.lut_preview_generator import generate_lut_preview
+                generate_lut_preview(result, lut_id)
+            except Exception as e:
+                warning(f"生成LUT预览图失败: {e}")
+
+            display_name = get_lut_display_name(self.file_path)
+            lut_info = {
+                "id": lut_id,
+                "name": display_name,
+                "path": result,
+                "preview_path": "",
+                "size": info.get("size", 0),
+                "is_3d": info.get("is_3d", True),
+                "display_name": display_name,
+            }
+
+            self.progress_updated.emit(4)
+            self.import_finished.emit(lut_info)
+        except Exception as e:
+            self.import_error.emit(str(e))
 
 
 class LutManagerDialog(CustomMessageBox):
@@ -372,36 +424,26 @@ class LutManagerDialog(CustomMessageBox):
             self.reject()
     
     def _add_new_lut(self):
-        """添加新LUT（带进度条）"""
+        """添加新LUT（带进度条）- 使用工作线程保持UI响应"""
         debug("开始添加 LUT")
         
         # 打开文件选择对话框
-        debug("打开文件选择对话框")
-        _t_start = time.perf_counter()
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择LUT文件",
             "",
             "LUT Files (*.cube);;All Files (*)"
         )
-        _t_end = time.perf_counter()
-        debug(f"getOpenFileName 返回，耗时: {(_t_end-_t_start)*1000:.1f}ms")
-        
         if not file_path:
             debug("用户取消选择文件")
             return
         
         debug(f"用户选择了文件: {file_path}")
         
-        # 验证LUT文件
-        debug("开始验证 LUT 文件")
-        _t0 = time.perf_counter()
+        # 验证LUT文件（快速操作，保留在主线程）
         is_valid, error_msg = validate_lut_file(file_path)
-        _t1 = time.perf_counter()
-        debug(f"LUT 文件验证完成，耗时: {(_t1-_t0)*1000:.1f}ms")
         if not is_valid:
             debug(f"LUT 文件验证失败: {error_msg}")
-            # 显示错误信息
             error_dialog = CustomMessageBox(self)
             error_dialog.set_title("错误")
             error_dialog.set_message(f"无效的LUT文件:\n{error_msg}")
@@ -411,109 +453,64 @@ class LutManagerDialog(CustomMessageBox):
         
         debug("LUT 文件验证通过")
         
-        # 创建进度弹窗
-        debug("创建进度弹窗")
+        # 创建进度弹窗（UI元素必须在主线程创建）
         from freeassetfilter.widgets.progress_widgets import D_ProgressBar
         progress_dialog = CustomMessageBox(self)
         progress_dialog.set_title("导入LUT")
         progress_dialog.set_text("正在导入LUT文件...")
-        
-        # 创建进度条
         progress_bar = D_ProgressBar()
         progress_bar.setRange(0, 4)
         progress_bar.setValue(0)
         progress_bar.setInteractive(False)
         progress_dialog.set_progress(progress_bar)
-        
-        # 禁用关闭按钮，防止用户在处理过程中关闭
         progress_dialog.setWindowFlags(progress_dialog.windowFlags() & ~Qt.WindowCloseButtonHint)
-        
         progress_dialog.show()
-        
-        # 处理事件以确保进度条显示
         QApplication.processEvents()
         
-        # 生成LUT ID
-        lut_id = str(uuid.uuid4())
-        debug(f"生成 LUT ID: {lut_id}")
-        
-        # 更新进度：复制文件
-        progress_bar.setValue(1)
-        QApplication.processEvents()
-        
-        # 复制LUT文件到应用目录
-        debug("开始复制 LUT 文件")
-        success, result = copy_lut_file(file_path, lut_id)
-        if not success:
-            progress_dialog.close()
-            debug(f"复制 LUT 文件失败: {result}")
-            # 显示错误信息
-            error_dialog = CustomMessageBox(self)
-            error_dialog.set_title("错误")
-            error_dialog.set_message(f"复制LUT文件失败:\n{result}")
-            error_dialog.set_buttons(["确定"], orientations=Qt.Horizontal, button_types=["primary"])
-            error_dialog.exec()
-            return
-        
-        debug(f"LUT 文件已复制到: {result}")
-        
-        # 更新进度：解析LUT
-        progress_bar.setValue(2)
-        QApplication.processEvents()
-        
-        # 获取LUT信息
-        debug("开始解析 LUT 信息")
-        from freeassetfilter.utils.lut_utils import CubeLUTParser
-        parser = CubeLUTParser(result)
-        parser.parse()
-        info = parser.get_info()
-        debug(f"LUT 解析完成: size={info.get('size')}, is_3d={info.get('is_3d')}")
-        
-        # 更新进度：生成预览图
-        progress_bar.setValue(3)
-        QApplication.processEvents()
-
-        # 生成LUT预览图
-        debug("开始生成 LUT 预览图")
-        try:
-            from freeassetfilter.core.lut_preview_generator import generate_lut_preview
-            generate_lut_preview(result, lut_id)
-            debug("LUT 预览图生成完成")
-        except (OSError, IOError) as e:
-            warning(f"生成LUT预览图失败 (文件IO错误): {e}")
-        except ValueError as e:
-            warning(f"生成LUT预览图失败 (数据错误): {e}")
-        except MemoryError as e:
-            warning(f"生成LUT预览图失败 (内存不足): {e}")
-        
-        # 创建LUT信息
-        display_name = get_lut_display_name(file_path)
-        lut_info = LUTInfo(
-            id=lut_id,
-            name=display_name,
-            path=result,
-            preview_path="",
-            size=info.get('size', 0),
-            is_3d=info.get('is_3d', True)
+        # 创建工作线程执行耗时操作
+        self._lut_import_worker = LutImportWorker(file_path)
+        self._lut_import_worker.progress_updated.connect(
+            lambda v: progress_bar.setValue(v)
         )
+        self._lut_import_worker.import_finished.connect(
+            lambda info: self._on_lut_import_finished(info, progress_dialog)
+        )
+        self._lut_import_worker.import_error.connect(
+            lambda msg: self._on_lut_import_error(msg, progress_dialog)
+        )
+        self._lut_import_worker.finished.connect(self._lut_import_worker.deleteLater)
+        self._lut_import_worker.start()
+    
+    def _on_lut_import_finished(self, info: dict, progress_dialog):
+        """LUT 导入完成回调（主线程）"""
+        debug(f"LUT 导入完成: {info.get('name')}")
         
-        # 添加到列表
+        lut_info = LUTInfo(
+            id=info["id"],
+            name=info["name"],
+            path=info["path"],
+            preview_path=info["preview_path"],
+            size=info["size"],
+            is_3d=info["is_3d"],
+        )
         self.lut_list.append(lut_info)
-        
-        # 保存到设置
         if self.settings_manager:
             save_lut_to_settings(self.settings_manager, lut_info)
         
-        # 更新进度：完成
-        progress_bar.setValue(4)
-        QApplication.processEvents()
-        
-        # 短暂延迟让用户看到完成状态
         from PySide6.QtCore import QTimer
         QTimer.singleShot(200, progress_dialog.close)
-        
-        # 刷新显示
         self._refresh_lut_cards()
+    
+    def _on_lut_import_error(self, error_msg: str, progress_dialog):
+        """LUT 导入失败回调（主线程）"""
+        debug(f"LUT 导入失败: {error_msg}")
+        progress_dialog.close()
+        
+        error_dialog = CustomMessageBox(self)
+        error_dialog.set_title("错误")
+        error_dialog.set_message(f"导入LUT文件失败:\n{error_msg}")
+        error_dialog.set_buttons(["确定"], orientations=Qt.Horizontal, button_types=["primary"])
+        error_dialog.exec()
     
     def _close_or_cancel_lut(self):
         """
