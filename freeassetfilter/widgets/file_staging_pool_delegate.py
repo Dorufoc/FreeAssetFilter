@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple, Union
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionViewItem
 
@@ -36,6 +36,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         self._action_slide_states: Dict[str, dict] = {}
         self._active_action_slide_keys: set = set()
         super().__init__(dpi_scale=dpi_scale, global_font=global_font, parent=parent)
+        self._animation_timer = QTimer(self)
 
     def clear_caches(self):
         self._pressed_action_key = None

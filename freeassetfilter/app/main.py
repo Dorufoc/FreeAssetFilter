@@ -23,7 +23,6 @@ import warnings
 import time
 import traceback
 import threading
-import subprocess
 import faulthandler
 
 # 添加父目录到Python路径，确保包能被正确导入
@@ -349,9 +348,18 @@ class FreeAssetFilterApp(QMainWindow):
             "cleanup_done": False,
         }
 
+        # 启动看门狗定时器（延迟到 schedule_startup_tasks 中创建）
+        self._startup_watchdog_timer = None
+
         # 更新控制器（延迟导入，避免连锁加载 urllib/subprocess 等模块）
         from freeassetfilter.components.update_controller import UpdateController
         self.update_controller = None  # 延迟到 schedule_startup_tasks 中创建
+
+        # 底部按钮将在延迟加载中创建
+        self.github_button = None
+        self.update_button = None
+        self.global_settings_button = None
+        self.hover_tooltip = None
 
         # 获取全局字体
         global_font = getattr(app, 'global_font', QFont())
@@ -712,7 +720,7 @@ class FreeAssetFilterApp(QMainWindow):
             # 获取当前主题模式
             app = QApplication.instance()
             is_dark_mode = False
-            if hasattr(app, 'settings_manager'):
+            if hasattr(app, 'settings_manager') and app.settings_manager is not None:
                 is_dark_mode = app.settings_manager.get_setting("appearance.theme", "default") == "dark"
 
             # 设置深色模式属性 (1 = 启用深色, 0 = 禁用深色/使用浅色)
@@ -814,7 +822,7 @@ class FreeAssetFilterApp(QMainWindow):
         normal_color = "#e0e0e0"
         base_color = "#212121"
 
-        if hasattr(app, "settings_manager"):
+        if hasattr(app, "settings_manager") and app.settings_manager is not None:
             panel_background = app.settings_manager.get_setting(
                 "appearance.colors.panel_background", "#f1f3f5"
             )
@@ -1033,8 +1041,8 @@ class FreeAssetFilterApp(QMainWindow):
         """
         # 创建中央部件
         self.central_widget = QWidget()
-        # 获取主题颜色
-        panel_background, normal_color, base_color = self._get_theme_colors()
+        # 获取主题颜色（骨架屏已移除，只需中央背景色）
+        panel_background, _, _ = self._get_theme_colors()
         self.central_widget.setStyleSheet(f"background-color: {panel_background};")
         self.setCentralWidget(self.central_widget)
 
@@ -1049,41 +1057,21 @@ class FreeAssetFilterApp(QMainWindow):
         splitter.setContentsMargins(0, 0, 0, 0)
         self._splitter = splitter
 
-        # 左侧列：文件选择器A
+        # 三列空白容器（骨架屏已移除，首帧后填充真实控件）
         self.left_column = QWidget()
         self.left_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # 设置边框圆角
-        border_radius = 8
-        column_qss = f"background-color: {base_color}; border: 1px solid {normal_color}; border-radius: {border_radius}px;"
-        self.left_column.setStyleSheet(column_qss)
         left_layout = QVBoxLayout(self.left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 内嵌文件选择器A（轻量占位，首帧后替换为真实控件）
-        self.file_selector_a = QWidget()
-        self.file_selector_a.setEnabled(False)
-        left_layout.addWidget(self.file_selector_a)
-
-        # 中间列：文件临时存储池
         self.middle_column = QWidget()
         self.middle_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.middle_column.setStyleSheet(column_qss)
         middle_layout = QVBoxLayout(self.middle_column)
+        middle_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 添加文件临时存储池组件（轻量占位，首帧后替换为真实控件）
-        self.file_staging_pool = QWidget()
-        self.file_staging_pool.setEnabled(False)
-        middle_layout.addWidget(self.file_staging_pool)
-
-        # 右侧列：统一文件预览器
         self.right_column = QWidget()
         self.right_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.right_column.setStyleSheet(column_qss)
         right_layout = QVBoxLayout(self.right_column)
-
-        # 统一文件预览器（轻量占位，首帧后替换为真实控件）
-        self.unified_previewer = QWidget()
-        self.unified_previewer.setEnabled(False)
-        right_layout.addWidget(self.unified_previewer, 1)
+        right_layout.setContentsMargins(0, 0, 0, 0)
 
         # 将三列添加到分割器，调整初始比例
         splitter.addWidget(self.left_column)
@@ -1099,7 +1087,7 @@ class FreeAssetFilterApp(QMainWindow):
         # 添加分割器到主布局
         main_layout.addWidget(splitter, 1)
 
-        # 创建状态标签和全局设置按钮的布局
+        # 创建状态标签和全局设置按钮的布局（按钮延迟到 show() 后创建）
         status_container = QWidget()
         status_container_layout = QVBoxLayout(status_container)
         status_container_layout.setContentsMargins(0, 0, 0, 0)
@@ -1109,16 +1097,7 @@ class FreeAssetFilterApp(QMainWindow):
         status_layout = QHBoxLayout()
         status_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 创建GitHub按钮，使用svg图标
-        from freeassetfilter.widgets.button_widgets import CustomButton
-        github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
-        self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
-        self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        # 连接到GitHub跳转函数
-        self.github_button.clicked.connect(self._open_github)
-        status_layout.addWidget(self.github_button)
-
-        # 添加左侧占位符，将状态标签推到居中位置
+        # 左侧占位，预留后续按钮位置
         status_layout.addStretch()
 
         # 状态标签
@@ -1135,35 +1114,56 @@ class FreeAssetFilterApp(QMainWindow):
         self.status_label.setStyleSheet(f"color: #888888; margin-top: {margin}px;")
         status_layout.addWidget(self.status_label)
 
-        # 添加右侧占位符，将全局设置按钮推到右侧
+        # 右侧占位，预留后续按钮位置
         status_layout.addStretch()
-
-        # 创建更新按钮，显示在设置按钮左侧
-        update_icon_path = get_resource_path('freeassetfilter/icons/update.svg')
-        self.update_button = CustomButton(update_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="检查更新")
-        self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        status_layout.addWidget(self.update_button)
-
-        # 创建全局设置按钮，显示在更新按钮右侧
-        settings_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
-        self.global_settings_button = CustomButton(settings_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
-        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.global_settings_button.clicked.connect(self._open_global_settings)
-        status_layout.addWidget(self.global_settings_button)
 
         # 将水平布局添加到容器的垂直布局中
         status_container_layout.addLayout(status_layout)
+        self._status_bar_layout = status_layout  # 保存引用供延迟创建按钮使用
 
         # 添加状态容器到主布局
         main_layout.addWidget(status_container)
 
-        # 初始化自定义悬浮提示
-        from freeassetfilter.widgets.hover_tooltip import HoverTooltip
-        self.hover_tooltip = HoverTooltip(self)
-        # 将底部按钮添加为目标控件
-        self.hover_tooltip.set_target_widget(self.github_button)
-        self.hover_tooltip.set_target_widget(self.update_button)
-        self.hover_tooltip.set_target_widget(self.global_settings_button)
+    def _create_bottom_bar_buttons(self):
+        """首帧后延迟创建底部按钮，加速首屏显示"""
+        if self._is_closing:
+            return
+        try:
+            status_layout = getattr(self, '_status_bar_layout', None)
+            if status_layout is None:
+                error("底部按钮延迟创建: 状态栏布局引用不存在")
+                return
+
+            from freeassetfilter.widgets.button_widgets import CustomButton
+
+            # Add GitHub button before the first stretch
+            github_icon_path = get_resource_path('freeassetfilter/icons/github.svg')
+            self.github_button = CustomButton(github_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="跳转项目主页")
+            self.github_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.github_button.clicked.connect(self._open_github)
+            # Insert at position 0 (before the first stretch)
+            status_layout.insertWidget(0, self.github_button)
+
+            # Add update button and settings button at the end
+            update_icon_path = get_resource_path('freeassetfilter/icons/update.svg')
+            self.update_button = CustomButton(update_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="检查更新")
+            self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            status_layout.addWidget(self.update_button)
+
+            settings_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
+            self.global_settings_button = CustomButton(settings_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
+            self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self.global_settings_button.clicked.connect(self._open_global_settings)
+            status_layout.addWidget(self.global_settings_button)
+
+            # 初始化自定义悬浮提示
+            from freeassetfilter.widgets.hover_tooltip import HoverTooltip
+            self.hover_tooltip = HoverTooltip(self)
+            self.hover_tooltip.set_target_widget(self.github_button)
+            self.hover_tooltip.set_target_widget(self.update_button)
+            self.hover_tooltip.set_target_widget(self.global_settings_button)
+        except Exception as e:
+            error(f"延迟创建底部按钮失败: {e}")
 
     def _open_github(self):
         """打开GitHub项目主页"""
@@ -1692,66 +1692,188 @@ class FreeAssetFilterApp(QMainWindow):
         if self._is_closing:
             return
 
+        # 空白容器布局中直接插入真实控件（骨架屏已移除，无需清理占位）
+        left_layout = self.left_column.layout()
+        middle_layout = self.middle_column.layout()
+        right_layout = self.right_column.layout()
+
         try:
-            # 1. 从布局中移除占位控件
-            left_layout = self.left_column.layout()
-            middle_layout = self.middle_column.layout()
-            right_layout = self.right_column.layout()
+            # 1. 创建真实的 file_selector
+            try:
+                from freeassetfilter.components.file_selector import CustomFileSelector
+                self.file_selector_a = CustomFileSelector()
+                self.file_selector_a.setEnabled(True)
+                left_layout.addWidget(self.file_selector_a)
+            except Exception as e:
+                error(f"文件选择器创建失败: {e}")
+                import traceback
+                error(traceback.format_exc())
+                self.file_selector_a = type('Placeholder', (), {'setEnabled': lambda s, b: None, 'file_selected': type('Signal', (), {'connect': lambda s, c: None})(), 'preview_cancel_requested': type('Signal', (), {'connect': lambda s, c: None})(), 'file_selection_changed': type('Signal', (), {'connect': lambda s, c: None})()})()
+                placeholder = QLabel("文件选择器加载失败，请重启应用")
+                placeholder.setStyleSheet("color: #888888; padding: 20px;")
+                placeholder.setAlignment(Qt.AlignCenter)
+                left_layout.addWidget(placeholder)
 
-            left_layout.removeWidget(self.file_selector_a)
-            middle_layout.removeWidget(self.file_staging_pool)
-            right_layout.removeWidget(self.unified_previewer)
+            # 2. 创建真实的 file_staging_pool
+            try:
+                from freeassetfilter.components.file_staging_pool import FileStagingPool
+                self.file_staging_pool = FileStagingPool()
+                self.file_staging_pool.setEnabled(True)
+                middle_layout.addWidget(self.file_staging_pool)
+            except Exception as e:
+                error(f"文件存储池创建失败: {e}")
+                import traceback
+                error(traceback.format_exc())
+                self.file_staging_pool = type('Placeholder', (), {'setEnabled': lambda s, b: None, 'item_left_clicked': type('Signal', (), {'connect': lambda s, c: None})(), 'preview_cancel_requested': type('Signal', (), {'connect': lambda s, c: None})(), 'remove_from_selector': type('Signal', (), {'connect': lambda s, c: None})(), 'file_added_to_pool': type('Signal', (), {'connect': lambda s, c: None})(), 'navigate_to_path': type('Signal', (), {'connect': lambda s, c: None})()})()
+                placeholder = QLabel("文件存储池加载失败，请重启应用")
+                placeholder.setStyleSheet("color: #888888; padding: 20px;")
+                placeholder.setAlignment(Qt.AlignCenter)
+                middle_layout.addWidget(placeholder)
 
-            # 2. 创建真实的 file_selector
-            from freeassetfilter.components.file_selector import CustomFileSelector
-            self.file_selector_a = CustomFileSelector()
-            self.file_selector_a.setEnabled(True)
-            left_layout.addWidget(self.file_selector_a)
+            # 3. 创建真实的 unified_previewer
+            try:
+                from freeassetfilter.components.unified_previewer import UnifiedPreviewer
+                self.unified_previewer = UnifiedPreviewer(self)
+                self.unified_previewer.setEnabled(True)
+                right_layout.addWidget(self.unified_previewer, 1)
+            except Exception as e:
+                error(f"统一预览器创建失败: {e}")
+                import traceback
+                error(traceback.format_exc())
+                self.unified_previewer = type('Placeholder', (), {'setEnabled': lambda s, b: None, 'set_file': lambda s, f: None, 'clear_preview': lambda s: None, 'open_in_selector_requested': type('Signal', (), {'connect': lambda s, c: None})(), 'preview_started': type('Signal', (), {'connect': lambda s, c: None})(), 'preview_cleared': type('Signal', (), {'connect': lambda s, c: None})()})()
+                placeholder = QLabel("统一预览器加载失败，请重启应用")
+                placeholder.setStyleSheet("color: #888888; padding: 20px;")
+                placeholder.setAlignment(Qt.AlignCenter)
+                right_layout.addWidget(placeholder)
 
-            # 3. 创建真实的 file_staging_pool
-            from freeassetfilter.components.file_staging_pool import FileStagingPool
-            self.file_staging_pool = FileStagingPool()
-            self.file_staging_pool.setEnabled(True)
-            middle_layout.addWidget(self.file_staging_pool)
-
-            # 4. 创建真实的 unified_previewer
-            from freeassetfilter.components.unified_previewer import UnifiedPreviewer
-            self.unified_previewer = UnifiedPreviewer(self)
-            self.unified_previewer.setEnabled(True)
-            right_layout.addWidget(self.unified_previewer, 1)
-
-            # 5. 重建信号连接
-            self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
-            self.file_selector_a.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
-            self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
-            self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
-            self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
-            self.file_staging_pool.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
-            self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
-            self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
-            self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
-            self.unified_previewer.preview_started.connect(self.handle_preview_started)
-            self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
+            # 4. 重建信号连接（每个连接单独保护）
+            try:
+                self.file_selector_a.file_selected.connect(self.unified_previewer.set_file)
+            except Exception as e:
+                error(f"信号连接[file_selected]失败: {e}")
+            try:
+                self.file_selector_a.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
+            except Exception as e:
+                error(f"信号连接[preview_cancel_requested]失败: {e}")
+            try:
+                self.file_selector_a.file_selection_changed.connect(self.handle_file_selection_changed)
+            except Exception as e:
+                error(f"信号连接[file_selection_changed]失败: {e}")
+            try:
+                self.unified_previewer.open_in_selector_requested.connect(lambda path, file_info: self.handle_navigate_to_path(path, file_info))
+            except Exception as e:
+                error(f"信号连接[open_in_selector_requested]失败: {e}")
+            try:
+                self.file_staging_pool.item_left_clicked.connect(self.unified_previewer.set_file)
+            except Exception as e:
+                error(f"信号连接[item_left_clicked]失败: {e}")
+            try:
+                self.file_staging_pool.preview_cancel_requested.connect(self.unified_previewer.clear_preview)
+            except Exception as e:
+                error(f"信号连接[preview_cancel_requested]失败: {e}")
+            try:
+                self.file_staging_pool.remove_from_selector.connect(self.handle_remove_from_selector)
+            except Exception as e:
+                error(f"信号连接[remove_from_selector]失败: {e}")
+            try:
+                self.file_staging_pool.file_added_to_pool.connect(self.handle_file_added_to_pool)
+            except Exception as e:
+                error(f"信号连接[file_added_to_pool]失败: {e}")
+            try:
+                self.file_staging_pool.navigate_to_path.connect(self.handle_navigate_to_path)
+            except Exception as e:
+                error(f"信号连接[navigate_to_path]失败: {e}")
+            try:
+                self.unified_previewer.preview_started.connect(self.handle_preview_started)
+            except Exception as e:
+                error(f"信号连接[preview_started]失败: {e}")
+            try:
+                self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
+            except Exception as e:
+                error(f"信号连接[preview_cleared]失败: {e}")
 
         except Exception as e:
             error(f"延迟创建控件失败: {e}")
+
+        self._cancel_startup_watchdog()
+
+    def _init_settings_deferred(self):
+        """首帧后异步加载真实设置配置"""
+        if self._is_closing:
+            return
+        app = QApplication.instance()
+        if app is None or hasattr(app, 'settings_manager') and app.settings_manager is not None:
+            return
+        try:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            settings_manager = SettingsManager()
+            app.settings_manager = settings_manager
+
+            # 应用真实字体设置
+            font_size = settings_manager.get_setting("font.size", 10)
+            font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
+            app.default_font_size = font_size
+            app._deferred_font_style = font_style
+
+            # 刷新已有控件的主题
+            self._apply_theme_to_existing_widgets()
+
+            info(f"[启动] 设置管理器异步加载完成")
+        except Exception as e:
+            error(f"延迟加载设置管理器失败: {e}")
+
+    def _safe_call(self, callback, name):
+        """安全执行启动回调，捕获异常并记录"""
+        if self._is_closing:
+            return
+        try:
+            callback()
+        except Exception as e:
+            error(f"启动回调 [{name}] 失败: {e}")
+            import traceback
+            error(traceback.format_exc())
+
+    def _on_startup_timeout(self):
+        """启动超时诊断"""
+        flags = getattr(self, '_startup_flags', {})
+        pending_items = getattr(self, '_pending_restore_items', [])
+        error(f"[启动超时] 看门狗触发 - startup_flags: {flags}, pending_restore: {len(pending_items)}项")
+        self._startup_watchdog_timer = None
+
+    def _cancel_startup_watchdog(self):
+        """取消启动看门狗计时器"""
+        if self._startup_watchdog_timer is not None:
+            try:
+                self._startup_watchdog_timer.stop()
+                self._startup_watchdog_timer.deleteLater()
+            except Exception:
+                pass
+            self._startup_watchdog_timer = None
 
     def schedule_startup_tasks(self):
         """
         在首屏显示后分阶段执行启动任务，避免阻塞窗口显示
         更新检查延迟到所有后台任务（备份恢复、预热、清理）完成后触发
         """
-        QTimer.singleShot(0, self._create_real_widgets_deferred)  # 首帧后立即创建真实控件
-        QTimer.singleShot(0, self._load_fonts_async)
-        QTimer.singleShot(0, self._lazy_import_pillow_avif)
+        QTimer.singleShot(0, lambda: self._safe_call(self._init_settings_deferred, "_init_settings_deferred"))  # 首帧后立即异步加载设置管理器（先于控件创建）
+        QTimer.singleShot(0, lambda: self._safe_call(self._create_real_widgets_deferred, "_create_real_widgets_deferred"))  # 首帧后创建真实控件（settings_manager 已可用）
+        QTimer.singleShot(0, lambda: self._safe_call(self._create_bottom_bar_buttons, "_create_bottom_bar_buttons"))  # 首帧后延迟创建底部按钮
+        QTimer.singleShot(0, lambda: self._safe_call(self._load_fonts_async, "_load_fonts_async"))
+        QTimer.singleShot(0, lambda: self._safe_call(self._lazy_import_pillow_avif, "_lazy_import_pillow_avif"))
         # 首帧后启动心跳管理器（主线程周期性工作调度）
         if hasattr(self, 'heartbeat_manager') and self.heartbeat_manager:
             QTimer.singleShot(0, self.heartbeat_manager.start)
-        QTimer.singleShot(100, self.check_and_restore_backup)
-        QTimer.singleShot(0, self._start_background_warmup)
-        QTimer.singleShot(800, self._schedule_thumbnail_cleanup)
+        QTimer.singleShot(100, lambda: self._safe_call(self._apply_theme_to_existing_widgets, "_apply_theme_to_existing_widgets"))  # 控件创建完成后应用主题样式
+        QTimer.singleShot(100, lambda: self._safe_call(self.check_and_restore_backup, "check_and_restore_backup"))
+        QTimer.singleShot(0, lambda: self._safe_call(self._start_background_warmup, "_start_background_warmup"))
+        QTimer.singleShot(800, lambda: self._safe_call(self._schedule_thumbnail_cleanup, "_schedule_thumbnail_cleanup"))
         # 延迟创建 UpdateController，避免 urllib/http import 链阻塞首帧
-        QTimer.singleShot(600, self._init_update_controller_deferred)
+        QTimer.singleShot(600, lambda: self._safe_call(self._init_update_controller_deferred, "_init_update_controller_deferred"))
+        # 启动看门狗定时器，防止启动过程卡死
+        self._startup_watchdog_timer = QTimer(self)
+        self._startup_watchdog_timer.setSingleShot(True)
+        self._startup_watchdog_timer.timeout.connect(self._on_startup_timeout)
+        self._startup_watchdog_timer.start(15000)
 
     def _load_fonts_async(self):
         """
@@ -1846,6 +1968,7 @@ class FreeAssetFilterApp(QMainWindow):
         info("[预热] 启动阶段后台预热任务结束")
         self._startup_flags["warmup_done"] = True
         self._try_start_update_check()
+        self._cancel_startup_watchdog()
 
     def _schedule_thumbnail_cleanup(self):
         """
@@ -1856,11 +1979,13 @@ class FreeAssetFilterApp(QMainWindow):
         if settings_manager is None:
             self._startup_flags["cleanup_done"] = True
             self._try_start_update_check()
+            self._cancel_startup_watchdog()
             return
 
         if not settings_manager.get_setting("file_selector.auto_clear_thumbnail_cache", True):
             self._startup_flags["cleanup_done"] = True
             self._try_start_update_check()
+            self._cancel_startup_watchdog()
             return
 
         cache_cleanup_period = settings_manager.get_setting("file_selector.cache_cleanup_period", 7)
@@ -1872,6 +1997,7 @@ class FreeAssetFilterApp(QMainWindow):
         else:
             self._startup_flags["cleanup_done"] = True
             self._try_start_update_check()
+        self._cancel_startup_watchdog()
 
     def _run_thumbnail_cleanup(self, cache_cleanup_period, current_time):
         """
@@ -1883,12 +2009,13 @@ class FreeAssetFilterApp(QMainWindow):
             info(f"[启动] 缩略图缓存清理完成: 删除 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
 
             app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
+            if hasattr(app, 'settings_manager') and app.settings_manager is not None:
                 app.settings_manager.set_setting("file_selector.last_cleanup_time", current_time)
                 app.settings_manager.save_settings()
         except Exception as e:
             warning(f"[启动] 缩略图缓存清理失败: {e}")
         finally:
+            self._cancel_startup_watchdog()
             self._startup_flags["cleanup_done"] = True
             self._try_start_update_check()
 
@@ -2082,7 +2209,6 @@ class FreeAssetFilterApp(QMainWindow):
         检查是否存在备份文件，并根据设置决定是否自动恢复或询问用户
         注意：只恢复文件存储池，文件选择器的状态由其他模块处理
         """
-        from freeassetfilter.widgets.D_widgets import CustomMessageBox
         import json
 
         backup_data = None
@@ -2109,12 +2235,13 @@ class FreeAssetFilterApp(QMainWindow):
 
         auto_restore = True
         app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
+        if hasattr(app, 'settings_manager') and app.settings_manager is not None:
             auto_restore = app.settings_manager.get_setting("file_staging.auto_restore_records", True)
 
         if auto_restore:
             self.start_restore_backup(backup_data)
         else:
+            from freeassetfilter.widgets.D_widgets import CustomMessageBox
             confirm_msg = CustomMessageBox(self)
             confirm_msg.set_title("恢复上次选中内容")
             confirm_msg.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
@@ -2247,6 +2374,7 @@ class FreeAssetFilterApp(QMainWindow):
             )
 
         self._mark_restore_done()
+        self._cancel_startup_watchdog()
 
     def restore_backup(self, backup_data):
         """
@@ -2328,6 +2456,7 @@ def _run_installer_after_parent_exit(installer_path, expected_sha256, parent_pid
         error(f"安装 helper: 安装包校验失败: {installer_path}")
         return 1
 
+    import subprocess
     try:
         if sys.platform == "win32" and hasattr(os, "startfile"):
             os.startfile(installer_path)
@@ -2619,6 +2748,7 @@ def _restart_current_application():
     """
     使用当前启动参数重新启动应用程序
     """
+    import subprocess
     relaunch_args = [sys.executable] + list(sys.argv[1:])
     subprocess.Popen(
         relaunch_args,
@@ -2629,11 +2759,11 @@ def _restart_current_application():
 
 def _show_already_running_dialog_and_handle_restart(mutex_handle):
     """
-    显示“程序已在运行”弹窗，并在需要时执行强制终止后重启
+    显示"程序已在运行"弹窗，并在需要时执行强制终止后重启
     """
-    from PySide6.QtWidgets import QApplication as _QApplication, QMessageBox
+    from PySide6.QtWidgets import QMessageBox
 
-    _temp_app = _QApplication(sys.argv)
+    # QApplication 已在 main() 中提前创建，无需创建临时实例
     msg_box = QMessageBox()
     msg_box.setWindowTitle("FreeAssetFilter")
     msg_box.setIcon(QMessageBox.Warning)
@@ -2742,7 +2872,6 @@ def _show_already_running_dialog_and_handle_restart(mutex_handle):
         error_box.exec()
         return
 
-    _temp_app.quit()
     sys.exit(0)
 
 
@@ -2751,6 +2880,8 @@ def main():
     主程序入口函数
     """
     info("程序启动")
+    _start_ts = time.perf_counter()
+    import subprocess
 
     # 内部缩略图子进程模式
     worker_type, worker_payload = _parse_internal_worker_args(sys.argv)
@@ -2785,7 +2916,84 @@ def main():
             error(f"安装程序执行失败: {e}")
             sys.exit(1)
 
-    # 单实例检测
+    # 修改sys.argv[0]以确保Windows任务栏显示正确图标
+    sys.argv[0] = os.path.abspath(__file__)
+
+    # 在Windows系统上设置应用程序身份，确保任务栏显示正确图标
+    if sys.platform == 'win32':
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeAssetFilter.App")
+
+        # 设置DPI感知级别
+        try:
+            user32 = ctypes.windll.user32
+            SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
+            SetProcessDpiAwarenessContext.restype = ctypes.c_void_p
+            SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = 0x3
+            result = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            if result == 0:
+                shcore = ctypes.windll.shcore
+                SetProcessDpiAwareness = shcore.SetProcessDpiAwareness
+                SetProcessDpiAwareness.restype = ctypes.c_long
+                SetProcessDpiAwareness.argtypes = [ctypes.c_int]
+                PROCESS_PER_MONITOR_DPI_AWARE = 2
+                SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+        except (AttributeError, OSError):
+            try:
+                user32 = ctypes.windll.user32
+                SetProcessDPIAware = user32.SetProcessDPIAware
+                SetProcessDPIAware.restype = ctypes.c_bool
+                SetProcessDPIAware()
+            except (AttributeError, OSError):
+                pass
+
+    # 获取通过文件关联传递的文件路径
+    associated_file_path = _extract_associated_file_path(sys.argv)
+    if associated_file_path:
+        pass
+
+    # 获取通过右键菜单 --open-path 传递的路径
+    open_path = _extract_open_path_arg(sys.argv)
+    initial_navigate_path = None
+    if open_path:
+        open_path = os.path.normpath(open_path)
+        if os.path.isfile(open_path):
+            initial_navigate_path = os.path.dirname(open_path)
+        elif os.path.isdir(open_path):
+            initial_navigate_path = open_path
+        if initial_navigate_path:
+            pass
+
+    # 先创建 QApplication，再执行单实例检测（使得弹窗复用已有 QApp）
+    app = QApplication(sys.argv)
+    info(f"[启动] QApplication 创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+
+    # 设置 QPixmapCache 全局缓存上限为 50MB（L2 缓存层，配合各组件 L1 缓存使用）
+    from PySide6.QtGui import QPixmapCache
+    QPixmapCache.setCacheLimit(50 * 1024 * 1024)
+
+    # 将关联文件路径存储到app对象，供其他组件访问
+    app.associated_file_path = associated_file_path
+    # 将右键菜单初始导航路径存储到app对象，供文件选择器使用
+    app.initial_navigate_path = initial_navigate_path
+
+    # 设置全局DPI缩放因子为系统缩放的1.4倍
+    from PySide6.QtGui import QCursor, QFontDatabase, QFont
+    cursor_pos = QCursor.pos()
+    screen = QApplication.screenAt(cursor_pos)
+    if screen is None:
+        screen = QApplication.primaryScreen()
+    logical_dpi = screen.logicalDotsPerInch()
+    physical_dpi = screen.physicalDotsPerInch()
+    system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
+    app.dpi_scale_factor = system_scale * 1.4
+
+    # 设置应用程序图标，用于任务栏显示
+    icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
+    app.setWindowIcon(QIcon(icon_path))
+
+    # 单实例检测（QApplication 已存在，弹窗可直接复用）
     _mutex_handle = None
     if sys.platform == 'win32':
         import ctypes
@@ -2822,90 +3030,9 @@ def main():
     except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError) as e:
         warning(f"写入运行实例信息失败: {e}")
 
-    # 获取通过文件关联传递的文件路径
-    associated_file_path = _extract_associated_file_path(sys.argv)
-    if associated_file_path:
-        pass
-
-    # 获取通过右键菜单 --open-path 传递的路径
-    open_path = _extract_open_path_arg(sys.argv)
-    initial_navigate_path = None
-    if open_path:
-        open_path = os.path.normpath(open_path)
-        if os.path.isfile(open_path):
-            initial_navigate_path = os.path.dirname(open_path)
-        elif os.path.isdir(open_path):
-            initial_navigate_path = open_path
-        if initial_navigate_path:
-            pass
-
-    # 修改sys.argv[0]以确保Windows任务栏显示正确图标
-    sys.argv[0] = os.path.abspath(__file__)
-
-    # 在Windows系统上设置应用程序身份，确保任务栏显示正确图标
-    if sys.platform == 'win32':
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FreeAssetFilter.App")
-
-        # 设置DPI感知级别
-        try:
-            user32 = ctypes.windll.user32
-            SetProcessDpiAwarenessContext = user32.SetProcessDpiAwarenessContext
-            SetProcessDpiAwarenessContext.restype = ctypes.c_void_p
-            SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = 0x3
-            result = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-            if result == 0:
-                shcore = ctypes.windll.shcore
-                SetProcessDpiAwareness = shcore.SetProcessDpiAwareness
-                SetProcessDpiAwareness.restype = ctypes.c_long
-                SetProcessDpiAwareness.argtypes = [ctypes.c_int]
-                PROCESS_PER_MONITOR_DPI_AWARE = 2
-                SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
-        except (AttributeError, OSError):
-            try:
-                user32 = ctypes.windll.user32
-                SetProcessDPIAware = user32.SetProcessDPIAware
-                SetProcessDPIAware.restype = ctypes.c_bool
-                SetProcessDPIAware()
-            except (AttributeError, OSError):
-                pass
-
-    app = QApplication(sys.argv)
-
-    # 设置 QPixmapCache 全局缓存上限为 50MB（L2 缓存层，配合各组件 L1 缓存使用）
-    from PySide6.QtGui import QPixmapCache
-    QPixmapCache.setCacheLimit(50 * 1024 * 1024)
-
-    # 将关联文件路径存储到app对象，供其他组件访问
-    app.associated_file_path = associated_file_path
-    # 将右键菜单初始导航路径存储到app对象，供文件选择器使用
-    app.initial_navigate_path = initial_navigate_path
-
-    # 设置全局DPI缩放因子为系统缩放的1.4倍
-    from PySide6.QtGui import QCursor, QFontDatabase, QFont
-    cursor_pos = QCursor.pos()
-    screen = QApplication.screenAt(cursor_pos)
-    if screen is None:
-        screen = QApplication.primaryScreen()
-    logical_dpi = screen.logicalDotsPerInch()
-    physical_dpi = screen.physicalDotsPerInch()
-    system_scale = physical_dpi / logical_dpi if logical_dpi > 0 else 1.0
-    app.dpi_scale_factor = system_scale * 1.4
-
-    # 设置应用程序图标，用于任务栏显示
-    icon_path = get_resource_path('freeassetfilter/icons/FAF-main.ico')
-    app.setWindowIcon(QIcon(icon_path))
-
-    # 导入设置管理器
-    from freeassetfilter.core.settings_manager import SettingsManager
-
-    # 初始化设置管理器
-    settings_manager = SettingsManager()
-
-    # 从设置管理器中获取字体设置
-    DEFAULT_FONT_SIZE = settings_manager.get_setting("font.size", 10)
-    saved_font_style = settings_manager.get_setting("font.style", "Microsoft YaHei")
+    # 设置管理器延迟到首帧后加载，先用默认值创建窗口
+    DEFAULT_FONT_SIZE = 10
+    saved_font_style = "Microsoft YaHei"
 
     # 启动阶段先用默认系统字体，完整的字体检测与 FiraCode 加载延迟到 show() 后
     app.setFont(QFont("Microsoft YaHei", DEFAULT_FONT_SIZE, QFont.Normal))
@@ -2914,8 +3041,8 @@ def main():
     # 将默认字体大小存储到app对象中，方便其他组件访问
     app.default_font_size = DEFAULT_FONT_SIZE
 
-    # 将设置管理器存储到app对象中，方便其他组件访问
-    app.settings_manager = settings_manager
+    # settings_manager 将在 _init_settings_deferred 中延迟创建
+    app.settings_manager = None
 
     # 将全局字体存储到app对象中，方便其他组件访问
     app.global_font = global_font
@@ -2926,20 +3053,34 @@ def main():
 
     # 全局滚动条样式不再需要（所有滚动条已隐藏）
 
-    window = FreeAssetFilterApp()
+    try:
+        window = FreeAssetFilterApp()
+    except Exception as e:
+        error_msg = f"应用程序初始化失败：{e}\n\n请尝试重启程序。如果问题持续，请检查日志文件。"
+        error(error_msg)
+        try:
+            if sys.platform == 'win32':
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, error_msg, "启动错误 - FreeAssetFilter", 0x10)
+        except Exception:
+            pass
+        sys.exit(1)
+    info(f"[启动] 主窗口创建: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
     # 窗口启动时窗口化显示
     window.show()
-    # 首帧渲染后轻量级应用主题设置（不阻塞首屏）
-    QTimer.singleShot(0, window._apply_theme_to_existing_widgets)
+    info(f"[启动] 窗口显示: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
+    # 首帧渲染后轻量级应用主题设置已移至 schedule_startup_tasks(100ms)
     # 窗口显示后清除启动阶段标志，允许后续主题更新重建UI
     window._is_startup_phase = False
     # 首屏显示后再分阶段执行恢复/预热/清理，避免阻塞启动
     window.schedule_startup_tasks()
+    info(f"[启动] 启动任务已调度: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
 
     # 应用程序退出前记录当前时间
     def on_app_exit():
         exit_time = time.time()
         settings_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'settings.json')
+        cur_settings_manager = getattr(app, 'settings_manager', None)
 
         try:
             if os.path.exists(settings_file):
@@ -2954,10 +3095,12 @@ def main():
                 with open(settings_file, 'w', encoding='utf-8') as f:
                     json.dump(settings_data, f, indent=4, ensure_ascii=False)
             else:
-                settings_manager.set_setting("app.last_exit_time", exit_time)
+                if cur_settings_manager is not None:
+                    cur_settings_manager.set_setting("app.last_exit_time", exit_time)
 
         except (OSError, PermissionError, json.JSONDecodeError, TypeError) as e:
-            settings_manager.set_setting("app.last_exit_time", exit_time)
+            if cur_settings_manager is not None:
+                cur_settings_manager.set_setting("app.last_exit_time", exit_time)
 
         try:
             _remove_runtime_instance_info(expected_pid=os.getpid())
@@ -2974,6 +3117,7 @@ def main():
     # 连接应用程序退出信号
     app.aboutToQuit.connect(on_app_exit)
 
+    info(f"[启动] 总耗时: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
     exit_code = app.exec()
 
     # 安全退出机制（closeEvent 中已调用 cleanup_faulthandler()，此处作为兜底）
