@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="linear-gradient" x1="0.5" x2="0.5" y2="0.267" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#8bd5c6"/>
+      <stop offset="1" stop-color="#4eb8b0"/>
+    </linearGradient>
+    <filter id="联合_4" x="14.216" y="32.737" width="227.569" height="192.525" filterUnits="userSpaceOnUse">
+      <feOffset dy="1" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <filter id="联合_4-2" x="14.216" y="32.737" width="227.569" height="192.525" filterUnits="userSpaceOnUse">
+      <feOffset dx="2" dy="2" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="1" result="blur-2"/>
+      <feFlood flood-color="#7cdcef" result="color"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-2"/>
+      <feComposite operator="in" in="color"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <linearGradient id="linear-gradient-2" x1="0.5" x2="0.5" y2="0.342" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#d3fafd"/>
+      <stop offset="1" stop-color="#aefee6"/>
+    </linearGradient>
+    <filter id="矩形_125">
+      <feOffset dy="1" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="2" result="blur-3"/>
+      <feFlood flood-color="#edfefb" result="color-2"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-3"/>
+      <feComposite operator="in" in="color-2"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <linearGradient id="linear-gradient-3" x1="0.235" y1="0.033" x2="0.724" y2="0.97" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#7be9ed"/>
+      <stop offset="1" stop-color="#3ab98e"/>
+    </linearGradient>
+    <filter id="矩形_122">
+      <feOffset dx="1" dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="1" result="blur-4"/>
+      <feFlood flood-color="#9debf1" result="color-3"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-4"/>
+      <feComposite operator="in" in="color-3"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <filter id="矩形_126">
+      <feOffset dx="-1" dy="-2" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="1" result="blur-5"/>
+      <feFlood flood-color="#339f65" result="color-4"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-5"/>
+      <feComposite operator="in" in="color-4"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <clipPath id="clip-文件夹_3">
+      <rect width="256" height="256"/>
+    </clipPath>
+  </defs>
+  <g id="文件夹_3" data-name="文件夹 – 3" clip-path="url(#clip-文件夹_3)">
+    <g data-type="innerShadowGroup">
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#联合_4)">
+        <path id="联合_4-3" data-name="联合 4" d="M11,174.525a11,11,0,0,1-11-11V14.387C0,6.478,7.069.067,15.79.067c0,0,47.334-.149,58.852,0S87.884,7.457,96.487,15.418c5.531,5.117,12.8,7.133,20.31,8.083h81.772a11,11,0,0,1,11,11V163.525a11,11,0,0,1-11,11Z" transform="translate(23.22 40.74)" fill="url(#linear-gradient)"/>
+      </g>
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#联合_4-2)">
+        <path id="联合_4-4" data-name="联合 4" d="M11,174.525a11,11,0,0,1-11-11V14.387C0,6.478,7.069.067,15.79.067c0,0,47.334-.149,58.852,0S87.884,7.457,96.487,15.418c5.531,5.117,12.8,7.133,20.31,8.083h81.772a11,11,0,0,1,11,11V163.525a11,11,0,0,1-11,11Z" transform="translate(23.22 40.74)" fill="#fff"/>
+      </g>
+    </g>
+    <g data-type="innerShadowGroup">
+      <rect id="矩形_125-2" data-name="矩形 125" width="196" height="98" rx="11" transform="translate(30.216 71.263)" fill="url(#linear-gradient-2)"/>
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_125)">
+        <rect id="矩形_125-3" data-name="矩形 125" width="196" height="98" rx="11" transform="translate(30.22 71.26)" fill="#fff"/>
+      </g>
+    </g>
+    <g data-type="innerShadowGroup">
+      <rect id="矩形_122-2" data-name="矩形 122" width="209" height="132" rx="11" transform="translate(23.216 83.263)" fill="url(#linear-gradient-3)"/>
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_122)">
+        <rect id="矩形_122-3" data-name="矩形 122" width="209" height="132" rx="11" transform="translate(23.22 83.26)" fill="#fff"/>
+      </g>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_126)">
+      <rect id="矩形_126-2" data-name="矩形 126" width="209" height="132" rx="11" transform="translate(23.5 83.26)" fill="#fff"/>
+    </g>
+  </g>
+</svg>

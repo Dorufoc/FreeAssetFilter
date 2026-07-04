@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, error
 from freeassetfilter.core.media_probe import (
     get_ffprobe_path,
     get_subprocess_creationflags,

@@ -18,7 +18,6 @@ from .button_widgets import CustomButton
 from .progress_widgets import D_ProgressBar
 from .switch_widgets import CustomSwitch
 from .hover_tooltip import HoverTooltip
-from freeassetfilter.utils.app_logger import warning, error
 
 
 def _get_sm_color(key, default):

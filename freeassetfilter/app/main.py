@@ -41,13 +41,14 @@ logger = get_logger()
 # 尽早安装 stdout/stderr 双写捕获
 try:
     if install_console_capture(logger.get_log_file_path()):
-        debug("控制台输出捕获已启用")
+        # debug("控制台输出捕获已启用")
+        pass
     else:
-        warning("控制台输出捕获未启用")
+        info("console capture unavailable (non-fatal)")
 except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-    warning(f"控制台捕获启用失败: {e}")
+    warning("console capture init failed")
 except (ValueError, TypeError) as e:
-    warning(f"控制台捕获启用失败: {e}")
+    warning("console capture init failed")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -63,8 +64,9 @@ except (ValueError, TypeError) as e:
 #   - AddVectoredExceptionHandler (VEH): 捕获所有首次异常
 #   - SetUnhandledExceptionFilter (UEF): 仅捕获未处理异常
 # 由于 VEH 的存在，0xe24c4a02 (LuaJIT 的 SEH 异常) 也会触发
-# 堆栈 dump，但这些异常会被 LuaJIT 自身捕获并恢复，
-# 不会导致程序崩溃。
+# 堆栈 dump。LuaJIT 自身的 VEH 仅在 Lua 后端初始化时注册；
+# 以 load-scripts=no 启动时 Lua 后端跳过初始化，该异常成为
+# 未处理异常导致崩溃。下方注册了一个独立的 VEH 来兜底。
 #
 # 输出策略：直接写入日志文件（不经过管道/tee/行过滤器）
 # ──────────────────────────────────────────────────────────────
@@ -91,15 +93,15 @@ if log_file_path:
         )
         _fault_handler_file.flush()
         faulthandler.enable(file=_fault_handler_file, all_threads=True)
-        debug("faulthandler 已启用 (日志)")
+        # debug("faulthandler 已启用 (日志)")
         _fault_handler_enabled = True
     except (OSError, IOError, PermissionError, FileNotFoundError) as e:
-        warning(f"faulthandler 启用失败: {e}")
+        warning("faulthandler init failed")
     except (ValueError, TypeError) as e:
-        warning(f"faulthandler 启用失败: {e}")
+        warning("faulthandler init failed")
 
 if not _fault_handler_enabled:
-    warning("faulthandler 未启用")
+    info("faulthandler not enabled (non-fatal)")
 
 
 def debug_exit_threads():
@@ -110,25 +112,28 @@ def debug_exit_threads():
         current_frames = sys._current_frames()
     except Exception as e:
         current_frames = {}
-        debug(f"获取线程栈帧失败: {e}")
+        # debug(f"获取线程栈帧失败: {e}")
 
     try:
         for thread in threading.enumerate():
             try:
-                thread_type = f"{thread.__class__.__module__}.{thread.__class__.__name__}"
-                is_dummy_thread = isinstance(thread, threading._DummyThread)
-                extra_hint = " [外部/native线程代理]" if is_dummy_thread else ""
-                debug(f"活跃线程: {thread.name}, 类型: {thread_type}, 守护: {thread.daemon}{extra_hint}")
+                # thread_type = f"{thread.__class__.__module__}.{thread.__class__.__name__}"
+                # is_dummy_thread = isinstance(thread, threading._DummyThread)
+                # extra_hint = " [外部/native线程代理]" if is_dummy_thread else ""
+                # debug(f"活跃线程: {thread.name}, 类型: {thread_type}, 守护: {thread.daemon}{extra_hint}")
 
-                frame = current_frames.get(thread.ident)
-                if frame:
-                    stack_text = "".join(traceback.format_stack(frame)).rstrip()
-                    if stack_text:
-                        debug(f"线程 {thread.name} 调用栈:\n{stack_text}")
+                # frame = current_frames.get(thread.ident)
+                # if frame:
+                #     stack_text = "".join(traceback.format_stack(frame)).rstrip()
+                #     if stack_text:
+                #         debug(f"线程 {thread.name} 调用栈:\n{stack_text}")
+                pass
             except Exception as e:
-                debug(f"打印线程信息失败: {e}")
+                # debug(f"打印线程信息失败: {e}")
+                pass
     except Exception as e:
-        debug(f"枚举活跃线程失败: {e}")
+        # debug(f"枚举活跃线程失败: {e}")
+        pass
 
 
 def cleanup_faulthandler():
@@ -164,7 +169,8 @@ def cleanup_faulthandler():
                 pass
             _fault_handler_file = None
     except Exception as e:
-        debug(f"清理 faulthandler 失败: {e}")
+        # debug(f"清理 faulthandler 失败: {e}")
+        pass
 
 
 # 定义异常处理函数
@@ -240,9 +246,9 @@ class StartupWarmupThread(QThread):
         try:
             from freeassetfilter.core.media_probe import warmup_ffmpeg_tools
 
-            debug("FFmpeg 模块预热开始")
+            # debug("FFmpeg 模块预热开始")
             warmup_ffmpeg_tools()
-            debug("FFmpeg 模块预热完成")
+            # debug("FFmpeg 模块预热完成")
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             error(f"FFmpeg 预热失败: {e}")
         except (ValueError, TypeError) as e:
@@ -254,12 +260,12 @@ class StartupWarmupThread(QThread):
 
         try:
             from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
-            debug("LUT C++ 模块预热开始")
+            # debug("LUT C++ 模块预热开始")
             lut_cpp_warmup()
 
             from freeassetfilter.core.lut_preview_generator import get_preview_generator
             get_preview_generator()
-            debug("LUT 模块预热完成")
+            # debug("LUT 模块预热完成")
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             error(f"LUT 预热失败: {e}")
         except (ValueError, TypeError) as e:
@@ -406,7 +412,7 @@ class FreeAssetFilterApp(QMainWindow):
                     if hasattr(self.unified_previewer.video_player, 'cleanup'):
                         # 使用同步模式关闭，确保资源完全释放
                         self.unified_previewer.video_player.cleanup(async_mode=False)
-                        logger.debug("视频播放器已同步清理")
+                        # logger.debug("视频播放器已同步清理")
                 except Exception as e:
                     logger.warning(f"清理视频播放器失败: {e}")
 
@@ -464,7 +470,8 @@ class FreeAssetFilterApp(QMainWindow):
         except ImportError:
             pass  # 模块不存在，忽略
         except (RuntimeError, AttributeError, OSError) as e:
-            logger.debug(f"停止全局鼠标监控器失败（正常情况）: {e}")
+            # logger.debug(f"停止全局鼠标监控器失败（正常情况）: {e}")
+            pass
         except Exception as e:
             logger.error(f"停止全局鼠标监控器时系统错误: {e}")
 
@@ -514,7 +521,7 @@ class FreeAssetFilterApp(QMainWindow):
         if os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
-                logger.debug(f"已删除临时文件夹: {temp_dir}")
+                # logger.debug(f"已删除临时文件夹: {temp_dir}")
             except (OSError, PermissionError) as e:
                 logger.warning(f"删除临时文件夹失败: {e}")
 
@@ -547,19 +554,22 @@ class FreeAssetFilterApp(QMainWindow):
             return
         try:
             if thread.isRunning():
-                debug(f"[QThreadCleanup] 正在停止 {name} (isRunning={thread.isRunning()})...")
+                # debug(f"[QThreadCleanup] 正在停止 {name} (isRunning={thread.isRunning()})...")
                 thread.requestInterruption()
                 thread.quit()
                 if not thread.wait(timeout):
                     logger.warning(f"[QThreadCleanup] {name} 未在 {timeout}ms 内退出，将由进程退出时自动回收")
                     return False
                 else:
-                    debug(f"[QThreadCleanup] {name} 已正常退出")
+                    # debug(f"[QThreadCleanup] {name} 已正常退出")
+                    pass
             else:
-                debug(f"[QThreadCleanup] {name} 未在运行，无需停止")
+                # debug(f"[QThreadCleanup] {name} 未在运行，无需停止")
+                pass
             return True
         except Exception as e:
-            logger.debug(f"[QThreadCleanup] 停止 {name} 时发生异常: {e}")
+            # logger.debug(f"[QThreadCleanup] 停止 {name} 时发生异常: {e}")
+            pass
             return False
 
     def _cleanup_retired_worker(self, worker):
@@ -575,7 +585,7 @@ class FreeAssetFilterApp(QMainWindow):
         在 closeEvent 中调用，确保所有已知的 QThread 子对象被安全停止。
         避免在父窗口销毁时 Qt 报 "Destroyed while thread is still running"。
         """
-        debug("[QThreadCleanup] 开始清理所有后台 QThread...")
+        # debug("[QThreadCleanup] 开始清理所有后台 QThread...")
         # 1) 启动预热线程
         if hasattr(self, '_startup_warmup_thread') and self._startup_warmup_thread:
             self._safe_stop_qthread(self._startup_warmup_thread, "StartupWarmupThread")
@@ -588,7 +598,7 @@ class FreeAssetFilterApp(QMainWindow):
             # 若不保留引用，当 super().closeEvent() 销毁 UpdateController 时信号连接断开，
             # QThread Python 包装器被 GC 时底层线程还在运行 → "QThread: Destroyed while thread '' is still running"
             _silent_worker = getattr(self.update_controller, '_silent_check_worker', None)
-            debug(f"[QThreadCleanup] 获取静默检查线程: {_silent_worker}, isRunning={_silent_worker.isRunning() if _silent_worker else 'N/A'}")
+            # debug(f"[QThreadCleanup] 获取静默检查线程: {_silent_worker}, isRunning={_silent_worker.isRunning() if _silent_worker else 'N/A'}")
             self.update_controller.cancel_silent_check()
             
             # 保留所有静默检查线程引用（包括当前线程和已退休的线程）
@@ -599,7 +609,7 @@ class FreeAssetFilterApp(QMainWindow):
             if _silent_worker and _silent_worker.isRunning():
                 self._retired_worker_refs.append(_silent_worker)
                 _silent_worker.finished.connect(lambda w=_silent_worker: self._cleanup_retired_worker(w))
-                debug(f"[QThreadCleanup] 已保留当前静默检查线程引用，防止 GC 提前销毁")
+                # debug(f"[QThreadCleanup] 已保留当前静默检查线程引用，防止 GC 提前销毁")
             
             # 保留已退休的线程引用
             _retired_workers = getattr(self.update_controller, '_retired_silent_workers', [])
@@ -607,21 +617,24 @@ class FreeAssetFilterApp(QMainWindow):
                 if w and w.isRunning() and w not in self._retired_worker_refs:
                     self._retired_worker_refs.append(w)
                     w.finished.connect(lambda worker=w: self._cleanup_retired_worker(worker))
-                    debug(f"[QThreadCleanup] 已保留已退休静默检查线程引用")
+                    # debug(f"[QThreadCleanup] 已保留已退休静默检查线程引用")
             
             # 等待所有静默检查线程退出
             _workers_to_wait = [w for w in self._retired_worker_refs if w.isRunning()]
             if _workers_to_wait:
-                debug(f"[QThreadCleanup] 等待 {len(_workers_to_wait)} 个静默检查线程退出...")
+                # debug(f"[QThreadCleanup] 等待 {len(_workers_to_wait)} 个静默检查线程退出...")
                 for w in _workers_to_wait:
                     if not w.wait(15000):
-                        debug(f"[QThreadCleanup] SilentUpdateCheckWorker 未在 15 秒内退出，将由进程退出时自动回收")
+                        # debug(f"[QThreadCleanup] SilentUpdateCheckWorker 未在 15 秒内退出，将由进程退出时自动回收")
+                        pass
                     else:
-                        debug(f"[QThreadCleanup] SilentUpdateCheckWorker 已正常退出")
+                        # debug(f"[QThreadCleanup] SilentUpdateCheckWorker 已正常退出")
+                        pass
                 # 清理已完成的线程引用，防止 _retired_worker_refs 无限增长
                 self._retired_worker_refs = [w for w in self._retired_worker_refs if w.isRunning()]
             else:
-                debug(f"[QThreadCleanup] SilentUpdateCheckWorker 未在运行或已取消，无需等待")
+                # debug(f"[QThreadCleanup] SilentUpdateCheckWorker 未在运行或已取消，无需等待")
+                pass
             if hasattr(self.update_controller, '_check_worker') and self.update_controller._check_worker:
                 self._safe_stop_qthread(self.update_controller._check_worker, "UpdateCheckWorker")
             if hasattr(self.update_controller, '_download_worker') and self.update_controller._download_worker:
@@ -677,9 +690,10 @@ class FreeAssetFilterApp(QMainWindow):
                 try:
                     ab._thread_pool.waitForDone(1500)
                 except Exception as e:
-                    debug(f"[QThreadCleanup] 等待音频背景线程池结束失败: {e}")
+                    # debug(f"[QThreadCleanup] 等待音频背景线程池结束失败: {e}")
+                    pass
 
-        debug("[QThreadCleanup] QThread 清理完成")
+        # debug("[QThreadCleanup] QThread 清理完成")
 
     def _apply_title_bar_theme(self):
         """
@@ -714,7 +728,8 @@ class FreeAssetFilterApp(QMainWindow):
 
         except (AttributeError, OSError, ctypes.WinError) as e:
             # 如果设置失败（非Windows系统或DWM API不可用），静默忽略
-            logger.debug(f"设置标题栏主题失败（非Windows系统或DWM API不可用）: {e}")
+            # logger.debug(f"设置标题栏主题失败（非Windows系统或DWM API不可用）: {e}")
+            pass
 
     def focusInEvent(self, event):
         """
@@ -827,7 +842,8 @@ class FreeAssetFilterApp(QMainWindow):
             if isinstance(current_file_info, dict) and current_file_info:
                 preview_file_info = dict(current_file_info)
         except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"备份预览状态失败: {e}")
+            # logger.debug(f"备份预览状态失败: {e}")
+            pass
 
         return preview_file_info
 
@@ -845,7 +861,8 @@ class FreeAssetFilterApp(QMainWindow):
             elif hasattr(unified_previewer, "stop_preview"):
                 unified_previewer.stop_preview()
         except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"主题刷新前清空预览失败: {e}")
+            # logger.debug(f"主题刷新前清空预览失败: {e}")
+            pass
 
         try:
             unified_previewer.current_file_info = None
@@ -862,7 +879,8 @@ class FreeAssetFilterApp(QMainWindow):
             if hasattr(unified_previewer, "locate_in_selector_button"):
                 unified_previewer.locate_in_selector_button.hide()
         except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"重置预览显示状态失败: {e}")
+            # logger.debug(f"重置预览显示状态失败: {e}")
+            pass
 
     def _restore_preview_for_theme_update(self, preview_file_info):
         """
@@ -879,7 +897,8 @@ class FreeAssetFilterApp(QMainWindow):
             try:
                 unified_previewer.set_file(dict(preview_file_info))
             except (RuntimeError, AttributeError, TypeError) as e:
-                logger.debug(f"恢复预览状态失败: {e}")
+                # logger.debug(f"恢复预览状态失败: {e}")
+                pass
 
         QTimer.singleShot(0, _restore)
 
@@ -894,7 +913,8 @@ class FreeAssetFilterApp(QMainWindow):
             if hasattr(widget, "apply_theme_from_settings"):
                 widget.apply_theme_from_settings()
         except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"应用控件主题设置失败: {e}")
+            # logger.debug(f"应用控件主题设置失败: {e}")
+            pass
 
         try:
             style = widget.style()
@@ -902,7 +922,8 @@ class FreeAssetFilterApp(QMainWindow):
                 style.unpolish(widget)
                 style.polish(widget)
         except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"重新 polish 控件样式失败: {e}")
+            # logger.debug(f"重新 polish 控件样式失败: {e}")
+            pass
 
         try:
             widget.update()
@@ -936,7 +957,8 @@ class FreeAssetFilterApp(QMainWindow):
             elif hasattr(root_widget, "_init_animations"):
                 root_widget._init_animations()
         except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"递归刷新控件主题入口失败: {e}")
+            # logger.debug(f"递归刷新控件主题入口失败: {e}")
+            pass
 
         self._refresh_widget_self_only(root_widget)
 
@@ -950,7 +972,8 @@ class FreeAssetFilterApp(QMainWindow):
                     continue
                 self._refresh_widget_theme_recursively(child, visited)
         except (RuntimeError, AttributeError, TypeError) as e:
-            logger.debug(f"递归遍历子控件失败: {e}")
+            # logger.debug(f"递归遍历子控件失败: {e}")
+            pass
 
     def _apply_theme_to_existing_widgets(self):
         """
@@ -994,7 +1017,8 @@ class FreeAssetFilterApp(QMainWindow):
             try:
                 self._refresh_widget_theme_recursively(widget, visited)
             except (RuntimeError, AttributeError, TypeError) as e:
-                logger.debug(f"递归刷新组件主题失败: {e}")
+                # logger.debug(f"递归刷新组件主题失败: {e}")
+                pass
 
         # 顶层容器只刷新自身，避免把同一子树重复递归一遍
         for container_name in ("left_column", "middle_column", "right_column", "central_widget"):
@@ -1003,13 +1027,15 @@ class FreeAssetFilterApp(QMainWindow):
                 try:
                     self._refresh_widget_self_only(container)
                 except (RuntimeError, AttributeError, TypeError) as e:
-                    logger.debug(f"刷新容器主题失败: {e}")
+                    # logger.debug(f"刷新容器主题失败: {e}")
+                    pass
 
         if self._splitter:
             try:
                 self._refresh_widget_self_only(self._splitter)
             except (RuntimeError, AttributeError, TypeError) as e:
-                logger.debug(f"刷新分割器样式失败: {e}")
+                # logger.debug(f"刷新分割器样式失败: {e}")
+                pass
 
         if hasattr(self, "central_widget") and self.central_widget:
             self.central_widget.update()
@@ -1132,6 +1158,13 @@ class FreeAssetFilterApp(QMainWindow):
         self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         status_layout.addWidget(self.update_button)
 
+        # 创建全局设置按钮，显示在更新按钮右侧
+        settings_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
+        self.global_settings_button = CustomButton(settings_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
+        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.global_settings_button.clicked.connect(self._open_global_settings)
+        status_layout.addWidget(self.global_settings_button)
+
         # 将水平布局添加到容器的垂直布局中
         status_container_layout.addLayout(status_layout)
 
@@ -1144,11 +1177,21 @@ class FreeAssetFilterApp(QMainWindow):
         # 将底部按钮添加为目标控件
         self.hover_tooltip.set_target_widget(self.github_button)
         self.hover_tooltip.set_target_widget(self.update_button)
+        self.hover_tooltip.set_target_widget(self.global_settings_button)
 
     def _open_github(self):
         """打开GitHub项目主页"""
         import webbrowser
         webbrowser.open("https://github.com/Dorufoc/FreeAssetFilter")
+
+    def _open_global_settings(self):
+        """打开全局设置窗口"""
+        from freeassetfilter.components.settings_window import ModernSettingsWindow
+        if not hasattr(self, '_settings_window') or self._settings_window is None:
+            self._settings_window = ModernSettingsWindow(self)
+        self._settings_window.show()
+        self._settings_window.raise_()
+        self._settings_window.activateWindow()
 
     def show_info(self, title, message):
         """
@@ -1215,7 +1258,8 @@ class FreeAssetFilterApp(QMainWindow):
                     if hasattr(old_file_selector, "view_mode"):
                         backup_data["file_selector"]["view_mode"] = old_file_selector.view_mode
                 except (RuntimeError, AttributeError) as e:
-                    logger.debug(f"备份文件选择器状态时出错: {e}")
+                    # logger.debug(f"备份文件选择器状态时出错: {e}")
+                    pass
 
             if old_staging_pool:
                 try:
@@ -1224,13 +1268,15 @@ class FreeAssetFilterApp(QMainWindow):
                     if hasattr(old_staging_pool, "previewing_file_path"):
                         backup_data["file_staging_pool"]["previewing_file_path"] = old_staging_pool.previewing_file_path
                 except (RuntimeError, AttributeError) as e:
-                    logger.debug(f"备份文件存储池状态时出错: {e}")
+                    # logger.debug(f"备份文件存储池状态时出错: {e}")
+                    pass
 
             if self._splitter:
                 try:
                     backup_data["splitter_sizes"] = list(self._splitter.sizes())
                 except (RuntimeError, AttributeError) as e:
-                    logger.debug(f"备份分割器大小时出错: {e}")
+                    # logger.debug(f"备份分割器大小时出错: {e}")
+                    pass
 
             self._ui_state_backup = backup_data
             return True
@@ -1291,7 +1337,8 @@ class FreeAssetFilterApp(QMainWindow):
                     ):
                         new_file_selector.set_previewing_file(new_file_selector.previewing_file_path)
                 except (RuntimeError, AttributeError) as e:
-                    logger.debug(f"恢复文件选择器状态时出错: {e}")
+                    # logger.debug(f"恢复文件选择器状态时出错: {e}")
+                    pass
 
             if new_staging_pool:
                 try:
@@ -1315,7 +1362,7 @@ class FreeAssetFilterApp(QMainWindow):
                                             new_staging_pool.add_file(item_data)
                                             existing_paths.add(item_path)
                                 except (TypeError, AttributeError) as e:
-                                    logger.debug(f"添加文件到存储池时出错: {e}")
+                                    # logger.debug(f"添加文件到存储池时出错: {e}")
                                     continue
 
                     previewing_file_path = staging_pool_state.get("previewing_file_path")
@@ -1325,7 +1372,8 @@ class FreeAssetFilterApp(QMainWindow):
                     elif hasattr(new_staging_pool, "clear_previewing_state"):
                         new_staging_pool.clear_previewing_state()
                 except (RuntimeError, AttributeError) as e:
-                    logger.debug(f"恢复文件存储池状态时出错: {e}")
+                    # logger.debug(f"恢复文件存储池状态时出错: {e}")
+                    pass
 
             if "splitter_sizes" in backup_data and self._splitter:
                 try:
@@ -1333,7 +1381,8 @@ class FreeAssetFilterApp(QMainWindow):
                     if sum(old_sizes) > 0:
                         self._splitter.setSizes(old_sizes)
                 except (RuntimeError, AttributeError) as e:
-                    logger.debug(f"恢复分割器大小时出错: {e}")
+                    # logger.debug(f"恢复分割器大小时出错: {e}")
+                    pass
 
             return True
         except (TypeError, KeyError) as e:
@@ -1365,7 +1414,8 @@ class FreeAssetFilterApp(QMainWindow):
                 if hasattr(self.hover_tooltip, 'set_safe_mode'):
                     self.hover_tooltip.set_safe_mode(True)
             except (RuntimeError, AttributeError) as e:
-                logger.debug(f"设置 HoverTooltip 安全模式失败: {e}")
+                # logger.debug(f"设置 HoverTooltip 安全模式失败: {e}")
+                pass
 
         self._backup_ui_state()
 
@@ -1419,7 +1469,8 @@ class FreeAssetFilterApp(QMainWindow):
                 old_central_widget.hide()
                 old_central_widget.blockSignals(True)
         except (RuntimeError, AttributeError) as e:
-            logger.debug(f"隐藏旧中央部件时出错: {e}")
+            # logger.debug(f"隐藏旧中央部件时出错: {e}")
+            pass
 
         self.central_widget = QWidget()
         self.central_widget.setStyleSheet(f"background-color: {panel_background};")
@@ -1523,6 +1574,13 @@ class FreeAssetFilterApp(QMainWindow):
         self.update_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         status_layout.addWidget(self.update_button)
 
+        # 全局设置按钮
+        settings_icon_path = get_resource_path('freeassetfilter/icons/setting.svg')
+        self.global_settings_button = CustomButton(settings_icon_path, button_type="normal", display_mode="icon", height=20, tooltip_text="全局设置")
+        self.global_settings_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.global_settings_button.clicked.connect(self._open_global_settings)
+        status_layout.addWidget(self.global_settings_button)
+
         if hasattr(self, "update_controller") and self.update_controller:
             self.update_controller.bind_button(self.update_button)
 
@@ -1534,7 +1592,8 @@ class FreeAssetFilterApp(QMainWindow):
                 if hasattr(old_hover_tooltip, 'cleanup'):
                     old_hover_tooltip.cleanup()
             except (RuntimeError, AttributeError) as e:
-                logger.debug(f"清理旧 HoverTooltip 失败: {e}")
+                # logger.debug(f"清理旧 HoverTooltip 失败: {e}")
+                pass
 
             try:
                 old_hover_tooltip.hide()
@@ -1555,6 +1614,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.hover_tooltip = HoverTooltip(self)
         self.hover_tooltip.set_target_widget(self.github_button)
         self.hover_tooltip.set_target_widget(self.update_button)
+        self.hover_tooltip.set_target_widget(self.global_settings_button)
 
         self._restore_ui_state()
         
@@ -1573,7 +1633,8 @@ class FreeAssetFilterApp(QMainWindow):
                 if hasattr(self.hover_tooltip, 'set_safe_mode'):
                     self.hover_tooltip.set_safe_mode(False)
             except (RuntimeError, AttributeError) as e:
-                logger.debug(f"禁用 HoverTooltip 安全模式失败: {e}")
+                # logger.debug(f"禁用 HoverTooltip 安全模式失败: {e}")
+                pass
 
         return True
 
@@ -1697,7 +1758,7 @@ class FreeAssetFilterApp(QMainWindow):
             self.unified_previewer.preview_started.connect(self.handle_preview_started)
             self.unified_previewer.preview_cleared.connect(self.handle_preview_cleared)
 
-            debug("延迟控件创建完成")
+            # debug("延迟控件创建完成")
         except Exception as e:
             error(f"延迟创建控件失败: {e}")
 
@@ -2299,7 +2360,7 @@ def _run_installer_after_parent_exit(installer_path, expected_sha256, parent_pid
                 close_fds=True,
                 creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             )
-        debug(f"安装 helper: 已启动安装包: {installer_path}")
+        # debug(f"安装 helper: 已启动安装包: {installer_path}")
         return 0
     except Exception:
         try:
@@ -2308,7 +2369,7 @@ def _run_installer_after_parent_exit(installer_path, expected_sha256, parent_pid
                 close_fds=True,
                 creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             )
-            debug(f"安装 helper: 已启动安装包 (回退): {installer_path}")
+            # debug(f"安装 helper: 已启动安装包 (回退): {installer_path}")
             return 0
         except Exception:
             error(f"安装 helper: 启动安装包失败: {installer_path}")
@@ -2766,7 +2827,7 @@ def main():
         if _mutex_handle:
             error_code = kernel32.GetLastError()
             if error_code == 183:  # ERROR_ALREADY_EXISTS
-                warning("程序已在运行中")
+                info("another instance already running")
                 try:
                     _show_already_running_dialog_and_handle_restart(_mutex_handle)
                 except Exception as e:
@@ -2779,7 +2840,8 @@ def main():
                             pass
                 sys.exit(0)
             else:
-                debug("单实例检测通过")
+                # debug("单实例检测通过")
+                pass
 
     try:
         _write_runtime_instance_info()
@@ -2789,7 +2851,8 @@ def main():
     # 获取通过文件关联传递的文件路径
     associated_file_path = _extract_associated_file_path(sys.argv)
     if associated_file_path:
-        debug(f"接收到关联文件: {associated_file_path}")
+        pass
+        # debug(f"接收到关联文件: {associated_file_path}")
 
     # 获取通过右键菜单 --open-path 传递的路径
     open_path = _extract_open_path_arg(sys.argv)
@@ -2801,7 +2864,8 @@ def main():
         elif os.path.isdir(open_path):
             initial_navigate_path = open_path
         if initial_navigate_path:
-            debug(f"接收到右键菜单路径: {open_path}，初始导航目录: {initial_navigate_path}")
+            pass
+            # debug(f"接收到右键菜单路径: {open_path}，初始导航目录: {initial_navigate_path}")
 
     # 修改sys.argv[0]以确保Windows任务栏显示正确图标
     sys.argv[0] = os.path.abspath(__file__)
@@ -2922,12 +2986,13 @@ def main():
 
         except (OSError, PermissionError, json.JSONDecodeError, TypeError) as e:
             settings_manager.set_setting("app.last_exit_time", exit_time)
-            debug(f"保存退出时间失败: {e}")
+            # debug(f"保存退出时间失败: {e}")
 
         try:
             _remove_runtime_instance_info(expected_pid=os.getpid())
         except Exception as e:
-            debug(f"清理运行实例信息失败: {e}")
+            pass
+            # debug(f"清理运行实例信息失败: {e}")
 
         if sys.platform == 'win32' and _mutex_handle:
             try:
@@ -2951,7 +3016,7 @@ def main():
     ]
     if non_daemon_alive:
         thread_names = ", ".join(t.name for t in non_daemon_alive)
-        debug(f"非守护线程存活: {thread_names}")
+        # debug(f"非守护线程存活: {thread_names}")
         for t in non_daemon_alive:
             t.join(timeout=1.0)
             if t.is_alive():

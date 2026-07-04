@@ -31,7 +31,6 @@ from .button_widgets import CustomButton
 from .D_volume_control import DVolumeControl
 from .dropdown_menu import CustomDropdownMenu
 from .hover_tooltip import HoverTooltip
-from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 
 class PlayerControlBar(QWidget):
@@ -218,7 +217,7 @@ class PlayerControlBar(QWidget):
         )
         self._progress_bar.setRange(0, 1000)
         self._progress_bar.setValue(0)
-        self.configure_progress_animation(sync_interval_ms=200, linear=True)
+        self.configure_progress_animation(sync_interval_ms=100, linear=True)
         progress_time_layout.addWidget(self._progress_bar)
 
         bottom_layout = QHBoxLayout()

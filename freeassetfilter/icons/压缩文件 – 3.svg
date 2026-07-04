@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="linear-gradient" x1="0.168" y1="0.028" x2="0.924" y2="0.985" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#f8f8fc"/>
+      <stop offset="1" stop-color="#efeff8"/>
+    </linearGradient>
+    <filter id="减去_5" x="24.245" y="4.594" width="206.822" height="249.501" filterUnits="userSpaceOnUse">
+      <feOffset dy="1" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <filter id="减去_5-2" x="24.245" y="4.594" width="206.822" height="249.501" filterUnits="userSpaceOnUse">
+      <feOffset dx="1" dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="2.5" result="blur-2"/>
+      <feFlood flood-color="#fefefe" result="color"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-2"/>
+      <feComposite operator="in" in="color"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <filter id="减去_7" x="33.589" y="12.25" width="188.822" height="231.501" filterUnits="userSpaceOnUse">
+      <feOffset dx="-1" dy="-1" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="1" result="blur-3"/>
+      <feFlood flood-color="#d1d4e4" result="color-2"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-3"/>
+      <feComposite operator="in" in="color-2"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <linearGradient id="linear-gradient-2" x1="0.779" y1="1.423" x2="0.386" y2="0.5" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#bfc6e6"/>
+      <stop offset="1" stop-color="#f3f3fa"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-3" x1="0.451" y1="0.245" x2="0.281" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#e3e4f6"/>
+      <stop offset="1" stop-color="#f1f1fa"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-4" x1="0.5" x2="0.5" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#5c4afa"/>
+      <stop offset="1" stop-color="#8a82d5"/>
+    </linearGradient>
+    <clipPath id="clip-压缩文件_3">
+      <rect width="256" height="256"/>
+    </clipPath>
+  </defs>
+  <g id="压缩文件_3" data-name="压缩文件 – 3" clip-path="url(#clip-压缩文件_3)">
+    <g data-type="innerShadowGroup">
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#减去_5)">
+        <path id="减去_5-3" data-name="减去 5" d="M171.822,231.5H17a17,17,0,0,1-17-17V17A17,17,0,0,1,17,0H136.485l52.337,52.337V214.5a17,17,0,0,1-17,17Z" transform="translate(33.25 12.59)" fill="url(#linear-gradient)"/>
+      </g>
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#减去_5-2)">
+        <path id="减去_5-4" data-name="减去 5" d="M171.822,231.5H17a17,17,0,0,1-17-17V17A17,17,0,0,1,17,0H136.485l52.337,52.337V214.5a17,17,0,0,1-17,17Z" transform="translate(33.25 12.59)" fill="#fff"/>
+      </g>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#减去_7)">
+      <path id="减去_7-2" data-name="减去 7" d="M171.822,231.5H17a17,17,0,0,1-17-17V17A17,17,0,0,1,17,0H136.485l52.337,52.337V214.5a17,17,0,0,1-17,17Z" transform="translate(33.59 12.25)" fill="#fff"/>
+    </g>
+    <path id="减去_6" data-name="减去 6" d="M49.5,53.714H10a10.012,10.012,0,0,1-10-10V0L49.5,53.712Z" transform="translate(217.854 113.47) rotate(180)" fill="url(#linear-gradient-2)"/>
+    <path id="减去_4" data-name="减去 4" d="M53.714,53.714H10a10.011,10.011,0,0,1-10-10V0L53.712,53.712Z" transform="translate(169.041 11.905)" fill="url(#linear-gradient-3)"/>
+    <path id="路径_79" data-name="路径 79" d="M334.635,73.145h13.414V86.356H334.637V73.145Zm13.414,13.211h13.417V99.567H348.049ZM334.635,99.567h13.414v13.208H334.637V99.569Zm13.414,13.208h13.417v13.211H348.049Zm-13.414,13.211h13.414V139.2H334.637V125.986Zm20.124,59.448H341.342a6.677,6.677,0,0,1-6.707-6.6v-19.82h26.831v19.817a6.469,6.469,0,0,1-6.707,6.6Zm-6.71-46.237h13.417v13.211H348.049V139.2Z" transform="translate(-220.05 -61.239)" fill="url(#linear-gradient-4)"/>
+  </g>
+</svg>

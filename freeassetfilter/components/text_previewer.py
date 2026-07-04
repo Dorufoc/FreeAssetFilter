@@ -597,7 +597,7 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
                 self.setFormat(token.start_pos, len(token.text), fmt)
         except (ValueError, KeyError, AttributeError) as e:
             # 解析失败时不应用高亮
-            debug(f"语法高亮解析失败: {e}")
+            # debug(f"语法高亮解析失败: {e}")
             pass
     
     def get_background_color(self):
@@ -624,7 +624,7 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
             # 重新高亮整个文档
             self.rehighlight()
         except (ImportError, RuntimeError) as e:
-            debug(f"更新主题配色方案失败: {e}")
+            # debug(f"更新主题配色方案失败: {e}")
             pass
 
 class ZoomDisabledTextEdit(QTextEdit):
@@ -1022,7 +1022,7 @@ class TextPreviewWidget(QWidget):
             b = int(hex_color[5:7], 16)
             return f'rgba({r}, {g}, {b}, {alpha})'
         except (ValueError, IndexError) as e:
-            debug(f"颜色转换失败: {e}")
+            # debug(f"颜色转换失败: {e}")
             return hex_color
     
 
@@ -1404,7 +1404,7 @@ class TextPreviewWidget(QWidget):
 
                 self.text_edit.setPalette(palette)
             except (AttributeError, RuntimeError) as e:
-                debug(f"更新代码高亮器主题失败: {e}")
+                # debug(f"更新代码高亮器主题失败: {e}")
                 pass
         
         # 更新行号区域主题
@@ -1463,7 +1463,7 @@ class TextPreviewWidget(QWidget):
 
             self.text_edit.setPalette(palette)
         except (AttributeError, RuntimeError) as e:
-            debug(f"应用配色方案失败: {e}")
+            # debug(f"应用配色方案失败: {e}")
             pass
     
     def _reset_display_state(self):
@@ -1676,7 +1676,7 @@ class TextPreviewWidget(QWidget):
 
         self.file_content = content
         file_type = self._detect_file_type(self.current_file_path)
-        debug(f"文件类型检测: {file_type}, 大小: {len(content)} 字符")
+        # debug(f"文件类型检测: {file_type}, 大小: {len(content)} 字符")
 
         if file_type == 'markdown' and MARKDOWN_AVAILABLE:
             self._render_markdown(content)

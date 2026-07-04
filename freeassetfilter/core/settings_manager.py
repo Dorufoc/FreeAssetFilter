@@ -81,7 +81,7 @@ class SettingsManager:
             },
             "appearance": {
                 "theme": "default",
-                "icon_style": 0,
+                "icon_style": 3,
                 "preset_theme": "活力蓝",
                 "animations": {
                     "directory_transition": True,

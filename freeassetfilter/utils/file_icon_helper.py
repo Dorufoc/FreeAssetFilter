@@ -19,7 +19,7 @@ import os
 from freeassetfilter.core.settings_manager import SettingsManager
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import debug, warning
 
 # 支持样式切换的图标名称列表
 STYLEABLE_ICONS = [
@@ -37,11 +37,12 @@ STYLEABLE_ICONS = [
     "Word文档"
 ]
 
-# 图标样式映射：0=扁平(默认), 1=质感, 2=统一
+# 图标样式映射：0=扁平, 1=质感, 2=统一, 3=多彩(默认)
 ICON_STYLE_SUFFIX = {
-    0: "",           # 默认样式，不加后缀
+    0: "",           # 扁平样式，不加后缀
     1: " – 1",       # 质感样式，加 " – 1" 后缀
-    2: " – 2"        # 统一样式，加 " – 2" 后缀
+    2: " – 2",       # 统一样式，加 " – 2" 后缀
+    3: " – 3"        # 多彩样式，加 " – 3" 后缀（默认）
 }
 
 

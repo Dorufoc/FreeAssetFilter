@@ -25,7 +25,7 @@ from ctypes.wintypes import (DWORD, MAX_PATH, HANDLE, UINT,
                            LPCWSTR, LPWSTR, BOOL, HICON)
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import debug, warning, error
 
 # 图标缓存目录
 _ICON_CACHE_DIR = None

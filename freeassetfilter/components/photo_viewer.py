@@ -19,7 +19,7 @@ import sys
 import os
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
+from freeassetfilter.utils.app_logger import debug, warning, error, exception_details
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,

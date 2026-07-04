@@ -17,7 +17,6 @@ from .switch_widgets import CustomSwitch
 from .hover_tooltip import HoverTooltip
 from .D_hover_menu import D_HoverMenu
 from .dropdown_menu import Ddropmenu, CustomDropdownMenu
-from freeassetfilter.utils.app_logger import info, debug, warning, error
 
 __all__ = [
     'CustomWindow', 'CustomButton', 'CustomProgressBar', 'CustomSelectListItem',

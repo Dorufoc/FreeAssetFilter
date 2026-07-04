@@ -27,7 +27,7 @@ import re
 from .settings_manager import SettingsManager
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 
 

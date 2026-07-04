@@ -37,7 +37,7 @@ from freeassetfilter.utils.lut_utils import (
     remove_lut_from_settings, get_lut_storage_dir, get_lut_preview_dir
 )
 from freeassetfilter.core.lut_preview_generator import generate_lut_preview, create_default_reference_image
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning
 
 
 class LutImportWorker(QThread):

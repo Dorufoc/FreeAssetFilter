@@ -24,7 +24,7 @@ from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtCore import Qt
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import debug, warning, error
 
 try:
     from PIL import Image

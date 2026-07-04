@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="linear-gradient" x1="0.168" y1="0.028" x2="0.924" y2="0.985" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#f8f8fc"/>
+      <stop offset="1" stop-color="#efeff8"/>
+    </linearGradient>
+    <filter id="减去_5" x="24.245" y="4.594" width="206.822" height="249.501" filterUnits="userSpaceOnUse">
+      <feOffset dy="1" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <filter id="减去_5-2" x="24.245" y="4.594" width="206.822" height="249.501" filterUnits="userSpaceOnUse">
+      <feOffset dx="1" dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="2.5" result="blur-2"/>
+      <feFlood flood-color="#fefefe" result="color"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-2"/>
+      <feComposite operator="in" in="color"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <filter id="减去_7" x="33.589" y="12.25" width="188.822" height="231.501" filterUnits="userSpaceOnUse">
+      <feOffset dx="-1" dy="-1" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="1" result="blur-3"/>
+      <feFlood flood-color="#d1d4e4" result="color-2"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-3"/>
+      <feComposite operator="in" in="color-2"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <linearGradient id="linear-gradient-2" x1="0.779" y1="1.423" x2="0.386" y2="0.5" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#bfc6e6"/>
+      <stop offset="1" stop-color="#f3f3fa"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-3" x1="0.451" y1="0.245" x2="0.281" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#e3e4f6"/>
+      <stop offset="1" stop-color="#f1f1fa"/>
+    </linearGradient>
+    <linearGradient id="linear-gradient-4" y1="0.5" x2="0.98" y2="0.5" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#76fd88"/>
+      <stop offset="1" stop-color="#157815"/>
+    </linearGradient>
+    <filter id="联合_6">
+      <feOffset dx="-1" dy="-1" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="1" result="blur-4"/>
+      <feFlood flood-opacity="0.161" result="color-3"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-4"/>
+      <feComposite operator="in" in="color-3"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <linearGradient id="linear-gradient-5" x1="0.061" y1="0.072" x2="0.893" y2="0.927" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#4ac47d"/>
+      <stop offset="1" stop-color="#357f5c"/>
+    </linearGradient>
+    <filter id="矩形_127">
+      <feOffset dx="4" dy="4" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur-5"/>
+      <feFlood flood-color="#fff" flood-opacity="0.161" result="color-4"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-5"/>
+      <feComposite operator="in" in="color-4"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <filter id="矩形_128">
+      <feOffset dx="-1" dy="-5" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="2.5" result="blur-6"/>
+      <feFlood flood-color="#1f754a" flood-opacity="0.541" result="color-5"/>
+      <feComposite operator="out" in="SourceGraphic" in2="blur-6"/>
+      <feComposite operator="in" in="color-5"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+    <linearGradient id="linear-gradient-6" x1="0.288" y1="1.261" x2="0.76" y2="0.189" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#fff"/>
+      <stop offset="1" stop-color="#ebffea"/>
+    </linearGradient>
+    <filter id="路径_4" x="45.8" y="101.587" width="87.399" height="91.827" filterUnits="userSpaceOnUse">
+      <feOffset dy="3" input="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3" result="blur-7"/>
+      <feFlood flood-opacity="0.161"/>
+      <feComposite operator="in" in2="blur-7"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <clipPath id="clip-表格_3">
+      <rect width="256" height="256"/>
+    </clipPath>
+  </defs>
+  <g id="表格_3" data-name="表格 – 3" clip-path="url(#clip-表格_3)">
+    <g data-type="innerShadowGroup">
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#减去_5)">
+        <path id="减去_5-3" data-name="减去 5" d="M171.822,231.5H17a17,17,0,0,1-17-17V17A17,17,0,0,1,17,0H136.485l52.337,52.337V214.5a17,17,0,0,1-17,17Z" transform="translate(33.25 12.59)" fill="url(#linear-gradient)"/>
+      </g>
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#减去_5-2)">
+        <path id="减去_5-4" data-name="减去 5" d="M171.822,231.5H17a17,17,0,0,1-17-17V17A17,17,0,0,1,17,0H136.485l52.337,52.337V214.5a17,17,0,0,1-17,17Z" transform="translate(33.25 12.59)" fill="#fff"/>
+      </g>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#减去_7)">
+      <path id="减去_7-2" data-name="减去 7" d="M171.822,231.5H17a17,17,0,0,1-17-17V17A17,17,0,0,1,17,0H136.485l52.337,52.337V214.5a17,17,0,0,1-17,17Z" transform="translate(33.59 12.25)" fill="#fff"/>
+    </g>
+    <path id="减去_6" data-name="减去 6" d="M49.5,53.714H10a10.012,10.012,0,0,1-10-10V0L49.5,53.712Z" transform="translate(217.854 113.47) rotate(180)" fill="url(#linear-gradient-2)"/>
+    <path id="减去_4" data-name="减去 4" d="M53.714,53.714H10a10.011,10.011,0,0,1-10-10V0L53.712,53.712Z" transform="translate(169.041 11.905)" fill="url(#linear-gradient-3)"/>
+    <g data-type="innerShadowGroup">
+      <path id="联合_6-2" data-name="联合 6" d="M766.334-2712.245H658a6,6,0,0,1-6-6v-2.227a6,6,0,0,1,6-6H760.334v-19.387H658a6,6,0,0,1-6-6v-2.226a6,6,0,0,1,6-6H760.334v-19.387H658a6,6,0,0,1-6-6v-2.227a6,6,0,0,1,6-6H764.448a5.991,5.991,0,0,1,1.886-.3h2.227a6,6,0,0,1,6,6v69.756a6,6,0,0,1-6,6Z" transform="translate(-578.28 2897.471)" opacity="0.15" fill="url(#linear-gradient-4)"/>
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#联合_6)">
+        <path id="联合_6-3" data-name="联合 6" d="M766.334-2712.245H658a6,6,0,0,1-6-6v-2.227a6,6,0,0,1,6-6H760.334v-19.387H658a6,6,0,0,1-6-6v-2.226a6,6,0,0,1,6-6H760.334v-19.387H658a6,6,0,0,1-6-6v-2.227a6,6,0,0,1,6-6H764.448a5.991,5.991,0,0,1,1.886-.3h2.227a6,6,0,0,1,6,6v69.756a6,6,0,0,1-6,6Z" transform="translate(-578.28 2897.47)" fill="#fff" opacity="0.15"/>
+      </g>
+    </g>
+    <g data-type="innerShadowGroup">
+      <rect id="矩形_127-2" data-name="矩形 127" width="135" height="135" rx="20" transform="translate(22 77)" fill="url(#linear-gradient-5)"/>
+      <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_127)">
+        <rect id="矩形_127-3" data-name="矩形 127" width="135" height="135" rx="20" transform="translate(22 77)" fill="#fff"/>
+      </g>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#矩形_128)">
+      <rect id="矩形_128-2" data-name="矩形 128" width="135" height="135" rx="20" transform="translate(22 77)" fill="#fff"/>
+    </g>
+    <g transform="matrix(1, 0, 0, 1, 0, 0)" filter="url(#路径_4)">
+      <path id="路径_4-2" data-name="路径 4" d="M11.6,7.845l-24.24-36.526H6.621L21.121-4.33,36.838-28.681H55.876L30.861,7.845l25.015,37.3H37.392L21.121,19.8,5.182,45.146H-13.523Z" transform="translate(68.32 136.27)" fill="url(#linear-gradient-6)"/>
+    </g>
+  </g>
+</svg>

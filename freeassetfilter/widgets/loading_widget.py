@@ -12,7 +12,7 @@ from PySide6.QtSvg import QSvgRenderer
 import os
 
 from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import warning, error
 
 
 class LoadingSpinner(QWidget):

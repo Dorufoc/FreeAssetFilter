@@ -20,7 +20,7 @@ from PySide6.QtCore import Qt, QPoint, QRect, Signal, QTimer, QPropertyAnimation
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPainterPath, QCursor
 
 from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import debug
 
 
 class D_HoverMenu(QWidget):

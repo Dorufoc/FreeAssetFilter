@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor
 from freeassetfilter.core.settings_manager import SettingsManager
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import info, debug, warning
 
 
 class ThemeManager(QObject):
@@ -36,7 +36,7 @@ class ThemeManager(QObject):
             settings_manager: 设置管理器实例，如果不提供则创建新实例
         """
         super().__init__()  # 调用QObject的初始化函数
-        debug("ThemeManager 初始化开始")
+        # debug("初始化开始")
 
         self.settings_manager = settings_manager or SettingsManager()
 
@@ -49,14 +49,14 @@ class ThemeManager(QObject):
 
         # 加载当前主题颜色
         self._load_theme_colors()
-        info("ThemeManager 初始化完成")
+        info("初始化完成")
     
     def _load_theme_colors(self):
         """
         加载主题颜色设置
         从内存设置中读取所有主题颜色值
         """
-        debug("加载主题颜色")
+        # debug("加载主题颜色")
 
         self.theme_colors = {
             "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
@@ -74,7 +74,7 @@ class ThemeManager(QObject):
         self.auxiliary_color_darker_2 = self._darken_color(self.theme_colors["auxiliary_color"], 2)
         self.auxiliary_color_darker_5 = self._darken_color(self.theme_colors["auxiliary_color"], 5)
 
-        debug(f"主题颜色加载完成: {self.theme_colors}")
+        # debug(f"主题颜色加载完成: {self.theme_colors}")
     
     def _darken_color(self, color_hex, percent):
         """
@@ -126,7 +126,7 @@ class ThemeManager(QObject):
             dict: 更新后的主题颜色字典
         """
         theme_value = "dark" if is_dark else "default"
-        debug(f"切换主题模式: {theme_value}")
+        # debug(f"切换主题模式: {theme_value}")
 
         # 更新主题模式设置
         self.settings_manager.set_setting("appearance.theme", theme_value)
@@ -198,7 +198,7 @@ class ThemeManager(QObject):
             warning(f"无效的颜色键: {color_key}")
             return
 
-        debug(f"更新颜色: {color_key} = {color_value}")
+        # debug(f"更新颜色: {color_key} = {color_value}")
 
         self.theme_colors[color_key] = color_value
         self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
@@ -213,7 +213,7 @@ class ThemeManager(QObject):
 
         # 发出信号
         self.colors_updated.emit(self.theme_colors)
-        debug(f"颜色更新完成: {color_key}")
+        # debug(f"颜色更新完成: {color_key}")
     
     def is_dark_theme(self):
         """

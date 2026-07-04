@@ -20,8 +20,9 @@ from PySide6.QtWidgets import (
     QScrollerProperties,
     QApplication,
     QGraphicsEffect,
+    QScrollBar,
 )
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtGui import QWheelEvent, QColor
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 import time
 
@@ -563,3 +564,61 @@ class SmoothScroller:
         if isinstance(scroll_area, QAbstractItemView):
             scroll_area.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
             scroll_area.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+
+
+class D_ScrollBar(QScrollBar):
+    """
+    自定义滚动条组件
+    支持设置主题颜色的平滑滚动条
+    """
+
+    def __init__(self, parent=None, orientation=Qt.Vertical):
+        super().__init__(orientation, parent)
+        self._normal_color = QColor("#e0e0e0")
+        self._secondary_color = QColor("#333333")
+        self._accent_color = QColor("#007AFF")
+        self._auxiliary_color = QColor("#f1f3f5")
+        self._update_style()
+
+    def set_colors(self, normal_color, secondary_color, accent_color, auxiliary_color):
+        """
+        设置滚动条颜色
+
+        Args:
+            normal_color: 正常状态颜色
+            secondary_color: 次要颜色
+            accent_color: 强调颜色
+            auxiliary_color: 辅助颜色
+        """
+        self._normal_color = QColor(normal_color) if isinstance(normal_color, str) else normal_color
+        self._secondary_color = QColor(secondary_color) if isinstance(secondary_color, str) else secondary_color
+        self._accent_color = QColor(accent_color) if isinstance(accent_color, str) else accent_color
+        self._auxiliary_color = QColor(auxiliary_color) if isinstance(auxiliary_color, str) else auxiliary_color
+        self._update_style()
+
+    def _update_style(self):
+        """更新滚动条样式"""
+        handle_color = self._secondary_color.name()
+        bg_color = self._auxiliary_color.name()
+        self.setStyleSheet(f"""
+            QScrollBar {{
+                background-color: {bg_color};
+                border: none;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle {{
+                background-color: {handle_color};
+                border-radius: 4px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:hover {{
+                background-color: {self._accent_color.name()};
+            }}
+            QScrollBar::add-line, QScrollBar::sub-line {{
+                height: 0px;
+                background: none;
+            }}
+            QScrollBar::add-page, QScrollBar::sub-page {{
+                background: none;
+            }}
+        """)

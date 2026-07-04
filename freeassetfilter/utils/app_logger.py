@@ -517,53 +517,6 @@ class ComponentSourceFormatter(logging.Formatter):
         return formatted
 
 
-# ==================== 异常类型分类 ====================
-
-class SecurityException(Exception):
-    """安全相关异常基类"""
-    pass
-
-
-class ResourceException(Exception):
-    """资源相关异常基类"""
-    pass
-
-
-class FileOperationException(ResourceException):
-    """文件操作异常（文件不存在、读写失败、格式错误等）"""
-    def __init__(self, message: str = "文件操作失败", original_error: Optional[Exception] = None):
-        self.original_error = original_error
-        super().__init__(message)
-
-
-class NetworkException(ResourceException):
-    """网络相关异常（连接失败、超时、下载失败等）"""
-    def __init__(self, message: str = "网络操作失败", original_error: Optional[Exception] = None):
-        self.original_error = original_error
-        super().__init__(message)
-
-
-class MemoryException(ResourceException):
-    """内存相关异常（内存不足、分配失败等）"""
-    def __init__(self, message: str = "内存操作失败", original_error: Optional[Exception] = None):
-        self.original_error = original_error
-        super().__init__(message)
-
-
-class PermissionException(SecurityException):
-    """权限相关异常（访问被拒绝、权限不足等）"""
-    def __init__(self, message: str = "权限不足", original_error: Optional[Exception] = None):
-        self.original_error = original_error
-        super().__init__(message)
-
-
-class ConfigurationException(Exception):
-    """配置相关异常"""
-    def __init__(self, message: str = "配置错误", original_error: Optional[Exception] = None):
-        self.original_error = original_error
-        super().__init__(message)
-
-
 # ==================== 敏感信息过滤 ====================
 
 # 敏感路径模式列表
@@ -655,54 +608,6 @@ def sanitize_sensitive_info(text: str) -> str:
     return sanitized
 
 
-def get_safe_error_message(error: Exception, include_details: bool = False) -> str:
-    """
-    获取安全的错误信息（不包含敏感路径）
-    
-    Args:
-        error: 异常对象
-        include_details: 是否包含详细错误信息（默认False，只返回安全信息）
-        
-    Returns:
-        str: 安全的错误信息
-    """
-    if error is None:
-        return "发生未知错误"
-    
-    # 获取异常类型名称
-    error_type = type(error).__name__
-    
-    # 获取异常消息并清理
-    error_msg = str(error)
-    safe_msg = sanitize_path(error_msg)
-    safe_msg = sanitize_sensitive_info(safe_msg)
-    
-    # 根据异常类型返回用户友好的消息
-    user_friendly_messages = {
-        'FileNotFoundError': '文件未找到',
-        'PermissionError': '权限不足，无法访问',
-        'IsADirectoryError': '路径指向目录而非文件',
-        'NotADirectoryError': '路径不是有效的目录',
-        'OSError': '系统操作失败',
-        'IOError': '输入/输出错误',
-        'MemoryError': '内存不足',
-        'TimeoutError': '操作超时',
-        'ConnectionError': '网络连接失败',
-        'FileOperationException': '文件操作失败',
-        'NetworkException': '网络操作失败',
-        'MemoryException': '内存操作失败',
-        'PermissionException': '权限不足',
-        'ConfigurationException': '配置错误',
-    }
-    
-    base_message = user_friendly_messages.get(error_type, '操作失败')
-    
-    if include_details and safe_msg:
-        return f"{base_message}: {safe_msg}"
-    
-    return base_message
-
-
 def get_safe_error_for_ui(error: Exception) -> str:
     """
     获取用于UI显示的安全错误信息（最简版本，绝不包含任何敏感信息）
@@ -744,51 +649,6 @@ def get_safe_error_for_ui(error: Exception) -> str:
     }
     
     return ui_messages.get(error_type, '操作失败，请重试')
-
-
-def classify_exception(error: Exception) -> type:
-    """
-    根据异常类型分类异常
-    
-    Args:
-        error: 异常对象
-        
-    Returns:
-        type: 异常分类类型
-    """
-    if error is None:
-        return Exception
-    
-    error_type = type(error)
-    error_name = error_type.__name__
-    
-    # 文件相关异常
-    file_exceptions = (
-        FileNotFoundError, PermissionError, IsADirectoryError, 
-        NotADirectoryError, FileExistsError, EOFError,
-        'FileOperationException'
-    )
-    if error_type in file_exceptions or error_name in file_exceptions:
-        return FileOperationException
-    
-    # 权限相关异常
-    if error_type == PermissionError or error_name == 'PermissionException':
-        return PermissionException
-    
-    # 网络相关异常
-    network_exceptions = (
-        ConnectionError, TimeoutError, BlockingIOError, 
-        InterruptedError, 'NetworkException'
-    )
-    if error_type in network_exceptions or error_name in network_exceptions:
-        return NetworkException
-    
-    # 内存相关异常
-    memory_exceptions = (MemoryError, 'MemoryException')
-    if error_type in memory_exceptions or error_name in memory_exceptions:
-        return MemoryException
-    
-    return Exception
 
 
 class TeeStream(io.TextIOBase):
@@ -1057,7 +917,7 @@ class AppLogger:
         console_stream = _get_original_console_stream('stdout')
         if console_stream is not None:
             console_handler = logging.StreamHandler(console_stream)
-            console_handler.setLevel(logging.DEBUG)
+            console_handler.setLevel(logging.INFO)
             console_handler.setFormatter(self.formatter)
             # 添加组件来源过滤器
             console_handler.addFilter(self.component_filter)
@@ -1124,24 +984,8 @@ class AppLogger:
             # 标记为启动日志
             _in_startup_log = True
             
-            self.info("=" * 60)
-            self.info("FreeAssetFilter 启动")
-            self.info("=" * 60)
-            
-            self.info(f"应用版本: {app_info.get('version', '未知')}")
-            self.info(f"安装路径: {app_info.get('install_path', '未知')}")
-            self.info(f"日志文件: {self.log_file}")
-            
-            self.info("-" * 60)
-            self.info("系统信息:")
-            self.info(f"  操作系统: {system_info.get('os', '未知')}")
-            self.info(f"  CPU: {system_info.get('cpu', '未知')}")
-            self.info(f"  显卡: {system_info.get('gpu', '未知')}")
-            self.info(f"  内存: {system_info.get('memory', '未知')}")
-            self.info(f"  架构: {system_info.get('architecture', '未知')}")
-            self.info(f"  Python: {system_info.get('python_version', '未知')} ({system_info.get('python_implementation', '未知')})")
-            
-            self.info("=" * 60)
+            self.info(f"启动 v{app_info.get('version', '?')} | {system_info.get('os', '?')} | {system_info.get('cpu', '?')} | {system_info.get('gpu', '?')} | {system_info.get('memory', '?')} | Python {system_info.get('python_version', '?')} ({system_info.get('architecture', '?')})")
+            self.info(f"日志: {self.log_file}")
         except Exception as e:
             try:
                 self.warning(f"输出启动信息失败: {e}")
@@ -1221,28 +1065,6 @@ def install_console_capture(log_file_path: Optional[str] = None) -> bool:
     return installed
 
 
-def log_print(msg, level='info'):
-    """
-    兼容 print 的日志输出函数
-
-    Args:
-        msg: 日志消息
-        level: 日志级别，可选 'debug', 'info', 'warning', 'error', 'critical'
-    """
-    logger = get_logger()
-
-    level_map = {
-        'debug': logger.debug,
-        'info': logger.info,
-        'warning': logger.warning,
-        'error': logger.error,
-        'critical': logger.critical
-    }
-
-    log_func = level_map.get(level, logger.info)
-    log_func(msg)
-
-
 def log_exception_details(message: str, exc: Optional[BaseException] = None, level: str = 'error'):
     """
     通过统一日志组件记录异常详情和堆栈，替代 traceback.print_exc() / logging.exception()。
@@ -1262,7 +1084,13 @@ def log_exception_details(message: str, exc: Optional[BaseException] = None, lev
         active_exc = sys.exc_info()[1]
 
     if active_exc is None:
-        log_print(safe_message, level=level)
+        {
+            'debug': logger.debug,
+            'info': logger.info,
+            'warning': logger.warning,
+            'error': logger.error,
+            'critical': logger.critical
+        }.get(level, logger.info)(safe_message)
         return
 
     safe_exc_text = sanitize_path(str(active_exc))

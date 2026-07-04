@@ -84,7 +84,7 @@ def _find_fafversion_file():
         with open(create_path, "w", encoding="utf-8") as f:
             f.write("v1\n")
             f.write("1970-01-01\n")
-        info(f"已创建默认版本文件: {create_path}")
+        # info(f"已创建默认版本文件: {create_path}")
         return create_path
     except (OSError, IOError) as e:
         warning(f"创建版本文件失败: {e}")
@@ -177,7 +177,7 @@ def load_local_version_info():
             build_date_obj,
         }
     """
-    info("读取本地版本信息")
+    # info("读取本地版本信息")
 
     if not os.path.exists(FAFVERSION_FILE):
         error(f"版本文件不存在: {FAFVERSION_FILE}")
@@ -404,7 +404,7 @@ def fetch_github_releases(cancel_check=None):
     保留旧接口，兼容历史调用。
     当前优先使用网页源避免 GitHub API rate limit。
     """
-    info("获取 GitHub Releases (API)")
+    # info("获取 GitHub Releases (API)")
 
     raw_text = _http_get_text(GITHUB_RELEASES_API_URL, timeout=10, cancel_check=cancel_check)
 
@@ -418,7 +418,7 @@ def fetch_github_releases(cancel_check=None):
         error("GitHub Releases 响应格式无效")
         raise UpdateError("GitHub Releases 响应格式无效")
 
-    info(f"获取到 {len(releases)} 个 Release")
+    # info(f"获取到 {len(releases)} 个 Release")
     return releases
 
 
@@ -427,7 +427,7 @@ def select_latest_release(releases, cancel_check=None):
     保留旧接口，兼容历史调用。
     当前主流程已改为网页源抓取。
     """
-    info("筛选最新 Release")
+    # info("筛选最新 Release")
 
     _raise_if_cancelled(cancel_check)
 
@@ -516,7 +516,7 @@ def _extract_latest_tag_from_redirect(cancel_check=None):
     """
     通过 releases/latest 跳转获取最新 tag
     """
-    info("获取最新版本标签")
+    # info("获取最新版本标签")
 
     _raise_if_cancelled(cancel_check)
 
@@ -546,7 +546,7 @@ def _extract_latest_tag_from_redirect(cancel_check=None):
         raise UpdateError("无法从 latest 跳转地址解析最新版本标签")
 
     tag = match.group(1)
-    info(f"最新版本标签: {tag}")
+    # info(f"最新版本标签: {tag}")
     return tag
 
 
@@ -574,7 +574,7 @@ def _fetch_release_metadata_from_atom(tag_name, cancel_check=None):
     """
     从 releases.atom 中获取指定 tag 的发布时间和更新日志
     """
-    info(f"获取版本元数据: {tag_name}")
+    # info(f"获取版本元数据: {tag_name}")
 
     atom_text = _http_get_text(GITHUB_RELEASES_ATOM_URL, timeout=10, cancel_check=cancel_check)
 
@@ -617,7 +617,7 @@ def _fetch_release_metadata_from_atom(tag_name, cancel_check=None):
         if link_node is not None:
             html_url = link_node.attrib.get("href", "")
 
-        info(f"获取到元数据: 发布日期={published_date}")
+        # info(f"获取到元数据: 发布日期={published_date}")
         return {
             "tag_name": tag_name,
             "published_at": published_at,
@@ -635,7 +635,7 @@ def _fetch_installer_info_from_expanded_assets(tag_name, cancel_check=None):
     """
     从 expanded_assets 页面获取 exe、sha256 和大小
     """
-    info(f"获取安装包信息: {tag_name}")
+    # info(f"获取安装包信息: {tag_name}")
 
     html_text = _http_get_text(
         f"{GITHUB_RELEASES_EXPANDED_ASSETS_URL}/{tag_name}",
@@ -673,7 +673,7 @@ def fetch_latest_release_via_web(cancel_check=None):
     """
     使用 GitHub 网页源获取最新发布，避免 API rate limit
     """
-    info("获取最新 Release (网页源)")
+    # info("获取最新 Release (网页源)")
 
     _raise_if_cancelled(cancel_check)
     tag_name = _extract_latest_tag_from_redirect(cancel_check=cancel_check)
@@ -684,7 +684,7 @@ def fetch_latest_release_via_web(cancel_check=None):
     _raise_if_cancelled(cancel_check)
     installer_info = _fetch_installer_info_from_expanded_assets(tag_name, cancel_check=cancel_check)
 
-    info(f"获取成功: {tag_name}")
+    # info(f"获取成功: {tag_name}")
     return {
         "release_id": None,
         "tag_name": tag_name,
@@ -806,7 +806,7 @@ def fetch_installer_sha256(checksum_download_url, installer_name, cancel_check=N
     """
     下载并解析 checksum 文件，提取目标 exe 的 sha256
     """
-    info(f"获取校验文件: {installer_name}")
+    # info(f"获取校验文件: {installer_name}")
 
     try:
         text = _http_get_text(checksum_download_url, timeout=30, cancel_check=cancel_check)
@@ -891,7 +891,7 @@ def calculate_sha256(file_path, chunk_size=1024 * 1024):
         raise UpdateError(f"读取文件计算 SHA256 失败：{e}") from e
 
     result = sha256_hash.hexdigest().lower()
-    info("SHA256 计算完成")
+    # info("SHA256 计算完成")
     return result
 
 
@@ -907,7 +907,7 @@ def verify_installer_file(file_path, expected_sha256):
         warning("安装包不存在")
         return False
 
-    info(f"校验安装包: {os.path.basename(file_path)}")
+    # info(f"校验安装包: {os.path.basename(file_path)}")
 
     try:
         actual_sha256 = calculate_sha256(file_path)
@@ -942,7 +942,7 @@ def load_cache_metadata():
         warning("缓存元数据格式无效")
         return None
 
-    info("缓存元数据加载成功")
+    # info("缓存元数据加载成功")
     return data
 
 
@@ -951,12 +951,12 @@ def save_cache_metadata(metadata):
     保存缓存元数据
     """
     metadata_path = get_cache_metadata_path()
-    info(f"保存缓存元数据: {metadata_path}")
+    # info(f"保存缓存元数据: {metadata_path}")
 
     try:
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
-        info("缓存元数据保存成功")
+        # info("缓存元数据保存成功")
     except OSError as e:
         error(f"写入缓存元数据失败: {e}")
         raise UpdateError(f"写入缓存元数据失败：{e}") from e
@@ -966,12 +966,12 @@ def clear_invalid_cache(installer_path=None):
     """
     清理无效缓存
     """
-    info("清理无效缓存")
+    # info("清理无效缓存")
 
     if installer_path and os.path.exists(installer_path):
         try:
             os.remove(installer_path)
-            info(f"删除安装包: {os.path.basename(installer_path)}")
+            # info(f"删除安装包: {os.path.basename(installer_path)}")
         except OSError as e:
             warning(f"删除安装包失败: {e}")
 
@@ -979,7 +979,7 @@ def clear_invalid_cache(installer_path=None):
     if os.path.exists(metadata_path):
         try:
             os.remove(metadata_path)
-            info("删除缓存元数据")
+            # info("删除缓存元数据")
         except OSError as e:
             warning(f"删除缓存元数据失败: {e}")
 
@@ -988,7 +988,7 @@ def prepare_cached_installer(release_info, installer_path):
     """
     将本地已准备好的安装包写入缓存元数据
     """
-    info(f"准备缓存安装包: {os.path.basename(installer_path)}")
+    # info(f"准备缓存安装包: {os.path.basename(installer_path)}")
 
     if not os.path.exists(installer_path):
         error("安装包不存在")
@@ -1012,7 +1012,7 @@ def prepare_cached_installer(release_info, installer_path):
 
     result = dict(metadata)
     result["is_ready"] = True
-    info("安装包缓存准备完成")
+    # info("安装包缓存准备完成")
     return result
 
 
@@ -1020,11 +1020,11 @@ def get_cached_installer_if_valid(release_info):
     """
     如果本地已有可复用缓存，则返回缓存信息
     """
-    info("检查缓存安装包")
+    # info("检查缓存安装包")
 
     metadata = load_cache_metadata()
     if not metadata:
-        info("未找到缓存元数据")
+        # info("未找到缓存元数据")
         return {
             "is_ready": False,
             "reason": "未找到缓存元数据",
@@ -1040,7 +1040,7 @@ def get_cached_installer_if_valid(release_info):
         or published_date != release_info.get("published_date")
         or expected_sha256 != release_info.get("installer_sha256")
     ):
-        info("缓存版本与最新发布不匹配")
+        # info("缓存版本与最新发布不匹配")
         return {
             "is_ready": False,
             "reason": "缓存版本与最新发布不匹配",

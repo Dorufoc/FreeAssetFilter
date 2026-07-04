@@ -24,7 +24,7 @@ from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass
 
 # 导入日志模块
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import debug, warning, error
 
 
 @dataclass

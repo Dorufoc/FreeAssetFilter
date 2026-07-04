@@ -14,7 +14,7 @@ from ctypes import c_char_p, c_int, c_size_t, c_uint8, c_uint32, POINTER, Struct
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from freeassetfilter.utils.app_logger import debug, info, warning, error
+from freeassetfilter.utils.app_logger import debug, info, warning
 
 
 class NativeThumbnailResult(Structure):

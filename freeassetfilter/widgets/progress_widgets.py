@@ -18,7 +18,7 @@ from PySide6.QtSvg import QSvgRenderer
 # 用于SVG渲染
 from freeassetfilter.core.svg_renderer import SvgRenderer
 from freeassetfilter.utils.animation_settings import is_animation_enabled
-from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.utils.app_logger import error
 import os
 
 
