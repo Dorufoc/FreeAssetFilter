@@ -17,6 +17,7 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 
 import sys
 import os
+from collections import OrderedDict
 
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -103,6 +104,11 @@ class UnifiedPreviewer(QWidget):
         self._pending_file_info = None
         self._preview_sequence = 0
         self._pending_preview_sequence = 0
+
+        # 动画检测 LRU 缓存，避免重复打开图片文件
+        # key: (absolute_file_path, mtime), value: bool
+        self._animated_image_cache: OrderedDict = OrderedDict()
+        self._ANIMATED_CACHE_MAX_SIZE = 200
 
         # 初始化UI
         self.init_ui()
@@ -415,19 +421,32 @@ class UnifiedPreviewer(QWidget):
         """
         显示默认占位提示，并确保它占用预览区域的剩余空间。
         """
-        if self.preview_layout.indexOf(self.default_placeholder) < 0:
-            self.preview_layout.addWidget(self.default_placeholder, 1)
-        self.default_placeholder.show()
-        self.default_label.show()
+        from shiboken6 import isValid as _isValid
+        if not _isValid(self.default_placeholder):
+            return
+        try:
+            if self.preview_layout.indexOf(self.default_placeholder) < 0:
+                self.preview_layout.addWidget(self.default_placeholder, 1)
+            self.default_placeholder.show()
+            self.default_label.show()
+        except RuntimeError:
+            pass
 
     def _hide_default_placeholder(self):
         """
         隐藏默认占位提示，避免它参与具体预览内容的布局。
         """
-        if self.preview_layout.indexOf(self.default_placeholder) >= 0:
-            self.preview_layout.removeWidget(self.default_placeholder)
-        self.default_placeholder.hide()
-        self.default_label.hide()
+        from shiboken6 import isValid as _isValid
+        if not _isValid(self.default_placeholder):
+            return
+        try:
+            if self.preview_layout.indexOf(self.default_placeholder) >= 0:
+                self.preview_layout.removeWidget(self.default_placeholder)
+            self.default_placeholder.hide()
+            self.default_label.hide()
+        except RuntimeError:
+            # 快速切换时 default_placeholder 可能已被前一次 _finish_clear 删除
+            pass
     
     def set_file(self, file_info):
         """
@@ -845,6 +864,9 @@ class UnifiedPreviewer(QWidget):
                     layout_widget = item.widget()
                     if layout_widget is None:
                         continue
+                    # 跳过 default_placeholder — 它由 _hide / _show_default_placeholder 管理
+                    if layout_widget is self.default_placeholder:
+                        continue
                     self.preview_layout.removeWidget(layout_widget)
                     if layout_widget is video_player_widget:
                         layout_widget.hide()
@@ -858,6 +880,9 @@ class UnifiedPreviewer(QWidget):
                         continue
                     layout_widget = item.widget()
                     if layout_widget is not None:
+                        # 跳过 default_placeholder — 由 _hide / _show 管理
+                        if layout_widget is self.default_placeholder:
+                            continue
                         layout_widget.setParent(None)
                         layout_widget.deleteLater()
 
@@ -1103,7 +1128,7 @@ class UnifiedPreviewer(QWidget):
 
     def _is_animated_image(self, file_path):
         """
-        检测图片是否为动画格式
+        检测图片是否为动画格式（带 LRU 缓存 + 扩展名快速路径）
         
         Args:
             file_path (str): 图片文件路径
@@ -1111,18 +1136,41 @@ class UnifiedPreviewer(QWidget):
         Returns:
             bool: 是否为动画图片
         """
+        # 扩展名快速路径：只有 .gif .webp .png 可能包含多帧
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext not in ('.gif', '.webp', '.png'):
+            return False
+
+        try:
+            cache_key = (os.path.abspath(file_path), os.path.getmtime(file_path))
+        except OSError:
+            return False
+
+        # LRU 缓存命中
+        if cache_key in self._animated_image_cache:
+            self._animated_image_cache.move_to_end(cache_key)
+            return self._animated_image_cache[cache_key]
+
+        # 缓存未命中，执行 PIL 检测
         try:
             from PIL import Image
             with Image.open(file_path) as img:
                 try:
-                    return getattr(img, 'is_animated', False) or img.n_frames > 1
+                    result = bool(getattr(img, 'is_animated', False) or img.n_frames > 1)
                 except AttributeError:
-                    return False
+                    result = False
         except ImportError:
-            return False
+            result = False
         except (AttributeError, OSError, ValueError) as e:
-            debug(f'[UnifiedPreviewer] 检查GIF动画时出错: {e}')
-            return False
+            debug(f'[UnifiedPreviewer] 检查动画图片时出错: {e}')
+            result = False
+
+        # 写入 LRU 缓存
+        self._animated_image_cache[cache_key] = result
+        if len(self._animated_image_cache) > self._ANIMATED_CACHE_MAX_SIZE:
+            self._animated_image_cache.popitem(last=False)
+
+        return result
     
     def _show_video_preview(self, file_path, loaded_data=None):
         """

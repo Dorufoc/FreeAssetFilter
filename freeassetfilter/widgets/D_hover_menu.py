@@ -16,9 +16,11 @@ FreeAssetFilter 自定义悬浮菜单组件
 from typing import Set
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QApplication
-from PySide6.QtCore import Qt, QPoint, QRect, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QEvent
+from PySide6.QtCore import Qt, QPoint, QRect, Signal, QPropertyAnimation, QEasingCurve, Property, QEvent
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPainterPath, QCursor
 
+import time
+from freeassetfilter.core.heartbeat_manager import HeartbeatManager
 from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
 from freeassetfilter.utils.app_logger import debug
 
@@ -128,19 +130,13 @@ class D_HoverMenu(QWidget):
         self._vertical_animation_duration = 300
         self._base_position = QPoint(0, 0)
 
-        self._timeout_timer = QTimer(self)
-        self._timeout_timer.setSingleShot(True)
-        self._timeout_timer.timeout.connect(self._on_timeout)
-
-        self._bar_idle_timer = QTimer(self)
-        self._bar_idle_timer.setSingleShot(True)
-        self._bar_idle_timer.timeout.connect(self._on_bar_idle_timeout)
-
         self._debounce_hide_on_move = False
-        self._debounce_timer = QTimer(self)
-        self._debounce_timer.setSingleShot(True)
-        self._debounce_timer.timeout.connect(self._clear_debounce)
         self._auto_hide_enabled = False
+
+        # Timestamp-based timer management (replacing 3 QTimers)
+        self._timeout_deadline: float = 0.0       # 0 = no pending timeout
+        self._bar_idle_deadline: float = 0.0      # 0 = no pending idle
+        self._debounce_deadline: float = 0.0      # 0 = no pending debounce
         self._mouse_activity_monitor = GlobalMouseMonitor(self, timeout=5000)
         self._mouse_activity_monitor.mouse_moved.connect(self._show_control_bar)
         self._mouse_activity_monitor.timeout_reached.connect(self._hide_control_bar)
@@ -161,9 +157,35 @@ class D_HoverMenu(QWidget):
         # 启用鼠标跟踪，用于控制栏空闲检测
         self._start_mouse_tracking()
 
+        # Register heartbeat callback for deadline checks
+        self._deadline_check_id = f"D_hover_menu_{id(self)}_deadlines"
+        HeartbeatManager().register_tick_callback(
+            self._deadline_check_id,
+            self._check_deadlines,
+            priority=4,
+            every_n_ticks=1,
+            owner=self
+        )
+
     def _clear_debounce(self):
         """清除隐藏防抖标记"""
+        if self._debounce_deadline == 0:
+            return  # cancelled or not yet due
+        self._debounce_deadline = 0
         self._debounce_hide_on_move = False
+
+    def _check_deadlines(self):
+        """Check all timestamp-based deadlines and fire callbacks as needed."""
+        now = time.monotonic()
+        if self._timeout_deadline and now >= self._timeout_deadline:
+            self._timeout_deadline = 0
+            self._on_timeout()
+        if self._bar_idle_deadline and now >= self._bar_idle_deadline:
+            self._bar_idle_deadline = 0
+            self._on_bar_idle_timeout()
+        if self._debounce_deadline and now >= self._debounce_deadline:
+            self._debounce_deadline = 0
+            self._clear_debounce()
 
     def _install_event_filter_to_children(self):
         """为所有子控件安装事件过滤器，捕获键盘事件并传递给父窗口"""
@@ -201,10 +223,10 @@ class D_HoverMenu(QWidget):
         super().mouseMoveEvent(event)
         if self._auto_hide_enabled and self._is_visible:
             if self._popup_menu_visible:
-                self._bar_idle_timer.stop()
+                self._bar_idle_deadline = 0.0
             else:
-                self._bar_idle_timer.stop()
-                self._bar_idle_timer.start(self._mouse_inside_timeout)
+                self._bar_idle_deadline = 0.0
+                self._bar_idle_deadline = time.monotonic() + (self._mouse_inside_timeout / 1000.0)
 
     def _init_ui(self):
         """初始化UI组件"""
@@ -345,7 +367,7 @@ class D_HoverMenu(QWidget):
             self._stop_timeout_timer()
             if self._mouse_monitor_active:
                 self._mouse_activity_monitor.pause_hide_timer()
-            self._bar_idle_timer.stop()
+            self._bar_idle_deadline = 0.0
 
     def is_popup_menu_visible(self) -> bool:
         """检查是否有弹出菜单可见"""
@@ -354,12 +376,11 @@ class D_HoverMenu(QWidget):
     def _start_timeout_timer(self):
         """启动超时定时器（使用区域外超时时间）"""
         if self._timeout_enabled and self._is_visible:
-            self._timeout_timer.stop()
-            self._timeout_timer.start(self._mouse_outside_timeout)
+            self._timeout_deadline = time.monotonic() + (self._mouse_outside_timeout / 1000.0)
 
     def _stop_timeout_timer(self):
         """停止超时定时器"""
-        self._timeout_timer.stop()
+        self._timeout_deadline = 0.0
 
     def reset_auto_hide_timer(self):
         """
@@ -371,12 +392,12 @@ class D_HoverMenu(QWidget):
         debug(f"[D_HoverMenu] reset_auto_hide_timer called: _timeout_enabled={self._timeout_enabled}, _is_visible={self._is_visible}")
         if self._timeout_enabled and self._is_visible:
             if self._is_cursor_in_control_bar_area():
-                self._bar_idle_timer.stop()
-                self._bar_idle_timer.start(self._mouse_inside_timeout)
+                self._bar_idle_deadline = 0.0
+                self._bar_idle_deadline = time.monotonic() + (self._mouse_inside_timeout / 1000.0)
                 debug(f"[D_HoverMenu] Inside bar area, using inside timeout: {self._mouse_inside_timeout}ms")
             else:
-                self._timeout_timer.stop()
-                self._timeout_timer.start(self._mouse_outside_timeout)
+                self._timeout_deadline = 0.0
+                self._timeout_deadline = time.monotonic() + (self._mouse_outside_timeout / 1000.0)
                 debug(f"[D_HoverMenu] Outside bar area, using outside timeout: {self._mouse_outside_timeout}ms")
         else:
             debug(f"[D_HoverMenu] Timer NOT started due to condition check failed")
@@ -385,6 +406,9 @@ class D_HoverMenu(QWidget):
         """超时处理（区域外定时器 _timeout_timer 触发）"""
         from freeassetfilter.utils.app_logger import debug
         debug(f"[D_HoverMenu] _on_timeout called: _is_visible={self._is_visible}, _is_animating={self._is_animating}, _popup_menu_visible={self._popup_menu_visible}")
+        # 确保定时器确实已到期，防止重入
+        if self._timeout_deadline:
+            return  # deadline was reset between heartbeat tick and now
         # 控制栏已隐藏，忽略
         if not self._is_visible:
             return
@@ -404,6 +428,9 @@ class D_HoverMenu(QWidget):
         """控制栏空闲超时：鼠标在控制栏区域静止超过 _mouse_inside_timeout 后隐藏"""
         from freeassetfilter.utils.app_logger import debug
         debug(f"[D_HoverMenu] _on_bar_idle_timeout: _is_visible={self._is_visible}, _popup_menu_visible={self._popup_menu_visible}")
+        # 确保定时器确实已到期，防止重入
+        if self._bar_idle_deadline:
+            return  # deadline was reset between heartbeat tick and now
         # 控制栏已隐藏，忽略
         if not self._is_visible:
             return
@@ -415,8 +442,8 @@ class D_HoverMenu(QWidget):
         if not self._is_animating:
             self._hide_control_bar()
         else:
-            self._bar_idle_timer.stop()
-            self._bar_idle_timer.start(self._mouse_inside_timeout)
+            self._bar_idle_deadline = 0.0
+            self._bar_idle_deadline = time.monotonic() + (self._mouse_inside_timeout / 1000.0)
 
     def _start_mouse_tracking(self):
         """递归启用鼠标跟踪，用于检测控制栏上的鼠标移动"""
@@ -496,21 +523,21 @@ class D_HoverMenu(QWidget):
             self._stop_timeout_timer()
             if self._mouse_monitor_active:
                 self._mouse_activity_monitor.pause_hide_timer()
-            self._bar_idle_timer.stop()
+            self._bar_idle_deadline = 0.0
             return
 
         if self._is_cursor_in_control_bar_area():
             self._stop_timeout_timer()
             if self._mouse_monitor_active:
                 self._mouse_activity_monitor.pause_hide_timer()
-            self._bar_idle_timer.stop()
-            self._bar_idle_timer.start(self._mouse_inside_timeout)
+            self._bar_idle_deadline = 0.0
+            self._bar_idle_deadline = time.monotonic() + (self._mouse_inside_timeout / 1000.0)
         elif self._mouse_monitor_active:
             self._mouse_activity_monitor.timeout = self._mouse_outside_timeout
             self._mouse_activity_monitor.resume_hide_timer()
         else:
-            self._timeout_timer.stop()
-            self._timeout_timer.start(self._mouse_outside_timeout)
+            self._timeout_deadline = 0.0
+            self._timeout_deadline = time.monotonic() + (self._mouse_outside_timeout / 1000.0)
 
     def _on_animation_finished(self):
         """动画结束处理"""
@@ -614,7 +641,7 @@ class D_HoverMenu(QWidget):
 
         # 防抖：设置 300ms 内不响应 hide_on_window_move 的 Move 事件
         self._debounce_hide_on_move = True
-        self._debounce_timer.start(300)
+        self._debounce_deadline = time.monotonic() + 0.3
 
     def _fade_in(self):
         """兼容旧接口：统一走显示动画"""
@@ -630,7 +657,7 @@ class D_HoverMenu(QWidget):
 
         self._is_animating = True
         self._stop_timeout_timer()
-        self._bar_idle_timer.stop()
+        self._bar_idle_deadline = 0.0
 
         if self._enable_vertical_animation:
             self._vertical_animation.stop()
@@ -779,10 +806,10 @@ class D_HoverMenu(QWidget):
         if event.type() in (QEvent.MouseMove, QEvent.MouseButtonPress, QEvent.MouseButtonRelease) and self._auto_hide_enabled and self._is_visible:
             if self._is_menu_widget(obj) and obj is not self:
                 if self._popup_menu_visible:
-                    self._bar_idle_timer.stop()
+                    self._bar_idle_deadline = 0.0
                 else:
-                    self._bar_idle_timer.stop()
-                    self._bar_idle_timer.start(self._mouse_inside_timeout)
+                    self._bar_idle_deadline = 0.0
+                    self._bar_idle_deadline = time.monotonic() + (self._mouse_inside_timeout / 1000.0)
 
         if event.type() == QEvent.Move and self._hide_on_window_move:
             # 防抖：菜单刚显示后的 300ms 内不响应 Move 事件，
@@ -861,7 +888,7 @@ class D_HoverMenu(QWidget):
         self._is_visible = False
         self._is_animating = False
         self._stop_timeout_timer()
-        self._bar_idle_timer.stop()
+        self._bar_idle_deadline = 0.0
         self._fade_animation.stop()
         self._vertical_animation.stop()
         self._opacity_value = 0.0
@@ -905,8 +932,8 @@ class D_HoverMenu(QWidget):
         self._stop_timeout_timer()
         if self._mouse_monitor_active:
             self._mouse_activity_monitor.pause_hide_timer()
-        self._bar_idle_timer.stop()
-        self._bar_idle_timer.start(self._mouse_inside_timeout)
+        self._bar_idle_deadline = 0.0
+        self._bar_idle_deadline = time.monotonic() + (self._mouse_inside_timeout / 1000.0)
 
     def leaveEvent(self, event):
         """
@@ -916,12 +943,12 @@ class D_HoverMenu(QWidget):
         3. 否则恢复区域外隐藏定时器（_mouse_outside_timeout = 3s）
         """
         super().leaveEvent(event)
-        self._bar_idle_timer.stop()
+        self._bar_idle_deadline = 0.0
         # 如果鼠标移到弹出菜单上，不启动隐藏定时器
         if self._is_cursor_in_control_bar_area() or self._is_mouse_over_descendant():
             if self._popup_menu_visible:
                 return
-            self._bar_idle_timer.start(self._mouse_inside_timeout)
+            self._bar_idle_deadline = time.monotonic() + (self._mouse_inside_timeout / 1000.0)
             return
         if self._popup_menu_visible:
             return
@@ -930,8 +957,8 @@ class D_HoverMenu(QWidget):
             self._mouse_activity_monitor.timeout = self._mouse_outside_timeout
             self._mouse_activity_monitor.resume_hide_timer()
         else:
-            self._timeout_timer.stop()
-            self._timeout_timer.start(self._mouse_outside_timeout)
+            self._timeout_deadline = 0.0
+            self._timeout_deadline = time.monotonic() + (self._mouse_outside_timeout / 1000.0)
 
     def _calculate_position(self):
         """计算菜单显示位置"""
@@ -1200,7 +1227,7 @@ class D_HoverMenu(QWidget):
             self._show_control_bar()
             self._update_hide_timer_after_show()
         else:
-            self._bar_idle_timer.stop()
+            self._bar_idle_deadline = 0.0
             if self._mouse_monitor_active:
                 self._mouse_activity_monitor.stop()
                 self._mouse_monitor_active = False

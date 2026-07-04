@@ -35,7 +35,7 @@ from PySide6.QtGui import (
 from PySide6.QtGui import QMovie
 from PySide6.QtCore import (
     Qt, QPoint, QRect, QSize, QTimer, Signal, QMimeData, QUrl,
-    QThread
+    QThread, QBuffer, QIODevice
 )
 
 # PIL支持已移除以提高性能
@@ -107,6 +107,11 @@ class IcoProcessor(QThread):
     def __init__(self, image_path):
         super().__init__()
         self.image_path = image_path
+        self._is_cancelled = False
+
+    def cancel(self):
+        """请求取消当前处理。"""
+        self._is_cancelled = True
 
     def run(self):
         """
@@ -114,17 +119,27 @@ class IcoProcessor(QThread):
         优先使用PIL库解析，如不可用则使用Windows API
         """
         try:
+            if self._is_cancelled:
+                return
+
             # 首先尝试使用PIL库解析ICO文件
             try:
                 image = self._load_with_pil()
+                if self._is_cancelled:
+                    return
                 if image and not image.isNull():
                     self.processing_complete.emit(image, self.image_path)
                     return
             except ImportError:
                 debug("PIL不可用，使用Windows API备用方案")
 
+            if self._is_cancelled:
+                return
+
             # 使用Windows API加载ICO文件
             image = self._load_with_windows_api()
+            if self._is_cancelled:
+                return
             if image and not image.isNull():
                 self.processing_complete.emit(image, self.image_path)
                 return
@@ -293,25 +308,42 @@ class HeifAvifProcessor(QThread):
     def __init__(self, image_path):
         super().__init__()
         self.image_path = image_path
+        self._is_cancelled = False
+
+    def cancel(self):
+        """请求取消当前处理。"""
+        self._is_cancelled = True
     
     def run(self):
         try:
             from PIL import Image
             import numpy as np
-            
+
+            if self._is_cancelled:
+                return
+
             try:
                 import pillow_avif
             except ImportError:
                 pass
-            
+
+            if self._is_cancelled:
+                return
+
             try:
                 import pillow_heif
                 pillow_heif.register_heif_opener()
             except ImportError:
                 pass
-            
+
+            if self._is_cancelled:
+                return
+
             img = Image.open(self.image_path)
-            
+
+            if self._is_cancelled:
+                return
+
             if img.mode in ('RGBA', 'LA', 'P'):
                 img = img.convert('RGBA')
             elif img.mode == 'L':
@@ -322,10 +354,16 @@ class HeifAvifProcessor(QThread):
                 img = img.convert('RGB')
             else:
                 img = img.convert('RGB')
-            
+
+            if self._is_cancelled:
+                return
+
             file_size = os.path.getsize(self.image_path)
             large_file_threshold = 20 * 1024 * 1024
-            
+
+            if self._is_cancelled:
+                return
+
             if file_size > large_file_threshold:
                 max_dimension = 2048
                 if img.width > max_dimension or img.height > max_dimension:
@@ -333,12 +371,21 @@ class HeifAvifProcessor(QThread):
                     new_width = int(img.width * ratio)
                     new_height = int(img.height * ratio)
                     img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
+
+            if self._is_cancelled:
+                return
+
             img_array = np.array(img)
             height, width = img_array.shape[:2]
-            
+
+            if self._is_cancelled:
+                return
+
             img_bytes = img_array.tobytes()
-            
+
+            if self._is_cancelled:
+                return
+
             # 使用 .copy() 确保数据安全，防止 numpy 数组被释放后 QImage 访问无效内存
             if img.mode == 'RGBA':
                 qimage = QImage(
@@ -350,10 +397,13 @@ class HeifAvifProcessor(QThread):
                     img_bytes, width, height,
                     width * 3, QImage.Format_RGB888
                 ).copy()
-            
+
+            if self._is_cancelled:
+                return
+
             if qimage.isNull():
                 raise Exception("QImage创建失败")
-            
+
             self.processing_complete.emit(qimage, self.image_path)
         except (ImportError, ModuleNotFoundError) as e:
             error(f"HEIC/AVIF加载缺少依赖: {e}")
@@ -449,6 +499,84 @@ class PSDProcessor(QThread):
             self.processing_failed.emit(f"加载PSD文件时未知错误: {e}")
 
 
+class ImageLoader(QThread):
+    """
+    后台图像加载器，用于在非主线程中加载 QImage，避免阻塞 UI。
+    """
+    processing_complete = Signal(QImage, str)
+    processing_failed = Signal(str)
+
+    def __init__(self, image_path: str, force_full_resolution: bool = False):
+        super().__init__()
+        self.image_path = image_path
+        self.force_full_resolution = force_full_resolution
+        self._is_cancelled = False
+
+    def cancel(self):
+        """请求取消当前加载。"""
+        self._is_cancelled = True
+
+    def run(self):
+        try:
+            if self._is_cancelled:
+                return
+
+            if not self.force_full_resolution:
+                reader = QImageReader(self.image_path)
+                if self._is_cancelled:
+                    return
+                orig_size = reader.size()
+                if orig_size.isValid() and (orig_size.width() > 4096 or orig_size.height() > 4096):
+                    scaled = orig_size.scaled(4096, 4096, Qt.KeepAspectRatio)
+                    reader.setScaledSize(scaled)
+                    image = reader.read()
+                else:
+                    image = QImage(self.image_path)
+            else:
+                image = QImage(self.image_path)
+
+            if self._is_cancelled:
+                return
+            if not image.isNull():
+                self.processing_complete.emit(image, self.image_path)
+            else:
+                self.processing_failed.emit("QImage加载失败")
+        except Exception as e:
+            if not self._is_cancelled:
+                exception_details("[ImageLoader] 图片加载失败", e)
+                self.processing_failed.emit(f"加载图片时未知错误: {e}")
+
+
+class MovieLoader(QThread):
+    """
+    后台 GIF/影片加载器，读取文件字节后交给主线程构造 QMovie。
+    """
+    movie_data_loaded = Signal(bytes, str)  # file bytes + path
+    loading_failed = Signal(str)
+
+    def __init__(self, file_path: str):
+        super().__init__()
+        self.file_path = file_path
+        self._is_cancelled = False
+
+    def cancel(self):
+        """请求取消当前加载。"""
+        self._is_cancelled = True
+
+    def run(self):
+        try:
+            if self._is_cancelled:
+                return
+            with open(self.file_path, 'rb') as f:
+                data = f.read()
+            if self._is_cancelled:
+                return
+            self.movie_data_loaded.emit(data, self.file_path)
+        except Exception as e:
+            if not self._is_cancelled:
+                self.loading_failed.emit(str(e))
+
+
 class ImageWidget(QWidget):
     """
     图片显示部件，支持缩放、像素信息显示等功能
@@ -487,6 +615,10 @@ class ImageWidget(QWidget):
         self.heif_avif_processor = None
         self.ico_processor = None
         self.psd_processor = None
+        self.image_loader = None
+
+        # 加载序列计数器，用于处理快速切换时的竞态条件
+        self._current_load_sequence = 0
 
         # 像素信息
         self.pixel_info = {
@@ -623,6 +755,10 @@ class ImageWidget(QWidget):
         """
         ICO文件处理完成槽函数
         """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
         if not qimage.isNull():
             self._set_loaded_image(qimage, image_path)
 
@@ -632,6 +768,10 @@ class ImageWidget(QWidget):
         """
         ICO文件处理失败槽函数
         """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
         error(error_msg)
         self.ico_processor = None
 
@@ -639,6 +779,10 @@ class ImageWidget(QWidget):
         """
         HEIC/AVIF文件处理完成槽函数
         """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
         if not qimage.isNull():
             self._set_loaded_image(qimage, image_path)
 
@@ -648,6 +792,10 @@ class ImageWidget(QWidget):
         """
         HEIC/AVIF文件处理失败槽函数
         """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
         error(error_msg)
         self.heif_avif_processor = None
 
@@ -656,6 +804,10 @@ class ImageWidget(QWidget):
         PSD文件处理完成槽函数
         使用原始的QImage(image_path)方式加载，保持接口一致性
         """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
         image = QImage(temp_path)
 
         if not image.isNull():
@@ -669,6 +821,10 @@ class ImageWidget(QWidget):
         """
         PSD文件处理失败槽函数
         """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
         error(error_msg)
         self.psd_processor = None
 
@@ -685,6 +841,10 @@ class ImageWidget(QWidget):
         """
         RAW文件处理完成槽函数
         """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
         if not qimage.isNull():
             self._set_loaded_image(qimage, image_path)
         
@@ -695,8 +855,36 @@ class ImageWidget(QWidget):
         """
         RAW文件处理失败槽函数
         """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
         error(error_msg)
         self.raw_processor = None
+
+    def _on_image_loader_complete(self, qimage, image_path):
+        """
+        ImageLoader 加载完成槽函数
+        """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
+        if not qimage.isNull():
+            self._set_loaded_image(qimage, image_path)
+
+        self.image_loader = None
+
+    def _on_image_loader_failed(self, error_msg):
+        """
+        ImageLoader 加载失败槽函数
+        """
+        sender = self.sender()
+        if sender is not None and hasattr(sender, '_load_seq') and sender._load_seq != self._current_load_sequence:
+            return
+
+        error(error_msg)
+        self.image_loader = None
     
     def set_image(self, image_path, force_full_resolution=False):
         """
@@ -723,7 +911,9 @@ class ImageWidget(QWidget):
                 if self.raw_processor is not None and self.raw_processor.isRunning():
                     self.raw_processor.cancel()
 
+                self._current_load_sequence += 1
                 self.raw_processor = RawProcessor(image_path)
+                self.raw_processor._load_seq = self._current_load_sequence
                 self.raw_processor.processing_complete.connect(self._on_raw_processing_complete, Qt.QueuedConnection)
                 self.raw_processor.processing_failed.connect(self._on_raw_processing_failed, Qt.QueuedConnection)
                 self.raw_processor.start()
@@ -731,10 +921,11 @@ class ImageWidget(QWidget):
                 return True
             elif file_ext in heif_avif_formats:
                 if self.heif_avif_processor is not None and self.heif_avif_processor.isRunning():
-                    self.heif_avif_processor.quit()
-                    self.heif_avif_processor.wait()
+                    self.heif_avif_processor.cancel()
 
+                self._current_load_sequence += 1
                 self.heif_avif_processor = HeifAvifProcessor(image_path)
+                self.heif_avif_processor._load_seq = self._current_load_sequence
                 self.heif_avif_processor.processing_complete.connect(self._on_heif_avif_processing_complete, Qt.QueuedConnection)
                 self.heif_avif_processor.processing_failed.connect(self._on_heif_avif_processing_failed, Qt.QueuedConnection)
                 self.heif_avif_processor.start()
@@ -742,10 +933,11 @@ class ImageWidget(QWidget):
                 return True
             elif file_ext in ico_formats:
                 if self.ico_processor is not None and self.ico_processor.isRunning():
-                    self.ico_processor.quit()
-                    self.ico_processor.wait()
+                    self.ico_processor.cancel()
 
+                self._current_load_sequence += 1
                 self.ico_processor = IcoProcessor(image_path)
+                self.ico_processor._load_seq = self._current_load_sequence
                 self.ico_processor.processing_complete.connect(self._on_ico_processing_complete, Qt.QueuedConnection)
                 self.ico_processor.processing_failed.connect(self._on_ico_processing_failed, Qt.QueuedConnection)
                 self.ico_processor.start()
@@ -753,10 +945,11 @@ class ImageWidget(QWidget):
                 return True
             elif file_ext in psd_formats:
                 if self.psd_processor is not None and self.psd_processor.isRunning():
-                    self.psd_processor.quit()
-                    self.psd_processor.wait()
+                    self.psd_processor.cancel()
 
+                self._current_load_sequence += 1
                 self.psd_processor = PSDProcessor(image_path)
+                self.psd_processor._load_seq = self._current_load_sequence
                 self.psd_processor.processing_complete.connect(self._on_psd_processing_complete, Qt.QueuedConnection)
                 self.psd_processor.processing_failed.connect(self._on_psd_processing_failed, Qt.QueuedConnection)
                 self.psd_processor.processing_progress.connect(self._on_psd_processing_progress, Qt.QueuedConnection)
@@ -764,22 +957,17 @@ class ImageWidget(QWidget):
 
                 return True
             else:
-                # 大图片使用 QImageReader 降分辨率解码，避免全分辨率内存爆炸
-                if not force_full_resolution:
-                    reader = QImageReader(image_path)
-                    orig_size = reader.size()
-                    if orig_size.isValid() and (orig_size.width() > 4096 or orig_size.height() > 4096):
-                        scaled = orig_size.scaled(4096, 4096, Qt.KeepAspectRatio)
-                        reader.setScaledSize(scaled)
-                        image = reader.read()
-                    else:
-                        image = QImage(image_path)
-                else:
-                    image = QImage(image_path)
-                if not image.isNull():
-                    self._set_loaded_image(image, image_path)
-                    return True
-            return False
+                if self.image_loader is not None and self.image_loader.isRunning():
+                    self.image_loader.cancel()
+
+                self._current_load_sequence += 1
+                self.image_loader = ImageLoader(image_path, force_full_resolution)
+                self.image_loader._load_seq = self._current_load_sequence
+                self.image_loader.processing_complete.connect(self._on_image_loader_complete, Qt.QueuedConnection)
+                self.image_loader.processing_failed.connect(self._on_image_loader_failed, Qt.QueuedConnection)
+                self.image_loader.start()
+
+                return True
         except (OSError, IOError) as e:
             error(f"加载图片时文件错误: {e}")
             return False
@@ -1892,6 +2080,9 @@ class GifViewer(QWidget):
         self.gif_widget = None
         self.scroll_area = None
         self.movie = None
+        self.movie_loader = None
+        self._movie_buffer = None
+        self._current_load_sequence = 0
         
         self.setWindowTitle("GIF查看器")
         
@@ -1930,27 +2121,62 @@ class GifViewer(QWidget):
         try:
             if not os.path.exists(file_path):
                 return False
-            
-            if self.movie:
-                self.movie.stop()
-                self.movie.deleteLater()
-            
-            self.movie = QMovie(file_path)
-            
-            if not self.movie.isValid():
-                error(f"无效的GIF文件: {file_path}")
-                return False
-            
-            self.gif_widget.current_file_path = file_path
-            self.gif_widget.set_movie(self.movie)
 
-            self.movie.start()
+            if self.movie_loader is not None and self.movie_loader.isRunning():
+                self.movie_loader.cancel()
 
-            self.setWindowTitle(f"GIF查看器 - {os.path.basename(file_path)}")
+            self._current_load_sequence += 1
+            seq = self._current_load_sequence
+
+            self.movie_loader = MovieLoader(file_path)
+            self.movie_loader._load_seq = seq
+            self.movie_loader.movie_data_loaded.connect(
+                lambda data, path, s=seq: self._on_movie_data_loaded(data, path, s)
+            )
+            self.movie_loader.loading_failed.connect(
+                lambda msg, s=seq: self._on_movie_load_failed(msg, s)
+            )
+            self.movie_loader.start()
+
             return True
         except Exception as e:
             error(f"GIF加载失败: {e}")
             return False
+
+    def _on_movie_data_loaded(self, data: bytes, file_path: str, seq: int):
+        """后台GIF数据加载完成，在主线程构造 QMovie。"""
+        if seq != self._current_load_sequence:
+            return
+
+        if self.movie:
+            self.movie.stop()
+            self.movie.deleteLater()
+            self.movie = None
+
+        self._movie_buffer = QBuffer()
+        self._movie_buffer.setData(data)
+        self._movie_buffer.open(QIODevice.ReadOnly)
+
+        self.movie = QMovie()
+        self.movie.setDevice(self._movie_buffer)
+
+        if not self.movie.isValid():
+            error(f"无效的GIF文件: {file_path}")
+            self.movie = None
+            self._movie_buffer = None
+            return
+
+        self.gif_widget.current_file_path = file_path
+        self.gif_widget.set_movie(self.movie)
+        self.movie.start()
+
+        self.setWindowTitle(f"GIF查看器 - {os.path.basename(file_path)}")
+
+    def _on_movie_load_failed(self, error_msg: str, seq: int):
+        """后台GIF数据加载失败。"""
+        if seq != self._current_load_sequence:
+            return
+        error(f"GIF文件加载失败: {error_msg}")
     
     def reset_view(self):
         try:

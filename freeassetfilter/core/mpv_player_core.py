@@ -28,6 +28,7 @@ from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details, sanitize_path
+from freeassetfilter.core.heartbeat_manager import HeartbeatManager
 from freeassetfilter.utils.path_utils import validate_dll_path, get_safe_dll_paths
 
 
@@ -551,10 +552,20 @@ class MPVPlayerCore(QObject):
         
         self._initialized = False
         self._signal_process_interval_ms = 100
-        self._signal_timer = QTimer(self)
-        self._signal_timer.setSingleShot(False)  # persistent, not single-shot
-        self._signal_timer.timeout.connect(self._process_signal_queue)
-        # Note: DO NOT start() here - __init__ runs on operation thread, not main thread.
+        # 使用 HeartbeatManager 驱动信号队列处理（替代 QTimer）
+        # 每 3 个 normal tick（~99ms）执行一次，保持与原 100ms QTimer 相近的频率
+        self._heartbeat_signal_id: str = f"mpv_player_core_{id(self)}_signal"
+        try:
+            _hm = HeartbeatManager()
+            _hm.register_tick_callback(
+                self._heartbeat_signal_id,
+                self._process_signal_queue,
+                priority=1,
+                every_n_ticks=3,
+                owner=self,
+            )
+        except Exception:
+            pass  # 注册失败时静默处理，不影响初始化
         self._max_signals_per_tick = 20
         self._signal_process_count = 0
 
@@ -566,12 +577,6 @@ class MPVPlayerCore(QObject):
         self._worker_crash_info: str = ""
         self._worker_exit_expected = False
         self._worker_crash_lock = threading.Lock()
-
-    @Slot()
-    def _start_signal_timer_main_thread(self):
-        """启动信号处理定时器（必须从主线程调用）"""
-        if self._signal_timer is not None and not self._signal_timer.isActive():
-            self._signal_timer.start(self._signal_process_interval_ms)
 
     def _worker_thread_func(self):
         """MPV工作线程主函数 - 所有MPV操作都在此线程执行"""
@@ -2069,7 +2074,6 @@ class MPVPlayerCore(QObject):
         self._worker_thread.start()
         
         if self._initialized_event.wait(timeout=10.0):
-            QTimer.singleShot(0, self._start_signal_timer_main_thread)
             return True
         
         return False
@@ -2731,13 +2735,6 @@ class MPVPlayerCore(QObject):
 
         # 标记退出为预期行为（即使线程已崩溃，也抑制后续二次崩溃检测）
         self._worker_exit_expected = True
-
-        # 停止信号处理定时器
-        if self._signal_timer is not None:
-            try:
-                self._signal_timer.stop()
-            except (RuntimeError, AttributeError):
-                pass
 
         # 预清理 - 让 MPV 进入空闲状态（如果线程已崩溃则跳过）
         if not self._is_worker_crashed():

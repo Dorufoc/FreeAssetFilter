@@ -2,6 +2,10 @@
 
 def __getattr__(name):
     if name in __all__:
+        if name in ('HeartbeatManager', 'FutureHandle'):
+            from .heartbeat_manager import HeartbeatManager, FutureHandle
+            globals().update(locals())
+            return globals()[name]
         from .color_extractor import (
             extract_cover_colors,
             extract_cover_colors_from_path,
@@ -23,5 +27,7 @@ __all__ = [
     'rgb_to_hex',
     'hex_to_qcolor',
     'sort_colors_by_brightness',
-    'adjust_colors_for_gradient'
+    'adjust_colors_for_gradient',
+    'HeartbeatManager',
+    'FutureHandle',
 ]

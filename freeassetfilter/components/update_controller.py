@@ -35,6 +35,7 @@ from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.loading_widget import LoadingSpinner
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
+from freeassetfilter.core.heartbeat_manager import HeartbeatManager
 
 
 class UpdateCheckWorker(QThread):
@@ -305,9 +306,6 @@ class UpdateController(QObject):
         self._check_cancelled = False
         self._pending_check_restart = False
         self._current_download_total_size = 0
-        self._download_progress_timer = QTimer(self)
-        self._download_progress_timer.setInterval(1000)
-        self._download_progress_timer.timeout.connect(self._poll_download_progress_from_file)
         self._current_download_temp_path = None
         self._current_download_final_path = None
         self._latest_downloaded_size = 0
@@ -672,7 +670,13 @@ class UpdateController(QObject):
         self._download_worker.failure.connect(self._on_download_failure)
         self._download_worker.cancelled.connect(self._on_download_cancelled)
         self._download_worker.start()
-        self._download_progress_timer.start()
+        HeartbeatManager().register_tick_callback(
+            f"update_dl_progress_{id(self)}",
+            self._poll_download_progress_from_file,
+            priority=4,
+            every_n_ticks=30,
+            owner=self,
+        )
         info("UpdateController: 下载任务已启动")
 
     def _on_download_dialog_clicked(self, index):
@@ -698,7 +702,7 @@ class UpdateController(QObject):
 
     def _on_download_success(self, cache_result):
         info("UpdateController: 下载完成，SHA256校验通过")
-        self._download_progress_timer.stop()
+        HeartbeatManager().unregister_tick_callback(f"update_dl_progress_{id(self)}")
         self._download_worker = None
         self._current_download_total_size = 0
         self._current_download_temp_path = None
@@ -719,7 +723,7 @@ class UpdateController(QObject):
 
     def _on_download_failure(self, message):
         error(f"UpdateController: 下载失败: {message}")
-        self._download_progress_timer.stop()
+        HeartbeatManager().unregister_tick_callback(f"update_dl_progress_{id(self)}")
         self._download_worker = None
         self._current_download_total_size = 0
         self._current_download_temp_path = None
@@ -737,7 +741,7 @@ class UpdateController(QObject):
 
     def _on_download_cancelled(self):
         info("UpdateController: 下载已取消")
-        self._download_progress_timer.stop()
+        HeartbeatManager().unregister_tick_callback(f"update_dl_progress_{id(self)}")
         self._download_worker = None
         self._current_download_total_size = 0
         self._current_download_temp_path = None
@@ -1402,7 +1406,7 @@ hr {{ border: none; border-top: 1px solid {border_color}; margin: 1em 0; }}
                 self._current_dialog.close()
             except Exception:
                 pass
-        self._download_progress_timer.stop()
+        HeartbeatManager().unregister_tick_callback(f"update_dl_progress_{id(self)}")
         self._last_speed_check_time = None
         self._last_speed_check_size = 0
         self._current_download_speed_text = "0 B/s"

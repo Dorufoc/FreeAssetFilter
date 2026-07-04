@@ -28,6 +28,8 @@ from PySide6.QtGui import (
 from PySide6.QtSvgWidgets import QSvgWidget
 from PIL import Image, ImageFilter
 from collections import OrderedDict
+
+from freeassetfilter.core.heartbeat_manager import HeartbeatManager
 import io
 import json
 import random
@@ -841,7 +843,6 @@ class AudioBackground(QWidget):
         self._current_theme = 'sunset'
         self._animation_speed = 1.0
         self._is_paused = False
-        self._animation_timer = None
         self._animation_start_time = time.perf_counter()
 
         self._theme_colors = {
@@ -1250,27 +1251,42 @@ class AudioBackground(QWidget):
         return QColor.fromHsv(h, s, v, a)
 
     def _start_fluid_animation(self):
-        if self._animation_timer is None:
-            self._animation_timer = QTimer(self)
-            self._animation_timer.timeout.connect(self._update_fluid_animation)
-            self._animation_timer.start(33)
-            self._animation_start_time = time.perf_counter()
-        elif not self._animation_timer.isActive():
-            self._animation_timer.start(33)
+        self._animation_start_time = time.perf_counter()
+        hm = HeartbeatManager()
+        try:
+            hm.register_tick_callback(
+                f"audio_bg_anim_{id(self)}",
+                self._update_fluid_animation,
+                priority=3,
+                every_n_ticks=1,
+                owner=self,
+            )
+        except ValueError:
+            pass  # already registered
 
     def _stop_fluid_animation(self):
-        if self._animation_timer:
-            self._animation_timer.stop()
-            self._animation_timer.deleteLater()
-            self._animation_timer = None
+        hm = HeartbeatManager()
+        hm.unregister_tick_callback(f"audio_bg_anim_{id(self)}")
 
     def pauseAnimation(self, paused: bool = True):
         self._is_paused = paused
-        if self._animation_timer:
-            if paused:
-                self._animation_timer.stop()
-            elif self._is_loaded and self._current_mode == self.MODE_FLUID:
-                self._animation_timer.start(33)
+        if paused:
+            hm = HeartbeatManager()
+            hm.unregister_tick_callback(f"audio_bg_anim_{id(self)}")
+        elif self._is_loaded and self._current_mode == self.MODE_FLUID:
+            # Re-register (unregister first, then register)
+            hm = HeartbeatManager()
+            hm.unregister_tick_callback(f"audio_bg_anim_{id(self)}")
+            try:
+                hm.register_tick_callback(
+                    f"audio_bg_anim_{id(self)}",
+                    self._update_fluid_animation,
+                    priority=3,
+                    every_n_ticks=1,
+                    owner=self,
+                )
+            except ValueError:
+                pass
 
     def resumeAnimation(self):
         self.pauseAnimation(False)

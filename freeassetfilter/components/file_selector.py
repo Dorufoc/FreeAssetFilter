@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import debug, warning, error
+from freeassetfilter.core.heartbeat_manager import HeartbeatManager
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QDialog, QApplication,
@@ -341,6 +342,39 @@ class _JsonReadRunnable(QRunnable):
         self._signals.finished.emit(data)
 
 
+class _DriveAvailabilitySignals(QObject):
+    """Drive availability check completion signal bridge for QRunnable."""
+    finished = Signal(str, bool)  # drive_path, available
+
+
+class _DriveAvailabilityCheckRunnable(QRunnable):
+    """Background drive availability check using os.scandir()."""
+
+    def __init__(self, drive_path: str, signals: _DriveAvailabilitySignals):
+        super().__init__()
+        self._drive_path = drive_path
+        self._signals = signals
+
+    def run(self):
+        available = False
+        try:
+            drive_path = self._drive_path
+            if not drive_path.endswith(('\\', '/')):
+                drive_path = drive_path + '\\'
+            if os.path.exists(drive_path):
+                with os.scandir(drive_path) as it:
+                    next(it, None)
+                available = True
+        except StopIteration:
+            # Empty directory — still available
+            available = True
+        except (OSError, PermissionError):
+            available = False
+        except Exception:
+            available = False
+        self._signals.finished.emit(self._drive_path, available)
+
+
 class CustomFileSelector(QWidget):
     """
     自定义文件选择器组件
@@ -352,6 +386,7 @@ class CustomFileSelector(QWidget):
     file_right_clicked = Signal(dict)  # 当文件被右键点击时发出
     file_selection_changed = Signal(dict, bool)  # 当文件选择状态改变时发出
     preview_cancel_requested = Signal()  # 当点击正在预览的卡片时发出，用于取消预览
+    drive_availability_changed = Signal(str, bool)  # drive_path, available — from background check
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -406,28 +441,6 @@ class CustomFileSelector(QWidget):
         os.makedirs(os.path.dirname(self.save_path_file), exist_ok=True)
         os.makedirs(os.path.dirname(self.favorites_file), exist_ok=True)
         
-        self.resize_timer = QTimer(self)
-        self.resize_timer.setSingleShot(True)
-        self.resize_timer.setInterval(16)
-        self.resize_timer.timeout.connect(self._on_resize_timeout)
-        self._grid_size_sync_timer = QTimer(self)
-        self._grid_size_sync_timer.setSingleShot(True)
-        self._grid_size_sync_timer.timeout.connect(self._update_grid_size)
-
-        # JSON I/O 防抖定时器
-        self._path_save_timer = QTimer(self)
-        self._path_save_timer.setSingleShot(True)
-        self._path_save_timer.setInterval(200)
-        self._path_save_timer.timeout.connect(self._flush_path_save)
-        self._view_mode_save_timer = QTimer(self)
-        self._view_mode_save_timer.setSingleShot(True)
-        self._view_mode_save_timer.setInterval(200)
-        self._view_mode_save_timer.timeout.connect(self._flush_view_mode_save)
-        self._favorites_save_timer = QTimer(self)
-        self._favorites_save_timer.setSingleShot(True)
-        self._favorites_save_timer.setInterval(300)
-        self._favorites_save_timer.timeout.connect(self._flush_favorites_save)
-
         # JSON 读取信号对象
         self._json_read_signals = None
         self._pending_path_data = None
@@ -444,6 +457,8 @@ class CustomFileSelector(QWidget):
         self._refresh_request_id = 0
         self._cached_local_drives = []
         self._cached_network_locations = []
+        self._drive_availability_cache: dict[str, tuple[bool, float]] = {}  # drive_path -> (available, timestamp)
+        self._drive_availability_cache_ttl = 5.0  # seconds
         self._pending_path_transition_direction = 0
         self._pending_path_transition_token = 0
         
@@ -545,7 +560,7 @@ class CustomFileSelector(QWidget):
             "last_path": path_to_save,
             "last_accessible_path": last_accessible_path,
         }
-        self._path_save_timer.start()
+        HeartbeatManager().request_main_thread(self._flush_path_save, priority=4)
 
     def _flush_path_save(self):
         """防抖到期后实际执行路径保存"""
@@ -581,7 +596,7 @@ class CustomFileSelector(QWidget):
         异步防抖保存视图模式到文件（后台线程写入）
         """
         self._pending_view_mode = self.view_mode
-        self._view_mode_save_timer.start()
+        HeartbeatManager().request_main_thread(self._flush_view_mode_save, priority=4)
 
     def _flush_view_mode_save(self):
         """防抖到期后实际执行视图模式保存"""
@@ -1800,43 +1815,67 @@ class CustomFileSelector(QWidget):
 
         self.refresh_files(callback=callback, scroll_to_top=scroll_to_top)
     
-    def _is_drive_available(self, drive_path):
+    def _is_drive_available(self, drive_path: str) -> bool:
         """
         检测盘符是否可用（可以正常访问）
-        
+        使用缓存避免重复阻塞主线程，缓存过期后在后台线程刷新。
+
         Args:
             drive_path: 盘符路径，如 "C:\\" 或 "D:"
-            
+
         Returns:
             bool: 如果盘符可用返回True，否则返回False
         """
-        try:
-            # 确保路径格式正确
-            if not drive_path.endswith(('\\', '/')):
-                drive_path = drive_path + '\\'
-            
-            # 方法1: 尝试获取盘符信息
-            import os
-            if not os.path.exists(drive_path):
-                debug(f"盘符 {drive_path} 不存在")
-                return False
-            
-            # 方法2: 尝试列出根目录内容，这是最可靠的检测方式
-            try:
-                # 快速检查，只列出第一个条目
-                with os.scandir(drive_path) as it:
-                    next(it, None)
-                return True
-            except (OSError, PermissionError) as e:
-                debug(f"检测盘符 {drive_path} 可用性时出错: {e}")
-                return False
-            except StopIteration:
-                # 目录存在但是空的，这也算可用
-                return True
-                
-        except Exception as e:
-            debug(f"检测盘符 {drive_path} 可用性时发生异常: {e}")
-            return False
+        # 确保路径格式统一用于缓存键
+        norm_path = drive_path.rstrip('\\/') + '\\'
+
+        import time
+        now = time.time()
+
+        # 检查缓存
+        cached = self._drive_availability_cache.get(norm_path)
+        if cached is not None:
+            available, timestamp = cached
+            if now - timestamp < self._drive_availability_cache_ttl:
+                return available
+
+        # 缓存过期或不存在 — 在后台刷新可用性
+        self._schedule_drive_availability_check(norm_path)
+
+        # 返回乐观值（True）或最近一次的缓存值
+        if cached is not None:
+            return cached[0]
+        return True
+
+    def _schedule_drive_availability_check(self, drive_path: str) -> None:
+        """在 QThreadPool 后台检查盘符可用性并更新缓存。"""
+        # 避免对同一盘符发起重复的后台检查
+        if not hasattr(self, '_pending_drive_checks'):
+            self._pending_drive_checks: set[str] = set()
+
+        if drive_path in self._pending_drive_checks:
+            return
+        self._pending_drive_checks.add(drive_path)
+
+        signals = _DriveAvailabilitySignals()
+        signals.finished.connect(lambda path, available: self._on_drive_availability_result(path, available))
+
+        runnable = _DriveAvailabilityCheckRunnable(drive_path, signals)
+        QThreadPool.globalInstance().start(runnable)
+
+    def _on_drive_availability_result(self, drive_path: str, available: bool) -> None:
+        """后台检查完成回调 — 更新缓存并发出信号。"""
+        import time
+        old_value = self._drive_availability_cache.get(drive_path)
+        self._drive_availability_cache[drive_path] = (available, time.time())
+
+        if hasattr(self, '_pending_drive_checks'):
+            self._pending_drive_checks.discard(drive_path)
+
+        # 仅在值发生变化时发出信号
+        if old_value is None or old_value[0] != available:
+            debug(f"盘符 {drive_path} 可用性变更为: {available}")
+            self.drive_availability_changed.emit(drive_path, available)
     
     def _update_drive_list(self):
         """
@@ -2687,8 +2726,9 @@ class CustomFileSelector(QWidget):
         return max(card_base_width, cell_width - spacing)
     
     def _schedule_grid_size_update(self, *_args):
-        if hasattr(self, "_grid_size_sync_timer") and self._grid_size_sync_timer:
-            self._grid_size_sync_timer.start(16)
+        if hasattr(self, 'files_scroll_area') and self.files_scroll_area:
+            self._update_grid_size()
+            self.files_scroll_area.update()
 
     def _on_resize_timeout(self):
         if hasattr(self, 'files_scroll_area') and self.files_scroll_area:

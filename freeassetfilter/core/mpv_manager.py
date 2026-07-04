@@ -49,6 +49,9 @@ from freeassetfilter.core.mpv_player_core import (
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, warning, error, exception_details
 
+# 导入心跳管理器
+from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+
 
 class MPVOperationType(Enum):
     """MPV操作类型枚举"""
@@ -240,12 +243,8 @@ class MPVManager(QObject):
         self._state_emit_timer.setSingleShot(True)
         self._state_emit_timer.timeout.connect(self._flush_state_changed)
 
-        # 主线程信号泵浦定时器 — 驱动核心的信号队列处理
-        # 核心自身的 QTimer 因 QObject 位于 threading.Thread 上而无法工作
-        self._signal_pump_timer = QTimer(self)
-        self._signal_pump_timer.setInterval(100)
-        self._signal_pump_timer.timeout.connect(self._pump_core_signals)
-        self._signal_pump_timer.start()
+        # 注册 HeartbeatManager tick 回调用于泵浦核心信号队列
+        self._register_signal_pump_callback()
 
         # MPV核心崩溃状态
         self._core_crashed = False
@@ -254,6 +253,14 @@ class MPVManager(QObject):
         # 文件加载间隔防御
         self._last_file_load_time: float = 0.0
         self._file_load_lock = Lock()
+
+        # GPU管线排空事件（替代time.sleep，支持中断）
+        self._gpu_drain_event = threading.Event()
+        self._gpu_drain_event.set()  # 初始状态：无需等待
+        self._gpu_drain_target: float = 0.0
+
+        # 注册 HeartbeatManager tick 回调检查GPU drain
+        self._register_gpu_drain_callback()
         
         # LuaJIT VEH 处理器状态
         self._luajit_veh_handle: Optional[Any] = None
@@ -289,6 +296,12 @@ class MPVManager(QObject):
     def _cleanup_resources(self):
         """清理资源"""
         info("清理MPV管理器资源")
+        # 注销 HeartbeatManager 回调
+        try:
+            hm = HeartbeatManager()
+            hm.unregister_tick_callback("mpv_manager_signal_pump")
+        except Exception:
+            pass
         # 清空操作队列
         while not self._operation_queue.empty():
             try:
@@ -612,6 +625,54 @@ class MPVManager(QObject):
         info("MPV核心已关闭")
         return True
 
+    def _register_gpu_drain_callback(self) -> None:
+        """注册 HeartbeatManager tick 回调用于 GPU drain 信号.
+
+        回调在 main-thread heartbeat tick 中运行，检查 GPU drain 时间是否已到，
+        如果已到则设置事件唤醒等待中的操作线程。
+        """
+        try:
+            hm = HeartbeatManager()
+            hm.register_tick_callback(
+                "mpv_gpu_drain",
+                self._check_gpu_drain,
+                priority=0,
+                owner=self,
+            )
+            info("GPU drain heartbeat回调已注册")
+        except Exception as exc:
+            warning(f"GPU drain heartbeat回调注册失败: {exc}")
+
+    def _check_gpu_drain(self) -> None:
+        """HeartbeatManager tick callback: 检查 GPU drain 时间是否已到.
+
+        在 main-thread 上被 HeartbeatManager 正常 tick 调用。
+        当 GPU drain 目标时间已过时，设置事件唤醒操作线程。
+        """
+        if self._gpu_drain_target > 0 and time.monotonic() >= self._gpu_drain_target:
+            self._gpu_drain_event.set()
+            self._gpu_drain_target = 0.0
+
+    def _register_signal_pump_callback(self) -> None:
+        """注册 HeartbeatManager tick 回调用于泵浦核心信号队列.
+
+        每 3 个 normal tick（~99ms）执行一次 _pump_core_signals，
+        驱动 MPV 核心的信号队列处理和健康探测。使用 every_n_ticks=3
+        保持与原 100ms QTimer 相近的泵浦频率（33ms × 3 = 99ms）。
+        """
+        try:
+            hm = HeartbeatManager()
+            hm.register_tick_callback(
+                "mpv_manager_signal_pump",
+                self._pump_core_signals,
+                priority=1,
+                every_n_ticks=3,
+                owner=self,
+            )
+            info("信号泵浦 heartbeat 回调已注册")
+        except Exception as exc:
+            warning(f"信号泵浦 heartbeat 回调注册失败: {exc}")
+
     def _do_load_file(self, file_path: str, is_audio: bool = False) -> bool:
         """执行加载文件操作"""
         if self._mpv_core is None:
@@ -619,13 +680,28 @@ class MPVManager(QObject):
 
         # GPU驱动崩溃防御：强制文件加载间隔，排空GPU管线后再加载新文件
         # 解决 RTX 5070 Ti + gpu-next + hwdec 在快速切换文件时的 0xe24c4a02 崩溃
+        # 使用 HeartbeatManager 驱动的事件等待替代 time.sleep，支持线程中断
         with self._file_load_lock:
             elapsed = time.monotonic() - self._last_file_load_time
             if elapsed < self.FILE_LOAD_MIN_INTERVAL:
                 delay = self.FILE_LOAD_MIN_INTERVAL - elapsed
                 info(f"文件加载间隔过短({elapsed:.3f}s)，延迟 {delay:.3f}s 以排空GPU管线")
-                time.sleep(delay)
+                self._gpu_drain_target = time.monotonic() + delay
+                self._gpu_drain_event.clear()
+                # 可中断的轮询等待：每次最多等 50ms，HeartbeatManager 的
+                # _check_gpu_drain 回调会在目标时间到达时设置事件提前唤醒
+                while not self._stop_event.is_set():
+                    remaining = self._gpu_drain_target - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    wait_time = min(remaining, 0.05)
+                    self._gpu_drain_event.wait(timeout=wait_time)
             self._last_file_load_time = time.monotonic()
+
+        # 如果在等待期间收到了停止信号，放弃加载
+        if self._stop_event.is_set():
+            info("GPU管线排空等待被停止事件中断，放弃文件加载")
+            return False
 
         info(f"加载文件: {file_path}")
 

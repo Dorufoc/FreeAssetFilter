@@ -16,7 +16,8 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 """
 
 import os
-from typing import Optional, Any, Dict, List
+import time
+from typing import Optional, Any, Dict, List, Set, Callable
 
 try:
     from mutagen import File as mutagen_file
@@ -38,9 +39,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy,
     QApplication, QFileDialog
 )
-from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QEvent
+from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QEvent, QThreadPool, QRunnable
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QCursor
 
+from freeassetfilter.core.heartbeat_manager import HeartbeatManager
 from freeassetfilter.core.mpv_manager import MPVManager, MPVState
 from freeassetfilter.widgets.D_hover_menu import D_HoverMenu
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
@@ -407,6 +409,54 @@ class VideoPlaceholder(QWidget):
         painter.drawRoundedRect(rect, 10, 10)
 
 
+class _SubtitleScanTask(QRunnable):
+    """后台字幕扫描任务，避免 os.listdir() 阻塞主线程"""
+
+    def __init__(
+        self,
+        base_dir: str,
+        video_stem: str,
+        video_ext: str,
+        auto_extensions: Set[str],
+        video_path: str,
+        callback: Callable[[str, Optional[str]], None],
+    ) -> None:
+        super().__init__()
+        self._base_dir = base_dir
+        self._video_stem = video_stem
+        self._video_ext = video_ext
+        self._auto_extensions = auto_extensions
+        self._video_path = video_path
+        self._callback = callback
+
+    def run(self) -> None:
+        """在后台线程中执行目录扫描"""
+        try:
+            candidates: list[str] = []
+            for entry in os.listdir(self._base_dir):
+                entry_path = os.path.join(self._base_dir, entry)
+                if not os.path.isfile(entry_path):
+                    continue
+
+                stem, ext = os.path.splitext(entry)
+                ext = ext.lower()
+                if stem != self._video_stem:
+                    continue
+                if ext == self._video_ext:
+                    continue
+                if ext not in self._auto_extensions:
+                    continue
+
+                candidates.append(entry_path)
+
+            result: Optional[str] = candidates[0] if candidates else None
+
+            # 通过 QTimer.singleShot 切换回主线程执行回调
+            QTimer.singleShot(0, lambda: self._callback(self._video_path, result))
+        except Exception:
+            QTimer.singleShot(0, lambda: self._callback(self._video_path, None))
+
+
 class VideoPlayer(QWidget):
     """
     视频播放器组件
@@ -457,11 +507,14 @@ class VideoPlayer(QWidget):
         self._user_interacting = False
         self._pending_seek_value: Optional[int] = None
 
-        # 状态同步心跳定时器（周期性推送缓存状态到 UI，弥补信号丢失）
-        self._state_sync_timer = QTimer(self)
-        self._state_sync_timer.setInterval(100)
-        self._state_sync_timer.start()
-        self._state_sync_timer.timeout.connect(self._heartbeat_sync)
+        # 注册状态同步心跳回调（每 3 个 tick ~99ms，匹配原 100ms QTimer）
+        HeartbeatManager().register_tick_callback(
+            f"video_player_state_sync_{id(self)}",
+            self._heartbeat_sync,
+            every_n_ticks=3,
+            owner=self,
+            priority=1,
+        )
 
         # 加载序列计数器：每次 load_file 递增，用于过滤过期的属性事件
         self._load_sequence_counter = 0
@@ -495,6 +548,12 @@ class VideoPlayer(QWidget):
             ".srt", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".ttml",
             ".dfxp", ".smi", ".sami", ".rt", ".txt", ".sup", ".mpl", ".mks"
         }
+
+        # 字幕扫描缓存 key: video_path, value: (subtitle_path or None, timestamp)
+        # 缓存 TTL 60 秒，避免重复扫描包含大量文件的目录
+        self._subtitle_scan_cache: Dict[str, tuple[Optional[str], float]] = {}
+        self._pending_subtitle_scans: Set[str] = set()
+        self._SUBTITLE_CACHE_TTL: float = 60.0
 
         # 进度完全由信号驱动，无轮询
 
@@ -1120,6 +1179,11 @@ class VideoPlayer(QWidget):
         初始化进度显示
         文件加载后延迟调用，确保MPV已准备好时长信息
         """
+        # 快速切换/清理时 VideoPlayer 可能已被销毁，静默退出
+        from shiboken6 import isValid as _isValid
+        if not _isValid(self):
+            return
+
         if not self._mpv_manager:
             return
 
@@ -1311,43 +1375,56 @@ class VideoPlayer(QWidget):
         return state
 
     def _find_matching_subtitle_file(self, video_path: str) -> Optional[str]:
-        """查找与当前视频同目录、同名不同后缀的字幕文件"""
+        """查找与当前视频同目录、同名不同后缀的字幕文件
+
+        优先从缓存返回结果；缓存未命中时提交后台扫描任务，立即返回 None。
+        """
         if not video_path:
             return None
+
+        # 检查缓存（TTL 60 秒）
+        now = time.monotonic()
+        if video_path in self._subtitle_scan_cache:
+            cached_path, cached_time = self._subtitle_scan_cache[video_path]
+            if now - cached_time < self._SUBTITLE_CACHE_TTL:
+                return cached_path
 
         base_dir = os.path.dirname(video_path)
         video_stem, video_ext = os.path.splitext(os.path.basename(video_path))
         video_ext = video_ext.lower()
 
         if not base_dir or not os.path.isdir(base_dir):
+            self._subtitle_scan_cache[video_path] = (None, now)
             return None
 
-        try:
-            candidates = []
-            for entry in os.listdir(base_dir):
-                entry_path = os.path.join(base_dir, entry)
-                if not os.path.isfile(entry_path):
-                    continue
-
-                stem, ext = os.path.splitext(entry)
-                ext = ext.lower()
-                if stem != video_stem:
-                    continue
-                if ext == video_ext:
-                    continue
-                if ext not in self._auto_subtitle_extensions:
-                    continue
-
-                candidates.append(entry_path)
-
-            if not candidates:
-                return None
-
-            candidates.sort()
-            return candidates[0]
-        except Exception as e:
-            warning(f"自动匹配外挂字幕失败: {e}")
+        # 避免重复提交扫描任务
+        if video_path in self._pending_subtitle_scans:
             return None
+        self._pending_subtitle_scans.add(video_path)
+
+        # 提交后台扫描任务
+        task = _SubtitleScanTask(
+            base_dir,
+            video_stem,
+            video_ext,
+            self._auto_subtitle_extensions,
+            video_path,
+            self._on_subtitle_scan_completed,
+        )
+        QThreadPool.globalInstance().start(task)
+        return None
+
+    def _on_subtitle_scan_completed(self, video_path: str, result: Optional[str]) -> None:
+        """后台字幕扫描完成回调（在主线程执行）"""
+        self._pending_subtitle_scans.discard(video_path)
+
+        now = time.monotonic()
+        self._subtitle_scan_cache[video_path] = (result, now)
+
+        # 只有当前文件仍然匹配时才自动加载
+        if video_path == self._current_file and result:
+            self._load_subtitle_path(result, show_osd=True, emit_error=False)
+            info(f"已自动加载同名外挂字幕: {result}")
 
     def _load_subtitle_path(self, subtitle_path: str, show_osd: bool = True, emit_error: bool = True) -> bool:
         """加载指定字幕文件路径"""
@@ -1586,13 +1663,11 @@ class VideoPlayer(QWidget):
         """
         info(f"文件加载完成: {file_path}")
 
-        self._current_load_sequence = self._load_sequence_counter
-        debug(f"[FILE_LOADED_UI] seq={self._load_sequence_counter}, file={file_path}")
+        seq = getattr(self, '_load_sequence_counter', 0)
+        self._current_load_sequence = seq
+        debug(f"[FILE_LOADED_UI] seq={seq}, file={file_path}")
         if not hasattr(self, '_control_bar') or self._control_bar is None:
             debug(f"[FILE_LOADED_UI] _control_bar 未就绪，跳过 UI 更新")
-
-        # 加载序列递增，后续到来的过时事件将被忽略
-        self._current_load_sequence = getattr(self, '_load_sequence_counter', 0)
 
         if self._mpv_manager:
             # 文件加载完成 → 已经自动开始播放
@@ -1611,10 +1686,6 @@ class VideoPlayer(QWidget):
         # 合并初始化步骤：使用单次 QTimer.singleShot(0) 延迟一帧后统一初始化
         QTimer.singleShot(0, self._initialize_progress_display)
         QTimer.singleShot(250, self._delayed_file_init)
-
-        # 启动心跳定时器（周期性同步状态）
-        if not self._state_sync_timer.isActive():
-            self._state_sync_timer.start()
 
         # 立即手动触发一次心跳，确保首次刷新
         self._heartbeat_sync()
@@ -2744,9 +2815,7 @@ class VideoPlayer(QWidget):
             self._seek_debounce_timer.stop()
         self._clear_pending_seek_state()
 
-        # 停止心跳定时器
-        if self._state_sync_timer.isActive():
-            self._state_sync_timer.stop()
+        # 心跳定时器由 HeartbeatManager 自动管理（owner=self 自动清理）
 
         # 进度同步定时器已移除，改用信号驱动
 

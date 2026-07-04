@@ -358,6 +358,10 @@ class FreeAssetFilterApp(QMainWindow):
         self._is_closing = False
         self._is_startup_phase = True  # 启动阶段标志，防止启动时重建UI
 
+        # 初始化心跳管理器（用于协调所有主线程周期性工作）
+        from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+        self.heartbeat_manager = HeartbeatManager()
+
         # 启动任务完成标志，全部完成后触发更新检查
         self._startup_flags = {
             "restore_done": False,
@@ -533,6 +537,10 @@ class FreeAssetFilterApp(QMainWindow):
                 logger.warning("预热线程未在2秒内退出")
                 # 不再强制终止，允许其自然结束
 
+        # 停止心跳管理器（在所有 QThread 停止之前，确保所有 tick 回调已结束）
+        if hasattr(self, 'heartbeat_manager') and self.heartbeat_manager:
+            self.heartbeat_manager.stop_all()
+
         # === 新增：在调用父类 closeEvent 之前，安全停止所有 QThread ===
         self._cleanup_all_qthreads_before_exit()
 
@@ -584,6 +592,11 @@ class FreeAssetFilterApp(QMainWindow):
         """
         在 closeEvent 中调用，确保所有已知的 QThread 子对象被安全停止。
         避免在父窗口销毁时 Qt 报 "Destroyed while thread is still running"。
+
+        注意：调用此函数之前，调用方必须先停止 HeartbeatManager
+        （调用 self.heartbeat_manager.stop_all()），以断开所有 tick 定时器
+        的回调引用，防止在 QThread 等待期间心跳回调意外触发导致竞态条件。
+        参见 closeEvent() 中 HeartbeatManager.stop_all() 在第 0 步调用。
         """
         # debug("[QThreadCleanup] 开始清理所有后台 QThread...")
         # 1) 启动预热线程
@@ -601,7 +614,30 @@ class FreeAssetFilterApp(QMainWindow):
             # debug(f"[QThreadCleanup] 获取静默检查线程: {_silent_worker}, isRunning={_silent_worker.isRunning() if _silent_worker else 'N/A'}")
             self.update_controller.cancel_silent_check()
             
-            # 保留所有静默检查线程引用（包括当前线程和已退休的线程）
+            # ------------------------------------------------------------------
+            # _retired_worker_refs — 退休工人强引用列表
+            #
+            # 用途：
+            #   保留已完成工作的 QThread 对象的强引用，防止 Python GC 在
+            #   QThread 对象仍持有底层操作系统线程句柄时提前销毁它。
+            #
+            # 为什么需要这个模式：
+            #   部分 QThread 子类（如 SilentUpdateCheckWorker）不运行事件循环
+            #   （没有调用 exec()），因此在 requestInterruption() + wait() 后
+            #   它们的 finished 信号可能不会触发，或者其 Python 包装器在父对象
+            #   （如 UpdateController）清理时因为设置了 setParent(None) 而失去
+            #   Qt 父子关系，导致 Python GC 回收 QThread 对象，进而触发
+            #   "QThread: Destroyed while thread is still running" 警告。
+            #
+            #   注意：deleteLater() 不能处理这个边缘情况，因为 deleteLater()
+            #   依赖事件循环来实际销毁对象，而静默检查线程没有事件循环。
+            #   唯一可靠的方案是持有强引用，让 QThread 对象存活到进程退出。
+            #
+            # 审计结论：
+            #   此模式在 Phase 4 线程优化审计中经过评审并确认为必要方案。
+            #   不要移除或替换这个模式——回归风险远大于收益。
+            #   参见：Phase 4, Task 21 (Threading Optimization Audit)
+            # ------------------------------------------------------------------
             if not hasattr(self, '_retired_worker_refs'):
                 self._retired_worker_refs = []
             
@@ -1770,6 +1806,9 @@ class FreeAssetFilterApp(QMainWindow):
         QTimer.singleShot(0, self._create_real_widgets_deferred)  # 首帧后立即创建真实控件
         QTimer.singleShot(0, self._load_fonts_async)
         QTimer.singleShot(0, self._lazy_import_pillow_avif)
+        # 首帧后启动心跳管理器（主线程周期性工作调度）
+        if hasattr(self, 'heartbeat_manager') and self.heartbeat_manager:
+            QTimer.singleShot(0, self.heartbeat_manager.start)
         QTimer.singleShot(100, self.check_and_restore_backup)
         QTimer.singleShot(0, self._start_background_warmup)
         QTimer.singleShot(800, self._schedule_thumbnail_cleanup)

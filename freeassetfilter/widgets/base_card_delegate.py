@@ -10,7 +10,7 @@ BaseCardDelegate - 文件卡片委托的共享基类
 from datetime import datetime
 from collections import OrderedDict
 
-from PySide6.QtCore import Qt, QSize, QRect, QRectF, QTimer
+from PySide6.QtCore import Qt, QSize, QRect, QRectF
 from PySide6.QtGui import QColor, QPen, QFont, QFontMetrics, QPixmap, QPainter
 from PySide6.QtWidgets import (
     QStyledItemDelegate,
@@ -39,10 +39,6 @@ class BaseCardDelegate(QStyledItemDelegate):
         self._active_animation_keys = set()
         self._dragging_file_path = None
         self._shadow_pixmap_cache = OrderedDict()
-
-        self._animation_timer = QTimer(self)
-        self._animation_timer.setInterval(16)
-        self._animation_timer.timeout.connect(self._on_animation_tick)
 
         self._init_colors()
         self._init_fonts()
@@ -174,8 +170,19 @@ class BaseCardDelegate(QStyledItemDelegate):
     def _ensure_animation_timer_running(self):
         if not self._active_animation_keys:
             return
-        if not self._animation_timer.isActive():
-            self._animation_timer.start()
+        from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+        hm = HeartbeatManager()
+        try:
+            hm.register_tick_callback(
+                f"base_card_delegate_anim_{id(self)}",
+                self._on_animation_tick,
+                priority=3,
+                every_n_ticks=1,
+                owner=self,
+                use_fast_tick=True,
+            )
+        except ValueError:
+            pass  # already registered
 
     def _ease(self, curve_name, t):
         t = max(0.0, min(1.0, t))
@@ -293,8 +300,9 @@ class BaseCardDelegate(QStyledItemDelegate):
         if self._active_animation_keys:
             self._ensure_animation_timer_running()
             return
-        if self._animation_timer.isActive():
-            self._animation_timer.stop()
+        from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+        hm = HeartbeatManager()
+        hm.unregister_tick_callback(f"base_card_delegate_anim_{id(self)}")
 
     def _on_animation_tick(self):
         if not self._are_state_animations_enabled():

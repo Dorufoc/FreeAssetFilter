@@ -15,12 +15,15 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 用于展示和管理从左侧素材区添加的文件/文件夹项目
 """
 
+import hashlib
 import os
 import sys
 import tempfile
 import threading
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Optional
 
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -44,12 +47,46 @@ from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.file_staging_pool_model import FileStagingPoolListModel, FileStagingPoolListView
 from freeassetfilter.widgets.file_staging_pool_delegate import FileStagingPoolCardDelegate
 from PySide6.QtCore import (
-    Qt, Signal, Slot, QFileInfo, QThread, QMetaObject, Q_ARG, QObject, QRunnable, QTimer, QEventLoop
+    Qt, Signal, Slot, QObject, QRunnable, QTimer
 )
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QAction
 
 # 导入缩略图管理器
 from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path
+
+# 导入心跳管理器
+from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+
+
+class _MD5CalculationTask(QRunnable):
+    """在后台线程计算文件MD5，完成后在主线程通过HeartbeatManager调用回调。"""
+
+    def __init__(
+        self, file_path: str, callback: Callable[[Optional[str]], None]
+    ) -> None:
+        super().__init__()
+        self._file_path = file_path
+        self._callback = callback
+
+    def run(self) -> None:
+        try:
+            hash_md5 = hashlib.md5()
+            with open(self._file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+            result: Optional[str] = hash_md5.hexdigest()
+        except FileNotFoundError:
+            result = None
+        except (IOError, OSError, PermissionError) as e:
+            warning(f"计算MD5失败: {e}")
+            result = None
+
+        # 在主线程调用回调
+        try:
+            hm = HeartbeatManager()
+            hm.request_main_thread(lambda: self._callback(result))
+        except Exception:
+            pass
 
 
 class FileStagingPool(QWidget):
@@ -67,6 +104,7 @@ class FileStagingPool(QWidget):
     export_finished = Signal(int, int, list)  # 导出完成信号
     folder_size_calculated = Signal(dict)  # 文件夹体积计算完成信号
     folder_size_result_ready = Signal(object)  # 线程完成后的文件夹大小结果投递信号
+    total_size_ready = Signal(str, int)  # 异步总大小计算完成信号 (request_id, total_file_size_bytes)
     navigate_to_path = Signal(str, dict)  # 当需要导航到某个路径时发出，第二个参数是可选的文件信息
     preview_cancel_requested = Signal()  # 当左键点击正在预览的卡片时发出，用于取消预览
 
@@ -106,6 +144,7 @@ class FileStagingPool(QWidget):
         self.previewing_file_path = None  # 当前处于预览态的文件路径
         self._active_size_calculators = {}  # 跟踪活动的文件夹大小计算任务 {folder_path: Future}
         self._size_calculator_cancel_events = {}  # 文件夹大小计算取消标记
+        self._pending_total_requests: dict[str, dict] = {}  # req_id -> {base_total: int, pending_folders: set[str]}
         self._size_calculator_executor = ThreadPoolExecutor(
             max_workers=min(4, os.cpu_count() or 2),
             thread_name_prefix="FolderSizeCalculator"
@@ -749,6 +788,7 @@ class FileStagingPool(QWidget):
         """
         导出所有文件到指定目录
         显示导出模式选择弹窗，支持直接导出和分类导出
+        使用异步总大小计算，不阻塞主线程。
         """
         debug(f"开始导出文件，共 {len(self.items)} 项")
         # 检查是否有文件可以导出
@@ -761,20 +801,8 @@ class FileStagingPool(QWidget):
             info_msg.exec()
             return
 
-        # 检查是否有文件正在计算体积
-        calculating_count = 0
-        for item in self.items:
-            if item.get("size_calculating") is True:
-                calculating_count += 1
-
-        if calculating_count > 0:
-            warning_msg = CustomMessageBox(self)
-            warning_msg.set_title("数据未准备就绪")
-            warning_msg.set_text(f"有 {calculating_count} 个文件夹正在计算体积，请等待计算完成后再导出。")
-            warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            warning_msg.buttonClicked.connect(warning_msg.close)
-            warning_msg.exec()
-            return
+        # 清理上一次导出的异步状态（防止重入）
+        self._cleanup_stale_export_state()
 
         # 显示导出模式选择弹窗
         export_mode_msg = CustomMessageBox(self)
@@ -817,62 +845,120 @@ class FileStagingPool(QWidget):
             if not target_dir:
                 return
 
-            # 计算待导出文件的总大小
-            total_file_size = self.calculate_total_file_size(all_files)
+            # 检查是否有文件夹仍在计算
+            still_calculating = [f for f in all_files if f.get("size_calculating") is True]
 
-            # 获取目标目录的总容量和可用空间
-            total_space, free_space = self.get_directory_space(target_dir)
+            if still_calculating:
+                # 异步计算路径：存储状态，启动异步计算，不阻塞主线程
+                self._pending_export_state = {
+                    "target_dir": target_dir,
+                    "all_files": all_files,
+                    "export_mode": export_mode,
+                }
+                req_id = f"export_{id(self)}_{len(still_calculating)}"
+                self._pending_export_req_id = req_id
+                self.total_size_ready.connect(self._on_export_total_size_ready)
+                self.calculate_total_size_async(req_id, all_files)
+                # 显示正在进行大小计算的提示
+                self.stats_label.setText(f"正在计算 {len(still_calculating)} 个文件夹体积，请稍候...")
+                return  # 退出方法，等待 total_size_ready 信号继续处理
 
-            if total_space is None or free_space is None:
-                warning_msg = CustomMessageBox(self)
-                warning_msg.set_title("警告")
-                warning_msg.set_text("无法获取目标目录的可用空间信息，可能是网络存储或远程目录。\n"
-                                     "是否继续导出操作？")
-                warning_msg.set_buttons(["继续", "重新选择", "取消"], Qt.Horizontal, ["primary", "normal", "normal"])
+            # 所有文件夹大小已知，同步计算总大小
+            total_file_size = 0
+            for item in all_files:
+                if item.get("size") is not None:
+                    total_file_size += item["size"]
+                elif os.path.isfile(item["path"]):
+                    try:
+                        total_file_size += os.path.getsize(item["path"])
+                    except (OSError, PermissionError, FileNotFoundError) as e:
+                        warning(f"计算文件大小失败: {e}")
+
+            # 空间检查
+            check_result = self._check_space_and_proceed(target_dir, total_file_size)
+            if check_result is True:
+                break
+            elif check_result is False:
+                return
+            # check_result == "reselect": 继续循环
+
+        # 继续导出流程
+        self._do_export(all_files, target_dir, export_mode)
+
+    def _check_space_and_proceed(self, target_dir: str, total_file_size: int):
+        """
+        检查目标目录可用空间，若空间不足提供重新选择或取消选项。
+
+        Args:
+            target_dir: 目标目录路径
+            total_file_size: 待导出文件总大小（字节）
+
+        Returns:
+            True: 继续导出
+            False: 取消导出
+            "reselect": 用户选择重新选择目录
+        """
+        total_space, free_space = self.get_directory_space(target_dir)
+
+        if total_space is None or free_space is None:
+            warning_msg = CustomMessageBox(self)
+            warning_msg.set_title("警告")
+            warning_msg.set_text("无法获取目标目录的可用空间信息，可能是网络存储或远程目录。\n"
+                                 "是否继续导出操作？")
+            warning_msg.set_buttons(["继续", "重新选择", "取消"], Qt.Horizontal, ["primary", "normal", "normal"])
+
+            user_choice = -1
+
+            def on_button_clicked(button_index):
+                nonlocal user_choice
+                user_choice = button_index
+                warning_msg.close()
+
+            warning_msg.buttonClicked.connect(on_button_clicked)
+            warning_msg.exec()
+
+            if user_choice == 0:
+                return True
+            elif user_choice == 1:
+                return "reselect"
+            else:
+                return False
+        else:
+            if free_space < total_file_size:
+                error_msg = CustomMessageBox(self)
+                error_msg.set_title("空间不足")
+                error_msg.set_text(f"目标目录可用空间不足！\n"
+                                   f"待导出文件总大小：{self._format_file_size(total_file_size)}\n"
+                                   f"目标目录可用空间：{self._format_file_size(free_space)}\n"
+                                   f"所需额外空间：{self._format_file_size(total_file_size - free_space)}")
+                error_msg.set_buttons(["重新选择", "取消"], Qt.Horizontal, ["primary", "normal"])
 
                 user_choice = -1
 
-                def on_button_clicked(button_index):
+                def on_error_button_clicked(button_index):
                     nonlocal user_choice
                     user_choice = button_index
-                    warning_msg.close()
+                    error_msg.close()
 
-                warning_msg.buttonClicked.connect(on_button_clicked)
-                warning_msg.exec()
+                error_msg.buttonClicked.connect(on_error_button_clicked)
+                error_msg.exec()
 
                 if user_choice == 0:
-                    break
-                elif user_choice == 1:
-                    continue
+                    return "reselect"
                 else:
-                    return
+                    return False
             else:
-                if free_space < total_file_size:
-                    error_msg = CustomMessageBox(self)
-                    error_msg.set_title("空间不足")
-                    error_msg.set_text(f"目标目录可用空间不足！\n"
-                                       f"待导出文件总大小：{self._format_file_size(total_file_size)}\n"
-                                       f"目标目录可用空间：{self._format_file_size(free_space)}\n"
-                                       f"所需额外空间：{self._format_file_size(total_file_size - free_space)}")
-                    error_msg.set_buttons(["重新选择", "取消"], Qt.Horizontal, ["primary", "normal"])
+                return True
 
-                    user_choice = -1
+    def _do_export(self, all_files: list, target_dir: str, export_mode: int) -> None:
+        """
+        执行文件导出操作，创建进度提示窗口并启动复制线程。
 
-                    def on_error_button_clicked(button_index):
-                        nonlocal user_choice
-                        user_choice = button_index
-                        error_msg.close()
-
-                    error_msg.buttonClicked.connect(on_error_button_clicked)
-                    error_msg.exec()
-
-                    if user_choice == 0:
-                        continue
-                    else:
-                        return
-                else:
-                    break
-
+        Args:
+            all_files: 文件信息列表
+            target_dir: 目标目录路径
+            export_mode: 导出模式（0=直接导出, 1=分类导出）
+        """
         # 创建带进度条的自定义提示窗口
         progress_msg_box = CustomMessageBox(self)
         progress_msg_box.set_title("导出进度")
@@ -894,6 +980,9 @@ class FileStagingPool(QWidget):
         # 连接进度更新信号到新的进度条
         self.update_progress.connect(self.on_update_export_progress)
 
+        # 更新统计信息
+        self.update_stats()
+
         # 根据导出模式执行相应的复制操作
         if export_mode == 0:
             self.copy_files(all_files, target_dir)
@@ -912,6 +1001,59 @@ class FileStagingPool(QWidget):
                 on_categorized_confirm,
                 on_categorized_cancel
             )
+
+    def _cleanup_stale_export_state(self) -> None:
+        """
+        清理上一次导出的异步状态，防止重入。
+        """
+        if hasattr(self, '_pending_export_req_id') and self._pending_export_req_id:
+            try:
+                self.total_size_ready.disconnect(self._on_export_total_size_ready)
+            except (TypeError, RuntimeError):
+                pass
+            self._pending_export_req_id = None
+            self._pending_export_state = None
+
+    def _on_export_total_size_ready(self, request_id: str, total_file_size: int) -> None:
+        """
+        处理导出时异步总大小计算结果，继续导出流程。
+
+        Args:
+            request_id: 请求标识符
+            total_file_size: 文件总大小（字节）
+        """
+        if request_id != getattr(self, '_pending_export_req_id', None):
+            return  # 已过期的请求，忽略
+
+        # 断开信号连接，避免重复触发
+        try:
+            self.total_size_ready.disconnect(self._on_export_total_size_ready)
+        except (TypeError, RuntimeError):
+            pass
+
+        state = getattr(self, '_pending_export_state', None)
+        if not state:
+            self._pending_export_req_id = None
+            return
+
+        target_dir = state["target_dir"]
+        all_files = state["all_files"]
+        export_mode = state["export_mode"]
+
+        # 清理状态
+        self._pending_export_req_id = None
+        self._pending_export_state = None
+
+        # 恢复统计显示
+        self.update_stats()
+
+        # 空间检查
+        check_result = self._check_space_and_proceed(target_dir, total_file_size)
+        if check_result is True:
+            self._do_export(all_files, target_dir, export_mode)
+        elif check_result == "reselect":
+            self.export_selected_files()
+        # check_result == False: 取消，无需操作
 
     def on_update_progress(self, value):
         """
@@ -1179,7 +1321,7 @@ class FileStagingPool(QWidget):
                                 "original_file_info": file_info,
                                 "status": "unlinked",
                                 "new_path": None,
-                                "md5": self.calculate_md5(file_info["path"]) if os.path.exists(file_info["path"]) else None
+                                "md5": self._calculate_md5_sync(file_info["path"])
                             })
 
                 # 如果有未链接文件，显示处理对话框
@@ -1212,17 +1354,15 @@ class FileStagingPool(QWidget):
                 warning_msg.buttonClicked.connect(warning_msg.close)
                 warning_msg.exec()
 
-    def calculate_md5(self, file_path):
-        """
-        计算文件的MD5值
+    def _calculate_md5_sync(self, file_path: str) -> Optional[str]:
+        """计算文件的MD5值（同步，内部使用）。
 
         Args:
-            file_path (str): 文件路径
+            file_path: 文件路径
 
         Returns:
-            str: 文件的MD5值，如果文件不存在则返回None
+            文件的MD5值，如果文件不存在则返回None
         """
-        import hashlib
         try:
             hash_md5 = hashlib.md5()
             with open(file_path, "rb") as f:
@@ -1234,6 +1374,41 @@ class FileStagingPool(QWidget):
         except (IOError, OSError, PermissionError) as e:
             warning(f"计算MD5失败: {e}")
             return None
+
+    def _calculate_md5_sync(self, file_path: str) -> Optional[str]:
+        """同步计算MD5（用于不需要异步的同步场景）。
+
+        Args:
+            file_path: 文件路径
+
+        Returns:
+            MD5字符串或None（计算失败时）
+        """
+        try:
+            hash_md5 = hashlib.md5()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+            return hash_md5.hexdigest()
+        except FileNotFoundError:
+            return None
+        except (IOError, OSError, PermissionError) as e:
+            warning(f"计算MD5失败: {e}")
+            return None
+
+    def calculate_md5_async(
+        self,
+        file_path: str,
+        callback: Callable[[Optional[str]], None],
+    ) -> None:
+        """异步计算文件MD5值，完成后在主线程调用回调函数。
+
+        Args:
+            file_path: 文件路径
+            callback: 回调函数，接收MD5字符串或None（计算失败时）
+        """
+        task = _MD5CalculationTask(file_path, callback)
+        QThreadPool.globalInstance().start(task)
 
     def show_unlinked_files_dialog(self, unlinked_files):
         """
@@ -1363,7 +1538,7 @@ class FileStagingPool(QWidget):
             original_file_info = file_item["original_file_info"]
             original_md5 = file_item.get("_original_md5")
             if original_md5 is None:
-                original_md5 = self.calculate_md5(original_file_info["path"])
+                original_md5 = self._calculate_md5_sync(original_file_info["path"])
                 file_item["_original_md5"] = original_md5
 
             if original_md5:
@@ -1375,7 +1550,7 @@ class FileStagingPool(QWidget):
         for entry in self._iter_file_entries(dir_path):
             file_path = entry.path
             file_name = entry.name
-            file_md5 = self.calculate_md5(file_path)
+            file_md5 = self._calculate_md5_sync(file_path)
 
             matched_item = None
             if file_md5:
@@ -2089,6 +2264,17 @@ class FileStagingPool(QWidget):
             updated_file_info = self.pool_model.get_file_info_by_path(folder_path)
             if updated_file_info:
                 self.folder_size_calculated.emit(updated_file_info)
+
+            # 检查是否有等待该文件夹的总大小计算请求
+            if self._pending_total_requests:
+                for req_id, req_data in list(self._pending_total_requests.items()):
+                    if folder_path in req_data["pending_folders"]:
+                        req_data["pending_folders"].discard(folder_path)
+                        if total_size is not None:
+                            req_data["base_total"] += total_size
+                        if not req_data["pending_folders"]:
+                            self.total_size_ready.emit(req_id, req_data["base_total"])
+                            del self._pending_total_requests[req_id]
         except RuntimeError:
             pass
 
@@ -2187,116 +2373,41 @@ class FileStagingPool(QWidget):
 
         self._refresh_selector_card(file_path)
 
-    def calculate_total_file_size(self, files):
+    def calculate_total_size_async(self, request_id: str, files: list) -> None:
         """
-        计算待导出文件的总大小
+        异步计算待导出文件的总大小。
+        已知大小的文件立即累加，仍在计算中的文件夹通过 total_size_ready 信号异步返回结果。
 
         Args:
-            files (list): 文件信息列表
-
-        Returns:
-            int: 总大小字节数
+            request_id: 请求标识符，用于匹配 total_size_ready 信号
+            files: 文件信息列表
         """
-        total_size = 0
-        calculating_folders = []
+        base_total = 0
+        pending_folders: list[str] = []
 
         for file_info in files:
             if file_info.get("size_calculating") is True:
-                calculating_folders.append(file_info["path"])
-            elif "size" in file_info and file_info["size"] is not None:
-                total_size += file_info["size"]
+                pending_folders.append(file_info["path"])
+            elif file_info.get("size") is not None:
+                base_total += file_info["size"]
             else:
-                # 如果没有size信息，尝试获取
                 try:
                     if os.path.isfile(file_info["path"]):
                         file_size = os.path.getsize(file_info["path"])
-                        total_size += file_size
+                        base_total += file_size
                     elif os.path.isdir(file_info["path"]):
-                        calculating_folders.append(file_info["path"])
+                        pending_folders.append(file_info["path"])
                 except (OSError, PermissionError, FileNotFoundError) as e:
                     warning(f"计算文件大小失败: {e}")
 
-        if not calculating_folders:
-            return total_size
+        if not pending_folders:
+            self.total_size_ready.emit(request_id, base_total)
+            return
 
-        # 使用工作线程 + QEventLoop 等待计算完成，避免阻塞UI
-        import time
-
-        class _SizeWorker(QObject):
-            finished = Signal()
-
-            def __init__(self, pool, initial_folders, base_size, result_ref, timeout_ref):
-                super().__init__()
-                self.pool = pool
-                self.folders = initial_folders
-                self.base_size = base_size
-                self.result_ref = result_ref
-                self.timeout_ref = timeout_ref
-
-            def run(self):
-                max_wait_time = 30
-                wait_interval = 0.5
-                elapsed_time = 0
-                folders = list(self.folders)
-                accum_size = self.base_size
-
-                while folders and elapsed_time < max_wait_time:
-                    time.sleep(wait_interval)
-                    elapsed_time += wait_interval
-
-                    still_calculating = []
-                    for folder_path in folders:
-                        for item in self.pool.items:
-                            if item["path"] == folder_path:
-                                if item.get("size_calculating") is True:
-                                    still_calculating.append(folder_path)
-                                elif item.get("size") is not None:
-                                    accum_size += item["size"]
-                                break
-                        else:
-                            try:
-                                if os.path.isdir(folder_path):
-                                    folder_size = FileStagingPool._sum_folder_file_sizes(folder_path)
-                                    if folder_size is not None:
-                                        accum_size += folder_size
-                            except (OSError, PermissionError, FileNotFoundError) as e:
-                                warning(f"同步计算文件夹大小时失败: {e}")
-
-                    folders = still_calculating
-
-                self.result_ref[0] = accum_size
-                self.timeout_ref[0] = folders
-                self.finished.emit()
-
-        result_holder = [0]
-        timeout_holder = [[]]
-        worker = _SizeWorker(self, calculating_folders, total_size, result_holder, timeout_holder)
-        thread = QThread(self)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-
-        loop = QEventLoop()
-        worker.finished.connect(loop.quit)
-
-        # 等待期间禁用用户交互，防止重入
-        widgets_to_disable = [self.pool_view, self.export_btn, self.import_export_btn, self.clear_btn]
-        for w in widgets_to_disable:
-            w.setEnabled(False)
-
-        thread.start()
-        loop.exec()
-
-        for w in widgets_to_disable:
-            w.setEnabled(True)
-
-        thread.quit()
-        thread.wait()
-
-        timeout_folders = timeout_holder[0]
-        if timeout_folders:
-            warning(f"警告: {len(timeout_folders)}个文件夹体积计算超时，这些文件夹大小将被忽略")
-
-        return result_holder[0]
+        self._pending_total_requests[request_id] = {
+            "base_total": base_total,
+            "pending_folders": set(pending_folders),
+        }
 
     def copy_files(self, files, target_dir):
         """
