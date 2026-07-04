@@ -133,10 +133,10 @@ class D_HoverMenu(QWidget):
         self._debounce_hide_on_move = False
         self._auto_hide_enabled = False
 
-        # Timestamp-based timer management (replacing 3 QTimers)
-        self._timeout_deadline: float = 0.0       # 0 = no pending timeout
-        self._bar_idle_deadline: float = 0.0      # 0 = no pending idle
-        self._debounce_deadline: float = 0.0      # 0 = no pending debounce
+        # 基于时间戳的定时器管理（替代3个QTimer）
+        self._timeout_deadline: float = 0.0       # 0 = 无待处理的超时
+        self._bar_idle_deadline: float = 0.0      # 0 = 无待处理的空闲
+        self._debounce_deadline: float = 0.0      # 0 = 无待处理的防抖
         self._mouse_activity_monitor = GlobalMouseMonitor(self, timeout=5000)
         self._mouse_activity_monitor.mouse_moved.connect(self._show_control_bar)
         self._mouse_activity_monitor.timeout_reached.connect(self._hide_control_bar)
@@ -157,7 +157,7 @@ class D_HoverMenu(QWidget):
         # 启用鼠标跟踪，用于控制栏空闲检测
         self._start_mouse_tracking()
 
-        # Register heartbeat callback for deadline checks
+        # 注册心跳回调用于期限检查
         self._deadline_check_id = f"D_hover_menu_{id(self)}_deadlines"
         HeartbeatManager().register_tick_callback(
             self._deadline_check_id,
@@ -170,12 +170,12 @@ class D_HoverMenu(QWidget):
     def _clear_debounce(self):
         """清除隐藏防抖标记"""
         if self._debounce_deadline == 0:
-            return  # cancelled or not yet due
+            return  # 已取消或尚未到期
         self._debounce_deadline = 0
         self._debounce_hide_on_move = False
 
     def _check_deadlines(self):
-        """Check all timestamp-based deadlines and fire callbacks as needed."""
+        """检查所有基于时间戳的期限，在需要时触发回调。"""
         now = time.monotonic()
         if self._timeout_deadline and now >= self._timeout_deadline:
             self._timeout_deadline = 0

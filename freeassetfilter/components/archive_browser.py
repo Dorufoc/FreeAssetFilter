@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -59,8 +59,6 @@ class ArchiveBrowser(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        # debug("初始化开始")
-
         # 获取全局字体和DPI缩放因子
         app = QApplication.instance()
         self.global_font = getattr(app, 'global_font', QFont())
@@ -94,7 +92,6 @@ class ArchiveBrowser(QWidget):
 
         # 初始化UI
         self.init_ui()
-        # debug("初始化完成")
     
     def init_ui(self):
         """
@@ -123,9 +120,7 @@ class ArchiveBrowser(QWidget):
         files_area = self._create_files_area()
         main_layout.addWidget(files_area, 1)
         
-        # 创建底部状态栏
-        #status_bar = self._create_status_bar()
-        #main_layout.addWidget(status_bar)
+
     
     def _create_control_panel(self):
         """
@@ -213,24 +208,15 @@ class ArchiveBrowser(QWidget):
         
         main_layout.addLayout(path_layout)
         
-        # 第二行：压缩包信息（已隐藏）
-        # info_layout = QHBoxLayout()
-        # info_layout.setSpacing(scaled_spacing)
-        
-        # 压缩包类型显示
+        # 压缩包类型显示（已隐藏）
         self.type_label = QLabel("压缩包类型: ")
         self.type_label.setFont(control_font)
-        self.type_label.hide()  # 隐藏标签
-        # info_layout.addWidget(self.type_label)
+        self.type_label.hide()
 
-        # 加密状态显示
+        # 加密状态显示（已隐藏）
         self.encryption_label = QLabel("加密状态: 未加密")
         self.encryption_label.setFont(control_font)
-        self.encryption_label.hide()  # 隐藏标签
-        # info_layout.addWidget(self.encryption_label)
-        
-        # info_layout.addStretch(1)
-        # main_layout.addLayout(info_layout)
+        self.encryption_label.hide()
         
         return panel
     
@@ -238,11 +224,11 @@ class ArchiveBrowser(QWidget):
         """
         将颜色加深或变淡指定百分比，深色模式下则相反
         
-        参数：
+        Args:
             color_hex (str): 十六进制颜色值
             percent (int): 加深/变淡百分比（1-100）
             
-        返回：
+        Returns:
             str: 处理后的十六进制颜色值
         """
         # 获取当前主题模式
@@ -424,10 +410,10 @@ class ArchiveBrowser(QWidget):
     def _detect_encoding(self, filename_bytes):
         """
         检测文件名的编码
-        
+
         Args:
             filename_bytes (bytes): 文件名的字节流
-            
+
         Returns:
             str: 检测到的编码
         """
@@ -468,10 +454,10 @@ class ArchiveBrowser(QWidget):
     def _decode_filename(self, filename):
         """
         解码文件名，使用手动选择的编码
-        
+
         Args:
             filename (str or bytes): 文件名
-            
+
         Returns:
             str: 解码后的文件名
         """
@@ -500,7 +486,6 @@ class ArchiveBrowser(QWidget):
         Args:
             path (str): 压缩包路径
         """
-        # debug(f"设置压缩包路径: {path}")
         if os.path.exists(path) and os.path.isfile(path):
             self.archive_path = path
             self._detect_archive_type()
@@ -521,7 +506,6 @@ class ArchiveBrowser(QWidget):
         """
         编码选择变化
         """
-        # debug(f"编码切换: {item_data}")
         # 获取选择的编码
         self.manual_encoding = item_data
         if hasattr(self, "encoding_button") and self.encoding_button:
@@ -535,21 +519,18 @@ class ArchiveBrowser(QWidget):
         检测压缩包类型
         使用 7z 核心模块获取类型
         """
-        # debug("检测压缩包类型")
         if self.archive_path and self._7z_core:
             self.archive_type = self._7z_core.get_archive_type(self.archive_path)
         else:
             self.archive_type = 'unknown'
 
         self.type_label.setText(f"压缩包类型: {self.archive_type.upper()}")
-        # debug(f"压缩包类型: {self.archive_type}")
     
     def _detect_encryption(self):
         """
         检测压缩包是否加密
         使用 7z 核心模块检测
         """
-        # debug("检测压缩包加密状态")
         self.is_encrypted = False
 
         try:
@@ -562,7 +543,6 @@ class ArchiveBrowser(QWidget):
             warning(f"检测加密状态失败: {e}")
 
         self.encryption_label.setText(f"加密状态: {'已加密' if self.is_encrypted else '未加密'}")
-        # debug(f"加密状态: {'已加密' if self.is_encrypted else '未加密'}")
     
     def refresh(self):
         """
@@ -570,8 +550,6 @@ class ArchiveBrowser(QWidget):
         """
         if not self.archive_path:
             return
-
-        # debug(f"刷新文件列表: {self.current_path or '根目录'}")
 
         # 更新路径显示
         self.path_edit.set_text(f"{os.path.basename(self.archive_path)}{'/' + self.current_path if self.current_path else ''}")
@@ -626,15 +604,8 @@ class ArchiveBrowser(QWidget):
             self._add_encoding_error_item()
             warning("检测到编码错误，部分文件名无法解析")
 
-        # 更新返回按钮状态（注释掉，使按钮始终保持启用状态）
-        # self.back_btn.setEnabled(bool(self.current_path))
-
-        # 更新文件计数
-        #self.file_count_label.setText(f"文件数量: {len(self.archive_content)}")
-
         # 发送路径变化信号
         self.path_changed.emit(self.current_path)
-        # debug(f"文件列表刷新完成，共 {len(self.archive_content)} 项")
 
     def _add_encoding_error_item(self):
         """
@@ -682,14 +653,12 @@ class ArchiveBrowser(QWidget):
         if not self.archive_path or not self._7z_core:
             return []
 
-        # debug(f"获取文件列表: {self.current_path or '根目录'}")
         try:
             files = self._7z_core.list_archive(
                 self.archive_path,
                 current_path=self.current_path,
                 encoding=self.manual_encoding
             )
-            # debug(f"获取到 {len(files)} 个文件/文件夹")
             return files
         except Exception as e:
             error(f"获取压缩包文件列表失败: {e}")
@@ -700,12 +669,10 @@ class ArchiveBrowser(QWidget):
         返回上一级目录
         """
         if self.current_path:
-            # debug(f"返回上一级目录: {self.current_path}")
             # 获取父路径
             parent_path = os.path.dirname(self.current_path)
             self.current_path = parent_path if parent_path != '.' else ''
             self.refresh()
-            # debug(f"已切换到目录: {self.current_path or '根目录'}")
     
     def on_item_double_clicked(self, item):
         """
@@ -715,7 +682,6 @@ class ArchiveBrowser(QWidget):
         if file_info["is_dir"] and file_info["name"]:  # 确保文件名不为空
             # 进入子目录
             new_path = f"{self.current_path}/{file_info['name']}" if self.current_path else file_info['name']
-            # debug(f"进入子目录: {new_path}")
             self.current_path = new_path
             self.refresh()
     
@@ -724,7 +690,6 @@ class ArchiveBrowser(QWidget):
         点击列表项事件处理
         """
         file_info = item.data(Qt.UserRole)
-        # debug(f"选中文件: {file_info.get('name', '未知')}")
         self.file_selected.emit(file_info)
 
     def _on_list_mouse_press(self, event):
@@ -733,12 +698,11 @@ class ArchiveBrowser(QWidget):
         当点击空白区域时取消所有选中状态
         支持鼠标侧键返回上级目录
 
-        参数：
+        Args:
             event: 鼠标事件对象
         """
         # 处理鼠标侧键返回上级（XButton1 通常是鼠标上的"后退"按钮）
         if event.button() == Qt.XButton1:
-            # debug("鼠标侧键返回上级目录")
             self.go_to_parent()
             return
 
@@ -750,7 +714,6 @@ class ArchiveBrowser(QWidget):
             self.files_list.clearSelection()
             # 发送空信号表示取消选中
             self.file_selected.emit({})
-            # debug("取消文件选中")
         else:
             # 点击了列表项，调用原来的点击处理
             self.on_item_clicked(item)
@@ -763,12 +726,11 @@ class ArchiveBrowser(QWidget):
         处理列表区域的鼠标双击事件
         只响应左键双击，其他按键不响应
 
-        参数：
+        Args:
             event: 鼠标事件对象
         """
         # 只响应左键双击
         if event.button() == Qt.LeftButton:
-            # debug("鼠标左键双击")
             # 获取双击位置对应的列表项
             item = self.files_list.itemAt(event.pos())
             if item is not None:

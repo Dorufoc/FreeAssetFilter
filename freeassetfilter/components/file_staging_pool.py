@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -671,16 +671,11 @@ class FileStagingPool(QWidget):
             file_info (dict): 文件信息字典
             drop_target (str): 放置目标类型 ('file_selector', 'previewer', 'none')
         """
-        # debug(f"拖拽结束: {file_info.get('name', 'unknown')} -> {drop_target}")
 
         if drop_target == 'file_selector':
-            # debug(f"拖拽到文件选择器，移除文件: {file_info.get('path', '')}")
             self.remove_file(file_info['path'])
         elif drop_target == 'previewer':
-            # debug(f"拖拽到预览器，触发预览: {file_info.get('path', '')}")
             self.item_left_clicked.emit(file_info)
-        # else:
-        #     debug(f"未放置到有效区域")
 
     def rename_file(self, file_info, widget=None):
         """
@@ -880,7 +875,7 @@ class FileStagingPool(QWidget):
                 break
             elif check_result is False:
                 return
-            # check_result == "reselect": 继续循环
+            # 选择"重新选择"：继续循环
 
         # 继续导出流程
         self._do_export(all_files, target_dir, export_mode)
@@ -1053,7 +1048,7 @@ class FileStagingPool(QWidget):
             self._do_export(all_files, target_dir, export_mode)
         elif check_result == "reselect":
             self.export_selected_files()
-        # check_result == False: 取消，无需操作
+        # 取消：无需操作
 
     def on_update_progress(self, value):
         """
@@ -1153,7 +1148,6 @@ class FileStagingPool(QWidget):
             backup_data = self._build_backup_payload(last_path)
             with open(self.backup_file, 'w', encoding='utf-8') as f:
                 json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            # debug(f"保存备份成功: {len(self.items)} 项, 路径: {last_path}")
         except (IOError, OSError, TypeError, ValueError) as e:
             warning(f"保存文件列表备份失败: {e}")
 

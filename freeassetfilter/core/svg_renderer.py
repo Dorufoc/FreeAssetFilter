@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -228,7 +228,6 @@ class SvgRenderer:
         replace_colors=True,
         device_pixel_ratio=None,
     ):
-        #debug(f"渲染SVG到Pixmap: {icon_path}, 尺寸: {icon_width}x{icon_height}")
         with track_perf("svg.render_exact_pixmap"):
             target_width = max(1, int(icon_width))
             target_height = max(1, int(icon_height))
@@ -309,7 +308,6 @@ class SvgRenderer:
         # 使用逻辑像素大小，不再应用DPI缩放因子
         scaled_icon_size = icon_size
         if not icon_path or not os.path.exists(icon_path):
-            # 如果路径无效，返回完全透明的QLabel
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
             label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
@@ -321,26 +319,21 @@ class SvgRenderer:
             return label
         
         try:
-            # 读取SVG文件内容，预处理以确保兼容性
             with open(icon_path, 'r', encoding='utf-8') as f:
                 svg_content = f.read()
             
-            # 预处理SVG内容：根据参数决定是否替换颜色
             if replace_colors:
                 svg_content = SvgRenderer._replace_svg_colors(svg_content)
             
-            # 预处理SVG内容：将rgba颜色转换为十六进制格式
             import re
             
             def rgba_to_hex(match):
                 rgba_values = match.group(1).split(',')
-                # 去除空格并处理不同格式的rgba值
                 r = rgba_values[0].strip()
                 g = rgba_values[1].strip()
                 b = rgba_values[2].strip()
                 a = rgba_values[3].strip()
                 
-                # 处理百分比值
                 if '%' in r:
                     r = float(r.replace('%', '')) * 2.55
                 else:
@@ -356,46 +349,33 @@ class SvgRenderer:
                 else:
                     b = float(b)
                 
-                # 处理alpha值（可能是0-1范围或0-100%范围）
                 if '%' in a:
                     a = float(a.replace('%', '')) / 100
                 else:
                     a = float(a)
                 
-                # 确保RGB值在0-255范围内
                 r = max(0, min(255, r))
                 g = max(0, min(255, g))
                 b = max(0, min(255, b))
-                
-                # 确保alpha值在0-1范围内
                 a = max(0, min(1, a))
-                
-                # 将alpha值转换为十六进制（0-255）
                 a = int(a * 255)
-                
-                # 转换为十六进制格式，使用小写字母，不足两位补零
                 return f'#{int(r):02x}{int(g):02x}{int(b):02x}{a:02x}'
             
-            # 替换CSS rgba格式为十六进制格式
             svg_content = re.sub(r'rgba\(([^\)]+)\)', rgba_to_hex, svg_content)
             
-            # 创建临时渲染器获取SVG原始尺寸
+            # 获取 SVG 原始尺寸
             temp_renderer = QSvgRenderer(svg_content.encode('utf-8'))
             svg_default_size = temp_renderer.defaultSize()
             
-            # 计算保持原始比例的尺寸
             if svg_default_size.width() > 0 and svg_default_size.height() > 0:
                 svg_aspect_ratio = svg_default_size.width() / svg_default_size.height()
                 if svg_aspect_ratio >= 1:
-                    # 宽度大于等于高度，以宽度为基准
                     render_width = scaled_icon_size
                     render_height = int(scaled_icon_size / svg_aspect_ratio)
                 else:
-                    # 高度大于宽度，以高度为基准
                     render_height = scaled_icon_size
                     render_width = int(scaled_icon_size * svg_aspect_ratio)
             else:
-                # 如果无法获取原始尺寸，使用正方形
                 render_width = scaled_icon_size
                 render_height = scaled_icon_size
             
@@ -404,7 +384,6 @@ class SvgRenderer:
             svg_widget.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
             svg_widget.setAttribute(Qt.WA_TranslucentBackground, True)
             
-            # 使用保持比例的尺寸，而不是强制正方形
             svg_widget.setFixedSize(render_width, render_height)
             
             container = QWidget()
@@ -420,14 +399,11 @@ class SvgRenderer:
             return container
         except (OSError, ValueError, TypeError) as e:
             warning(f"SVG加载失败: {e}")
-            # QSvgWidget失败，回退到超分辨率渲染
             pixmap = SvgRenderer.render_svg_to_pixmap(icon_path, icon_size, dpi_scale, replace_colors=replace_colors)
             
-            # 将pixmap显示在完全透明的QLabel中
             label = QLabel()
             label.setFixedSize(scaled_icon_size, scaled_icon_size)
             label.setAlignment(Qt.AlignCenter)
-            # 确保QLabel完全透明，没有任何可见样式
             label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
             label.setAttribute(Qt.WA_TranslucentBackground, True)
             label.setPixmap(pixmap)
@@ -446,52 +422,38 @@ class SvgRenderer:
             QLabel: 渲染后的QLabel对象，确保透明度正确
         """
         try:
-            # 创建一个透明的QLabel
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
             label.setFixedSize(icon_size, icon_size)
             
-            # 读取SVG文件内容，预处理以确保兼容性
             with open(icon_path, 'r', encoding='utf-8') as f:
                 svg_content = f.read()
             
-            # 预处理SVG内容：替换颜色
             svg_content = SvgRenderer._replace_svg_colors(svg_content)
             
-            # 使用QSvgRenderer渲染
             svg_renderer = QSvgRenderer(svg_content.encode('utf-8'))
             
-            # 使用智能渲染尺寸，保证小图标清晰同时避免不必要的开销
+            # 智能渲染尺寸，保证小图标清晰
             dpr = QGuiApplication.primaryScreen().devicePixelRatio()
             render_size = _smart_render_size(icon_size, icon_size, dpr)
             
-            # 创建一个QImage，使用ARGB32_Premultiplied格式以支持正确的透明度
             image = QImage(render_size, render_size, QImage.Format_ARGB32_Premultiplied)
-            image.fill(Qt.transparent)  # 使用透明背景
+            image.fill(Qt.transparent)
             
-            # 创建画家
             painter = QPainter(image)
-            
-            # 设置最高质量的渲染提示
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setRenderHint(QPainter.TextAntialiasing, True)
-            painter.setRenderHint(QPainter.Antialiasing, True)
             
-            # 渲染SVG图标
             svg_renderer.render(painter)
-            
             painter.end()
             
-            # 将QImage转换为QPixmap，确保透明度正确
             pixmap = QPixmap.fromImage(image)
             
             if not pixmap.isNull():
-                # 缩放PNG到合适大小，使用高质量缩放算法
                 scaled_pixmap = pixmap.scaled(icon_size, icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 label.setPixmap(scaled_pixmap)
             else:
-                # 如果加载失败，创建一个默认的透明图标
                 pixmap = QPixmap(icon_size, icon_size)
                 pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
                 pixmap.fill(Qt.transparent)
@@ -500,7 +462,6 @@ class SvgRenderer:
             return label
         except (OSError, ValueError) as renderer_e:
             warning(f"使用QSvgRenderer加载SVG图标失败: {renderer_e}")
-            # 如果加载失败，创建一个默认的透明图标
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
             label.setFixedSize(icon_size, icon_size)
@@ -856,28 +817,23 @@ class SvgRenderer:
         """
         debug(f"渲染SVG字符串到Pixmap, 尺寸: {icon_size}")
         if not svg_string:
-            # 如果SVG字符串为空，返回透明像素图
             pixmap = QPixmap(icon_size, icon_size)
             pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
             pixmap.fill(Qt.transparent)
             return pixmap
         
         try:
-            # 预处理SVG内容：替换颜色
             svg_string = SvgRenderer._replace_svg_colors(svg_string)
             
-            # 预处理SVG内容：将rgba颜色转换为十六进制格式
             import re
             
             def rgba_to_hex(match):
                 rgba_values = match.group(1).split(',')
-                # 去除空格并处理不同格式的rgba值
                 r = rgba_values[0].strip()
                 g = rgba_values[1].strip()
                 b = rgba_values[2].strip()
                 a = rgba_values[3].strip()
                 
-                # 处理百分比值
                 if '%' in r:
                     r = float(r.replace('%', '')) * 2.55
                 else:
@@ -893,62 +849,43 @@ class SvgRenderer:
                 else:
                     b = float(b)
                 
-                # 处理alpha值（可能是0-1范围或0-100%范围）
                 if '%' in a:
                     a = float(a.replace('%', '')) / 100
                 else:
                     a = float(a)
                 
-                # 确保RGB值在0-255范围内
                 r = max(0, min(255, r))
                 g = max(0, min(255, g))
                 b = max(0, min(255, b))
-                
-                # 确保alpha值在0-1范围内
                 a = max(0, min(1, a))
-                
-                # 将alpha值转换为十六进制（0-255）
                 a = int(a * 255)
-                
-                # 转换为十六进制格式，使用小写字母，不足两位补零
                 return f'#{int(r):02x}{int(g):02x}{int(b):02x}{a:02x}'
             
-            # 替换CSS rgba格式为十六进制格式
             processed_svg = re.sub(r'rgba\(([^\)]+)\)', rgba_to_hex, svg_string)
             
-            # 使用预处理后的SVG内容创建渲染器
             svg_renderer = QSvgRenderer(processed_svg.encode('utf-8'))
             
-            # 使用智能渲染尺寸，保证小图标清晰同时避免不必要的开销
             dpr = QGuiApplication.primaryScreen().devicePixelRatio()
             render_size = _smart_render_size(icon_size, icon_size, dpr)
             
-            # 创建一个透明背景的QPixmap
             pixmap = QPixmap(render_size, render_size)
             pixmap.setDevicePixelRatio(dpr)
             pixmap.fill(Qt.transparent)
             
-            # 创建画家，设置透明背景和高质量渲染
             painter = QPainter(pixmap)
-            
-            # 设置最高质量的渲染提示
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
             painter.setRenderHint(QPainter.TextAntialiasing, True)
 
-            # 渲染SVG
             svg_renderer.render(painter)
-            
             painter.end()
             
-            # 然后缩放回目标大小，使用高质量缩放算法
             final_pixmap = pixmap.scaled(icon_size, icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             
             if not final_pixmap.isNull():
                 return final_pixmap
         except (ValueError, TypeError) as e:
             warning(f"SVG字符串渲染失败: {e}")
-            # 渲染失败，返回透明像素图
         pixmap = QPixmap(icon_size, icon_size)
         pixmap.setDevicePixelRatio(QGuiApplication.primaryScreen().devicePixelRatio())
         pixmap.fill(Qt.transparent)

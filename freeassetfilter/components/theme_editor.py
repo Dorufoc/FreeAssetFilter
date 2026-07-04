@@ -65,10 +65,10 @@ class ThemeEditor(QScrollArea):
         """
         根据当前深色模式获取完整的主题颜色集
         
-        参数：
+        Args:
             accent_color (str): 强调色
             
-        返回：
+        Returns:
             list: 包含完整主题颜色的列表 [accent_color, secondary_color, normal_color, auxiliary_color, panel_background]
         """
         if self.is_dark_mode:
@@ -94,7 +94,7 @@ class ThemeEditor(QScrollArea):
         """
         从设置中加载用户自定义的颜色
         
-        返回：
+        Returns:
             str: 保存的颜色值，默认为 #27BE24
         """
         default_color = "#27BE24"
@@ -108,7 +108,7 @@ class ThemeEditor(QScrollArea):
         """
         将用户自定义的颜色保存到设置中
         
-        参数：
+        Args:
             color (str): 要保存的颜色值
         """
         if self.settings_manager:
@@ -171,7 +171,7 @@ class ThemeEditor(QScrollArea):
         """
         检查当前是否为深色模式
         
-        返回：
+        Returns:
             bool: True为深色模式，False为浅色模式
         """
         if self.settings_manager:
@@ -209,7 +209,7 @@ class ThemeEditor(QScrollArea):
         title_label.setStyleSheet(f"color: {sec};")
         title_label.setContentsMargins(0, 0, 0, int(3 * d))
 
-        # Ensure the title label is positioned via layout
+        # 确保标题标签通过布局定位
         gb_layout = QVBoxLayout(gb)
         gb_layout.setContentsMargins(int(6 * d), int(6 * d), int(6 * d), int(6 * d))
         gb_layout.setSpacing(int(6 * d))

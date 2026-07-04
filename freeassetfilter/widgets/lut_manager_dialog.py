@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -142,7 +142,6 @@ class LutManagerDialog(CustomMessageBox):
             create_default_reference_image(str(reference_path))
     
     def _init_ui(self):
-        """初始化UI"""
         # 设置标题
         self.set_title("LUT管理")
         
@@ -164,7 +163,6 @@ class LutManagerDialog(CustomMessageBox):
         self.resize(int(300 * self.dpi_scale), int(450 * self.dpi_scale))
     
     def _create_scroll_area(self):
-        """创建滚动区域（参考收藏夹弹窗）"""
         # 获取颜色设置
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
@@ -224,7 +222,6 @@ class LutManagerDialog(CustomMessageBox):
         self.list_widget.show()
     
     def _load_lut_list(self):
-        """加载LUT列表"""
         if self.settings_manager:
             self.lut_list = load_lut_from_settings(self.settings_manager)
             self.active_lut_id = self.settings_manager.get_setting("video.active_lut_id", None)
@@ -300,7 +297,6 @@ class LutManagerDialog(CustomMessageBox):
         return card
     
     def _on_lut_card_clicked(self, lut_info: LUTInfo):
-        """LUT卡片点击处理"""
         # 更新选中状态
         self.selected_lut_id = lut_info.id
         
@@ -316,7 +312,6 @@ class LutManagerDialog(CustomMessageBox):
         self.accept()
     
     def _on_lut_rename_requested(self, lut_id: str, file_path: str):
-        """LUT重命名请求处理"""
         # 查找LUT信息
         lut_info = None
         for info in self.lut_list:
@@ -345,7 +340,6 @@ class LutManagerDialog(CustomMessageBox):
         input_dialog.exec()
     
     def _rename_lut(self, lut_id: str, new_name: str):
-        """重命名LUT"""
         # 查找LUT信息
         for lut_info in self.lut_list:
             if lut_info.id == lut_id:
@@ -361,7 +355,6 @@ class LutManagerDialog(CustomMessageBox):
                 break
     
     def _on_lut_delete_requested(self, lut_id: str, file_path: str):
-        """LUT删除请求处理"""
         # 使用CustomMessageBox显示确认对话框
         confirm_dialog = CustomMessageBox(self)
         confirm_dialog.set_title("确认删除")
@@ -482,7 +475,6 @@ class LutManagerDialog(CustomMessageBox):
         self._lut_import_worker.start()
     
     def _on_lut_import_finished(self, info: dict, progress_dialog):
-        """LUT 导入完成回调（主线程）"""
         debug(f"LUT 导入完成: {info.get('name')}")
         
         lut_info = LUTInfo(
@@ -502,7 +494,6 @@ class LutManagerDialog(CustomMessageBox):
         self._refresh_lut_cards()
     
     def _on_lut_import_error(self, error_msg: str, progress_dialog):
-        """LUT 导入失败回调（主线程）"""
         debug(f"LUT 导入失败: {error_msg}")
         progress_dialog.close()
         

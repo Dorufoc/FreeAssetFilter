@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -196,7 +196,7 @@ class SyntaxHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text):
         """高亮文本块
 
-        参数：
+        Args:
             text (str): 当前文本块的内容
         """
         if not text:
@@ -545,7 +545,7 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
         """
         初始化适配器高亮器
         
-        参数：
+        Args:
             parent: 父文档
             file_path: 文件路径（用于自动检测语言）
             language: 语言标识（直接指定）
@@ -565,10 +565,10 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
         """
         根据文件路径检测语言
         
-        参数：
+        Args:
             file_path: 文件路径
             
-        返回：
+        Returns:
             str: 语言标识
         """
         if not file_path:
@@ -581,7 +581,7 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
         """
         高亮文本块 - 实现QSyntaxHighlighter接口
         
-        参数：
+        Args:
             text: 当前文本块内容
         """
         if not text or self.language == 'text':
@@ -597,7 +597,6 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
                 self.setFormat(token.start_pos, len(token.text), fmt)
         except (ValueError, KeyError, AttributeError) as e:
             # 解析失败时不应用高亮
-            # debug(f"语法高亮解析失败: {e}")
             pass
     
     def get_background_color(self):
@@ -624,7 +623,6 @@ class FAFHighlighterAdapter(QSyntaxHighlighter):
             # 重新高亮整个文档
             self.rehighlight()
         except (ImportError, RuntimeError) as e:
-            # debug(f"更新主题配色方案失败: {e}")
             pass
 
 class ZoomDisabledTextEdit(QTextEdit):
@@ -642,7 +640,7 @@ class ZoomDisabledTextEdit(QTextEdit):
         """
         初始化文本编辑器
         
-        参数：
+        Args:
             parent: 父控件
         """
         super().__init__(parent)
@@ -654,7 +652,7 @@ class ZoomDisabledTextEdit(QTextEdit):
         当按下Ctrl键时，通过信号通知字体大小变化
         否则正常处理滚轮事件（滚动）
         
-        参数：
+        Args:
             event: 滚轮事件
         """
         # 如果按下了Ctrl键，发送字体大小变化信号
@@ -688,7 +686,7 @@ class LineNumberArea(QWidget):
         """
         初始化行号区域
         
-        参数：
+        Args:
             text_edit: 关联的文本编辑器
             parent: 父控件
         """
@@ -729,7 +727,7 @@ class LineNumberArea(QWidget):
         """
         根据行数计算所需宽度
         
-        返回：
+        Returns:
             int: 行号区域宽度（像素）
         """
         digits = 1
@@ -757,7 +755,7 @@ class LineNumberArea(QWidget):
         """
         绘制行号
 
-        参数：
+        Args:
             event: 绘制事件
         """
         painter = QPainter(self)
@@ -1007,11 +1005,11 @@ class TextPreviewWidget(QWidget):
         """
         将十六进制颜色转换为RGBA格式
         
-        参数：
+        Args:
             hex_color (str): 十六进制颜色，如 "#RRGGBB"
             alpha (float): 透明度，范围 0.0-1.0，默认 0.5
             
-        返回：
+        Returns:
             str: RGBA格式字符串，如 "rgba(51, 51, 51, 0.5)"
         """
         try:
@@ -1022,7 +1020,6 @@ class TextPreviewWidget(QWidget):
             b = int(hex_color[5:7], 16)
             return f'rgba({r}, {g}, {b}, {alpha})'
         except (ValueError, IndexError) as e:
-            # debug(f"颜色转换失败: {e}")
             return hex_color
     
 
@@ -1404,7 +1401,6 @@ class TextPreviewWidget(QWidget):
 
                 self.text_edit.setPalette(palette)
             except (AttributeError, RuntimeError) as e:
-                # debug(f"更新代码高亮器主题失败: {e}")
                 pass
         
         # 更新行号区域主题
@@ -1463,7 +1459,6 @@ class TextPreviewWidget(QWidget):
 
             self.text_edit.setPalette(palette)
         except (AttributeError, RuntimeError) as e:
-            # debug(f"应用配色方案失败: {e}")
             pass
     
     def _reset_display_state(self):
@@ -1676,7 +1671,6 @@ class TextPreviewWidget(QWidget):
 
         self.file_content = content
         file_type = self._detect_file_type(self.current_file_path)
-        # debug(f"文件类型检测: {file_type}, 大小: {len(content)} 字符")
 
         if file_type == 'markdown' and MARKDOWN_AVAILABLE:
             self._render_markdown(content)
@@ -1699,10 +1693,10 @@ class TextPreviewWidget(QWidget):
     def _preprocess_markdown_lists(self, content):
         """预处理 Markdown 列表缩进，统一为 4 空格缩进
 
-        参数：
+        Args:
             content (str): 原始 Markdown 内容
 
-        返回：
+        Returns:
             str: 处理后的 Markdown 内容
         """
         lines = content.split('\n')
@@ -1995,7 +1989,7 @@ class TextPreviewWidget(QWidget):
         """
         处理字体大小变化请求（来自Ctrl+滚轮）
         
-        参数：
+        Args:
             delta (int): 变化量，1表示增大，-1表示减小
         """
         if not hasattr(self, 'font_size_slider') or self.font_size_slider is None:
@@ -2071,7 +2065,6 @@ class TextPreviewWidget(QWidget):
     def _perform_search(self):
         """执行搜索"""
         search_term = self.search_input.text()
-        # debug(f"_perform_search: search_term = '{search_term}'")
         if not search_term:
             self._clear_search()
             return
@@ -2083,13 +2076,10 @@ class TextPreviewWidget(QWidget):
         content = self.text_edit.toPlainText()
 
         pos = content.find(search_term)
-        # debug(f"_perform_search: found at pos = {pos}")
 
         while pos >= 0:
             self._search_results.append(pos)
             pos = content.find(search_term, pos + 1)
-
-        # debug(f"_perform_search: results count = {len(self._search_results)}")
 
         if self._search_results:
             self._current_search_index = 0
@@ -2101,37 +2091,28 @@ class TextPreviewWidget(QWidget):
     
     def _go_to_previous_match(self):
         """跳转到上一个匹配项"""
-        # debug(f"_go_to_previous_match: results = {len(self._search_results)}, current = {self._current_search_index}")
         if not self._search_results:
-            # debug(f"_go_to_previous_match: early return, no results")
             return
 
         self._current_search_index = (self._current_search_index - 1) % len(self._search_results)
-        # debug(f"_go_to_previous_match: new index = {self._current_search_index}")
         self._go_to_match(self._current_search_index)
         self._update_search_info()
     
     def _go_to_next_match(self):
         """跳转到下一个匹配项"""
-        # debug(f"_go_to_next_match: results = {len(self._search_results)}, current = {self._current_search_index}")
         if not self._search_results:
-            # debug(f"_go_to_next_match: early return, no results")
             return
 
         self._current_search_index = (self._current_search_index + 1) % len(self._search_results)
-        # debug(f"_go_to_next_match: new index = {self._current_search_index}")
         self._go_to_match(self._current_search_index)
         self._update_search_info()
     
     def _go_to_match(self, index):
         """跳转到指定索引的匹配项"""
-        # debug(f"_go_to_match: index = {index}, results count = {len(self._search_results)}")
         if not self._search_results or index < 0 or index >= len(self._search_results):
-            # debug(f"_go_to_match: early return due to invalid index")
             return
 
         pos = self._search_results[index]
-        # debug(f"_go_to_match: pos = {pos}, term = '{self._search_term}'")
 
         self._highlight_search_results()
 
@@ -2142,7 +2123,6 @@ class TextPreviewWidget(QWidget):
     
     def _highlight_search_results(self):
         """高亮搜索结果"""
-        # debug(f"_highlight_search_results: called with {len(self._search_results)} results")
         
         app = QApplication.instance()
         accent_color_hex = "#007AFF"
@@ -2179,7 +2159,6 @@ class TextPreviewWidget(QWidget):
             
             extra_selections.append(extra_selection)
         
-        # debug(f"_highlight_search_results: setting {len(extra_selections)} extra selections")
         self.text_edit.setExtraSelections(extra_selections)
         self.text_edit.viewport().update()
     

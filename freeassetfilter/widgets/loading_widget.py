@@ -143,9 +143,6 @@ class LoadingSpinner(QWidget):
     rotation = Property(float, fget=get_rotation, fset=set_rotation)
     
     def start(self):
-        """
-        开始动画
-        """
         if self._is_running:
             return
         
@@ -155,9 +152,6 @@ class LoadingSpinner(QWidget):
             self._rotation_animation.start()
     
     def stop(self):
-        """
-        停止动画
-        """
         self._is_running = False
         
         if self._rotation_animation:
@@ -167,15 +161,9 @@ class LoadingSpinner(QWidget):
         self.update()
     
     def is_running(self):
-        """
-        获取动画运行状态
-        """
         return self._is_running
     
     def set_icon_size(self, size):
-        """
-        设置图标大小
-        """
         self._icon_size = size
         scaled_size = int(size * self._dpi_scale)
         self.setFixedSize(scaled_size, scaled_size)
@@ -183,9 +171,6 @@ class LoadingSpinner(QWidget):
         self.update()
     
     def set_accent_color(self, color):
-        """
-        设置强调色
-        """
         self._accent_color = QColor(color)
         self._load_svg_icon()
         self.update()
@@ -198,9 +183,6 @@ class LoadingSpinner(QWidget):
         self.update()
     
     def paintEvent(self, event):
-        """
-        绘制控件
-        """
         if self._loading_pixmap.isNull():
             return
         
@@ -251,9 +233,6 @@ class LoadingSpinner(QWidget):
         super().show()
     
     def set_visible(self, visible):
-        """
-        设置可见性
-        """
         if visible:
             self.show()
         else:

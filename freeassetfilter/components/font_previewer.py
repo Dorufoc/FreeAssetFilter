@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -76,7 +76,7 @@ class ZoomDisabledTextEdit(QTextEdit):
         """
         初始化文本编辑器
         
-        参数：
+        Args:
             parent: 父控件
         """
         super().__init__(parent)
@@ -88,7 +88,7 @@ class ZoomDisabledTextEdit(QTextEdit):
         当按下Ctrl键时，通过信号通知字体大小变化
         否则正常处理滚轮事件（滚动）
         
-        参数：
+        Args:
             event: 滚轮事件
         """
         # 如果按下了Ctrl键，发送字体大小变化信号
@@ -166,7 +166,6 @@ class FontLoadThread(QThread):
             self.finished.emit(request_id, True, font_family, font_id)
 
         except Exception as e:
-            # warning(f"加载字体时发生异常: {str(e)}")
             self.error.emit(request_id, f"加载字体失败: {str(e)}")
 
 
@@ -358,7 +357,7 @@ class FontPreviewWidget(QWidget):
         """
         设置要预览的字体文件
 
-        参数：
+        Args:
             file_path (str): 字体文件路径
         """
         debug(f"加载字体文件: {file_path}")
@@ -393,7 +392,6 @@ class FontPreviewWidget(QWidget):
                 self._thread.finished.disconnect(self._on_font_loaded)
                 self._thread.error.disconnect(self._on_load_error)
             except (TypeError, RuntimeError):
-                # debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                 pass
             self._thread.abort()
             self._thread.wait()
@@ -416,7 +414,6 @@ class FontPreviewWidget(QWidget):
                     self._thread.finished.disconnect(self._on_font_loaded)
                     self._thread.error.disconnect(self._on_load_error)
                 except (TypeError, RuntimeError):
-                    # debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                     pass
                 self._thread.abort()
                 self._thread.wait()
@@ -493,7 +490,7 @@ class FontPreviewWidget(QWidget):
         """
         设置自定义预览文本
 
-        参数：
+        Args:
             text (str): 预览文本内容
         """
         if self.current_font_family:
@@ -507,7 +504,7 @@ class FontPreviewWidget(QWidget):
         """
         设置要预览的字体文件（set_file的别名，用于兼容性）
         
-        参数：
+        Args:
             file_path (str): 字体文件路径
         """
         self.set_file(file_path)
@@ -521,7 +518,6 @@ class FontPreviewWidget(QWidget):
                 self._thread.finished.disconnect(self._on_font_loaded)
                 self._thread.error.disconnect(self._on_load_error)
             except (TypeError, RuntimeError):
-                # debug(f"断开信号连接时发生异常（可忽略）: {str(e)}")
                 pass
             
             # 终止线程
@@ -579,7 +575,7 @@ class FontPreviewer(QWidget):
         """
         设置要预览的字体文件
         
-        参数：
+        Args:
             file_path (str): 字体文件路径
         """
         self.preview_widget.set_file(file_path)
@@ -588,7 +584,7 @@ class FontPreviewer(QWidget):
         """
         设置自定义预览文本
         
-        参数：
+        Args:
             text (str): 预览文本内容
         """
         self.preview_widget.set_preview_text(text)

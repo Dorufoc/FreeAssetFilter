@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -145,7 +145,6 @@ class MPVManager(QObject):
 
         # 获取状态
         state = manager.get_state()
-        # debug(f"当前位置: {state.position}")
 
         # 关闭MPV
         manager.close()
@@ -280,7 +279,6 @@ class MPVManager(QObject):
             )
             self._operation_thread.start()
             info("操作处理线程已启动")
-            # debug(f"线程名称: {self._operation_thread.name}")
 
     def _stop_operation_thread(self, timeout: float = 2.0):
         """停止操作处理线程"""
@@ -291,7 +289,6 @@ class MPVManager(QObject):
                 warning(f"操作处理线程未在 {timeout}s 内停止")
             else:
                 info("操作处理线程已停止")
-            # debug(f"停止超时: {timeout}s")
 
     def _cleanup_resources(self):
         """清理资源"""
@@ -356,8 +353,6 @@ class MPVManager(QObject):
                                 operation.future.set_result(False)
                             continue
                         self._pending_latest_operations.pop(pending_key, None)
-
-                #debug(f"处理操作: {operation.operation_type.value}, 组件: {operation.component_id}")
 
                 # 执行操作前再次检查关闭状态
                 if self._is_shutting_down:
@@ -612,7 +607,6 @@ class MPVManager(QObject):
         except RuntimeError as e:
             # 信号可能未连接，这是正常情况
             pass
-            # debug(f"断开信号连接时出错: {e}")
 
         try:
             self._mpv_core.close()
@@ -872,7 +866,6 @@ class MPVManager(QObject):
         try:
             import os
             abs_path = os.path.abspath(lut_file_path)
-            # debug(f"加载LUT: {abs_path}")
 
             abs_path2 = abs_path.replace("\\", "/")
 
@@ -1170,20 +1163,16 @@ class MPVManager(QObject):
 
     def _on_state_changed(self, is_playing: bool):
         """播放状态变化回调"""
-        # debug(f"[MGR_STATE] stateChanged(playing={is_playing}) → 请求发射")
         self._request_state_changed_emit()
 
     def _on_position_changed(self, position: float, duration: float):
         """位置变化回调"""
-        # debug(f"[MGR_POS] positionChanged(pos={position}, dur={duration}) → 转发")
         self.positionChanged.emit(position, duration)
 
     def _on_duration_changed(self, duration: float):
         """时长变化回调"""
-        # debug(f"管理器收到 durationChanged: duration={duration}")
         # 从core获取当前缓存位置，避免阻塞
         position = self._mpv_core.get_position_cached() if self._mpv_core else 0.0
-        # debug(f"[MGR_DUR] durationChanged(dur={duration}) → 读取缓存位置 {position} → positionChanged")
         self.positionChanged.emit(position if position is not None else 0.0, duration)
     def _on_volume_changed(self, volume: int):
         """音量变化回调"""
@@ -2411,7 +2400,6 @@ class MPVManager(QObject):
                 self.close()
         except RuntimeError as e:
             pass
-            # debug(f"析构时关闭MPV管理器失败: {e}")
 
 
 # 便捷函数，用于快速获取管理器实例

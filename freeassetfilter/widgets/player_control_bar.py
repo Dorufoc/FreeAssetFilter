@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -532,17 +532,14 @@ class PlayerControlBar(QWidget):
 
     def _on_lut_button_clicked(self):
         """LUT按钮点击处理"""
-        # 打开LUT管理弹窗
         self._open_lut_manager_dialog()
     
     def _open_lut_manager_dialog(self):
         from .lut_manager_dialog import LutManagerDialog
         """打开LUT管理弹窗"""
-        # 获取设置管理器
         app = QApplication.instance()
         settings_manager = getattr(app, 'settings_manager', None)
         
-        # 创建并显示LUT管理弹窗
         dialog = LutManagerDialog(self, settings_manager)
         dialog.lutSelected.connect(self._on_lut_selected)
         dialog.lutCleared.connect(self._on_lut_cleared)
@@ -568,16 +565,13 @@ class PlayerControlBar(QWidget):
         self.lutCleared.emit()
     
     def _update_lut_button_style(self):
-        """更新LUT按钮样式（根据LUT加载状态）"""
+        """LUT加载状态切换强调/普通样式"""
         if not hasattr(self, '_lut_button'):
             return
         
-        # 根据LUT状态设置按钮高亮
         if self._is_lut_loaded:
-            # LUT已加载，使用强调样式
             self._lut_button.set_button_type("primary")
         else:
-            # LUT未加载，使用普通样式
             self._lut_button.set_button_type("normal")
         
         self._lut_button.update()
@@ -797,12 +791,11 @@ class PlayerControlBar(QWidget):
         volume = max(0, min(100, volume))
         if self._volume != volume:
             self._volume = volume
-            # 同步更新音量控制组件显示（阻止信号循环）
+            # 阻止信号循环
             self._block_volume_signal = True
             if hasattr(self, '_volume_control'):
                 self._volume_control.set_volume(volume)
             self._block_volume_signal = False
-            # 仅在允许时发射信号
             if emit_signal:
                 self.volumeChanged.emit(volume)
 
@@ -837,23 +830,20 @@ class PlayerControlBar(QWidget):
             
         old_speed = self._speed
         self._speed = speed
-        # 同步更新下拉菜单选中项
         if hasattr(self, '_speed_menu'):
-            # 查找对应的选项并设置为当前选中
             for item in self._speed_menu._items:
                 if item.get('data') == speed:
                     self._speed_menu.set_current_item(item)
                     break
-        # 无论速度值是否变化，都更新按钮样式，确保每次都检查当前速度是否为1.0
+        # 无论速度值是否变化，都更新按钮样式
         self._update_speed_button_style()
-        # 仅在速度值变化且允许时发射信号，避免循环触发
+        # 速度变化时发射信号，避免循环触发
         if old_speed != speed and emit_signal and not self._block_speed_signal:
             self.speedChanged.emit(speed)
 
     def _update_speed_button_style(self):
-        """更新倍速按钮样式（根据当前倍速切换普通/强调样式）"""
+        """倍速不为1.0时使用强调样式"""
         if self._show_speed_button and hasattr(self, '_speed_button'):
-            # 倍速不为1.0时使用强调样式，否则使用普通样式
             button_type = "primary" if self._speed != 1.0 else "normal"
             self._speed_button.set_button_type(button_type)
             self._speed_button.update_style()
@@ -923,16 +913,13 @@ class PlayerControlBar(QWidget):
         self._update_lut_button_style()
     
     def _update_lut_button_style(self):
-        """更新LUT按钮样式（根据LUT加载状态）"""
+        """LUT加载状态切换强调/普通样式"""
         if not (self._show_lut_controls and hasattr(self, '_lut_button')):
             return
         
-        # 根据LUT状态设置按钮高亮
         if self._is_lut_loaded:
-            # LUT已加载，使用强调样式
             self._lut_button.set_button_type("primary")
         else:
-            # LUT未加载，使用普通样式
             self._lut_button.set_button_type("normal")
         
         self._lut_button.update()
@@ -1005,13 +992,8 @@ class PlayerControlBar(QWidget):
         self._on_popup_menu_visibility_changed()
     
     def keyPressEvent(self, event):
-        """
-        键盘按下事件处理
-        将键盘事件传递给父窗口处理
-        """
-        # 发射信号通知父窗口有键盘事件
+        """键盘事件传递给父窗口"""
         self.keyPressed.emit(event)
-        # 不调用父类的默认处理，确保事件继续传递给父窗口
-        # 如果事件未被处理，则忽略它，让它继续传递
+        # 不调用父类默认处理，确保事件继续传递
         if not event.isAccepted():
             event.ignore()

@@ -198,9 +198,6 @@ class CustomInputBox(QWidget):
         self._context_menu = None
     
     def init_ui(self):
-        """
-        初始化UI组件
-        """
         # 设置主布局
         main_layout = QVBoxLayout(self)
         # 设置布局边距，确保边框能显示
@@ -256,17 +253,11 @@ class CustomInputBox(QWidget):
         self.repaint()
     
     def _on_text_changed(self, text):
-        """
-        文本变化事件处理
-        """
         self._has_content = bool(text)
         self.update_style()
         self.textChanged.emit(text)
     
     def _on_focus_in(self, event):
-        """
-        获得焦点事件处理
-        """
         self._is_active = True
         self.update_style()
         self.focusChanged.emit(True)
@@ -274,9 +265,6 @@ class CustomInputBox(QWidget):
         QLineEdit.focusInEvent(self.line_edit, event)
     
     def _on_focus_out(self, event):
-        """
-        失去焦点事件处理
-        """
         self._is_active = False
         self.update_style()
         self.focusChanged.emit(False)
@@ -286,15 +274,9 @@ class CustomInputBox(QWidget):
         QLineEdit.focusOutEvent(self.line_edit, event)
     
     def _on_return_pressed(self):
-        """
-        回车键按下事件处理
-        """
         self.editingFinished.emit(self.line_edit.text())
     
     def update_style(self):
-        """
-        更新输入框样式
-        """
         # 更新 line_edit 的文字与占位符颜色，确保主题切换后立即生效
         padding_left = int(8 * self.dpi_scale)
         padding_right = int(8 * self.dpi_scale)
@@ -391,111 +373,45 @@ class CustomInputBox(QWidget):
         painter.drawRoundedRect(border_rect, self._border_radius, self._border_radius)
     
     def set_text(self, text):
-        """
-        设置输入框文本
-        
-        Args:
-            text (str): 要设置的文本
-        """
         self.line_edit.setText(text)
         self._has_content = bool(text)
         self.update_style()
     
     def get_text(self):
-        """
-        获取输入框当前文本
-        
-        Returns:
-            str: 当前输入框文本
-        """
         return self.line_edit.text()
-    
+
     def clear_text(self):
-        """
-        清空输入框文本
-        """
         self.line_edit.clear()
         self._has_content = False
         self.update_style()
     
     def set_placeholder_text(self, text):
-        """
-        设置占位符文本
-        
-        Args:
-            text (str): 占位符文本
-        """
         self.placeholder_text = text
         self.line_edit.setPlaceholderText(text)
-    
+
     def get_placeholder_text(self):
-        """
-        获取占位符文本
-        
-        Returns:
-            str: 占位符文本
-        """
         return self.placeholder_text
-    
+
     def set_focus(self):
-        """
-        设置输入框获得焦点
-        """
         self.line_edit.setFocus()
-    
+
     def has_focus(self):
-        """
-        检查输入框是否获得焦点
-        
-        Returns:
-            bool: 是否获得焦点
-        """
         return self._is_active
-    
+
     def has_content(self):
-        """
-        检查输入框是否有内容
-        
-        Returns:
-            bool: 是否有内容
-        """
         return self._has_content
     
     def setText(self, text):
-        """
-        设置输入框文本（Qt兼容接口）
-
-        Args:
-            text (str): 要设置的文本
-        """
         self.set_text(text)
 
     def text(self):
-        """
-        获取输入框当前文本（Qt兼容接口）
-
-        Returns:
-            str: 当前输入框文本
-        """
         return self.get_text()
 
     def set_editable(self, editable):
-        """
-        设置输入框是否可编辑
-
-        Args:
-            editable (bool): 是否可编辑
-        """
         self._editable = editable
         self.line_edit.setReadOnly(not editable)
 
     def is_editable(self):
-        """
-        获取输入框是否可编辑
-
-        Returns:
-            bool: 是否可编辑
-        """
         return self._editable
 
     def _init_context_menu(self):
@@ -518,12 +434,6 @@ class CustomInputBox(QWidget):
         self._has_selection = False
 
     def _show_context_menu(self, pos):
-        """
-        显示右键菜单
-
-        Args:
-            pos: 鼠标位置
-        """
         # 保存当前选区信息
         self._saved_selection_start = self.line_edit.selectionStart()
         self._saved_selection_end = self.line_edit.selectionEnd()
@@ -552,12 +462,6 @@ class CustomInputBox(QWidget):
         self._context_menu.popup(global_pos)
 
     def _on_context_menu_item_clicked(self, action):
-        """
-        处理右键菜单项点击事件
-
-        Args:
-            action: 菜单项动作标识
-        """
         is_readonly = self.line_edit.isReadOnly()
 
         if action == "copy":

@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -467,7 +467,7 @@ class VideoPlayer(QWidget):
     - 文件加载和播放状态管理
     - 与主窗口的信号通信
     
-    Signals:
+    信号:
         fileLoaded: 文件加载完成信号 (file_path: str)
         fileEnded: 文件播放结束信号
         errorOccurred: 错误发生信号 (error_message: str)

@@ -573,7 +573,7 @@ This project is open-sourced under the [AGPL-3.0](LICENSE) license.
 
 ```
 FreeAssetFilter - Multi-functional File Preview and Management Tool
-Copyright (C) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as published

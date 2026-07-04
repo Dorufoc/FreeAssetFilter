@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -1625,9 +1625,9 @@ class UnifiedPreviewer(QWidget):
         优化：避免在后台线程中创建UI组件，只处理媒体加载逻辑
         """
         # 信号定义
-        preview_created = Signal(object, str)  # 预览组件创建完成，参数：组件实例，预览类型
-        preview_error = Signal(str)  # 预览创建失败，参数：错误信息
-        preview_progress = Signal(int, str)  # 预览进度更新，参数：进度(0-100)，状态描述
+        preview_created = Signal(object, str)  # 预览组件创建完成，Args:组件实例，预览类型
+        preview_error = Signal(str)  # 预览创建失败，Args:错误信息
+        preview_progress = Signal(int, str)  # 预览进度更新，Args:进度(0-100)，状态描述
 
         def __init__(self, file_path, preview_type, parent=None):
             """

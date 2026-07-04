@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -101,7 +101,7 @@ class TokenType(Enum):
 class Token:
     """语法 Token 数据类
     
-    属性：
+    Attributes:
         text: Token 文本内容
         token_type: Token 类型
         start_pos: 起始位置（字符索引）
@@ -123,7 +123,7 @@ class Token:
 class ColorScheme:
     """颜色方案数据类
     
-    属性：
+    Attributes:
         name: 方案名称
         background: 背景色 (hex)
         foreground: 前景色 (hex)
@@ -307,7 +307,7 @@ class TextMateGrammar:
     
     用于表示从 .tmLanguage 或 .sublime-syntax 文件加载的语法定义
     
-    属性：
+    Attributes:
         name: 语法名称
         scope_name: 作用域名（如 source.python）
         file_extensions: 支持的文件扩展名列表
@@ -354,10 +354,10 @@ class TextMateGrammarLoader:
     def load_file(self, file_path: str) -> Optional[TextMateGrammar]:
         """加载单个语法定义文件
         
-        参数：
+        Args:
             file_path: 语法文件路径
             
-        返回：
+        Returns:
             TextMateGrammar 对象或 None
         """
         path = Path(file_path)
@@ -387,10 +387,10 @@ class TextMateGrammarLoader:
     def _load_sublime_syntax(self, file_path: str) -> Optional[TextMateGrammar]:
         """加载 Sublime Syntax 文件 (YAML 格式)
         
-        参数：
+        Args:
             file_path: 文件路径
             
-        返回：
+        Returns:
             TextMateGrammar 对象
         """
         try:
@@ -407,10 +407,10 @@ class TextMateGrammarLoader:
     def _load_tm_language(self, file_path: str) -> Optional[TextMateGrammar]:
         """加载 TextMate Language 文件 (XML plist 格式)
         
-        参数：
+        Args:
             file_path: 文件路径
             
-        返回：
+        Returns:
             TextMateGrammar 对象
         """
         with open(file_path, 'rb') as f:
@@ -421,10 +421,10 @@ class TextMateGrammarLoader:
     def _load_json(self, file_path: str) -> Optional[TextMateGrammar]:
         """加载 JSON 格式的语法定义
         
-        参数：
+        Args:
             file_path: 文件路径
             
-        返回：
+        Returns:
             TextMateGrammar 对象
         """
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -435,10 +435,10 @@ class TextMateGrammarLoader:
     def _load_plist(self, file_path: str) -> Optional[TextMateGrammar]:
         """加载 plist 格式的语法定义
         
-        参数：
+        Args:
             file_path: 文件路径
             
-        返回：
+        Returns:
             TextMateGrammar 对象
         """
         with open(file_path, 'rb') as f:
@@ -449,11 +449,11 @@ class TextMateGrammarLoader:
     def _parse_grammar_data(self, data: Dict[str, Any], source_file: str) -> TextMateGrammar:
         """解析语法定义数据
         
-        参数：
+        Args:
             data: 原始数据字典
             source_file: 源文件路径
             
-        返回：
+        Returns:
             TextMateGrammar 对象
         """
         # 处理不同格式的字段名差异
@@ -474,21 +474,20 @@ class TextMateGrammarLoader:
             source_file=source_file
         )
         
-        # 注册到映射表
         if scope_name:
             self._scope_to_grammar[scope_name] = grammar
         if name:
             self.grammars[name.lower()] = grammar
         
         return grammar
-    
+
     def load_folder(self, folder_path: str) -> Dict[str, TextMateGrammar]:
         """加载文件夹中的所有语法定义
         
-        参数：
+        Args:
             folder_path: 文件夹路径
             
-        返回：
+        Returns:
             语法名称到 TextMateGrammar 的映射
         """
         folder = Path(folder_path)
@@ -498,7 +497,6 @@ class TextMateGrammarLoader:
 
         grammars = {}
 
-        # 支持的扩展名
         extensions = ['.sublime-syntax', '.tmlanguage', '.json', '.plist']
 
         for ext in extensions:
@@ -518,10 +516,10 @@ class TextMateGrammarLoader:
         - macOS: ~/.vscode/extensions/
         - Linux: ~/.vscode/extensions/
         
-        参数：
+        Args:
             extension_path: 扩展文件夹路径
             
-        返回：
+        Returns:
             语法名称到 TextMateGrammar 的映射
         """
         ext_path = Path(extension_path)
@@ -542,10 +540,10 @@ class TextMateGrammarLoader:
     def get_grammar_by_scope(self, scope_name: str) -> Optional[TextMateGrammar]:
         """通过作用域名获取语法定义
         
-        参数：
+        Args:
             scope_name: 作用域名（如 source.python）
             
-        返回：
+        Returns:
             TextMateGrammar 对象或 None
         """
         return self._scope_to_grammar.get(scope_name)
@@ -553,10 +551,10 @@ class TextMateGrammarLoader:
     def get_grammar_by_extension(self, extension: str) -> Optional[TextMateGrammar]:
         """通过文件扩展名获取语法定义
         
-        参数：
+        Args:
             extension: 文件扩展名（如 .py）
             
-        返回：
+        Returns:
             TextMateGrammar 对象或 None
         """
         ext = extension.lower()
@@ -622,7 +620,7 @@ class TextMateTheme:
     
     用于表示从 .tmTheme 文件加载的颜色主题
     
-    属性：
+    Attributes:
         name: 主题名称
         author: 作者
         settings: 颜色设置列表
@@ -663,10 +661,10 @@ class TextMateThemeLoader:
     def load_file(self, file_path: str) -> Optional[TextMateTheme]:
         """加载单个主题文件
         
-        参数：
+        Args:
             file_path: 主题文件路径
             
-        返回：
+        Returns:
             TextMateTheme 对象或 None
         """
         path = Path(file_path)
@@ -694,10 +692,10 @@ class TextMateThemeLoader:
     def _load_tm_theme(self, file_path: str) -> Optional[TextMateTheme]:
         """加载 TextMate Theme 文件 (XML plist 格式)
         
-        参数：
+        Args:
             file_path: 文件路径
             
-        返回：
+        Returns:
             TextMateTheme 对象
         """
         with open(file_path, 'rb') as f:
@@ -708,10 +706,10 @@ class TextMateThemeLoader:
     def _load_json(self, file_path: str) -> Optional[TextMateTheme]:
         """加载 JSON 格式的主题
         
-        参数：
+        Args:
             file_path: 文件路径
             
-        返回：
+        Returns:
             TextMateTheme 对象
         """
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -722,10 +720,10 @@ class TextMateThemeLoader:
     def _load_plist(self, file_path: str) -> Optional[TextMateTheme]:
         """加载 plist 格式的主题
         
-        参数：
+        Args:
             file_path: 文件路径
             
-        返回：
+        Returns:
             TextMateTheme 对象
         """
         with open(file_path, 'rb') as f:
@@ -736,11 +734,11 @@ class TextMateThemeLoader:
     def _parse_theme_data(self, data: Dict[str, Any], source_file: str) -> TextMateTheme:
         """解析主题数据
         
-        参数：
+        Args:
             data: 原始数据字典
             source_file: 源文件路径
             
-        返回：
+        Returns:
             TextMateTheme 对象
         """
         name = data.get('name', '')
@@ -756,7 +754,6 @@ class TextMateThemeLoader:
             source_file=source_file
         )
         
-        # 注册到映射表
         if name:
             self.themes[name.lower()] = theme
         
@@ -765,10 +762,10 @@ class TextMateThemeLoader:
     def load_folder(self, folder_path: str) -> Dict[str, TextMateTheme]:
         """加载文件夹中的所有主题
         
-        参数：
+        Args:
             folder_path: 文件夹路径
             
-        返回：
+        Returns:
             主题名称到 TextMateTheme 的映射
         """
         folder = Path(folder_path)
@@ -778,7 +775,6 @@ class TextMateThemeLoader:
 
         themes = {}
 
-        # 支持的扩展名
         extensions = ['.tmtheme', '.json', '.plist']
 
         for ext in extensions:
@@ -793,14 +789,13 @@ class TextMateThemeLoader:
     def to_color_scheme(self, theme: TextMateTheme, scheme_name: str) -> ColorScheme:
         """将 TextMate 主题转换为 ColorScheme
         
-        参数：
+        Args:
             theme: TextMateTheme 对象
             scheme_name: 颜色方案名称
             
-        返回：
+        Returns:
             ColorScheme 对象
         """
-        # 默认颜色
         background = "#1e1e1e"
         foreground = "#d4d4d4"
         colors = {token_type: foreground for token_type in TokenType}
@@ -921,7 +916,7 @@ class SyntectHighlighter:
     使用 pysyntect 库实现高性能语法高亮，支持 500+ 种语言。
     同时支持加载自定义 TextMate 语法文件和主题。
     
-    属性：
+    Attributes:
         syntax_set: 语法定义集合
         theme: 当前主题
         color_scheme: 颜色方案
@@ -932,7 +927,7 @@ class SyntectHighlighter:
     def __init__(self, color_scheme: Optional[ColorScheme] = None):
         """初始化语法高亮器
         
-        参数：
+        Args:
             color_scheme: 颜色方案，默认为 GitHub Dark
         """
         self.color_scheme = color_scheme or ColorSchemes.github_dark()
@@ -940,7 +935,6 @@ class SyntectHighlighter:
         self.theme = None
         self._formats_cache: Dict[str, QTextCharFormat] = {}
         
-        # 初始化 TextMate 加载器
         self.grammar_loader = TextMateGrammarLoader()
         self.theme_loader = TextMateThemeLoader()
         
@@ -972,7 +966,7 @@ class SyntectHighlighter:
         
         Syntect需要主题才能工作，如果没有主题则不可用
         
-        返回：
+        Returns:
             bool: 是否可用
         """
         return SYNTECT_AVAILABLE and self.syntax_set is not None and self.theme is not None
@@ -980,7 +974,7 @@ class SyntectHighlighter:
     def load_syntax_from_folder(self, folder_path: str):
         """从文件夹加载语法定义
         
-        参数：
+        Args:
             folder_path: 包含 .sublime-syntax 文件的文件夹路径
         """
         if not SYNTECT_AVAILABLE:
@@ -994,10 +988,10 @@ class SyntectHighlighter:
     def load_theme_from_folder(self, folder_path: str) -> Dict[str, any]:
         """从文件夹加载主题
 
-        参数：
+        Args:
             folder_path: 包含 .tmTheme 文件的文件夹路径
 
-        返回：
+        Returns:
             主题名称到主题对象的映射
         """
         if not SYNTECT_AVAILABLE:
@@ -1019,10 +1013,10 @@ class SyntectHighlighter:
         - .json (VS Code)
         - .plist (属性列表)
         
-        参数：
+        Args:
             file_path: 语法文件路径
             
-        返回：
+        Returns:
             TextMateGrammar 对象或 None
         """
         return self.grammar_loader.load_file(file_path)
@@ -1030,10 +1024,10 @@ class SyntectHighlighter:
     def load_textmate_grammars_from_folder(self, folder_path: str) -> Dict[str, TextMateGrammar]:
         """从文件夹加载所有 TextMate 语法定义
         
-        参数：
+        Args:
             folder_path: 包含语法文件的文件夹路径
             
-        返回：
+        Returns:
             语法名称到 TextMateGrammar 的映射
         """
         return self.grammar_loader.load_folder(folder_path)
@@ -1046,10 +1040,10 @@ class SyntectHighlighter:
         - macOS: ~/.vscode/extensions/
         - Linux: ~/.vscode/extensions/
         
-        参数：
+        Args:
             extension_path: 扩展文件夹路径
             
-        返回：
+        Returns:
             语法名称到 TextMateGrammar 的映射
         """
         return self.grammar_loader.load_vscode_extension(extension_path)
@@ -1062,10 +1056,10 @@ class SyntectHighlighter:
         - .json (VS Code)
         - .plist (属性列表)
         
-        参数：
+        Args:
             file_path: 主题文件路径
             
-        返回：
+        Returns:
             TextMateTheme 对象或 None
         """
         return self.theme_loader.load_file(file_path)
@@ -1073,10 +1067,10 @@ class SyntectHighlighter:
     def load_textmate_themes_from_folder(self, folder_path: str) -> Dict[str, TextMateTheme]:
         """从文件夹加载所有 TextMate 主题
         
-        参数：
+        Args:
             folder_path: 包含主题文件的文件夹路径
             
-        返回：
+        Returns:
             主题名称到 TextMateTheme 的映射
         """
         return self.theme_loader.load_folder(folder_path)
@@ -1084,7 +1078,7 @@ class SyntectHighlighter:
     def apply_textmate_theme(self, theme: TextMateTheme, scheme_name: Optional[str] = None):
         """应用 TextMate 主题
         
-        参数：
+        Args:
             theme: TextMateTheme 对象
             scheme_name: 颜色方案名称（可选）
         """
@@ -1097,10 +1091,10 @@ class SyntectHighlighter:
     def get_textmate_grammar_info(self, grammar_name: str) -> Optional[Dict[str, Any]]:
         """获取 TextMate 语法信息
         
-        参数：
+        Args:
             grammar_name: 语法名称
             
-        返回：
+        Returns:
             包含语法信息的字典或 None
         """
         grammar = self.grammar_loader.grammars.get(grammar_name.lower())
@@ -1120,10 +1114,10 @@ class SyntectHighlighter:
     def get_textmate_theme_info(self, theme_name: str) -> Optional[Dict[str, Any]]:
         """获取 TextMate 主题信息
         
-        参数：
+        Args:
             theme_name: 主题名称
             
-        返回：
+        Returns:
             包含主题信息的字典或 None
         """
         theme = self.theme_loader.themes.get(theme_name.lower())
@@ -1141,7 +1135,7 @@ class SyntectHighlighter:
     def get_supported_languages(self) -> List[str]:
         """获取支持的语言列表
         
-        返回：
+        Returns:
             支持的语言名称列表
         """
         if self.syntax_set:
@@ -1154,11 +1148,11 @@ class SyntectHighlighter:
     def highlight_line(self, line: str, language: str) -> List[Token]:
         """高亮单行代码
         
-        参数：
+        Args:
             line: 代码行文本
             language: 语言标识符
             
-        返回：
+        Returns:
             Token 列表
         """
         if not SYNTECT_AVAILABLE or not self.syntax_set:
@@ -1194,17 +1188,16 @@ class SyntectHighlighter:
     def _map_syntect_style_to_token_type(self, style) -> TokenType:
         """将 Syntect 样式映射为 TokenType
         
-        参数：
+        Args:
             style: Syntect 样式对象
             
-        返回：
+        Returns:
             TokenType
         """
         # 根据前景色判断类型（简化映射）
         fg = style.foreground
         hex_color = f"#{fg.r:02x}{fg.g:02x}{fg.b:02x}"
         
-        # 与颜色方案对比
         for token_type, color in self.color_scheme.colors.items():
             if color.lower() == hex_color.lower():
                 return token_type
@@ -1214,11 +1207,11 @@ class SyntectHighlighter:
     def _fallback_highlight(self, line: str, language: str) -> List[Token]:
         """备选高亮方案（使用 Pygments）
         
-        参数：
+        Args:
             line: 代码行文本
             language: 语言标识符
             
-        返回：
+        Returns:
             Token 列表
         """
         if not PYGMENTS_AVAILABLE:
@@ -1262,10 +1255,10 @@ class SyntectHighlighter:
     def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
         """获取 TokenType 对应的 QTextCharFormat
         
-        参数：
+        Args:
             token_type: Token 类型
             
-        返回：
+        Returns:
             QTextCharFormat 对象
         """
         cache_key = f"{self.color_scheme.name}_{token_type.name}"
@@ -1281,10 +1274,10 @@ class SyntectHighlighter:
     def guess_language(self, filename: str) -> Optional[str]:
         """根据文件名猜测语言
         
-        参数：
+        Args:
             filename: 文件名
             
-        返回：
+        Returns:
             语言标识符或 None
         """
         ext = Path(filename).suffix.lower()
@@ -1296,7 +1289,7 @@ class PygmentsHighlighter:
     
     当 Syntect 不可用时使用 Pygments 作为备选。
     
-    属性：
+    Attributes:
         color_scheme: 颜色方案
         style: Pygments 样式
     """
@@ -1304,7 +1297,7 @@ class PygmentsHighlighter:
     def __init__(self, color_scheme: Optional[ColorScheme] = None):
         """初始化语法高亮器
         
-        参数：
+        Args:
             color_scheme: 颜色方案，默认为 GitHub Dark
         """
         self.color_scheme = color_scheme or ColorSchemes.github_dark()
@@ -1329,11 +1322,11 @@ class PygmentsHighlighter:
     def highlight_line(self, line: str, language: str) -> List[Token]:
         """高亮单行代码
         
-        参数：
+        Args:
             line: 代码行文本
             language: 语言标识符
             
-        返回：
+        Returns:
             Token 列表
         """
         if not PYGMENTS_AVAILABLE:
@@ -1368,13 +1361,12 @@ class PygmentsHighlighter:
     def _map_pygments_token(self, token) -> TokenType:
         """将 Pygments token 映射为 TokenType
         
-        参数：
+        Args:
             token: Pygments token
             
-        返回：
+        Returns:
             TokenType
         """
-        # 确保映射已初始化
         _init_pygments_token_map()
         
         # 直接检查token本身是否在映射中
@@ -1386,7 +1378,6 @@ class PygmentsHighlighter:
         while current:
             if current in PYGMENTS_TOKEN_MAP:
                 return PYGMENTS_TOKEN_MAP[current]
-            # 获取父token
             current = current.parent
         
         return TokenType.DEFAULT
@@ -1394,10 +1385,10 @@ class PygmentsHighlighter:
     def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
         """获取 TokenType 对应的 QTextCharFormat
         
-        参数：
+        Args:
             token_type: Token 类型
             
-        返回：
+        Returns:
             QTextCharFormat 对象
         """
         cache_key = f"pygments_{self.color_scheme.name}_{token_type.name}"
@@ -1413,10 +1404,10 @@ class PygmentsHighlighter:
     def guess_language(self, filename: str) -> Optional[str]:
         """根据文件名猜测语言
         
-        参数：
+        Args:
             filename: 文件名
             
-        返回：
+        Returns:
             语言标识符或 None
         """
         ext = Path(filename).suffix.lower()
@@ -1433,7 +1424,7 @@ class SyntaxHighlighter:
     自动选择最佳可用的高亮引擎（Syntect > Pygments > 无高亮）
     支持自动加载 TextMate 语法文件并根据文件扩展名进行高亮
     
-    属性：
+    Attributes:
         engine: 实际使用的高亮引擎
         color_scheme: 颜色方案
         grammar_loader: TextMate 语法加载器
@@ -1448,7 +1439,7 @@ class SyntaxHighlighter:
                  syntax_dir: Optional[str] = None):
         """初始化语法高亮器
 
-        参数：
+        Args:
             color_scheme: 颜色方案
             engine: 指定引擎 ('syntect', 'pygments', 'auto')
             syntax_dir: TextMate 语法文件目录，默认为 core/syntax
@@ -1493,7 +1484,7 @@ class SyntaxHighlighter:
     def _load_textmate_syntaxes(self, syntax_dir: Optional[str] = None):
         """加载 TextMate 语法文件
         
-        参数：
+        Args:
             syntax_dir: 语法文件目录，None 则使用默认目录
         """
         if syntax_dir is None:
@@ -1504,7 +1495,6 @@ class SyntaxHighlighter:
             warning(f"语法目录不存在: {syntax_dir}")
             return
         
-        # 加载所有语法文件
         grammars = self.grammar_loader.load_folder(str(syntax_path))
         
         if not grammars:
@@ -1631,10 +1621,10 @@ class SyntaxHighlighter:
         
         将语法名称转换为统一的语言标识符
         
-        参数：
+        Args:
             name: 原始名称
             
-        返回：
+        Returns:
             规范化的语言标识符
         """
         name_lower = name.lower()
@@ -1658,7 +1648,6 @@ class SyntaxHighlighter:
             'asp vb.net': 'vb',
         }
         
-        # 直接映射
         if name_lower in name_mapping:
             return name_mapping[name_lower]
         
@@ -1676,10 +1665,10 @@ class SyntaxHighlighter:
         
         优先使用 TextMate 语法中的映射，其次使用内置映射
         
-        参数：
+        Args:
             filename: 文件名或路径
             
-        返回：
+        Returns:
             语言标识符或 None
         """
         ext = Path(filename).suffix.lower()
@@ -1702,11 +1691,11 @@ class SyntaxHighlighter:
     def highlight_file(self, text: str, filename: str) -> List[List[Token]]:
         """根据文件名自动选择语言并高亮
 
-        参数：
+        Args:
             text: 代码文本
             filename: 文件名（用于推断语言）
 
-        返回：
+        Returns:
             每行的 Token 列表
         """
         debug(f"高亮文件: {filename}")
@@ -1724,11 +1713,11 @@ class SyntaxHighlighter:
     def highlight_line(self, line: str, language: str) -> List[Token]:
         """高亮单行代码
         
-        参数：
+        Args:
             line: 代码行文本
             language: 语言标识符
             
-        返回：
+        Returns:
             Token 列表
         """
         if self._engine:
@@ -1738,11 +1727,11 @@ class SyntaxHighlighter:
     def tokenize(self, line: str, language: str) -> List[Token]:
         """Tokenize单行代码（highlight_line的别名，用于兼容接口）
         
-        参数：
+        Args:
             line: 代码行文本
             language: 语言标识符
             
-        返回：
+        Returns:
             Token 列表
         """
         return self.highlight_line(line, language)
@@ -1750,11 +1739,11 @@ class SyntaxHighlighter:
     def highlight_text(self, text: str, language: str) -> List[List[Token]]:
         """高亮多行代码
 
-        参数：
+        Args:
             text: 代码文本
             language: 语言标识符
 
-        返回：
+        Returns:
             每行的 Token 列表
         """
         debug(f"高亮代码，语言: {language}, 长度: {len(text)} 字符")
@@ -1766,10 +1755,10 @@ class SyntaxHighlighter:
     def get_qtextformat(self, token_type: TokenType) -> QTextCharFormat:
         """获取 TokenType 对应的 QTextCharFormat
         
-        参数：
+        Args:
             token_type: Token 类型
             
-        返回：
+        Returns:
             QTextCharFormat 对象
         """
         if self._engine:
@@ -1782,7 +1771,7 @@ class SyntaxHighlighter:
     def get_background_color(self) -> QColor:
         """获取背景颜色
         
-        返回：
+        Returns:
             QColor 对象
         """
         return QColor(self.color_scheme.background)
@@ -1790,7 +1779,7 @@ class SyntaxHighlighter:
     def get_foreground_color(self) -> QColor:
         """获取前景颜色
         
-        返回：
+        Returns:
             QColor 对象
         """
         return QColor(self.color_scheme.foreground)
@@ -1798,10 +1787,10 @@ class SyntaxHighlighter:
     def guess_language(self, filename: str) -> Optional[str]:
         """根据文件名猜测语言
         
-        参数：
+        Args:
             filename: 文件名
             
-        返回：
+        Returns:
             语言标识符或 None
         """
         if self._engine:
@@ -1817,7 +1806,7 @@ class SyntaxHighlighter:
     def set_color_scheme(self, color_scheme: ColorScheme):
         """设置颜色方案
         
-        参数：
+        Args:
             color_scheme: 新的颜色方案
         """
         self.color_scheme = color_scheme
@@ -1830,11 +1819,11 @@ class SyntaxHighlighter:
 def create_highlighter(theme: str = 'github_dark') -> SyntaxHighlighter:
     """创建语法高亮器
 
-    参数：
+    Args:
         theme: 主题名称 ('github_dark', 'github_light', 'vscode_dark', 'vscode_light', 'auto')
                'auto' 会根据当前主题模式自动选择
 
-    返回：
+    Returns:
         SyntaxHighlighter 实例
     """
     debug(f"创建语法高亮器，主题: {theme}")
@@ -1863,7 +1852,7 @@ def is_dark_mode() -> bool:
 
     从应用设置中获取主题设置，判断是否为深色模式
 
-    返回：
+    Returns:
         是否为深色模式
     """
     try:
@@ -1886,7 +1875,7 @@ def get_auto_theme_scheme() -> ColorScheme:
     暗色模式使用 github_dark
     亮色模式使用 vscode_light（前景色更深，对比度更好）
 
-    返回：
+    Returns:
         合适的颜色方案
     """
     if is_dark_mode():
@@ -1898,10 +1887,10 @@ def get_auto_theme_scheme() -> ColorScheme:
 def guess_language_from_filename(filename: str) -> Optional[str]:
     """根据文件名猜测语言
     
-    参数：
+    Args:
         filename: 文件名
         
-    返回：
+    Returns:
         语言标识符或 None
     """
     ext = Path(filename).suffix.lower()
@@ -1920,16 +1909,10 @@ if __name__ == '__main__':
     # 创建高亮器
     highlighter = create_highlighter('github_dark')
 
-    # 测试代码
     test_code = '''def hello_world():
     """这是一个测试函数"""
     message = "Hello, World!"
     print(message)
     return 42'''
 
-    # info(f"测试代码: {test_code}")
     tokens_list = highlighter.highlight_text(test_code, 'python')
-    # info(f"高亮结果: {len(tokens_list)} 行")
-    # for i, tokens in enumerate(tokens_list):
-    #     for token in tokens:
-    #         info(f"  [{token.token_type.name}] '{token.text}'")

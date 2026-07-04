@@ -86,33 +86,15 @@ class ColorWheelPicker(QWidget):
                     self.hueChanged.emit(self._hue)
     
     def get_hue(self):
-        """
-        获取当前色相
-
-        Returns:
-            int: 当前色相值
-        """
         return self._hue
 
     def set_saturation(self, saturation):
-        """
-        设置饱和度
-
-        Args:
-            saturation (int): 饱和度值 (0-255)
-        """
         new_saturation = max(0, min(255, saturation))
         if self._saturation != new_saturation:
             self._saturation = new_saturation
             self.update()
 
     def set_lightness(self, lightness):
-        """
-        设置亮度
-
-        Args:
-            lightness (int): 亮度值 (0-255)
-        """
         new_lightness = max(0, min(255, lightness))
         if self._lightness != new_lightness:
             self._lightness = new_lightness
@@ -263,33 +245,19 @@ class ColorPreview(QWidget):
         self.setStyleSheet("background-color: transparent;")
     
     def _setup_size(self):
-        """设置尺寸参数"""
         min_size = int(40 * self.dpi_scale)
         self.setMinimumSize(min_size, min_size)
         self.setMaximumSize(min_size, min_size)
     
     def set_color(self, color):
-        """
-        设置预览颜色
-        
-        Args:
-            color (QColor): 要显示的颜色
-        """
         if self._color != color:
             self._color = color
             self.update()
     
     def get_color(self):
-        """
-        获取当前预览颜色
-        
-        Returns:
-            QColor: 当前预览的颜色
-        """
         return self._color
     
     def paintEvent(self, event):
-        """绘制颜色预览"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
@@ -499,105 +467,39 @@ class ColorWheelPickerWidget(QWidget):
             self._update_color_preview()
     
     def get_color(self):
-        """
-        获取当前颜色
-        
-        Returns:
-            QColor: 当前选择的颜色
-        """
         return QColor.fromHsl(self._hue, self._saturation, self._lightness)
     
     def get_rgb(self):
-        """
-        获取RGB颜色值
-        
-        Returns:
-            tuple: (r, g, b)
-        """
         color = self.get_color()
         return (color.red(), color.green(), color.blue())
     
     def get_hsv(self):
-        """
-        获取HSV颜色值
-        
-        Returns:
-            tuple: (h, s, v)
-        """
         color = self.get_color()
         h, s, v, _ = color.getHsv()
         return (h, s, v)
     
     def get_hsl(self):
-        """
-        获取HSL颜色值
-        
-        Returns:
-            tuple: (h, s, l)
-        """
         return (self._hue, self._saturation, self._lightness)
     
     def get_hex(self):
-        """
-        获取十六进制颜色值
-        
-        Returns:
-            str: 十六进制颜色字符串，例如 "#RRGGBB"
-        """
         return self.get_color().name().upper()
     
     def set_hue(self, hue):
-        """
-        设置色相
-        
-        Args:
-            hue (int): 色相值 (0-360)
-        """
         self._color_wheel.set_hue(hue)
     
     def set_saturation(self, saturation):
-        """
-        设置饱和度
-        
-        Args:
-            saturation (int): 饱和度值 (0-255)
-        """
         self._saturation_bar.setValue(saturation)
     
     def set_lightness(self, lightness):
-        """
-        设置亮度
-        
-        Args:
-            lightness (int): 亮度值 (0-255)
-        """
         self._lightness_bar.setValue(lightness)
     
     def get_hue(self):
-        """
-        获取当前色相
-        
-        Returns:
-            int: 色相值
-        """
         return self._hue
     
     def get_saturation(self):
-        """
-        获取当前饱和度
-        
-        Returns:
-            int: 饱和度值
-        """
         return self._saturation
     
     def get_lightness(self):
-        """
-        获取当前亮度
-        
-        Returns:
-            int: 亮度值
-        """
         return self._lightness
 
 
@@ -633,64 +535,22 @@ class D_ColorWheelPickerMenu(D_HoverMenu):
         self._color_picker.colorSelected.connect(self.colorSelected.emit)
     
     def set_color(self, color):
-        """
-        设置当前颜色
-        
-        Args:
-            color (QColor): 要设置的颜色
-        """
         self._color_picker.set_color(color)
     
     def get_color(self):
-        """
-        获取当前颜色
-        
-        Returns:
-            QColor: 当前选择的颜色
-        """
         return self._color_picker.get_color()
     
     def get_rgb(self):
-        """
-        获取RGB颜色值
-        
-        Returns:
-            tuple: (r, g, b)
-        """
         return self._color_picker.get_rgb()
     
     def get_hsv(self):
-        """
-        获取HSV颜色值
-        
-        Returns:
-            tuple: (h, s, v)
-        """
         return self._color_picker.get_hsv()
     
     def get_hsl(self):
-        """
-        获取HSL颜色值
-        
-        Returns:
-            tuple: (h, s, l)
-        """
         return self._color_picker.get_hsl()
     
     def get_hex(self):
-        """
-        获取十六进制颜色值
-        
-        Returns:
-            str: 十六进制颜色字符串
-        """
         return self._color_picker.get_hex()
     
     def get_color_picker(self):
-        """
-        获取内部的颜色选择器实例
-        
-        Returns:
-            ColorWheelPickerWidget: 颜色选择器实例
-        """
         return self._color_picker

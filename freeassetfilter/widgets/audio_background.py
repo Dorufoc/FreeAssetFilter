@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 
@@ -1274,7 +1274,7 @@ class AudioBackground(QWidget):
             hm = HeartbeatManager()
             hm.unregister_tick_callback(f"audio_bg_anim_{id(self)}")
         elif self._is_loaded and self._current_mode == self.MODE_FLUID:
-            # Re-register (unregister first, then register)
+            # 重新注册（先取消再注册）
             hm = HeartbeatManager()
             hm.unregister_tick_callback(f"audio_bg_anim_{id(self)}")
             try:

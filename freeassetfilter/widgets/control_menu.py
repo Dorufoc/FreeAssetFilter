@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -75,9 +75,6 @@ class CustomControlMenu(QWidget):
         self.init_ui()
         
     def init_ui(self):
-        """
-        初始化UI组件
-        """
         # 设置窗口属性（只设置一次，避免重复设置导致窗口重建）
         self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -273,9 +270,6 @@ class CustomControlMenu(QWidget):
         super().mousePressEvent(event)
     
     def closeEvent(self, event):
-        """
-        关闭事件
-        """
         super().closeEvent(event)
     
     def update_style(self):

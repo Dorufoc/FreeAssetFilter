@@ -15,7 +15,7 @@ def __getattr__(name):
             sort_colors_by_brightness,
             adjust_colors_for_gradient
         )
-        # Make available as module attribute for subsequent access
+        # 作为模块属性供后续访问
         globals().update(locals())
         return globals()[name]
     raise AttributeError(f"module 'freeassetfilter.core' has no attribute {name!r}")

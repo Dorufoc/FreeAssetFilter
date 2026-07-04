@@ -72,7 +72,6 @@ def _prepare_image_data_for_rust(cover_data: bytes) -> bytes:
     try:
         image = Image.open(io.BytesIO(cover_data))
         
-        # 转换为 RGBA 模式
         if image.mode != 'RGBA':
             image = image.convert('RGBA')
         
@@ -112,12 +111,11 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
         warning("封面数据为空")
         return []
     
-    # 优先使用 Rust DLL 实现
+    # 优先使用 Rust DLL
     if _ensure_rust_module():
         try:
             start_time = time.time()
             
-            # 准备图像数据
             rust_data = _prepare_image_data_for_rust(cover_data)
 
             # 调用 Rust 函数（CIEDE2000 距离默认 60.0）
@@ -131,7 +129,6 @@ def extract_cover_colors(cover_data: bytes, num_colors: int = 5,
             
             elapsed = (time.time() - start_time) * 1000
             
-            # 转换为 QColor 列表
             result = [QColor(r, g, b) for r, g, b in colors_rgb]
 
             debug(f"Rust 提取 {len(result)} 个颜色，耗时 {elapsed:.2f}ms")
@@ -364,8 +361,7 @@ def extract_cover_from_audio(file_path: str) -> Optional[bytes]:
             if 'metadata_block_picture' in audio:
                 import base64
                 picture_data = base64.b64decode(audio['metadata_block_picture'][0])
-                # 跳过Ogg FLAC picture block header (4 bytes type + 4 bytes mime length + ...)
-                # 简化处理：尝试直接作为图片数据
+                # 跳过 picture block header，直接作为图片处理
                 try:
                     Image.open(io.BytesIO(picture_data))
                     return picture_data
@@ -460,12 +456,11 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
     Returns:
         5种QColor对象的列表
     """
-    # 验证文件路径
     if not file_path or not os.path.exists(file_path):
         warning(f"音频文件不存在: {file_path}")
         return generate_colors_from_accent(accent_hex)
 
-    # 检查文件大小（避免处理过大的文件）
+    # 过大文件跳过封面提取
     try:
         file_size = os.path.getsize(file_path)
         if file_size > 100 * 1024 * 1024:  # 100MB
@@ -475,21 +470,19 @@ def get_theme_colors_for_audio(file_path: str, accent_hex: str = "#B036EE") -> L
         error(f"检查文件大小失败: {e}")
     
     try:
-        # 尝试从音频文件提取封面
         cover_data = extract_cover_from_audio(file_path)
         
         if cover_data:
-            # 检查封面数据大小
             if len(cover_data) > 10 * 1024 * 1024:  # 10MB
                 warning(f"封面图像过大，跳过: {len(cover_data) / 1024 / 1024:.1f}MB")
                 return generate_colors_from_accent(accent_hex)
 
-            # 从封面提取颜色（增大min_distance确保颜色区分度）
+            # 从封面提取颜色，min_distance 确保区分度
             colors = extract_cover_colors(cover_data, num_colors=5, min_distance=70.0)
 
-            # 验证提取的颜色数量和质量
+            # 验证颜色数量和质量
             if colors and len(colors) >= 5:
-                # 检查颜色之间的平均距离，确保区分度
+                # 检查颜色平均距离，确保区分度
                 total_distance = 0
                 count = 0
                 for i in range(len(colors)):

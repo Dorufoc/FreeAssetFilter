@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FreeAssetFilter Heartbeat Manager
+FreeAssetFilter 心跳管理器
 
-Singleton heartbeat coordinator for all main-thread periodic work.
-Provides dual-tick-rate registration, priority-ordered dispatch,
-cross-thread main-thread request queue, and owner-aware lifecycle.
+主线程周期性任务的单例协调器。
+提供双频率注册、优先级调度、跨线程请求队列和生命周期管理。
 
-Usage:
+用法：
     hm = HeartbeatManager()
     hm.start()
     hm.register_tick_callback("my_cb", my_func, priority=2, owner=self)
@@ -31,10 +30,9 @@ from freeassetfilter.utils.app_logger import info, warning, error
 
 
 class _OwnerRef:
-    """Thread-safe weak reference wrapper for QObject owner detection.
+    """QObject 所有者的线程安全弱引用包装。
 
-    Stores a plain reference for identity comparison and provides
-    a liveness check without keeping the QObject alive.
+    存储原始引用用于身份比较，提供存活检查而不保持 QObject 存活。
     """
 
     __slots__ = ("_ref", "_uid")
@@ -45,7 +43,7 @@ class _OwnerRef:
 
     @property
     def is_dead(self) -> bool:
-        """Check whether the referenced QObject has been deleted."""
+        """检查引用的 QObject 是否已被删除"""
         return self._ref() is None
 
     @property
@@ -53,13 +51,13 @@ class _OwnerRef:
         return self._uid
 
     def matches(self, owner: QObject) -> bool:
-        """Check if this ref wraps the given owner QObject."""
+        """检查此引用是否包装了指定的 QObject"""
         return self._uid == id(owner)
 
 
 @dataclass
 class _CallbackEntry:
-    """Internal storage for a registered tick callback."""
+    """已注册的 tick 回调的内部存储"""
 
     callback_id: str
     priority: int = 3
@@ -67,15 +65,15 @@ class _CallbackEntry:
     owner_ref: Optional[_OwnerRef] = None
     use_fast_tick: bool = False
 
-    # One of these is populated depending on callback type
-    callback: Optional[Callable] = None  # Strong ref (for non-method callables)
-    weak_method: Optional[weakref.WeakMethod] = None  # Weak ref (for bound methods)
+    # 根据回调类型填充其中一个
+    callback: Optional[Callable] = None  # 强引用（非方法可调用对象）
+    weak_method: Optional[weakref.WeakMethod] = None  # 弱引用（绑定方法）
 
-    # Tick counter for every_n_ticks support
+    # every_n_ticks 的 tick 计数器
     _tick_counter: int = field(default=0, repr=False)
 
     def resolve(self) -> Optional[Callable]:
-        """Resolve the callable, returning None if the weak ref is dead."""
+        """解析可调用对象，弱引用失效时返回 None"""
         if self.weak_method is not None:
             cb = self.weak_method()
             if cb is None:
@@ -85,9 +83,9 @@ class _CallbackEntry:
 
 
 class FutureHandle:
-    """Lightweight future returned by request_main_thread.
+    """request_main_thread 返回的轻量级 Future。
 
-    Provides:
+    提供：
         - result(timeout=None) -> Any
         - done() -> bool
         - add_done_callback(cb)
@@ -105,7 +103,7 @@ class FutureHandle:
     def add_done_callback(
         self, callback: Callable[["FutureHandle"], None]
     ) -> None:
-        """Add a callback invoked when the future completes."""
+        """添加 future 完成时的回调"""
         if self._done:
             try:
                 callback(self)
@@ -115,9 +113,9 @@ class FutureHandle:
             self._callbacks.append(callback)
 
     def result(self, timeout: Optional[float] = None) -> Any:
-        """Block until the result is available, then return it.
+        """阻塞直到结果可用，然后返回。
 
-        Raises the stored exception if the callable raised.
+        如果可调用对象抛异常，则抛出存储的异常。
         """
         self._event.wait(timeout=timeout)
         if self._exception is not None:
@@ -148,19 +146,19 @@ class FutureHandle:
 
 
 class HeartbeatManager(QObject):
-    """Singleton heartbeat coordinator for main-thread periodic work.
+    """主线程周期性任务的单例心跳协调器。
 
-    Manages two QTimer loops:
-        - Normal tick (~30 fps / 33ms): all registered callbacks
-        - Fast tick (~60 fps / 16ms): animation callbacks only
+    管理两个 QTimer 循环：
+        - 普通 tick（~30fps / 33ms）：所有已注册的回调
+        - 快速 tick（~60fps / 16ms）：仅动画回调
 
-    Features:
-        - Priority-ordered dispatch within each tick
-        - Weak-reference callback storage via weakref.WeakMethod
-        - Cross-thread request queue (thread-safe deque + main-thread drain)
-        - Owner-aware lifecycle with automatic cleanup on destroy
-        - Tick overrun detection and warning logging
-        - Empty-tick optimization: timers stop when no callbacks registered
+    特性：
+        - 每个 tick 内按优先级排序分发
+        - 通过 weakref.WeakMethod 存储弱引用回调
+        - 跨线程请求队列（线程安全 deque + 主线程消耗）
+        - 所有者感知生命周期，销毁时自动清理
+        - tick 超时检测和警告日志
+        - 空 tick 优化：无回调时停止定时器
     """
 
     _instance: Optional["HeartbeatManager"] = None
@@ -168,8 +166,8 @@ class HeartbeatManager(QObject):
     _initialized: bool = False
 
     NORMAL_TICK_MS: int = 33  # ~30fps
-    FAST_TICK_MS: int = 16  # ~60fps (animation only)
-    _TICK_PRUNING_INTERVAL: int = 100  # prune dead weak refs every N ticks
+    FAST_TICK_MS: int = 16  # ~60fps（仅动画）
+    _TICK_PRUNING_INTERVAL: int = 100  # 每 N 次 tick 清理失效弱引用
 
     def __new__(cls, parent: Optional[QObject] = None) -> "HeartbeatManager":
         with cls._lock:
@@ -215,14 +213,13 @@ class HeartbeatManager(QObject):
         info("HeartbeatManager initialized")
 
     # ================================================================
-    # Lifecycle
+    # 生命周期
     # ================================================================
 
     def start(self) -> None:
-        """Start the heartbeat timers.
+        """启动心跳定时器。
 
-        Timers only activate when at least one callback is registered
-        (empty-tick optimization).
+        仅在有回调注册时激活定时器（空 tick 优化）。
         """
         if self._running:
             return
@@ -233,13 +230,13 @@ class HeartbeatManager(QObject):
         info("HeartbeatManager started")
 
     def stop(self) -> None:
-        """Stop all heartbeat timers. Registered callbacks are preserved."""
+        """停止所有心跳定时器，保留已注册的回调"""
         self._running = False
         self._normal_timer.stop()
         self._fast_timer.stop()
 
     def stop_all(self) -> None:
-        """Stop timers and clear all registered callbacks and pending requests."""
+        """停止定时器并清除所有已注册的回调和待处理请求"""
         self.stop()
         with self._callback_lock:
             self._callbacks.clear()
@@ -249,7 +246,7 @@ class HeartbeatManager(QObject):
         info("HeartbeatManager stopped all")
 
     # ================================================================
-    # Callback registration
+    # 回调注册
     # ================================================================
 
     def register_tick_callback(
@@ -261,21 +258,21 @@ class HeartbeatManager(QObject):
         owner: Optional[QObject] = None,
         use_fast_tick: bool = False,
     ) -> str:
-        """Register a periodic callback.
+        """注册一个周期性回调。
 
         Args:
-            callback_id: Unique identifier for this callback.
-            callback: The callable to invoke each tick.
-            priority: 0 (highest) to 4 (lowest). Default 3.
-            every_n_ticks: Fire the callback every N ticks. Default 1 (every tick).
-            owner: Optional QObject for owner-aware lifecycle management.
-            use_fast_tick: If True, runs at FAST_TICK_MS rate instead of normal.
+            callback_id: 该回调的唯一标识符。
+            callback: 每次 tick 调用的可调用对象。
+            priority: 0（最高）到 4（最低）。默认 3。
+            every_n_ticks: 每 N 次 tick 触发一次。默认 1（每次触发）。
+            owner: 用于所有者感知生命周期管理的 QObject。
+            use_fast_tick: 若为 True，则使用 FAST_TICK_MS 频率而非普通频率。
 
         Returns:
-            The callback_id as a registration token.
+            作为注册令牌的 callback_id。
 
         Raises:
-            ValueError: If callback_id is already registered.
+            ValueError: 如果 callback_id 已注册。
         """
         if not callable(callback):
             raise TypeError("callback must be callable")
@@ -286,7 +283,7 @@ class HeartbeatManager(QObject):
                     f"Callback '{callback_id}' is already registered"
                 )
 
-            # Attempt WeakMethod for bound methods, fall back to strong ref
+            # 优先使用 WeakMethod 绑定方法，回退到强引用
             weak_method: Optional[weakref.WeakMethod] = None
             try:
                 weak_method = weakref.WeakMethod(callback)
@@ -316,20 +313,20 @@ class HeartbeatManager(QObject):
             self._animation_callback_count += 1
             self._maybe_start_fast_timer()
 
-        # Start normal timer if not running (empty-tick optimization)
+        # 若定时器未运行则启动（空 tick 优化）
         if self._running and not self._normal_timer.isActive():
             self._normal_timer.start()
 
         return callback_id
 
     def unregister_tick_callback(self, callback_id: str) -> bool:
-        """Unregister a previously registered callback.
+        """取消注册之前注册的回调。
 
         Args:
-            callback_id: The identifier used during registration.
+            callback_id: 注册时使用的标识符。
 
         Returns:
-            True if the callback was found and removed, False otherwise.
+            找到并移除返回 True，否则返回 False。
         """
         with self._callback_lock:
             entry = self._callbacks.pop(callback_id, None)
@@ -341,20 +338,20 @@ class HeartbeatManager(QObject):
             self._animation_callback_count -= 1
             self._maybe_stop_fast_timer()
 
-        # Stop normal timer if no more callbacks (empty-tick optimization)
+        # 无回调时停止普通定时器（空 tick 优化）
         if self._running:
             self._maybe_stop_normal_timer()
 
         return True
 
     def unregister_all_for_owner(self, owner: QObject) -> int:
-        """Unregister all callbacks registered with the given owner.
+        """取消注册指定所有者的所有回调。
 
         Args:
-            owner: The QObject whose callbacks should be removed.
+            owner: 需要移除回调的 QObject。
 
         Returns:
-            Number of callbacks removed.
+            移除的回调数量。
         """
         with self._callback_lock:
             cids = [
@@ -370,45 +367,43 @@ class HeartbeatManager(QObject):
         return count
 
     def set_normal_tick_rate(self, fps: int) -> None:
-        """Adjust the normal tick rate by specifying frames per second.
+        """通过指定每秒帧数调整普通 tick 频率。
 
-        Always updates the timer interval, regardless of active state.
+        无论活动状态如何，始终更新定时器间隔。
 
         Args:
-            fps: Target frames per second (minimum 1).
+            fps: 目标每秒帧数（最小 1）。
         """
         interval = max(1, int(1000 / max(fps, 1)))
         self._normal_tick_interval = interval
         self._normal_timer.setInterval(interval)
 
     # ================================================================
-    # Cross-thread dispatch
+    # 跨线程调度
     # ================================================================
 
     def request_main_thread(
         self, fn: Callable, priority: int = 5
     ) -> FutureHandle:
-        """Schedule a callable for execution on the main thread.
+        """调度一个可调用对象在主线程执行。
 
-        Thread-safe. The callable is queued and executed during the
-        next heartbeat tick on the main thread.
+        线程安全。可调用对象被排队并在下一个心跳 tick 中在主线程执行。
 
-        Uses QMetaObject.invokeMethod to start the timer on the main thread,
-        making this safe to call from any thread.
+        使用 QMetaObject.invokeMethod 在主线程启动定时器。
 
         Args:
-            fn: The callable to execute on the main thread.
-            priority: Callback priority (0=highest, 5=lowest). Default 5.
+            fn: 要在主线程执行的可调用对象。
+            priority: 回调优先级（0=最高，5=最低）。默认 5。
 
         Returns:
-            A FutureHandle that resolves when the callable completes.
+            可调用对象完成时解析的 FutureHandle。
         """
         future = FutureHandle()
         with self._pending_calls_lock:
             self._pending_calls.append((priority, fn, future))
 
-        # Ensure normal timer is running to drain the queue.
-        # Use invokeMethod to safely start the timer from any thread.
+        # 确保普通定时器运行以消耗队列
+        # 使用 invokeMethod 从任意线程安全启动定时器
         if self._running:
             QMetaObject.invokeMethod(
                 self._normal_timer,
@@ -419,18 +414,18 @@ class HeartbeatManager(QObject):
         return future
 
     # ================================================================
-    # Internal: tick processing
+    # 内部：tick 处理
     # ================================================================
 
     def _process_normal_tick(self) -> None:
-        """Process a single normal-rate heartbeat tick."""
+        """处理一个普通的 tick"""
         if not self._running:
             return
 
-        # Drain cross-thread queue first
+        # 优先处理跨线程队列
         self._drain_pending_queue()
 
-        # Collect and sort callbacks by priority
+        # 收集并按优先级排序回调
         with self._callback_lock:
             if not self._callbacks:
                 self._maybe_stop_normal_timer()
@@ -444,17 +439,17 @@ class HeartbeatManager(QObject):
         dead_ids: list[str] = []
 
         for entry in entries:
-            # Skip entries using fast tick (handled by fast timer)
+            # 跳过使用快速 tick 的条目（由快速定时器处理）
             if entry.use_fast_tick:
                 continue
 
-            # Every-N-ticks gating
+            # 每 N 次 tick 触发控制
             if entry.every_n_ticks > 1:
                 entry._tick_counter += 1
                 if entry._tick_counter % entry.every_n_ticks != 0:
                     continue
 
-            # Resolve and execute
+            # 解析并执行
             cb = entry.resolve()
             if cb is None:
                 dead_ids.append(entry.callback_id)
@@ -467,7 +462,7 @@ class HeartbeatManager(QObject):
                     f"Heartbeat: callback '{entry.callback_id}' raised {type(exc).__name__}: {exc}"
                 )
 
-        # Prune dead weak-ref callbacks
+        # 清理失效的弱引用回调
         if dead_ids:
             with self._callback_lock:
                 for cid in dead_ids:
@@ -475,11 +470,11 @@ class HeartbeatManager(QObject):
                     if entry and entry.use_fast_tick:
                         self._animation_callback_count -= 1
 
-        # Periodic pruning sweep
+        # 定期清理扫描
         if self._normal_tick_count % self._TICK_PRUNING_INTERVAL == 0:
             self._prune_dead_callbacks()
 
-        # Tick overrun detection
+        # tick 超时检测
         elapsed_ms = (time.monotonic() - start) * 1000
         if elapsed_ms > self._normal_tick_interval:
             warning(
@@ -487,12 +482,12 @@ class HeartbeatManager(QObject):
                 f"({elapsed_ms:.1f}ms > {self._normal_tick_interval}ms interval)"
             )
 
-        # Empty-tick optimization
+        # 空 tick 优化
         if self._running:
             self._maybe_stop_normal_timer()
 
     def _process_fast_tick(self) -> None:
-        """Process a single fast-rate heartbeat tick for animation callbacks."""
+        """处理单个快速 tick（仅动画回调）"""
         if not self._running:
             return
 
@@ -540,14 +535,14 @@ class HeartbeatManager(QObject):
             )
 
     def _drain_pending_queue(self) -> None:
-        """Execute all queued cross-thread requests on the main thread."""
+        """在主线程执行所有排队的跨线程请求"""
         with self._pending_calls_lock:
             if not self._pending_calls:
                 return
             calls = list(self._pending_calls)
             self._pending_calls.clear()
 
-        # Sort by priority (lower number = higher priority)
+        # 按优先级排序（数字越小优先级越高）
         calls.sort(key=lambda x: x[0])
 
         for _priority, fn, future in calls:
@@ -558,25 +553,24 @@ class HeartbeatManager(QObject):
                 future._set_exception(exc)
 
     # ================================================================
-    # Internal: owner lifecycle
+    # 内部：所有者生命周期
     # ================================================================
 
     def _on_owner_destroyed(self) -> None:
-        """Slot connected to owner.destroyed signals.
+        """连接到 owner.destroyed 信号的槽。
 
-        Scans all registered callbacks and removes any whose owner
-        QObject has been destroyed (dead weak ref or deleted C++ object).
+        扫描所有已注册回调，移除所有者 QObject 已销毁的条目（失效弱引用或已删除的 C++ 对象）。
         """
         with self._callback_lock:
             dead: list[str] = []
             for cid, entry in self._callbacks.items():
                 if entry.owner_ref is None:
                     continue
-                # Check weak ref liveness
+                # 检查弱引用是否存活
                 if entry.owner_ref.is_dead:
                     dead.append(cid)
                     continue
-                # Double-check via QObject liveness
+                # 通过 QObject 存活状态二次确认
                 owner = entry.owner_ref._ref()
                 if owner is not None:
                     try:
@@ -588,19 +582,19 @@ class HeartbeatManager(QObject):
             self.unregister_tick_callback(cid)
 
     # ================================================================
-    # Internal: pruning and helpers
+    # 内部：清理与辅助
     # ================================================================
 
     def _prune_dead_callbacks(self) -> None:
-        """Periodic maintenance: remove entries with dead weak refs or owners."""
+        """定期维护：移除失效弱引用或所有者已销毁的条目"""
         with self._callback_lock:
             dead: list[str] = []
             for cid, entry in self._callbacks.items():
-                # Check weak method
+                # 检查弱方法
                 if entry.weak_method is not None and entry.weak_method() is None:
                     dead.append(cid)
                     continue
-                # Check owner liveness
+                # 检查所有者存活状态
                 if entry.owner_ref is not None and entry.owner_ref.is_dead:
                     dead.append(cid)
 
@@ -610,20 +604,20 @@ class HeartbeatManager(QObject):
                     self._animation_callback_count -= 1
 
     def _maybe_start_fast_timer(self) -> None:
-        """Start the fast tick timer if animation callbacks are present."""
+        """存在动画回调时启动快速 tick 定时器"""
         if self._animation_callback_count > 0 and not self._fast_timer.isActive():
             self._fast_timer.start()
 
     def _maybe_stop_fast_timer(self) -> None:
-        """Stop the fast tick timer if no animation callbacks remain."""
+        """无动画回调时停止快速 tick 定时器"""
         if self._animation_callback_count <= 0 and self._fast_timer.isActive():
             self._fast_timer.stop()
             self._fast_tick_count = 0
 
     def _maybe_stop_normal_timer(self) -> None:
-        """Stop the normal timer if no callbacks or pending calls remain.
+        """无回调或待处理调用时停止普通定时器。
 
-        Empty-tick optimization: prevents the timer from firing uselessly.
+        空 tick 优化：防止定时器无意义地触发。
         """
         with self._callback_lock:
             has_callbacks = bool(self._callbacks)

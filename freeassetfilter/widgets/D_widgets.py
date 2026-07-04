@@ -5,7 +5,6 @@ FreeAssetFilter 自定义控件库
 包含各种自定义UI组件，如自定义窗口、按钮、进度条等
 """
 
-# Import all separated widgets
 from .message_box import CustomWindow, CustomMessageBox
 from .button_widgets import CustomButton
 from .progress_widgets import CustomProgressBar, CustomValueBar, CustomVolumeBar

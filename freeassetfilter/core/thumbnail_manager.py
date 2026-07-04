@@ -3,11 +3,11 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
-2. 商业使用：需联系 qpdrfc123@gmail.com 获取书面授权；
+2. 商业使用：需联系 dorufoc@outlook.com 获取书面授权；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
@@ -277,18 +277,14 @@ class ThumbnailManager:
         self._processing_videos: Set[str] = set()
         self._processing_lock = threading.Lock()
 
-        # 进程内直连视频解码限流：
-        # 批量模式下的视频任务已经通过"1条硬解队列 + 2条软解队列 + 子进程隔离"调度，
-        # 这里仅限制非批量直连路径，避免同一进程内过多软解任务争抢资源。
+        # 进程内直连视频解码限流：批量模式已有队列调度，仅限制非批量直连路径
         self._video_semaphore = threading.Semaphore(1)
 
-        # 单次缩略图创建轻量级缓存限制计数器
-        # 避免每次调用 create_thumbnail() 时都执行 glob+stat 磁盘扫描，
-        # 每 N 次创建才触发一次完整的检查
+        # 单次缩略图创建轻量级缓存限制计数器，每 N 次触发一次完整检查
         self._thumbnail_create_counter = 0
         self._thumbnail_create_check_threshold = 50
 
-        # 前一批缩略图的线程池引用，用于在创建新批次前确保旧池已关闭
+        # 前一批缩略图的线程池引用，确保新批次前旧池已关闭
         self._prev_batch_executor: Optional[ThreadPoolExecutor] = None
 
         debug(
@@ -915,22 +911,15 @@ class ThumbnailManager:
         """
         批量创建缩略图（异步多队列 + 原生批处理版）。
 
-        参数：
-            files_to_generate: 待生成缩略图的文件列表，兼容字符串路径列表与包含 path/file_path 字段的字典列表。
-            progress_callback: 单文件完成后的进度回调，回调参数依次为当前完成数、总数、原始文件项、是否成功。
-            cancel_check: 取消检查函数，返回 True 时停止继续投递新任务。
+        Args:
+            files_to_generate: 待生成缩略图的文件列表
+            progress_callback: 进度回调（当前完成数，总数，文件项，是否成功）
+            cancel_check: 取消检查函数
 
-        返回值：
-            Tuple[int, int]: 成功数量与已处理数量。
+        Returns:
+            Tuple[int, int]: 成功数量与已处理数量
 
-        异常场景：
-            函数内部会吞掉单文件处理异常，确保批处理流程不中断。
-
-        调度目标：
-        1. 原生图片/视频优先走 Rust 批量接口，减少 Python<->Rust 往返与进程调度开销；
-        2. Python 专用链路（RAW/PSD/SVG / OpenCV回退）保持单项异步；
-        3. 进度仍按“单文件完成”逐项回调，兼顾 UI 感知；
-        4. 支持取消，取消后不再补位，但已提交批次允许自然完成。
+        优先使用 Rust 批量接口，RAW/PSD/SVG 走 Python 专用链路。
         """
         total_count = len(files_to_generate)
         if total_count == 0:
@@ -1338,10 +1327,8 @@ class ThumbnailManager:
                         break
 
                     if queue_name.startswith("native_") and len(batch_items) > 1:
-                        # debug(f"提交原生批量任务: queue={queue_name}, batch_size={len(batch_items)}")
                         future = executor.submit(_run_native_batch_task, queue_name, batch_items)
                     else:
-                        # debug(f"提交单项任务: queue={queue_name}, file={batch_items[0]['file_path']}")
                         future = executor.submit(_run_single_task, queue_name, batch_items[0])
 
                     future.add_done_callback(_mark_future_completed)
@@ -1500,7 +1487,6 @@ class ThumbnailManager:
                     increment_perf_counter("thumbnail.create_native_thumbnail", "jpg_direct")
                     with open(thumbnail_path, "wb") as f:
                         f.write(jpg_bytes)
-                    # debug(f"Rust(JPG)生成成功: {thumbnail_path}")
                     return thumbnail_path
 
                 # 回退到 Rust JPEG 输出（兼容别名接口）
@@ -1509,7 +1495,6 @@ class ThumbnailManager:
                     increment_perf_counter("thumbnail.create_native_thumbnail", "jpeg_direct")
                     with open(thumbnail_path, "wb") as f:
                         f.write(jpeg_bytes)
-                    # debug(f"Rust(JPEG)生成成功: {thumbnail_path}")
                     return thumbnail_path
 
                 # 回退到 RGBA 路径
@@ -1540,7 +1525,6 @@ class ThumbnailManager:
                 except Exception:
                     pass
 
-                # debug(f"Rust(RGBA)生成成功: {thumbnail_path}")
                 return thumbnail_path
             except Exception as e:
                 increment_perf_counter("thumbnail.create_native_thumbnail", "failure")
@@ -1596,7 +1580,6 @@ class ThumbnailManager:
 
             thumbnail.save(thumbnail_path, format='JPEG', quality=self.QUALITY)
 
-            # debug(f"图片缩略图生成成功: {thumbnail_path}")
             return thumbnail_path
 
         except Exception as e:
@@ -1685,7 +1668,6 @@ class ThumbnailManager:
         """
         # 请求去重：检查是否已有相同视频正在处理
         if not self._try_acquire_video_lock(file_path):
-            # debug(f"视频正在处理中，跳过重复请求: {file_path}")
             return None
 
         try:
@@ -1753,16 +1735,11 @@ class ThumbnailManager:
             warning("ffprobe未找到")
             return None
         except subprocess.TimeoutExpired:
-            # debug(f"ffprobe超时: {file_path}")
             return None
         except Exception as e:
-            # debug(f"ffprobe失败: {file_path}, {e}")
             return None
 
         if completed.returncode != 0:
-            # stderr_text = (completed.stderr or "").strip()
-            # if stderr_text:
-            #     debug(f"ffprobe异常: {stderr_text}")
             return None
         if getattr(completed, "stdout_truncated", False):
             return None
@@ -1898,27 +1875,20 @@ class ThumbnailManager:
                     return None
                 except subprocess.TimeoutExpired:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "timeout")
-                    # debug(f"FFmpeg超时: {file_path}, seek={seek_seconds:.3f}s")
                     continue
                 except Exception as e:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "subprocess_error")
-                    # debug(f"FFmpeg失败: {file_path}, seek={seek_seconds:.3f}s, {e}")
                     continue
 
                 if completed.returncode == 0 and os.path.exists(temp_output_path) and os.path.getsize(temp_output_path) > 0:
                     try:
                         os.replace(temp_output_path, thumbnail_path)
                         increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "success")
-                        # debug(f"FFmpeg生成成功: {thumbnail_path}, seek={seek_seconds:.3f}s")
                         return thumbnail_path
                     except Exception as e:
                         increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "replace_error")
-                        # debug(f"FFmpeg落盘失败: {thumbnail_path}, {e}")
                 else:
                     increment_perf_counter("thumbnail.create_video_thumbnail_ffmpeg", "attempt_failed")
-                    # stderr_text = (completed.stderr or "").strip()
-                    # if stderr_text:
-                    #     debug(f"FFmpeg尝试失败: {file_path}, seek={seek_seconds:.3f}s")
 
             try:
                 if os.path.exists(temp_output_path):
@@ -2138,7 +2108,6 @@ class ThumbnailManager:
             scale = (self.MAX_IMAGE_PIXELS / total_pixels) ** 0.5
             new_width = int(width * scale)
             new_height = int(height * scale)
-            # debug(f"图像像素超限 ({total_pixels})，下采样至 {new_width}x{new_height}: {file_path}")
             img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
             width, height = new_width, new_height
 
@@ -2152,8 +2121,6 @@ class ThumbnailManager:
 
             new_width = int(width * scale)
             new_height = int(height * scale)
-
-            # debug(f"图像尺寸超限 ({width}x{height})，下采样至 {new_width}x{new_height}: {file_path}")
 
             # 使用LANCZOS重采样（高质量）
             img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
@@ -2359,7 +2326,6 @@ class ThumbnailManager:
             return len(thumbnail_files)
 
         except Exception as e:
-            # debug(f"获取缩略图数量失败: {e}")
             return 0
 
     def _get_all_thumbnail_files(self) -> List[Tuple[str, float]]:
@@ -2384,11 +2350,9 @@ class ThumbnailManager:
                         try:
                             file_time = os.path.getmtime(file_path)
                         except (OSError, IOError) as e:
-                            # debug(f"获取文件时间失败 {file_path}: {e}")
                             continue
                     thumbnail_files.append((file_path, file_time))
         except (OSError, IOError) as e:
-            # debug(f"访问缩略图目录失败 {self._thumb_dir}: {e}")
             pass
 
         return thumbnail_files
@@ -2430,7 +2394,6 @@ class ThumbnailManager:
                     self._set_cached_path_exists(file_path, False)
                     deleted_count += 1
             except (OSError, IOError) as e:
-                # debug(f"删除缓存文件失败 {file_path}: {e}")
                 pass
 
         return deleted_count, total_files - deleted_count

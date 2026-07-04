@@ -822,8 +822,7 @@ class FileStagingPoolListView(FileListView):
         else:
             bounds = QRect(start_rect).united(end_rect)
 
-        # Card shadows can extend outside the item rect; include that edge so
-        # dirty-region repainting does not leave stale pixels during motion.
+        # 卡片阴影可能超出项目矩形范围，包含该边缘区域以防止脏区域重绘留下残影。
         return bounds.adjusted(-24, -24, 24, 24)
 
     def _card_motion_update_rect(self) -> QRect:

@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -835,21 +835,18 @@ class AppLogger:
             log_level: 日志级别，默认为 DEBUG
             max_log_files: 保留的最大日志文件数量
         """
-        # 避免重复初始化
         if AppLogger._initialized:
             return
             
         self.logger = logging.getLogger("FreeAssetFilter")
         self.logger.setLevel(log_level)
-        self.logger.handlers = []  # 清除已有处理器
+        self.logger.handlers = []
         
         self.max_log_files = max_log_files
         self.log_dir = self._get_log_dir()
         
-        # 确保日志目录存在
         os.makedirs(self.log_dir, exist_ok=True)
         
-        # 创建日志文件路径
         self.log_file = self._create_log_file()
         
         # 设置日志格式 - 包含组件来源信息
@@ -858,7 +855,6 @@ class AppLogger:
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         
-        # 创建组件来源过滤器
         self.component_filter = ComponentSourceFilter()
         
         # 添加文件处理器
@@ -872,7 +868,6 @@ class AppLogger:
         
         AppLogger._initialized = True
         
-        # 输出初始化信息
         self._log_startup_info()
         
     def _get_log_dir(self):
@@ -902,7 +897,6 @@ class AppLogger:
             )
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(self.formatter)
-            # 添加组件来源过滤器
             file_handler.addFilter(self.component_filter)
             self.logger.addHandler(file_handler)
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
@@ -919,7 +913,6 @@ class AppLogger:
             console_handler = logging.StreamHandler(console_stream)
             console_handler.setLevel(logging.INFO)
             console_handler.setFormatter(self.formatter)
-            # 添加组件来源过滤器
             console_handler.addFilter(self.component_filter)
             self.logger.addHandler(console_handler)
     
@@ -930,12 +923,10 @@ class AppLogger:
                 f for f in os.listdir(self.log_dir) 
                 if f.startswith('app_') and f.endswith('.log')
             ]
-            # 按修改时间排序
             log_files.sort(key=lambda f: os.path.getmtime(
                 os.path.join(self.log_dir, f)
             ), reverse=True)
             
-            # 删除旧文件
             for old_file in log_files[self.max_log_files:]:
                 try:
                     os.remove(os.path.join(self.log_dir, old_file))
@@ -981,7 +972,6 @@ class AppLogger:
             app_info = _get_app_info()
             system_info = _get_system_info()
             
-            # 标记为启动日志
             _in_startup_log = True
             
             self.info(f"启动 v{app_info.get('version', '?')} | {system_info.get('os', '?')} | {system_info.get('cpu', '?')} | {system_info.get('gpu', '?')} | {system_info.get('memory', '?')} | Python {system_info.get('python_version', '?')} ({system_info.get('architecture', '?')})")
@@ -992,7 +982,6 @@ class AppLogger:
             except Exception:
                 pass
         finally:
-            # 恢复正常状态
             _in_startup_log = False
 
 

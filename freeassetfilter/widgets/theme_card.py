@@ -17,7 +17,7 @@ class ThemeCard(QWidget):
     主题卡片组件
     可独立使用的主题选项控件，用于显示和选择主题
     
-    参数:
+        Args:
         theme_name (str): 主题名称
         colors (list): 颜色列表 [主题色, 文本颜色, 次选颜色, 不可用颜色]
         is_selected (bool): 是否被选中
@@ -87,7 +87,6 @@ class ThemeCard(QWidget):
         self.setup_ui(font_size)
     
     def setup_ui(self, font_size):
-        """设置UI界面"""
         auxiliary_color = "#f1f3f5"
         secondary_color = "#333333"
         if self.settings_manager:
@@ -176,21 +175,17 @@ class ThemeCard(QWidget):
         self.update()
     
     def mousePressEvent(self, event):
-        """鼠标点击事件"""
         if event.button() == Qt.LeftButton and not self.is_add_card:
             self.clicked.emit(self)
     
     def _on_color_slider_changed(self, color):
-        """颜色滑条颜色变化"""
         self.color_changed.emit(color)
     
     def enterEvent(self, event):
-        """鼠标进入事件"""
         self._is_hovered = True
         self.update()
-    
+
     def leaveEvent(self, event):
-        """鼠标离开事件"""
         self._is_hovered = False
         self.update()
     
@@ -236,7 +231,6 @@ class ThemeCard(QWidget):
         }
     
     def sizeHint(self):
-        """返回建议的大小"""
         if self._flexible_width is not None:
             base_width = self._flexible_width
         else:

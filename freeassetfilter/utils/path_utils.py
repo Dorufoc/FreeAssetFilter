@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -96,14 +96,12 @@ def _get_project_root() -> str:
         # PyInstaller打包环境
         if getattr(sys, 'frozen', False):
             project_root = os.path.dirname(sys.executable)
-            # logger.debug(f"打包环境项目根目录: {project_root}")
             return project_root
         else:
             # 开发环境
             current_file = os.path.abspath(__file__)
             # 从utils/path_utils.py向上3级到项目根目录
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
-            # logger.debug(f"开发环境项目根目录: {project_root}")
             return project_root
     except Exception as e:
         logger = _get_logger()
@@ -117,8 +115,6 @@ def _init_allowed_paths():
     global _ALLOWED_BASE_PATHS
     if _ALLOWED_BASE_PATHS:
         return
-    
-    # logger.debug("初始化路径白名单")
     
     project_root = _get_project_root()
     
@@ -170,8 +166,6 @@ def _init_allowed_paths():
     
     # 规范化所有路径
     _ALLOWED_BASE_PATHS = [os.path.normpath(p) for p in _ALLOWED_BASE_PATHS if os.path.exists(p)]
-    
-    # logger.debug(f"路径白名单初始化完成，共 {len(_ALLOWED_BASE_PATHS)} 个路径")
 
 
 def is_sensitive_path(path: str) -> bool:
@@ -537,7 +531,6 @@ def get_app_data_path():
     try:
         os.makedirs(data_dir, exist_ok=True)
         os.makedirs(os.path.join(data_dir, 'thumbnails'), exist_ok=True)
-        # logger.debug(f"应用数据目录: {data_dir}")
     except Exception as e:
         logger = _get_logger()
         if logger:
@@ -561,7 +554,6 @@ def get_config_path():
     # 确保目录存在
     try:
         os.makedirs(config_dir, exist_ok=True)
-        # logger.debug(f"配置目录: {config_dir}")
     except Exception as e:
         logger = _get_logger()
         if logger:

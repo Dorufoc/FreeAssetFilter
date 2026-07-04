@@ -48,63 +48,50 @@ class CustomWindow(QWidget):
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
-        # 窗口标题
         self.title = title
         
-        # 拖拽相关变量
         self.dragging = False
         self.drag_position = QPoint()
         
-        # 调整大小相关变量
         self.resizing = False
         self.resize_direction = ""
         self.resize_start_pos = QPoint()
         self.resize_start_size = None
         self.resize_start_geometry = None
         
-        # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
-        # 增加边框宽度，便于用户抓住边缘和角落，并应用DPI缩放
+        # 增加边框宽度，便于用户抓住边缘和角落
         self.border_size = 0
         
-        # 获取全局字体
         self.global_font = getattr(app, 'global_font', QFont())
         self.setFont(self.global_font)
         
-        # 初始化UI
         self.init_ui()
         
     def init_ui(self):
-        """
-        初始化自定义窗口UI
-        """
-        # 应用DPI缩放因子
+        """初始化自定义窗口UI"""
         scaled_margin = int(2.5 * self.dpi_scale)
         scaled_radius = int(1.5 * self.dpi_scale)
         self.scaled_title_height = int(5 * self.dpi_scale)
         scaled_shadow_radius = int(2.5 * self.dpi_scale)
         scaled_shadow_offset = int(1 * self.dpi_scale)
         
-        # 设置默认大小（调整为原始的一半）
+        # 默认大小缩小为原始的一半
         self.setMinimumSize(100, 75)
         self.resize(100, 75)
         
-        # 主布局（用于容纳内容和装饰）
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(0)
         
-        # 创建窗口主体（带圆角）
         self.window_body = QWidget()
         
-        # 获取主题颜色
         app = QApplication.instance()
-        window_bg_color = "#FFFFFF"  # 默认使用base_color
-        window_border_color = "#FFFFFF"  # 默认使用base_color
+        window_bg_color = "#FFFFFF"
+        window_border_color = "#FFFFFF"
         
-        # 尝试从应用实例获取主题颜色
         if hasattr(app, 'settings_manager'):
             window_bg_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
             window_border_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
@@ -117,19 +104,16 @@ class CustomWindow(QWidget):
             }}
         """)
         
-        # 添加阴影效果
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(scaled_shadow_radius)
         shadow.setOffset(0, scaled_shadow_offset)
         shadow.setColor(QColor(0, 0, 0, 60))
         self.window_body.setGraphicsEffect(shadow)
         
-        # 窗口主体布局
         body_layout = QVBoxLayout(self.window_body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
         
-        # 标题栏
         title_bar = QWidget()
         title_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         title_bar.setMinimumHeight(self.scaled_title_height)
@@ -141,14 +125,12 @@ class CustomWindow(QWidget):
         """)
         
         title_layout = QHBoxLayout(title_bar)
-        # 应用DPI缩放因子到边距和间距
         scaled_left_margin = int(2 * self.dpi_scale)
         scaled_right_margin = int(2 * self.dpi_scale)
         scaled_spacing = int(2 * self.dpi_scale)
         title_layout.setContentsMargins(scaled_left_margin, 0, scaled_right_margin, 0)
         title_layout.setSpacing(scaled_spacing)
         
-        # 标题标签
         title_label = QLabel(self.title)
         # 使用全局字体，让Qt6自动处理DPI缩放
         title_font = QFont(self.global_font)
@@ -161,15 +143,13 @@ class CustomWindow(QWidget):
         """)
         title_layout.addWidget(title_label, 1)
         
-        # 关闭按钮
-        # 使用CustomButton代替QPushButton以确保一致性和DPI缩放兼容性
+        # 使用CustomButton代替QPushButton，确保DPI缩放兼容
         from .button_widgets import CustomButton
         self.close_button = CustomButton("×", button_type="primary", display_mode="text", height=12)
         self.close_button.setFixedSize(int(6 * self.dpi_scale), int(6 * self.dpi_scale))
         self.close_button.clicked.connect(self.close)
         title_layout.addWidget(self.close_button)
         
-        # 内容区域
         self.content_widget = QWidget()
         self.content_widget.setStyleSheet("""
             QWidget {
@@ -178,18 +158,15 @@ class CustomWindow(QWidget):
         """)
         
         self.content_layout = QVBoxLayout(self.content_widget)
-        # 应用DPI缩放因子到内容区域边距和间距
         scaled_content_margin = int(2 * self.dpi_scale)
         scaled_content_top_margin = int(2 * self.dpi_scale)
         scaled_content_spacing = int(1.5 * self.dpi_scale)
         self.content_layout.setContentsMargins(scaled_content_margin, scaled_content_top_margin, scaled_content_margin, scaled_content_margin)
         self.content_layout.setSpacing(scaled_content_spacing)
         
-        # 将标题栏和内容区域添加到窗口主体布局
         body_layout.addWidget(title_bar)
         body_layout.addWidget(self.content_widget, 1)
         
-        # 将窗口主体添加到主布局
         main_layout.addWidget(self.window_body)
     
     def _get_resize_direction(self, pos):
@@ -215,7 +192,6 @@ class CustomWindow(QWidget):
         on_top = y <= actual_border_size
         on_bottom = y >= height - actual_border_size
         
-        # 判断方向
         direction = ""
         if on_top:
             direction += "top-"
@@ -227,7 +203,6 @@ class CustomWindow(QWidget):
         elif on_right:
             direction += "right"
         
-        # 移除末尾的连字符（如果有的话）
         direction = direction.rstrip("-")
         
         return direction
@@ -238,23 +213,17 @@ class CustomWindow(QWidget):
         鼠标按下事件，用于实现窗口拖拽和调整大小
         """
         if event.button() == Qt.LeftButton:
-            # 获取鼠标位置
             pos = event.pos()
-            
-            # 检查是否在调整大小的边缘
             direction = self._get_resize_direction(pos)
             if direction:
-                # 开始调整大小
                 self.resizing = True
                 self.resize_direction = direction
                 self.resize_start_pos = event.globalPos()
                 self.resize_start_size = self.size()
                 self.resize_start_geometry = self.geometry()
                 event.accept()
-            elif pos.y() < self.scaled_title_height:  # 标题栏区域，使用缩放后的高度
-                # 开始拖动
+            elif pos.y() < self.scaled_title_height:  # 标题栏区域
                 self.dragging = True
-                # 使用鼠标全局位置减去窗口左上角位置，避免频繁调用frameGeometry()
                 self.drag_position = event.globalPos() - self.pos()
                 event.accept()
     
@@ -264,22 +233,18 @@ class CustomWindow(QWidget):
         优化：减少重绘次数，提高拖动流畅度
         """
         if self.resizing:
-            # 处理调整大小
             delta = event.globalPos() - self.resize_start_pos
             
-            # 保存初始几何形状
             orig_x = self.resize_start_geometry.x()
             orig_y = self.resize_start_geometry.y()
             orig_width = self.resize_start_geometry.width()
             orig_height = self.resize_start_geometry.height()
             
-            # 初始化新的位置和大小
             new_x = orig_x
             new_y = orig_y
             new_width = orig_width
             new_height = orig_height
             
-            # 根据方向调整大小和位置
             if "right" in self.resize_direction:
                 new_width = orig_width + delta.x()
             if "left" in self.resize_direction:
@@ -291,12 +256,11 @@ class CustomWindow(QWidget):
                 new_height = orig_height - delta.y()
                 new_y = orig_y + delta.y()
             
-            # 设置最小大小限制
             min_width, min_height = 100, 75
             new_width = max(min_width, new_width)
             new_height = max(min_height, new_height)
             
-            # 处理边界情况：当窗口达到最小值时，调整位置
+            # 窗口达最小值时，调整位置防止漂移
             if new_width == min_width:
                 if "left" in self.resize_direction:
                     # 左侧调整达到最小值，固定左侧位置
@@ -307,14 +271,10 @@ class CustomWindow(QWidget):
                     # 顶部调整达到最小值，固定顶部位置
                     new_y = orig_y + orig_height - min_height
             
-            # 更新窗口几何形状
             self.setGeometry(new_x, new_y, new_width, new_height)
             event.accept()
         elif self.dragging:
-            # 处理拖动
-            # 直接计算新位置，避免频繁调用frameGeometry()
             new_pos = event.globalPos() - self.drag_position
-            # 使用move方法移动窗口，这是最高效的方式
             self.move(new_pos)
             event.accept()
     
@@ -326,20 +286,14 @@ class CustomWindow(QWidget):
         self.resizing = False
 
     def resizeEvent(self, event):
-        """
-        窗口大小变化事件
-        当窗口大小变化时，检查是否需要更新DPI缩放因子
-        """
+        """DPI缩放因子变化时重新初始化UI"""
         super().resizeEvent(event)
         
-        # 获取应用实例和最新的DPI缩放因子
         app = QApplication.instance()
         new_dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
         
-        # 如果DPI缩放因子发生变化，更新窗口样式
         if new_dpi_scale != self.dpi_scale:
             self.dpi_scale = new_dpi_scale
-            # 重新初始化UI以应用新的DPI缩放因子
             self.init_ui()
     
     def add_widget(self, widget):
@@ -363,12 +317,11 @@ class CustomWindow(QWidget):
     def set_title(self, title):
         """
         设置窗口标题
-        
+
         Args:
             title (str): 窗口标题
         """
         self.title = title
-        # 更新标题标签
         if hasattr(self, 'window_body'):
             title_bar = self.window_body.layout().itemAt(0).widget()
             title_layout = title_bar.layout()
@@ -443,32 +396,26 @@ class CustomMessageBox(QDialog):
         self._has_played_show_animation = False
         self._show_animation_pending = False
         
-        # 初始化UI
         self.init_ui()
         self._setup_animations()
     
     def init_ui(self):
-        """
-        初始化自定义提示窗口UI
-        """
-        # 应用DPI缩放因子到UI参数
+        """初始化自定义提示窗口UI"""
         scaled_radius = int(6 * self.dpi_scale)
-        # 增加阴影模糊半径和偏移量，使阴影更加明显
+        # 增大阴影使效果更明显
         scaled_shadow_radius = int(40 * self.dpi_scale)
         scaled_shadow_offset = int(4 * self.dpi_scale)
-        # 边距必须足够大以容纳阴影效果，至少为阴影模糊半径的一半
+        # 边距需容纳阴影，至少为模糊半径的一半
         scaled_margin = int(25 * self.dpi_scale)
         scaled_body_margin = int(10 * self.dpi_scale)
         scaled_body_spacing = int(8 * self.dpi_scale)
-        # 使用全局字体大小，确保与settings.json中的设置一致
-        scaled_title_font_size = int(self.global_font.pointSize() * 1.2)  # 标题使用1.2倍字体大小
+        scaled_title_font_size = int(self.global_font.pointSize() * 1.2)
         scaled_title_padding = f"{int(12 * self.dpi_scale)}px {int(15 * self.dpi_scale)}px 0 {int(15 * self.dpi_scale)}px"
-        scaled_text_font_size = self.global_font.pointSize()  # 正文使用标准字体大小
+        scaled_text_font_size = self.global_font.pointSize()
         scaled_min_width = int(200 * self.dpi_scale)
         scaled_button_margin = int(4 * self.dpi_scale)
         scaled_button_spacing = int(6 * self.dpi_scale)
         
-        # 主布局（用于容纳内容和装饰）
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
         main_layout.setSpacing(0)
@@ -482,7 +429,6 @@ class CustomMessageBox(QDialog):
             base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
             secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
-        # 创建窗口主体（带圆角）
         self.window_body = QWidget()
         self.window_body.setStyleSheet(f"""
             QWidget {{
@@ -492,18 +438,16 @@ class CustomMessageBox(QDialog):
             }}
         """)
         
-        # 添加阴影效果到窗口主体
-        # 注意：阴影会在控件外部渲染，需要父控件有透明背景才能看到
+        # 阴影在控件外部渲染，需父控件透明背景
         self.shadow_effect = QGraphicsDropShadowEffect(self.window_body)
         self.shadow_effect.setBlurRadius(scaled_shadow_radius)
         self.shadow_effect.setOffset(0, scaled_shadow_offset)
         self.shadow_effect.setColor(QColor(0, 0, 0, 80))
         self.window_body.setGraphicsEffect(self.shadow_effect)
         
-        # 窗口主体布局 - 正确的纵向排列顺序
         self.body_layout = QVBoxLayout(self.window_body)
         self.body_layout.setContentsMargins(scaled_body_margin, scaled_body_margin, scaled_body_margin, scaled_body_margin)
-        self.body_layout.setSpacing(scaled_body_spacing)  # 合理的纵向间距
+        self.body_layout.setSpacing(scaled_body_spacing)
         
         # 1. 标题区
         self.title_label = QLabel()
@@ -565,9 +509,6 @@ class CustomMessageBox(QDialog):
         self.input_layout.setSpacing(0)
         self.input_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
-        # 输入框
-        
-        # 获取secondary_color作为文本颜色
         app = QApplication.instance()
         secondary_color = "#333333"
         if hasattr(app, 'settings_manager'):
@@ -597,22 +538,19 @@ class CustomMessageBox(QDialog):
         self.progress_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.body_layout.addWidget(self.progress_widget)
         
-        # 5. 按钮区
+        # 7. 按钮区（默认纵向排列）
         self.button_widget = QWidget()
         self.button_widget.setStyleSheet("background-color: transparent;")
-        # 默认使用纵向布局
         self.button_layout = QVBoxLayout(self.button_widget)
-        self.button_layout.setContentsMargins(0, scaled_button_margin, 0, 0)  # 顶部添加间距，应用DPI缩放
-        self.button_layout.setSpacing(scaled_button_spacing)  # 按钮之间的合理间距，应用DPI缩放
+        self.button_layout.setContentsMargins(0, scaled_button_margin, 0, 0)
+        self.button_layout.setSpacing(scaled_button_spacing)
         self.button_layout.setAlignment(Qt.AlignCenter)
         self.button_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        # 确保按钮区在body_layout中居中显示
         self.body_layout.addWidget(self.button_widget, 0, Qt.AlignCenter)
         
-        # 将窗口主体添加到主布局
         main_layout.addWidget(self.window_body)
         
-        # 初始隐藏所有区域
+        # 初始全部隐藏，按需显示
         self.title_label.hide()
         self.image_label.hide()
         self.text_label.hide()
@@ -708,10 +646,8 @@ class CustomMessageBox(QDialog):
             min_width (int): 列表最小宽度
             min_height (int): 列表最小高度
         """
-        # 清空现有列表
         self.clear_list()
         
-        # 创建新的列表实例
         self._list = CustomSelectList(
             parent=self,
             default_width=default_width,
@@ -721,62 +657,49 @@ class CustomMessageBox(QDialog):
             selection_mode=selection_mode
         )
         
-        # 设置选择模式
         self._list_selection_mode = selection_mode
         
-        # 添加列表项
         self._list.add_items(items)
         self._list_items = items
         
-        # 添加列表到布局
         self.list_layout.addWidget(self._list)
         self.list_widget.show()
         
-        # 调整窗口大小
         self.adjust_size()
     
     def add_list_item(self, item):
         """
         添加单个列表项
-        
+
         Args:
-            item (str or dict): 列表项数据，可以是字符串或字典
+            item (str or dict): 列表项数据
         """
         if not self._list:
-            # 如果列表不存在，创建默认列表
             self.set_list([], self._list_selection_mode)
         
-        # 添加列表项
         self._list.add_item(item if isinstance(item, str) else item.get("text", ""), 
                            item.get("icon_path", "") if isinstance(item, dict) else "")
         self._list_items.append(item)
         
-        # 调整窗口大小
         self.adjust_size()
     
     def add_list_items(self, items):
         """
         批量添加列表项
-        
+
         Args:
             items (list): 列表项数据列表
         """
         if not self._list:
-            # 如果列表不存在，创建默认列表
             self.set_list([], self._list_selection_mode)
         
-        # 添加列表项
         self._list.add_items(items)
         self._list_items.extend(items)
         
-        # 调整窗口大小
         self.adjust_size()
     
     def clear_list(self):
-        """
-        清空列表
-        """
-        # 清空现有列表
+        """清空列表"""
         for i in reversed(range(self.list_layout.count())):
             widget = self.list_layout.itemAt(i).widget()
             if widget:
@@ -786,7 +709,6 @@ class CustomMessageBox(QDialog):
         self._list_items = []
         self.list_widget.hide()
         
-        # 调整窗口大小
         self.adjust_size()
     
     def get_selected_list_items(self):
@@ -847,26 +769,21 @@ class CustomMessageBox(QDialog):
         self._buttons = button_texts[:3]
         self._button_orientation = orientations
         
-        # 清空现有按钮
         for i in reversed(range(self.button_layout.count())):
             widget = self.button_layout.itemAt(i).widget()
             if widget:
                 widget.setParent(None)
         
-        # 设置布局属性，应用DPI缩放
-        # 左右边距和进度条一样，底部添加边距确保最后一个按钮的阴影不会被切掉
+        # 底部留边距，防止按钮阴影被切掉
         scaled_left_right_margin = int(15 * self.dpi_scale)
         scaled_top_margin = int(4 * self.dpi_scale)
         scaled_bottom_margin = int(8 * self.dpi_scale)
         scaled_button_spacing = int(8 * self.dpi_scale)
         
         self.button_layout.setContentsMargins(scaled_left_right_margin, scaled_top_margin, scaled_left_right_margin, scaled_bottom_margin)
-        self.button_layout.setSpacing(scaled_button_spacing)  # 增加按钮之间的间距，确保阴影不重叠
-        
-        # 设置布局对齐方式
+        self.button_layout.setSpacing(scaled_button_spacing)
         self.button_layout.setAlignment(Qt.AlignCenter)
         
-        # 设置默认按钮类型
         if button_types is None:
             button_types = []
             for i in range(len(self._buttons)):
@@ -875,15 +792,11 @@ class CustomMessageBox(QDialog):
                 else:
                     button_types.append("normal")
         
-        # 创建按钮
         from freeassetfilter.widgets.button_widgets import CustomButton
         for i, (text, btn_type) in enumerate(zip(self._buttons, button_types)):
             button = CustomButton(text, self, btn_type)
-            # 让按钮左右填充，同时保持固定高度
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            # 连接按钮点击信号到处理函数
             button.clicked.connect(lambda checked, idx=i: self._on_button_clicked(idx))
-            # 添加按钮到布局
             self.button_layout.addWidget(button)
         
         if self._buttons:
@@ -891,7 +804,6 @@ class CustomMessageBox(QDialog):
         else:
             self.button_widget.hide()
         
-        # 确保窗口能正确调整大小
         self.adjust_size()
     
     def _setup_animations(self):
@@ -925,18 +837,14 @@ class CustomMessageBox(QDialog):
         self._hide_animation_group.finished.connect(self._on_hide_animation_finished)
     
     def _stop_animations(self):
-        """
-        停止所有动画
-        """
+        """停止所有动画"""
         if self._show_animation_group and self._show_animation_group.state() == QPropertyAnimation.Running:
             self._show_animation_group.stop()
         if self._hide_animation_group and self._hide_animation_group.state() == QPropertyAnimation.Running:
             self._hide_animation_group.stop()
     
     def _start_show_animation(self):
-        """
-        启动显示动画
-        """
+        """启动显示动画"""
         self._show_animation_pending = False
         if self._is_hide_animating or self._is_show_animating or self._has_played_show_animation:
             return
@@ -965,9 +873,7 @@ class CustomMessageBox(QDialog):
         self._show_animation_group.start()
     
     def _start_hide_animation(self):
-        """
-        启动隐藏动画
-        """
+        """启动隐藏动画"""
         if self._is_hide_animating:
             return
         
@@ -990,8 +896,8 @@ class CustomMessageBox(QDialog):
     
     def _request_animated_close(self, result=None):
         """
-        请求以动画方式关闭弹窗
-        
+        以动画方式关闭弹窗
+
         Args:
             result (int, optional): 对话框结果值
         """
@@ -1065,39 +971,27 @@ class CustomMessageBox(QDialog):
             self.shadow_effect.setEnabled(True)
     
     def mousePressEvent(self, event):
-        """
-        鼠标按下事件，用于实现窗口拖拽
-        """
+        """拖拽窗口"""
         if event.button() == Qt.LeftButton:
-            # 开始拖动
             self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
             event.accept()
     
     def mouseMoveEvent(self, event):
-        """
-        鼠标移动事件，用于实现窗口拖拽
-        """
+        """拖拽窗口"""
         if hasattr(self, 'drag_position'):
-            # 处理拖动
             self.move(event.globalPos() - self.drag_position)
             event.accept()
     
     def mouseReleaseEvent(self, event):
-        """
-        鼠标释放事件，用于结束窗口拖拽
-        """
+        """结束拖拽"""
         if hasattr(self, 'drag_position'):
             delattr(self, 'drag_position')
     
     def showEvent(self, event):
-        """
-        显示事件，确保窗口居中并刷新阴影效果
-        """
+        """显示时居中并刷新阴影"""
         super().showEvent(event)
-        # 确保窗口居中
         self.center()
         self._animation_target_pos = self.pos()
-        # 强制刷新阴影效果
         if hasattr(self, 'shadow_effect') and self.shadow_effect:
             self.window_body.update()
         
@@ -1112,11 +1006,7 @@ class CustomMessageBox(QDialog):
             QTimer.singleShot(0, self._start_show_animation)
     
     def center(self):
-        """
-        将窗口居中显示
-        优先相对于主窗口居中，然后尝试相对于父窗口，最后相对于屏幕
-        """
-        # 尝试获取主窗口
+        """窗口居中：优先主窗口，其次父窗口，最后屏幕"""
         main_window = None
         for widget in QApplication.topLevelWidgets():
             if hasattr(widget, 'windowTitle') and widget.windowTitle() and 'FreeAssetFilter' in widget.windowTitle():
@@ -1124,21 +1014,18 @@ class CustomMessageBox(QDialog):
                 break
         
         if main_window:
-            # 相对于主窗口居中
             main_rect = main_window.frameGeometry()
             self.move(
                 main_rect.center().x() - self.width() // 2,
                 main_rect.center().y() - self.height() // 2
             )
         elif self.parent():
-            # 相对于父窗口居中
             parent_rect = self.parent().frameGeometry()
             self.move(
                 parent_rect.center().x() - self.width() // 2,
                 parent_rect.center().y() - self.height() // 2
             )
         else:
-            # 相对于屏幕居中
             screen = QApplication.primaryScreen()
             screen_rect = screen.availableGeometry()
             self.move(
@@ -1147,9 +1034,7 @@ class CustomMessageBox(QDialog):
             )
     
     def closeEvent(self, event):
-        """
-        关闭事件，统一接管为退场动画
-        """
+        """关闭事件统一接管为退场动画"""
         if self._allow_direct_close:
             event.accept()
             return
@@ -1162,24 +1047,16 @@ class CustomMessageBox(QDialog):
         self._request_animated_close()
     
     def accept(self):
-        """
-        以动画方式接受对话框
-        """
+        """以动画方式接受对话框"""
         self._request_animated_close(QDialog.Accepted)
     
     def reject(self):
-        """
-        以动画方式拒绝对话框
-        """
+        """以动画方式拒绝对话框"""
         self._request_animated_close(QDialog.Rejected)
     
     def keyPressEvent(self, event):
-        """
-        键盘按下事件，阻止ESC键关闭弹窗
-        """
+        """阻止ESC键关闭"""
         if event.key() == Qt.Key_Escape:
-            # 忽略ESC键，不执行任何操作
             event.ignore()
         else:
-            # 其他按键正常处理
             super().keyPressEvent(event)

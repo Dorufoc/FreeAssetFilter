@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -168,7 +168,6 @@ class AudioInfoTask(QRunnable):
                     if hasattr(audio.info, 'sample_rate'):
                         info["采样率"] = f"{audio.info.sample_rate} Hz"
             except (OSError, ValueError, AttributeError):
-                # debug(f"获取音频信息失败 (mutagen): {e}")
                 pass
 
         if not info:
@@ -204,7 +203,6 @@ class AudioInfoTask(QRunnable):
                     info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
                     info["比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
             except (OSError, ValueError, TypeError, subprocess.SubprocessError):
-                # debug(f"获取音频信息失败 (ffprobe): {e}")
                 info["时长"] = "无法获取"
                 info["比特率"] = "无法获取"
 
@@ -629,7 +627,6 @@ class FileInfoPreviewer(QObject):
         try:
             stat = os.stat(file_path)
         except (OSError, IOError, PermissionError, FileNotFoundError):
-            # debug(f"获取文件状态失败: {e}")
             pass
             return {
                 "文件名": os.path.basename(file_path),
@@ -673,7 +670,6 @@ class FileInfoPreviewer(QObject):
                     hasher.update(chunk)
             return hasher.hexdigest()
         except (OSError, IOError, PermissionError, FileNotFoundError):
-            # debug(f"计算文件哈希失败: {e}")
             pass
             return "无法计算"
 
@@ -697,7 +693,6 @@ class FileInfoPreviewer(QObject):
                 "文件数": len(files),
             }
         except (OSError, IOError, PermissionError, FileNotFoundError):
-            # debug(f"获取目录信息失败: {e}")
             pass
             return {
                 "子目录数": "无法访问",
@@ -801,7 +796,6 @@ class FileInfoPreviewer(QObject):
                     if hasattr(audio.info, 'sample_rate'):
                         info["采样率"] = f"{audio.info.sample_rate} Hz"
             except (OSError, ValueError, AttributeError):
-                # debug(f"获取音频信息失败 (mutagen): {e}")
                 pass
 
         if not info or "时长" not in info:
@@ -837,7 +831,6 @@ class FileInfoPreviewer(QObject):
                     info["时长"] = self._format_duration(float(format_info.get("duration", 0)))
                     info["比特率"] = self._format_bitrate(int(format_info.get("bit_rate", 0)))
             except (OSError, ValueError, TypeError, subprocess.SubprocessError):
-                # debug(f"获取音频信息失败 (ffprobe): {e}")
                 pass
                 if "时长" not in info:
                     info["时长"] = "无法获取"
@@ -867,7 +860,6 @@ class FileInfoPreviewer(QObject):
             if isinstance(fps, (int, float)) and fps > 0:
                 info["帧率"] = f"{float(fps):.2f} fps"
         except Exception:
-            # debug(f"获取视频信息失败 (ffprobe): {e}")
             pass
 
         return info
@@ -887,7 +879,6 @@ class FileInfoPreviewer(QObject):
             if isinstance(bitrate, int) and bitrate > 0:
                 info["码率"] = self._format_bitrate(bitrate)
         except Exception:
-            # debug(f"获取视频高级信息失败 (ffprobe): {e}")
             pass
 
         return info
@@ -903,7 +894,6 @@ class FileInfoPreviewer(QObject):
                 info["格式"] = img.format
                 info["模式"] = img.mode
         except (OSError, IOError, ValueError, AttributeError):
-            # debug(f"获取图像信息失败: {e}")
             pass
             info["尺寸"] = "无法获取"
             info["格式"] = "无法获取"
@@ -926,7 +916,6 @@ class FileInfoPreviewer(QObject):
                             exif_info[tag_name] = str(value)
                         info["EXIF信息"] = exif_info
             except (OSError, IOError, ValueError, AttributeError):
-                # debug(f"获取图像EXIF信息失败: {e}")
                 pass
 
         return info
@@ -942,7 +931,6 @@ class FileInfoPreviewer(QObject):
                 result = chardet.detect(raw_data)
                 info["编码格式"] = result['encoding']
         except (OSError, IOError, PermissionError, FileNotFoundError):
-            # debug(f"检测文本编码失败: {e}")
             pass
             info["编码格式"] = "无法检测"
 
@@ -955,7 +943,6 @@ class FileInfoPreviewer(QObject):
                 info["行数"] = content.count('\n') + 1
                 info["单词数"] = len(content.split())
         except (OSError, IOError, PermissionError, FileNotFoundError, UnicodeDecodeError, LookupError):
-            # debug(f"统计文本字数失败: {e}")
             pass
             info["字符数"] = "无法统计"
             info["字符数（不含空格）"] = "无法统计"
@@ -976,7 +963,6 @@ class FileInfoPreviewer(QObject):
                 magic_instance = magic.Magic()
                 info["详细类型"] = magic_instance.from_file(file_path)
             except (OSError, IOError, ValueError, AttributeError):
-                # debug(f"获取文本文件MIME类型失败: {e}")
                 pass
 
         return info
@@ -1009,7 +995,6 @@ class FileInfoPreviewer(QObject):
             else:
                 info["压缩率"] = "无法计算"
         except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError, RuntimeError):
-            # debug(f"获取压缩文件信息失败: {e}")
             pass
             info["文件数"] = "无法获取"
             info["总大小"] = "无法获取"
@@ -1038,7 +1023,6 @@ class FileInfoPreviewer(QObject):
                     info["内容列表"].append({"名称": f"... 还有 {len(content_list) - 10} 个文件", "大小": "", "修改时间": ""})
 
         except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, AttributeError, RuntimeError):
-            # debug(f"获取压缩文件高级信息失败: {e}")
             pass
 
         return info
@@ -1083,7 +1067,6 @@ class FileInfoPreviewer(QObject):
                                 info[name_desc] = record.string.decode('latin-1')
                             break
         except (ImportError, OSError, IOError, KeyError, AttributeError, UnicodeDecodeError):
-            # debug(f"获取字体基本信息失败: {e}")
             pass
 
         return info
@@ -1108,7 +1091,6 @@ class FileInfoPreviewer(QObject):
                     info["下降"] = hhea.descent
                     info["行间距"] = hhea.lineGap
         except (ImportError, OSError, IOError, KeyError, AttributeError):
-            # debug(f"获取字体高级信息失败: {e}")
             pass
 
         return info
@@ -1219,7 +1201,6 @@ class FileInfoPreviewer(QObject):
 
                     self.finished.emit({"basic": basic_info, "details": details})
                 except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError, AttributeError, KeyError):
-                    # debug(f"加载详细信息失败: {e}")
                     pass
                     self.error.emit(str(e))
 

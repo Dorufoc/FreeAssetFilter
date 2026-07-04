@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -514,7 +514,7 @@ class MPVPlayerCore(QObject):
         self._command_queue_maxsize = 100
         self._command_queue = queue.Queue(maxsize=self._command_queue_maxsize)
 
-        # 信号队列用于线程安全地发射信号
+        # 信号队列，用于线程安全地发射信号
         self._signal_queue = queue.Queue(maxsize=self._command_queue_maxsize)
 
         # 命令执行超时（秒）
@@ -787,10 +787,8 @@ class MPVPlayerCore(QObject):
                     value.encode('utf-8')
                 )
                 if result < 0:
-                    # debug(f"设置选项 {name}={value} 失败: {result}")
                     pass
             except (RuntimeError, AttributeError, OSError):
-                # debug(f"设置选项 {name} 时出错: {e}")
                 pass
     
     def _observe_properties(self, mpv_handle: c_void_p):
@@ -869,7 +867,6 @@ class MPVPlayerCore(QObject):
                 self._signal_queue.put_nowait(signal_data)
                 enqueued = True
             except queue.Full:
-                # debug(f"信号队列拥塞，丢弃信号: {signal_name}")
                 pass
 
     def _queue_signal_if_changed(self, signal_name: str, *args):
@@ -1427,7 +1424,6 @@ class MPVPlayerCore(QObject):
                 cmd_args = [b"vf", b"add", filter_string.encode('utf-8'), None]
                 cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
                 result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-                # debug(f"vf add命令结果: {result}")
 
                 # 尝试强制视频重新配置以应用滤镜
                 if result >= 0:
@@ -1435,9 +1431,7 @@ class MPVPlayerCore(QObject):
                         reconfig_args = [b"video-reconfig", None]
                         reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                         self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
-                        # debug(f"video-reconfig结果: {reconfig_result}")
                     except (RuntimeError, AttributeError, OSError):
-                        # debug(f"video-reconfig失败")
                         pass
 
                 return result >= 0
@@ -1446,7 +1440,6 @@ class MPVPlayerCore(QObject):
                 clear_cmd = [b"vf", b"cl", None]
                 clear_array = (c_char_p * len(clear_cmd))(*clear_cmd)
                 result = self._dll_loader.dll.mpv_command(mpv_handle, clear_array)
-                # debug(f"清除vf结果: {result}")
                 return result >= 0
         except (RuntimeError, AttributeError, OSError) as e:
             error(f"设置vf滤镜失败: {e}")
@@ -1461,9 +1454,7 @@ class MPVPlayerCore(QObject):
             cmd_args = [b"load", b"glsl-shaders", shader_path.encode('utf-8'), None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-            # 使用安全路径记录日志
             sanitize_path(shader_path)
-            # debug(f"load glsl-shaders命令结果: {result}")
 
             # 尝试强制视频重新配置
             if result >= 0:
@@ -1471,9 +1462,7 @@ class MPVPlayerCore(QObject):
                     reconfig_args = [b"video-reconfig", None]
                     reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                     self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
-                    # debug(f"video-reconfig结果: {reconfig_result}")
                 except (RuntimeError, AttributeError, OSError):
-                    # debug(f"video-reconfig失败")
                     pass
 
             return result >= 0
@@ -1490,14 +1479,11 @@ class MPVPlayerCore(QObject):
             cmd_args = [b"set", b"glsl-shaders", shader_list.encode('utf-8'), None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-            # debug(f"set glsl-shaders命令结果: {result}")
 
             if result < 0:
-                # 尝试使用set_property_string
                 result2 = self._dll_loader.dll.mpv_set_property_string(
                     mpv_handle, b"glsl-shaders", shader_list.encode('utf-8')
                 )
-                # debug(f"set_property_string glsl-shaders结果: {result2}")
                 result = result2
 
             # 尝试强制视频重新配置
@@ -1506,9 +1492,7 @@ class MPVPlayerCore(QObject):
                     reconfig_args = [b"video-reconfig", None]
                     reconfig_array = (c_char_p * len(reconfig_args))(*reconfig_args)
                     self._dll_loader.dll.mpv_command(mpv_handle, reconfig_array)
-                    # debug(f"video-reconfig结果: {reconfig_result}")
                 except (RuntimeError, AttributeError, OSError):
-                    # debug(f"video-reconfig失败")
                     pass
 
             return result >= 0
@@ -1525,7 +1509,6 @@ class MPVPlayerCore(QObject):
             cmd_args = [b"glsl-shaders", b"clr", None]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-            # debug(f"glsl-shaders clr命令结果: {result}")
             return result >= 0
         except (RuntimeError, AttributeError, OSError) as e:
             error(f"清除GLSL着色器失败: {e}")
@@ -1543,9 +1526,7 @@ class MPVPlayerCore(QObject):
                 b"options/lut",
                 abs_path.encode('utf-8')
             )
-            # 使用安全路径记录日志
             sanitize_path(abs_path)
-            # debug(f"set lut={safe_path} 结果: {result}")
             return result >= 0
         except (RuntimeError, AttributeError, OSError) as e:
             error(f"设置LUT失败: {e}")
@@ -1562,7 +1543,6 @@ class MPVPlayerCore(QObject):
                 b"options/lut",
                 b""
             )
-            # debug(f"清除lut结果: {result}")
             return result >= 0
         except (RuntimeError, AttributeError, OSError) as e:
             error(f"清除LUT失败: {e}")
@@ -1587,7 +1567,6 @@ class MPVPlayerCore(QObject):
             ]
             cmd_array = (c_char_p * len(cmd_args))(*cmd_args)
             result = self._dll_loader.dll.mpv_command(mpv_handle, cmd_array)
-            # debug(f"sub-add 结果: {result}")
 
             if result < 0:
                 return False
@@ -1597,14 +1576,12 @@ class MPVPlayerCore(QObject):
                 b"sub-visibility",
                 b"yes"
             )
-            # debug(f"sub-visibility=yes 结果: {visibility_result}")
 
             self._dll_loader.dll.mpv_set_property_string(
                 mpv_handle,
                 b"sid",
                 b"auto"
             )
-            # debug(f"sid=auto 结果: {sid_result}")
 
             return True
         except (RuntimeError, AttributeError, OSError, UnicodeEncodeError) as e:
@@ -1711,7 +1688,6 @@ class MPVPlayerCore(QObject):
                 b"sub-visibility",
                 visibility_value
             )
-            # debug(f"sub-visibility 设置结果: {result}")
 
             if result < 0:
                 return False
@@ -1722,7 +1698,6 @@ class MPVPlayerCore(QObject):
                     b"sid",
                     b"no"
                 )
-                # debug(f"sid=no 结果: {sid_result}")
                 return sid_result >= 0
 
             return True
@@ -1750,7 +1725,6 @@ class MPVPlayerCore(QObject):
                 b"sid",
                 sid_value
             )
-            # debug(f"sid={track_id} 结果: {sid_result}")
 
             if sid_result < 0:
                 return False
@@ -1760,7 +1734,6 @@ class MPVPlayerCore(QObject):
                 b"sub-visibility",
                 b"yes"
             )
-            # debug(f"sub-visibility=yes 结果: {visibility_result}")
             return visibility_result >= 0
         except (RuntimeError, AttributeError, OSError, UnicodeEncodeError) as e:
             error(f"切换字幕轨失败: {e}")
@@ -1882,7 +1855,6 @@ class MPVPlayerCore(QObject):
                 b"aid",
                 aid_value
             )
-            # debug(f"aid={aid_value.decode('utf-8', errors='ignore')} 结果: {aid_result}")
             return aid_result >= 0
         except (RuntimeError, AttributeError, OSError, UnicodeEncodeError) as e:
             error(f"切换音轨失败: {e}")
@@ -2715,7 +2687,6 @@ class MPVPlayerCore(QObject):
                 self._send_command(MPVCommandType.SET_VF_FILTER, "", timeout=0.3)
                 self._send_command(MPVCommandType.CLEAR_LUT, timeout=0.3)
             except (RuntimeError, TypeError):
-                # debug(f"预清理时清除滤镜/LUT失败: {e}")
                 pass
 
         except (RuntimeError, TypeError) as e:
@@ -2777,7 +2748,6 @@ class MPVPlayerCore(QObject):
                 except queue.Empty:
                     break
         except Exception:
-            # debug(f"清空命令队列失败: {e}")
             pass
 
     def _sync_cleanup(self, timeout=2.0):
@@ -2797,8 +2767,7 @@ class MPVPlayerCore(QObject):
             self._is_playing = False
             self._is_paused = False
 
-        # debug("同步清理完成")
-
+    
     def _async_cleanup(self, timeout=3.0):
         """异步清理 - 在后台完成"""
         try:
@@ -2868,5 +2837,4 @@ class MPVPlayerCore(QObject):
         try:
             self.close()
         except (RuntimeError, AttributeError):
-            # debug(f"析构时关闭播放器失败: {e}")
             pass

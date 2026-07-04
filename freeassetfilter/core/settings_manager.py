@@ -24,7 +24,7 @@ def _load_json_file(file_path):
 
 
 def _apply_private_file_permissions(file_path):
-    """尽量限制设置文件权限，降低本机其他账户读取敏感路径信息的风险。"""
+    """限制设置文件权限，防止其他账户读取敏感路径。"""
     try:
         os.chmod(file_path, 0o600)
     except (OSError, PermissionError, FileNotFoundError, ValueError, TypeError):
@@ -258,10 +258,10 @@ class SettingsManager:
 
     def schedule_save(self, delay=None):
         """
-        延迟调度设置写盘，将高频设置变更合并为一次磁盘写入。
+        延迟写盘，合并高频设置为一次写入。
 
         Args:
-            delay: 延迟秒数，None 时使用默认延迟
+            delay: 延迟秒数，None 时使用默认值
         """
         with self._settings_lock:
             if delay is None:
@@ -280,7 +280,7 @@ class SettingsManager:
             self._save_timer.start()
 
     def _flush_scheduled_save(self):
-        """执行已调度的设置写盘"""
+        """执行已调度的写盘"""
         with self._settings_lock:
             self._save_timer = None
             if not self._save_pending:
@@ -347,14 +347,14 @@ class SettingsManager:
         Returns:
             设置值
         """
-        # 颜色快速路径：使用内存缓存，避免字典遍历
+        # 颜色快速路径：内存缓存
         if key_path.startswith("appearance.colors."):
             color_key = key_path.split(".")[-1]
             with self._color_cache_lock:
                 if color_key in self._color_cache:
                     return self._color_cache[color_key]
 
-            # 缓存未命中，从内存设置中读取
+            # 缓存未命中，从内存读取
             with self._settings_lock:
                 if self.settings is None:
                     return default
@@ -416,7 +416,7 @@ class SettingsManager:
             elif key_path.startswith("appearance.colors."):
                 debug(f"颜色变更: {key_path}={value}")
 
-            # 只有显式要求时才自动保存，但使用延迟合并写盘避免高频 I/O
+            # 仅 auto_save 时写盘，用延迟合并避免高频 I/O
             if auto_save:
                 self.schedule_save()
 

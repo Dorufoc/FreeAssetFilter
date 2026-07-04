@@ -3,11 +3,11 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
-2. 商业使用：需联系 qpdrfc123@gmail.com 获取书面授权；
+2. 商业使用：需联系 dorufoc@outlook.com 获取书面授权；
 
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
 许可协议：https://github.com/Dorufoc/FreeAssetFilter/blob/main/LICENSE
@@ -89,11 +89,11 @@ def save_icon_to_cache(file_path: str, pixmap) -> bool:
     """
     将图标保存到缓存文件
 
-    参数:
+        Args:
         file_path: str - 原始文件路径（用于生成缓存键）
         pixmap: QPixmap - 要保存的图标
 
-    返回:
+        Returns:
         bool - 是否保存成功
     """
     if pixmap is None or pixmap.isNull():
@@ -279,10 +279,10 @@ def get_all_icons_from_exe(file_path):
     """
     从EXE文件中提取所有可用的图标
 
-    参数:
+        Args:
         file_path: str - EXE文件路径
 
-    返回:
+        Returns:
         list - 包含所有图标信息的列表，每个元素是(dict):
             {"hicon": HICON, "index": int, "width": int, "height": int}
     """
@@ -466,11 +466,11 @@ def get_highest_resolution_icon(file_path, desired_size=256):
     获取文件的最高分辨率图标，支持exe和lnk文件
     优先使用 IShellItemImageFactory (Windows资源管理器使用的接口) 获取高质量图标
 
-    参数:
+        Args:
         file_path: str - 文件路径
         desired_size: int - 期望的图标大小（仅作为参考，实际会获取最高分辨率）
 
-    返回:
+        Returns:
         HICON - 图标句柄，如果获取失败则返回None
     """
     debug(f"获取高分辨率图标: {file_path}, 期望尺寸: {desired_size}")
@@ -563,11 +563,11 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
     使用 IShellItemImageFactory 获取高质量图标
     这是 Windows 资源管理器使用的接口，可以获取高质量、大尺寸的图标
 
-    参数:
+        Args:
         file_path: str - 文件路径
         size: int - 期望的图标大小
 
-    返回:
+        Returns:
         HICON - 图标句柄，如果获取失败则返回None
     """
     debug(f"使用IShellItemImageFactory获取图标: {file_path}, 尺寸: {size}")
@@ -727,14 +727,14 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
     """
     将HICON转换为QPixmap
 
-    参数:
+        Args:
         hicon: HICON - 图标句柄
         size: int - 目标大小（逻辑像素）
         qt_app: QApplication - Qt应用实例
         device_pixel_ratio: float - 设备像素比，如果不指定则使用系统主屏幕的DPI
         keep_original_size: bool - 是否保持原始分辨率（点对点渲染），默认为False
 
-    返回:
+        Returns:
         QPixmap - 如果转换成功则返回Pixmap，否则返回None
     """
     debug(f"HICON转QPixmap: size={size}, keep_original={keep_original_size}")

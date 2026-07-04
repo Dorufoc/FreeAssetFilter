@@ -1,5 +1,5 @@
-# FreeAssetFilter components module
-# All components lazy-loaded to accelerate startup
+# FreeAssetFilter 组件模块
+# 所有组件懒加载以加速启动
 
 __all__ = [
     'ArchiveBrowser',

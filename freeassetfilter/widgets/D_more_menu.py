@@ -189,7 +189,6 @@ class D_MoreMenu(QWidget):
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self.hide)
 
-        # 确保窗口初始状态是隐藏的
         self.hide()
 
         main_layout = QVBoxLayout(self)
@@ -221,13 +220,11 @@ class D_MoreMenu(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # 计算内容区域的位置和大小
         content_x = self._shadow_radius + self._padding
         content_y = self._shadow_radius + self._padding
         content_width = self.width() - 2 * content_x
         content_height = self.height() - 2 * content_y
 
-        # 绘制阴影层（与内容区域完全对齐）
         shadow_rect = QRect(content_x, content_y, content_width, content_height)
 
         painter.setPen(Qt.NoPen)

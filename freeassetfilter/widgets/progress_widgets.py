@@ -119,12 +119,6 @@ class CustomProgressBar(QWidget):
         # 条顶中 SVG 会在绘制时根据需要直接渲染，这里只保存路径
     
     def setOrientation(self, orientation):
-        """
-        设置进度条方向
-        
-        Args:
-            orientation: 方向常量，Horizontal 或 Vertical
-        """
         if self._orientation != orientation:
             self._orientation = orientation
             
@@ -143,33 +137,14 @@ class CustomProgressBar(QWidget):
             self.update()
     
     def orientation(self):
-        """
-        获取进度条方向
-        
-        Returns:
-            int: 方向常量
-        """
         return self._orientation
-    
+
     def setRange(self, minimum, maximum):
-        """
-        设置进度条范围
-        
-        Args:
-            minimum (int): 最小值
-            maximum (int): 最大值
-        """
         self._minimum = minimum
         self._maximum = maximum
         self.update()
-    
+
     def setValue(self, value):
-        """
-        设置进度条值
-        
-        Args:
-            value (int): 进度值
-        """
         if value < self._minimum:
             value = self._minimum
         elif value > self._maximum:
@@ -181,31 +156,13 @@ class CustomProgressBar(QWidget):
             self.valueChanged.emit(value)
     
     def value(self):
-        """
-        获取当前进度值
-        
-        Returns:
-            int: 当前进度值
-        """
         return self._value
-    
+
     def setInteractive(self, is_interactive):
-        """
-        设置进度条是否可交互
-        
-        Args:
-            is_interactive (bool): 是否可交互
-        """
         self._is_interactive = is_interactive
         self.update()
-    
+
     def isInteractive(self):
-        """
-        获取进度条是否可交互
-        
-        Returns:
-            bool: 是否可交互
-        """
         return self._is_interactive
     
     def mousePressEvent(self, event):
@@ -321,9 +278,6 @@ class CustomProgressBar(QWidget):
             self.setValue(value)
     
     def paintEvent(self, event):
-        """
-        绘制进度条
-        """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
@@ -558,15 +512,9 @@ class CustomProgressBar(QWidget):
         painter.end()
     
     def enterEvent(self, event):
-        """
-        鼠标进入事件
-        """
         self.update()
-    
+
     def leaveEvent(self, event):
-        """
-        鼠标离开事件
-        """
         self.update()
 
 
@@ -1554,17 +1502,11 @@ class CustomValueBar(QWidget):
         self._dynamic_handle_color = False
     
     def setRange(self, minimum, maximum):
-        """
-        设置数值条范围
-        """
         self._minimum = minimum
         self._maximum = maximum
         self.update()
-    
+
     def setValue(self, value):
-        """
-        设置数值条值
-        """
         if value < self._minimum:
             value = self._minimum
         elif value > self._maximum:
@@ -1576,18 +1518,9 @@ class CustomValueBar(QWidget):
             self.valueChanged.emit(value)
     
     def value(self):
-        """
-        获取当前数值
-        """
         return self._value
-    
+
     def setOrientation(self, orientation):
-        """
-        设置数值条方向
-        
-        Args:
-            orientation: 方向常量，Horizontal 或 Vertical
-        """
         if self._orientation != orientation:
             self._orientation = orientation
             
@@ -1607,9 +1540,6 @@ class CustomValueBar(QWidget):
             self.update()
     
     def mousePressEvent(self, event):
-        """
-        鼠标按下事件
-        """
         if self._interactive and event.button() == Qt.LeftButton:
             self._is_pressed = True
             if self._orientation == self.Horizontal:
@@ -1624,9 +1554,6 @@ class CustomValueBar(QWidget):
             super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
-        """
-        鼠标移动事件
-        """
         if self._interactive and self._is_pressed:
             if self._orientation == self.Horizontal:
                 self._last_pos = event.pos().x()
@@ -1639,9 +1566,6 @@ class CustomValueBar(QWidget):
             super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event):
-        """
-        鼠标释放事件
-        """
         if self._interactive and self._is_pressed and event.button() == Qt.LeftButton:
             self._is_pressed = False
             self.userInteractionEnded.emit()
@@ -1650,10 +1574,6 @@ class CustomValueBar(QWidget):
             super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
-        """
-        鼠标滚轮事件，处理滚轮调整数值
-        仅当数值条可交互时响应滚轮事件
-        """
         if not self._interactive:
             super().wheelEvent(event)
             return
@@ -1682,22 +1602,10 @@ class CustomValueBar(QWidget):
         event.accept()
 
     def setInteractive(self, interactive):
-        """
-        设置数值条是否可交互
-        
-        Args:
-            interactive: 是否可交互
-        """
         self._interactive = interactive
         self.update()
     
     def _update_value_from_pos(self, pos):
-        """
-        根据鼠标位置更新数值
-        
-        Args:
-            pos: 鼠标位置（横向为x坐标，竖向为y坐标）
-        """
         if self._orientation == self.Horizontal:
             # 横向处理
             # 计算数值条总宽度
@@ -1736,9 +1644,6 @@ class CustomValueBar(QWidget):
         self.setValue(value)
     
     def paintEvent(self, event):
-        """
-        绘制数值控制条
-        """
         # 确保Qt已导入
         from PySide6.QtCore import Qt
         
@@ -1883,75 +1788,32 @@ class CustomValueBar(QWidget):
         painter.end()
     
     def enterEvent(self, event):
-        """
-        鼠标进入事件
-        """
         self.update()
     
     def leaveEvent(self, event):
-        """
-        鼠标离开事件
-        """
         self.update()
     
     def set_progress_color(self, color):
-        """
-        设置进度条已完成部分的颜色
-        
-        Args:
-            color (QColor): 进度颜色
-        """
         self._progress_color = QColor(color)
         self.update()
     
     def set_bg_color(self, color):
-        """
-        设置进度条背景颜色
-        
-        Args:
-            color (QColor): 背景颜色
-        """
         self._bg_color = QColor(color)
         self.update()
     
     def set_handle_border_color(self, color):
-        """
-        设置滑块边框颜色
-        
-        Args:
-            color (QColor): 边框颜色
-        """
         self._handle_border_color = QColor(color)
         self.update()
     
     def set_gradient_mode(self, enabled):
-        """
-        设置是否使用渐变背景
-        
-        Args:
-            enabled (bool): 是否启用渐变模式
-        """
         self._gradient_mode = enabled
         self.update()
     
     def set_gradient_colors(self, colors):
-        """
-        设置渐变背景颜色列表
-        
-        Args:
-            colors (list): QColor颜色列表，至少需要2个颜色
-        """
         self._gradient_colors = colors
         self.update()
     
     def set_dynamic_handle_color(self, enabled, color=None):
-        """
-        设置滑块边框颜色是否动态变化
-        
-        Args:
-            enabled (bool): 是否启用动态颜色
-            color (QColor): 动态颜色计算函数，接收当前值参数返回QColor
-        """
         self._dynamic_handle_color = enabled
         self._dynamic_handle_color_func = color
         self.update()
@@ -2017,17 +1879,11 @@ class CustomVolumeBar(QWidget):
             self._handle_border_color = QColor(0, 120, 212)  # 边框为蓝色，与进度条颜色一致
     
     def setRange(self, minimum, maximum):
-        """
-        设置音量条范围
-        """
         self._minimum = minimum
         self._maximum = maximum
         self.update()
-    
+
     def setValue(self, value):
-        """
-        设置音量条值
-        """
         if value < self._minimum:
             value = self._minimum
         elif value > self._maximum:
@@ -2039,15 +1895,9 @@ class CustomVolumeBar(QWidget):
             self.valueChanged.emit(value)
     
     def value(self):
-        """
-        获取当前音量值
-        """
         return self._value
-    
+
     def mousePressEvent(self, event):
-        """
-        鼠标按下事件
-        """
         if event.button() == Qt.LeftButton:
             self._is_pressed = True
             self._last_pos = event.pos().x()
@@ -2055,24 +1905,15 @@ class CustomVolumeBar(QWidget):
             self._update_value_from_pos(event.pos().x())
     
     def mouseMoveEvent(self, event):
-        """
-        鼠标移动事件
-        """
         if self._is_pressed:
             self._last_pos = event.pos().x()
             self._update_value_from_pos(event.pos().x())
     
     def mouseReleaseEvent(self, event):
-        """
-        鼠标释放事件
-        """
         if self._is_pressed and event.button() == Qt.LeftButton:
             self._is_pressed = False
 
     def wheelEvent(self, event):
-        """
-        鼠标滚轮事件，处理滚轮调整音量值
-        """
         # 获取滚轮滚动角度，每格通常为120
         delta = event.angleDelta().y()
 
@@ -2095,9 +1936,6 @@ class CustomVolumeBar(QWidget):
         event.accept()
 
     def _update_value_from_pos(self, x_pos):
-        """
-        根据鼠标位置更新音量值
-        """
         # 计算音量条总宽度，确保不小于0
         effective_width = max(0, self.width() - (self._handle_radius * 2))
         bar_width = effective_width
@@ -2117,9 +1955,6 @@ class CustomVolumeBar(QWidget):
         self.setValue(value)
     
     def paintEvent(self, event):
-        """
-        绘制音量条
-        """
         # 确保Qt已导入
         from PySide6.QtCore import Qt
         
@@ -2191,13 +2026,7 @@ class CustomVolumeBar(QWidget):
         painter.end()
     
     def enterEvent(self, event):
-        """
-        鼠标进入事件
-        """
         self.update()
-    
+
     def leaveEvent(self, event):
-        """
-        鼠标离开事件
-        """
         self.update()

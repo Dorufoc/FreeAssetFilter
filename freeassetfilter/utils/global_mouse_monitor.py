@@ -24,7 +24,7 @@ monitor.start()
 ```
 
 Author: FreeAssetFilter
-Date: 2025
+Date: 2026
 """
 
 import ctypes
@@ -213,14 +213,11 @@ class GlobalMouseMonitor(QObject):
         Returns:
             bool: 是否成功启动监控
         """
-        #debug("开始启动鼠标监控")
-
         if self._disposed:
             warning("监控器已销毁，无法启动")
             return False
 
         if self._is_monitoring:
-            #debug("监控已在运行中")
             return True
 
         try:
@@ -281,7 +278,6 @@ class GlobalMouseMonitor(QObject):
             with GlobalMouseMonitor._active_instances_lock:
                 GlobalMouseMonitor._active_instances.add(self)
 
-            #info("鼠标监控启动成功")
             return True
 
         except OSError as e:
@@ -292,8 +288,6 @@ class GlobalMouseMonitor(QObject):
         """
         停止监控鼠标活动
         """
-        #debug("停止鼠标监控")
-
         if self._stopping:
             return
 
@@ -328,7 +322,6 @@ class GlobalMouseMonitor(QObject):
             with GlobalMouseMonitor._active_instances_lock:
                 GlobalMouseMonitor._active_instances.discard(self)
 
-            #info("鼠标监控已停止")
         finally:
             self._stopping = False
 

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 FreeAssetFilter v1.0
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
 项目地址：https://github.com/Dorufoc/FreeAssetFilter
@@ -97,7 +97,7 @@ class CustomFileHorizontalCard(QWidget):
         selectionChanged (bool, str): 选中状态改变事件，传递选中状态和文件路径
         previewStateChanged (bool, str): 预览状态改变事件，传递预览状态和文件路径
 
-    属性：
+    Attributes:
         file_path (str): 文件路径
         is_selected (bool): 是否选中
         is_previewing (bool): 是否处于预览态

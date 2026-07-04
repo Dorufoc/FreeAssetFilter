@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -42,10 +42,10 @@ class PDFPageWidget(QWidget):
     类似于 QML 的 PdfPageView，显示单页PDF内容
     支持高DPI显示
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # 获取应用实例和DPI缩放因子
         app = QApplication.instance()
         self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
@@ -70,7 +70,7 @@ class PDFPageWidget(QWidget):
         self._init_ui()
     
     def _init_ui(self):
-        """初始化UI"""
+        """初始化UI界面"""
         # 创建主布局，添加边距以显示边框
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(1, 1, 1, 1)  # 为边框留出空间
@@ -106,9 +106,9 @@ class PDFPageWidget(QWidget):
     
     def set_page_pixmap(self, pixmap: QPixmap, page_number: int):
         """设置页面图片
-        
+
         Args:
-            pixmap: 页面图片（已经考虑了devicePixelRatio的高DPI图片）
+            pixmap: 页面图片（已考虑 devicePixelRatio 的高DPI图片）
             page_number: 页码
         """
         self.page_pixmap = pixmap
@@ -123,7 +123,7 @@ class PDFPageWidget(QWidget):
     
     def set_zoom(self, zoom_factor: float):
         """设置缩放比例
-        
+
         Args:
             zoom_factor: 缩放比例（1.0 = 原始尺寸）
         """
@@ -131,7 +131,7 @@ class PDFPageWidget(QWidget):
         self._update_display()
     
     def _update_display(self):
-        """更新显示"""
+        """更新页面显示"""
         if self.page_pixmap:
             # 计算显示尺寸（逻辑像素）
             display_width = int(self.original_size.width() * self.current_zoom)
@@ -155,7 +155,7 @@ class PDFPageWidget(QWidget):
             self.image_label.setFixedSize(display_width, display_height)
     
     def sizeHint(self):
-        """返回建议大小"""
+        """返回控件的建议大小"""
         if self.page_pixmap:
             return QSize(
                 int(self.original_size.width() * self.current_zoom),
@@ -170,7 +170,7 @@ class PDFPreviewer(QWidget):
     提供PDF文件的完整预览功能，包括页面导航、缩放控制等
     使用 QPdfDocument 渲染页面到 QImage，然后使用自定义控件从上到下显示所有页面
     全流程适配高DPI缩放
-    
+
     信号:
         pdf_render_finished: PDF渲染完成时发出
     """
@@ -246,7 +246,7 @@ class PDFPreviewer(QWidget):
         self._init_ui()
     
     def _init_ui(self):
-        """初始化用户界面"""
+        """初始化PDF预览器用户界面"""
         # 主布局
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(int(5 * self.dpi_scale))
@@ -264,7 +264,7 @@ class PDFPreviewer(QWidget):
         self.setFont(self.global_font)
     
     def _create_control_bar(self):
-        """创建控制栏"""
+        """创建顶部控制栏"""
         self.control_bar = QWidget()
         self.control_bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         
@@ -333,7 +333,7 @@ class PDFPreviewer(QWidget):
         control_layout.addWidget(self.zoom_slider)
     
     def _create_content_area(self):
-        """创建内容预览区 - 使用滚动区域显示所有页面"""
+        """创建内容预览区域 - 使用滚动区域显示所有PDF页面"""
         # 创建外层容器，用于添加3px内边距
         self.scroll_container = QWidget(self)
         self.scroll_container.setStyleSheet(f"background-color: {self.base_color};")
@@ -390,7 +390,7 @@ class PDFPreviewer(QWidget):
         self.pdf_document = QPdfDocument(self)
     
     def set_file(self, file_info):
-        """设置要预览的文件（统一预览器接口）"""
+        """设置要预览的PDF文件（统一预览器接口）"""
         if isinstance(file_info, dict):
             file_path = file_info.get("path", "")
         else:
@@ -399,7 +399,7 @@ class PDFPreviewer(QWidget):
         self.load_file_from_path(file_path)
     
     def load_file_from_path(self, file_path: str):
-        """从文件路径加载PDF"""
+        """从指定文件路径加载PDF文档"""
         if not file_path or not os.path.exists(file_path):
             warning(f"PDF文件不存在: {file_path}")
             self._show_error("文件不存在")
@@ -440,7 +440,7 @@ class PDFPreviewer(QWidget):
             self._show_error(f"加载PDF失败: {str(e)}")
     
     def _clear_pages(self):
-        """清空所有页面控件和懒加载缓存"""
+        """清空所有PDF页面控件和懒加载缓存"""
         # 断开滚动信号连接
         try:
             self.scroll_area.verticalScrollBar().valueChanged.disconnect(self._on_scroll_changed)
@@ -468,7 +468,7 @@ class PDFPreviewer(QWidget):
         self._lazy_loaded = False
     
     def _get_device_pixel_ratio(self) -> float:
-        """获取设备像素比"""
+        """获取当前设备像素比（用于高DPI适配）"""
         # 优先使用当前窗口的设备像素比
         if self.window():
             return self.window().devicePixelRatioF() if hasattr(self.window(), 'devicePixelRatioF') else 1.0
@@ -479,8 +479,8 @@ class PDFPreviewer(QWidget):
         return 1.0
     
     def _get_render_dpi(self) -> float:
-        """计算渲染DPI
-        
+        """
+        计算渲染DPI
         根据设备DPI和设备像素比计算实际渲染DPI
         确保在高DPI显示器上渲染清晰
         """
@@ -504,7 +504,7 @@ class PDFPreviewer(QWidget):
         return render_dpi
     
     def _render_all_pages(self):
-        """懒加载渲染PDF页面 - 只创建占位控件，页面内容在滚动时按需渲染（LRU缓存最多20页）"""
+        """懒加载渲染所有PDF页面 - 只创建占位控件，页面内容在滚动时按需渲染（LRU缓存最多20页）"""
         if self.total_pages == 0:
             return
 
@@ -536,7 +536,7 @@ class PDFPreviewer(QWidget):
 
     def _render_page_range(self, start: int, end: int):
         """
-        按需渲染指定范围内的PDF页面（带LRU缓存）
+        按需渲染指定页码范围内的PDF页面（带LRU缓存）
 
         Args:
             start: 起始页码（含）
@@ -631,7 +631,8 @@ class PDFPreviewer(QWidget):
             self._render_page_range(render_start, render_end)
     
     def _calculate_fit_to_width_zoom(self, force=False):
-        """计算适合页面显示的缩放因子，并将其设为100%基准
+        """
+        计算适合页面显示的缩放因子，并将其设为100%基准
         无论用户是否手动设置了缩放比例，基准100%都会随视口大小实时变化
 
         Args:
@@ -766,8 +767,9 @@ class PDFPreviewer(QWidget):
     
     def _on_zoom_changed(self, value: int):
         """缩放值变化处理
-        
-        value: 用户设置的缩放百分比（相对于适合显示的大小，100% = 适合显示）
+
+        Args:
+            value: 用户设置的缩放百分比（相对于适合显示的大小，100% = 适合显示）
         """
         self.current_zoom = value
         self._user_zoom = value  # 记录用户手动设置的缩放值
@@ -939,6 +941,5 @@ class PDFPreviewer(QWidget):
 
     def closeEvent(self, event):
         """关闭事件处理"""
-        debug("PDF预览器关闭")
         self._close_document()
         super().closeEvent(event)

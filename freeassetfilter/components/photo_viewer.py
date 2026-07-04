@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -662,7 +662,7 @@ class ImageWidget(QWidget):
     def _get_current_bg_color(self):
         """
         获取当前设置的背景色
-        
+
         Returns:
             str: 十六进制颜色值
         """
@@ -889,11 +889,11 @@ class ImageWidget(QWidget):
     def set_image(self, image_path, force_full_resolution=False):
         """
         设置要显示的图片
-        
+
         Args:
             image_path (str): 图片文件路径
             force_full_resolution (bool): 强制全分辨率解码（用于全屏模式）
-        
+
         Returns:
             bool: 是否成功启动加载
         """
@@ -1175,7 +1175,7 @@ class ImageWidget(QWidget):
         try:
             # 无论鼠标是否在图片上，都可以进行缩放
             if self.original_image and self.scaled_image:
-                # PySide6使用position()而不是pos()
+                # PySide6 使用 position() 而非 pos()
                 wheel_pos = event.position().toPoint()
                 
                 # 使用scaled_image的实际逻辑像素尺寸
@@ -1450,7 +1450,7 @@ class PhotoViewer(QWidget):
     def __init__(self, parent=None):
         """
         初始化照片查看器
-        
+
         Args:
             parent: 父窗口部件
         """
@@ -1539,10 +1539,10 @@ class PhotoViewer(QWidget):
     def load_image_from_path(self, image_path):
         """
         从外部路径加载图片
-        
+
         Args:
             image_path (str): 图片文件路径
-        
+
         Returns:
             bool: 是否成功加载图片
         """
@@ -1559,10 +1559,10 @@ class PhotoViewer(QWidget):
     def set_file(self, file_path):
         """
         设置要显示的图片文件
-        
+
         Args:
             file_path (str): 图片文件路径
-        
+
         Returns:
             bool: 是否成功加载图片
         """

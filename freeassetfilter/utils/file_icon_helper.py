@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -18,7 +18,6 @@ Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
 import os
 from freeassetfilter.core.settings_manager import SettingsManager
 
-# 导入日志模块
 from freeassetfilter.utils.app_logger import debug, warning
 
 # 支持样式切换的图标名称列表
@@ -57,7 +56,6 @@ def get_icon_path(icon_name, icon_dir=None):
     Returns:
         str: SVG文件的完整路径，如果找不到对应图标则返回默认路径
     """
-    # 获取图标目录
     if icon_dir is None:
         icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
     
@@ -75,18 +73,14 @@ def get_icon_path(icon_name, icon_dir=None):
         warning(f"图标样式设置异常: {e}")
         icon_style = 0
     
-    # 确保样式值有效
     if icon_style not in ICON_STYLE_SUFFIX:
         icon_style = 0
     
-    # 检查该图标是否支持样式切换
     if icon_name in STYLEABLE_ICONS:
-        # 构建带样式的图标文件名
         suffix = ICON_STYLE_SUFFIX[icon_style]
         styled_icon_name = f"{icon_name}{suffix}.svg"
         styled_icon_path = os.path.join(icon_dir, styled_icon_name)
         
-        # 如果带样式的图标存在，返回它
         if os.path.exists(styled_icon_path):
             return styled_icon_path
 
@@ -96,7 +90,6 @@ def get_icon_path(icon_name, icon_dir=None):
             debug(f"图标回退: {styled_icon_name} -> {icon_name}.svg")
             return default_icon_path
     
-    # 对于不支持样式切换的图标，直接返回默认路径
     default_icon_path = os.path.join(icon_dir, f"{icon_name}.svg")
     return default_icon_path
 
@@ -112,15 +105,12 @@ def get_file_icon_path(file_info, icon_dir=None):
     Returns:
         str: SVG文件的完整路径
     """
-    # 获取图标目录
     if icon_dir is None:
         icon_dir = os.path.join(os.path.dirname(__file__), "..", "icons")
     
-    # 检查是否是文件夹
     if file_info.get("is_dir", False):
         return get_icon_path("文件夹", icon_dir)
     
-    # 获取文件后缀
     suffix = file_info.get("suffix", "").lower()
     
     # 定义文件类型映射
@@ -130,7 +120,6 @@ def get_file_icon_path(file_info, icon_dir=None):
     font_formats = ["ttf", "otf", "woff", "woff2", "eot"]
     archive_formats = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "lzma", "iso", "cab", "arj"]
     
-    # 根据后缀返回对应的图标
     if suffix in video_formats:
         return get_icon_path("视频", icon_dir)
     elif suffix in image_formats:
@@ -155,7 +144,6 @@ def get_file_icon_path(file_info, icon_dir=None):
         return get_icon_path("未知底板", icon_dir)
 
 
-# 模块导出
 __all__ = [
     "get_icon_path",
     "get_file_icon_path",

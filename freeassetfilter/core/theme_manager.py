@@ -8,10 +8,7 @@ FreeAssetFilter 主题管理器组件
 from PySide6.QtCore import Qt, Signal, QObject
 from PySide6.QtGui import QColor
 
-# 导入设置管理器
 from freeassetfilter.core.settings_manager import SettingsManager
-
-# 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning
 
 
@@ -32,11 +29,10 @@ class ThemeManager(QObject):
         """
         初始化主题管理器
 
-        参数：
-            settings_manager: 设置管理器实例，如果不提供则创建新实例
+        Args:
+            settings_manager: 设置管理器实例，不提供则创建新实例
         """
-        super().__init__()  # 调用QObject的初始化函数
-        # debug("初始化开始")
+        super().__init__()
 
         self.settings_manager = settings_manager or SettingsManager()
 
@@ -56,8 +52,6 @@ class ThemeManager(QObject):
         加载主题颜色设置
         从内存设置中读取所有主题颜色值
         """
-        # debug("加载主题颜色")
-
         self.theme_colors = {
             "accent_color": self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF"),
             "secondary_color": self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333"),
@@ -74,17 +68,16 @@ class ThemeManager(QObject):
         self.auxiliary_color_darker_2 = self._darken_color(self.theme_colors["auxiliary_color"], 2)
         self.auxiliary_color_darker_5 = self._darken_color(self.theme_colors["auxiliary_color"], 5)
 
-        # debug(f"主题颜色加载完成: {self.theme_colors}")
     
     def _darken_color(self, color_hex, percent):
         """
         将颜色加深指定百分比，深色模式下则变浅
         
-        参数：
+        Args:
             color_hex (str): 十六进制颜色值
             percent (int): 加深/变浅百分比（1-100）
             
-        返回：
+        Returns:
             str: 处理后的十六进制颜色值
         """
         # 获取当前主题模式
@@ -119,15 +112,13 @@ class ThemeManager(QObject):
         """
         切换主题模式（深色/浅色）
 
-        参数：
+        Args:
             is_dark (bool): True为深色主题，False为浅色主题
 
-        返回：
+        Returns:
             dict: 更新后的主题颜色字典
         """
         theme_value = "dark" if is_dark else "default"
-        # debug(f"切换主题模式: {theme_value}")
-
         # 更新主题模式设置
         self.settings_manager.set_setting("appearance.theme", theme_value)
 
@@ -171,7 +162,7 @@ class ThemeManager(QObject):
         获取当前主题颜色字典
         直接从JSON文件读取，绕过内存缓存
         
-        返回：
+        Returns:
             dict: 主题颜色字典
         """
         # 每次获取时都从文件读取最新颜色
@@ -181,7 +172,7 @@ class ThemeManager(QObject):
         """
         获取辅助色的加深版本
         
-        返回：
+        Returns:
             tuple: (auxiliary_color_darker_2, auxiliary_color_darker_5)
         """
         return (self.auxiliary_color_darker_2, self.auxiliary_color_darker_5)
@@ -190,15 +181,13 @@ class ThemeManager(QObject):
         """
         更新单个颜色值
 
-        参数：
+        Args:
             color_key (str): 颜色键名
             color_value (str): 颜色值（十六进制格式）
         """
         if color_key not in self.theme_colors:
             warning(f"无效的颜色键: {color_key}")
             return
-
-        # debug(f"更新颜色: {color_key} = {color_value}")
 
         self.theme_colors[color_key] = color_value
         self.settings_manager.set_setting(f"appearance.colors.{color_key}", color_value)
@@ -213,13 +202,12 @@ class ThemeManager(QObject):
 
         # 发出信号
         self.colors_updated.emit(self.theme_colors)
-        # debug(f"颜色更新完成: {color_key}")
     
     def is_dark_theme(self):
         """
         检查当前是否为深色主题
         
-        返回：
+        Returns:
             bool: True为深色主题，False为浅色主题
         """
         return self.settings_manager.get_setting("appearance.theme", "default") == "dark"

@@ -122,8 +122,8 @@ class AsyncIconLoader:
     ) -> None:
         self.cancel_load(file_path)
 
-        # Keep a strong reference until completion; callers often pass
-        # short-lived closures that would otherwise be collected immediately.
+        # 保持强引用直到完成；调用者常传递短生命周期闭包，
+        # 否则这些闭包会立即被回收。
         self._callbacks[file_path] = callback
 
         runnable = _IconLoadRunnable(file_path, icon_size, self._signals)

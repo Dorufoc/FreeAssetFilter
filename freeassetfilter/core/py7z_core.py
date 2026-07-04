@@ -3,7 +3,7 @@
 """
 FreeAssetFilter v1.0
 
-Copyright (c) 2025 Dorufoc <qpdrfc123@gmail.com>
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 协议说明：本软件基于 AGPL-3.0 协议开源
 1. 个人非商业使用：需保留本注释及开发者署名；
@@ -23,7 +23,6 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
-# 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
 from freeassetfilter.utils.path_utils import validate_safe_path, contains_injection_chars
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
@@ -114,7 +113,6 @@ class Py7zCore:
             try:
                 if os.path.exists(path):
                     self._7z_exe_path = path
-                    # debug(f"7z.exe 路径: {path}")
                     return path
             except Exception:
                 continue
@@ -133,7 +131,6 @@ class Py7zCore:
                 path = result.stdout.strip().split('\n')[0].strip()
                 if os.path.exists(path):
                     self._7z_exe_path = path
-                    # debug(f"7z.exe 路径(where): {path}")
                     return path
         except Exception:
             pass
@@ -162,7 +159,6 @@ class Py7zCore:
                     return -1, "", "检测到命令注入风险"
 
             cmd = [self._7z_exe_path] + args
-            # debug(f"7z 命令: {' '.join(cmd)}")
 
             # 使用指定的超时时间或实例默认值
             actual_timeout = timeout if timeout is not None else self._command_timeout
@@ -257,7 +253,6 @@ class Py7zCore:
 
         # 如果有替换字符，说明 UTF-8 解码失败，尝试 GBK
         if replacement_count > 0:
-            # debug(f"乱码字符数: {replacement_count}, 切换 GBK")
             return "gbk"
 
         return "utf-8"
@@ -319,7 +314,6 @@ class Py7zCore:
             detected_encoding = self._detect_encoding_from_output(stdout, encoding)
             if detected_encoding != encoding:
                 increment_perf_counter("py7z.list_archive", "encoding_retry")
-                # debug(f"编码切换: {encoding} -> {detected_encoding}")
                 returncode, stdout, stderr = self._run_7z_command(args, detected_encoding)
                 if returncode != 0:
                     increment_perf_counter("py7z.list_archive", "command_failure")
@@ -366,7 +360,6 @@ class Py7zCore:
 
                 if len(files) >= self.MAX_ARCHIVE_FILES:
                     increment_perf_counter("py7z.parse_list_output", "max_files_reached")
-                    # debug(f"文件数达上限({self.MAX_ARCHIVE_FILES}),停止解析")
                     break
 
                 file_info = self._parse_file_block(block)
@@ -722,22 +715,17 @@ if __name__ == "__main__":
         info(f"7z.exe: {core._7z_exe_path}")
 
         test_dir = os.path.dirname(os.path.abspath(__file__))
-        # debug(f"测试目录: {test_dir}")
 
         for filename in os.listdir(test_dir):
             if filename.endswith(('.zip', '.rar', '.7z', '.tar', '.gz')):
                 archive_path = os.path.join(test_dir, filename)
                 info(f"测试: {filename}")
-                # debug(f"类型: {core.get_archive_type(archive_path)}")
-                # debug(f"加密: {core.is_encrypted(archive_path)}")
 
                 files = core.list_archive(archive_path)
                 info(f"文件数: {len(files)}")
                 for f in files[:5]:
                     type_str = "[DIR]" if f["is_dir"] else "[FILE]"
-                    # debug(f"  {type_str} {f['name']}")
                 if len(files) > 5:
-                    # debug(f"  ... 还有 {len(files) - 5} 个文件")
                     pass
                 break
         else:

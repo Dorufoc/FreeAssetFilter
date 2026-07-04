@@ -96,10 +96,8 @@ class ModernSettingsWindow(QDialog):
         if self.settings_manager is None:
             self.settings_manager = SettingsManager()
         
-        # 初始化主题管理器
         self.theme_manager = ThemeManager(self.settings_manager)
 
-        # 当前设置值
         self.current_settings = {}
         self._current_tab_id = None
 
@@ -110,16 +108,15 @@ class ModernSettingsWindow(QDialog):
         else:
             self.global_font = QFont("Microsoft YaHei", 9)
         
-        # 加载当前设置
         self.load_settings()
         
-        # 统一的设置组样式
         self._update_styles()
         
-        # 初始化UI
         self.init_modern_ui()
         
-        # debug("设置窗口初始化完成")
+    
+
+
     
     def init_modern_ui(self):
         """
@@ -206,8 +203,6 @@ class ModernSettingsWindow(QDialog):
             )
 
         except (OSError, AttributeError) as e:
-            # 如果设置失败（非Windows系统或DWM API不可用），静默忽略
-            # debug(f"设置窗口标题栏主题失败: {e}")
             pass
 
     def _create_navigation_widget(self):
@@ -511,7 +506,6 @@ class ModernSettingsWindow(QDialog):
         self.tab_widget = QWidget()
         self.tab_layout = QVBoxLayout(self.tab_widget)
         
-        # 标题标签
         self.tab_title_label = QLabel(title)
 
         # 使用全局字体，让Qt6自动处理DPI缩放
@@ -529,7 +523,6 @@ class ModernSettingsWindow(QDialog):
         """)
         self.tab_layout.addWidget(self.tab_title_label)
         
-        # 滚动区域
         self.tab_scroll_area = QScrollArea()
         self.tab_scroll_area.setWidgetResizable(True)
         self.tab_scroll_area.setStyleSheet(f"""
@@ -550,11 +543,9 @@ class ModernSettingsWindow(QDialog):
             }}
         """)
         
-        # 滚动内容
         self.tab_scroll_content = QWidget()
         self.tab_scroll_layout = QVBoxLayout(self.tab_scroll_content)
         
-        # 应用DPI缩放因子到布局
         scaled_padding = 2
         scaled_spacing = 3
         self.tab_scroll_layout.setContentsMargins(scaled_padding, scaled_padding, scaled_padding, scaled_padding)
@@ -572,20 +563,16 @@ class ModernSettingsWindow(QDialog):
         self.buttons_widget = QWidget()
         self.buttons_layout = QHBoxLayout(self.buttons_widget)
         
-        # 应用DPI缩放因子到布局
         scaled_spacing = 3
         self.buttons_layout.setContentsMargins(0, 0, 0, 0)
         self.buttons_layout.setSpacing(scaled_spacing)
         
-        # 重置按钮
         self.reset_button = CustomButton("重置", button_type="secondary")
         self.reset_button.clicked.connect(self.reset_settings)
         self.buttons_layout.addWidget(self.reset_button)
         
-        # 占位符
         self.buttons_layout.addStretch()
         
-        # 保存按钮
         self.save_button = CustomButton("保存", button_type="primary")
         self.save_button.clicked.connect(self.save_settings)
         self.buttons_layout.addWidget(self.save_button)
@@ -698,10 +685,8 @@ class ModernSettingsWindow(QDialog):
         if 0 <= index < len(nav_ids):
             tab_id = nav_ids[index]
             if tab_id == self._current_tab_id:
-                # debug(f"忽略重复导航: {tab_id}")
                 return
 
-            # debug(f"切换导航: {tab_id}")
             for i, button in enumerate(self.navigation_buttons):
                 if i == index:
                     button.button_type = "primary"
@@ -720,10 +705,8 @@ class ModernSettingsWindow(QDialog):
             tab_id (str): 标签页ID
         """
         if tab_id == self._current_tab_id:
-            # debug(f"忽略重复填充设置页: {tab_id}")
             return
 
-        # 更新内容标题
         title_mapping = {
             "general": "通用设置",
             "file_selector": "文件选择器设置",
@@ -1260,7 +1243,6 @@ class ModernSettingsWindow(QDialog):
         )
         def on_theme_toggled(value):
             theme_value = "dark" if value else "default"
-            # debug(f"主题切换: {theme_value}")
             self.current_settings.update({"appearance.theme": theme_value})
 
             current_accent_color = self.current_settings.get("appearance.colors.accent_color", "#007AFF")
@@ -1283,9 +1265,6 @@ class ModernSettingsWindow(QDialog):
                 }
                 for color_key, color_value in light_colors.items():
                     self.current_settings.update({f"appearance.colors.{color_key}": color_value})
-
-            # 不再立即刷新样式，只在保存时应用
-            # self._update_styles()
 
         self.theme_switch.switch_toggled.connect(on_theme_toggled)
         self.theme_group_layout.addWidget(self.theme_switch)
@@ -1331,10 +1310,6 @@ class ModernSettingsWindow(QDialog):
                     accent_color = theme_data["accent_color"]
                     self.current_settings.update({"appearance.colors.accent_color": accent_color})
                     
-                    # 不再立即刷新样式和使SVG缓存失效，只在保存时应用
-                    # SvgRenderer._invalidate_color_cache()
-                    # self._update_theme_display()
-            
             self.theme_dropdown_menu.itemClicked.connect(on_theme_item_clicked)
             button = self.theme_selector_setting.button_group[button_index]
             self.theme_dropdown_menu.set_target_button(button)
@@ -1361,11 +1336,7 @@ class ModernSettingsWindow(QDialog):
                 try:
                     QColor(hex_color)
                     self.current_settings.update({"appearance.colors.accent_color": hex_color})
-                    # 不再立即刷新样式和使SVG缓存失效，只在保存时应用
-                    # SvgRenderer._invalidate_color_cache()
-                    # self._update_theme_display()
                 except ValueError as e:
-                    # debug(f"无效的颜色值 '{hex_color}': {e}")
                     pass
 
         self.custom_color_input.input_submitted.connect(on_custom_color_applied)
@@ -1891,7 +1862,6 @@ class ModernSettingsWindow(QDialog):
             url (str): 要打开的链接
         """
         import webbrowser
-        # debug(f"打开链接: {url}")
         webbrowser.open(url)
 
     def _find_update_controller(self):
@@ -1984,7 +1954,6 @@ class ModernSettingsWindow(QDialog):
         Args:
             value (bool): 开关状态
         """
-        # debug(f"实验性功能开关: {value}")
         if value:
             # 开启时弹出警告提示窗口
             self._show_experimental_warning()
@@ -2046,8 +2015,6 @@ class ModernSettingsWindow(QDialog):
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             "data", "settings.json"
         )
-        # debug("打开设置文件")
-
         # 确保文件存在
         if not os.path.exists(settings_file_path):
             # 如果文件不存在，先保存当前设置创建文件
@@ -2260,7 +2227,6 @@ class ModernSettingsWindow(QDialog):
         """
         加载当前设置
         """
-        # debug("开始加载设置")
         self.current_settings = {
             "appearance.theme": self.settings_manager.get_setting("appearance.theme", "default"),
             "appearance.colors.base_color": self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF"),
@@ -2317,7 +2283,6 @@ class ModernSettingsWindow(QDialog):
         """
         保存设置
         """
-        # debug("开始保存设置")
         font_changed = self._check_font_changed()
         theme_changed = self._check_theme_changed()
         colors_changed = self._check_colors_changed()
@@ -2455,8 +2420,6 @@ class ModernSettingsWindow(QDialog):
         重置设置为默认值
         将当前设置恢复为默认值，并立即更新UI显示
         """
-        # debug("用户请求重置设置")
-        # 询问用户是否确认重置
         confirm_box = CustomMessageBox(self)
         confirm_box.set_title("确认重置")
         confirm_box.set_text("重置后所有设置将恢复为默认值，此操作不可撤销。\n是否继续？")
@@ -2494,7 +2457,7 @@ class ModernSettingsWindow(QDialog):
         """
         显示重置成功消息并退出程序
         """
-        # debug("显示重置成功消息")
+        
         success_box = CustomMessageBox(self)
         success_box.set_title("重置成功")
 
@@ -2513,8 +2476,6 @@ class ModernSettingsWindow(QDialog):
         # 显示消息框
         success_box.exec()
 
-        # 消息框关闭后，终止主程序
-        # debug("退出程序")
         QApplication.instance().quit()
 
     def _update_ui_to_defaults(self):

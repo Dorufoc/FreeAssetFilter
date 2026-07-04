@@ -121,7 +121,7 @@ def warmup_ffmpeg_tools(force: bool = False) -> Dict[str, bool]:
     """
     global _FFMPEG_WARMUP_RESULT
 
-    # 快速路径：不带锁检查缓存（CPython GIL 保证原子性）
+    # 快速路径：缓存存在时跳过锁（GIL 保证原子性）
     if not force and _FFMPEG_WARMUP_RESULT is not None:
         debug("使用缓存的预热结果")
         return dict(_FFMPEG_WARMUP_RESULT)
@@ -129,7 +129,6 @@ def warmup_ffmpeg_tools(force: bool = False) -> Dict[str, bool]:
     ffprobe_path = get_ffprobe_path()
     ffmpeg_path = get_ffmpeg_path()
 
-    # 并行执行 3 个子进程预热任务
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     tasks: Dict[str, tuple] = {
@@ -152,7 +151,7 @@ def warmup_ffmpeg_tools(force: bool = False) -> Dict[str, bool]:
                 debug(f"预热任务 {name} 异常: {e}")
                 result[name] = False
 
-    # 窄锁：仅保护写入缓存
+    # 窄锁保护缓存写入
     with _FFMPEG_WARMUP_LOCK:
         if _FFMPEG_WARMUP_RESULT is None or force:
             _FFMPEG_WARMUP_RESULT = dict(result)
@@ -284,7 +283,7 @@ def run_ffprobe_json(
         debug("ffprobe 路径命中敏感系统路径，已拒绝")
         return None
 
-    # 获取文件 mtime 作为缓存失效依据
+    # 文件 mtime 作为缓存失效依据
     try:
         file_mtime = os.path.getmtime(file_path)
     except OSError:

@@ -49,7 +49,6 @@ class ColorSliderWidget(QWidget):
         self._update_colors()
     
     def _init_ui(self, font_size):
-        """初始化UI"""
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         
@@ -103,28 +102,23 @@ class ColorSliderWidget(QWidget):
         self.layout.addWidget(self.color_preview)
     
     def _connect_signals(self):
-        """连接信号"""
         self.hue_slider.valueChanged.connect(self._on_hue_changed)
         self.saturation_slider.valueChanged.connect(self._on_saturation_changed)
         self.lightness_slider.valueChanged.connect(self._on_lightness_changed)
     
     def _on_hue_changed(self, value):
-        """色相值变化"""
         self._hue = value
         self._update_colors()
-    
+
     def _on_saturation_changed(self, value):
-        """饱和度值变化"""
         self._saturation = value
         self._update_colors()
-    
+
     def _on_lightness_changed(self, value):
-        """亮度值变化"""
         self._lightness = value
         self._update_colors()
     
     def _update_colors(self):
-        """更新滑条颜色和预览"""
         self._update_saturation_slider_colors()
         self._update_lightness_slider_color()
         self._update_preview()
@@ -133,7 +127,6 @@ class ColorSliderWidget(QWidget):
         self.color_changed.emit(rgb_color)
     
     def _update_saturation_slider_colors(self):
-        """更新饱和度滑条颜色"""
         saturation_color = QColor.fromHsl(self._hue, 255, 128)
         saturation_gradient = QColor.fromHsl(self._hue, 0, 128)
         self.saturation_slider.set_progress_color(saturation_color)
@@ -143,7 +136,6 @@ class ColorSliderWidget(QWidget):
         self.saturation_slider.set_dynamic_handle_color(True, lambda v: QColor.fromHsl(self._hue, v * 255 // 100, 128))
     
     def _update_lightness_slider_color(self):
-        """更新亮度滑条颜色"""
         lightness_progress = QColor.fromHsl(self._hue, self._saturation * 255 // 100, 128)
         lightness_bg_start = QColor.fromHsl(self._hue, self._saturation * 255 // 100, 255)
         lightness_bg_end = QColor.fromHsl(self._hue, self._saturation * 255 // 100, 0)
@@ -154,7 +146,6 @@ class ColorSliderWidget(QWidget):
         self.lightness_slider.set_dynamic_handle_color(True, lambda v: QColor.fromHsl(self._hue, self._saturation * 255 // 100, v))
     
     def _update_preview(self):
-        """更新颜色预览"""
         rgb_color = self._hsl_to_rgb(self._hue, self._saturation, self._lightness)
         self.color_preview.setStyleSheet(f"background-color: {rgb_color}; border: 1px solid {rgb_color}; border-radius: {int(3 * self.dpi_scale)}px;")
     
@@ -201,20 +192,14 @@ class ColorSliderWidget(QWidget):
         return f"#{r:02X}{g:02X}{b:02X}"
     
     def get_color(self):
-        """
-        获取当前颜色
-        
-        Returns:
-            str: RGB颜色字符串 (#RRGGBB)
-        """
         return self._hsl_to_rgb(self._hue, self._saturation, self._lightness)
-    
+
     def set_color(self, rgb_color):
         """
-        设置颜色
-        
+        设置颜色，接受 #RRGGBB 格式字符串
+
         Args:
-            rgb_color (str): RGB颜色字符串 (#RRGGBB)
+            rgb_color (str): RGB颜色字符串
         """
         color = QColor(rgb_color)
         if color.isValid():
@@ -266,13 +251,11 @@ class HueSlider(QWidget):
         self._is_hovered = False
     
     def setRange(self, minimum, maximum):
-        """设置范围"""
         self._minimum = minimum
         self._maximum = maximum
         self.update()
-    
+
     def setValue(self, value):
-        """设置值"""
         if value < self._minimum:
             value = self._minimum
         elif value > self._maximum:
@@ -284,36 +267,29 @@ class HueSlider(QWidget):
             self.valueChanged.emit(value)
     
     def value(self):
-        """获取当前值"""
         return self._value
-    
+
     def enterEvent(self, event):
-        """鼠标进入"""
         self._is_hovered = True
         self.update()
-    
+
     def leaveEvent(self, event):
-        """鼠标离开"""
         self._is_hovered = False
         self.update()
-    
+
     def mousePressEvent(self, event):
-        """鼠标按下"""
         if event.button() == Qt.LeftButton:
             self._is_pressed = True
             self._update_value_from_pos(event.pos().x())
     
     def mouseMoveEvent(self, event):
-        """鼠标移动"""
         if self._is_pressed:
             self._update_value_from_pos(event.pos().x())
-    
+
     def mouseReleaseEvent(self, event):
-        """鼠标释放"""
         self._is_pressed = False
-    
+
     def _update_value_from_pos(self, pos):
-        """根据位置更新值"""
         bar_length = self.width() - 2 * self._handle_radius
         relative_pos = pos - self._handle_radius
         if relative_pos < 0:
@@ -330,7 +306,6 @@ class HueSlider(QWidget):
         self.setValue(value)
     
     def paintEvent(self, event):
-        """绘制"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         

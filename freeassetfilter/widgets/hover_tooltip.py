@@ -237,9 +237,6 @@ class HoverTooltip(QWidget):
     # 样式与动画
     # --------------------------
     def update_style(self):
-        """
-        更新组件样式
-        """
         if self._disposed:
             return
 
@@ -273,11 +270,9 @@ class HoverTooltip(QWidget):
         self.update()
 
     def _get_opacity(self):
-        """获取透明度"""
         return self._opacity_value
 
     def _set_opacity(self, opacity):
-        """设置透明度"""
         if self._disposed:
             return
         self._opacity_value = max(0.0, min(1.0, opacity))
@@ -286,11 +281,9 @@ class HoverTooltip(QWidget):
     _tooltip_opacity = Property(float, _get_opacity, _set_opacity)
 
     def _get_scale(self):
-        """获取缩放比例"""
         return self._scale_value
 
     def _set_scale(self, scale):
-        """设置缩放比例"""
         if self._disposed:
             return
         self._scale_value = max(0.01, min(2.0, scale))

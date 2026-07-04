@@ -100,7 +100,6 @@ class CustomSettingItem(QWidget):
             self._ensure_hover_tooltip()
         
     def _ensure_hover_tooltip(self):
-        """确保当前设置项已接入自定义 HoverTooltip"""
         if self._hover_tooltip is None:
             self._hover_tooltip = HoverTooltip(self)
             self._hover_tooltip.set_target_widget(self)
@@ -173,7 +172,6 @@ class CustomSettingItem(QWidget):
         return widget
     
     def _create_interaction_widget(self):
-        """创建右侧交互区域"""
         if self.interaction_type == self.SWITCH_TYPE:
             # 开关控件
             return self._create_switch_widget()
@@ -196,7 +194,6 @@ class CustomSettingItem(QWidget):
             return widget
     
     def _create_switch_widget(self):
-        """创建开关控件"""
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -258,11 +255,9 @@ class CustomSettingItem(QWidget):
             self.folder_selected.emit(folder_path)
     
     def _on_switch_toggled(self, checked):
-        """开关状态变化处理"""
         self.switch_toggled.emit(checked)
-    
+
     def _create_button_group_widget(self):
-        """创建按钮组控件"""
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -302,11 +297,9 @@ class CustomSettingItem(QWidget):
         return widget
 
     def _on_button_clicked(self, button_index):
-        """按钮点击处理"""
         self.button_clicked.emit(button_index)
     
     def _create_input_button_widget(self):
-        """创建文本输入与按钮组合控件"""
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -346,7 +339,6 @@ class CustomSettingItem(QWidget):
         return widget
 
     def _on_input_button_clicked(self):
-        """输入按钮点击处理"""
         text = self.input_box.get_text()
         self.input_submitted.emit(text)
     
@@ -380,7 +372,6 @@ class CustomSettingItem(QWidget):
         return widget
     
     def _on_value_changed(self, value):
-        """数值变化处理"""
         self.value_label.setText(str(value))
         self.value_changed.emit(value)
     
@@ -388,23 +379,19 @@ class CustomSettingItem(QWidget):
     
     # 公共方法
     def set_text(self, text):
-        """设置主文本"""
         self.text = text
         self.main_text_label.setText(text)
-    
+
     def set_secondary_text(self, text):
-        """设置辅助文本"""
         self.secondary_text = text
         if hasattr(self, 'secondary_text_label'):
             self.secondary_text_label.setText(text)
     
     def set_switch_value(self, value):
-        """设置开关状态"""
         if self.interaction_type == self.SWITCH_TYPE:
             self.switch_button.setChecked(value)
-    
+
     def get_switch_value(self):
-        """获取开关状态"""
         if self.interaction_type == self.SWITCH_TYPE:
             return self.switch_button.isChecked()
         return False
@@ -415,32 +402,18 @@ class CustomSettingItem(QWidget):
         return ""
 
     def set_value(self, value):
-        """设置数值条值"""
         if self.interaction_type == self.VALUE_BAR_TYPE:
             self.value_bar.setValue(value)
-    
+
     def get_value(self):
-        """获取数值条值"""
         if self.interaction_type == self.VALUE_BAR_TYPE:
             return self.value_bar.value()
         return 0
 
     def set_tooltip_text(self, text):
-        """
-        设置悬浮提示文本
-
-        Args:
-            text: 提示文本内容
-        """
         self._tooltip_text = text
         if text:
             self._ensure_hover_tooltip()
 
     def get_tooltip_text(self):
-        """
-        获取悬浮提示文本
-
-        Returns:
-            str: 提示文本内容
-        """
         return self._tooltip_text
