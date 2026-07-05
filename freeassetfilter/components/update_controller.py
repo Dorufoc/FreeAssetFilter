@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import subprocess
+import weakref
 
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer
@@ -395,6 +396,7 @@ class UpdateController(QObject):
         """
         请求后台检查线程停止，并保留引用直到线程结束，避免 UI 等待。
         """
+        weak_self = weakref.ref(self)
         if worker is None:
             return
 
@@ -407,7 +409,7 @@ class UpdateController(QObject):
             retired_workers.append(worker)
 
         try:
-            worker.finished.connect(lambda w=worker, workers=retired_workers: self._forget_retired_worker(w, workers))
+            worker.finished.connect(lambda w=worker, workers=retired_workers: (s := weak_self()) and s._forget_retired_worker(w, workers))
         except Exception:
             pass
 

@@ -251,6 +251,12 @@ def collect_binaries() -> List[Tuple[str, str]]:
                 print_warning(f"未找到 {file_name}")
 
     # 4. cpp_color_extractor DLLs
+    # NOTE: cpp_color_extractor.pyd appears to be DEAD CODE.
+    # grep confirms NO runtime `import` or dynamic load of `cpp_color_extractor` exists anywhere in the codebase.
+    # The color extraction feature was superseded by the Rust DLL (rust_color_extractor_native.dll)
+    # loaded via freeassetfilter/core/native/rust_color_extractor.py → freeassetfilter/core/color_extractor.py.
+    # In contrast, cpp_lut_preview IS actively imported (core/lut_preview_generator.py, app/main.py).
+    # Keep the .pyd binary and these references in the build script in case it is revived.
     cpp_color_dir = project_root / "freeassetfilter" / "core" / "cpp_color_extractor"
     if cpp_color_dir.exists():
         for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
@@ -304,12 +310,13 @@ def collect_binaries() -> List[Tuple[str, str]]:
 
     # 8. 收集Python扩展模块(.pyd文件)
     # cpp_color_extractor
+    # NOTE: Dead code — no runtime import found (see note in section 4 above).
     if cpp_color_dir.exists():
         for pyd_file in cpp_color_dir.glob("*.pyd"):
             binaries.append((str(pyd_file), "freeassetfilter/core/cpp_color_extractor"))
             print_info(f"收集到 {pyd_file.name}")
     
-    # cpp_lut_preview
+    # cpp_lut_preview (actively used — keep)
     if cpp_lut_dir.exists():
         for pyd_file in cpp_lut_dir.glob("*.pyd"):
             binaries.append((str(pyd_file), "freeassetfilter/core/cpp_lut_preview"))
@@ -325,8 +332,8 @@ def collect_hidden_imports() -> List[str]:
     
     hidden_imports = [
         # C++扩展模块
-        "freeassetfilter.core.cpp_color_extractor",
-        "freeassetfilter.core.cpp_lut_preview",
+        "freeassetfilter.core.cpp_color_extractor",  # NOTE: Likely dead code — no runtime import found (see section 4)
+        "freeassetfilter.core.cpp_lut_preview",      # actively used in core/lut_preview_generator.py + app/main.py
         "freeassetfilter.core.rust_thumbnail_bridge",
         # 重要包（第一轮瘦身：移除 numpy/scipy/skimage/imageio 的强制隐藏导入，
         # 交给 PyInstaller 按实际导入链分析，避免把整套科学计算/可选插件带进产物）

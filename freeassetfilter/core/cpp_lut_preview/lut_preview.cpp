@@ -1,4 +1,4 @@
-// lut_preview.cpp
+﻿// lut_preview.cpp
 // C++ 实现的高性能 LUT 预览生成器
 // 使用 pybind11 绑定到 Python
 
@@ -14,6 +14,7 @@
 #include <string>
 #include <cstring>
 #include <stdexcept>
+#include <mutex>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -32,18 +33,18 @@ namespace py = pybind11;
 // ============================================================================
 
 uint32_t crc_table[256];
-bool crc_initialized = false;
+std::once_flag crc_init_flag;
 
 void init_crc_table() {
-    if (crc_initialized) return;
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t c = i;
-        for (int j = 0; j < 8; j++) {
-            c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+    std::call_once(crc_init_flag, []() {
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int j = 0; j < 8; j++) {
+                c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
+            }
+            crc_table[i] = c;
         }
-        crc_table[i] = c;
-    }
-    crc_initialized = true;
+    });
 }
 
 uint32_t calculate_crc32(const std::vector<uint8_t>& data) {
@@ -413,6 +414,12 @@ inline void apply_lut_pixel(const LUTData& lut, float r, float g, float b, float
 
 void resize_image(const uint8_t* src, int src_width, int src_height,
                   uint8_t* dst, int dst_width, int dst_height) {
+    if (src_width <= 0 || src_height <= 0 || dst_width <= 0 || dst_height <= 0) {
+        if (dst && dst_width > 0 && dst_height > 0) {
+            std::fill(dst, dst + dst_width * dst_height * 3, 0);
+        }
+        return;
+    }
     float scale_x = static_cast<float>(src_width) / dst_width;
     float scale_y = static_cast<float>(src_height) / dst_height;
 
@@ -513,7 +520,7 @@ py::bytes generate_preview_from_data_impl(const std::string& lut_content,
 
     std::vector<uint8_t> rgb_data;
     if (channels == 4) {
-        rgb_data.resize(width * height * 3);
+        rgb_data.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 3);
         #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < width * height; i++) {
             rgb_data[i * 3] = src_data[i * 4];
@@ -523,10 +530,10 @@ py::bytes generate_preview_from_data_impl(const std::string& lut_content,
         src_data = rgb_data.data();
     }
 
-    std::vector<uint8_t> scaled_data(output_width * output_height * 3);
+    std::vector<uint8_t> scaled_data(static_cast<size_t>(output_width) * static_cast<size_t>(output_height) * 3);
     resize_image(src_data, width, height, scaled_data.data(), output_width, output_height);
 
-    std::vector<uint8_t> output_data(output_width * output_height * 3);
+    std::vector<uint8_t> output_data(static_cast<size_t>(output_width) * static_cast<size_t>(output_height) * 3);
     apply_lut_to_image(lut, scaled_data.data(), output_width, output_height, output_data.data());
 
     std::vector<uint8_t> png_data;
@@ -563,7 +570,7 @@ py::bytes generate_preview_from_array_impl(const std::string& lut_file_path,
 
     std::vector<uint8_t> rgb_data;
     if (channels == 4) {
-        rgb_data.resize(width * height * 3);
+        rgb_data.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 3);
         #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < width * height; i++) {
             rgb_data[i * 3] = src_data[i * 4];
@@ -573,10 +580,10 @@ py::bytes generate_preview_from_array_impl(const std::string& lut_file_path,
         src_data = rgb_data.data();
     }
 
-    std::vector<uint8_t> scaled_data(output_width * output_height * 3);
+    std::vector<uint8_t> scaled_data(static_cast<size_t>(output_width) * static_cast<size_t>(output_height) * 3);
     resize_image(src_data, width, height, scaled_data.data(), output_width, output_height);
 
-    std::vector<uint8_t> output_data(output_width * output_height * 3);
+    std::vector<uint8_t> output_data(static_cast<size_t>(output_width) * static_cast<size_t>(output_height) * 3);
     apply_lut_to_image(lut, scaled_data.data(), output_width, output_height, output_data.data());
 
     std::vector<uint8_t> png_data;

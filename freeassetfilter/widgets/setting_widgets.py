@@ -5,6 +5,8 @@ FreeAssetFilter 设置项类自定义控件
 包含高度可定制的设置项控件，支持多种交互类型
 """
 
+import weakref
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QSizePolicy, QApplication, QLineEdit,
@@ -284,7 +286,8 @@ class CustomSettingItem(QWidget):
                 btn.set_button_type('normal')
             
             # 连接信号
-            btn.clicked.connect(lambda checked, idx=i: self._on_button_clicked(idx))
+            weak_self = weakref.ref(self)
+            btn.clicked.connect(lambda checked, idx=i: (s := weak_self()) and s._on_button_clicked(idx))
             
             layout.addWidget(btn)
             self.button_group.append(btn)

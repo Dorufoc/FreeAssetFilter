@@ -92,6 +92,8 @@ if platform.system() == "Windows":
                 "/EHsc",
                 "/openmp",
                 "/std:c++17",
+                "/utf-8",
+                "/MT",
             ]
             ext.extra_link_args = ["/openmp"]
         

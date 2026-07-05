@@ -1109,6 +1109,10 @@ def log_exception_details(message: str, exc: Optional[BaseException] = None, lev
     log_func(full_message)
 
 
+# 递归保护标志，防止 log_exception 在日志系统自身抛出异常时无限递归
+_log_exception_in_progress: bool = False
+
+
 def log_exception(exc_type, exc_value, exc_traceback):
     """
     记录未捕获的异常
@@ -1118,28 +1122,38 @@ def log_exception(exc_type, exc_value, exc_traceback):
         exc_value: 异常值
         exc_traceback: 异常回溯信息
     """
-    logger = get_logger()
-    
-    # 过滤异常值中的敏感信息
-    safe_exc_value = sanitize_path(str(exc_value))
-    safe_exc_value = sanitize_sensitive_info(safe_exc_value)
-    
-    # 构建异常信息
-    error_msg = f"\n=== 检测到未捕获的异常 ===\n"
-    error_msg += f"异常类型: {exc_type.__name__}\n"
-    error_msg += f"异常值: {safe_exc_value}\n"
-    error_msg += f"异常堆栈:\n"
-    
-    # 获取堆栈跟踪字符串并过滤敏感信息
-    stack_trace = ''.join(traceback.format_tb(exc_traceback))
-    safe_stack_trace = sanitize_path(stack_trace)
-    safe_stack_trace = sanitize_sensitive_info(safe_stack_trace)
-    error_msg += safe_stack_trace
-    error_msg += "==========================\n"
-    
-    # 记录到日志。
-    # 不再主动调用 sys.__excepthook__，避免在 stderr 已经被双写到日志文件时产生重复记录。
-    logger.error(error_msg)
+    global _log_exception_in_progress
+
+    # 递归保护：如果日志系统自身抛出异常导致再次进入此函数，立即返回
+    if _log_exception_in_progress:
+        return
+
+    _log_exception_in_progress = True
+    try:
+        logger = get_logger()
+
+        # 过滤异常值中的敏感信息
+        safe_exc_value = sanitize_path(str(exc_value))
+        safe_exc_value = sanitize_sensitive_info(safe_exc_value)
+
+        # 构建异常信息
+        error_msg = f"\n=== 检测到未捕获的异常 ===\n"
+        error_msg += f"异常类型: {exc_type.__name__}\n"
+        error_msg += f"异常值: {safe_exc_value}\n"
+        error_msg += f"异常堆栈:\n"
+
+        # 获取堆栈跟踪字符串并过滤敏感信息
+        stack_trace = ''.join(traceback.format_tb(exc_traceback))
+        safe_stack_trace = sanitize_path(stack_trace)
+        safe_stack_trace = sanitize_sensitive_info(safe_stack_trace)
+        error_msg += safe_stack_trace
+        error_msg += "==========================\n"
+
+        # 记录到日志。
+        # 不再主动调用 sys.__excepthook__，避免在 stderr 已经被双写到日志文件时产生重复记录。
+        logger.error(error_msg)
+    finally:
+        _log_exception_in_progress = False
 
 
 # 便捷的日志函数

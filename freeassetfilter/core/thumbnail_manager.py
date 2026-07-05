@@ -2051,10 +2051,10 @@ class ThumbnailManager:
                     pillow_heif.register_heif_opener()
                 except ImportError:
                     pass
-                img = normalize_pil_image(Image.open(file_path))
+                with Image.open(file_path) as _pil_img:
+                    img = normalize_pil_image(_pil_img)
             elif suffix in self.PSD_FORMATS:
                 # PSD格式
-                psd = None
                 try:
                     from psd_tools import PSDImage
                     psd = PSDImage.open(file_path)
@@ -2062,18 +2062,13 @@ class ThumbnailManager:
                 except ImportError:
                     warning(f"psd-tools未安装，无法加载PSD: {file_path}")
                     return None, False
-                finally:
-                    if psd is not None:
-                        try:
-                            psd.close()
-                        except Exception:
-                            pass
             elif suffix == '.svg':
                 # SVG格式
                 return self._load_svg_image(file_path)
             else:
                 # 普通图像格式
-                img = normalize_pil_image(Image.open(file_path))
+                with Image.open(file_path) as _pil_img:
+                    img = normalize_pil_image(_pil_img)
 
             # 检查图像尺寸并应用下采样
             img = self._apply_image_size_limit(img, file_path)

@@ -5,6 +5,8 @@
 用于选择色相(Hue)、饱和度(Saturation)和亮度(Lightness)
 """
 
+import weakref
+
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from PySide6.QtCore import Qt, Signal, QSize, QRect
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QLinearGradient
@@ -133,7 +135,8 @@ class ColorSliderWidget(QWidget):
         self.saturation_slider.set_bg_color(saturation_gradient)
         self.saturation_slider.set_gradient_mode(True)
         self.saturation_slider.set_gradient_colors([saturation_gradient, saturation_color])
-        self.saturation_slider.set_dynamic_handle_color(True, lambda v: QColor.fromHsl(self._hue, v * 255 // 100, 128))
+        weak_self = weakref.ref(self)
+        self.saturation_slider.set_dynamic_handle_color(True, lambda v: (s := weak_self()) and QColor.fromHsl(s._hue, v * 255 // 100, 128))
     
     def _update_lightness_slider_color(self):
         lightness_progress = QColor.fromHsl(self._hue, self._saturation * 255 // 100, 128)
@@ -143,7 +146,8 @@ class ColorSliderWidget(QWidget):
         self.lightness_slider.set_bg_color(lightness_bg_start)
         self.lightness_slider.set_gradient_mode(True)
         self.lightness_slider.set_gradient_colors([lightness_bg_start, lightness_bg_end])
-        self.lightness_slider.set_dynamic_handle_color(True, lambda v: QColor.fromHsl(self._hue, self._saturation * 255 // 100, v))
+        weak_self = weakref.ref(self)
+        self.lightness_slider.set_dynamic_handle_color(True, lambda v: (s := weak_self()) and QColor.fromHsl(s._hue, s._saturation * 255 // 100, v))
     
     def _update_preview(self):
         rgb_color = self._hsl_to_rgb(self._hue, self._saturation, self._lightness)

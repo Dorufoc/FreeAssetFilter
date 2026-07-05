@@ -17,6 +17,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 import os
 import time
+import weakref
 from typing import Optional, Any, Dict, List, Set, Callable
 
 try:
@@ -452,9 +453,11 @@ class _SubtitleScanTask(QRunnable):
             result: Optional[str] = candidates[0] if candidates else None
 
             # 通过 QTimer.singleShot 切换回主线程执行回调
-            QTimer.singleShot(0, lambda: self._callback(self._video_path, result))
+            weak_self = weakref.ref(self)
+            QTimer.singleShot(0, lambda: (s := weak_self()) and s._callback(s._video_path, result))
         except Exception:
-            QTimer.singleShot(0, lambda: self._callback(self._video_path, None))
+            weak_self = weakref.ref(self)
+            QTimer.singleShot(0, lambda: (s := weak_self()) and s._callback(s._video_path, None))
 
 
 class VideoPlayer(QWidget):
@@ -1016,7 +1019,8 @@ class VideoPlayer(QWidget):
         debug(f"新视频渲染窗口ID: {win_id}")
         
         # 重新设置窗口ID — 通过异步队列提交，防止与正在执行的操作竞态
-        QTimer.singleShot(0, lambda: self._do_reconnect_window(win_id=win_id))
+        weak_self = weakref.ref(self)
+        QTimer.singleShot(0, lambda: (s := weak_self()) and s._do_reconnect_window(win_id=win_id))
     
     def _do_reconnect_window(self, win_id: int = None):
         """异步执行窗口重连"""
@@ -2117,10 +2121,11 @@ class VideoPlayer(QWidget):
         self._detached_window.upArrowPressed.connect(self.volume_up)
         self._detached_window.downArrowPressed.connect(self.volume_down)
         # 连接独立窗口的数字键信号到倍速控制（1-3键，最高3x，`键0.5x）
-        self._detached_window.key1Pressed.connect(lambda: self.set_speed(1.0))
-        self._detached_window.key2Pressed.connect(lambda: self.set_speed(2.0))
-        self._detached_window.key3Pressed.connect(lambda: self.set_speed(3.0))
-        self._detached_window.keyTildePressed.connect(lambda: self.set_speed(0.5))
+        weak_self = weakref.ref(self)
+        self._detached_window.key1Pressed.connect(lambda: (s := weak_self()) and s.set_speed(1.0))
+        self._detached_window.key2Pressed.connect(lambda: (s := weak_self()) and s.set_speed(2.0))
+        self._detached_window.key3Pressed.connect(lambda: (s := weak_self()) and s.set_speed(3.0))
+        self._detached_window.keyTildePressed.connect(lambda: (s := weak_self()) and s.set_speed(0.5))
 
         # 显示独立窗口并强制获取焦点
         self._detached_window.show()

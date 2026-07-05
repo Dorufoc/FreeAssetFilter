@@ -7,6 +7,7 @@ FreeAssetFilter 按钮类自定义控件
 
 import os
 import threading
+import weakref
 
 from PySide6.QtCore import Qt, QRectF, QSize, QTimer, Property, QVariantAnimation, QEasingCurve, QEvent
 from PySide6.QtGui import QColor, QPainter, QFont, QPen, QFontMetrics, QCursor
@@ -108,7 +109,8 @@ class CustomButton(QPushButton):
 
         QTimer.singleShot(0, self._init_animations)
         if self._display_mode == "icon":
-            QTimer.singleShot(0, lambda: self._render_icon(force=False))
+            weak_self = weakref.ref(self)
+            QTimer.singleShot(0, lambda: (s := weak_self()) and s._render_icon(force=False))
 
     @classmethod
     def _get_cached_svg_renderer(cls, icon_path, button_type, theme_signature):

@@ -560,8 +560,14 @@ class HeartbeatManager(QObject):
         """连接到 owner.destroyed 信号的槽。
 
         扫描所有已注册回调，移除所有者 QObject 已销毁的条目（失效弱引用或已删除的 C++ 对象）。
+
+        使用非阻塞锁获取以避免在 GC 期间发生死锁：
+        若锁已被持有（例如在 tick 处理中），跳过此次清理，
+        由 _prune_dead_callbacks（每 100 tick）完成清理。
         """
-        with self._callback_lock:
+        if not self._callback_lock.acquire(blocking=False):
+            return
+        try:
             dead: list[str] = []
             for cid, entry in self._callbacks.items():
                 if entry.owner_ref is None:
@@ -577,6 +583,8 @@ class HeartbeatManager(QObject):
                         owner.objectName()
                     except RuntimeError:
                         dead.append(cid)
+        finally:
+            self._callback_lock.release()
 
         for cid in dead:
             self.unregister_tick_callback(cid)

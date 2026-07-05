@@ -24,6 +24,7 @@ import time
 import traceback
 import threading
 import faulthandler
+import atexit
 
 # 添加父目录到Python路径，确保包能被正确导入
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -152,8 +153,8 @@ def cleanup_faulthandler():
             except (OSError, ValueError):
                 pass
             _fault_handler_file = None
-    except Exception as e:
-        pass
+    except Exception:
+        _fault_handler_file = None
 
 
 # 定义异常处理函数
@@ -325,6 +326,9 @@ class FreeAssetFilterApp(QMainWindow):
         self._theme_update_queued = False
         self._ui_state_backup = None
         self._splitter = None
+
+        # 卡片尺寸更新重入保护，防止 processEvents 递归
+        self._updating_cards = False
 
         # 启动阶段异步任务状态
         self._pending_restore_items = []
@@ -633,10 +637,15 @@ class FreeAssetFilterApp(QMainWindow):
                     w.finished.connect(lambda worker=w: self._cleanup_retired_worker(worker))
             
             # 等待所有静默检查线程退出
+            # 超时设为 3000ms（而非 15000ms），基于以下考量：
+            # - 静默检查线程可能阻塞在同步 HTTP 请求上，无法被 requestInterruption 中断
+            # - 3 秒足以覆盖正常网络超时场景，过长等待会让窗口关闭感觉卡顿
+            # - 即使超时未退出，线程也会随进程退出而自动回收，不会造成资源泄漏
+            # - 同类线程清理（_safe_stop_qthread）统一使用 2000ms 超时，3000ms 已留有余量
             _workers_to_wait = [w for w in self._retired_worker_refs if w.isRunning()]
             if _workers_to_wait:
                 for w in _workers_to_wait:
-                    if not w.wait(15000):
+                    if not w.wait(3000):
                         pass
                     else:
                         pass
@@ -777,7 +786,13 @@ class FreeAssetFilterApp(QMainWindow):
             max_retries = 15
             if retry_count < max_retries:
                 from PySide6.QtWidgets import QApplication
-                QApplication.processEvents()
+                # 防止 processEvents 递归（changeEvent 通路相互重入）
+                if not self._updating_cards:
+                    self._updating_cards = True
+                    try:
+                        QApplication.processEvents()
+                    finally:
+                        self._updating_cards = False
                 QTimer.singleShot(30, lambda: self._check_and_update_cards(retry_count + 1))
             return
 
@@ -799,9 +814,16 @@ class FreeAssetFilterApp(QMainWindow):
         - 延迟执行确保布局完成
         - 连续检测直到窗口尺寸稳定
         """
-        from PySide6.QtWidgets import QApplication
-        QApplication.processEvents()
-        self._check_and_update_cards(retry_count=0)
+        # 防止 processEvents 递归（changeEvent 通路相互重入）
+        if self._updating_cards:
+            return
+        self._updating_cards = True
+        try:
+            from PySide6.QtWidgets import QApplication
+            QApplication.processEvents()
+            self._check_and_update_cards(retry_count=0)
+        finally:
+            self._updating_cards = False
 
     def _create_file_selector_widget(self):
         """
@@ -3078,6 +3100,7 @@ def main():
 
     # 应用程序退出前记录当前时间
     def on_app_exit():
+        nonlocal _mutex_handle
         exit_time = time.time()
         settings_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'settings.json')
         cur_settings_manager = getattr(app, 'settings_manager', None)
@@ -3113,9 +3136,12 @@ def main():
                 ctypes.windll.kernel32.CloseHandle(_mutex_handle)
             except Exception:
                 pass
+            finally:
+                _mutex_handle = None
 
-    # 连接应用程序退出信号
+    # 连接应用程序退出信号 (aboutToQuit + atexit 双重保障)
     app.aboutToQuit.connect(on_app_exit)
+    atexit.register(on_app_exit)
 
     info(f"[启动] 总耗时: {(time.perf_counter()-_start_ts)*1000:.0f}ms")
     exit_code = app.exec()

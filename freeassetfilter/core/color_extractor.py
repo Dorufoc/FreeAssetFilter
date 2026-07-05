@@ -70,23 +70,22 @@ def _prepare_image_data_for_rust(cover_data: bytes) -> bytes:
     使用 numpy 视图避免 .tobytes() + 拼接两次内存拷贝。
     """
     try:
-        image = Image.open(io.BytesIO(cover_data))
-        
-        if image.mode != 'RGBA':
-            image = image.convert('RGBA')
-        
-        import numpy as np
-        
-        width, height = image.size
-        # numpy 视图与 PIL 共享内存，避免 .tobytes() 拷贝
-        arr = np.asarray(image, dtype=np.uint8)  # shape (H, W, 4)
-        header = struct.pack('ii', width, height)
-        
-        # 单次拷贝：将 header + 像素数据写入同一输出缓冲区
-        out = bytearray(8 + arr.nbytes)
-        out[:8] = header
-        out[8:] = memoryview(arr)
-        return bytes(out)
+        with Image.open(io.BytesIO(cover_data)) as image:
+            if image.mode != 'RGBA':
+                image = image.convert('RGBA')
+            
+            import numpy as np
+            
+            width, height = image.size
+            # numpy 视图与 PIL 共享内存，避免 .tobytes() 拷贝
+            arr = np.asarray(image, dtype=np.uint8)  # shape (H, W, 4)
+            header = struct.pack('ii', width, height)
+            
+            # 单次拷贝：将 header + 像素数据写入同一输出缓冲区
+            out = bytearray(8 + arr.nbytes)
+            out[:8] = header
+            out[8:] = memoryview(arr)
+            return bytes(out)
     except (OSError, IOError, ValueError) as e:
         error(f"图像数据准备失败: {e}")
         raise ValueError(f"图像解码失败: {e}")
@@ -148,13 +147,14 @@ def _extract_cover_colors_python(cover_data: bytes, num_colors: int = 5,
     Python 实现的颜色提取（作为 fallback）
     """
     try:
-        image = Image.open(io.BytesIO(cover_data))
+        with Image.open(io.BytesIO(cover_data)) as _img:
+            image = _img.convert('RGB')
     except (OSError, IOError) as e:
         error(f"打开封面图像失败: {e}")
         return []
     
     try:
-        image = image.convert('RGB')
+        image = image.resize((100, 100), Image.Resampling.LANCZOS)
         image = image.resize((100, 100), Image.Resampling.LANCZOS)
         
         pixels = list(image.getdata())
@@ -363,7 +363,8 @@ def extract_cover_from_audio(file_path: str) -> Optional[bytes]:
                 picture_data = base64.b64decode(audio['metadata_block_picture'][0])
                 # 跳过 picture block header，直接作为图片处理
                 try:
-                    Image.open(io.BytesIO(picture_data))
+                    with Image.open(io.BytesIO(picture_data)):
+                        pass
                     return picture_data
                 except (OSError, IOError):
                     pass

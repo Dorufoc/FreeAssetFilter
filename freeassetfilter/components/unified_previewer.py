@@ -17,6 +17,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 import sys
 import os
+import weakref
 from collections import OrderedDict
 
 # 添加项目根目录到Python路径，解决直接运行时的导入问题
@@ -93,6 +94,9 @@ class UnifiedPreviewer(QWidget):
         self.temp_pdf_path = None
         # 预览加载状态标志，防止快速点击导致多个预览组件同时运行
         self.is_loading_preview = False
+
+        # 预览清理重入保护，防止 processEvents 递归
+        self._clearing_preview = False
         
         # 保存主窗口引用，避免循环导入和运行时查找
         self.main_window = parent
@@ -109,6 +113,9 @@ class UnifiedPreviewer(QWidget):
         # key: (absolute_file_path, mtime), value: bool
         self._animated_image_cache: OrderedDict = OrderedDict()
         self._ANIMATED_CACHE_MAX_SIZE = 200
+
+        # 连接 destroyed 信号，确保 widget 销毁时清理预览线程
+        self.destroyed.connect(self._cleanup_thread_on_destroy)
 
         # 初始化UI
         self.init_ui()
@@ -671,8 +678,8 @@ class UnifiedPreviewer(QWidget):
         self._preview_thread = None
         super().closeEvent(event)
 
-    def __del__(self):
-        """析构时确保清理预览线程"""
+    def _cleanup_thread_on_destroy(self):
+        """destroyed 信号触发时清理预览线程（替代 __del__）"""
         thread = getattr(self, '_preview_thread', None)
         if thread is not None:
             try:
@@ -827,122 +834,129 @@ class UnifiedPreviewer(QWidget):
                                 退出时应避免在主线程执行阻塞式播放器清理，并强制清理分离窗口中的播放器。
             on_cleared (callable | None): 清理完成后的回调，用于非阻塞续接后续逻辑。
         """
-        self._cleanup_preview_thread()
+        # 防止 processEvents 递归（信号处理器相互重入）
+        if self._clearing_preview:
+            return
+        self._clearing_preview = True
+        try:
+            self._cleanup_preview_thread()
 
-        self._hide_default_placeholder()
+            self._hide_default_placeholder()
 
-        widget = self.current_preview_widget
-        is_detached_video_player = False
-        video_player_widget = None
+            widget = self.current_preview_widget
+            is_detached_video_player = False
+            video_player_widget = None
 
-        if widget:
-            try:
-                from freeassetfilter.components.video_player import VideoPlayer
-                if isinstance(widget, VideoPlayer):
-                    video_player_widget = widget
-                    if (
-                        not app_closing
-                        and hasattr(widget, '_detached_window')
-                        and widget._detached_window
-                    ):
-                        is_detached_video_player = True
-                        info("[UnifiedPreviewer] 视频播放器已分离到独立窗口，跳过清理")
-            except Exception as e:
-                error(f"检查VideoPlayer分离状态时出错: {e}")
+            if widget:
+                try:
+                    from freeassetfilter.components.video_player import VideoPlayer
+                    if isinstance(widget, VideoPlayer):
+                        video_player_widget = widget
+                        if (
+                            not app_closing
+                            and hasattr(widget, '_detached_window')
+                            and widget._detached_window
+                        ):
+                            is_detached_video_player = True
+                            info("[UnifiedPreviewer] 视频播放器已分离到独立窗口，跳过清理")
+                except Exception as e:
+                    error(f"检查VideoPlayer分离状态时出错: {e}")
 
-        def _finish_clear(callback_token=None):
-            if callback_token is not None and callback_token != self._preview_cleanup_sequence:
-                return
+            def _finish_clear(callback_token=None):
+                if callback_token is not None and callback_token != self._preview_cleanup_sequence:
+                    return
 
-            if not is_detached_video_player:
-                for i in reversed(range(self.preview_layout.count())):
-                    if i == 0:
-                        continue
-                    item = self.preview_layout.itemAt(i)
-                    if item is None:
-                        continue
-                    layout_widget = item.widget()
-                    if layout_widget is None:
-                        continue
-                    # 跳过 default_placeholder — 它由 _hide / _show_default_placeholder 管理
-                    if layout_widget is self.default_placeholder:
-                        continue
-                    self.preview_layout.removeWidget(layout_widget)
-                    if layout_widget is video_player_widget:
-                        layout_widget.hide()
-                    # 防止小部件积累：先断开父子关系，再排队删除
-                    layout_widget.setParent(None)
-                    layout_widget.deleteLater()
-
-                while self.preview_layout.count() > 1:
-                    item = self.preview_layout.takeAt(1)
-                    if item is None:
-                        continue
-                    layout_widget = item.widget()
-                    if layout_widget is not None:
-                        # 跳过 default_placeholder — 由 _hide / _show 管理
+                if not is_detached_video_player:
+                    for i in reversed(range(self.preview_layout.count())):
+                        if i == 0:
+                            continue
+                        item = self.preview_layout.itemAt(i)
+                        if item is None:
+                            continue
+                        layout_widget = item.widget()
+                        if layout_widget is None:
+                            continue
+                        # 跳过 default_placeholder — 它由 _hide / _show_default_placeholder 管理
                         if layout_widget is self.default_placeholder:
                             continue
+                        self.preview_layout.removeWidget(layout_widget)
+                        if layout_widget is video_player_widget:
+                            layout_widget.hide()
+                        # 防止小部件积累：先断开父子关系，再排队删除
                         layout_widget.setParent(None)
                         layout_widget.deleteLater()
 
-                # 处理待处理事件，确保 deleteLater 即刻生效，避免新部件创建时旧部件尚未销毁
-                from PySide6.QtWidgets import QApplication
-                QApplication.processEvents()
+                    while self.preview_layout.count() > 1:
+                        item = self.preview_layout.takeAt(1)
+                        if item is None:
+                            continue
+                        layout_widget = item.widget()
+                        if layout_widget is not None:
+                            # 跳过 default_placeholder — 由 _hide / _show 管理
+                            if layout_widget is self.default_placeholder:
+                                continue
+                            layout_widget.setParent(None)
+                            layout_widget.deleteLater()
 
-                self.current_preview_widget = None
-                self.current_preview_type = None
+                    # 处理待处理事件，确保 deleteLater 即刻生效，避免新部件创建时旧部件尚未销毁
+                    from PySide6.QtWidgets import QApplication
+                    QApplication.processEvents()
 
-            if emit_signal:
-                self.preview_cleared.emit()
+                    self.current_preview_widget = None
+                    self.current_preview_type = None
 
-            if on_cleared:
-                try:
-                    on_cleared()
-                except Exception as e:
-                    exception_details("[UnifiedPreviewer] 执行预览清理回调失败", e)
+                if emit_signal:
+                    self.preview_cleared.emit()
 
-        if not widget or is_detached_video_player:
-            _finish_clear()
-            return
+                if on_cleared:
+                    try:
+                        on_cleared()
+                    except Exception as e:
+                        exception_details("[UnifiedPreviewer] 执行预览清理回调失败", e)
 
-        try:
-            from freeassetfilter.components.text_previewer import TextPreviewWidget
-            if isinstance(widget, TextPreviewWidget) and hasattr(widget, 'cleanup'):
-                widget.cleanup()
-        except Exception as e:
-            error(f"清理TextPreviewWidget组件时出错: {e}")
+            if not widget or is_detached_video_player:
+                _finish_clear()
+                return
 
-        try:
-            from freeassetfilter.components.font_previewer import FontPreviewWidget
-            if isinstance(widget, FontPreviewWidget) and hasattr(widget, 'cleanup'):
-                widget.cleanup()
-        except Exception as e:
-            error(f"清理FontPreviewWidget组件时出错: {e}")
-
-        if hasattr(widget, 'stop'):
             try:
-                widget.stop()
+                from freeassetfilter.components.text_previewer import TextPreviewWidget
+                if isinstance(widget, TextPreviewWidget) and hasattr(widget, 'cleanup'):
+                    widget.cleanup()
             except Exception as e:
-                error(f"停止预览组件时出错: {e}")
+                error(f"清理TextPreviewWidget组件时出错: {e}")
 
-        if video_player_widget is None:
-            _finish_clear()
-            return
+            try:
+                from freeassetfilter.components.font_previewer import FontPreviewWidget
+                if isinstance(widget, FontPreviewWidget) and hasattr(widget, 'cleanup'):
+                    widget.cleanup()
+            except Exception as e:
+                error(f"清理FontPreviewWidget组件时出错: {e}")
 
-        try:
-            if hasattr(video_player_widget, 'cleanup'):
-                # 退出时使用同步清理，确保资源完全释放
-                video_player_widget.cleanup(async_mode=not app_closing)
-        except Exception as e:
-            error(f"调用VideoPlayer.cleanup()时出错: {e}")
+            if hasattr(widget, 'stop'):
+                try:
+                    widget.stop()
+                except Exception as e:
+                    error(f"停止预览组件时出错: {e}")
 
-        self._preview_cleanup_sequence += 1
-        callback_token = self._preview_cleanup_sequence
+            if video_player_widget is None:
+                _finish_clear()
+                return
 
-        # 如果是应用退出，立即完成清理；否则延迟120ms
-        delay_ms = 0 if app_closing else 120
-        QTimer.singleShot(delay_ms, lambda: _finish_clear(callback_token))
+            try:
+                if hasattr(video_player_widget, 'cleanup'):
+                    # 退出时使用同步清理，确保资源完全释放
+                    video_player_widget.cleanup(async_mode=not app_closing)
+            except Exception as e:
+                error(f"调用VideoPlayer.cleanup()时出错: {e}")
+
+            self._preview_cleanup_sequence += 1
+            callback_token = self._preview_cleanup_sequence
+
+            # 如果是应用退出，立即完成清理；否则延迟120ms
+            delay_ms = 0 if app_closing else 120
+            QTimer.singleShot(delay_ms, lambda: _finish_clear(callback_token))
+        finally:
+            self._clearing_preview = False
     
     def _update_preview_widget(self, file_path, preview_type):
         """
@@ -953,6 +967,7 @@ class UnifiedPreviewer(QWidget):
             file_path (str): 文件路径
             preview_type (str): 预览类型
         """
+        weak_self = weakref.ref(self)
         if not self.current_preview_widget:
             return
         
@@ -1002,10 +1017,10 @@ class UnifiedPreviewer(QWidget):
                 current_is_photoviewer = isinstance(self.current_preview_widget, PhotoViewer)
                 
                 if is_animated and not current_is_gifviewer:
-                    self._clear_preview(emit_signal=False, on_cleared=lambda: self._show_image_preview(file_path))
+                    self._clear_preview(emit_signal=False, on_cleared=lambda: (s := weak_self()) and s._show_image_preview(file_path))
                     return
                 elif not is_animated and not current_is_photoviewer:
-                    self._clear_preview(emit_signal=False, on_cleared=lambda: self._show_image_preview(file_path))
+                    self._clear_preview(emit_signal=False, on_cleared=lambda: (s := weak_self()) and s._show_image_preview(file_path))
                     return
                 else:
                     # 组件类型匹配，直接更新
@@ -1032,7 +1047,7 @@ class UnifiedPreviewer(QWidget):
                 if hasattr(self.current_preview_widget, 'set_path'):
                     self.current_preview_widget.set_path(file_path)
             elif preview_type == "font":
-                self._clear_preview(emit_signal=False, on_cleared=lambda: self._show_font_preview(file_path))
+                self._clear_preview(emit_signal=False, on_cleared=lambda: (s := weak_self()) and s._show_font_preview(file_path))
                 return
         except Exception as e:
             error(f"更新预览组件时出错: {e}")
@@ -1045,6 +1060,7 @@ class UnifiedPreviewer(QWidget):
         Args:
             error_message (str): 错误信息
         """
+        weak_self = weakref.ref(self)
         # 创建错误信息容器
         error_container = QWidget()
         error_container.setStyleSheet("background-color: transparent;")
@@ -1061,7 +1077,7 @@ class UnifiedPreviewer(QWidget):
         # 添加复制按钮
         copy_button = CustomButton("复制错误信息", button_type="secondary")
         copy_button.setFixedWidth(int(120 * self.dpi_scale))
-        copy_button.clicked.connect(lambda: self._copy_to_clipboard(error_message))
+        copy_button.clicked.connect(lambda: (s := weak_self()) and s._copy_to_clipboard(error_message))
         copy_button_layout = QHBoxLayout()
         copy_button_layout.addStretch()
         copy_button_layout.addWidget(copy_button)
@@ -1421,6 +1437,7 @@ class UnifiedPreviewer(QWidget):
             loaded_data (dict): 后台线程预加载的数据（文件内容、元数据等）
             preview_type (str): 预览类型
         """
+        weak_self = weakref.ref(self)
         try:
             # 注意：对于文档类型，我们不在这里关闭进度条弹窗，而是在转换完成后关闭
             if preview_type != "document":
@@ -1528,7 +1545,7 @@ class UnifiedPreviewer(QWidget):
             # 添加复制按钮
             copy_button = CustomButton("复制错误信息", button_type="secondary")
             copy_button.setFixedWidth(int(120 * self.dpi_scale))
-            copy_button.clicked.connect(lambda: self._copy_to_clipboard(full_error_message))
+            copy_button.clicked.connect(lambda: (s := weak_self()) and s._copy_to_clipboard(full_error_message))
             copy_button_layout = QHBoxLayout()
             copy_button_layout.addStretch()
             copy_button_layout.addWidget(copy_button)
@@ -1577,7 +1594,7 @@ class UnifiedPreviewer(QWidget):
             # 添加复制按钮
             copy_button = CustomButton("复制错误信息", button_type="secondary")
             copy_button.setFixedWidth(int(120 * self.dpi_scale))
-            copy_button.clicked.connect(lambda: self._copy_to_clipboard(full_error_message))
+            copy_button.clicked.connect(lambda: (s := weak_self()) and s._copy_to_clipboard(full_error_message))
             copy_button_layout = QHBoxLayout()
             copy_button_layout.addStretch()
             copy_button_layout.addWidget(copy_button)

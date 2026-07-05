@@ -4,6 +4,8 @@ FreeAssetFilter 平滑滚动组件
 提供平滑滚轮滚动和边界弹性回弹效果
 """
 
+import weakref
+
 from PySide6.QtCore import (
     Qt,
     QObject,
@@ -384,6 +386,7 @@ class _WheelSmoothScrollFilter(QObject):
         return None
 
     def _animate_scrollbar(self, scrollbar, target_value):
+        weak_self = weakref.ref(self)
         orientation = scrollbar.orientation()
         animation_attr = "_vertical_animation" if orientation == Qt.Vertical else "_horizontal_animation"
         pending_attr = "_pending_vertical_target" if orientation == Qt.Vertical else "_pending_horizontal_target"
@@ -399,7 +402,7 @@ class _WheelSmoothScrollFilter(QObject):
         animation.setEasingCurve(QEasingCurve.OutQuad)
         animation.setStartValue(int(start_value))
         animation.setEndValue(int(target_value))
-        animation.finished.connect(lambda: setattr(self, pending_attr, None))
+        animation.finished.connect(lambda p=pending_attr: (s := weak_self()) and setattr(s, p, None))
         setattr(self, animation_attr, animation)
         animation.start()
 

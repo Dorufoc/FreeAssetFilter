@@ -86,10 +86,12 @@ class LUTPreviewGenerator:
         
         try:
             if PIL_AVAILABLE:
-                self._reference_image = Image.open(self.reference_image_path)
-                # 转换为RGB模式
-                if self._reference_image.mode != 'RGB':
-                    self._reference_image = self._reference_image.convert('RGB')
+                with Image.open(self.reference_image_path) as _ref_img:
+                    _ref_img.load()  # ensure pixels loaded before file closed
+                    if _ref_img.mode != 'RGB':
+                        self._reference_image = _ref_img.convert('RGB')
+                    else:
+                        self._reference_image = _ref_img
             return True
         except (IOError, OSError) as e:
             error(f"加载参考图像失败: {e}")

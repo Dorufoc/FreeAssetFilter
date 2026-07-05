@@ -13,6 +13,8 @@ FreeAssetFilter 自定义右键菜单控件
 - 宽度自适应文本内容
 """
 
+import weakref
+
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication, QFrame
 from PySide6.QtCore import Qt, QPoint, Signal, QSize, QTimer, QEvent, QRect
 from PySide6.QtGui import QFont, QFontMetrics, QColor, QPainter, QBrush, QPen
@@ -246,6 +248,7 @@ class D_MoreMenu(QWidget):
 
         self._items = items
 
+        weak_self = weakref.ref(self)
         for item in items:
             if isinstance(item, dict):
                 text = item.get('text', '')
@@ -255,7 +258,7 @@ class D_MoreMenu(QWidget):
                 data = item
 
             item_widget = D_MoreMenuItem(text, data, self)
-            item_widget.clicked.connect(lambda checked, d=data: self._on_item_clicked(d))
+            item_widget.clicked.connect(lambda checked, d=data: (s := weak_self()) and s._on_item_clicked(d))
 
             self._list_layout.addWidget(item_widget)
 
@@ -272,7 +275,8 @@ class D_MoreMenu(QWidget):
         item_data = data if data is not None else text
 
         item_widget = D_MoreMenuItem(text, item_data, self)
-        item_widget.clicked.connect(lambda checked, d=item_data: self._on_item_clicked(d))
+        weak_self = weakref.ref(self)
+        item_widget.clicked.connect(lambda checked, d=item_data: (s := weak_self()) and s._on_item_clicked(d))
 
         self._list_layout.addWidget(item_widget)
         self._items.append({"text": text, "data": item_data})
@@ -290,7 +294,8 @@ class D_MoreMenu(QWidget):
         item_data = data if data is not None else text
 
         item_widget = D_MoreMenuItem(text, item_data, self)
-        item_widget.clicked.connect(lambda checked, d=item_data: self._on_item_clicked(d))
+        weak_self = weakref.ref(self)
+        item_widget.clicked.connect(lambda checked, d=item_data: (s := weak_self()) and s._on_item_clicked(d))
 
         self._list_layout.insertWidget(index, item_widget)
 
@@ -521,8 +526,9 @@ class D_MoreMenu(QWidget):
             widget: 要连接右键菜单的控件
         """
         widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        weak_self = weakref.ref(self)
         widget.customContextMenuRequested.connect(
-            lambda pos: self._on_context_menu_requested(widget, pos)
+            lambda pos: (s := weak_self()) and s._on_context_menu_requested(widget, pos)
         )
 
     def _on_context_menu_requested(self, widget, pos):

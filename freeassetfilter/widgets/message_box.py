@@ -5,6 +5,8 @@ FreeAssetFilter 窗口类自定义控件
 包含各种窗口类UI组件，如自定义窗口、自定义消息框等
 """
 
+import weakref
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
@@ -793,10 +795,11 @@ class CustomMessageBox(QDialog):
                     button_types.append("normal")
         
         from freeassetfilter.widgets.button_widgets import CustomButton
+        weak_self = weakref.ref(self)
         for i, (text, btn_type) in enumerate(zip(self._buttons, button_types)):
             button = CustomButton(text, self, btn_type)
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            button.clicked.connect(lambda checked, idx=i: self._on_button_clicked(idx))
+            button.clicked.connect(lambda checked, idx=i: (s := weak_self()) and s._on_button_clicked(idx))
             self.button_layout.addWidget(button)
         
         if self._buttons:

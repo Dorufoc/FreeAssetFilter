@@ -26,6 +26,7 @@ import subprocess
 import platform
 import json
 import hashlib
+import weakref
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
@@ -492,6 +493,7 @@ class FileInfoPreviewer(QObject):
         # 存储基本信息控件的引用
         self.basic_info_widgets = {}
 
+        weak_self = weakref.ref(self)
         for key in basic_info_order:
             # 创建值标签 - 使用QTextEdit实现更好的文本换行控制（包括英文路径）
             is_clickable = key in ["MD5", "SHA1", "SHA256"]
@@ -499,7 +501,7 @@ class FileInfoPreviewer(QObject):
 
             # 为MD5、SHA1、SHA256添加点击事件
             if is_clickable:
-                value_widget.mousePressEvent = lambda event, k=key: self._load_detailed_info()
+                value_widget.mousePressEvent = lambda event, k=key: (s := weak_self()) and s._load_detailed_info()
 
             # 创建标签文本
             label_widget = QLabel(key + ":")

@@ -1216,9 +1216,10 @@ class FileStagingPoolListView(FileListView):
                 needs_motion = True
             self._card_motion_pending_finalize_keys.add(key)
             file_path = str(model.data(index, FileStagingPoolListModel.FilePathRole) or "")
+            weak_self = weakref.ref(self)
             QTimer.singleShot(
                 self._card_motion_duration_ms,
-                lambda path=file_path, key=key: self._finalize_marked_removal(path, key),
+                lambda path=file_path, key=key: (s := weak_self()) and s._finalize_marked_removal(path, key),
             )
 
         if needs_motion:

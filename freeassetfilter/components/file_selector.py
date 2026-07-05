@@ -19,6 +19,8 @@ import sys
 import os
 import re
 import json
+import traceback
+import weakref
 from collections import deque
 from datetime import datetime
 
@@ -148,72 +150,75 @@ class DriveListLoaderThread(QThread):
     loaded = Signal(list, list)
 
     def run(self):
-        local_drives = []
-        network_locations = []
+        try:
+            local_drives = []
+            network_locations = []
 
-        if sys.platform == 'win32':
-            try:
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                drives_bitmask = kernel32.GetLogicalDrives()
-                for drive in range(26):
-                    if drives_bitmask & (1 << drive):
-                        local_drives.append(chr(65 + drive) + ':')
-            except Exception as e:
-                warning(f"获取本地盘符失败: {e}")
+            if sys.platform == 'win32':
+                try:
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    drives_bitmask = kernel32.GetLogicalDrives()
+                    for drive in range(26):
+                        if drives_bitmask & (1 << drive):
+                            local_drives.append(chr(65 + drive) + ':')
+                except Exception as e:
+                    warning(f"获取本地盘符失败: {e}")
 
-            try:
-                import ctypes
-                from ctypes import wintypes
-                mpr = ctypes.WinDLL('mpr')
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    mpr = ctypes.WinDLL('mpr')
 
-                class NETRESOURCE(ctypes.Structure):
-                    _fields_ = [
-                        ('dwScope', wintypes.DWORD),
-                        ('dwType', wintypes.DWORD),
-                        ('dwDisplayType', wintypes.DWORD),
-                        ('dwUsage', wintypes.DWORD),
-                        ('lpLocalName', wintypes.LPWSTR),
-                        ('lpRemoteName', wintypes.LPWSTR),
-                        ('lpComment', wintypes.LPWSTR),
-                        ('lpProvider', wintypes.LPWSTR)
-                    ]
+                    class NETRESOURCE(ctypes.Structure):
+                        _fields_ = [
+                            ('dwScope', wintypes.DWORD),
+                            ('dwType', wintypes.DWORD),
+                            ('dwDisplayType', wintypes.DWORD),
+                            ('dwUsage', wintypes.DWORD),
+                            ('lpLocalName', wintypes.LPWSTR),
+                            ('lpRemoteName', wintypes.LPWSTR),
+                            ('lpComment', wintypes.LPWSTR),
+                            ('lpProvider', wintypes.LPWSTR)
+                        ]
 
-                resource_connected = 1
-                resource_type_any = 0
-                h_enum = wintypes.HANDLE()
+                    resource_connected = 1
+                    resource_type_any = 0
+                    h_enum = wintypes.HANDLE()
 
-                if mpr.WNetOpenEnumW(resource_connected, resource_type_any, 0, None, ctypes.byref(h_enum)) == 0:
-                    try:
-                        while True:
-                            buf_size = wintypes.DWORD(16384)
-                            count = wintypes.DWORD(0xFFFFFFFF)
-                            buf = ctypes.create_string_buffer(buf_size.value)
-                            result = mpr.WNetEnumResourceW(h_enum, ctypes.byref(count), buf, ctypes.byref(buf_size))
-                            if result != 0:
-                                break
+                    if mpr.WNetOpenEnumW(resource_connected, resource_type_any, 0, None, ctypes.byref(h_enum)) == 0:
+                        try:
+                            while True:
+                                buf_size = wintypes.DWORD(16384)
+                                count = wintypes.DWORD(0xFFFFFFFF)
+                                buf = ctypes.create_string_buffer(buf_size.value)
+                                result = mpr.WNetEnumResourceW(h_enum, ctypes.byref(count), buf, ctypes.byref(buf_size))
+                                if result != 0:
+                                    break
 
-                            ptr = ctypes.cast(buf, ctypes.POINTER(NETRESOURCE))
-                            for i in range(count.value):
-                                res = ptr[i]
-                                if res.lpLocalName:
-                                    local_name = ctypes.wstring_at(res.lpLocalName)
-                                    if local_name and local_name not in local_drives:
-                                        local_drives.append(local_name)
-                                if res.lpRemoteName:
-                                    remote_name = ctypes.wstring_at(res.lpRemoteName)
-                                    if remote_name and remote_name not in network_locations:
-                                        network_locations.append(remote_name)
-                    finally:
-                        mpr.WNetCloseEnum(h_enum)
-            except Exception as e:
-                debug(f"获取网络位置失败，保留本地盘符列表: {e}")
-        else:
-            local_drives = ['/']
+                                ptr = ctypes.cast(buf, ctypes.POINTER(NETRESOURCE))
+                                for i in range(count.value):
+                                    res = ptr[i]
+                                    if res.lpLocalName:
+                                        local_name = ctypes.wstring_at(res.lpLocalName)
+                                        if local_name and local_name not in local_drives:
+                                            local_drives.append(local_name)
+                                    if res.lpRemoteName:
+                                        remote_name = ctypes.wstring_at(res.lpRemoteName)
+                                        if remote_name and remote_name not in network_locations:
+                                            network_locations.append(remote_name)
+                        finally:
+                            mpr.WNetCloseEnum(h_enum)
+                except Exception as e:
+                    debug(f"获取网络位置失败，保留本地盘符列表: {e}")
+            else:
+                local_drives = ['/']
 
-        local_drives = sorted(set(local_drives))
-        network_locations = sorted(set(network_locations))
-        self.loaded.emit(local_drives, network_locations)
+            local_drives = sorted(set(local_drives))
+            network_locations = sorted(set(network_locations))
+            self.loaded.emit(local_drives, network_locations)
+        except Exception:
+            error(f"DriveListLoaderThread.run() 异常: {traceback.format_exc()}")
 
 
 class FileListLoaderThread(QThread):
@@ -1384,14 +1389,16 @@ class CustomFileSelector(QWidget):
         """防抖到期后实际执行收藏夹保存"""
         if not self._favorites_loaded:
             self._load_favorites()
+        weak_self = weakref.ref(self)
         QThreadPool.globalInstance().start(
-            _JsonWriteRunnable(self.favorites_file, lambda: self.favorites.copy())
+            _JsonWriteRunnable(self.favorites_file, lambda: (s := weak_self()) and s.favorites.copy())
         )
     
     def _show_favorites_dialog(self):
         """
         显示收藏夹对话框
         """
+        weak_self = weakref.ref(self)
         self._load_favorites()
         app = QApplication.instance()
         default_font_size = getattr(app, 'default_font_size', 9)
@@ -1457,16 +1464,16 @@ class CustomFileSelector(QWidget):
         delegate.set_view(view)
 
         # 点击收藏项 → 跳转路径
-        view.clicked.connect(lambda idx: self._on_favorite_clicked(
+        view.clicked.connect(lambda idx: (s := weak_self()) and s._on_favorite_clicked(
             model.data(idx, model.FilePathRole), dialog
         ))
 
         # 重命名 / 删除
         delegate.renameRequested.connect(
-            lambda path: self._on_favorite_rename_dlg(path, model, dialog)
+            lambda path: (s := weak_self()) and s._on_favorite_rename_dlg(path, model, dialog)
         )
         delegate.deleteRequested.connect(
-            lambda path: self._on_favorite_delete_dlg(path, model, dialog)
+            lambda path: (s := weak_self()) and s._on_favorite_delete_dlg(path, model, dialog)
         )
 
         dialog.list_layout.addWidget(view)
@@ -1625,6 +1632,7 @@ class CustomFileSelector(QWidget):
         """
         显示收藏夹项的右键菜单
         """
+        weak_self = weakref.ref(self)
         item = favorites_list.itemAt(pos)
         if not item:
             return
@@ -1633,12 +1641,12 @@ class CustomFileSelector(QWidget):
         
         # 重命名菜单项
         rename_action = QAction("重命名", self)
-        rename_action.triggered.connect(lambda: self._rename_favorite(item, favorites_list))
+        rename_action.triggered.connect(lambda: (s := weak_self()) and s._rename_favorite(item, favorites_list))
         menu.addAction(rename_action)
         
         # 删除菜单项
         delete_action = QAction("删除", self)
-        delete_action.triggered.connect(lambda: self._delete_favorite(item, favorites_list))
+        delete_action.triggered.connect(lambda: (s := weak_self()) and s._delete_favorite(item, favorites_list))
         menu.addAction(delete_action)
         
         # 显示菜单
@@ -1853,8 +1861,9 @@ class CustomFileSelector(QWidget):
             return
         self._pending_drive_checks.add(drive_path)
 
+        weak_self = weakref.ref(self)
         signals = _DriveAvailabilitySignals()
-        signals.finished.connect(lambda path, available: self._on_drive_availability_result(path, available))
+        signals.finished.connect(lambda path, available: (s := weak_self()) and s._on_drive_availability_result(path, available))
 
         runnable = _DriveAvailabilityCheckRunnable(drive_path, signals)
         QThreadPool.globalInstance().start(runnable)
@@ -2222,8 +2231,9 @@ class CustomFileSelector(QWidget):
                 self._file_loader_thread.wait(100)
 
             self._file_loader_thread = FileListLoaderThread(self.current_path, self)
-            self._file_loader_thread.loaded.connect(lambda loaded_path, files: self._on_files_loaded(request_id, loaded_path, files, callback, scroll_to_top))
-            self._file_loader_thread.failed.connect(lambda failed_path, message: self._on_files_load_failed(request_id, failed_path, message))
+            weak_self = weakref.ref(self)
+            self._file_loader_thread.loaded.connect(lambda loaded_path, files: (s := weak_self()) and s._on_files_loaded(request_id, loaded_path, files, callback, scroll_to_top))
+            self._file_loader_thread.failed.connect(lambda failed_path, message: (s := weak_self()) and s._on_files_load_failed(request_id, failed_path, message))
             self._file_loader_thread.finished.connect(self._on_file_loader_finished)
             self._file_loader_thread.start()
         except Exception as e:
@@ -2387,7 +2397,8 @@ class CustomFileSelector(QWidget):
             token = getattr(self, "_pending_path_transition_token", 0)
             list_view.doItemsLayout()
             list_view.viewport().update()
-            QTimer.singleShot(0, lambda: self._finish_files_path_transition_deferred(token, direction))
+            weak_self = weakref.ref(self)
+            QTimer.singleShot(0, lambda: (s := weak_self()) and s._finish_files_path_transition_deferred(token, direction))
         except Exception as transition_error:
             debug(f"完成文件选择器路径切换动画失败: {transition_error}")
 

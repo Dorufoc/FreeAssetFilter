@@ -21,6 +21,8 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
+import weakref
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
@@ -84,7 +86,8 @@ class _MD5CalculationTask(QRunnable):
         # 在主线程调用回调
         try:
             hm = HeartbeatManager()
-            hm.request_main_thread(lambda: self._callback(result))
+            weak_self = weakref.ref(self)
+            hm.request_main_thread(lambda: (s := weak_self()) and s._callback(result))
         except Exception:
             pass
 
@@ -1411,6 +1414,7 @@ class FileStagingPool(QWidget):
         Args:
             unlinked_files (list): 未链接文件列表
         """
+        weak_self = weakref.ref(self)
         from PySide6.QtWidgets import (
             QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
             QListWidget, QListWidgetItem, QMenu, QAction,
@@ -1433,7 +1437,7 @@ class FileStagingPool(QWidget):
         # 创建未链接文件列表
         self.unlinked_list_widget = QListWidget()
         self.unlinked_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.unlinked_list_widget.customContextMenuRequested.connect(lambda pos: self.show_unlinked_context_menu(pos, unlinked_files))
+        self.unlinked_list_widget.customContextMenuRequested.connect(lambda pos: (s := weak_self()) and s.show_unlinked_context_menu(pos, unlinked_files))
 
         # 添加未链接文件到列表
         for i, file_item in enumerate(unlinked_files):
@@ -1451,17 +1455,17 @@ class FileStagingPool(QWidget):
 
         # 手动链接按钮
         manual_link_btn = CustomButton("手动链接", button_type="normal")
-        manual_link_btn.clicked.connect(lambda: self.manual_link_files(unlinked_files, self.unlinked_list_widget))
+        manual_link_btn.clicked.connect(lambda: (s := weak_self()) and s.manual_link_files(unlinked_files, s.unlinked_list_widget))
         button_layout.addWidget(manual_link_btn)
 
         # 忽略所有按钮
         ignore_all_btn = CustomButton("忽略所有", button_type="normal")
-        ignore_all_btn.clicked.connect(lambda: self.ignore_all_files(unlinked_files))
+        ignore_all_btn.clicked.connect(lambda: (s := weak_self()) and s.ignore_all_files(unlinked_files))
         button_layout.addWidget(ignore_all_btn)
 
         # 完成按钮
         finish_btn = CustomButton("完成", button_type="primary")
-        finish_btn.clicked.connect(lambda: self.finish_unlinked_files_dialog(dialog, unlinked_files))
+        finish_btn.clicked.connect(lambda: (s := weak_self()) and s.finish_unlinked_files_dialog(dialog, unlinked_files))
         button_layout.addWidget(finish_btn)
 
         main_layout.addLayout(button_layout)
@@ -1485,6 +1489,7 @@ class FileStagingPool(QWidget):
             pos (QPoint): 鼠标位置
             unlinked_files (list): 未链接文件列表
         """
+        weak_self = weakref.ref(self)
         from PySide6.QtWidgets import QMenu
         from PySide6.QtGui import QAction
 
@@ -1498,11 +1503,11 @@ class FileStagingPool(QWidget):
 
         # 忽略此项
         ignore_action = menu.addAction("忽略此项")
-        ignore_action.triggered.connect(lambda: self.ignore_selected_files(unlinked_files, selected_items))
+        ignore_action.triggered.connect(lambda: (s := weak_self()) and s.ignore_selected_files(unlinked_files, selected_items))
 
         # 手动链接此项
         link_action = menu.addAction("手动链接此文件")
-        link_action.triggered.connect(lambda: self.manual_link_selected_files(unlinked_files, selected_items))
+        link_action.triggered.connect(lambda: (s := weak_self()) and s.manual_link_selected_files(unlinked_files, selected_items))
 
         # 显示菜单
         menu.exec_(self.unlinked_list_widget.mapToGlobal(pos))
@@ -2303,9 +2308,12 @@ class FileStagingPool(QWidget):
                 self.card = card
 
             def run(self):
-                result_path = self.thumbnail_manager.create_thumbnail(self.file_path)
-                if result_path:
-                    self.thumbnail_ready.emit(result_path, self.file_path, self.card)
+                try:
+                    result_path = self.thumbnail_manager.create_thumbnail(self.file_path)
+                    if result_path:
+                        self.thumbnail_ready.emit(result_path, self.file_path, self.card)
+                except Exception:
+                    error(f"ThumbnailGenerator: 生成缩略图失败: {self.file_path}\n{traceback.format_exc()}")
 
         generator = ThumbnailGenerator(thumbnail_manager, file_path, card)
         generator.thumbnail_ready.connect(
@@ -2443,8 +2451,8 @@ class FileStagingPool(QWidget):
             self.export_finished.emit(success_count, error_count, errors)
 
         # 启动复制线程
-        thread = threading.Thread(target=copy_thread)
-        thread.daemon = True
+        thread = threading.Thread(target=copy_thread, name="FileExportCopyThread")
+        thread.daemon = False  # Non-daemon ensures copy completes during shutdown
         thread.start()
 
     def _show_categorized_export_dialog(self, files, target_dir, on_confirm_callback, on_cancel_callback):
@@ -2704,8 +2712,8 @@ class FileStagingPool(QWidget):
             self.export_finished.emit(success_count, error_count, errors)
 
         # 启动复制线程
-        thread = threading.Thread(target=copy_thread)
-        thread.daemon = True
+        thread = threading.Thread(target=copy_thread, name="FileExportCategorizedThread")
+        thread.daemon = False  # Non-daemon ensures copy completes during shutdown
         thread.start()
 
     def _get_unique_target_path(self, target_dir, file_name):

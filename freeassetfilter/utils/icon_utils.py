@@ -193,6 +193,10 @@ IID_IShellItem = GUID(0x43826d1e, 0xe718, 0x42ee, (0xbc, 0x55, 0xa1, 0xe2, 0x61,
 # IID_IShellItemImageFactory
 IID_IShellItemImageFactory = GUID(0xbcc18b79, 0xba16, 0x442f, (0x80, 0xc4, 0x8a, 0x59, 0xc5, 0x5c, 0x09, 0x7f))
 
+# IShellItemImageFactory vtable 布局: QueryInterface(0), AddRef(1), Release(2), GetImage(3)
+_ISIIF_VTABLE_METHODS = 4
+_ISIIF_VTABLE_SIZE = _ISIIF_VTABLE_METHODS * ctypes.sizeof(ctypes.c_void_p)
+
 # 解析lnk文件的函数
 def get_lnk_target(lnk_path):
     """
@@ -558,6 +562,29 @@ def get_highest_resolution_icon(file_path, desired_size=256):
         debug(f"获取高分辨率图标失败: {file_path}, 错误: {e}")
         return None
 
+
+def _validate_vtable_offset(vtable_ptr: int, offset: int, max_size: int,
+                            method_name: str = "unknown") -> None:
+    """验证COM虚函数表偏移量是否在有效范围内。
+
+    Args:
+        vtable_ptr: vtable基地址指针（必须非零）。
+        offset: vtable内的字节偏移量。
+        max_size: vtable的总字节大小。
+        method_name: 用于错误信息的方法名。
+
+    Raises:
+        ValueError: 如果偏移量超出vtable边界。
+    """
+    if not vtable_ptr:
+        raise ValueError(f"COM vtable指针为空，无法调用 {method_name}")
+    if offset < 0 or offset >= max_size:
+        raise ValueError(
+            f"COM vtable偏移量 {offset} 超出 {method_name} 的边界 "
+            f"(期望 0 <= offset < {max_size})"
+        )
+
+
 def get_icon_from_shell_item_image_factory(file_path, size=256):
     """
     使用 IShellItemImageFactory 获取高质量图标
@@ -611,8 +638,12 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
             if not vtable_ptr:
                 return None
 
+            # 验证GetImage的vtable偏移量在有效范围内
+            _getimage_offset = 3 * ctypes.sizeof(ctypes.c_void_p)
+            _validate_vtable_offset(vtable_ptr, _getimage_offset,
+                                    _ISIIF_VTABLE_SIZE, "IShellItemImageFactory::GetImage")
             # GetImage 是第4个函数 (索引3)
-            get_image_ptr = ctypes.cast(vtable_ptr + 3 * ctypes.sizeof(ctypes.c_void_p),
+            get_image_ptr = ctypes.cast(vtable_ptr + _getimage_offset,
                                        ctypes.POINTER(ctypes.c_void_p)).contents.value
 
             # 定义 GetImage 函数原型
@@ -709,7 +740,11 @@ def get_icon_from_shell_item_image_factory(file_path, size=256):
                 # 调用 Release 方法 (vtable 索引2)
                 vtable_ptr = ctypes.cast(shell_item_ptr, ctypes.POINTER(ctypes.c_void_p)).contents.value
                 if vtable_ptr:
-                    release_ptr = ctypes.cast(vtable_ptr + 2 * ctypes.sizeof(ctypes.c_void_p),
+                    # 验证Release的vtable偏移量在有效范围内
+                    _release_offset = 2 * ctypes.sizeof(ctypes.c_void_p)
+                    _validate_vtable_offset(vtable_ptr, _release_offset,
+                                            _ISIIF_VTABLE_SIZE, "IShellItemImageFactory::Release")
+                    release_ptr = ctypes.cast(vtable_ptr + _release_offset,
                                              ctypes.POINTER(ctypes.c_void_p)).contents.value
                     Release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(release_ptr)
                     Release(shell_item_ptr)
@@ -886,7 +921,8 @@ def hicon_to_pixmap(hicon, size, qt_app, device_pixel_ratio=None, keep_original_
                 qt_buffer.open(QBuffer.OpenModeFlag.WriteOnly)
                 qimage.save(qt_buffer, "PNG")
                 qt_buffer.seek(0)
-                pil_image = Image.open(io.BytesIO(qt_buffer.data())).convert("RGBA")
+                with Image.open(io.BytesIO(qt_buffer.data())) as _img:
+                    pil_image = _img.convert("RGBA")
 
                 # 计算缩放比例
                 scale_factor = min(size / width, size / height)

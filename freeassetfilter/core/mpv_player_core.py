@@ -516,6 +516,8 @@ class MPVPlayerCore(QObject):
 
         # 信号队列，用于线程安全地发射信号
         self._signal_queue = queue.Queue(maxsize=self._command_queue_maxsize)
+        # 用于安全地窥探信号队列（替代 queue.Queue.mutex 这一内部实现细节）
+        self._signal_queue_peek_lock = threading.Lock()
 
         # 命令执行超时（秒）
         self._command_timeout = 5.0
@@ -1406,13 +1408,18 @@ class MPVPlayerCore(QObject):
         """内部设置循环模式实现"""
         if not mpv_handle:
             return False
-        result = self._dll_loader.dll.mpv_set_property_string(
-            mpv_handle, b"loop-file", loop_mode.encode('utf-8')
-        )
-        if result >= 0:
-            with self._state_lock:
-                self._loop_mode = loop_mode
-        return result >= 0
+        try:
+            result = self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle, b"loop-file", loop_mode.encode('utf-8')
+            )
+            if result >= 0:
+                with self._state_lock:
+                    self._loop_mode = loop_mode
+            return result >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"设置循环模式异常: {e}")
+            return False
     
     def _set_vf_filter_internal(self, mpv_handle: c_void_p, filter_string: str, **kwargs) -> bool:
         """内部设置视频滤镜实现"""
@@ -1864,19 +1871,29 @@ class MPVPlayerCore(QObject):
         """内部设置窗口ID实现"""
         if not mpv_handle:
             return False
-        with self._state_lock:
-            self._window_id = window_id
-        return self._dll_loader.dll.mpv_set_property_string(
-            mpv_handle, b"wid", str(window_id).encode('utf-8')
-        ) >= 0
+        try:
+            with self._state_lock:
+                self._window_id = window_id
+            return self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle, b"wid", str(window_id).encode('utf-8')
+            ) >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"设置窗口ID异常: {e}")
+            return False
     
     def _set_window_size_internal(self, mpv_handle: c_void_p, width: int, height: int, **kwargs) -> bool:
         """内部设置窗口大小实现"""
         if not mpv_handle:
             return False
-        return self._dll_loader.dll.mpv_set_property_string(
-            mpv_handle, b"geometry", f"{width}x{height}".encode('utf-8')
-        ) >= 0
+        try:
+            return self._dll_loader.dll.mpv_set_property_string(
+                mpv_handle, b"geometry", f"{width}x{height}".encode('utf-8')
+            ) >= 0
+        except Exception as e:
+            if not self._stop_event.is_set():
+                error(f"设置窗口大小异常: {e}")
+            return False
     
     def _get_property_double(self, mpv_handle: c_void_p, name: str) -> Optional[float]:
         """获取双精度属性"""
@@ -2107,7 +2124,7 @@ class MPVPlayerCore(QObject):
     def _has_pending_signal(self, signal_name: str) -> bool:
         """检查队列中是否还有指定类型的待处理信号（用于丢弃策略）"""
         try:
-            with self._signal_queue.mutex:
+            with self._signal_queue_peek_lock:
                 for item in self._signal_queue.queue:
                     if isinstance(item, (tuple, list)) and len(item) > 0 and item[0] == signal_name:
                         return True

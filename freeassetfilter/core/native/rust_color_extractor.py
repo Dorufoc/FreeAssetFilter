@@ -9,7 +9,7 @@ from __future__ import annotations
 import ctypes
 import json
 import sys
-from ctypes import c_char_p, c_float, c_int, c_size_t, c_uint8, POINTER, Structure
+from ctypes import c_char_p, c_float, c_int, c_size_t, c_uint8, c_void_p, POINTER, Structure
 from pathlib import Path
 from typing import List, Tuple
 
@@ -78,16 +78,19 @@ class RustColorExtractorBridge:
 
     def _bind(self, dll):
         dll.color_extractor_get_version.argtypes = []
-        dll.color_extractor_get_version.restype = c_char_p
+        dll.color_extractor_get_version.restype = c_void_p
 
         dll.color_extractor_extract_colors.argtypes = [POINTER(c_uint8), c_size_t, c_int, c_float, c_int]
-        dll.color_extractor_extract_colors.restype = c_char_p
+        dll.color_extractor_extract_colors.restype = c_void_p
 
         dll.color_extractor_rgb_to_lab.argtypes = [c_uint8, c_uint8, c_uint8]
         dll.color_extractor_rgb_to_lab.restype = LabResult
 
         dll.color_extractor_lab_to_rgb.argtypes = [c_float, c_float, c_float]
         dll.color_extractor_lab_to_rgb.restype = RgbResult
+
+        dll.color_extractor_free_string.argtypes = [c_void_p]
+        dll.color_extractor_free_string.restype = None
 
         dll.color_extractor_ciede2000.argtypes = [c_float, c_float, c_float, c_float, c_float, c_float]
         dll.color_extractor_ciede2000.restype = c_float
@@ -98,7 +101,10 @@ class RustColorExtractorBridge:
         raw = self._dll.color_extractor_get_version()
         if not raw:
             raise RuntimeError("无法获取版本信息")
-        return ctypes.cast(raw, c_char_p).value.decode("utf-8", errors="replace")
+        try:
+            return ctypes.cast(raw, c_char_p).value.decode("utf-8", errors="replace")
+        finally:
+            self._dll.color_extractor_free_string(raw)
 
     def extract_colors(
         self,
@@ -123,18 +129,21 @@ class RustColorExtractorBridge:
         if not raw:
             raise RuntimeError("Rust DLL 返回空结果")
 
-        payload = ctypes.cast(raw, c_char_p).value.decode("utf-8", errors="replace")
-        data = json.loads(payload)
+        try:
+            payload = ctypes.cast(raw, c_char_p).value.decode("utf-8", errors="replace")
+            data = json.loads(payload)
 
-        if "error" in data:
-            raise RuntimeError(data["error"])
+            if "error" in data:
+                raise RuntimeError(data["error"])
 
-        colors = data.get("colors", [])
-        result = []
-        for item in colors:
-            if isinstance(item, list) and len(item) >= 3:
-                result.append((int(item[0]), int(item[1]), int(item[2])))
-        return result
+            colors = data.get("colors", [])
+            result = []
+            for item in colors:
+                if isinstance(item, list) and len(item) >= 3:
+                    result.append((int(item[0]), int(item[1]), int(item[2])))
+            return result
+        finally:
+            self._dll.color_extractor_free_string(raw)
 
     def rgb_to_lab(self, r: int, g: int, b: int) -> Tuple[float, float, float]:
         if not self.available:

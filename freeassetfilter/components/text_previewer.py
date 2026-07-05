@@ -1523,7 +1523,8 @@ class TextPreviewWidget(QWidget):
         # 先停止正在运行的加载线程
         if self._thread and self._thread.isRunning():
             self._thread.abort()
-            self._thread.wait()
+            if not self._thread.wait(2000):
+                warning("text_previewer: thread wait timed out")
 
         # 完全重置显示状态，确保任何模式都能正确切换
         self._reset_display_state()
@@ -1547,7 +1548,8 @@ class TextPreviewWidget(QWidget):
         """异步加载文件"""
         if self._thread and self._thread.isRunning():
             self._thread.abort()
-            self._thread.wait()
+            if not self._thread.wait(2000):
+                warning("text_previewer: thread wait timed out")
         
         self._thread = TextPreviewThread(self)
         self._thread.setFile(file_path, encoding)
@@ -2191,7 +2193,8 @@ class TextPreviewWidget(QWidget):
         """清理资源"""
         if self._thread and self._thread.isRunning():
             self._thread.abort()
-            self._thread.wait()
+            if not self._thread.wait(2000):
+                warning("text_previewer: thread wait timed out")
         self._clear_search()
 
 

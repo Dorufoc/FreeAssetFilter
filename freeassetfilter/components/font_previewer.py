@@ -394,7 +394,8 @@ class FontPreviewWidget(QWidget):
             except (TypeError, RuntimeError):
                 pass
             self._thread.abort()
-            self._thread.wait()
+            if not self._thread.wait(2000):
+                warning("font_previewer: thread wait timed out")
             self._thread = None
 
         self._load_font_async(file_path)
@@ -416,7 +417,8 @@ class FontPreviewWidget(QWidget):
                 except (TypeError, RuntimeError):
                     pass
                 self._thread.abort()
-                self._thread.wait()
+                if not self._thread.wait(2000):
+                    warning("font_previewer: thread wait timed out")
                 self._thread = None
 
             # 创建新线程并连接信号
@@ -523,7 +525,8 @@ class FontPreviewWidget(QWidget):
             # 终止线程
             if self._thread.isRunning():
                 self._thread.abort()
-                self._thread.wait()
+                if not self._thread.wait(2000):
+                    warning("font_previewer: thread wait timed out")
             self._thread = None
         
         # 移除加载的字体

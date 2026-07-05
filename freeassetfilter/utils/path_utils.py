@@ -138,8 +138,14 @@ def _init_allowed_paths():
         SHGFP_TYPE_CURRENT = 0
         
         buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-        ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
-        documents_path = buf.value
+        result = ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+        if result != 0:  # S_OK = 0
+            logger = _get_logger()
+            if logger:
+                logger.warning(f"SHGetFolderPathW(CSIDL_PERSONAL) failed with HRESULT {result}, falling back to environment variable")
+            documents_path = os.path.expanduser("~\\Documents")
+        else:
+            documents_path = buf.value
         if documents_path and os.path.exists(documents_path):
             _ALLOWED_BASE_PATHS.append(documents_path)
     except Exception:
@@ -152,8 +158,14 @@ def _init_allowed_paths():
         SHGFP_TYPE_CURRENT = 0
         
         buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-        ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOPDIRECTORY, None, SHGFP_TYPE_CURRENT, buf)
-        desktop_path = buf.value
+        result = ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOPDIRECTORY, None, SHGFP_TYPE_CURRENT, buf)
+        if result != 0:  # S_OK = 0
+            logger = _get_logger()
+            if logger:
+                logger.warning(f"SHGetFolderPathW(CSIDL_DESKTOPDIRECTORY) failed with HRESULT {result}, falling back to environment variable")
+            desktop_path = os.path.expanduser("~\\Desktop")
+        else:
+            desktop_path = buf.value
         if desktop_path and os.path.exists(desktop_path):
             _ALLOWED_BASE_PATHS.append(desktop_path)
     except Exception:

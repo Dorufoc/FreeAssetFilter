@@ -18,6 +18,7 @@ LUT管理弹窗
 import os
 import time
 import uuid
+import weakref
 from pathlib import Path
 from typing import Optional, List, Callable
 
@@ -290,9 +291,10 @@ class LutManagerDialog(CustomMessageBox):
                 warning(f"加载LUT预览图文件失败: {e}")
         
         # 连接卡片信号（参考收藏夹实现）
-        card.clicked.connect(lambda path, lut=lut_info: self._on_lut_card_clicked(lut))
-        card.renameRequested.connect(lambda path, lut=lut_info: self._on_lut_rename_requested(lut.id, path))
-        card.deleteRequested.connect(lambda path, lut=lut_info: self._on_lut_delete_requested(lut.id, path))
+        weak_self = weakref.ref(self)
+        card.clicked.connect(lambda path, lut=lut_info: (s := weak_self()) and s._on_lut_card_clicked(lut))
+        card.renameRequested.connect(lambda path, lut=lut_info: (s := weak_self()) and s._on_lut_rename_requested(lut.id, path))
+        card.deleteRequested.connect(lambda path, lut=lut_info: (s := weak_self()) and s._on_lut_delete_requested(lut.id, path))
         
         return card
     
@@ -462,14 +464,15 @@ class LutManagerDialog(CustomMessageBox):
         
         # 创建工作线程执行耗时操作
         self._lut_import_worker = LutImportWorker(file_path)
+        weak_self = weakref.ref(self)
         self._lut_import_worker.progress_updated.connect(
             lambda v: progress_bar.setValue(v)
         )
         self._lut_import_worker.import_finished.connect(
-            lambda info: self._on_lut_import_finished(info, progress_dialog)
+            lambda info: (s := weak_self()) and s._on_lut_import_finished(info, progress_dialog)
         )
         self._lut_import_worker.import_error.connect(
-            lambda msg: self._on_lut_import_error(msg, progress_dialog)
+            lambda msg: (s := weak_self()) and s._on_lut_import_error(msg, progress_dialog)
         )
         self._lut_import_worker.finished.connect(self._lut_import_worker.deleteLater)
         self._lut_import_worker.start()

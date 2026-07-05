@@ -10,7 +10,7 @@ import ctypes
 import json
 import os
 import sys
-from ctypes import c_char_p, c_int, c_size_t, c_uint8, c_uint32, POINTER, Structure
+from ctypes import c_char_p, c_int, c_size_t, c_uint8, c_uint32, c_void_p, POINTER, Structure
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -130,13 +130,13 @@ class RustThumbnailBridge:
         dll.native_clear_cache.restype = c_int
 
         dll.native_get_decode_stats_json.argtypes = []
-        dll.native_get_decode_stats_json.restype = c_char_p
+        dll.native_get_decode_stats_json.restype = c_void_p
 
         dll.native_reset_decode_stats.argtypes = []
         dll.native_reset_decode_stats.restype = c_int
 
         dll.native_get_available_hwaccels_json.argtypes = []
-        dll.native_get_available_hwaccels_json.restype = c_char_p
+        dll.native_get_available_hwaccels_json.restype = c_void_p
 
         dll.native_set_max_concurrent_hw_video_decodes.argtypes = [c_size_t]
         dll.native_set_max_concurrent_hw_video_decodes.restype = c_int
@@ -146,6 +146,10 @@ class RustThumbnailBridge:
 
         dll.native_free_batch_result.argtypes = [POINTER(NativeThumbnailBatchResult)]
         dll.native_free_batch_result.restype = None
+
+        self._native_free_message = dll.native_free_message
+        self._native_free_message.argtypes = [c_void_p]
+        self._native_free_message.restype = None
 
         try:
             dll.native_generate_thumbnail_jpg.argtypes = [c_char_p, c_int, c_int]
@@ -186,20 +190,18 @@ class RustThumbnailBridge:
     def get_decode_stats(self) -> Dict[str, int]:
         if not self.available:
             return {}
+        raw = self._dll.native_get_decode_stats_json()
         try:
-            raw = self._dll.native_get_decode_stats_json()
             if not raw:
                 return {}
-            if isinstance(raw, bytes):
-                text = raw.decode("utf-8", errors="ignore")
-            else:
-                text = raw
-            result = json.loads(text) if text else {}
+            result = json.loads(ctypes.cast(raw, c_char_p).value)
             debug(f"获取解码统计: {result}")
             return result
         except Exception as e:
             warning(f"get_decode_stats 失败: {e}")
             return {}
+        finally:
+            self._native_free_message(raw)
 
     def reset_decode_stats(self) -> bool:
         if not self.available:
@@ -215,15 +217,11 @@ class RustThumbnailBridge:
     def get_available_hwaccels(self) -> List[str]:
         if not self.available:
             return []
+        raw = self._dll.native_get_available_hwaccels_json()
         try:
-            raw = self._dll.native_get_available_hwaccels_json()
             if not raw:
                 return []
-            if isinstance(raw, bytes):
-                text = raw.decode("utf-8", errors="ignore")
-            else:
-                text = raw
-            parsed = json.loads(text) if text else []
+            parsed = json.loads(ctypes.cast(raw, c_char_p).value)
             if not isinstance(parsed, list):
                 return []
             result = [str(item).strip().lower() for item in parsed if str(item).strip()]
@@ -232,6 +230,8 @@ class RustThumbnailBridge:
         except Exception as e:
             warning(f"get_available_hwaccels 失败: {e}")
             return []
+        finally:
+            self._native_free_message(raw)
 
     def set_max_concurrent_hw_video_decodes(self, max_slots: int) -> bool:
         if not self.available:

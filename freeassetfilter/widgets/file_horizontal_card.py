@@ -13,6 +13,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 import os
 import sys
+import weakref
 from collections import OrderedDict
 
 from PySide6.QtCore import (
@@ -423,7 +424,8 @@ class CustomFileHorizontalCard(QWidget):
         self.button1.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         overlay_layout.addStretch(1)
         overlay_layout.addWidget(self.button1)
-        self.button1.clicked.connect(lambda: self.renameRequested.emit(self._file_path))
+        weak_self = weakref.ref(self)
+        self.button1.clicked.connect(lambda: (s := weak_self()) and s.renameRequested.emit(s._file_path))
 
         self.button2 = None
         if self._enable_delete_button:
@@ -435,7 +437,7 @@ class CustomFileHorizontalCard(QWidget):
             )
             self.button2.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             overlay_layout.addWidget(self.button2)
-            self.button2.clicked.connect(lambda: self.deleteRequested.emit(self._file_path))
+            self.button2.clicked.connect(lambda: (s := weak_self()) and s.deleteRequested.emit(s._file_path))
 
         main_layout.addWidget(self.card_container)
 

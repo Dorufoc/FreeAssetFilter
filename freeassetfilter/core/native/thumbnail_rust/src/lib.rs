@@ -277,7 +277,11 @@ impl Drop for HwDecodePermit {
     }
 }
 
-fn decode_with_image_crate(path: &str, width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), i32> {
+fn decode_with_image_crate(
+    path: &str,
+    width: u32,
+    height: u32,
+) -> Result<(Vec<u8>, u32, u32), i32> {
     let input = image::open(path).map_err(|_| STATUS_DECODE_FAILED)?;
     let resized = input.thumbnail(width, height).to_rgba8();
     let rw = resized.width();
@@ -301,7 +305,18 @@ fn is_video_ext(path: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         ext.as_str(),
-        "mp4" | "mov" | "mkv" | "flv" | "3gp" | "mxf" | "avi" | "webm" | "wmv" | "mpg" | "mpeg" | "m4v"
+        "mp4"
+            | "mov"
+            | "mkv"
+            | "flv"
+            | "3gp"
+            | "mxf"
+            | "avi"
+            | "webm"
+            | "wmv"
+            | "mpg"
+            | "mpeg"
+            | "m4v"
     )
 }
 
@@ -359,7 +374,11 @@ fn available_hwaccels_from_ffmpeg() -> Vec<String> {
     };
 
     let mut command = Command::new(ffmpeg);
-    command.arg("-hide_banner").arg("-loglevel").arg("quiet").arg("-hwaccels");
+    command
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("quiet")
+        .arg("-hwaccels");
 
     let output = match run_command_with_timeout(command, Duration::from_secs(5)) {
         Ok(o) if o.status.success() => o,
@@ -427,7 +446,8 @@ fn run_ffprobe_basic_info(path: &str) -> VideoProbeInfo {
         .arg("default=noprint_wrappers=1:nokey=0")
         .arg(path);
 
-    let output = match run_command_with_timeout(command, Duration::from_secs(FFPROBE_TIMEOUT_SECS)) {
+    let output = match run_command_with_timeout(command, Duration::from_secs(FFPROBE_TIMEOUT_SECS))
+    {
         Ok(o) if o.status.success() => o,
         _ => return VideoProbeInfo::default(),
     };
@@ -496,18 +516,21 @@ fn ffmpeg_log_indicates_hw_hit(stderr: &str, hwaccel: &str) -> bool {
     let log = stderr.to_ascii_lowercase();
     match hwaccel {
         "d3d11va" => {
-            (log.contains("d3d11va") && (log.contains("hwaccel") || log.contains("using") || log.contains("decoder")))
+            (log.contains("d3d11va")
+                && (log.contains("hwaccel") || log.contains("using") || log.contains("decoder")))
                 || log.contains("using auto hwaccel type d3d11va")
                 || log.contains("using hwaccel d3d11va")
                 || log.contains("av_hwdevice_ctx_create")
         }
         "dxva2" => {
-            (log.contains("dxva2") && (log.contains("hwaccel") || log.contains("using") || log.contains("decoder")))
+            (log.contains("dxva2")
+                && (log.contains("hwaccel") || log.contains("using") || log.contains("decoder")))
                 || log.contains("using auto hwaccel type dxva2")
                 || log.contains("using hwaccel dxva2")
         }
         "qsv" => {
-            (log.contains("qsv") && (log.contains("mfx") || log.contains("hwaccel") || log.contains("decoder")))
+            (log.contains("qsv")
+                && (log.contains("mfx") || log.contains("hwaccel") || log.contains("decoder")))
                 || log.contains("initialized an internal mfx session")
                 || log.contains("using hwaccel qsv")
         }
@@ -566,7 +589,8 @@ fn try_extract_frame_with_ffmpeg(
     command.arg("-f").arg("image2pipe");
     command.arg("pipe:1");
 
-    let output = run_command_with_timeout(command, Duration::from_secs(FFMPEG_TIMEOUT_SECS)).ok()?;
+    let output =
+        run_command_with_timeout(command, Duration::from_secs(FFMPEG_TIMEOUT_SECS)).ok()?;
     if !output.status.success() || output.stdout.is_empty() {
         return None;
     }
@@ -598,7 +622,11 @@ fn try_extract_frame_with_ffmpeg(
     })
 }
 
-fn extract_best_video_frame_jpeg(path: &str, width: u32, height: u32) -> Result<FrameExtractResult, i32> {
+fn extract_best_video_frame_jpeg(
+    path: &str,
+    width: u32,
+    height: u32,
+) -> Result<FrameExtractResult, i32> {
     let info = run_ffprobe_basic_info(path);
     let seek_candidates = build_seek_candidates(&info);
     let hw_permit = HwDecodePermit::try_acquire();
@@ -610,7 +638,9 @@ fn extract_best_video_frame_jpeg(path: &str, width: u32, height: u32) -> Result<
         if allow_hw {
             for accel in [Some("d3d11va"), Some("dxva2"), Some("qsv")] {
                 had_hw_attempt = true;
-                if let Some(result) = try_extract_frame_with_ffmpeg(path, seek_time, width, height, accel, false) {
+                if let Some(result) =
+                    try_extract_frame_with_ffmpeg(path, seek_time, width, height, accel, false)
+                {
                     if !result.bytes.is_empty() {
                         eprintln!(
                             "[thumbnail_generator] decode path file={} mode={} verified_hw={}",
@@ -624,7 +654,14 @@ fn extract_best_video_frame_jpeg(path: &str, width: u32, height: u32) -> Result<
             }
         }
 
-        if let Some(result) = try_extract_frame_with_ffmpeg(path, seek_time, width, height, None, had_hw_attempt || !allow_hw) {
+        if let Some(result) = try_extract_frame_with_ffmpeg(
+            path,
+            seek_time,
+            width,
+            height,
+            None,
+            had_hw_attempt || !allow_hw,
+        ) {
             if !result.bytes.is_empty() {
                 eprintln!(
                     "[thumbnail_generator] decode path file={} mode={} verified_hw={} software_fallback={}",
@@ -641,7 +678,11 @@ fn extract_best_video_frame_jpeg(path: &str, width: u32, height: u32) -> Result<
     Err(STATUS_DECODE_FAILED)
 }
 
-fn decode_video_with_ffmpeg(path: &str, width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), i32> {
+fn decode_video_with_ffmpeg(
+    path: &str,
+    width: u32,
+    height: u32,
+) -> Result<(Vec<u8>, u32, u32), i32> {
     let result = extract_best_video_frame_jpeg(path, width, height)?;
     decode_image_bytes_to_rgba(&result.bytes)
 }
@@ -868,50 +909,69 @@ fn ptr_to_string(path: *const c_char) -> Result<String, i32> {
 }
 
 #[no_mangle]
-pub extern "C" fn native_generate_thumbnail(path: *const c_char, width: c_int, height: c_int) -> NativeThumbnailResult {
-    if width <= 0 || height <= 0 {
-        return make_error_result(STATUS_INVALID_ARG, "invalid target size");
-    }
+pub extern "C" fn native_generate_thumbnail(
+    path: *const c_char,
+    width: c_int,
+    height: c_int,
+) -> NativeThumbnailResult {
+    std::panic::catch_unwind(|| {
+        if width <= 0 || height <= 0 {
+            return make_error_result(STATUS_INVALID_ARG, "invalid target size");
+        }
 
-    let path = match ptr_to_string(path) {
-        Ok(p) => p,
-        Err(_) => return make_error_result(STATUS_INVALID_ARG, "invalid path"),
-    };
+        let path = match ptr_to_string(path) {
+            Ok(p) => p,
+            Err(_) => return make_error_result(STATUS_INVALID_ARG, "invalid path"),
+        };
 
-    if !Path::new(&path).exists() {
-        return make_error_result(STATUS_NOT_FOUND, "file not found");
-    }
+        if !Path::new(&path).exists() {
+            return make_error_result(STATUS_NOT_FOUND, "file not found");
+        }
 
-    match generate_entry(&path, width as u32, height as u32) {
-        Ok(entry) => make_result_from_entry(entry),
-        Err(code) => make_error_result(code, "generate failed"),
-    }
+        match generate_entry(&path, width as u32, height as u32) {
+            Ok(entry) => make_result_from_entry(entry),
+            Err(code) => make_error_result(code, "generate failed"),
+        }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
-pub extern "C" fn native_generate_thumbnail_jpeg(path: *const c_char, width: c_int, height: c_int) -> NativeThumbnailResult {
-    if width <= 0 || height <= 0 {
-        return make_error_result(STATUS_INVALID_ARG, "invalid target size");
-    }
+pub extern "C" fn native_generate_thumbnail_jpeg(
+    path: *const c_char,
+    width: c_int,
+    height: c_int,
+) -> NativeThumbnailResult {
+    std::panic::catch_unwind(|| {
+        if width <= 0 || height <= 0 {
+            return make_error_result(STATUS_INVALID_ARG, "invalid target size");
+        }
 
-    let path = match ptr_to_string(path) {
-        Ok(p) => p,
-        Err(_) => return make_error_result(STATUS_INVALID_ARG, "invalid path"),
-    };
+        let path = match ptr_to_string(path) {
+            Ok(p) => p,
+            Err(_) => return make_error_result(STATUS_INVALID_ARG, "invalid path"),
+        };
 
-    if !Path::new(&path).exists() {
-        return make_error_result(STATUS_NOT_FOUND, "file not found");
-    }
+        if !Path::new(&path).exists() {
+            return make_error_result(STATUS_NOT_FOUND, "file not found");
+        }
 
-    match generate_jpeg_bytes(&path, width as u32, height as u32) {
-        Ok(bytes) => make_jpeg_result(bytes),
-        Err(code) => make_error_result(code, "generate failed"),
-    }
+        match generate_jpeg_bytes(&path, width as u32, height as u32) {
+            Ok(bytes) => make_jpeg_result(bytes),
+            Err(code) => make_error_result(code, "generate failed"),
+        }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
-pub extern "C" fn native_generate_thumbnail_jpg(path: *const c_char, width: c_int, height: c_int) -> NativeThumbnailResult {
-    native_generate_thumbnail_jpeg(path, width, height)
+pub extern "C" fn native_generate_thumbnail_jpg(
+    path: *const c_char,
+    width: c_int,
+    height: c_int,
+) -> NativeThumbnailResult {
+    std::panic::catch_unwind(|| native_generate_thumbnail_jpeg(path, width, height))
+        .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
@@ -921,57 +981,60 @@ pub extern "C" fn native_generate_batch(
     width: c_int,
     height: c_int,
 ) -> NativeThumbnailBatchResult {
-    if paths.is_null() || count <= 0 || width <= 0 || height <= 0 {
-        return NativeThumbnailBatchResult {
-            status: STATUS_INVALID_ARG,
-            count: 0,
-            results: std::ptr::null_mut(),
-            message: c_message("invalid args"),
-        };
-    }
-
-    let slice = unsafe { std::slice::from_raw_parts(paths, count as usize) };
-    let mut parsed_paths = Vec::with_capacity(slice.len());
-    for &p in slice {
-        match ptr_to_string(p) {
-            Ok(s) => parsed_paths.push(s),
-            Err(_) => parsed_paths.push(String::new()),
+    std::panic::catch_unwind(|| {
+        if paths.is_null() || count <= 0 || width <= 0 || height <= 0 {
+            return NativeThumbnailBatchResult {
+                status: STATUS_INVALID_ARG,
+                count: 0,
+                results: std::ptr::null_mut(),
+                message: c_message("invalid args"),
+            };
         }
-    }
 
-    let parallel_items: Vec<ParallelBatchItem> = parsed_paths
-        .par_iter()
-        .map(|path| {
-            if path.is_empty() {
-                return ParallelBatchItem::err(STATUS_INVALID_ARG, "invalid path");
+        let slice = unsafe { std::slice::from_raw_parts(paths, count as usize) };
+        let mut parsed_paths = Vec::with_capacity(slice.len());
+        for &p in slice {
+            match ptr_to_string(p) {
+                Ok(s) => parsed_paths.push(s),
+                Err(_) => parsed_paths.push(String::new()),
             }
-            if !Path::new(path).exists() {
-                return ParallelBatchItem::err(STATUS_NOT_FOUND, "file not found");
-            }
+        }
 
-            match generate_entry(path, width as u32, height as u32) {
-                Ok(entry) => ParallelBatchItem::ok_from_entry(entry),
-                Err(code) => ParallelBatchItem::err(code, "generate failed"),
-            }
-        })
-        .collect();
+        let parallel_items: Vec<ParallelBatchItem> = parsed_paths
+            .par_iter()
+            .map(|path| {
+                if path.is_empty() {
+                    return ParallelBatchItem::err(STATUS_INVALID_ARG, "invalid path");
+                }
+                if !Path::new(path).exists() {
+                    return ParallelBatchItem::err(STATUS_NOT_FOUND, "file not found");
+                }
 
-    let results_vec: Vec<NativeThumbnailResult> = parallel_items
-        .into_iter()
-        .map(ParallelBatchItem::into_native)
-        .collect();
+                match generate_entry(path, width as u32, height as u32) {
+                    Ok(entry) => ParallelBatchItem::ok_from_entry(entry),
+                    Err(code) => ParallelBatchItem::err(code, "generate failed"),
+                }
+            })
+            .collect();
 
-    let mut boxed = results_vec.into_boxed_slice();
-    let ptr = boxed.as_mut_ptr();
-    let len = boxed.len();
-    std::mem::forget(boxed);
+        let results_vec: Vec<NativeThumbnailResult> = parallel_items
+            .into_iter()
+            .map(ParallelBatchItem::into_native)
+            .collect();
 
-    NativeThumbnailBatchResult {
-        status: STATUS_OK,
-        count: len,
-        results: ptr,
-        message: c_message("ok"),
-    }
+        let mut boxed = results_vec.into_boxed_slice();
+        let ptr = boxed.as_mut_ptr();
+        let len = boxed.len();
+        std::mem::forget(boxed);
+
+        NativeThumbnailBatchResult {
+            status: STATUS_OK,
+            count: len,
+            results: ptr,
+            message: c_message("ok"),
+        }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
@@ -981,173 +1044,202 @@ pub extern "C" fn native_generate_batch_jpg(
     width: c_int,
     height: c_int,
 ) -> NativeThumbnailBatchResult {
-    if paths.is_null() || count <= 0 || width <= 0 || height <= 0 {
-        return NativeThumbnailBatchResult {
-            status: STATUS_INVALID_ARG,
-            count: 0,
-            results: std::ptr::null_mut(),
-            message: c_message("invalid args"),
-        };
-    }
-
-    let slice = unsafe { std::slice::from_raw_parts(paths, count as usize) };
-    let mut parsed_paths = Vec::with_capacity(slice.len());
-    for &p in slice {
-        match ptr_to_string(p) {
-            Ok(s) => parsed_paths.push(s),
-            Err(_) => parsed_paths.push(String::new()),
+    std::panic::catch_unwind(|| {
+        if paths.is_null() || count <= 0 || width <= 0 || height <= 0 {
+            return NativeThumbnailBatchResult {
+                status: STATUS_INVALID_ARG,
+                count: 0,
+                results: std::ptr::null_mut(),
+                message: c_message("invalid args"),
+            };
         }
-    }
 
-    let parallel_items: Vec<ParallelBatchItem> = parsed_paths
-        .par_iter()
-        .map(|path| {
-            if path.is_empty() {
-                return ParallelBatchItem::err(STATUS_INVALID_ARG, "invalid path");
+        let slice = unsafe { std::slice::from_raw_parts(paths, count as usize) };
+        let mut parsed_paths = Vec::with_capacity(slice.len());
+        for &p in slice {
+            match ptr_to_string(p) {
+                Ok(s) => parsed_paths.push(s),
+                Err(_) => parsed_paths.push(String::new()),
             }
-            if !Path::new(path).exists() {
-                return ParallelBatchItem::err(STATUS_NOT_FOUND, "file not found");
-            }
+        }
 
-            match generate_jpeg_bytes(path, width as u32, height as u32) {
-                Ok(bytes) => ParallelBatchItem::ok_jpeg_bytes(bytes),
-                Err(code) => ParallelBatchItem::err(code, "generate failed"),
-            }
-        })
-        .collect();
+        let parallel_items: Vec<ParallelBatchItem> = parsed_paths
+            .par_iter()
+            .map(|path| {
+                if path.is_empty() {
+                    return ParallelBatchItem::err(STATUS_INVALID_ARG, "invalid path");
+                }
+                if !Path::new(path).exists() {
+                    return ParallelBatchItem::err(STATUS_NOT_FOUND, "file not found");
+                }
 
-    let results_vec: Vec<NativeThumbnailResult> = parallel_items
-        .into_iter()
-        .map(ParallelBatchItem::into_native)
-        .collect();
+                match generate_jpeg_bytes(path, width as u32, height as u32) {
+                    Ok(bytes) => ParallelBatchItem::ok_jpeg_bytes(bytes),
+                    Err(code) => ParallelBatchItem::err(code, "generate failed"),
+                }
+            })
+            .collect();
 
-    let mut boxed = results_vec.into_boxed_slice();
-    let ptr = boxed.as_mut_ptr();
-    let len = boxed.len();
-    std::mem::forget(boxed);
+        let results_vec: Vec<NativeThumbnailResult> = parallel_items
+            .into_iter()
+            .map(ParallelBatchItem::into_native)
+            .collect();
 
-    NativeThumbnailBatchResult {
-        status: STATUS_OK,
-        count: len,
-        results: ptr,
-        message: c_message("ok"),
-    }
+        let mut boxed = results_vec.into_boxed_slice();
+        let ptr = boxed.as_mut_ptr();
+        let len = boxed.len();
+        std::mem::forget(boxed);
+
+        NativeThumbnailBatchResult {
+            status: STATUS_OK,
+            count: len,
+            results: ptr,
+            message: c_message("ok"),
+        }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_get_decode_stats_json() -> *mut c_char {
-    match DECODE_STATS.lock() {
+    std::panic::catch_unwind(|| match DECODE_STATS.lock() {
         Ok(stats) => c_message(&stats.to_json()),
         Err(_) => c_message("{}"),
-    }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_reset_decode_stats() -> c_int {
-    match DECODE_STATS.lock() {
+    std::panic::catch_unwind(|| match DECODE_STATS.lock() {
         Ok(mut stats) => {
             *stats = DecodeStats::default();
             STATUS_OK
         }
         Err(_) => STATUS_INTERNAL,
-    }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_get_available_hwaccels_json() -> *mut c_char {
-    let hwaccels = available_hwaccels_from_ffmpeg();
-    let json = serde_json::to_string(&hwaccels).unwrap_or_else(|_| "[]".to_string());
-    c_message(&json)
+    std::panic::catch_unwind(|| {
+        let hwaccels = available_hwaccels_from_ffmpeg();
+        let json = serde_json::to_string(&hwaccels).unwrap_or_else(|_| "[]".to_string());
+        c_message(&json)
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_set_max_concurrent_hw_video_decodes(max_slots: usize) -> c_int {
-    MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT.store(max_slots.max(1), Ordering::Release);
-    STATUS_OK
+    std::panic::catch_unwind(|| {
+        MAX_CONCURRENT_HW_VIDEO_DECODE_LIMIT.store(max_slots.max(1), Ordering::Release);
+        STATUS_OK
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_set_cache_limit(max_bytes: usize) -> c_int {
-    let mut engine = match ENGINE.lock() {
-        Ok(g) => g,
-        Err(_) => return STATUS_INTERNAL,
-    };
-    engine.set_cache_limit(max_bytes);
-    STATUS_OK
+    std::panic::catch_unwind(|| {
+        let mut engine = match ENGINE.lock() {
+            Ok(g) => g,
+            Err(_) => return STATUS_INTERNAL,
+        };
+        engine.set_cache_limit(max_bytes);
+        STATUS_OK
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_clear_cache() -> c_int {
-    let mut engine = match ENGINE.lock() {
-        Ok(g) => g,
-        Err(_) => return STATUS_INTERNAL,
-    };
-    engine.clear_cache();
-    STATUS_OK
+    std::panic::catch_unwind(|| {
+        let mut engine = match ENGINE.lock() {
+            Ok(g) => g,
+            Err(_) => return STATUS_INTERNAL,
+        };
+        engine.clear_cache();
+        STATUS_OK
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_free_buffer(data: *mut u8, len: usize) {
-    if data.is_null() || len == 0 {
-        return;
-    }
-    unsafe {
-        let _ = Vec::from_raw_parts(data, len, len);
-    }
+    std::panic::catch_unwind(|| {
+        if data.is_null() || len == 0 {
+            return;
+        }
+        unsafe {
+            let _ = Vec::from_raw_parts(data, len, len);
+        }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_free_message(msg: *mut c_char) {
-    if msg.is_null() {
-        return;
-    }
-    unsafe {
-        let _ = CString::from_raw(msg);
-    }
+    std::panic::catch_unwind(|| {
+        if msg.is_null() {
+            return;
+        }
+        unsafe {
+            let _ = CString::from_raw(msg);
+        }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_free_result(result: *mut NativeThumbnailResult) {
-    if result.is_null() {
-        return;
-    }
-    unsafe {
-        let r = &mut *result;
-        if !r.data.is_null() && r.len > 0 {
-            native_free_buffer(r.data, r.len);
-            r.data = std::ptr::null_mut();
-            r.len = 0;
+    std::panic::catch_unwind(|| {
+        if result.is_null() {
+            return;
         }
-        if !r.message.is_null() {
-            native_free_message(r.message);
-            r.message = std::ptr::null_mut();
+        unsafe {
+            let r = &mut *result;
+            if !r.data.is_null() && r.len > 0 {
+                native_free_buffer(r.data, r.len);
+                r.data = std::ptr::null_mut();
+                r.len = 0;
+            }
+            if !r.message.is_null() {
+                native_free_message(r.message);
+                r.message = std::ptr::null_mut();
+            }
         }
-    }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }
 
 #[no_mangle]
 pub extern "C" fn native_free_batch_result(batch: *mut NativeThumbnailBatchResult) {
-    if batch.is_null() {
-        return;
-    }
-    unsafe {
-        let b = &mut *batch;
-        if !b.results.is_null() && b.count > 0 {
-            let results = Vec::from_raw_parts(b.results, b.count, b.count);
-            for r in results {
-                if !r.data.is_null() && r.len > 0 {
-                    native_free_buffer(r.data, r.len);
+    std::panic::catch_unwind(|| {
+        if batch.is_null() {
+            return;
+        }
+        unsafe {
+            let b = &mut *batch;
+            if !b.results.is_null() && b.count > 0 {
+                let results = Vec::from_raw_parts(b.results, b.count, b.count);
+                for r in results {
+                    if !r.data.is_null() && r.len > 0 {
+                        native_free_buffer(r.data, r.len);
+                    }
+                    if !r.message.is_null() {
+                        native_free_message(r.message);
+                    }
                 }
-                if !r.message.is_null() {
-                    native_free_message(r.message);
-                }
+                b.results = std::ptr::null_mut();
+                b.count = 0;
             }
-            b.results = std::ptr::null_mut();
-            b.count = 0;
+            if !b.message.is_null() {
+                native_free_message(b.message);
+                b.message = std::ptr::null_mut();
+            }
         }
-        if !b.message.is_null() {
-            native_free_message(b.message);
-            b.message = std::ptr::null_mut();
-        }
-    }
+    })
+    .unwrap_or_else(|_| std::process::abort())
 }

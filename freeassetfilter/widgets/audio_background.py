@@ -39,6 +39,7 @@ import hashlib
 import time
 import tempfile
 import threading
+import traceback
 
 from freeassetfilter.utils.app_logger import info, debug, warning
 
@@ -345,8 +346,8 @@ class ColorExtractionTask(QRunnable):
             if self.callback and not self.is_cancelled():
                 self.callback(self.task_id, styled_colors)
 
-        except (RuntimeError, ValueError, IOError) as e:
-            warning(f"[ColorExtractionTask] 颜色提取失败: {e}")
+        except Exception as e:
+            warning(f"[ColorExtractionTask] 颜色提取失败: {e}\n{traceback.format_exc()}")
             if self.callback and not self.is_cancelled():
                 self.callback(self.task_id, None)
 
@@ -356,12 +357,12 @@ class ColorExtractionTask(QRunnable):
 
             start_time = time.time()
 
-            image = Image.open(io.BytesIO(self.cover_data))
-            if image.mode != 'RGBA':
-                image = image.convert('RGBA')
+            with Image.open(io.BytesIO(self.cover_data)) as image:
+                if image.mode != 'RGBA':
+                    image = image.convert('RGBA')
 
-            width, height = image.size
-            pixels = image.tobytes()
+                width, height = image.size
+                pixels = image.tobytes()
 
             header = struct.pack('ii', width, height)
             image_data = header + pixels
@@ -384,11 +385,11 @@ class ColorExtractionTask(QRunnable):
 
     def _extract_colors_python(self) -> list:
         try:
-            image = Image.open(io.BytesIO(self.cover_data))
-            if image.mode != 'RGBA':
-                image = image.convert('RGBA')
+            with Image.open(io.BytesIO(self.cover_data)) as image:
+                if image.mode != 'RGBA':
+                    image = image.convert('RGBA')
 
-            small_image = image.copy()
+                small_image = image.copy()
             small_image.thumbnail((160, 160), Image.Resampling.LANCZOS)
 
             pixels = list(small_image.getdata())
@@ -698,11 +699,11 @@ class ColorExtractionTask(QRunnable):
         - 但彼此不能过近
         """
         try:
-            image = Image.open(io.BytesIO(self.cover_data))
-            if image.mode != 'RGBA':
-                image = image.convert('RGBA')
+            with Image.open(io.BytesIO(self.cover_data)) as image:
+                if image.mode != 'RGBA':
+                    image = image.convert('RGBA')
 
-            small_image = image.copy()
+                small_image = image.copy()
             small_image.thumbnail((160, 160), Image.Resampling.LANCZOS)
 
             pixels = list(small_image.getdata())
@@ -1450,14 +1451,14 @@ class AudioBackground(QWidget):
                     self._cover_layout.update()
                     return
 
-                image = Image.open(io.BytesIO(cover_data))
-                if image.mode != 'RGBA':
-                    image = image.convert('RGBA')
+                with Image.open(io.BytesIO(cover_data)) as image:
+                    if image.mode != 'RGBA':
+                        image = image.convert('RGBA')
 
-                # 保存一次源图，后续 resize 时直接复用，避免重复解码 bytes
-                self._cover_source_image = image.copy()
+                    # 保存一次源图，后续 resize 时直接复用，避免重复解码 bytes
+                    self._cover_source_image = image.copy()
 
-                display_image = image.copy()
+                    display_image = image.copy()
                 display_image.thumbnail((self._cover_size, self._cover_size), Image.Resampling.LANCZOS)
 
                 self._cover_pixmap = self._pil_to_pixmap(display_image)
@@ -1596,10 +1597,12 @@ class AudioBackground(QWidget):
 
         try:
             if self._cover_source_image is None:
-                source_image = Image.open(io.BytesIO(self._cover_data))
-                if source_image.mode != 'RGBA':
-                    source_image = source_image.convert('RGBA')
-                self._cover_source_image = source_image
+                with Image.open(io.BytesIO(self._cover_data)) as source_image:
+                    if source_image.mode != 'RGBA':
+                        source_image = source_image.convert('RGBA')
+                    else:
+                        source_image.load()
+                    self._cover_source_image = source_image
 
             display_image = self._cover_source_image.copy()
             display_image.thumbnail((self._cover_size, self._cover_size), Image.Resampling.LANCZOS)
@@ -1665,19 +1668,19 @@ class AudioBackground(QWidget):
             return
 
         try:
-            image = Image.open(io.BytesIO(self._cover_data))
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
+            with Image.open(io.BytesIO(self._cover_data)) as image:
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
 
-            target_width = 1920
-            target_height = 1080
+                target_width = 1920
+                target_height = 1080
 
-            img_width, img_height = image.size
-            scale = max(target_width / img_width, target_height / img_height)
-            new_width = int(img_width * scale)
-            new_height = int(img_height * scale)
+                img_width, img_height = image.size
+                scale = max(target_width / img_width, target_height / img_height)
+                new_width = int(img_width * scale)
+                new_height = int(img_height * scale)
 
-            image_resized = image.resize((new_width, new_height), Image.Resampling.BILINEAR)
+                image_resized = image.resize((new_width, new_height), Image.Resampling.BILINEAR)
 
             left = (new_width - target_width) // 2
             top = (new_height - target_height) // 2

@@ -1272,6 +1272,15 @@ class MPVManager(QObject):
                 kernel32.RemoveVectoredExceptionHandler(self._luajit_veh_handle)
             except (OverflowError, ctypes.ArgumentError):
                 pass  # 64 位 handle 可能超出 ctypes 默认范围，忽略
+
+            # 释放在 _register_luajit_veh 中分配的 VirtualAlloc 内存
+            if self._luajit_veh_fn is not None:
+                MEM_RELEASE = 0x8000
+                VirtualFree = kernel32.VirtualFree
+                VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD]
+                VirtualFree.restype = wintypes.BOOL
+                VirtualFree(self._luajit_veh_fn, 0, MEM_RELEASE)
+
             self._luajit_veh_handle = None
             self._luajit_veh_fn = None
             info("LuaJIT SEH VEH 处理器已注销")
@@ -1341,7 +1350,9 @@ class MPVManager(QObject):
             # 继续尝试初始化，但记录警告
         
         # 如果正在关闭中，等待关闭完成
-        if self._is_shutting_down:
+        with self._shutdown_lock:
+            is_shutting_down = self._is_shutting_down
+        if is_shutting_down:
             info("等待关闭完成后再初始化...")
             if not self.wait_for_cleanup(timeout=5.0):
                 error("等待关闭完成超时")
@@ -1388,7 +1399,7 @@ class MPVManager(QObject):
 
         with self._shutdown_lock:
             self._is_shutting_down = True
-        self._cleanup_event.clear()  # 标记清理开始
+            self._cleanup_event.clear()  # 标记清理开始
 
         # 如果操作线程未运行，直接清理并重置状态
         if not self._operation_thread or not self._operation_thread.is_alive():

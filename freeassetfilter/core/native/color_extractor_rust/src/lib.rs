@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::ffi::{c_char, CString};
+use std::panic;
 use std::slice;
 
 const VERSION: &str = "Rust 1.1.0";
@@ -40,37 +41,57 @@ struct Cluster {
 
 #[no_mangle]
 pub extern "C" fn color_extractor_get_version() -> *mut c_char {
-    string_to_ptr(VERSION.to_string())
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        string_to_ptr(VERSION.to_string())
+    }))
+    .unwrap_or_else(|_| {
+        std::process::abort()
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn color_extractor_free_string(ptr: *mut c_char) {
-    if ptr.is_null() {
-        return;
-    }
-    unsafe {
-        let _ = CString::from_raw(ptr);
-    }
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        if ptr.is_null() {
+            return;
+        }
+        unsafe {
+            let _ = CString::from_raw(ptr);
+        }
+    }))
+    .unwrap_or_else(|_| {
+        std::process::abort()
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn color_extractor_rgb_to_lab(r: u8, g: u8, b: u8) -> LabResult {
-    let lab = rgb_to_lab(Rgb { r, g, b });
-    LabResult {
-        l: lab.l,
-        a: lab.a,
-        b: lab.b,
-    }
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let lab = rgb_to_lab(Rgb { r, g, b });
+        LabResult {
+            l: lab.l,
+            a: lab.a,
+            b: lab.b,
+        }
+    }))
+    .unwrap_or_else(|_| {
+        std::process::abort()
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn color_extractor_lab_to_rgb(l: f32, a: f32, b: f32) -> RgbResult {
-    let rgb = lab_to_rgb(Lab { l, a, b });
-    RgbResult {
-        r: rgb.r,
-        g: rgb.g,
-        b: rgb.b,
-    }
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let rgb = lab_to_rgb(Lab { l, a, b });
+        RgbResult {
+            r: rgb.r,
+            g: rgb.g,
+            b: rgb.b,
+        }
+    }))
+    .unwrap_or_else(|_| {
+        std::process::abort()
+    })
 }
 
 #[no_mangle]
@@ -82,10 +103,15 @@ pub extern "C" fn color_extractor_ciede2000(
     a2: f32,
     b2: f32,
 ) -> f32 {
-    ciede2000(
-        Lab { l: l1, a: a1, b: b1 },
-        Lab { l: l2, a: a2, b: b2 },
-    )
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        ciede2000(
+            Lab { l: l1, a: a1, b: b1 },
+            Lab { l: l2, a: a2, b: b2 },
+        )
+    }))
+    .unwrap_or_else(|_| {
+        std::process::abort()
+    })
 }
 
 #[no_mangle]
@@ -96,22 +122,27 @@ pub extern "C" fn color_extractor_extract_colors(
     min_distance: f32,
     max_image_size: i32,
 ) -> *mut c_char {
-    let result = extract_colors_internal(data_ptr, data_len, num_colors, min_distance, max_image_size);
-    match result {
-        Ok(colors) => {
-            let payload = format!(
-                "{{\"version\":\"{}\",\"colors\":[{}]}}",
-                VERSION,
-                colors
-                    .iter()
-                    .map(|c| format!("[{},{},{}]", c.r, c.g, c.b))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-            string_to_ptr(payload)
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let result = extract_colors_internal(data_ptr, data_len, num_colors, min_distance, max_image_size);
+        match result {
+            Ok(colors) => {
+                let payload = format!(
+                    "{{\"version\":\"{}\",\"colors\":[{}]}}",
+                    VERSION,
+                    colors
+                        .iter()
+                        .map(|c| format!("[{},{},{}]", c.r, c.g, c.b))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                string_to_ptr(payload)
+            }
+            Err(err) => string_to_ptr(format!("{{\"error\":\"{}\"}}", escape_json(&err))),
         }
-        Err(err) => string_to_ptr(format!("{{\"error\":\"{}\"}}", escape_json(&err))),
-    }
+    }))
+    .unwrap_or_else(|_| {
+        std::process::abort()
+    })
 }
 
 fn extract_colors_internal(
@@ -609,9 +640,26 @@ fn atan2_deg(y: f32, x: f32) -> f32 {
 }
 
 fn string_to_ptr(text: String) -> *mut c_char {
-    CString::new(text).unwrap().into_raw()
+    CString::new(text)
+        .unwrap_or_else(|_| CString::new("[invalid utf8]").unwrap())
+        .into_raw()
 }
 
 fn escape_json(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_string_to_ptr_with_nul_byte() {
+        let text = "valid\0invalid".to_string();
+        let ptr = string_to_ptr(text);
+        assert!(!ptr.is_null());
+        // Read back the CString to verify it contains the fallback string
+        let result = unsafe { CString::from_raw(ptr) };
+        assert_eq!(result.to_str().unwrap(), "[invalid utf8]");
+    }
 }

@@ -17,6 +17,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 import sys
 import os
+import weakref
 from datetime import datetime
 
 # 添加项目根目录到Python路径
@@ -321,8 +322,9 @@ class FolderContentList(QWidget):
             self._load_thread.wait(100)
 
         self._load_thread = FolderContentLoaderThread(path, self)
-        self._load_thread.loaded.connect(lambda loaded_path, entries: self._on_folder_content_loaded(request_id, loaded_path, entries))
-        self._load_thread.load_failed.connect(lambda failed_path, message: self._on_folder_content_failed(request_id, failed_path, message))
+        weak_self = weakref.ref(self)
+        self._load_thread.loaded.connect(lambda loaded_path, entries: (s := weak_self()) and s._on_folder_content_loaded(request_id, loaded_path, entries))
+        self._load_thread.load_failed.connect(lambda failed_path, message: (s := weak_self()) and s._on_folder_content_failed(request_id, failed_path, message))
         self._load_thread.start()
 
     def _on_folder_content_loaded(self, request_id, loaded_path, entries):

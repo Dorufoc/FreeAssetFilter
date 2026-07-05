@@ -17,6 +17,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 
 import sys
 import os
+import weakref
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import debug, warning, error, exception_details
@@ -60,7 +61,8 @@ class RawProcessor(QThread):
         """请求取消当前处理。rawpy.imread 无法中断，但解码后会检查此标志。"""
         self._is_cancelled = True
         self.quit()
-        self.wait()
+        if not self.wait(2000):
+            warning("RawProcessor.cancel: wait timed out, thread may still be running")
     
     def run(self):
         try:
@@ -164,26 +166,25 @@ class IcoProcessor(QThread):
         from PIL import Image
 
         # 打开ICO文件
-        img = Image.open(self.image_path)
+        with Image.open(self.image_path) as img:
+            # ICO文件可能包含多个尺寸，选择最大的那个
+            if hasattr(img, 'info') and 'sizes' in img.info:
+                sizes = img.info['sizes']
+                if sizes:
+                    # 选择最大尺寸
+                    max_size = max(sizes, key=lambda s: s[0] * s[1])
+                    img.size = max_size
+                    img.load()
 
-        # ICO文件可能包含多个尺寸，选择最大的那个
-        if hasattr(img, 'info') and 'sizes' in img.info:
-            sizes = img.info['sizes']
-            if sizes:
-                # 选择最大尺寸
-                max_size = max(sizes, key=lambda s: s[0] * s[1])
-                img.size = max_size
-                img.load()
+            # 转换为RGBA模式以支持透明通道
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
 
-        # 转换为RGBA模式以支持透明通道
-        if img.mode != 'RGBA':
-            img = img.convert('RGBA')
+            # 获取图像尺寸
+            width, height = img.size
 
-        # 获取图像尺寸
-        width, height = img.size
-
-        # 将图像数据转换为字节
-        img_bytes = img.tobytes()
+            # 将图像数据转换为字节
+            img_bytes = img.tobytes()
 
         # 创建QImage
         bytes_per_line = width * 4
@@ -339,44 +340,43 @@ class HeifAvifProcessor(QThread):
             if self._is_cancelled:
                 return
 
-            img = Image.open(self.image_path)
+            with Image.open(self.image_path) as img:
+                if self._is_cancelled:
+                    return
 
-            if self._is_cancelled:
-                return
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGBA')
+                elif img.mode == 'L':
+                    img = img.convert('RGB')
+                elif img.mode in ('RGBX', 'RGBa'):
+                    img = img.convert('RGBA')
+                elif img.mode == '1':
+                    img = img.convert('RGB')
+                else:
+                    img = img.convert('RGB')
 
-            if img.mode in ('RGBA', 'LA', 'P'):
-                img = img.convert('RGBA')
-            elif img.mode == 'L':
-                img = img.convert('RGB')
-            elif img.mode in ('RGBX', 'RGBa'):
-                img = img.convert('RGBA')
-            elif img.mode == '1':
-                img = img.convert('RGB')
-            else:
-                img = img.convert('RGB')
+                if self._is_cancelled:
+                    return
 
-            if self._is_cancelled:
-                return
+                file_size = os.path.getsize(self.image_path)
+                large_file_threshold = 20 * 1024 * 1024
 
-            file_size = os.path.getsize(self.image_path)
-            large_file_threshold = 20 * 1024 * 1024
+                if self._is_cancelled:
+                    return
 
-            if self._is_cancelled:
-                return
+                if file_size > large_file_threshold:
+                    max_dimension = 2048
+                    if img.width > max_dimension or img.height > max_dimension:
+                        ratio = min(max_dimension / img.width, max_dimension / img.height)
+                        new_width = int(img.width * ratio)
+                        new_height = int(img.height * ratio)
+                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-            if file_size > large_file_threshold:
-                max_dimension = 2048
-                if img.width > max_dimension or img.height > max_dimension:
-                    ratio = min(max_dimension / img.width, max_dimension / img.height)
-                    new_width = int(img.width * ratio)
-                    new_height = int(img.height * ratio)
-                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                if self._is_cancelled:
+                    return
 
-            if self._is_cancelled:
-                return
-
-            img_array = np.array(img)
-            height, width = img_array.shape[:2]
+                img_array = np.array(img)
+                height, width = img_array.shape[:2]
 
             if self._is_cancelled:
                 return
@@ -1698,7 +1698,7 @@ class GifWidget(QWidget):
             # 断开一次性连接
             try:
                 self.movie.frameChanged.disconnect(self._on_first_frame_loaded)
-            except:
+            except Exception:
                 pass
     
     def on_frame_changed(self):
@@ -2002,7 +2002,8 @@ class GifWidget(QWidget):
             
             # 使用定时器检查菜单是否仍然可见（处理点击外部区域的情况）
             check_timer = QTimer()
-            check_timer.timeout.connect(lambda: self._check_menu_closed(loop, check_timer))
+            weak_self = weakref.ref(self)
+            check_timer.timeout.connect(lambda: (s := weak_self()) and s._check_menu_closed(loop, check_timer))
             check_timer.start(100)  # 每100ms检查一次
             
             self._context_menu.popup(event.globalPos())
@@ -2024,7 +2025,7 @@ class GifWidget(QWidget):
                     loop.quit()
             else:
                 loop.quit()
-        except:
+        except Exception:
             loop.quit()
     
     def _on_context_menu_clicked(self, data):
@@ -2130,11 +2131,12 @@ class GifViewer(QWidget):
 
             self.movie_loader = MovieLoader(file_path)
             self.movie_loader._load_seq = seq
+            weak_self = weakref.ref(self)
             self.movie_loader.movie_data_loaded.connect(
-                lambda data, path, s=seq: self._on_movie_data_loaded(data, path, s)
+                lambda data, path, s=seq: (self_ref := weak_self()) and self_ref._on_movie_data_loaded(data, path, s)
             )
             self.movie_loader.loading_failed.connect(
-                lambda msg, s=seq: self._on_movie_load_failed(msg, s)
+                lambda msg, s=seq: (self_ref := weak_self()) and self_ref._on_movie_load_failed(msg, s)
             )
             self.movie_loader.start()
 

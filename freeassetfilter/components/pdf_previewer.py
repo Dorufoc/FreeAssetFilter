@@ -19,6 +19,7 @@ PDF预览器组件
 
 import os
 import sys
+import weakref
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details
@@ -638,6 +639,7 @@ class PDFPreviewer(QWidget):
         Args:
             force: 是否强制重新计算
         """
+        weak_self = weakref.ref(self)
         if self.total_pages == 0 or len(self.page_widgets) == 0:
             return
 
@@ -660,7 +662,7 @@ class PDFPreviewer(QWidget):
 
             # 如果视口尺寸无效，延迟再次尝试
             if viewport_width < 50 or viewport_height < 50:
-                QTimer.singleShot(50, lambda: self._calculate_fit_to_width_zoom(force))
+                QTimer.singleShot(50, lambda: (s := weak_self()) and s._calculate_fit_to_width_zoom(force))
                 return
 
             # 考虑边距
@@ -844,7 +846,8 @@ class PDFPreviewer(QWidget):
             else:
                 self._resize_timer = QTimer(self)
                 self._resize_timer.setSingleShot(True)
-                self._resize_timer.timeout.connect(lambda: self._calculate_fit_to_width_zoom(force=True))
+                weak_self = weakref.ref(self)
+                self._resize_timer.timeout.connect(lambda: (s := weak_self()) and s._calculate_fit_to_width_zoom(force=True))
 
             # 使用延迟，等待布局完成
             self._resize_timer.start(100)

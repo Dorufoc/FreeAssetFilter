@@ -5,6 +5,8 @@ FreeAssetFilter 输入类自定义控件
 包含各种输入类UI组件，如自定义输入框等
 """
 
+import weakref
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
     QLabel, QSizePolicy, QApplication, QDialog, QLineEdit, 
@@ -236,8 +238,9 @@ class CustomInputBox(QWidget):
         
         # 连接信号
         self.line_edit.textChanged.connect(self._on_text_changed)
-        self.line_edit.focusInEvent = lambda event: self._on_focus_in(event)
-        self.line_edit.focusOutEvent = lambda event: self._on_focus_out(event)
+        weak_self = weakref.ref(self)
+        self.line_edit.focusInEvent = lambda event: (s := weak_self()) and s._on_focus_in(event)
+        self.line_edit.focusOutEvent = lambda event: (s := weak_self()) and s._on_focus_out(event)
         self.line_edit.returnPressed.connect(self._on_return_pressed)
         
         # 设置当前控件尺寸
