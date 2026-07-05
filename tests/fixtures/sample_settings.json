@@ -1,0 +1,88 @@
+{
+    "font": {
+        "size": 10,
+        "style": "Microsoft YaHei"
+    },
+    "appearance": {
+        "theme": "default",
+        "icon_style": 0,
+        "preset_theme": "活力蓝",
+        "animations": {
+            "directory_transition": true,
+            "file_record_changes": true,
+            "smooth_scrolling": true,
+            "file_card_state": true,
+            "progress_bar_smoothing": true,
+            "button_smoothing": true
+        },
+        "colors": {
+            "accent_color": "#007AFF",
+            "secondary_color": "#333333",
+            "normal_color": "#e0e0e0",
+            "auxiliary_color": "#f1f3f5",
+            "base_color": "#FFFFFF",
+            "custom_design_color": "#27BE24"
+        }
+    },
+    "file_selector": {
+        "auto_clear_thumbnail_cache": true,
+        "restore_last_path": true,
+        "default_layout": "card",
+        "cache_cleanup_period": 7,
+        "cache_cleanup_threshold": 500,
+        "return_shortcut": "middle_click"
+    },
+    "file_staging": {
+        "auto_restore_records": true,
+        "default_export_data_path": "",
+        "default_export_file_path": "",
+        "delete_original_after_export": false
+    },
+    "player": {
+        "speed": 1.0,
+        "volume": 100,
+        "fluid_gradient_theme": "sunset",
+        "audio_background_style": "流体动画",
+        "use_default_volume": false,
+        "default_volume": 100,
+        "use_default_speed": true,
+        "default_speed": 1.0,
+        "last_volume": 100,
+        "last_speed": 1.0,
+        "enable_fullscreen": false,
+        "control_bar_show_fullscreen": true,
+        "control_bar_show_lut": false,
+        "control_bar_show_subtitle": false,
+        "control_bar_show_audio": true,
+        "control_bar_show_volume": true,
+        "control_bar_show_speed": true,
+        "fullscreen_classic_control_bar": true,
+        "control_bar_timeout": 3
+    },
+    "developer": {
+        "debug_mode": true,
+        "log_level": "debug"
+    },
+    "text_preview": {
+        "word_wrap": true,
+        "use_global_font": true,
+        "custom_font_family": "Microsoft YaHei",
+        "use_global_font_size": true,
+        "custom_font_size": 12,
+        "markdown_word_wrap": true,
+        "markdown_use_global_font": true,
+        "markdown_custom_font_family": "Microsoft YaHei",
+        "markdown_use_global_font_size": true,
+        "markdown_custom_font_size": 12
+    },
+    "video": {
+        "lut_files": [],
+        "active_lut_id": null
+    },
+    "photo_viewer": {
+        "style": {
+            "bg_color_key": "base_color",
+            "remember_bg_color": true
+        }
+    }
+}

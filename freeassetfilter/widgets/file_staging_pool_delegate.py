@@ -31,7 +31,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         settings_manager=None,
     ):
         self._single_line_mode = True
-        self._enable_delete_action = False
+        self._enable_delete_action = enable_delete_action
         self._enable_actions = True
         self._pressed_action_key: Optional[Tuple[str, str]] = None
         self._action_slide_states: Dict[str, dict] = {}
@@ -41,7 +41,12 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         else:
             from freeassetfilter.core.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
-        super().__init__(dpi_scale=dpi_scale, global_font=global_font, parent=parent)
+        super().__init__(
+            dpi_scale=dpi_scale,
+            global_font=global_font,
+            parent=parent,
+            settings_manager=self._settings_manager,
+        )
         self._animation_timer = QTimer(self)
 
     def clear_caches(self):
@@ -195,6 +200,8 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         return f"{size / (1024 * 1024 * 1024):.2f} GB"
 
     def _get_file_info(self, index):
+        if index is None:
+            return {}
         model = index.model()
         if not model:
             return {}
@@ -845,11 +852,12 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         painter.restore()
 
     def sizeHint(self, option, index):
-        model = index.model()
-        if model:
-            item_size = model.data(index, FileStagingPoolListModel.ItemSizeRole)
-            if isinstance(item_size, QSize) and item_size.isValid():
-                return item_size
+        if index is not None:
+            model = index.model()
+            if model:
+                item_size = model.data(index, FileStagingPoolListModel.ItemSizeRole)
+                if isinstance(item_size, QSize) and item_size.isValid():
+                    return item_size
 
         dpi_scale = self._dpi_scale
         icon_size = int(12 * dpi_scale)

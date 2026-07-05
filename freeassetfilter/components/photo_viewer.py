@@ -673,22 +673,22 @@ class ImageWidget(QWidget):
             # 检查是否记忆背景色
             remember_bg_color = self._settings_manager.get_setting("photo_viewer.style.remember_bg_color", True)
                 
-                if remember_bg_color:
-                    # 使用保存的颜色键名获取颜色
-                    color_key = self._current_bg_color_key
-                else:
-                    # 不记忆，强制使用 base_color
-                    color_key = "base_color"
-                
-                default_colors = {
-                    "secondary_color": "#333333",
-                    "normal_color": "#e0e0e0",
-                    "base_color": "#FFFFFF"
-                }
-                return self._settings_manager.get_setting(
-                    f"appearance.colors.{color_key}", 
-                    default_colors.get(color_key, "#212121")
-                )
+            if remember_bg_color:
+                # 使用保存的颜色键名获取颜色
+                color_key = self._current_bg_color_key
+            else:
+                # 不记忆，强制使用 base_color
+                color_key = "base_color"
+            
+            default_colors = {
+                "secondary_color": "#333333",
+                "normal_color": "#e0e0e0",
+                "base_color": "#FFFFFF"
+            }
+            return self._settings_manager.get_setting(
+                f"appearance.colors.{color_key}", 
+                default_colors.get(color_key, "#212121")
+            )
         except Exception as e:
             error(f"获取背景色失败: {e}")
         return "#212121"
@@ -1631,8 +1631,8 @@ class GifWidget(QWidget):
     def _load_bg_color_setting(self):
         try:
             saved_key = self._settings_manager.get_setting("photo_viewer.style.bg_color_key", "base_color")
-                if saved_key in self._bg_color_keys:
-                    self._current_bg_color_key = saved_key
+            if saved_key in self._bg_color_keys:
+                self._current_bg_color_key = saved_key
         except Exception as e:
             error(f"背景色设置加载失败: {e}")
     
@@ -1640,20 +1640,20 @@ class GifWidget(QWidget):
         try:
             remember_bg_color = self._settings_manager.get_setting("photo_viewer.style.remember_bg_color", True)
                 
-                if remember_bg_color:
-                    color_key = self._current_bg_color_key
-                else:
-                    color_key = "base_color"
+            if remember_bg_color:
+                color_key = self._current_bg_color_key
+            else:
+                color_key = "base_color"
                 
-                default_colors = {
-                    "secondary_color": "#333333",
-                    "normal_color": "#e0e0e0",
-                    "base_color": "#FFFFFF"
-                }
-                return self._settings_manager.get_setting(
-                    f"appearance.colors.{color_key}", 
-                    default_colors.get(color_key, "#212121")
-                )
+            default_colors = {
+                "secondary_color": "#333333",
+                "normal_color": "#e0e0e0",
+                "base_color": "#FFFFFF"
+            }
+            return self._settings_manager.get_setting(
+                f"appearance.colors.{color_key}", 
+                default_colors.get(color_key, "#212121")
+            )
         except Exception as e:
             error(f"背景色获取失败: {e}")
         return "#212121"

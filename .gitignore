@@ -19,12 +19,8 @@ data/LibreOfficePortable/
 
 # Configuration files
 config/
-test/
 data/
-# Testing files
-tests/
-data/timeline/
-*.test
+
 
 # DeepSeek TUI per-project data
 .deepseek/
@@ -107,6 +103,7 @@ test_loading_spinner.py
 test_volume_slider_fix.py
 AGENTS.md
 .kagent/
-
+tests/*.md
 # Versioned C++ .pyd build artifacts
 *.cp*-win_amd64.pyd
+tests/gui/screenshots/

@@ -1,0 +1,11 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-9.1.0, pluggy-1.6.0 -- C:\Users\89553\AppData\Local\Programs\Python\Python311\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Temps\yaoshi\Desktop\code\FreeAssetFilter
+plugins: anyio-4.14.0, cov-7.1.0
+collecting ... collected 14 items
+
+tests/components/test_photo_viewer.py::TestPhotoViewerCreation::test_photo_viewer_can_be_created PASSED [  7%]
+tests/components/test_photo_viewer.py::TestPhotoViewerCreation::test_photo_viewer_has_required_components PASSED [ 14%]
+tests/components/test_photo_viewer.py::TestPhotoViewerSetFile::test_set_file_returns_true PASSED [ 21%]
+tests/components/test_photo_viewer.py::TestPhotoViewerSetFile::test_set_file_loads_png_image 
