@@ -36,11 +36,19 @@ class ColorWheelPicker(QWidget):
     huePreviewChanged = Signal(int)
     hueSelected = Signal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         self._hue = 0
         self._saturation = 255
@@ -175,12 +183,12 @@ class ColorWheelPicker(QWidget):
         painter.setBrush(QBrush(hue_gradient))
         painter.drawEllipse(QPoint(int(center_x), int(center_y)), int(outer_radius), int(outer_radius))
 
-        app = QApplication.instance()
         bg_color = QColor(255, 255, 255)
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+        try:
+            base_color_str = self._settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
             bg_color = QColor(base_color_str)
+        except Exception:
+            pass
 
         # 使用最终的完整颜色（包含色相、饱和度和亮度）
         hue_for_color = self._hue % 360
@@ -232,11 +240,19 @@ class ColorPreview(QWidget):
     显示当前选择的颜色
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
-        
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         self._color = QColor(0, 0, 0)
         self._setup_size()
@@ -265,12 +281,12 @@ class ColorPreview(QWidget):
         center_y = self.height() / 2
         radius = min(center_x, center_y) - int(2 * self.dpi_scale)
         
-        app = QApplication.instance()
         bg_color = QColor(255, 255, 255)
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+        try:
+            base_color_str = self._settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
             bg_color = QColor(base_color_str)
+        except Exception:
+            pass
         
         border_width = int(3 * self.dpi_scale)
         painter.setPen(QPen(bg_color, border_width))
@@ -287,11 +303,19 @@ class ColorWheelPickerWidget(QWidget):
     colorChanged = Signal(QColor)
     colorSelected = Signal(QColor)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         self._hue = 0
         self._saturation = 255
@@ -310,7 +334,7 @@ class ColorWheelPickerWidget(QWidget):
         wheel_layout = QVBoxLayout()
         wheel_layout.setAlignment(Qt.AlignCenter)
         
-        self._color_wheel = ColorWheelPicker()
+        self._color_wheel = ColorWheelPicker(dpi_scale=self.dpi_scale, settings_manager=self._settings_manager)
         wheel_layout.addWidget(self._color_wheel)
         
         layout.addLayout(wheel_layout)
@@ -362,11 +386,11 @@ class ColorWheelPickerWidget(QWidget):
 
     def _apply_secondary_color_to_label(self, label):
         """应用 secondary color 到标签"""
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        try:
+            secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
             label.setStyleSheet(f"color: {secondary_color};")
+        except Exception:
+            pass
 
     def _connect_signals(self):
         """连接信号"""

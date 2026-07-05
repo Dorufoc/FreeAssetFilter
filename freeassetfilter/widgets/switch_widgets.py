@@ -28,7 +28,7 @@ class CustomSwitch(QWidget):
     # 信号定义
     toggled = Signal(bool)  # 开关状态变化信号
     
-    def __init__(self, parent=None, initial_value=False, height=20):
+    def __init__(self, parent=None, initial_value=False, height=20, dpi_scale=None):
         """
         初始化开关控件
         
@@ -36,11 +36,14 @@ class CustomSwitch(QWidget):
             parent: 父控件
             initial_value: 初始状态，默认为False（关闭）
             height: 开关高度，默认为40px，与CustomButton保持一致
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
         """
         super().__init__(parent)
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
         self._height = int(height * self.dpi_scale)
         self._is_checked = initial_value
         self.icon_ratio = 462 / 256  # 图标宽高比约为1.8:1

@@ -57,6 +57,9 @@ class CustomSettingItem(QWidget):
                  text="", secondary_text="",
                  interaction_type=SWITCH_TYPE,
                  tooltip_text="",
+                 dpi_scale=None,
+                 global_font=None,
+                 settings_manager=None,
                  **kwargs):
         """
         初始化设置项控件
@@ -67,6 +70,7 @@ class CustomSettingItem(QWidget):
             secondary_text: 辅助文本（用于双行模式）
             interaction_type: 交互类型
             tooltip_text: 悬浮提示文本（用于hover tooltip显示）
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
             **kwargs: 交互类型相关的参数
                 - 开关类型: initial_value (bool)
                 - 按钮组类型: buttons (list of dict, 每个dict包含text和type)
@@ -76,14 +80,27 @@ class CustomSettingItem(QWidget):
         super().__init__(parent)
 
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
 
         # 获取全局字体
-        self.global_font = getattr(app, 'global_font', QFont())
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
         self.setFont(self.global_font)
 
+        # 注入 settings_manager
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
+
         # 从app对象获取全局默认字体大小，确保使用正确的默认值
+        app = QApplication.instance()
         self.default_font_size = getattr(app, 'default_font_size', 10)
 
         # 设置基本属性
@@ -114,9 +131,9 @@ class CustomSettingItem(QWidget):
 
         self.setObjectName("CustomSettingItem")
         br = int(2 * self.dpi_scale)
-        base = _get_sm_color("base_color", "#FFFFFF")
-        sc = _get_sm_color("secondary_color", "#333333")
-        nc = _get_sm_color("normal_color", "#e0e0e0")
+        base = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        sc = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        nc = self._settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
         self.setStyleSheet(f"""
             QWidget#CustomSettingItem {{
                 background-color: transparent;
@@ -148,8 +165,8 @@ class CustomSettingItem(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(int(1 * self.dpi_scale))
 
-        sc = _get_sm_color("secondary_color", "#333333")
-        nc = _get_sm_color("normal_color", "#e0e0e0")
+        sc = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        nc = self._settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
 
         self.main_text_label = QLabel(self.text)
         self.main_text_label.setFont(self.global_font)
@@ -227,8 +244,8 @@ class CustomSettingItem(QWidget):
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         layout.setSpacing(int(2 * self.dpi_scale))
 
-        nc = _get_sm_color("normal_color", "#e0e0e0")
-        sc = _get_sm_color("secondary_color", "#333333")
+        nc = self._settings_manager.get_setting("appearance.colors.normal_color", "#e0e0e0")
+        sc = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         initial_path = self.kwargs.get('initial_text', "")
 
         self.folder_path_label = QLabel(initial_path if initial_path else "未设置")
@@ -252,7 +269,7 @@ class CustomSettingItem(QWidget):
         folder_path = QFileDialog.getExistingDirectory(self, "选择文件夹", current_path)
         if folder_path:
             self.folder_path_label.setText(folder_path)
-            sc = _get_sm_color("secondary_color", "#333333")
+            sc = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
             self.folder_path_label.setStyleSheet(f"color: {sc}; padding-left: 5px;")
             self.folder_selected.emit(folder_path)
     
@@ -360,7 +377,7 @@ class CustomSettingItem(QWidget):
         self.value_bar.setRange(min_value, max_value)
         self.value_bar.setValue(initial_value)
 
-        sc = _get_sm_color("secondary_color", "#333333")
+        sc = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         self.value_label = QLabel(str(initial_value))
         self.value_label.setFont(self.global_font)
         self.value_label.setStyleSheet(f"color: {sc}; text-align: center;")

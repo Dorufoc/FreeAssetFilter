@@ -59,6 +59,9 @@ from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_ex
 # 导入心跳管理器
 from freeassetfilter.core.heartbeat_manager import HeartbeatManager
 
+# 导入服务
+from freeassetfilter.services.staging_pool_service import StagingPoolService
+
 
 class _MD5CalculationTask(QRunnable):
     """在后台线程计算文件MD5，完成后在主线程通过HeartbeatManager调用回调。"""
@@ -127,17 +130,22 @@ class FileStagingPool(QWidget):
         "size_calculating",
     )
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         super().__init__(parent)
 
         # 获取应用实例和DPI缩放因子
         from PySide6.QtWidgets import QApplication
         from PySide6.QtGui import QFont
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
 
         # 获取全局字体
-        self.global_font = getattr(app, 'global_font', QFont())
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
 
         # 设置组件字体
         self.setFont(self.global_font)
@@ -160,9 +168,16 @@ class FileStagingPool(QWidget):
         self._backup_save_timer.setSingleShot(True)
         self._backup_save_timer.timeout.connect(self._flush_pending_backup_save)
 
-        # 获取设置管理器引用
-        app = QApplication.instance()
-        self.settings_manager = getattr(app, 'settings_manager', None)
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
+
+        # 初始化存储池服务
+        self._staging_pool_service = StagingPoolService()
+        self._staging_pool_service.initialize()
 
         # 备份文件路径 - 使用get_app_data_path确保打包后路径正确
         self.backup_file = os.path.join(get_app_data_path(), 'staging_pool_backup.json')
@@ -352,22 +367,22 @@ class FileStagingPool(QWidget):
         }
 
         if hasattr(app, "settings_manager"):
-            colors["base_color"] = app.settings_manager.get_setting(
+            colors["base_color"] = self._settings_manager.get_setting(
                 "appearance.colors.base_color", colors["base_color"]
             )
-            colors["auxiliary_color"] = app.settings_manager.get_setting(
+            colors["auxiliary_color"] = self._settings_manager.get_setting(
                 "appearance.colors.auxiliary_color", colors["auxiliary_color"]
             )
-            colors["normal_color"] = app.settings_manager.get_setting(
+            colors["normal_color"] = self._settings_manager.get_setting(
                 "appearance.colors.normal_color", colors["normal_color"]
             )
-            colors["secondary_color"] = app.settings_manager.get_setting(
+            colors["secondary_color"] = self._settings_manager.get_setting(
                 "appearance.colors.secondary_color", colors["secondary_color"]
             )
-            colors["accent_color"] = app.settings_manager.get_setting(
+            colors["accent_color"] = self._settings_manager.get_setting(
                 "appearance.colors.accent_color", colors["accent_color"]
             )
-            colors["panel_background"] = app.settings_manager.get_setting(
+            colors["panel_background"] = self._settings_manager.get_setting(
                 "appearance.colors.panel_background", colors["panel_background"]
             )
 
@@ -480,6 +495,8 @@ class FileStagingPool(QWidget):
             return
 
         self._sync_items_from_model()
+        # 同步到存储池服务
+        self._staging_pool_service.add_item(file_info)
 
         if file_info.get("is_dir"):
             self._calculate_folder_size(file_path)
@@ -512,6 +529,8 @@ class FileStagingPool(QWidget):
             self.preview_cancel_requested.emit()
 
         self._sync_items_from_model()
+        # 同步到存储池服务
+        self._staging_pool_service.remove_item(normalized_path)
         self.remove_from_selector.emit(removed_file)
         self.update_stats()
         self._save_backup_if_needed()
@@ -830,8 +849,8 @@ class FileStagingPool(QWidget):
 
         # 获取默认导出文件路径作为初始目录
         initial_dir = ""
-        if self.settings_manager:
-            export_file_path = self.settings_manager.get_setting("file_staging.default_export_file_path", "")
+        if self._settings_manager:
+            export_file_path = self._settings_manager.get_setting("file_staging.default_export_file_path", "")
             if export_file_path and os.path.isdir(export_file_path):
                 initial_dir = export_file_path
             elif export_file_path and os.path.isfile(export_file_path):
@@ -1257,8 +1276,8 @@ class FileStagingPool(QWidget):
 
         # 获取默认导出数据路径作为初始目录
         initial_dir = ""
-        if self.settings_manager:
-            export_data_path = self.settings_manager.get_setting("file_staging.default_export_data_path", "")
+        if self._settings_manager:
+            export_data_path = self._settings_manager.get_setting("file_staging.default_export_data_path", "")
             if export_data_path and os.path.isdir(export_data_path):
                 initial_dir = export_data_path
             elif export_data_path and os.path.isfile(export_data_path):
@@ -1350,27 +1369,6 @@ class FileStagingPool(QWidget):
                 warning_msg.set_buttons(["确定"], Qt.Horizontal, ["primary"])
                 warning_msg.buttonClicked.connect(warning_msg.close)
                 warning_msg.exec()
-
-    def _calculate_md5_sync(self, file_path: str) -> Optional[str]:
-        """计算文件的MD5值（同步，内部使用）。
-
-        Args:
-            file_path: 文件路径
-
-        Returns:
-            文件的MD5值，如果文件不存在则返回None
-        """
-        try:
-            hash_md5 = hashlib.md5()
-            with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hash_md5.update(chunk)
-            return hash_md5.hexdigest()
-        except FileNotFoundError:
-            return None
-        except (IOError, OSError, PermissionError) as e:
-            warning(f"计算MD5失败: {e}")
-            return None
 
     def _calculate_md5_sync(self, file_path: str) -> Optional[str]:
         """同步计算MD5（用于不需要异步的同步场景）。
@@ -1786,8 +1784,8 @@ class FileStagingPool(QWidget):
 
         # 获取默认导出数据路径作为初始目录
         initial_dir = ""
-        if self.settings_manager:
-            export_data_path = self.settings_manager.get_setting("file_staging.default_export_data_path", "")
+        if self._settings_manager:
+            export_data_path = self._settings_manager.get_setting("file_staging.default_export_data_path", "")
             if export_data_path and os.path.isdir(export_data_path):
                 initial_dir = export_data_path
             elif export_data_path and os.path.isfile(export_data_path):
@@ -1832,6 +1830,8 @@ class FileStagingPool(QWidget):
         items_to_remove = self.items.copy()
         self.pool_model.clear()
         self._sync_items_from_model()
+        # 同步到存储池服务
+        self._staging_pool_service.clear()
 
         for item in items_to_remove:
             self.remove_from_selector.emit(item)
@@ -2090,24 +2090,7 @@ class FileStagingPool(QWidget):
         Returns:
             tuple: (总容量字节数, 可用空间字节数)，如果获取失败返回(None, None)
         """
-        try:
-            if sys.platform == "win32":
-                # Windows系统
-                import ctypes
-                free_bytes = ctypes.c_ulonglong(0)
-                total_bytes = ctypes.c_ulonglong(0)
-                # 调用Windows API获取磁盘空间
-                ctypes.windll.kernel32.GetDiskFreeSpaceExW(ctypes.c_wchar_p(directory), None, ctypes.byref(total_bytes), ctypes.byref(free_bytes))
-                return total_bytes.value, free_bytes.value
-            else:
-                # Linux/macOS系统
-                statvfs = os.statvfs(directory)
-                total_bytes = statvfs.f_frsize * statvfs.f_blocks
-                free_bytes = statvfs.f_frsize * statvfs.f_bavail
-                return total_bytes, free_bytes
-        except (OSError, PermissionError, FileNotFoundError) as e:
-            warning(f"获取目录空间失败: {e}")
-            return None, None
+        return self._staging_pool_service.get_directory_space(directory)
 
     def _calculate_folder_size(self, folder_path):
         """
@@ -2196,6 +2179,13 @@ class FileStagingPool(QWidget):
             self.stop_all_size_calculators()
         except Exception as e:
             warning(f"停止文件夹大小计算器失败: {e}")
+
+        # 清理存储池服务
+        try:
+            if hasattr(self, "_staging_pool_service") and self._staging_pool_service:
+                self._staging_pool_service.dispose()
+        except Exception as e:
+            warning(f"清理存储池服务失败: {e}")
 
         try:
             self.blockSignals(True)
@@ -2480,11 +2470,11 @@ class FileStagingPool(QWidget):
         accent_color = "#1890ff"
 
         if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#E6E6E6")
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+            base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#E6E6E6")
+            normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#808080")
+            secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
 
         dialog = CustomMessageBox(self)
         dialog.set_title("分类导出确认")

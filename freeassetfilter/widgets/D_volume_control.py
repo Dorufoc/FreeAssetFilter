@@ -33,18 +33,25 @@ class DVolumeControl(QWidget):
     menuShown = Signal()
     menuHidden = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None):
         """
         初始化自定义音量控制组件
 
         Args:
             parent: 父窗口部件
+            global_font: 全局字体
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
         """
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
 
         self._volume = 100
         self._muted = False

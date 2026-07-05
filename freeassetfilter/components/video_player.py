@@ -51,6 +51,7 @@ from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+from freeassetfilter.services.media_metadata_service import MediaMetadataService
 
 
 class DetachedVideoWindow(QWidget):
@@ -72,20 +73,26 @@ class DetachedVideoWindow(QWidget):
     key3Pressed = Signal()  # 数字键3按下信号（3x倍速）
     keyTildePressed = Signal()  # ~/`键按下信号（0.5x倍速）
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None):
         """
         初始化独立视频窗口
         
         Args:
             parent: 父窗口
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
         """
         super().__init__(parent)
 
         self._video_player = None
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -485,7 +492,7 @@ class VideoPlayer(QWidget):
     errorOccurred = Signal(str)
     idle_event = Signal()
     
-    def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True, playback_mode: str = "video", initial_volume: int = None, initial_speed: float = None, control_bar_border_radius: int = None):
+    def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True, playback_mode: str = "video", initial_volume: int = None, initial_speed: float = None, control_bar_border_radius: int = None, settings_manager=None, dpi_scale=None, global_font=None):
         """
         初始化视频播放器
         
@@ -497,12 +504,18 @@ class VideoPlayer(QWidget):
             initial_volume: 初始音量值 (0-100)，None表示从设置读取
             initial_speed: 初始倍速值，None表示从设置读取
             control_bar_border_radius: 浮动控制栏圆角半径（像素），None表示使用默认值4像素
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
         """
         super().__init__(parent)
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
         
         self._current_file: str = ""
         self._playback_mode = playback_mode  # 播放模式：video 或 audio
@@ -567,12 +580,15 @@ class VideoPlayer(QWidget):
         self._seek_debounce_timer.timeout.connect(self._flush_pending_seek)
 
         # 初始化设置管理器并读取初始设置
-        # 从 QApplication 实例获取 SettingsManager，如果不存在则创建新实例
-        app = QApplication.instance()
-        if app and hasattr(app, 'settings_manager'):
-            self._settings_manager = app.settings_manager
+        # 优先使用传入的参数，否则从 QApplication 实例获取，最后创建新实例
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
         else:
-            self._settings_manager = SettingsManager()
+            app = QApplication.instance()
+            if app and hasattr(app, 'settings_manager'):
+                self._settings_manager = app.settings_manager
+            else:
+                self._settings_manager = SettingsManager()
         
         # 从设置管理器读取控制栏按钮可见性设置
         self._show_lut_controls = self._settings_manager.get_setting("player.control_bar_show_lut", False)
@@ -2360,41 +2376,8 @@ class VideoPlayer(QWidget):
         Returns:
             Optional[bytes]: 封面图像的二进制数据，如果没有封面则返回None
         """
-        if not mutagen_file:
-            return None
-
-        try:
-            audio = mutagen_file(file_path)
-            if not audio:
-                return None
-
-            # 尝试从不同格式的音频文件中提取封面
-            # 方法1: 从tags中查找封面数据
-            if hasattr(audio, 'tags') and audio.tags:
-                for key in ['cover', ' Cover', 'APIC:', 'covr', 'albumart']:
-                    if key in audio.tags:
-                        data = audio.tags[key].data
-                        if isinstance(data, bytes):
-                            return data
-
-            # 方法2: 遍历所有tags查找图片数据
-            if hasattr(audio, 'tags') and audio.tags:
-                for tag in audio.tags.values():
-                    if hasattr(tag, 'data') and isinstance(tag.data, bytes):
-                        # 检查是否是图片数据（常见图片格式的头部）
-                        data = tag.data
-                        if len(data) > 10 and (
-                            data[:3] == b'\xff\xd8\xff' or  # JPEG
-                            data[:4] == b'\x89PNG' or       # PNG
-                            data[:2] in [b'BM', b'GI', b'CI']  # BMP或其他
-                        ):
-                            return data
-
-            return None
-
-        except Exception as e:
-            warning(f"提取音频封面失败: {e}")
-            return None
+        service = MediaMetadataService()
+        return service.extract_audio_cover(file_path)
     
     def load_file(self, file_path: str, is_audio: bool = False) -> bool:
         """

@@ -44,22 +44,30 @@ class PDFPageWidget(QWidget):
     支持高DPI显示
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_manager=None, dpi_scale=None):
         super().__init__(parent)
 
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
         
         # 获取设备像素比
         self.device_pixel_ratio = self.devicePixelRatioF() if hasattr(self, 'devicePixelRatioF') else 1.0
         
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
+        
         # 获取主题颜色
         self.base_color = "#F5F5F5"
         self.normal_color = "#CCCCCC"  # 默认边框颜色
-        if hasattr(app, 'settings_manager'):
-            self.base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#F5F5F5")
-            self.normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#CCCCCC")
+        self.base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#F5F5F5")
+        self.normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#CCCCCC")
         
         # 页面数据
         self.page_pixmap = None
@@ -178,24 +186,35 @@ class PDFPreviewer(QWidget):
     
     pdf_render_finished = Signal()
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_manager=None, dpi_scale=None, global_font=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.default_font_size = getattr(app, 'default_font_size', 10)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+        self.default_font_size = getattr(QApplication.instance(), 'default_font_size', 10)
         
         # 获取设备像素比（在窗口显示后会更准确）
         self.device_pixel_ratio = self.devicePixelRatioF() if hasattr(self, 'devicePixelRatioF') else 1.0
         
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
+        
         # 获取主题颜色
         self.secondary_color = "#333333"
         self.base_color = "#F5F5F5"
-        if hasattr(app, 'settings_manager'):
-            self.secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            self.base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#F5F5F5")
+        self.secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        self.base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#F5F5F5")
         
         # 获取图标路径
         current_dir = os.path.dirname(os.path.abspath(__file__))

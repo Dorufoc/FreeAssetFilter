@@ -8,19 +8,9 @@ FreeAssetFilter 设置管理模块
 import os
 import json
 import threading
-import tempfile
 
 from freeassetfilter.utils.app_logger import info, debug, warning, error
-
-
-def _load_json_file(file_path):
-    """从文件加载 JSON，附带基础文件大小保护。"""
-    MAX_SIZE = 10 * 1024 * 1024
-    file_size = os.path.getsize(file_path)
-    if file_size > MAX_SIZE:
-        raise ValueError(f"JSON 文件大小 ({file_size} 字节) 超过最大限制 ({MAX_SIZE} 字节)")
-    with open(file_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+from freeassetfilter.services.settings_repository import SettingsRepository
 
 
 def _apply_private_file_permissions(file_path):
@@ -73,6 +63,8 @@ class SettingsManager:
             self._settings_file = os.path.join(data_dir, "settings.json")
         else:
             self._settings_file = self._settings_file
+
+        self._repo = SettingsRepository(self._settings_file)
 
         self.default_settings = {
             "font": {
@@ -167,13 +159,13 @@ class SettingsManager:
     
     def load_settings(self):
         with self._settings_lock:
-            if not os.path.exists(self._settings_file):
+            loaded = self._repo.load()
+            if not loaded:
                 defaults = self._create_default_settings_copy()
                 self.settings = defaults
                 self.save_settings()
                 return defaults
             try:
-                loaded = _load_json_file(self._settings_file)
                 merged = self._merge_settings(self.default_settings, loaded)
                 self.settings = merged
                 return merged
@@ -300,24 +292,8 @@ class SettingsManager:
                 self._save_timer = None
 
             try:
-                settings_dir = os.path.dirname(self._settings_file) or "."
-                os.makedirs(settings_dir, exist_ok=True)
-
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    dir=settings_dir,
-                    delete=False,
-                    suffix=".tmp"
-                ) as tmp_file:
-                    json.dump(self.settings, tmp_file, ensure_ascii=False, indent=4)
-                    tmp_file.flush()
-                    os.fsync(tmp_file.fileno())
-                    temp_path = tmp_file.name
-
-                os.replace(temp_path, self._settings_file)
+                self._repo.atomic_save(self.settings)
                 _apply_private_file_permissions(self._settings_file)
-
                 self._dirty_keys.clear()
                 info(f"设置已保存: {self._settings_file}")
             except PermissionError as e:
@@ -326,15 +302,8 @@ class SettingsManager:
                 error(f"保存设置失败，目录不存在: {e}")
             except TypeError as e:
                 error(f"保存设置失败，数据类型错误: {e}")
-            except IOError as e:
+            except OSError as e:
                 error(f"保存设置失败，IO错误: {e}")
-            finally:
-                temp_path = locals().get("temp_path")
-                if temp_path and os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except OSError:
-                        pass
     
     def get_setting(self, key_path, default=None):
         """

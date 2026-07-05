@@ -31,7 +31,7 @@ class ThemeCard(QWidget):
     clicked = Signal(object)  # 点击信号，传递主题信息
     color_changed = Signal(str)  # 颜色变化信号，传递RGB颜色字符串
     
-    def __init__(self, theme_name="", colors=None, is_selected=False, is_add_card=False, parent=None):
+    def __init__(self, theme_name="", colors=None, is_selected=False, is_add_card=False, parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         """
         初始化主题卡片
         
@@ -41,6 +41,9 @@ class ThemeCard(QWidget):
             is_selected (bool): 是否被选中
             is_add_card (bool): 是否为添加新设计的卡片
             parent (QWidget): 父控件
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
+            global_font: 全局字体，None时从QApplication自动获取
+            settings_manager: 设置管理器实例，None时自动创建
         """
         super().__init__(parent)
         self.theme_name = theme_name
@@ -49,10 +52,24 @@ class ThemeCard(QWidget):
         self.is_add_card = is_add_card
         self._flexible_width = None
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.settings_manager = getattr(app, 'settings_manager', None)
-        self.global_font_size = getattr(app, 'default_font_size', 8)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
+        
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            app = QApplication.instance()
+            self.global_font = getattr(app, 'global_font', QFont())
+        
+        self.global_font_size = self.global_font.pointSize() if self.global_font.pointSize() > 0 else 8
         
         font_size = int(self.global_font_size * self.dpi_scale)
         
@@ -60,11 +77,11 @@ class ThemeCard(QWidget):
         base_color = "#FFFFFF"
         secondary_color = "#333333"
         accent_color = "#007AFF"
-        if self.settings_manager:
-            auxiliary_color = self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-            base_color = self.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-            secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            accent_color = self.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+        if self._settings_manager:
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+            base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
         
         self._accent_color = accent_color
         self._base_color = base_color
@@ -89,9 +106,9 @@ class ThemeCard(QWidget):
     def setup_ui(self, font_size):
         auxiliary_color = "#f1f3f5"
         secondary_color = "#333333"
-        if self.settings_manager:
-            auxiliary_color = self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-            secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        if self._settings_manager:
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+            secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
         if self.is_add_card:
             self.color_slider = ColorSliderWidget(self)
@@ -149,9 +166,9 @@ class ThemeCard(QWidget):
         
         auxiliary_color = "#f1f3f5"
         secondary_color = "#333333"
-        if self.settings_manager:
-            auxiliary_color = self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-            secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        if self._settings_manager:
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+            secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
         if not self.is_add_card:
             self.theme_color.setStyleSheet(f"background-color: {self.colors[0]}; border: 1px solid {auxiliary_color}; border-radius: {int(3 * self.dpi_scale)}px;")

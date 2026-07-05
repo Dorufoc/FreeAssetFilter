@@ -1856,14 +1856,12 @@ def is_dark_mode() -> bool:
         是否为深色模式
     """
     try:
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app and hasattr(app, 'settings_manager'):
-            # 使用正确的设置键名 appearance.theme
-            theme = app.settings_manager.get_setting("appearance.theme", "default")
-            return theme == "dark"
-    except (ImportError, AttributeError) as e:
-        debug(f"检测深色模式失败: {e}")
+        from freeassetfilter.core.settings_manager import SettingsManager
+        sm = SettingsManager()
+        theme = sm.get_setting("appearance.theme", "default")
+        return theme == "dark"
+    except Exception:
+        pass
 
     # 默认返回False（亮色模式），与设置管理器默认值保持一致
     return False

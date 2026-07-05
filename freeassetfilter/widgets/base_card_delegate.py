@@ -30,10 +30,14 @@ from freeassetfilter.utils.app_logger import debug
 class BaseCardDelegate(QStyledItemDelegate):
     _SHADOW_CACHE_MAX_ENTRIES = 96
 
-    def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
+    def __init__(self, dpi_scale=1.0, global_font=None, parent=None, settings_manager=None):
         super().__init__(parent)
         self._dpi_scale = dpi_scale
         self._global_font = global_font
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            self._settings_manager = SettingsManager()
         self._view = None
         self._animation_states = {}
         self._active_animation_keys = set()
@@ -76,15 +80,11 @@ class BaseCardDelegate(QStyledItemDelegate):
 
     def _init_colors(self):
         try:
-            app = QApplication.instance()
-            settings_manager = getattr(app, "settings_manager", None) if app else None
-            if settings_manager is None:
-                settings_manager = SettingsManager()
-            self.base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
-            self.auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
-            self.normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
-            self.accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
-            self.secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+            self.base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#212121")
+            self.auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+            self.normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+            self.accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
+            self.secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
         except Exception as error:
             debug(f"初始化委托颜色配置失败，使用默认颜色: {error}")
             self.base_color = "#212121"

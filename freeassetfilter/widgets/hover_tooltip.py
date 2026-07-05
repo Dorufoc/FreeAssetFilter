@@ -39,7 +39,7 @@ class HoverTooltip(QWidget):
     - 灰色400字重文字
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         super().__init__(parent)
 
         # 设置窗口标志
@@ -56,13 +56,31 @@ class HoverTooltip(QWidget):
         self.label = QLabel(self)
         self.label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            app = QApplication.instance()
+            self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+
+        # 存储全局字体
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            app = QApplication.instance()
+            self.global_font = getattr(app, "global_font", QFont()) if app else QFont()
+
+        # 注入 settings_manager
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         # 设置字体样式：创建一个新的字体实例，确保不受调用组件字体影响
         font = QFont()
+        app = QApplication.instance()
         if app and hasattr(app, "global_font"):
-            global_font = app.global_font
+            global_font = self.global_font
             font.setFamily(global_font.family())
             font.setStyle(global_font.style())
             font.setWeight(global_font.weight())
@@ -240,15 +258,7 @@ class HoverTooltip(QWidget):
         if self._disposed:
             return
 
-        app = QApplication.instance()
-        if app and hasattr(app, "settings_manager"):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-
-            settings_manager = SettingsManager()
-
-        secondary_color = settings_manager.get_setting(
+        secondary_color = self._settings_manager.get_setting(
             "appearance.colors.secondary_color", "#333333"
         )
 
@@ -1083,15 +1093,7 @@ class HoverTooltip(QWidget):
             transform.translate(-center_x, -center_y)
             painter.setTransform(transform)
 
-        app = QApplication.instance()
-        if app and hasattr(app, "settings_manager"):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-
-            settings_manager = SettingsManager()
-
-        current_colors = settings_manager.get_setting("appearance.colors", {})
+        current_colors = self._settings_manager.get_setting("appearance.colors", {})
         base_color = current_colors.get("base_color", "#ffffff")
         normal_color = current_colors.get("normal_color", "#333333")
 

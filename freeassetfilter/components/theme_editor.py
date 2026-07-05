@@ -24,15 +24,21 @@ class ThemeEditor(QScrollArea):
     add_new_design = Signal()
     theme_applied = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None):
         super().__init__(parent)
 
         debug("初始化主题编辑器")
 
         self.app = QApplication.instance()
         self.settings_manager = getattr(self.app, 'settings_manager', None)
-        self.dpi_scale = getattr(self.app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(self.app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(self.app, 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(self.app, 'global_font', QFont())
 
         self.preset_themes = [
             {"name": "活力蓝", "colors": ["#007AFF"]},

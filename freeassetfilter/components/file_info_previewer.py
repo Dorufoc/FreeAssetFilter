@@ -249,7 +249,7 @@ class FileInfoPreviewer(QObject):
 
     audioInfoLoaded = Signal(dict)  # 音频信息加载完成信号
 
-    def __init__(self):
+    def __init__(self, global_font=None, dpi_scale=None, settings_manager=None):
         super().__init__()
         self.current_file = None
         self.file_info = {}
@@ -262,9 +262,21 @@ class FileInfoPreviewer(QObject):
         self._7z_core = get_7z_core()
 
         # 获取全局字体和DPI缩放因子
-        app = QApplication.instance()
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         # 主题颜色
         self._load_theme_colors()
@@ -273,7 +285,6 @@ class FileInfoPreviewer(QObject):
 
     def _load_theme_colors(self):
         """加载主题颜色"""
-        app = QApplication.instance()
         self.background_color = "#f1f3f5"
         self.base_color = "#212121"
         self.auxiliary_color = "#f1f3f5"
@@ -281,13 +292,12 @@ class FileInfoPreviewer(QObject):
         self.secondary_color = "#FFFFFF"
         self.accent_color = "#F0C54D"
 
-        if hasattr(app, 'settings_manager'):
-            self.background_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-            self.base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
-            self.auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
-            self.normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
-            self.secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-            self.accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
+        self.background_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+        self.base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        self.auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+        self.normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+        self.secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+        self.accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
 
     def init_ui(self):
         """初始化UI组件"""

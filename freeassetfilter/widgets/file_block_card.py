@@ -483,11 +483,17 @@ class FileBlockCard(QWidget):
         self._anim_border_color = QColor(color)
         self.update()
 
-    def __init__(self, file_info, dpi_scale=1.0, parent=None):
+    def __init__(self, file_info, dpi_scale=1.0, parent=None, global_font=None, settings_manager=None):
         super().__init__(parent)
 
         self.file_info = file_info
         self.dpi_scale = dpi_scale
+        self._global_font_injected = global_font
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         self._flexible_width = None
 
         self._is_selected = False
@@ -540,7 +546,10 @@ class FileBlockCard(QWidget):
 
         app = QApplication.instance()
         self.default_font_size = getattr(app, "default_font_size", 8) if app else 8
-        self.global_font = getattr(app, "global_font", QFont()) if app else QFont()
+        if self._global_font_injected is not None:
+            self.global_font = self._global_font_injected
+        else:
+            self.global_font = getattr(app, "global_font", QFont()) if app else QFont()
 
         self._init_colors()
         self._init_fonts()
@@ -571,16 +580,11 @@ class FileBlockCard(QWidget):
     def _init_colors(self):
         """初始化颜色配置"""
         try:
-            app = QApplication.instance()
-            settings_manager = getattr(app, "settings_manager", None) if app else None
-            if settings_manager is None:
-                settings_manager = SettingsManager()
-
-            self.base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
-            self.auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
-            self.normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
-            self.accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
-            self.secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+            self.base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#212121")
+            self.auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+            self.normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+            self.accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
+            self.secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             debug(f"初始化颜色配置失败 - 文件操作错误，使用默认颜色: {e}")
             self.base_color = "#212121"
@@ -639,16 +643,11 @@ class FileBlockCard(QWidget):
         self._touch_optimization_enabled = True
         self._mouse_buttons_swapped = False
         try:
-            app = QApplication.instance()
-            settings_manager = getattr(app, "settings_manager", None) if app else None
-            if settings_manager is None:
-                settings_manager = SettingsManager()
-
             self._touch_optimization_enabled = bool(
-                settings_manager.get_setting("file_selector.touch_optimization", True)
+                self._settings_manager.get_setting("file_selector.touch_optimization", True)
             )
             self._mouse_buttons_swapped = bool(
-                settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+                self._settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
             )
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             debug(f"初始化交互设置缓存失败 - 文件操作错误: {e}")

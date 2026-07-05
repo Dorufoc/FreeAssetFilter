@@ -57,15 +57,27 @@ class ArchiveBrowser(QWidget):
     path_changed = Signal(str)  # 当浏览路径变化时发出
     file_selected = Signal(dict)  # 当选中文件时发出
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
         # 获取全局字体和DPI缩放因子
-        app = QApplication.instance()
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
 
         # 设置组件字体
         self.setFont(self.global_font)
+
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         # 初始化配置
         self.archive_path = None  # 压缩包路径
@@ -101,8 +113,7 @@ class ArchiveBrowser(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # 设置背景色
-        app = QApplication.instance()
-        background_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#2D2D2D")
+        background_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#2D2D2D")
         self.setStyleSheet(f"background-color: {background_color};")
         
         # 创建主布局
@@ -127,14 +138,8 @@ class ArchiveBrowser(QWidget):
         创建控制面板
         """
         panel = QGroupBox()
-        app = QApplication.instance()
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-        auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
         # 控制栏背景使用主题 auxiliary_color，隐藏边框
         panel.setStyleSheet(f"""
             QGroupBox {{
@@ -232,14 +237,7 @@ class ArchiveBrowser(QWidget):
             str: 处理后的十六进制颜色值
         """
         # 获取当前主题模式
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-        current_theme = settings_manager.get_setting("appearance.theme", "default")
+        current_theme = self._settings_manager.get_setting("appearance.theme", "default")
         is_dark_mode = (current_theme == "dark")
         
         # 将十六进制颜色转换为RGB
@@ -272,14 +270,7 @@ class ArchiveBrowser(QWidget):
         集成自定义丝滑滚动条和平滑滚动效果
         """
         # 获取颜色设置
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-
-        current_colors = settings_manager.get_setting("appearance.colors", {
+        current_colors = self._settings_manager.get_setting("appearance.colors", {
             "secondary_color": "#FFFFFF",
             "base_color": "#212121",
             "auxiliary_color": "#3D3D3D",
@@ -318,13 +309,7 @@ class ArchiveBrowser(QWidget):
         self.scaled_font = self.global_font
         
         # 获取颜色设置
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-        
-        current_colors = settings_manager.get_setting("appearance.colors", {
+        current_colors = self._settings_manager.get_setting("appearance.colors", {
             "secondary_color": "#FFFFFF",
             "base_color": "#212121",
             "auxiliary_color": "#3D3D3D",
@@ -617,14 +602,7 @@ class ArchiveBrowser(QWidget):
         warning_item.setFlags(warning_item.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEnabled)  # 禁用选择和交互
 
         # 获取当前主题颜色
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-
-        current_colors = settings_manager.get_setting("appearance.colors", {
+        current_colors = self._settings_manager.get_setting("appearance.colors", {
             "secondary_color": "#FFFFFF",
             "base_color": "#212121",
             "auxiliary_color": "#3D3D3D",

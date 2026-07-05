@@ -189,13 +189,27 @@ class CustomFileHorizontalCard(QWidget):
         single_line_mode=False,
         enable_delete_button=True,
         compact_mode=False,
+        dpi_scale=None,
+        global_font=None,
+        settings_manager=None,
     ):
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
-        self.global_font = getattr(app, "global_font", QFont())
-        self.default_font_size = getattr(app, "default_font_size", 9)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+        self.default_font_size = getattr(QApplication.instance(), 'default_font_size', 9)
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         self.setFont(self.global_font)
 
@@ -1771,12 +1785,7 @@ class CustomFileHorizontalCard(QWidget):
 
     def _darken_or_lighten_color(self, color_hex, amount=30):
         try:
-            app = QApplication.instance()
-            if hasattr(app, "settings_manager"):
-                settings_manager = app.settings_manager
-            else:
-                settings_manager = SettingsManager()
-            current_theme = settings_manager.get_setting("appearance.theme", "default")
+            current_theme = self._settings_manager.get_setting("appearance.theme", "default")
             is_dark_mode = current_theme == "dark"
         except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError, RuntimeError):
             is_dark_mode = False

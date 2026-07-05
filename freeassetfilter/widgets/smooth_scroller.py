@@ -91,7 +91,7 @@ class _ElasticContentOverscrollController(QObject):
     管理滚动内容本身的边界弹性位移。
     """
 
-    def __init__(self, target_widget, duration=380):
+    def __init__(self, target_widget, duration=380, dpi_scale=None):
         super().__init__(target_widget)
         self._target_widget = target_widget
         self._dpi_scale = 1.0
@@ -100,9 +100,12 @@ class _ElasticContentOverscrollController(QObject):
         self._orientation = Qt.Vertical
         self._effect = None
 
-        app = QApplication.instance()
-        if app:
-            self._dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
+        if dpi_scale is not None:
+            self._dpi_scale = dpi_scale
+        else:
+            app = QApplication.instance()
+            if app:
+                self._dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
 
         self._animation = QPropertyAnimation(self, b"_offset")
         self._animation.setDuration(duration)

@@ -51,16 +51,7 @@ class _DropdownHoverMenu(D_HoverMenu):
 
     def paintEvent(self, event):
         """绘制 dropdown 专用圆角卡片，与 D_HoverMenu 保持一致的卡片样式。"""
-        app = QApplication.instance()
-
-        if hasattr(app, "settings_manager"):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-
-            settings_manager = SettingsManager()
-
-        current_colors = settings_manager.get_setting("appearance.colors", {})
+        current_colors = self._settings_manager.get_setting("appearance.colors", {})
         base_color = current_colors.get("base_color", "#ffffff")
         # 使用 auxiliary_color 作为边框色，比 normal_color 更柔和，与卡片控件风格一致
         border_color = current_colors.get("auxiliary_color", "#f1f3f5")
@@ -143,13 +134,22 @@ class _DropdownMenuItem(QPushButton):
 
     clickedWithIndex = Signal(int)
 
-    def __init__(self, index: int, item_info: Dict[str, Any], parent=None):
+    def __init__(self, index: int, item_info: Dict[str, Any], parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
-        self.global_font = getattr(app, "global_font", QFont())
-        self.settings_manager = getattr(app, "settings_manager", None)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), "dpi_scale_factor", 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), "global_font", QFont())
+        if settings_manager is not None:
+            self.settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self.settings_manager = SettingsManager()
 
         self._index = index
         self._item_info = item_info
@@ -282,13 +282,22 @@ class _DropdownMenuList(QWidget):
 
     itemClicked = Signal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
-        self.global_font = getattr(app, "global_font", QFont())
-        self.settings_manager = getattr(app, "settings_manager", None)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), "dpi_scale_factor", 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), "global_font", QFont())
+        if settings_manager is not None:
+            self.settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self.settings_manager = SettingsManager()
 
         self._items: List[Dict[str, Any]] = []
         self._item_widgets: List[_DropdownMenuItem] = []
@@ -560,13 +569,22 @@ class Ddropmenu(QWidget):
         "bottom_right": D_HoverMenu.Position_BottomRight,
     }
 
-    def __init__(self, parent=None, position="bottom", use_internal_button=True):
+    def __init__(self, parent=None, position="bottom", use_internal_button=True, global_font=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
-        self.global_font = getattr(app, "global_font", QFont())
-        self.settings_manager = getattr(app, "settings_manager", None)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), "dpi_scale_factor", 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), "global_font", QFont())
+        if settings_manager is not None:
+            self.settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self.settings_manager = SettingsManager()
 
         self._position = position if position in self.POSITION_MAP else "bottom"
         self._use_internal_button = use_internal_button

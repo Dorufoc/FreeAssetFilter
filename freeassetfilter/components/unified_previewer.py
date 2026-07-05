@@ -43,6 +43,7 @@ from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager
 from freeassetfilter.utils.path_utils import contains_injection_chars, validate_safe_path
 from freeassetfilter.utils.subprocess_utils import run_with_limited_output
+from freeassetfilter.services.previewer_registry import PreviewerRegistry
 
 
 DOCUMENT_CONVERT_TIMEOUT = 300
@@ -61,15 +62,27 @@ class UnifiedPreviewer(QWidget):
     preview_started = Signal(dict)  # 预览开始信号，传递文件信息
     preview_cleared = Signal()  # 预览清除信号
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_manager=None, dpi_scale=None, global_font=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
         from PySide6.QtWidgets import QApplication
         from PySide6.QtGui import QFont
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -124,7 +137,6 @@ class UnifiedPreviewer(QWidget):
         """
         获取当前主题颜色
         """
-        app = QApplication.instance()
         colors = {
             "panel_background": "#f1f3f5",
             "window_background": "#f1f3f5",
@@ -133,12 +145,11 @@ class UnifiedPreviewer(QWidget):
             "secondary_color": "#FFFFFF",
         }
 
-        if hasattr(app, "settings_manager"):
-            colors["panel_background"] = app.settings_manager.get_setting("appearance.colors.panel_background", colors["panel_background"])
-            colors["window_background"] = app.settings_manager.get_setting("appearance.colors.auxiliary_color", colors["window_background"])
-            colors["base_color"] = app.settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
-            colors["normal_color"] = app.settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
-            colors["secondary_color"] = app.settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
+        colors["panel_background"] = self._settings_manager.get_setting("appearance.colors.panel_background", colors["panel_background"])
+        colors["window_background"] = self._settings_manager.get_setting("appearance.colors.auxiliary_color", colors["window_background"])
+        colors["base_color"] = self._settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
+        colors["normal_color"] = self._settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
+        colors["secondary_color"] = self._settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
 
         return colors
 
@@ -247,14 +258,9 @@ class UnifiedPreviewer(QWidget):
         
         # 创建主布局 - 使用QSplitter实现可拖拽调整
         main_layout = QVBoxLayout(self)
-        app = QApplication.instance()
-        background_color = "#f1f3f5"
-        base_color = "#212121"
-        normal_color = "#717171"
-        if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+        background_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#717171")
         self.setStyleSheet(f"background-color: {background_color}; border: none;")
         main_layout.setSpacing(scaled_spacing)
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
@@ -524,24 +530,31 @@ class UnifiedPreviewer(QWidget):
         preview_type = None
         if self.current_file_info["is_dir"]:
             preview_type = "dir"
-        elif file_type in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "avif", "heic", "cr2", "cr3", "nef", "arw", "dng", "orf", "ico", "icon", "psd"]:
-            preview_type = "image"
-        elif file_type in ["mp4", "avi", "mov", "mkv", "m4v", "mxf", "3gp", "mpg", "wmv", "webm", "vob", "ogv", "rmvb", "m2ts", "ts", "mts"]:
-            preview_type = "video"
-        elif file_type in ["mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"]:
-            preview_type = "audio"
-        elif file_type in ["doc", "docx", "xls", "xlsx", "ppt", "pptx"]:
-            preview_type = "document"
-        elif file_type in ["pdf"]:
-            preview_type = "pdf"
-        elif file_type in ["txt", "md", "rst", "py", "java", "cpp", "js", "html", "css", "php", "c", "h", "cs", "go", "rb", "swift", "kt", "yml", "yaml", "json", "xml"]:
-            preview_type = "text"
-        elif file_type in ["zip", "rar", "tar", "gz", "tgz", "bz2", "xz", "7z", "iso"]:
-            preview_type = "archive"
-        elif file_type in ["ttf", "otf", "woff", "woff2", "eot"]:
-            preview_type = "font"
         else:
-            preview_type = "unknown"
+            # 使用 PreviewerRegistry 获取预览组件类
+            cls = PreviewerRegistry.get_previewer_class(self.current_file_info)
+            if cls is None:
+                preview_type = "unknown"
+            else:
+                # 类名到预览类型的映射
+                class_name = cls.__name__
+                if class_name in ("PhotoViewer", "GifViewer"):
+                    preview_type = "image"
+                elif class_name == "VideoPlayer":
+                    # 根据文件后缀区分视频/音频
+                    preview_type = "audio" if file_type in [
+                        "mp3", "wav", "flac", "ogg", "wma", "m4a", "aiff", "ape", "opus"
+                    ] else "video"
+                elif class_name == "PDFPreviewer":
+                    preview_type = "pdf"
+                elif class_name == "TextPreviewWidget":
+                    preview_type = "text"
+                elif class_name == "ArchiveBrowser":
+                    preview_type = "archive"
+                elif class_name == "FontPreviewWidget":
+                    preview_type = "font"
+                else:
+                    preview_type = "unknown"
         
         debug(f"current_preview_type: {self.current_preview_type}, preview_type: {preview_type}")
         debug(f"current_preview_widget: {self.current_preview_widget}")

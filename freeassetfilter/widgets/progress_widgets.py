@@ -41,12 +41,20 @@ class CustomProgressBar(QWidget):
     Horizontal = 0
     Vertical = 1
     
-    def __init__(self, parent=None, is_interactive=True):
+    def __init__(self, parent=None, is_interactive=True, dpi_scale=None, global_font=None, settings_manager=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         # 方向属性
         self._orientation = self.Horizontal
@@ -68,7 +76,10 @@ class CustomProgressBar(QWidget):
         self.setStyleSheet("background-color: transparent;")
         
         # 获取全局字体
-        self.global_font = getattr(app, 'global_font', QFont())
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
         self.setFont(self.global_font)
         
         # 进度条属性
@@ -80,18 +91,13 @@ class CustomProgressBar(QWidget):
         self._is_interactive = is_interactive  # 新增：控制是否可交互
         
         # 外观属性，应用DPI缩放
-        # 尝试从应用实例获取主题颜色
-        app = QApplication.instance()
-        
-        # 获取辅助颜色auxiliary_color
+        # 尝试从设置管理器获取主题颜色
         auxiliary_color = "#f1f3f5"  # 默认辅助色
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            # 获取主题颜色
-            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
-            progress_color_str = settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
-            handle_color_str = settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
-            handle_hover_color_str = settings_manager.get_setting("appearance.colors.slider_handle_hover", "#5EE0D8")
+        if self._settings_manager is not None:
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
+            progress_color_str = self._settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
+            handle_color_str = self._settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
+            handle_hover_color_str = self._settings_manager.get_setting("appearance.colors.slider_handle_hover", "#5EE0D8")
             
             # 使用主题颜色
             self._bg_color = QColor(auxiliary_color)
@@ -544,11 +550,20 @@ class D_ProgressBar(QWidget):
     Horizontal = 0
     Vertical = 1
 
-    def __init__(self, parent=None, orientation=Horizontal, is_interactive=True):
+    def __init__(self, parent=None, orientation=Horizontal, is_interactive=True, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
+
         self._orientation = orientation
         self._is_interactive = is_interactive
 
@@ -783,36 +798,21 @@ class D_ProgressBar(QWidget):
             self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
     def _init_colors(self):
-        app = QApplication.instance()
+        accent_color_str = self._settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
+        secondary_color_str = self._settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
 
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            accent_color_str = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
-            secondary_color_str = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+        accent_color = QColor(accent_color_str)
+        secondary_color = QColor(secondary_color_str)
+        base_color_str = self._settings_manager.get_setting("appearance.colors.base_color", "#222222")
+        base_color = QColor(base_color_str)
 
-            accent_color = QColor(accent_color_str)
-            secondary_color = QColor(secondary_color_str)
-            base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#222222")
-            base_color = QColor(base_color_str)
-
-            self._track_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
-            self._bg_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
-            self._progress_color = QColor(accent_color_str)
-            self._handle_color = QColor(base_color_str)
-            self._handle_hover_color = QColor(base_color_str).lighter(110)
-            self._handle_pressed_color = QColor(base_color_str).darker(120)
-            self._handle_border_color = QColor(accent_color_str)
-        else:
-            accent_color = QColor("#B036EE")
-            secondary_color = QColor("#FFFFFF")
-
-            self._track_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
-            self._bg_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
-            self._progress_color = QColor("#B036EE")
-            self._handle_color = QColor("#FFFFFF")
-            self._handle_hover_color = QColor("#FFFFFF").lighter(110)
-            self._handle_pressed_color = QColor("#FFFFFF").darker(120)
-            self._handle_border_color = QColor("#B036EE")
+        self._track_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
+        self._bg_color = QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 102)
+        self._progress_color = QColor(accent_color_str)
+        self._handle_color = QColor(base_color_str)
+        self._handle_hover_color = QColor(base_color_str).lighter(110)
+        self._handle_pressed_color = QColor(base_color_str).darker(120)
+        self._handle_border_color = QColor(accent_color_str)
 
         self._gradient_mode = False
         self._bg_gradient_colors = []
@@ -1425,12 +1425,20 @@ class CustomValueBar(QWidget):
     Horizontal = 0
     Vertical = 1
     
-    def __init__(self, parent=None, orientation=Horizontal, interactive=True):
+    def __init__(self, parent=None, orientation=Horizontal, interactive=True, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         # 方向属性
         self._orientation = orientation
@@ -1469,18 +1477,13 @@ class CustomValueBar(QWidget):
         
         # 外观属性，应用DPI缩放（尺寸参数已在上面设置）
         
-        # 尝试从应用实例获取主题颜色
-        app = QApplication.instance()
-        
-        # 获取辅助颜色auxiliary_color
+        # 从设置管理器获取主题颜色
         auxiliary_color = "#f1f3f5"  # 默认辅助色
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            # 获取主题颜色
-            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
-            progress_color_str = settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
-            handle_color_str = settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
-            handle_hover_color_str = settings_manager.get_setting("appearance.colors.slider_handle_hover", "#5EE0D8")
+        if self._settings_manager is not None:
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
+            progress_color_str = self._settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
+            handle_color_str = self._settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
+            handle_hover_color_str = self._settings_manager.get_setting("appearance.colors.slider_handle_hover", "#5EE0D8")
             
             # 使用主题颜色
             self._bg_color = QColor(auxiliary_color)
@@ -1826,12 +1829,20 @@ class CustomVolumeBar(QWidget):
     """
     valueChanged = Signal(int)  # 值变化信号
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         # 设置尺寸参数
         # 尺寸关系：进度条高度 = 滑块半径，滑块直径 = 2 × 进度条高度
@@ -1857,16 +1868,12 @@ class CustomVolumeBar(QWidget):
         self._handle_fill_color = QColor(255, 255, 255)  # 内部填充为纯白色
         self._handle_border_width = int(2 * self.dpi_scale)  # 边框宽度，响应DPI缩放
         
-        # 尝试从应用实例获取主题颜色
-        
-        # 获取辅助颜色auxiliary_color
+        # 从设置管理器获取主题颜色
         auxiliary_color = "#f1f3f5"  # 默认辅助色
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            # 获取主题颜色
-            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
-            progress_color_str = settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
-            handle_color_str = settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
+        if self._settings_manager is not None:
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", auxiliary_color)
+            progress_color_str = self._settings_manager.get_setting("appearance.colors.progress_bar_fg", "#4ECDC4")
+            handle_color_str = self._settings_manager.get_setting("appearance.colors.slider_handle", "#4ECDC4")
             
             # 使用主题颜色
             self._bg_color = QColor(auxiliary_color)

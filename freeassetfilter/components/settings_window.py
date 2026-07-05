@@ -71,25 +71,22 @@ class ModernSettingsWindow(QDialog):
     settings_saved = Signal(dict)  # 设置保存信号
     player_restart_requested = Signal(dict)  # 请求立即重启播放器
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         super().__init__(parent, Qt.Dialog | Qt.WindowMaximizeButtonHint | Qt.WindowMinimizeButtonHint | Qt.WindowCloseButtonHint)
         
         self.setWindowTitle("设置")
         self.setSizeGripEnabled(False)
         
-        self.settings_manager = None
-        if parent is not None:
+        if dpi_scale is not None:
+            self._dpi_scale = dpi_scale
+        else:
+            self._dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        
+        self.settings_manager = settings_manager
+        if self.settings_manager is None and parent is not None:
             try:
                 if hasattr(parent, 'settings_manager'):
                     self.settings_manager = parent.settings_manager
-            except (RuntimeError, AttributeError):
-                pass
-        
-        if self.settings_manager is None:
-            try:
-                app = QApplication.instance()
-                if app is not None and hasattr(app, 'settings_manager'):
-                    self.settings_manager = app.settings_manager
             except (RuntimeError, AttributeError):
                 pass
         
@@ -131,8 +128,7 @@ class ModernSettingsWindow(QDialog):
             }}
         """)
 
-        app = QApplication.instance()
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        dpi_scale = self._dpi_scale
         handle_width = int(10)
         base_color = self.theme_manager.get_theme_colors()['base_color']
         normal_color = self.theme_manager.get_theme_colors()['normal_color']
@@ -212,8 +208,7 @@ class ModernSettingsWindow(QDialog):
         self.nav_widget = QWidget()
         self.nav_widget.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Expanding)
 
-        app = QApplication.instance()
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        dpi_scale = self._dpi_scale
         min_width = int(80 * dpi_scale)
         self.nav_widget.setMinimumWidth(min_width)
 
@@ -1703,8 +1698,7 @@ class ModernSettingsWindow(QDialog):
         """
         添加开发者设置项
         """
-        app = QApplication.instance()
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        dpi_scale = self._dpi_scale
 
         # 实验性功能开关（带警告提示）
         self.experimental_feature_switch = CustomSettingItem(
@@ -1742,8 +1736,7 @@ class ModernSettingsWindow(QDialog):
         """
         添加关于设置项
         """
-        app = QApplication.instance()
-        dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        dpi_scale = self._dpi_scale
 
         self.about_group = QGroupBox("关于 FreeAssetFilter")
         self.about_group.setStyleSheet(self.group_box_style)
@@ -2462,10 +2455,7 @@ class ModernSettingsWindow(QDialog):
         success_box.set_title("重置成功")
 
         # 获取主题颜色用于正文
-        app = QApplication.instance()
-        secondary_color = "#333333"
-        if hasattr(app, 'settings_manager'):
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
 
         # 设置提示文字，加粗红色显示
         full_text = f"<span style='color: {secondary_color};'>所有设置已恢复为默认值</span><br><span style='font-weight: bold; color: #F44336;'>请手动重新启动程序</span>"

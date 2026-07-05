@@ -31,35 +31,41 @@ class CustomControlMenu(QWidget):
     - 支持自定义内容布局
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, settings_manager=None):
         """
         初始化自定义控制菜单
         
         Args:
             parent: 父窗口部件
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
+            settings_manager: 设置管理器实例，None时自动创建
         """
         super().__init__(parent)
         
-        # 获取应用实例和DPI缩放因子
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        # DPI缩放因子注入
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            from PySide6.QtWidgets import QApplication
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        
+        # settings_manager注入
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         # 基础属性
         self._parent_widget = parent
         self._target_button = None
         self._position = "top"  # 菜单位置："top" 或 "bottom"，默认为上方
         
-        # 获取settings_manager实例（如果有）
-        self.settings_manager = None
-        if hasattr(app, 'settings_manager'):
-            self.settings_manager = app.settings_manager
-        
         # 外观属性，应用DPI缩放
         # 背景颜色：使用base_color
         self._bg_color = QColor(255, 255, 255)  # 默认白色背景
-        if self.settings_manager:
-            base_color_str = self.settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+        if self._settings_manager:
+            base_color_str = self._settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
             self._bg_color = QColor(base_color_str)
         
         self._shadow_color = QColor(0, 0, 0, 25)  # 阴影颜色，透明度25/255
@@ -93,8 +99,8 @@ class CustomControlMenu(QWidget):
         
         # 内容容器背景色：使用base_color
         container_style = "background-color: transparent;"
-        if self.settings_manager:
-            base_color_str = self.settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+        if self._settings_manager:
+            base_color_str = self._settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
             container_style = f"background-color: {base_color_str};"
         
         self.content_container.setStyleSheet(container_style)
@@ -276,23 +282,12 @@ class CustomControlMenu(QWidget):
         """
         更新菜单样式，用于主题变化时
         """
-        # 获取应用实例和settings_manager
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        settings_manager = None
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-        
         # 更新背景颜色：使用base_color
-        if settings_manager:
-            base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
-            self._bg_color = QColor(base_color_str)
+        base_color_str = self._settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
+        self._bg_color = QColor(base_color_str)
         
         # 更新内容容器背景色：使用base_color
-        container_style = "background-color: transparent;"
-        if settings_manager:
-            base_color_str = settings_manager.get_setting("appearance.colors.base_color", "#ffffff")
-            container_style = f"background-color: {base_color_str};"
+        container_style = f"background-color: {base_color_str};"
         
         self.content_container.setStyleSheet(container_style)
         

@@ -30,12 +30,15 @@ class FileScrollBar(QWidget):
 
     valueChanged = Signal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
-        app = QApplication.instance()
-        self._dpi_scale = getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
+        if dpi_scale is not None:
+            self._dpi_scale = dpi_scale
+        else:
+            app = QApplication.instance()
+            self._dpi_scale = getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
 
         self._minimum = 0
         self._maximum = 0

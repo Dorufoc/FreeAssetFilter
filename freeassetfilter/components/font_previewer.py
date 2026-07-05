@@ -175,14 +175,26 @@ class FontPreviewWidget(QWidget):
     负责加载字体文件并显示预览文本
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, settings_manager=None, dpi_scale=None):
         super().__init__(parent)
         debug("FontPreviewWidget 初始化")
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.default_font_size = getattr(app, 'default_font_size', 24)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+        self.default_font_size = getattr(QApplication.instance(), 'default_font_size', 24)
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
         
         self.current_file_path = ""
         self.current_font_family = ""
@@ -210,12 +222,10 @@ class FontPreviewWidget(QWidget):
         self.toolbar = QWidget()
         self.toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
-        app = QApplication.instance()
         auxiliary_color = "#3D3D3D"
         text_color = "#333333"
-        if hasattr(app, 'settings_manager'):
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
-            text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        text_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
         self.toolbar.setStyleSheet(f"background-color: {auxiliary_color};")
         
@@ -254,10 +264,7 @@ class FontPreviewWidget(QWidget):
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
-        app = QApplication.instance()
-        base_color = "#FFFFFF"
-        if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
 
         container.setStyleSheet(f"background-color: {base_color};")
         
@@ -277,12 +284,8 @@ class FontPreviewWidget(QWidget):
         default_font = QFont(self.global_font)
         self.text_edit.setFont(default_font)
 
-        app = QApplication.instance()
-        base_color = "#FFFFFF"
-        second_color = "#333333"
-        if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-            second_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        second_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
 
         self.text_edit.setStyleSheet(f"""
             QTextEdit {{
@@ -304,19 +307,15 @@ class FontPreviewWidget(QWidget):
 
     def _apply_theme(self):
         """应用主题"""
-        app = QApplication.instance()
-        if not hasattr(app, 'settings_manager'):
-            return
-
-        bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
-        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        bg_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
 
         self.setStyleSheet(f"""
             background-color: {bg_color};
         """)
 
-        auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
         self.toolbar.setStyleSheet(f"background-color: {auxiliary_color};")
 
         self.text_edit.setStyleSheet(f"""
@@ -544,14 +543,26 @@ class FontPreviewer(QWidget):
     包含窗口控件和FontPreviewWidget
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
         debug("FontPreviewer 初始化")
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
         self.setFont(self.global_font)
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
         
         self._init_ui()
         self._apply_theme()
@@ -567,11 +578,7 @@ class FontPreviewer(QWidget):
     
     def _apply_theme(self):
         """应用主题"""
-        app = QApplication.instance()
-        if not hasattr(app, 'settings_manager'):
-            return
-        
-        bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
+        bg_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
         self.setStyleSheet(f"background-color: {bg_color};")
     
     def set_file(self, file_path):

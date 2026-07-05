@@ -682,20 +682,27 @@ class LineNumberArea(QWidget):
     - 行号与文本行精确对齐
     """
     
-    def __init__(self, text_edit, parent=None):
+    def __init__(self, text_edit, parent=None, settings_manager=None):
         """
         初始化行号区域
         
         Args:
             text_edit: 关联的文本编辑器
             parent: 父控件
+            settings_manager: 设置管理器实例
         """
         super().__init__(parent)
         self.text_edit = text_edit
         self.setFixedWidth(40)  # 默认宽度
         
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
+        
         # 设置背景色和文字颜色
-        app = QApplication.instance()
         self.bg_color = QColor("#2d2d2d") if self._is_dark_theme() else QColor("#f0f0f0")
         self.text_color = QColor("#808080") if self._is_dark_theme() else QColor("#666666")
         self.border_color = QColor("#3d3d3d") if self._is_dark_theme() else QColor("#d0d0d0")
@@ -706,11 +713,8 @@ class LineNumberArea(QWidget):
     
     def _is_dark_theme(self):
         """检测当前是否为深色主题"""
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            theme = app.settings_manager.get_setting("appearance.theme", "default")
-            return theme == "dark"
-        return False
+        theme = self._settings_manager.get_setting("appearance.theme", "default")
+        return theme == "dark"
     
     def update_theme(self):
         """更新主题颜色"""
@@ -975,13 +979,25 @@ class TextPreviewWidget(QWidget):
     负责文本显示、格式渲染和用户交互
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         super().__init__(parent)
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.default_font_size = getattr(app, 'default_font_size', 12)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+        self.default_font_size = getattr(QApplication.instance(), 'default_font_size', 12)
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
         
         self.current_file_path = ""
         self.current_encoding = "auto"
@@ -1040,20 +1056,14 @@ class TextPreviewWidget(QWidget):
         toolbar = QWidget()
         toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        app = QApplication.instance()
-        toolbar_auxiliary_color = "#f1f3f5"
-        if hasattr(app, 'settings_manager'):
-            toolbar_auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+        toolbar_auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
         toolbar.setStyleSheet(f"background-color: {toolbar_auxiliary_color};")
         
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(10, 5, 10, 5)
         toolbar_layout.setSpacing(10)
         
-        app = QApplication.instance()
-        text_color = "#333333"
-        if hasattr(app, 'settings_manager'):
-            text_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        text_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
         icon_dir = os.path.join(os.path.dirname(__file__), '..', 'icons')
         font_icon_path = os.path.join(icon_dir, "font.svg")
@@ -1139,10 +1149,7 @@ class TextPreviewWidget(QWidget):
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(0)
 
-        app = QApplication.instance()
-        base_color = "#FFFFFF"
-        if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
 
         container.setStyleSheet(f"background-color: {base_color};")
         
@@ -1161,14 +1168,9 @@ class TextPreviewWidget(QWidget):
         default_font = QFont(self.global_font)
         self.text_edit.setFont(default_font)
 
-        app = QApplication.instance()
-        base_color = "#FFFFFF"
-        second_color = "#333333"
-        accent_color = "#007AFF"
-        if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-            second_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        second_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
         
         self.text_edit.setStyleSheet(f"""
             QTextEdit {{
@@ -1215,13 +1217,11 @@ class TextPreviewWidget(QWidget):
     
     def _apply_word_wrap_from_settings(self):
         """从全局设置读取并应用换行模式"""
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            word_wrap = app.settings_manager.get_setting("text_preview.word_wrap", True)
-            if word_wrap:
-                self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-            else:
-                self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
+        word_wrap = self._settings_manager.get_setting("text_preview.word_wrap", True)
+        if word_wrap:
+            self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
+        else:
+            self.text_edit.setLineWrapMode(QTextEdit.NoWrap)
     
     def _update_line_number_width(self):
         """更新行号区域宽度"""
@@ -1255,10 +1255,7 @@ class TextPreviewWidget(QWidget):
         self.search_bar = QWidget()
         self.search_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        app = QApplication.instance()
-        search_bar_auxiliary_color = "#f1f3f5"
-        if hasattr(app, 'settings_manager'):
-            search_bar_auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
+        search_bar_auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#f1f3f5")
         self.search_bar.setStyleSheet(f"background-color: {search_bar_auxiliary_color};")
         
         search_layout = QHBoxLayout(self.search_bar)
@@ -1300,10 +1297,8 @@ class TextPreviewWidget(QWidget):
         
         self.search_info_label = QLabel("0/0")
         self.search_info_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
-            self.search_info_label.setStyleSheet(f"color: {secondary_color};")
+        secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
+        self.search_info_label.setStyleSheet(f"color: {secondary_color};")
         search_layout.addWidget(self.search_info_label)
         
         self.search_next_button = CustomButton(
@@ -1336,14 +1331,10 @@ class TextPreviewWidget(QWidget):
 
         更新文本编辑器的样式，并在有代码高亮器时同步更新配色方案
         """
-        app = QApplication.instance()
-        if not hasattr(app, 'settings_manager'):
-            return
-
-        bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
-        base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-        accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+        bg_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
 
         self.setStyleSheet(f"""
             background-color: {bg_color};
@@ -1352,11 +1343,11 @@ class TextPreviewWidget(QWidget):
         if hasattr(self, 'search_button') and self.search_button:
             toolbar_widget = self.search_button.parentWidget()
             if toolbar_widget is not None:
-                toolbar_widget.setStyleSheet(f"background-color: {bg_color if False else app.settings_manager.get_setting('appearance.colors.auxiliary_color', '#f1f3f5')};")
+                toolbar_widget.setStyleSheet(f"background-color: {bg_color if False else self._settings_manager.get_setting('appearance.colors.auxiliary_color', '#f1f3f5')};")
 
         if hasattr(self, 'search_bar') and self.search_bar:
             self.search_bar.setStyleSheet(
-                f"background-color: {app.settings_manager.get_setting('appearance.colors.auxiliary_color', '#f1f3f5')};"
+                f"background-color: {self._settings_manager.get_setting('appearance.colors.auxiliary_color', '#f1f3f5')};"
             )
 
         self.text_edit.setStyleSheet(f"""
@@ -1447,10 +1438,8 @@ class TextPreviewWidget(QWidget):
             palette.setColor(QPalette.Text, fg_color)
 
             # 重新应用选中样式
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
-                if accent_color and accent_color.startswith('#') and len(accent_color) == 7:
+            accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+            if accent_color and accent_color.startswith('#') and len(accent_color) == 7:
                     r = int(accent_color[1:3], 16)
                     g = int(accent_color[3:5], 16)
                     b = int(accent_color[5:7], 16)
@@ -1489,11 +1478,7 @@ class TextPreviewWidget(QWidget):
             self.line_number_area.hide()
         
         # 重置换行模式为默认（纯文本模式的默认换行）
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            word_wrap = app.settings_manager.get_setting("text_preview.word_wrap", True)
-        else:
-            word_wrap = True
+        word_wrap = self._settings_manager.get_setting("text_preview.word_wrap", True)
         
         if word_wrap:
             self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
@@ -1763,20 +1748,13 @@ class TextPreviewWidget(QWidget):
         font_size = current_slider_value
         
         is_dark = False
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            # 使用正确的设置键名 appearance.theme
-            theme = app.settings_manager.get_setting("appearance.theme", "default")
-            is_dark = theme == "dark"
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#666666")
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#999999")
-        else:
-            secondary_color = "#333333"
-            base_color = "#FFFFFF"
-            normal_color = "#666666"
-            auxiliary_color = "#999999"
+        # 使用正确的设置键名 appearance.theme
+        theme = self._settings_manager.get_setting("appearance.theme", "default")
+        is_dark = theme == "dark"
+        secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#666666")
+        auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#999999")
         
         # 代码块背景使用 auxiliary_color
         code_bg = auxiliary_color
@@ -1833,11 +1811,7 @@ class TextPreviewWidget(QWidget):
         html = f"<html><head>{header_style}</head><body>{html}</body></html>"
 
         # Markdown 模式下根据设置启用/禁用自动换行
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            markdown_word_wrap = app.settings_manager.get_setting("text_preview.markdown_word_wrap", True)
-        else:
-            markdown_word_wrap = True
+        markdown_word_wrap = self._settings_manager.get_setting("text_preview.markdown_word_wrap", True)
             
         if markdown_word_wrap:
             self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
@@ -1857,15 +1831,11 @@ class TextPreviewWidget(QWidget):
                 self.line_number_area.show()
 
         # 从全局设置读取换行模式
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            if file_type == 'text':
-                word_wrap = app.settings_manager.get_setting("text_preview.word_wrap", True)
-            else:
-                # 代码文件默认不换行
-                word_wrap = False
+        if file_type == 'text':
+            word_wrap = self._settings_manager.get_setting("text_preview.word_wrap", True)
         else:
-            word_wrap = (file_type == 'text')
+            # 代码文件默认不换行
+            word_wrap = False
 
         if word_wrap:
             self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
@@ -2126,12 +2096,8 @@ class TextPreviewWidget(QWidget):
     def _highlight_search_results(self):
         """高亮搜索结果"""
         
-        app = QApplication.instance()
-        accent_color_hex = "#007AFF"
-        secondary_color_hex = "#666666"
-        if hasattr(app, 'settings_manager'):
-            accent_color_hex = app.settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
-            secondary_color_hex = app.settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
+        accent_color_hex = self._settings_manager.get_setting("appearance.colors.accent_color", "#007AFF")
+        secondary_color_hex = self._settings_manager.get_setting("appearance.colors.secondary_color", "#666666")
         
         accent_color = QColor(accent_color_hex)
         accent_color.setAlpha(127)
@@ -2204,13 +2170,25 @@ class TextPreviewer(QWidget):
     包含窗口控件和TextPreviewWidget
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         super().__init__(parent)
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
         self.setFont(self.global_font)
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
         
         self._init_ui()
         self._apply_theme()
@@ -2226,11 +2204,7 @@ class TextPreviewer(QWidget):
     
     def _apply_theme(self):
         """应用主题"""
-        app = QApplication.instance()
-        if not hasattr(app, 'settings_manager'):
-            return
-        
-        bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
+        bg_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#F5F5F5")
         self.setStyleSheet(f"background-color: {bg_color};")
     
     def set_file(self, file_path):

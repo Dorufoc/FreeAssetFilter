@@ -34,7 +34,7 @@ class D_MoreMenuItem(QPushButton):
     - 文本左对齐
     """
 
-    def __init__(self, text="", data=None, parent=None):
+    def __init__(self, text="", data=None, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         """
         初始化菜单项
 
@@ -42,16 +42,26 @@ class D_MoreMenuItem(QPushButton):
             text: 显示文本
             data: 关联数据
             parent: 父窗口部件
+            global_font: 全局字体
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
+            settings_manager: 设置管理器实例
         """
         super().__init__(text, parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
 
-        self.settings_manager = None
-        if hasattr(app, 'settings_manager'):
-            self.settings_manager = app.settings_manager
+        if settings_manager is not None:
+            self.settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self.settings_manager = SettingsManager()
 
         self._data = data if data is not None else text
 
@@ -136,22 +146,32 @@ class D_MoreMenu(QWidget):
     """
     itemClicked = Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         """
         初始化右键菜单
 
         Args:
             parent: 父窗口部件
+            global_font: 全局字体
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
+            settings_manager: 设置管理器实例
         """
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
 
-        self.settings_manager = None
-        if hasattr(app, 'settings_manager'):
-            self.settings_manager = app.settings_manager
+        if settings_manager is not None:
+            self.settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self.settings_manager = SettingsManager()
 
         self._items = []
         self._timeout_enabled = True

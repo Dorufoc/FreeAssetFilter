@@ -38,7 +38,7 @@ class CustomInputBox(QWidget):
     # 编辑完成信号，当用户按下回车键或失去焦点时发出
     editingFinished = Signal(str)
     
-    def _resolve_theme_colors(self, app, border_color, background_color, text_color,
+    def _resolve_theme_colors(self, settings_manager, border_color, background_color, text_color,
                               placeholder_color, active_border_color, active_background_color):
         """
         解析输入框主题颜色：
@@ -53,10 +53,8 @@ class CustomInputBox(QWidget):
             "active_background_color": active_background_color,
         }
 
-        if not hasattr(app, "settings_manager"):
+        if settings_manager is None:
             return resolved
-
-        settings_manager = app.settings_manager
 
         resolved["border_color"] = settings_manager.get_setting(
             "appearance.colors.input_border",
@@ -98,7 +96,10 @@ class CustomInputBox(QWidget):
                  placeholder_color="#e0e0e0",  # 使用normal_color
                  active_border_color="#007AFF",  # 使用accent_color
                  active_background_color="#ffffff",  # 使用base_color
-                 editable=True):  # 是否可编辑
+                 editable=True,  # 是否可编辑
+                 dpi_scale=None,  # DPI缩放因子
+                 global_font=None,
+                 settings_manager=None):
         """
         初始化自定义输入框
 
@@ -120,8 +121,17 @@ class CustomInputBox(QWidget):
         super().__init__(parent)
 
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+
+        # 注入 settings_manager
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         # 设置基本属性
         self.placeholder_text = placeholder_text
@@ -131,7 +141,7 @@ class CustomInputBox(QWidget):
         
         # 从应用实例解析主题颜色，优先 input_*，否则回退到当前主题基础色
         resolved_theme_colors = self._resolve_theme_colors(
-            app,
+            self._settings_manager,
             border_color,
             background_color,
             text_color,
@@ -152,7 +162,10 @@ class CustomInputBox(QWidget):
         self._active_background_color = QColor(resolved_theme_colors["active_background_color"])
         
         # 获取全局字体
-        self.global_font = getattr(app, 'global_font', QFont())
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
         
         # 初始化UI
         self.init_ui()
@@ -212,12 +225,7 @@ class CustomInputBox(QWidget):
         self.line_edit.setPlaceholderText(self.placeholder_text)
         # 为line_edit添加内部边距，确保不会覆盖父控件的边框
         # 获取主题文本颜色
-        text_color = "#333333"  # 使用secondary_color
-
-        # 尝试从应用实例获取主题颜色
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            text_color = app.settings_manager.get_setting("appearance.colors.input_text", "#000000")
+        text_color = self._settings_manager.get_setting("appearance.colors.input_text", "#000000")
 
         # 计算内边距，应用DPI缩放
         padding_left = int(8 * self.dpi_scale)
@@ -305,38 +313,36 @@ class CustomInputBox(QWidget):
         统一主题刷新入口
         重新从 settings_manager 读取输入框相关颜色并刷新显示。
         """
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            resolved_theme_colors = self._resolve_theme_colors(
-                app,
-                self._border_color.name(),
-                self._background_color.name(),
-                self._text_color.name(),
-                self._placeholder_color.name(),
-                self._active_border_color.name(),
-                self._active_background_color.name(),
-            )
+        resolved_theme_colors = self._resolve_theme_colors(
+            self._settings_manager,
+            self._border_color.name(),
+            self._background_color.name(),
+            self._text_color.name(),
+            self._placeholder_color.name(),
+            self._active_border_color.name(),
+            self._active_background_color.name(),
+        )
 
-            self._border_color = QColor(resolved_theme_colors["border_color"])
-            self._background_color = QColor(resolved_theme_colors["background_color"])
-            self._text_color = QColor(resolved_theme_colors["text_color"])
-            self._placeholder_color = QColor(resolved_theme_colors["placeholder_color"])
-            self._active_border_color = QColor(resolved_theme_colors["active_border_color"])
-            self._active_background_color = QColor(resolved_theme_colors["active_background_color"])
+        self._border_color = QColor(resolved_theme_colors["border_color"])
+        self._background_color = QColor(resolved_theme_colors["background_color"])
+        self._text_color = QColor(resolved_theme_colors["text_color"])
+        self._placeholder_color = QColor(resolved_theme_colors["placeholder_color"])
+        self._active_border_color = QColor(resolved_theme_colors["active_border_color"])
+        self._active_background_color = QColor(resolved_theme_colors["active_background_color"])
 
-            palette = self.line_edit.palette()
-            palette.setColor(self.line_edit.foregroundRole(), self._text_color)
+        palette = self.line_edit.palette()
+        palette.setColor(self.line_edit.foregroundRole(), self._text_color)
 
-            placeholder_role = None
-            if hasattr(QPalette, "ColorRole") and hasattr(QPalette.ColorRole, "PlaceholderText"):
-                placeholder_role = QPalette.ColorRole.PlaceholderText
-            elif hasattr(QPalette, "PlaceholderText"):
-                placeholder_role = QPalette.PlaceholderText
+        placeholder_role = None
+        if hasattr(QPalette, "ColorRole") and hasattr(QPalette.ColorRole, "PlaceholderText"):
+            placeholder_role = QPalette.ColorRole.PlaceholderText
+        elif hasattr(QPalette, "PlaceholderText"):
+            placeholder_role = QPalette.PlaceholderText
 
-            if placeholder_role is not None:
-                palette.setColor(placeholder_role, self._placeholder_color)
+        if placeholder_role is not None:
+            palette.setColor(placeholder_role, self._placeholder_color)
 
-            self.line_edit.setPalette(palette)
+        self.line_edit.setPalette(palette)
 
         self.update_style()
         self.repaint()

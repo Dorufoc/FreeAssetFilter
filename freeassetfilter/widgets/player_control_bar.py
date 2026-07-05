@@ -77,7 +77,7 @@ class PlayerControlBar(QWidget):
     keyPressed = Signal(object)  # 键盘按键信号，用于传递键盘事件到父窗口
     popupMenuVisibilityChanged = Signal(bool)  # 弹出菜单（速度/音量等）可见性变化信号
     
-    def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True):
+    def __init__(self, parent=None, show_lut_controls: bool = True, show_detach_button: bool = True, dpi_scale=None, global_font=None, settings_manager=None):
         """
         初始化播放器控制栏
 
@@ -85,15 +85,26 @@ class PlayerControlBar(QWidget):
             parent: 父控件
             show_lut_controls: 是否显示LUT相关控制按钮
             show_detach_button: 是否显示分离窗口按钮
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
         """
         super().__init__(parent)
 
         # 禁用焦点，确保键盘事件传递给父窗口（分离窗口）
         self.setFocusPolicy(Qt.NoFocus)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         self._is_playing = False
         self._current_position = 0.0
@@ -130,22 +141,12 @@ class PlayerControlBar(QWidget):
     
     def _load_control_bar_settings(self):
         """从设置管理器加载控制栏按钮可见性设置"""
-        app = QApplication.instance()
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            self._show_fullscreen_button = settings_manager.get_setting("player.control_bar_show_fullscreen", True)
-            self._show_lut_controls = settings_manager.get_setting("player.control_bar_show_lut", False)
-            self._show_subtitle_button = settings_manager.get_setting("player.control_bar_show_subtitle", False)
-            self._show_audio_button = settings_manager.get_setting("player.control_bar_show_audio", True)
-            self._show_volume_button = settings_manager.get_setting("player.control_bar_show_volume", True)
-            self._show_speed_button = settings_manager.get_setting("player.control_bar_show_speed", True)
-        else:
-            self._show_fullscreen_button = True
-            self._show_lut_controls = False
-            self._show_subtitle_button = False
-            self._show_audio_button = True
-            self._show_volume_button = True
-            self._show_speed_button = True
+        self._show_fullscreen_button = self._settings_manager.get_setting("player.control_bar_show_fullscreen", True)
+        self._show_lut_controls = self._settings_manager.get_setting("player.control_bar_show_lut", False)
+        self._show_subtitle_button = self._settings_manager.get_setting("player.control_bar_show_subtitle", False)
+        self._show_audio_button = self._settings_manager.get_setting("player.control_bar_show_audio", True)
+        self._show_volume_button = self._settings_manager.get_setting("player.control_bar_show_volume", True)
+        self._show_speed_button = self._settings_manager.get_setting("player.control_bar_show_speed", True)
 
     def _install_event_filter_to_children(self):
         """为所有子控件安装事件过滤器，捕获键盘事件"""
@@ -412,17 +413,13 @@ class PlayerControlBar(QWidget):
         app = QApplication.instance()
 
         # 更新全局字体，确保使用settings.json中定义的字体大小
-        self.global_font = getattr(app, 'global_font', QFont())
+        self.global_font = getattr(self, 'global_font', None) or getattr(app, 'global_font', QFont())
         self._time_label.setFont(self.global_font)
 
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            # 从设置中获取 second color 作为字体颜色
-            text_color = settings_manager.get_setting(
-                "appearance.colors.secondary_color", "#FFFFFF"
-            )
-        else:
-            text_color = "#FFFFFF"
+        # 从设置中获取 second color 作为字体颜色
+        text_color = self._settings_manager.get_setting(
+            "appearance.colors.secondary_color", "#FFFFFF"
+        )
 
         # 样式表中只设置颜色，不设置字体大小（字体大小由setFont控制）
         self._time_label.setStyleSheet(
@@ -537,10 +534,7 @@ class PlayerControlBar(QWidget):
     def _open_lut_manager_dialog(self):
         from .lut_manager_dialog import LutManagerDialog
         """打开LUT管理弹窗"""
-        app = QApplication.instance()
-        settings_manager = getattr(app, 'settings_manager', None)
-        
-        dialog = LutManagerDialog(self, settings_manager)
+        dialog = LutManagerDialog(self, self._settings_manager)
         dialog.lutSelected.connect(self._on_lut_selected)
         dialog.lutCleared.connect(self._on_lut_cleared)
         

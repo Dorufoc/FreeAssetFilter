@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtWidgets import QApplication
-
 
 def resolve_settings_manager(settings_manager: Any = None):
     """
@@ -17,10 +15,6 @@ def resolve_settings_manager(settings_manager: Any = None):
     """
     if settings_manager is not None:
         return settings_manager
-
-    app = QApplication.instance()
-    if app is not None and hasattr(app, "settings_manager"):
-        return app.settings_manager
 
     try:
         from freeassetfilter.core.settings_manager import SettingsManager

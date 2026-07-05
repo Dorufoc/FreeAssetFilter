@@ -48,13 +48,26 @@ class CustomSelectList(QWidget):
         default_height=50,
         min_width=50,
         min_height=37.5,
-        selection_mode="single"
+        selection_mode="single",
+        global_font=None,
+        dpi_scale=None,
+        settings_manager=None,
     ):
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
-        self.global_font = getattr(app, "global_font", QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), "dpi_scale_factor", 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), "global_font", QFont())
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         self.default_width = int(default_width * self.dpi_scale)
         self.default_height = int(default_height * self.dpi_scale)
@@ -105,9 +118,6 @@ class CustomSelectList(QWidget):
 
     def _apply_reference_list_style(self):
         """应用与文件夹预览器/压缩包预览器一致的 QListWidget 样式"""
-        app = QApplication.instance()
-        settings_manager = getattr(app, "settings_manager", None)
-
         current_colors = {
             "secondary_color": "#FFFFFF",
             "base_color": "#212121",
@@ -115,8 +125,7 @@ class CustomSelectList(QWidget):
             "normal_color": "#717171",
             "accent_color": "#B036EE"
         }
-        if settings_manager:
-            current_colors = settings_manager.get_setting("appearance.colors", current_colors)
+        current_colors = self._settings_manager.get_setting("appearance.colors", current_colors)
 
         base_color = current_colors.get("base_color", "#212121")
         secondary_color = current_colors.get("secondary_color", "#FFFFFF")
@@ -357,9 +366,8 @@ class CustomSelectList(QWidget):
         """计算内容所需宽度"""
         from PySide6.QtGui import QFontMetrics
 
-        app = QApplication.instance()
-        dpi_scale = getattr(app, "dpi_scale_factor", 1.0)
-        global_font = getattr(app, "global_font", QFont())
+        dpi_scale = self.dpi_scale
+        global_font = getattr(self, 'global_font', None) or getattr(QApplication.instance(), "global_font", QFont())
 
         font_metrics = QFontMetrics(global_font)
         max_text_width = 0

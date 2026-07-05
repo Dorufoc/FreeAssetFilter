@@ -26,19 +26,29 @@ class ColorSliderWidget(QWidget):
     
     color_changed = Signal(str)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None):
         """
         初始化颜色滑条控件
         
         Args:
             parent (QWidget): 父控件
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
+            global_font: 全局字体，None时从QApplication自动获取
         """
         super().__init__(parent)
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.settings_manager = getattr(app, 'settings_manager', None)
-        self.global_font_size = getattr(app, 'default_font_size', 8)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            app = QApplication.instance()
+            self.global_font = getattr(app, 'global_font', QFont())
+        
+        self.global_font_size = self.global_font.pointSize() if self.global_font.pointSize() > 0 else 8
         
         font_size = int(self.global_font_size * self.dpi_scale)
         

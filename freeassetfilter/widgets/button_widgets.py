@@ -50,6 +50,9 @@ class CustomButton(QPushButton):
         display_mode="text",
         height=20,
         tooltip_text="",
+        global_font=None,
+        dpi_scale=None,
+        settings_manager=None,
     ):
         """
         初始化自定义按钮
@@ -74,8 +77,11 @@ class CustomButton(QPushButton):
         self.setFocusPolicy(Qt.NoFocus)
         self.setCursor(Qt.PointingHandCursor)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            app = QApplication.instance()
+            self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
         self._height = int(self._original_height * self.dpi_scale)
 
         self._animations_initialized = False
@@ -92,9 +98,19 @@ class CustomButton(QPushButton):
         self._target_colors = None
         self._anim_progress = 1.0
 
-        self.global_font = QFont()
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(app, "global_font", QFont()) if app else QFont()
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
+
         self._button_font = QFont()
-        base_font = getattr(app, "global_font", QFont()) if app else QFont()
+        base_font = self.global_font
         self.setFont(base_font)
 
         self._icon_renderer = None
@@ -289,11 +305,7 @@ class CustomButton(QPushButton):
         self._state_animation.start()
 
     def _get_settings_manager(self):
-        app = QApplication.instance()
-        if app and hasattr(app, "settings_manager"):
-            return app.settings_manager
-        from freeassetfilter.core.settings_manager import SettingsManager
-        return SettingsManager()
+        return self._settings_manager
 
     def _is_button_animation_enabled(self):
         return is_animation_enabled(
@@ -500,7 +512,7 @@ class CustomButton(QPushButton):
         app = QApplication.instance()
         self.dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
 
-        base_font = getattr(app, "global_font", QFont()) if app else QFont()
+        base_font = getattr(self, 'global_font', None) or (getattr(app, "global_font", QFont()) if app else QFont())
         self.setFont(base_font)
 
         self._height = self._calculate_optimal_height()
@@ -623,8 +635,8 @@ class CustomButton(QPushButton):
         if event is not None:
             super().resizeEvent(event)
 
-        app = QApplication.instance()
-        new_dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
+        _app = QApplication.instance()
+        new_dpi_scale = getattr(_app, "dpi_scale_factor", 1.0) if _app else 1.0
         if new_dpi_scale != self.dpi_scale:
             self.update_style()
 

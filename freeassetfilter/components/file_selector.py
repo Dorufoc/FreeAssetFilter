@@ -97,6 +97,9 @@ from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_ex
 from freeassetfilter.widgets.file_selector_model import FileSelectorListModel, FileListView
 from freeassetfilter.widgets.file_selector_delegate import FileBlockCardDelegate
 from freeassetfilter.widgets.file_horizontal_card_delegate import FileHorizontalCardDelegate
+from freeassetfilter.services.file_service import FileService
+from freeassetfilter.services.favorites_service import FavoritesService
+from freeassetfilter.services.drive_service import DriveService
 
 
 class ThumbnailGeneratorThread(QThread):
@@ -156,61 +159,10 @@ class DriveListLoaderThread(QThread):
 
             if sys.platform == 'win32':
                 try:
-                    import ctypes
-                    kernel32 = ctypes.windll.kernel32
-                    drives_bitmask = kernel32.GetLogicalDrives()
-                    for drive in range(26):
-                        if drives_bitmask & (1 << drive):
-                            local_drives.append(chr(65 + drive) + ':')
+                    local_drives = DriveService._list_windows_drives()
+                    network_locations = DriveService._list_windows_network_locations()
                 except Exception as e:
-                    warning(f"获取本地盘符失败: {e}")
-
-                try:
-                    import ctypes
-                    from ctypes import wintypes
-                    mpr = ctypes.WinDLL('mpr')
-
-                    class NETRESOURCE(ctypes.Structure):
-                        _fields_ = [
-                            ('dwScope', wintypes.DWORD),
-                            ('dwType', wintypes.DWORD),
-                            ('dwDisplayType', wintypes.DWORD),
-                            ('dwUsage', wintypes.DWORD),
-                            ('lpLocalName', wintypes.LPWSTR),
-                            ('lpRemoteName', wintypes.LPWSTR),
-                            ('lpComment', wintypes.LPWSTR),
-                            ('lpProvider', wintypes.LPWSTR)
-                        ]
-
-                    resource_connected = 1
-                    resource_type_any = 0
-                    h_enum = wintypes.HANDLE()
-
-                    if mpr.WNetOpenEnumW(resource_connected, resource_type_any, 0, None, ctypes.byref(h_enum)) == 0:
-                        try:
-                            while True:
-                                buf_size = wintypes.DWORD(16384)
-                                count = wintypes.DWORD(0xFFFFFFFF)
-                                buf = ctypes.create_string_buffer(buf_size.value)
-                                result = mpr.WNetEnumResourceW(h_enum, ctypes.byref(count), buf, ctypes.byref(buf_size))
-                                if result != 0:
-                                    break
-
-                                ptr = ctypes.cast(buf, ctypes.POINTER(NETRESOURCE))
-                                for i in range(count.value):
-                                    res = ptr[i]
-                                    if res.lpLocalName:
-                                        local_name = ctypes.wstring_at(res.lpLocalName)
-                                        if local_name and local_name not in local_drives:
-                                            local_drives.append(local_name)
-                                    if res.lpRemoteName:
-                                        remote_name = ctypes.wstring_at(res.lpRemoteName)
-                                        if remote_name and remote_name not in network_locations:
-                                            network_locations.append(remote_name)
-                        finally:
-                            mpr.WNetCloseEnum(h_enum)
-                except Exception as e:
-                    debug(f"获取网络位置失败，保留本地盘符列表: {e}")
+                    warning(f"获取盘符列表失败: {e}")
             else:
                 local_drives = ['/']
 
@@ -282,27 +234,8 @@ class FileListLoaderThread(QThread):
                 if os.path.islink(self.current_path):
                     raise OSError("拒绝扫描符号链接目录")
 
-                with os.scandir(self.current_path) as entries:
-                    for entry in entries:
-                        if entry.name.startswith("."):
-                            continue
-
-                        try:
-                            if entry.is_symlink():
-                                continue
-
-                            stat = entry.stat(follow_symlinks=False)
-                            files.append({
-                                "name": entry.name,
-                                "path": entry.path,
-                                "is_dir": entry.is_dir(follow_symlinks=False),
-                                "size": stat.st_size,
-                                "modified": QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate),
-                                "created": QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate),
-                                "suffix": os.path.splitext(entry.name)[1].lower().lstrip('.')
-                            })
-                        except (OSError, PermissionError):
-                            continue
+                file_service = FileService()
+                files = file_service.scan_directory(self.current_path)
 
             self.loaded.emit(self.current_path, files)
         except Exception as e:
@@ -393,15 +326,28 @@ class CustomFileSelector(QWidget):
     preview_cancel_requested = Signal()  # 当点击正在预览的卡片时发出，用于取消预览
     drive_availability_changed = Signal(str, bool)  # drive_path, available — from background check
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
         
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
         
         # 获取全局字体
-        self.global_font = getattr(app, 'global_font', QFont())
+        app = QApplication.instance()
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(app, 'global_font', QFont())
+
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         # 设置组件字体
         self.setFont(self.global_font)
@@ -438,9 +384,14 @@ class CustomFileSelector(QWidget):
         self.save_path_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "last_path.json")
         
         # 收藏夹配置文件（延迟加载）
-        self.favorites_file = os.path.join(os.path.dirname(__file__), "..", "..", "config", "favorites.json")
+        self.favorites_file = os.path.join(os.path.dirname(__file__), "..", "..", "data", "favorites.json")
         self.favorites = []
         self._favorites_loaded = False
+        
+        # 初始化服务实例
+        self._file_service = FileService()
+        self._favorites_service = FavoritesService(self.favorites_file)
+        self._drive_service = DriveService()
         
         # 确保数据目录存在
         os.makedirs(os.path.dirname(self.save_path_file), exist_ok=True)
@@ -484,19 +435,14 @@ class CustomFileSelector(QWidget):
         self.setAcceptDrops(True)
         self.files_scroll_area.setAcceptDrops(True)
         
-        # 获取应用实例
-        app = QApplication.instance()
-        # 初始化设置管理器
-        from freeassetfilter.core.settings_manager import SettingsManager
-        settings_manager = getattr(app, 'settings_manager', SettingsManager())
-        
         # 检查是否有右键菜单传入的初始导航路径
+        app = QApplication.instance()
         initial_navigate_path = getattr(app, 'initial_navigate_path', None)
         if initial_navigate_path and self._is_valid_selector_path(initial_navigate_path):
             self.current_path = initial_navigate_path
             self._last_accessible_path = initial_navigate_path
             self._navigation_recovery_path = initial_navigate_path
-        elif settings_manager.get_setting("file_selector.restore_last_path", True):
+        elif self._settings_manager.get_setting("file_selector.restore_last_path", True):
             self.load_last_path()
         else:
             self.current_path = "All"
@@ -623,7 +569,7 @@ class CustomFileSelector(QWidget):
         app = QApplication.instance()
         background_color = "#f1f3f5"  # 默认窗口背景色
         if hasattr(app, 'settings_manager'):
-            background_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
+            background_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
         self.setStyleSheet(f"background-color: {background_color};")
         # 应用DPI缩放因子到布局参数
         scaled_spacing = int(2.5 * self.dpi_scale)
@@ -658,7 +604,7 @@ class CustomFileSelector(QWidget):
         app = QApplication.instance()
         base_color = "#212121"  # 默认base_color
         if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+            base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#212121")
         
         # 设置面板样式：隐藏边框，使用base_color作为背景色
         panel.setStyleSheet(f"QGroupBox {{ border: none; background-color: {base_color}; }}")
@@ -818,11 +764,11 @@ class CustomFileSelector(QWidget):
         accent_color = "#F0C54D"
         
         if hasattr(app, 'settings_manager'):
-            panel_bg_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#717171")
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
+            panel_bg_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#f1f3f5")
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131")
+            normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+            secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+            accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#F0C54D")
         
         self._card_spacing = int(4 * self.dpi_scale)
 
@@ -904,7 +850,7 @@ class CustomFileSelector(QWidget):
         app = QApplication.instance()
         base_color = "#FFFFFF"
         if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
         
         status_bar.setStyleSheet(f"QFrame {{ border: none; background-color: {base_color}; }}")
         layout = QHBoxLayout(status_bar)
@@ -943,12 +889,12 @@ class CustomFileSelector(QWidget):
         }
 
         if hasattr(app, "settings_manager"):
-            colors["base_color"] = app.settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
-            colors["auxiliary_color"] = app.settings_manager.get_setting("appearance.colors.auxiliary_color", colors["auxiliary_color"])
-            colors["normal_color"] = app.settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
-            colors["secondary_color"] = app.settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
-            colors["accent_color"] = app.settings_manager.get_setting("appearance.colors.accent_color", colors["accent_color"])
-            colors["panel_background"] = app.settings_manager.get_setting("appearance.colors.panel_background", colors["panel_background"])
+            colors["base_color"] = self._settings_manager.get_setting("appearance.colors.base_color", colors["base_color"])
+            colors["auxiliary_color"] = self._settings_manager.get_setting("appearance.colors.auxiliary_color", colors["auxiliary_color"])
+            colors["normal_color"] = self._settings_manager.get_setting("appearance.colors.normal_color", colors["normal_color"])
+            colors["secondary_color"] = self._settings_manager.get_setting("appearance.colors.secondary_color", colors["secondary_color"])
+            colors["accent_color"] = self._settings_manager.get_setting("appearance.colors.accent_color", colors["accent_color"])
+            colors["panel_background"] = self._settings_manager.get_setting("appearance.colors.panel_background", colors["panel_background"])
 
         return colors
 
@@ -1368,13 +1314,20 @@ class CustomFileSelector(QWidget):
             return self.favorites
         self._favorites_loaded = True
         try:
-            if os.path.exists(self.favorites_file):
-                with open(self.favorites_file, 'r', encoding='utf-8') as f:
-                    favorites_data = json.load(f)
-                    if isinstance(favorites_data, list):
-                        self.favorites = favorites_data
-                    else:
-                        warning(f"收藏夹数据格式错误，预期列表类型，实际为 {type(favorites_data).__name__}")
+            # 同步 FavoritesService 的文件路径（测试可能覆盖 favorites_file）
+            if self._favorites_service.favorites_file != self.favorites_file:
+                self._favorites_service.favorites_file = self.favorites_file
+                self._favorites_service._loaded = False
+            items = self._favorites_service.load()
+            # 向后兼容：新格式存储 List[str]（纯路径），旧格式存储 List[Dict]
+            self.favorites = []
+            for item in items:
+                if isinstance(item, str):
+                    self.favorites.append(
+                        {"path": item, "name": os.path.basename(item)}
+                    )
+                elif isinstance(item, dict) and "path" in item:
+                    self.favorites.append(item)
         except Exception as e:
             warning(f"加载收藏夹失败: {e}")
         return self.favorites
@@ -1389,10 +1342,11 @@ class CustomFileSelector(QWidget):
         """防抖到期后实际执行收藏夹保存"""
         if not self._favorites_loaded:
             self._load_favorites()
-        weak_self = weakref.ref(self)
-        QThreadPool.globalInstance().start(
-            _JsonWriteRunnable(self.favorites_file, lambda: (s := weak_self()) and s.favorites.copy())
-        )
+        try:
+            paths = [f["path"] for f in self.favorites if "path" in f]
+            self._favorites_service.save(paths)
+        except Exception as e:
+            warning(f"保存收藏夹失败: {e}")
     
     def _show_favorites_dialog(self):
         """
@@ -1411,11 +1365,11 @@ class CustomFileSelector(QWidget):
         accent_color = "#1890ff"
         
         if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-            auxiliary_color = app.settings_manager.get_setting("appearance.colors.auxiliary_color", "#E6E6E6")
-            normal_color = app.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+            base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+            auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#E6E6E6")
+            normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#808080")
+            secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+            accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
         
         dialog = CustomMessageBox(self)
         dialog.set_title("收藏夹")
@@ -1886,10 +1840,15 @@ class CustomFileSelector(QWidget):
         """
         动态获取当前系统存在的盘符列表和网络位置并更新到下拉框
         """
-        cached_items = self._build_drive_items(self._cached_local_drives, self._cached_network_locations)
-        if cached_items:
-            self._apply_drive_list(cached_items)
+        # 尝试使用 DriveService 同步获取盘符（快速路径）
+        try:
+            all_drives = self._drive_service.list_drives()
+            if all_drives:
+                self._apply_drive_list(["All"] + all_drives)
+        except Exception:
+            pass
 
+        # 异步加载（完整路径，包括网络位置）
         if self._drive_list_thread and self._drive_list_thread.isRunning():
             return
 
@@ -2564,40 +2523,12 @@ class CustomFileSelector(QWidget):
                 }
                 files.append(file_dict)
         else:
-            # 正常目录视图 - 使用 os.scandir() 替代 os.listdir() + QFileInfo
+            # 使用 FileService 扫描目录
             try:
                 if os.path.islink(self.current_path):
                     raise OSError("拒绝扫描符号链接目录")
 
-                # os.scandir() 返回的 DirEntry 对象已经缓存了文件元数据，性能更好
-                with os.scandir(self.current_path) as entries:
-                    for entry in entries:
-                        # 跳过隐藏文件
-                        if entry.name.startswith("."):
-                            continue
-                        
-                        try:
-                            if entry.is_symlink():
-                                continue
-
-                            # 使用 DirEntry 的 stat() 方法获取文件信息（缓存的，不触发额外系统调用）
-                            stat = entry.stat(follow_symlinks=False)
-                            
-                            # 构建文件信息字典
-                            file_dict = {
-                                "name": entry.name,
-                                "path": entry.path,
-                                "is_dir": entry.is_dir(follow_symlinks=False),
-                                "size": stat.st_size,
-                                "modified": QDateTime.fromSecsSinceEpoch(int(stat.st_mtime)).toString(Qt.ISODate),
-                                "created": QDateTime.fromSecsSinceEpoch(int(stat.st_ctime)).toString(Qt.ISODate),
-                                "suffix": os.path.splitext(entry.name)[1].lower().lstrip('.')
-                            }
-                            
-                            files.append(file_dict)
-                        except (OSError, PermissionError):
-                            # 跳过无法访问的文件
-                            continue
+                files = self._file_service.scan_directory(self.current_path)
 
             except Exception as e:
                 error(f"读取目录失败: {e}")
@@ -2615,46 +2546,18 @@ class CustomFileSelector(QWidget):
         """
         对文件列表进行排序
         """
-        if self.sort_by == "name":
-            files.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
-        elif self.sort_by == "size":
-            files.sort(key=lambda x: (not x["is_dir"], x["size"]))
-        elif self.sort_by == "modified":
-            files.sort(key=lambda x: (not x["is_dir"], x["modified"]))
-        elif self.sort_by == "created":
-            files.sort(key=lambda x: (not x["is_dir"], x["created"]))
-        
-        if self.sort_order == "desc":
-            files.reverse()
-        
-        return files
+        return self._file_service.sort_files(
+            files, key=self.sort_by, reverse=(self.sort_order == "desc")
+        )
     
     def _filter_files(self, files):
         """
         应用筛选器
         支持通配符 * 和 ?，对无效的正则表达式进行错误处理
         """
-        if self.filter_pattern == "*":
+        if not self.filter_pattern or self.filter_pattern == "*":
             return files
-        
-        filtered = []
-        # 将通配符转换为正则表达式
-        pattern = self.filter_pattern.replace(".", "\\.")
-        pattern = pattern.replace("*", ".*")
-        pattern = pattern.replace("?", ".")
-        pattern = f"^{pattern}$"
-        
-        try:
-            regex = re.compile(pattern, re.IGNORECASE)
-        except re.error:
-            # 正则表达式无效，返回空列表
-            return []
-        
-        for file in files:
-            if regex.match(file["name"]):
-                filtered.append(file)
-        
-        return filtered
+        return self._file_service.filter_files(files, pattern=self.filter_pattern)
     
     def _calculate_card_base_width(self):
         """
@@ -3170,15 +3073,15 @@ class CustomFileSelector(QWidget):
                     secondary_color = "#f1f3f5"
                     accent_color = "#1890ff"
                     if hasattr(app, 'settings_manager'):
-                        secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#f1f3f5")
-                        accent_color = app.settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
+                        secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#f1f3f5")
+                        accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#1890ff")
                     self.setStyleSheet(f"background-color: {secondary_color}; border: 3px dashed {accent_color}; border-radius: {int(8 * self.dpi_scale)}px;")
                     return True
             elif event.type() == QEvent.DragLeave:
                 app = QApplication.instance()
                 secondary_color = "#f1f3f5"
                 if hasattr(app, 'settings_manager'):
-                    secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#f1f3f5")
+                    secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#f1f3f5")
                 self.setStyleSheet(f"background-color: {secondary_color}; border: none;")
                 return True
             elif event.type() == QEvent.Drop:

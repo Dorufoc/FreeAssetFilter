@@ -28,6 +28,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         single_line_mode: bool = True,
         enable_delete_action: bool = False,
         parent=None,
+        settings_manager=None,
     ):
         self._single_line_mode = True
         self._enable_delete_action = False
@@ -35,6 +36,11 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         self._pressed_action_key: Optional[Tuple[str, str]] = None
         self._action_slide_states: Dict[str, dict] = {}
         self._active_action_slide_keys: set = set()
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         super().__init__(dpi_scale=dpi_scale, global_font=global_font, parent=parent)
         self._animation_timer = QTimer(self)
 
@@ -61,10 +67,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
             self._view.viewport().update()
 
     def _get_settings_manager(self):
-        app = QApplication.instance()
-        if app and hasattr(app, "settings_manager"):
-            return app.settings_manager
-        return SettingsManager()
+        return self._settings_manager
 
     def _darken_or_lighten_color(self, color_value: Any, percentage: float) -> QColor:
         settings_manager = self._get_settings_manager()
@@ -95,12 +98,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
 
     def _init_colors(self):
         try:
-            app = QApplication.instance()
-            settings_manager = getattr(app, "settings_manager", None) if app else None
-            if settings_manager is None:
-                settings_manager = SettingsManager()
-
-            self.accent_color = settings_manager.get_setting(
+            self.accent_color = self._settings_manager.get_setting(
                 "appearance.colors.accent_color",
                 "#1890ff",
             )

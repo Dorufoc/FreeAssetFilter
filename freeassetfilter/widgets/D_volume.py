@@ -28,18 +28,32 @@ class D_Volume(QWidget):
     progressValueChanged = Signal(int)
     progressInteractionEnded = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         """
         初始化音量控制组件
 
         Args:
             parent: 父窗口部件
+            global_font: 全局字体
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
+            settings_manager: 设置管理器实例，None时自动创建
         """
         super().__init__(parent)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
-        self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         self._volume = 100
 
@@ -61,12 +75,9 @@ class D_Volume(QWidget):
         self._percentage_label.setAlignment(Qt.AlignCenter)
         self._percentage_label.setFont(self.global_font)
 
-        app = QApplication.instance()
-        text_color = "#333333"
-        if hasattr(app, 'settings_manager'):
-            text_color = app.settings_manager.get_setting(
-                "appearance.colors.secondary_color", "#333333"
-            )
+        text_color = self._settings_manager.get_setting(
+            "appearance.colors.secondary_color", "#333333"
+        )
 
         font_size = int(6 * self.dpi_scale)
         self._percentage_label.setStyleSheet(
@@ -172,12 +183,9 @@ class D_Volume(QWidget):
 
     def update_style(self):
         """更新样式，用于主题变化时"""
-        app = QApplication.instance()
-        text_color = "#333333"
-        if hasattr(app, 'settings_manager'):
-            text_color = app.settings_manager.get_setting(
-                "appearance.colors.secondary_color", "#333333"
-            )
+        text_color = self._settings_manager.get_setting(
+            "appearance.colors.secondary_color", "#333333"
+        )
 
         font_size = int(6 * self.dpi_scale)
         self._percentage_label.setStyleSheet(

@@ -45,7 +45,7 @@ class CustomWindow(QWidget):
     - 可通过拖动边缘或四角调整大小
     """
     
-    def __init__(self, title="Custom Window", parent=None):
+    def __init__(self, title="Custom Window", parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -61,14 +61,27 @@ class CustomWindow(QWidget):
         self.resize_start_size = None
         self.resize_start_geometry = None
         
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
         
         # 增加边框宽度，便于用户抓住边缘和角落
         self.border_size = 0
         
-        self.global_font = getattr(app, 'global_font', QFont())
+        # 存储全局字体
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
         self.setFont(self.global_font)
+        
+        # 注入 settings_manager
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         self.init_ui()
         
@@ -90,13 +103,8 @@ class CustomWindow(QWidget):
         
         self.window_body = QWidget()
         
-        app = QApplication.instance()
-        window_bg_color = "#FFFFFF"
-        window_border_color = "#FFFFFF"
-        
-        if hasattr(app, 'settings_manager'):
-            window_bg_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-            window_border_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        window_bg_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        window_border_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
         
         self.window_body.setStyleSheet(f"""
             QWidget {{
@@ -346,7 +354,7 @@ class CustomMessageBox(QDialog):
     # 按钮点击信号，传递按钮索引
     buttonClicked = Signal(int)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         # 即使有parent，也要确保是独立窗口
         super().__init__(parent)
         # 设置窗口标志为顶级窗口，确保独立显示
@@ -359,12 +367,24 @@ class CustomMessageBox(QDialog):
         # 移除了保持在最顶层的设置，让窗口可以被其他窗口覆盖
         
         # 获取应用实例和DPI缩放因子
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
         
         # 获取全局字体
-        self.global_font = getattr(app, 'global_font', QFont())
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
         self.setFont(self.global_font)
+        
+        # 注入 settings_manager
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
         
         # 初始化区域内容
         self._title = ""
@@ -423,13 +443,8 @@ class CustomMessageBox(QDialog):
         main_layout.setSpacing(0)
         
         # 获取主题颜色
-        app = QApplication.instance()
-        base_color = "#FFFFFF"
-        secondary_color = "#333333"
-        
-        if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#FFFFFF")
+        secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
         self.window_body = QWidget()
         self.window_body.setStyleSheet(f"""
@@ -511,10 +526,7 @@ class CustomMessageBox(QDialog):
         self.input_layout.setSpacing(0)
         self.input_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
-        app = QApplication.instance()
-        secondary_color = "#333333"
-        if hasattr(app, 'settings_manager'):
-            secondary_color = app.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
         
         self.input_line_edit = CustomInputBox(
             parent=self,

@@ -54,7 +54,7 @@ class D_HoverMenu(QWidget):
 
     closed = Signal()
 
-    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None, background_alpha=1.0, enable_vertical_animation=False, content_padding: tuple = (0, 0, 0, 0), no_focus=False):
+    def __init__(self, parent=None, position="bottom", stay_on_top=True, hide_on_window_move=True, use_sub_widget_mode=False, fill_width=False, margin=0, border_radius=None, background_alpha=1.0, enable_vertical_animation=False, content_padding: tuple = (0, 0, 0, 0), no_focus=False, dpi_scale=None, settings_manager=None):
         """
         初始化悬浮菜单
 
@@ -71,6 +71,7 @@ class D_HoverMenu(QWidget):
             enable_vertical_animation: 是否启用垂直位移动画，默认 False（仅透明度动画）
             content_padding: 内容内边距 (左, 上, 右, 下) 像素，默认 (0, 0, 0, 0)
             no_focus: 是否不接受焦点（WindowDoesNotAcceptFocus），避免后续 setWindowFlags 重建窗口
+            settings_manager: 设置管理器实例
         """
         super().__init__(parent)
 
@@ -103,8 +104,16 @@ class D_HoverMenu(QWidget):
         # 禁用焦点，确保键盘事件传递给父窗口
         self.setFocusPolicy(Qt.NoFocus)
 
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
+
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = SettingsManager()
 
         self._position = position
         self._target_widget = None
@@ -1050,16 +1059,7 @@ class D_HoverMenu(QWidget):
 
     def paintEvent(self, event):
         """绘制圆角卡片 - 与HoverTooltip样式完全一致"""
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-        else:
-            from freeassetfilter.core.settings_manager import SettingsManager
-            settings_manager = SettingsManager()
-
-        current_colors = settings_manager.get_setting("appearance.colors", {})
+        current_colors = self._settings_manager.get_setting("appearance.colors", {})
         base_color = current_colors.get("base_color", "#ffffff")
         normal_color = current_colors.get("normal_color", "#333333")
 

@@ -97,18 +97,30 @@ class FolderContentList(QWidget):
     # 定义信号：请求在文件选择器中打开当前路径（路径，文件信息）
     open_in_selector_requested = Signal(str, object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_manager=None, global_font=None, dpi_scale=None):
         super().__init__(parent)
         debug("文件夹内容列表组件初始化")
 
         # 获取应用实例和DPI缩放因子
         from PySide6.QtWidgets import QApplication
         from PySide6.QtGui import QFont
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
 
         # 获取全局字体
-        self.global_font = getattr(app, 'global_font', QFont())
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(QApplication.instance(), 'global_font', QFont())
+
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
         # 设置组件字体
         self.setFont(self.global_font)
 
@@ -147,7 +159,7 @@ class FolderContentList(QWidget):
         main_layout.setContentsMargins(scaled_margin, scaled_margin, scaled_margin, scaled_margin)
 
         # 设置背景色
-        background_color = app.settings_manager.get_setting("appearance.colors.panel_background", "#2D2D2D")
+        background_color = self._settings_manager.get_setting("appearance.colors.panel_background", "#2D2D2D")
         self.setStyleSheet(f"background-color: {background_color};")
 
         # 使用统一的按钮高度（与压缩包预览器保持一致）
@@ -199,7 +211,7 @@ class FolderContentList(QWidget):
         self.scaled_font = self.global_font
 
         # 获取颜色设置
-        current_colors = app.settings_manager.get_setting("appearance.colors", {
+        current_colors = self._settings_manager.get_setting("appearance.colors", {
             "secondary_color": "#FFFFFF",
             "base_color": "#212121",
             "auxiliary_color": "#3D3D3D",

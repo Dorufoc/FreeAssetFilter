@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
 
 from freeassetfilter.core.settings_manager import SettingsManager
 from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.services.file_service import FileService
 from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.widgets.custom_scrollbar import FileScrollBar
@@ -106,7 +107,7 @@ class FileSelectorListModel(QAbstractListModel):
     })
     _icon_cache = OrderedDict()
 
-    def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
+    def __init__(self, dpi_scale=1.0, global_font=None, parent=None, settings_manager=None):
         super().__init__(parent)
         self._files: List[Dict[str, Any]] = []
         self._card_width: int = 150
@@ -120,9 +121,14 @@ class FileSelectorListModel(QAbstractListModel):
         self._pending_async_icons: Dict[str, tuple] = {}
         self._system_icon_retry_until: Dict[tuple, float] = {}
         self._attached_view_ref = None
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            self._settings_manager = SettingsManager()
 
     def _normalize_path(self, file_path: str) -> str:
-        return os.path.normpath(file_path) if file_path else ""
+        """标准化文件路径（委托到 FileService，保留以保持子类兼容）。"""
+        return FileService.normalize_path(file_path)
 
     def _rebuild_path_index(self) -> None:
         self._path_to_row.clear()
@@ -583,16 +589,11 @@ class FileSelectorListModel(QAbstractListModel):
         )
 
     def _get_theme_color_tuple(self):
-        app = QApplication.instance()
-        settings_manager = getattr(app, "settings_manager", None) if app else None
-        if settings_manager is None:
-            settings_manager = SettingsManager()
-
-        base_color = settings_manager.get_setting("appearance.colors.base_color", "#212121")
-        auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
-        normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#717171")
-        accent_color = settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
-        secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        auxiliary_color = self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        normal_color = self._settings_manager.get_setting("appearance.colors.normal_color", "#717171")
+        accent_color = self._settings_manager.get_setting("appearance.colors.accent_color", "#B036EE")
+        secondary_color = self._settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF")
         return base_color, auxiliary_color, normal_color, accent_color, secondary_color
 
     def _get_device_pixel_ratio(self) -> float:
@@ -982,7 +983,7 @@ class FileListView(QListView):
     file_drag_ended = Signal(dict, str)
     navigate_parent_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, dpi_scale=None, global_font=None, settings_manager=None):
         super().__init__(parent)
         self._pressed_index = QModelIndex()
         self._press_pos = None
@@ -1007,6 +1008,18 @@ class FileListView(QListView):
         self._path_transition_active = False
         self._path_transition_capturing_base = False
 
+        # 注入 DI 参数
+        if dpi_scale is not None:
+            self._dpi_scale = dpi_scale
+        else:
+            app = QApplication.instance()
+            self._dpi_scale = getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
+        self._global_font = global_font
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            self._settings_manager = SettingsManager()
+
         self._long_press_timer = QTimer(self)
         self._long_press_timer.setSingleShot(True)
         self._long_press_timer.timeout.connect(self._start_long_press_drag)
@@ -1019,10 +1032,6 @@ class FileListView(QListView):
         self._load_interaction_settings()
 
         # 自定义滚动条
-        self._dpi_scale = getattr(
-            QApplication.instance(), 'dpi_scale_factor', 1.0
-        ) if QApplication.instance() else 1.0
-
         self._custom_scrollbar = FileScrollBar(self)
         self._custom_scrollbar.setVisible(False)
 
@@ -1049,25 +1058,19 @@ class FileListView(QListView):
         self.setMouseTracking(True)
 
     def _load_interaction_settings(self) -> None:
-        app = QApplication.instance()
-        settings_manager = getattr(app, "settings_manager", None) if app else None
-        if settings_manager is None:
-            settings_manager = SettingsManager()
-
         try:
             self._touch_optimization_enabled = bool(
-                settings_manager.get_setting("file_selector.touch_optimization", True)
+                self._settings_manager.get_setting("file_selector.touch_optimization", True)
             )
             self._mouse_buttons_swapped = bool(
-                settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+                self._settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
             )
         except (RuntimeError, TypeError, ValueError) as error:
             debug(f"加载文件选择器交互设置失败: {error}")
             self._touch_optimization_enabled = True
             self._mouse_buttons_swapped = False
 
-        dpi_scale = getattr(app, "dpi_scale_factor", 1.0) if app else 1.0
-        self._touch_drag_threshold = int(10 * dpi_scale)
+        self._touch_drag_threshold = int(10 * self._dpi_scale)
         self._long_press_duration = 500
         self._path_transition_enabled = self._is_path_transition_enabled()
 

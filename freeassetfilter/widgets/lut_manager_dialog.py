@@ -103,17 +103,22 @@ class LutManagerDialog(CustomMessageBox):
     lutSelected = Signal(str)  # LUT选择信号（LUT文件路径）
     lutCleared = Signal()  # LUT清除信号
     
-    def __init__(self, parent: Optional[QWidget] = None, settings_manager=None):
+    def __init__(self, parent: Optional[QWidget] = None, settings_manager=None, dpi_scale=None):
         """
         初始化LUT管理弹窗
         
         Args:
             parent: 父窗口
             settings_manager: 设置管理器实例
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
         """
         super().__init__(parent)
         
-        self.settings_manager = settings_manager
+        if settings_manager is not None:
+            self.settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self.settings_manager = SettingsManager()
         self.lut_list: List[LUTInfo] = []
         self.lut_cards = []  # 存储卡片和对应的LUT信息
         self.selected_lut_id: Optional[str] = None
@@ -122,8 +127,10 @@ class LutManagerDialog(CustomMessageBox):
         
         # 获取DPI缩放因子
         from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(QApplication.instance(), 'dpi_scale_factor', 1.0)
         
         # 创建参考图像（如果不存在）
         self._ensure_reference_image()
@@ -165,20 +172,10 @@ class LutManagerDialog(CustomMessageBox):
     
     def _create_scroll_area(self):
         # 获取颜色设置
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        
-        if hasattr(app, 'settings_manager'):
-            settings_manager = app.settings_manager
-            base_color = settings_manager.get_setting("appearance.colors.base_color", "#1E1E1E")
-            normal_color = settings_manager.get_setting("appearance.colors.normal_color", "#808080")
-            secondary_color = settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
-            auxiliary_color = settings_manager.get_setting("appearance.colors.auxiliary_color", "#2D2D2D")
-        else:
-            base_color = "#1E1E1E"
-            normal_color = "#808080"
-            secondary_color = "#333333"
-            auxiliary_color = "#2D2D2D"
+        base_color = self.settings_manager.get_setting("appearance.colors.base_color", "#1E1E1E")
+        normal_color = self.settings_manager.get_setting("appearance.colors.normal_color", "#808080")
+        secondary_color = self.settings_manager.get_setting("appearance.colors.secondary_color", "#333333")
+        auxiliary_color = self.settings_manager.get_setting("appearance.colors.auxiliary_color", "#2D2D2D")
         
         # 创建滚动区域
         scroll_area = QScrollArea()

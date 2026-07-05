@@ -7,6 +7,8 @@ from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QMouseEvent, QPa
 from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
 from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.services.file_service import FileService
+from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
@@ -31,9 +33,10 @@ class FileStagingPoolListModel(FileSelectorListModel):
         self._max_cols = 1
 
     def _normalize_path(self, file_path: str) -> str:
+        """标准化路径：在 FileService 基础上添加不区分大小写。"""
         if not file_path:
             return ""
-        return os.path.normcase(os.path.normpath(file_path))
+        return os.path.normcase(FileService.normalize_path(file_path))
 
     def _display_path(self, file_path: str) -> str:
         return os.path.normpath(file_path) if file_path else ""
@@ -60,24 +63,8 @@ class FileStagingPoolListModel(FileSelectorListModel):
         path = str(file_info.get("path", "") or "")
         return os.path.splitext(path)[1].lower().lstrip(".") if path else ""
 
-    @staticmethod
-    def _format_file_size(size_bytes) -> str:
-        if size_bytes is None:
-            return ""
-        try:
-            size_value = float(size_bytes)
-        except (TypeError, ValueError):
-            return ""
-        if size_value < 0:
-            size_value = 0.0
-        units = ["B", "KB", "MB", "GB", "TB"]
-        unit_index = 0
-        while size_value >= 1024 and unit_index < len(units) - 1:
-            size_value /= 1024.0
-            unit_index += 1
-        if unit_index == 0:
-            return f"{int(size_value)} {units[unit_index]}"
-        return f"{size_value:.2f} {units[unit_index]}"
+    def _format_file_size(self, size_bytes) -> str:
+        return StagingPoolService.format_file_size(size_bytes)
 
     def _build_info_text(self, file_info: Dict[str, Any]) -> str:
         file_path = str(file_info.get("path", "") or "")
@@ -417,11 +404,15 @@ class FileStagingPoolListModel(FileSelectorListModel):
 
 
 class FileStagingPoolItemDelegate(QStyledItemDelegate):
-    def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
+    def __init__(self, dpi_scale=1.0, global_font=None, parent=None, settings_manager=None):
         super().__init__(parent)
         self._dpi_scale = float(dpi_scale or 1.0)
         self._global_font = global_font
         self._dragging_file_path = ""
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            self._settings_manager = SettingsManager()
 
     def set_dragging_file_path(self, file_path: Optional[str]) -> None:
         self._dragging_file_path = os.path.normcase(os.path.normpath(file_path)) if file_path else ""
@@ -433,16 +424,12 @@ class FileStagingPoolItemDelegate(QStyledItemDelegate):
         return QSize(320, 64)
 
     def _colors(self):
-        app = QApplication.instance()
-        settings_manager = getattr(app, "settings_manager", None) if app else None
-        if settings_manager is None:
-            settings_manager = SettingsManager()
         return {
-            "base": settings_manager.get_setting("appearance.colors.base_color", "#212121"),
-            "aux": settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131"),
-            "normal": settings_manager.get_setting("appearance.colors.normal_color", "#717171"),
-            "accent": settings_manager.get_setting("appearance.colors.accent_color", "#B036EE"),
-            "secondary": settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF"),
+            "base": self._settings_manager.get_setting("appearance.colors.base_color", "#212121"),
+            "aux": self._settings_manager.get_setting("appearance.colors.auxiliary_color", "#313131"),
+            "normal": self._settings_manager.get_setting("appearance.colors.normal_color", "#717171"),
+            "accent": self._settings_manager.get_setting("appearance.colors.accent_color", "#B036EE"),
+            "secondary": self._settings_manager.get_setting("appearance.colors.secondary_color", "#FFFFFF"),
         }
 
     def build_drag_pixmap(self, index: QModelIndex, preview_size: QSize, palette) -> QPixmap:
@@ -551,9 +538,13 @@ class FileStagingPoolListView(FileListView):
     drag_started = Signal(dict)
     drag_ended = Signal(dict, str)
 
-    def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
+    def __init__(self, dpi_scale=1.0, global_font=None, parent=None, settings_manager=None):
         self._dpi_scale = float(dpi_scale or 1.0)
         self._global_font = global_font
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            self._settings_manager = SettingsManager()
         self._delegate = None
         self._action_press_index = QModelIndex()
         self._card_motion_model = None
@@ -570,11 +561,11 @@ class FileStagingPoolListView(FileListView):
         self._card_motion_enabled = True
         self._card_motion_duration_ms = 105
         self._card_motion_last_update_rect = QRect()
-        super().__init__(parent)
+        super().__init__(parent, dpi_scale=self._dpi_scale, global_font=self._global_font, settings_manager=self._settings_manager)
         self._card_motion_timer = QTimer(self)
         self._card_motion_timer.setInterval(16)
         self._card_motion_timer.timeout.connect(self._advance_card_motion)
-        self._delegate = FileStagingPoolItemDelegate(self._dpi_scale, self._global_font, self)
+        self._delegate = FileStagingPoolItemDelegate(self._dpi_scale, self._global_font, self, settings_manager=self._settings_manager)
         self.setItemDelegate(self._delegate)
         self.file_clicked.connect(self.item_left_clicked.emit)
         self.file_right_clicked.connect(self.item_right_clicked.emit)
@@ -605,15 +596,11 @@ class FileStagingPoolListView(FileListView):
         self.setDefaultDropAction(Qt.CopyAction)
 
     def _load_interaction_settings(self) -> None:
-        app = QApplication.instance()
-        settings_manager = getattr(app, "settings_manager", None) if app else None
-        if settings_manager is None:
-            settings_manager = SettingsManager()
         try:
-            staging_touch = settings_manager.get_setting("file_staging.touch_optimization", None)
-            staging_swap = settings_manager.get_setting("file_staging.mouse_buttons_swap", None)
-            selector_touch = settings_manager.get_setting("file_selector.touch_optimization", True)
-            selector_swap = settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
+            staging_touch = self._settings_manager.get_setting("file_staging.touch_optimization", None)
+            staging_swap = self._settings_manager.get_setting("file_staging.mouse_buttons_swap", None)
+            selector_touch = self._settings_manager.get_setting("file_selector.touch_optimization", True)
+            selector_swap = self._settings_manager.get_setting("file_selector.mouse_buttons_swap", False)
             self._touch_optimization_enabled = bool(selector_touch if staging_touch is None else staging_touch)
             self._mouse_buttons_swapped = bool(selector_swap if staging_swap is None else staging_swap)
         except (RuntimeError, TypeError, ValueError) as error:

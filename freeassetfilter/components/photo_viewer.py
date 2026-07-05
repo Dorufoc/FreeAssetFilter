@@ -583,7 +583,7 @@ class ImageWidget(QWidget):
     """
     pixel_info_changed = Signal(dict)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_manager=None):
         super().__init__(parent)
         self.setMouseTracking(True)
         
@@ -592,6 +592,13 @@ class ImageWidget(QWidget):
         self.setMaximumSize(16777215, 16777215)
         
         # 不再需要获取设备像素比，Qt会自动处理
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
         
         # 初始化所有属性，确保在使用前都被定义
         self.source_image = None
@@ -638,12 +645,10 @@ class ImageWidget(QWidget):
         从设置管理器加载背景色设置
         """
         try:
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                # 获取保存的背景色键名，默认为base_color
-                saved_key = app.settings_manager.get_setting("photo_viewer.style.bg_color_key", "base_color")
-                if saved_key in self._bg_color_keys:
-                    self._current_bg_color_key = saved_key
+            # 获取保存的背景色键名，默认为base_color
+            saved_key = self._settings_manager.get_setting("photo_viewer.style.bg_color_key", "base_color")
+            if saved_key in self._bg_color_keys:
+                self._current_bg_color_key = saved_key
         except Exception as e:
             error(f"加载背景色设置失败: {e}")
     
@@ -652,10 +657,8 @@ class ImageWidget(QWidget):
         保存背景色设置到设置管理器
         """
         try:
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                app.settings_manager.set_setting("photo_viewer.style.bg_color_key", self._current_bg_color_key)
-                app.settings_manager.save_settings()
+            self._settings_manager.set_setting("photo_viewer.style.bg_color_key", self._current_bg_color_key)
+            self._settings_manager.save_settings()
         except Exception as e:
             error(f"保存背景色设置失败: {e}")
     
@@ -667,10 +670,8 @@ class ImageWidget(QWidget):
             str: 十六进制颜色值
         """
         try:
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                # 检查是否记忆背景色
-                remember_bg_color = app.settings_manager.get_setting("photo_viewer.style.remember_bg_color", True)
+            # 检查是否记忆背景色
+            remember_bg_color = self._settings_manager.get_setting("photo_viewer.style.remember_bg_color", True)
                 
                 if remember_bg_color:
                     # 使用保存的颜色键名获取颜色
@@ -684,7 +685,7 @@ class ImageWidget(QWidget):
                     "normal_color": "#e0e0e0",
                     "base_color": "#FFFFFF"
                 }
-                return app.settings_manager.get_setting(
+                return self._settings_manager.get_setting(
                     f"appearance.colors.{color_key}", 
                     default_colors.get(color_key, "#212121")
                 )
@@ -1447,12 +1448,15 @@ class PhotoViewer(QWidget):
     提供图片查看、缩放、平移等功能
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         """
         初始化照片查看器
 
         Args:
             parent: 父窗口部件
+            global_font: 全局字体，None时从QApplication自动获取
+            dpi_scale: DPI缩放因子，None时从QApplication自动获取
+            settings_manager: 设置管理器实例
         """
         super().__init__(parent)
         
@@ -1460,8 +1464,21 @@ class PhotoViewer(QWidget):
         from PySide6.QtGui import QFont
         app = QApplication.instance()
         
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
         
         self.setFont(self.global_font)
         
@@ -1488,10 +1505,7 @@ class PhotoViewer(QWidget):
         main_layout.setSpacing(0)
         
         # 设置整体背景色
-        app = QApplication.instance()
-        base_color = "#212121"
-        if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#212121")
         self.setStyleSheet(f"background-color: {base_color};")
         
         # 1. 图片显示区域
@@ -1574,13 +1588,20 @@ class GifWidget(QWidget):
     GIF显示部件，支持缩放、平移等功能
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_manager=None):
         super().__init__(parent)
         self.setMouseTracking(True)
         
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
         
         self.movie = None
         self.base_pixmap = None
@@ -1609,9 +1630,7 @@ class GifWidget(QWidget):
     
     def _load_bg_color_setting(self):
         try:
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                saved_key = app.settings_manager.get_setting("photo_viewer.style.bg_color_key", "base_color")
+            saved_key = self._settings_manager.get_setting("photo_viewer.style.bg_color_key", "base_color")
                 if saved_key in self._bg_color_keys:
                     self._current_bg_color_key = saved_key
         except Exception as e:
@@ -1619,9 +1638,7 @@ class GifWidget(QWidget):
     
     def _get_current_bg_color(self):
         try:
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                remember_bg_color = app.settings_manager.get_setting("photo_viewer.style.remember_bg_color", True)
+            remember_bg_color = self._settings_manager.get_setting("photo_viewer.style.remember_bg_color", True)
                 
                 if remember_bg_color:
                     color_key = self._current_bg_color_key
@@ -1633,7 +1650,7 @@ class GifWidget(QWidget):
                     "normal_color": "#e0e0e0",
                     "base_color": "#FFFFFF"
                 }
-                return app.settings_manager.get_setting(
+                return self._settings_manager.get_setting(
                     f"appearance.colors.{color_key}", 
                     default_colors.get(color_key, "#212121")
                 )
@@ -2053,9 +2070,7 @@ class GifWidget(QWidget):
     def _save_bg_color_setting(self):
         """保存背景色设置"""
         try:
-            app = QApplication.instance()
-            if hasattr(app, 'settings_manager'):
-                app.settings_manager.set_setting("photo_viewer.style.bg_color_key", self._current_bg_color_key)
+            self._settings_manager.set_setting("photo_viewer.style.bg_color_key", self._current_bg_color_key)
         except Exception as e:
             error(f"背景色设置保存失败: {e}")
 
@@ -2066,15 +2081,28 @@ class GifViewer(QWidget):
     提供GIF查看、播放暂停、缩放、平移等功能
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, global_font=None, dpi_scale=None, settings_manager=None):
         super().__init__(parent)
         
         from PySide6.QtWidgets import QApplication
         from PySide6.QtGui import QFont
         app = QApplication.instance()
         
-        self.global_font = getattr(app, 'global_font', QFont())
-        self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        if global_font is not None:
+            self.global_font = global_font
+        else:
+            self.global_font = getattr(app, 'global_font', QFont())
+        if dpi_scale is not None:
+            self.dpi_scale = dpi_scale
+        else:
+            self.dpi_scale = getattr(app, 'dpi_scale_factor', 1.0)
+        
+        # 初始化设置管理器
+        if settings_manager is not None:
+            self._settings_manager = settings_manager
+        else:
+            from freeassetfilter.core.settings_manager import SettingsManager
+            self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
         
         self.setFont(self.global_font)
         
@@ -2100,10 +2128,7 @@ class GifViewer(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        app = QApplication.instance()
-        base_color = "#212121"
-        if hasattr(app, 'settings_manager'):
-            base_color = app.settings_manager.get_setting("appearance.colors.base_color", "#212121")
+        base_color = self._settings_manager.get_setting("appearance.colors.base_color", "#212121")
         self.setStyleSheet(f"background-color: {base_color};")
         
         self.scroll_area = QScrollArea()
