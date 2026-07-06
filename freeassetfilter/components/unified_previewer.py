@@ -40,7 +40,7 @@ from freeassetfilter.components.file_info_previewer import FileInfoPreviewer
 from freeassetfilter.components.folder_content_list import FolderContentList
 from freeassetfilter.widgets.D_widgets import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
-from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager
+from freeassetfilter.core.managers.thumbnail_manager import get_thumbnail_manager
 from freeassetfilter.utils.path_utils import contains_injection_chars, validate_safe_path
 from freeassetfilter.utils.subprocess_utils import run_with_limited_output
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
@@ -81,7 +81,7 @@ class UnifiedPreviewer(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
         
         # 设置组件字体
@@ -1212,7 +1212,7 @@ class UnifiedPreviewer(QWidget):
         """
         try:
             from freeassetfilter.components.video_player import VideoPlayer
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
 
             # 从设置中读取播放器配置
             settings_manager = SettingsManager()
@@ -1273,7 +1273,7 @@ class UnifiedPreviewer(QWidget):
         try:
             # 使用视频播放器组件处理音频文件，因为它已经支持音频播放
             from freeassetfilter.components.video_player import VideoPlayer
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
 
             # 从设置中读取播放器配置
             settings_manager = SettingsManager()

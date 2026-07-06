@@ -29,7 +29,7 @@ from PySide6.QtSvgWidgets import QSvgWidget
 from PIL import Image, ImageFilter
 from collections import OrderedDict
 
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 import io
 import json
 import random
@@ -1219,7 +1219,7 @@ class AudioBackground(QWidget):
 
     def _generate_accent_colors(self):
         try:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             settings = SettingsManager()
             accent_hex = settings.get_setting("appearance.colors.accent_color", "#B036EE")
             accent_color = QColor(accent_hex)

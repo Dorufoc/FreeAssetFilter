@@ -27,6 +27,7 @@ from freeassetfilter.utils.app_logger import info, debug, warning, error, except
 from freeassetfilter.utils.path_utils import validate_safe_path, contains_injection_chars
 from freeassetfilter.utils.perf_metrics import increment_perf_counter, set_perf_metadata, track_perf
 from freeassetfilter.utils.subprocess_utils import run_with_limited_output
+from ..._paths import archive_7z_dir
 
 
 class Py7zCore:
@@ -90,7 +91,7 @@ class Py7zCore:
         # 1. 首先检查项目 core/7z 目录
         current_file = os.path.abspath(__file__)
         core_dir = os.path.dirname(current_file)
-        project_7z_path = os.path.join(core_dir, "7z", "7z.exe")
+        project_7z_path = str(archive_7z_dir() / "7z.exe")
         possible_paths.append(project_7z_path)
 
         # 2. 检查系统 PATH 中的 7z

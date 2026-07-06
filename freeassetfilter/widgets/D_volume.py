@@ -52,7 +52,7 @@ class D_Volume(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         self._volume = 100

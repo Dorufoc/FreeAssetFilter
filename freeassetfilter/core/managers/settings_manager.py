@@ -56,7 +56,8 @@ class SettingsManager:
 
     def _initialize_settings(self):
         if self._settings_file is None:
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from freeassetfilter.core._paths import core_dir
+            project_root = str(core_dir().parent)
             data_dir = os.path.join(project_root, "data")
             with self._settings_lock:
                 os.makedirs(data_dir, exist_ok=True)

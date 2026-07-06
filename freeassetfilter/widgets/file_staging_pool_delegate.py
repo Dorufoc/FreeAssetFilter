@@ -8,7 +8,7 @@ from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Sig
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionViewItem
 
-from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.utils.app_logger import debug
 from freeassetfilter.widgets.file_selector_delegate import FileBlockCardDelegate
 from freeassetfilter.widgets.file_staging_pool_model import FileStagingPoolListModel
@@ -39,7 +39,7 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
         super().__init__(
             dpi_scale=dpi_scale,

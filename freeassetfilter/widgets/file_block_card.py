@@ -49,12 +49,12 @@ from PySide6.QtGui import (
     QRegion,
 )
 
-from freeassetfilter.core.svg_renderer import SvgRenderer
-from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
 from freeassetfilter.utils.app_logger import debug, error
-from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path, get_thumbnail_manager
+from freeassetfilter.core.managers.thumbnail_manager import get_existing_thumbnail_path, get_thumbnail_manager
 from freeassetfilter.utils.async_icon_loader import AsyncIconLoader
 
 
@@ -492,7 +492,7 @@ class FileBlockCard(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
         self._flexible_width = None
 

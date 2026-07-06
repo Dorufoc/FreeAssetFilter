@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
 )
 
-from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 
@@ -170,7 +170,7 @@ class BaseCardDelegate(QStyledItemDelegate):
     def _ensure_animation_timer_running(self):
         if not self._active_animation_keys:
             return
-        from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+        from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
         hm = HeartbeatManager()
         try:
             hm.register_tick_callback(
@@ -300,7 +300,7 @@ class BaseCardDelegate(QStyledItemDelegate):
         if self._active_animation_keys:
             self._ensure_animation_timer_running()
             return
-        from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+        from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
         hm = HeartbeatManager()
         hm.unregister_tick_callback(f"base_card_delegate_anim_{id(self)}")
 

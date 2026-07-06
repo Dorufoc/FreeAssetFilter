@@ -42,7 +42,7 @@ from PySide6.QtCore import (
 # PIL支持已移除以提高性能
 
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from freeassetfilter.core.image_color_utils import load_raw_rgb_array
+from freeassetfilter.core.preview.image_color_utils import load_raw_rgb_array
 
 
 class RawProcessor(QThread):
@@ -597,7 +597,7 @@ class ImageWidget(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
         
         # 初始化所有属性，确保在使用前都被定义
@@ -1477,7 +1477,7 @@ class PhotoViewer(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
         
         self.setFont(self.global_font)
@@ -1600,7 +1600,7 @@ class GifWidget(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
         
         self.movie = None
@@ -2101,7 +2101,7 @@ class GifViewer(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
         
         self.setFont(self.global_font)

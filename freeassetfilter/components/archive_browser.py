@@ -44,7 +44,7 @@ from PySide6.QtCore import Qt, Signal, QFileInfo
 from PySide6.QtGui import QFont, QIcon
 
 # 导入 7z 核心模块
-from freeassetfilter.core.py7z_core import get_7z_core
+from freeassetfilter.core.native.bridges.py7z_core import get_7z_core
 
 
 class ArchiveBrowser(QWidget):
@@ -76,7 +76,7 @@ class ArchiveBrowser(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         # 初始化配置

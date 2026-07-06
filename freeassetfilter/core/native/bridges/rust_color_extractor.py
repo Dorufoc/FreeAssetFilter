@@ -46,10 +46,10 @@ class RustColorExtractorBridge:
         return bool(getattr(sys, "frozen", False))
 
     def _candidate_paths(self) -> List[Path]:
-        base_dir = Path(__file__).resolve().parent
-        bundled_dll = base_dir / "rust_color_extractor_native.dll"
-        dev_release_dll = base_dir / "color_extractor_rust" / "target" / "release" / "rust_color_extractor_native.dll"
-        dev_debug_dll = base_dir / "color_extractor_rust" / "target" / "debug" / "rust_color_extractor_native.dll"
+        native_dir = Path(__file__).resolve().parent.parent
+        bundled_dll = native_dir / "bin" / "rust_color_extractor_native.dll"
+        dev_release_dll = native_dir / "src" / "color_extractor_rust" / "target" / "release" / "rust_color_extractor_native.dll"
+        dev_debug_dll = native_dir / "src" / "color_extractor_rust" / "target" / "debug" / "rust_color_extractor_native.dll"
 
         if self._is_frozen_app():
             return [bundled_dll]

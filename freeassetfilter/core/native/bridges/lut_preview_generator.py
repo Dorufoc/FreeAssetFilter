@@ -35,7 +35,7 @@ except ImportError:
 
 from freeassetfilter.utils.lut_utils import CubeLUTParser, get_lut_preview_dir
 
-from freeassetfilter.core.cpp_lut_preview import warmup as cpp_warmup, generate_preview as cpp_generate_preview, is_cpp_available as _cpp_available
+from freeassetfilter.core.native.src.cpp_lut_preview import warmup as cpp_warmup, generate_preview as cpp_generate_preview, is_cpp_available as _cpp_available
 
 
 class LUTPreviewGenerator:

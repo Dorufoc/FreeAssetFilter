@@ -60,7 +60,7 @@ class D_MoreMenuItem(QPushButton):
         if settings_manager is not None:
             self.settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self.settings_manager = SettingsManager()
 
         self._data = data if data is not None else text
@@ -170,7 +170,7 @@ class D_MoreMenu(QWidget):
         if settings_manager is not None:
             self.settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self.settings_manager = SettingsManager()
 
         self._items = []

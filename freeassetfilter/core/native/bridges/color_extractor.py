@@ -37,7 +37,7 @@ def _ensure_rust_module():
         if _RUST_MODULE is not None:
             return _RUST_AVAILABLE
         try:
-            from .native import rust_color_extractor
+            from freeassetfilter.core.native import rust_color_extractor
             _RUST_AVAILABLE = True
             _RUST_MODULE = rust_color_extractor
             info("Rust DLL 扩展模块加载成功")

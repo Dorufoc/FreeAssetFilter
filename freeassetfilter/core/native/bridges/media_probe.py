@@ -32,7 +32,8 @@ _FFMPEG_WARMUP_RESULT: Optional[Dict[str, bool]] = None
 
 
 def _native_dir() -> Path:
-    return Path(__file__).resolve().parent / "native"
+    from ..._paths import native_bin_dir
+    return native_bin_dir()
 
 
 def _resolve_tool_path(tool_name: str) -> str:

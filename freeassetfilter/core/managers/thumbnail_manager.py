@@ -29,9 +29,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, Callable, Dict, Set, List, Union
 from pathlib import Path
 from dataclasses import dataclass
-from freeassetfilter.core.media_probe import get_ffmpeg_path, get_ffprobe_path
-from freeassetfilter.core.rust_thumbnail_bridge import RustThumbnailBridge
-from freeassetfilter.core.image_color_utils import load_raw_image, normalize_pil_image
+from freeassetfilter.core.native.bridges.media_probe import get_ffmpeg_path, get_ffprobe_path
+from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import RustThumbnailBridge
+from freeassetfilter.core.preview.image_color_utils import load_raw_image, normalize_pil_image
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error
@@ -296,7 +296,7 @@ class ThumbnailManager:
     def _ensure_rust_bridge(self):
         """延迟加载 Rust 原生引擎，首次实际使用时才初始化"""
         if self._rust_bridge is None:
-            from freeassetfilter.core.rust_thumbnail_bridge import RustThumbnailBridge
+            from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import RustThumbnailBridge
             self._rust_bridge = RustThumbnailBridge()
             if self._is_native_available():
                 self._native_batch_workers_video = self._get_native_batch_workers_video()
@@ -1954,7 +1954,7 @@ class ThumbnailManager:
                 "prefer_native" if prefer_native else "prefer_python",
             )
             timeout = max(int(self.BATCH_VIDEO_SUBPROCESS_TIMEOUT), int(self.VIDEO_PROCESSING_TIMEOUT) + 5)
-            project_root = str(Path(__file__).resolve().parents[2])
+            project_root = str(Path(__file__).resolve().parents[3])
 
             command = self._build_video_thumbnail_subprocess_command(
                 file_path,

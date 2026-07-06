@@ -28,8 +28,11 @@ from PySide6.QtCore import QObject, Signal, QTimer, Slot
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning, error, exception_details, sanitize_path
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 from freeassetfilter.utils.path_utils import validate_dll_path, get_safe_dll_paths
+
+# 导入 mpv DLL 路径解析（定位到 core/native/bin/）
+from ..._paths import native_bin_dir
 
 
 class MpvErrorCode(IntEnum):
@@ -295,9 +298,9 @@ class MPVDLLLoader:
         try:
             # 添加 DLL 搜索路径（libmpv 动态链接依赖）
             if sys.platform == "win32":
-                # 1. 依赖 DLL 所在目录（core/）
-                core_dir = os.path.dirname(os.path.abspath(__file__))
-                os.add_dll_directory(core_dir)
+                # 1. 依赖 DLL 所在目录（core/native/bin/）
+                mpv_runtime_dir = str(native_bin_dir())
+                os.add_dll_directory(mpv_runtime_dir)
                 # 2. MSYS2 MinGW 路径（开发环境）
                 msys2_mingw_bin = r"C:\msys64\mingw64\bin"
                 if os.path.isdir(msys2_mingw_bin):
@@ -344,11 +347,10 @@ class MPVDLLLoader:
         safe_paths.extend(get_safe_dll_paths("libmpv-2.dll"))
         safe_paths.extend(get_safe_dll_paths("libmpv.dll"))
         
-        # 2. 如果安全路径为空，回退到传统方式（但仍会经过验证）
+        # 2. 如果安全路径为空，回退到 DLL 目录（core/native/bin/）
         if not safe_paths:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            safe_paths.append(os.path.join(current_dir, "libmpv-2.dll"))
-            safe_paths.append(os.path.join(current_dir, "libmpv.dll"))
+            safe_paths.append(str(native_bin_dir() / "libmpv-2.dll"))
+            safe_paths.append(str(native_bin_dir() / "libmpv.dll"))
             
             # 添加系统PATH路径，但只保留系统目录
             if sys.platform == "win32":

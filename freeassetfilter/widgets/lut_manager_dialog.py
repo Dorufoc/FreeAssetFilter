@@ -37,7 +37,7 @@ from freeassetfilter.utils.lut_utils import (
     get_lut_display_name, load_lut_from_settings, save_lut_to_settings,
     remove_lut_from_settings, get_lut_storage_dir, get_lut_preview_dir
 )
-from freeassetfilter.core.lut_preview_generator import generate_lut_preview, create_default_reference_image
+from freeassetfilter.core.native.bridges.lut_preview_generator import generate_lut_preview, create_default_reference_image
 from freeassetfilter.utils.app_logger import info, debug, warning
 
 
@@ -71,7 +71,7 @@ class LutImportWorker(QThread):
             self.progress_updated.emit(3)
 
             try:
-                from freeassetfilter.core.lut_preview_generator import generate_lut_preview
+                from freeassetfilter.core.native.bridges.lut_preview_generator import generate_lut_preview
                 generate_lut_preview(result, lut_id)
             except Exception as e:
                 warning(f"生成LUT预览图失败: {e}")
@@ -117,7 +117,7 @@ class LutManagerDialog(CustomMessageBox):
         if settings_manager is not None:
             self.settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self.settings_manager = SettingsManager()
         self.lut_list: List[LUTInfo] = []
         self.lut_cards = []  # 存储卡片和对应的LUT信息

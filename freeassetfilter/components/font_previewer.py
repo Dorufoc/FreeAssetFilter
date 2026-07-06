@@ -193,7 +193,7 @@ class FontPreviewWidget(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
         
         self.current_file_path = ""
@@ -561,7 +561,7 @@ class FontPreviewer(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = getattr(QApplication.instance(), 'settings_manager', SettingsManager())
         
         self._init_ui()

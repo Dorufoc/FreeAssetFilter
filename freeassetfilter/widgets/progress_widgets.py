@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect
 from PySide6.QtSvg import QSvgRenderer
 
 # 用于SVG渲染
-from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import error
 import os
@@ -53,7 +53,7 @@ class CustomProgressBar(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
         
         # 方向属性
@@ -561,7 +561,7 @@ class D_ProgressBar(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         self._orientation = orientation
@@ -1437,7 +1437,7 @@ class CustomValueBar(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
         
         # 方向属性
@@ -1841,7 +1841,7 @@ class CustomVolumeBar(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
         
         # 设置尺寸参数

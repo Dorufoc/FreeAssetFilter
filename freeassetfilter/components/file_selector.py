@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import debug, warning, error
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QDialog, QApplication,
@@ -83,7 +83,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtSvgWidgets import QSvgWidget
-from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 from freeassetfilter.widgets import CustomButton, CustomInputBox, CustomWindow, CustomMessageBox
 from freeassetfilter.widgets.file_block_card import FileBlockCard
 from freeassetfilter.widgets.file_staging_pool_model import FileStagingPoolListModel
@@ -93,7 +93,7 @@ from freeassetfilter.widgets.dropdown_menu import CustomDropdownMenu
 from freeassetfilter.widgets.hover_tooltip import HoverTooltip
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.utils.file_icon_helper import get_file_icon_path
-from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path, is_media_file
+from freeassetfilter.core.managers.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path, is_media_file
 from freeassetfilter.widgets.file_selector_model import FileSelectorListModel, FileListView
 from freeassetfilter.widgets.file_selector_delegate import FileBlockCardDelegate
 from freeassetfilter.widgets.file_horizontal_card_delegate import FileHorizontalCardDelegate
@@ -346,7 +346,7 @@ class CustomFileSelector(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
         
         # 设置组件字体

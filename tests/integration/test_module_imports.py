@@ -40,7 +40,7 @@ ALL_MODULES = [
     "freeassetfilter.core.mpv_manager",
     "freeassetfilter.core.mpv_player_core",
     "freeassetfilter.core.py7z_core",
-    "freeassetfilter.core.rust_thumbnail_bridge",
+    "freeassetfilter.core.native.bridges.rust_thumbnail_bridge",
     "freeassetfilter.core.settings_manager",
     "freeassetfilter.core.svg_renderer",
     "freeassetfilter.core.theme_manager",
@@ -48,12 +48,12 @@ ALL_MODULES = [
     "freeassetfilter.core.update_manager",
     # -- core / native --
     "freeassetfilter.core.native.rust_color_extractor",
-    # -- core / cpp_color_extractor --
-    "freeassetfilter.core.cpp_color_extractor.setup",
-    # -- core / cpp_lut_preview --
-    "freeassetfilter.core.cpp_lut_preview",
-    "freeassetfilter.core.cpp_lut_preview.setup",
-    "freeassetfilter.core.cpp_lut_preview.setup_mingw",
+    # -- core/native/src / cpp_color_extractor --
+    "freeassetfilter.core.native.src.cpp_color_extractor.setup",
+    # -- core/native/src / cpp_lut_preview --
+    "freeassetfilter.core.native.src.cpp_lut_preview",
+    "freeassetfilter.core.native.src.cpp_lut_preview.setup",
+    "freeassetfilter.core.native.src.cpp_lut_preview.setup_mingw",
     # -- core / workers --
     "freeassetfilter.core.workers.drive_list_loader",
     "freeassetfilter.core.workers.file_list_loader",
@@ -121,9 +121,9 @@ _FRAGILE_MODULES = {
     # 原生依赖缺失：需要 rust_color_extractor_native.dll
     "freeassetfilter.core.native.rust_color_extractor",
     # 构建脚本：模块顶层调用 setup() 会解析 sys.argv 导致失败
-    "freeassetfilter.core.cpp_color_extractor.setup",
-    "freeassetfilter.core.cpp_lut_preview.setup",
-    "freeassetfilter.core.cpp_lut_preview.setup_mingw",
+    "freeassetfilter.core.native.src.cpp_color_extractor.setup",
+    "freeassetfilter.core.native.src.cpp_lut_preview.setup",
+    "freeassetfilter.core.native.src.cpp_lut_preview.setup_mingw",
 }
 
 
@@ -262,7 +262,7 @@ class TestAllModulesImport:
             "freeassetfilter.widgets",
             "freeassetfilter.libs",
             "freeassetfilter.icons",
-            "freeassetfilter.core.cpp_lut_preview",
+            "freeassetfilter.core.native.src.cpp_lut_preview",
         ]
         for pkg in packages:
             mod = importlib.import_module(pkg)

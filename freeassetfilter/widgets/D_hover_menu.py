@@ -20,7 +20,7 @@ from PySide6.QtCore import Qt, QPoint, QRect, Signal, QPropertyAnimation, QEasin
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QPainterPath, QCursor
 
 import time
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
 from freeassetfilter.utils.app_logger import debug
 
@@ -112,7 +112,7 @@ class D_HoverMenu(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         self._position = position

@@ -42,7 +42,7 @@ from PySide6.QtCore import (
 )
 
 # 导入MPV核心
-from freeassetfilter.core.mpv_player_core import (
+from freeassetfilter.core.native.bridges.mpv_player_core import (
     MPVPlayerCore, MpvErrorCode
 )
 
@@ -50,7 +50,7 @@ from freeassetfilter.core.mpv_player_core import (
 from freeassetfilter.utils.app_logger import info, warning, error, exception_details
 
 # 导入心跳管理器
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 
 
 class MPVOperationType(Enum):

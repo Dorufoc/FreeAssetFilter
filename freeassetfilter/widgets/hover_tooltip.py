@@ -73,7 +73,7 @@ class HoverTooltip(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         # 设置字体样式：创建一个新的字体实例，确保不受调用组件字体影响

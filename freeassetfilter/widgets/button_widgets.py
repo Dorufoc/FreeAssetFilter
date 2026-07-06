@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QPainter, QFont, QPen, QFontMetrics, QCursor
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QPushButton, QSizePolicy, QApplication
 
-from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
 
@@ -106,7 +106,7 @@ class CustomButton(QPushButton):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         self._button_font = QFont()

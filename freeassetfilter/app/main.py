@@ -228,7 +228,7 @@ class StartupWarmupThread(QThread):
 
     def run(self):
         try:
-            from freeassetfilter.core.media_probe import warmup_ffmpeg_tools
+            from freeassetfilter.core.native.bridges.media_probe import warmup_ffmpeg_tools
 
             warmup_ffmpeg_tools()
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
@@ -241,10 +241,10 @@ class StartupWarmupThread(QThread):
             error(f"FFmpeg 预热失败: {e}")
 
         try:
-            from freeassetfilter.core.cpp_lut_preview import warmup as lut_cpp_warmup
+            from freeassetfilter.core.native.src.cpp_lut_preview import warmup as lut_cpp_warmup
             lut_cpp_warmup()
 
-            from freeassetfilter.core.lut_preview_generator import get_preview_generator
+            from freeassetfilter.core.native.bridges.lut_preview_generator import get_preview_generator
             get_preview_generator()
         except (OSError, IOError, PermissionError, FileNotFoundError) as e:
             error(f"LUT 预热失败: {e}")
@@ -342,7 +342,7 @@ class FreeAssetFilterApp(QMainWindow):
         self._is_startup_phase = True  # 启动阶段标志，防止启动时重建UI
 
         # 初始化心跳管理器（用于协调所有主线程周期性工作）
-        from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+        from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
         self.heartbeat_manager = HeartbeatManager()
 
         # 启动任务完成标志，全部完成后触发更新检查
@@ -596,65 +596,49 @@ class FreeAssetFilterApp(QMainWindow):
             # QThread Python 包装器被 GC 时底层线程还在运行 → "QThread: Destroyed while thread '' is still running"
             _silent_worker = getattr(self.update_controller, '_silent_check_worker', None)
             self.update_controller.cancel_silent_check()
-            
+
             # ------------------------------------------------------------------
-            # _retired_worker_refs — 退休工人强引用列表
+            # _retired_worker_refs — 退休工人强引用列表（兜底）
             #
             # 用途：
-            #   保留已完成工作的 QThread 对象的强引用，防止 Python GC 在
-            #   QThread 对象仍持有底层操作系统线程句柄时提前销毁它。
+            #   保留 QThread 对象的强引用，防止 Python GC 在 QThread 对象仍持有
+            #   底层操作系统线程句柄时提前销毁它（terminate 后仍有短暂间隙）。
             #
-            # 为什么需要这个模式：
-            #   部分 QThread 子类（如 SilentUpdateCheckWorker）不运行事件循环
-            #   （没有调用 exec()），因此在 requestInterruption() + wait() 后
-            #   它们的 finished 信号可能不会触发，或者其 Python 包装器在父对象
-            #   （如 UpdateController）清理时因为设置了 setParent(None) 而失去
-            #   Qt 父子关系，导致 Python GC 回收 QThread 对象，进而触发
-            #   "QThread: Destroyed while thread is still running" 警告。
-            #
-            #   注意：deleteLater() 不能处理这个边缘情况，因为 deleteLater()
-            #   依赖事件循环来实际销毁对象，而静默检查线程没有事件循环。
-            #   唯一可靠的方案是持有强引用，让 QThread 对象存活到进程退出。
-            #
-            # 审计结论：
-            #   此模式在 Phase 4 线程优化审计中经过评审并确认为必要方案。
-            #   不要移除或替换这个模式——回归风险远大于收益。
-            #   参见：Phase 4, Task 21 (Threading Optimization Audit)
+            # 注意：deleteLater() 依赖事件循环来实际销毁对象，而静默检查线程
+            # 没有事件循环，因此唯一可靠的方案是持有强引用。
+            # 模块级 _global_qthread_refs 提供更长期的全局兜底。
             # ------------------------------------------------------------------
             if not hasattr(self, '_retired_worker_refs'):
                 self._retired_worker_refs = []
-            
-            # 保留当前线程引用
-            if _silent_worker and _silent_worker.isRunning():
+
+            # 立即终止静默检查线程
+            if _silent_worker and not _silent_worker.isFinished():
+                # requestInterruption() 已经由 cancel_silent_check() 调用
+                # 但 HTTP urlopen 是同步阻塞无法被中断，直接用 terminate()
+                _silent_worker.terminate()
+                _silent_worker.wait(500)
                 self._retired_worker_refs.append(_silent_worker)
                 _silent_worker.finished.connect(lambda w=_silent_worker: self._cleanup_retired_worker(w))
-            
-            # 保留已退休的线程引用
+
+            # 保留已退休的线程引用（防止 gc 在 terminate 生效前回收）
             _retired_workers = getattr(self.update_controller, '_retired_silent_workers', [])
             for w in _retired_workers:
-                if w and w.isRunning() and w not in self._retired_worker_refs:
+                if w and not w.isFinished() and w not in self._retired_worker_refs:
                     self._retired_worker_refs.append(w)
                     w.finished.connect(lambda worker=w: self._cleanup_retired_worker(worker))
-            
-            # 等待所有静默检查线程退出
-            # 超时设为 3000ms（而非 15000ms），基于以下考量：
-            # - 静默检查线程可能阻塞在同步 HTTP 请求上，无法被 requestInterruption 中断
-            # - 3 秒足以覆盖正常网络超时场景，过长等待会让窗口关闭感觉卡顿
-            # - 即使超时未退出，线程也会随进程退出而自动回收，不会造成资源泄漏
-            # - 同类线程清理（_safe_stop_qthread）统一使用 2000ms 超时，3000ms 已留有余量
-            _workers_to_wait = [w for w in self._retired_worker_refs if w.isRunning()]
-            if _workers_to_wait:
-                for w in _workers_to_wait:
-                    if not w.wait(3000):
-                        pass
-                    else:
-                        pass
-                # 清理已完成的线程引用，防止 _retired_worker_refs 无限增长
-                self._retired_worker_refs = [w for w in self._retired_worker_refs if w.isRunning()]
-            else:
-                pass
+
+            # 立即终止手动检查线程
             if hasattr(self.update_controller, '_check_worker') and self.update_controller._check_worker:
-                self._safe_stop_qthread(self.update_controller._check_worker, "UpdateCheckWorker")
+                cw = self.update_controller._check_worker
+                if cw.isRunning():
+                    cw.requestInterruption()
+                    cw.terminate()
+                    cw.wait(500)
+                    if cw not in self._retired_worker_refs:
+                        self._retired_worker_refs.append(cw)
+                        cw.finished.connect(lambda w=cw: self._cleanup_retired_worker(w))
+
+            # 下载线程：不强制终止（涉及文件 I/O），使用安全停止
             if hasattr(self.update_controller, '_download_worker') and self.update_controller._download_worker:
                 self._safe_stop_qthread(self.update_controller._download_worker, "UpdateDownloadWorker")
 
@@ -1123,7 +1107,7 @@ class FreeAssetFilterApp(QMainWindow):
         status_layout.addStretch()
 
         # 状态标签
-        from freeassetfilter.core.update_manager import get_app_version
+        from freeassetfilter.core.managers.update_manager import get_app_version
         self.status_label = QLabel(
             f"FreeAssetFilter {get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
         )
@@ -1555,7 +1539,7 @@ class FreeAssetFilterApp(QMainWindow):
 
         status_layout.addStretch()
 
-        from freeassetfilter.core.update_manager import get_app_version
+        from freeassetfilter.core.managers.update_manager import get_app_version
         self.status_label = QLabel(
             f"FreeAssetFilter {get_app_version()} | By Dorufoc & renmoren | 遵循AGPL-3.0协议开源"
         )
@@ -1644,7 +1628,7 @@ class FreeAssetFilterApp(QMainWindow):
         self.setUpdatesEnabled(False)
 
         # 清除SVG颜色缓存，确保新组件使用最新的主题颜色
-        from freeassetfilter.core.svg_renderer import SvgRenderer
+        from freeassetfilter.core.preview.svg_renderer import SvgRenderer
         SvgRenderer._invalidate_color_cache()
 
         try:
@@ -1827,7 +1811,7 @@ class FreeAssetFilterApp(QMainWindow):
         if app is None or hasattr(app, 'settings_manager') and app.settings_manager is not None:
             return
         try:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             settings_manager = SettingsManager()
             app.settings_manager = settings_manager
 
@@ -2026,7 +2010,7 @@ class FreeAssetFilterApp(QMainWindow):
         执行缩略图缓存清理
         """
         try:
-            from freeassetfilter.core.thumbnail_manager import clean_thumbnails
+            from freeassetfilter.core.managers.thumbnail_manager import clean_thumbnails
             deleted_count, remaining_count = clean_thumbnails(cleanup_period_days=cache_cleanup_period)
             info(f"[启动] 缩略图缓存清理完成: 删除 {deleted_count} 个文件，剩余 {remaining_count} 个文件")
 
@@ -2461,7 +2445,7 @@ def _run_installer_after_parent_exit(installer_path, expected_sha256, parent_pid
     - 再次校验安装包
     - 拉起安装程序
     """
-    from freeassetfilter.core.update_manager import verify_installer_file
+    from freeassetfilter.core.managers.update_manager import verify_installer_file
 
     if not installer_path or not expected_sha256:
         error("安装 helper: 缺少安装包路径或 SHA256")
@@ -2909,7 +2893,7 @@ def main():
     worker_type, worker_payload = _parse_internal_worker_args(sys.argv)
     if worker_type == "thumbnail":
         try:
-            from freeassetfilter.core.thumbnail_manager import _run_batch_video_thumbnail_subprocess
+            from freeassetfilter.core.managers.thumbnail_manager import _run_batch_video_thumbnail_subprocess
 
             file_path = worker_payload.get("file_path", "")
             dpi_scale = float(worker_payload.get("dpi_scale", 1.0))

@@ -16,7 +16,7 @@ Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
 """
 
 import os
-from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 
 from freeassetfilter.utils.app_logger import debug, warning
 

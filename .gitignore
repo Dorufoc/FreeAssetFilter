@@ -1,109 +1,101 @@
-# Python cache
+# ============================================================
+# FreeAssetFilter .gitignore
+# ============================================================
+# 策略：只保留 Python 源码 + 运行时必备 DLL/EXE/.pyd，
+# 忽略所有需要单独编译的源文件（Rust/C++）和构建缓存。
+# 其他人克隆后可直接运行，无需本地编译。
+# ============================================================
+
+# --- Python cache ---
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
 
-# Temporary files
-.trae/
-*.log
+# --- Virtual environments ---
+.venv/
+venv/
+env/
 
-# Data directories
-data/thumbnails/
-data/LibreOfficePortable/
-*.jpg
-*.jpeg
-*.gif
-*.mp4
-*.avi
-*.mkv
-*.pdf
-
-# Configuration files
-config/
+# --- Runtime data (user-specific, regenerated on launch) ---
 data/
+config/
 
-
-# DeepSeek TUI per-project data
-.deepseek/
-
-# IDE files
+# --- IDE & editor files ---
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.trae/
+.deepseek/
+.kagent/
 
-# OS files
+# --- OS files ---
 .DS_Store
 Thumbs.db
-*.cube
-data/lut.cube
-pyqt5_style_colors.md
-freeassetfilter/widgets/file_horizontal_card_color_parameters.md
-freeassetfilter/widgets/input_widgets_colors.md
-color_style_parameters.md
-list_widgets_color_styles.md
-modern_settings_window_colors.md
-progress_widgets_track_color_explanation.md
-progress_widgets_colors.md
-switch_widgets_colors.md
-freeassetfilter/widgets/message_box_color_params.md
-freeassetfilter/widgets/setting_widgets.py颜色参数整理.md
-freeassetfilter/widgets/volume_slider_menu_color_parameters.md
-archive_browser_style_params.md
-freeassetfilter/components/file_selector_style_params.md
-progress_widgets_summary.md
-FreeAssetFilter.zip
-.VSCodeCounter/
-.venv/
-test_audio_background.py
-build/
-nuitka-crash-report.xml
-FreeAssetFilter.spec
-freeassetfilter.egg-info/
 
-# Rust/native thumbnail build artifacts
-# 默认忽略 Rust target 与构建缓存，仅保留源码与最终交付产物
-freeassetfilter/core/native/thumbnail_rust/target/
-freeassetfilter/core/native/thumbnail_rust/.cargo/
+# --- Logs & temp files ---
+*.log
+*.tmp
+*.temp
 
-# Rust/native color extractor build artifacts
-# 默认忽略 Rust target 与构建缓存，仅保留源码与最终交付产物
-freeassetfilter/core/native/color_extractor_rust/target/
-freeassetfilter/core/native/color_extractor_rust/.cargo/
-
-# 保留运行时依赖 DLL（bundled 路径，用户免编译直接运行）
-!freeassetfilter/core/native/opencv_world4120.dll
-!freeassetfilter/core/native/opencv_videoio_ffmpeg4130_64.dll
-!freeassetfilter/core/native/rust_color_extractor_native.dll
-!freeassetfilter/core/native/thumbnail_generator.dll
-
-# Test & runtime artifacts
-test_results/
+# --- Test & coverage artifacts ---
 .pytest_cache/
+test_results/
 .coverage
 coverage.xml
 htmlcov/
-*.tmp
-*.temp
 *.cache
-unit.md
 .icon_cache/
-freeassetfilter/widgets/file_block_card_backup_before_refactor.py
-freeassetfilter/components/file_selector_backup_before_refactor.py
-freeassetfilter/components/file_staging_pool.重构前备份.py
-freeassetfilter/widgets/file_horizontal_card.重构前备份.py
-EXIT_BLOCK_FIX_SUMMARY.md
-FIX_SUMMARY.md
+tests/gui/screenshots/
+
+# --- Build artifacts (PyInstaller, Nuitka) ---
+build/
+dist/
+*.spec
+nuitka-crash-report.xml
+
+# --- Dotfiles (agent workspaces, code index) ---
 .*
 
-# Development/test files (not tracked)
-test_file_horizontal_card_demo.py
-test_file_selector_view_mode.py
-test_loading_spinner.py
-test_volume_slider_fix.py
-AGENTS.md
-.kagent/
-tests/*.md
-# Versioned C++ .pyd build artifacts
-*.cp*-win_amd64.pyd
-tests/gui/screenshots/
+# --- Design/markdown notes (not source code) ---
+*.cube
+*.md
+
+# --- Backup & refactor notes ---
+*备份*
+*backup*
+FIX_SUMMARY.md
+EXIT_BLOCK_FIX_SUMMARY.md
+
+# --- Test/demo scripts ---
+test_*.py
+!tests/
+
+# ============================================================
+# CORE/ — only keep runtime essentials, ignore build sources
+# ============================================================
+
+# native/src/ — Rust source (NOT needed for runtime clone)
+freeassetfilter/core/native/src/color_extractor_rust/
+freeassetfilter/core/native/src/thumbnail_rust/
+# But keep: compiled .pyd and VCOMP140.DLL (runtime essential)
+!freeassetfilter/core/native/src/cpp_color_extractor/*.pyd
+!freeassetfilter/core/native/src/cpp_color_extractor/libwinpthread-1.dll
+!freeassetfilter/core/native/src/cpp_lut_preview/__init__.py
+!freeassetfilter/core/native/src/cpp_lut_preview/*.pyd
+!freeassetfilter/core/native/src/cpp_lut_preview/VCOMP140.DLL
+# Keep: src/__init__.py (so cpp_lut_preview is importable via package)
+!freeassetfilter/core/native/src/__init__.py
+
+# C++ build scripts & sources (NOT needed at runtime)
+freeassetfilter/core/native/src/cpp_color_extractor/setup.py
+freeassetfilter/core/native/src/cpp_lut_preview/setup.py
+freeassetfilter/core/native/src/cpp_lut_preview/setup_mingw.py
+freeassetfilter/core/native/src/cpp_lut_preview/lut_preview.cpp
+freeassetfilter/core/native/src/cpp_lut_preview/build/
+
+# native/bin/ — ALL runtime DLLs/EXEs are tracked (nothing to ignore here)
+# Rust build caches (when building from source)
+target/

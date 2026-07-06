@@ -21,13 +21,13 @@ from freeassetfilter.widgets.smooth_scroller import SmoothScroller
 from freeassetfilter.widgets.message_box import CustomMessageBox
 
 # 导入设置管理器
-from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 
 # 导入SVG渲染器，用于主题颜色变化时刷新SVG图标
-from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 
 # 导入主题管理器组件
-from freeassetfilter.core.theme_manager import ThemeManager
+from freeassetfilter.core.managers.theme_manager import ThemeManager
 
 # 导入系统模块
 import os
@@ -35,7 +35,7 @@ import sys
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, warning
-from freeassetfilter.core.update_manager import get_app_version
+from freeassetfilter.core.managers.update_manager import get_app_version
 
 # 字体缓存，避免重复获取系统字体
 _cached_font_families = None

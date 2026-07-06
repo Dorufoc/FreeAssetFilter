@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QColor, QPixmap, QIcon
 
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 
 
 class CustomSelectListItem:
@@ -66,7 +66,7 @@ class CustomSelectList(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         self.default_width = int(default_width * self.dpi_scale)

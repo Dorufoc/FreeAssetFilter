@@ -1856,7 +1856,7 @@ def is_dark_mode() -> bool:
         是否为深色模式
     """
     try:
-        from freeassetfilter.core.settings_manager import SettingsManager
+        from freeassetfilter.core.managers.settings_manager import SettingsManager
         sm = SettingsManager()
         theme = sm.get_setting("appearance.theme", "default")
         return theme == "dark"

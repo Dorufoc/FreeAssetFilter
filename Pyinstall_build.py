@@ -220,8 +220,8 @@ def collect_binaries() -> List[Tuple[str, str]]:
     project_root = get_project_root()
     binaries = []
     
-    # 1. libmpv-2.dll
-    libmpv_dll = project_root / "freeassetfilter" / "core" / "libmpv-2.dll"
+    # 1. libmpv-2.dll (位于 core/native/mpv/)
+    libmpv_dll = project_root / "freeassetfilter" / "core" / "native" / "mpv" / "libmpv-2.dll"
     if libmpv_dll.exists():
         binaries.append((str(libmpv_dll), "freeassetfilter/core"))
         print_info("收集到 libmpv-2.dll")
@@ -229,23 +229,23 @@ def collect_binaries() -> List[Tuple[str, str]]:
         print_warning("未找到 libmpv-2.dll")
     
     # 2. 7z 运行时文件
-    seven_zip_dir = project_root / "freeassetfilter" / "core" / "7z"
+    seven_zip_dir = project_root / "freeassetfilter" / "core" / "native" / "bin" / "7z"
     if seven_zip_dir.exists():
         for file_name in ["7z.exe", "7z.dll"]:
             file_path = seven_zip_dir / file_name
             if file_path.exists():
-                binaries.append((str(file_path), "freeassetfilter/core/7z"))
+                binaries.append((str(file_path), "freeassetfilter/core/native/bin/7z"))
                 print_info(f"收集到 {file_name}")
             else:
                 print_warning(f"未找到 {file_name}")
 
     # 3. ffmpeg/ffprobe（Rust 缩略图引擎的视频缩略图链路依赖）
-    native_dir = project_root / "freeassetfilter" / "core" / "native"
-    if native_dir.exists():
+    native_bin_dir = project_root / "freeassetfilter" / "core" / "native" / "bin"
+    if native_bin_dir.exists():
         for file_name in ["ffmpeg.exe", "ffprobe.exe"]:
-            file_path = native_dir / file_name
+            file_path = native_bin_dir / file_name
             if file_path.exists():
-                binaries.append((str(file_path), "freeassetfilter/core/native"))
+                binaries.append((str(file_path), "freeassetfilter/core/native/bin"))
                 print_info(f"收集到 {file_name}")
             else:
                 print_warning(f"未找到 {file_name}")
@@ -254,24 +254,24 @@ def collect_binaries() -> List[Tuple[str, str]]:
     # NOTE: cpp_color_extractor.pyd appears to be DEAD CODE.
     # grep confirms NO runtime `import` or dynamic load of `cpp_color_extractor` exists anywhere in the codebase.
     # The color extraction feature was superseded by the Rust DLL (rust_color_extractor_native.dll)
-    # loaded via freeassetfilter/core/native/rust_color_extractor.py → freeassetfilter/core/color_extractor.py.
-    # In contrast, cpp_lut_preview IS actively imported (core/lut_preview_generator.py, app/main.py).
+    # loaded via freeassetfilter/core/native/bridges/rust_color_extractor.py → freeassetfilter/core/preview/color_extractor.py.
+    # In contrast, cpp_lut_preview IS actively imported (core/preview/lut_preview_generator.py, freeassetfilter/app/main.py).
     # Keep the .pyd binary and these references in the build script in case it is revived.
-    cpp_color_dir = project_root / "freeassetfilter" / "core" / "cpp_color_extractor"
+    cpp_color_dir = project_root / "freeassetfilter" / "core" / "native" / "src" / "cpp_color_extractor"
     if cpp_color_dir.exists():
         for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
             dll_path = cpp_color_dir / dll_name
             if dll_path.exists():
-                binaries.append((str(dll_path), "freeassetfilter/core/cpp_color_extractor"))
+                binaries.append((str(dll_path), "freeassetfilter/core/native/src/cpp_color_extractor"))
         print_info(f"收集到 cpp_color_extractor DLLs")
     
     # 5. cpp_lut_preview DLLs
-    cpp_lut_dir = project_root / "freeassetfilter" / "core" / "cpp_lut_preview"
+    cpp_lut_dir = project_root / "freeassetfilter" / "core" / "native" / "src" / "cpp_lut_preview"
     if cpp_lut_dir.exists():
         for dll_name in ["libgcc_s_seh-1.dll", "libgomp-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"]:
             dll_path = cpp_lut_dir / dll_name
             if dll_path.exists():
-                binaries.append((str(dll_path), "freeassetfilter/core/cpp_lut_preview"))
+                binaries.append((str(dll_path), "freeassetfilter/core/native/src/cpp_lut_preview"))
         print_info(f"收集到 cpp_lut_preview DLLs")
     
     # 6. Rust 原生缩略图引擎 DLL（统一使用源码正式编译产物）
@@ -280,13 +280,14 @@ def collect_binaries() -> List[Tuple[str, str]]:
         / "freeassetfilter"
         / "core"
         / "native"
+        / "src"
         / "thumbnail_rust"
         / "target"
         / "release"
         / "thumbnail_generator.dll"
     )
     if rust_thumb_dll.exists():
-        binaries.append((str(rust_thumb_dll), "freeassetfilter/core/native"))
+        binaries.append((str(rust_thumb_dll), "freeassetfilter/core/native/bin"))
         print_info(f"收集到 thumbnail_generator.dll（来源: {rust_thumb_dll}）")
     else:
         print_warning("未找到 thumbnail_rust/target/release/thumbnail_generator.dll（将使用Python回退缩略图链路）")
@@ -297,13 +298,14 @@ def collect_binaries() -> List[Tuple[str, str]]:
         / "freeassetfilter"
         / "core"
         / "native"
+        / "src"
         / "color_extractor_rust"
         / "target"
         / "release"
         / "rust_color_extractor_native.dll"
     )
     if rust_color_dll.exists():
-        binaries.append((str(rust_color_dll), "freeassetfilter/core/native"))
+        binaries.append((str(rust_color_dll), "freeassetfilter/core/native/bin"))
         print_info(f"收集到 rust_color_extractor_native.dll（来源: {rust_color_dll}）")
     else:
         print_warning("未找到 color_extractor_rust/target/release/rust_color_extractor_native.dll")
@@ -313,13 +315,13 @@ def collect_binaries() -> List[Tuple[str, str]]:
     # NOTE: Dead code — no runtime import found (see note in section 4 above).
     if cpp_color_dir.exists():
         for pyd_file in cpp_color_dir.glob("*.pyd"):
-            binaries.append((str(pyd_file), "freeassetfilter/core/cpp_color_extractor"))
+            binaries.append((str(pyd_file), "freeassetfilter/core/native/src/cpp_color_extractor"))
             print_info(f"收集到 {pyd_file.name}")
     
     # cpp_lut_preview (actively used — keep)
     if cpp_lut_dir.exists():
         for pyd_file in cpp_lut_dir.glob("*.pyd"):
-            binaries.append((str(pyd_file), "freeassetfilter/core/cpp_lut_preview"))
+            binaries.append((str(pyd_file), "freeassetfilter/core/native/src/cpp_lut_preview"))
             print_info(f"收集到 {pyd_file.name}")
     
     print_success(f"共收集到 {len(binaries)} 个二进制文件")
@@ -332,9 +334,26 @@ def collect_hidden_imports() -> List[str]:
     
     hidden_imports = [
         # C++扩展模块
-        "freeassetfilter.core.cpp_color_extractor",  # NOTE: Likely dead code — no runtime import found (see section 4)
-        "freeassetfilter.core.cpp_lut_preview",      # actively used in core/lut_preview_generator.py + app/main.py
-        "freeassetfilter.core.rust_thumbnail_bridge",
+        "freeassetfilter.core.native.src.cpp_color_extractor",  # NOTE: Likely dead code — no runtime import found (see section 4)
+        "freeassetfilter.core.native.src.cpp_lut_preview",      # actively used in core/lut_preview_generator.py + app/main.py
+        "freeassetfilter.core.native.bridges.rust_thumbnail_bridge",
+        # 核心管理模块
+        "freeassetfilter.core.managers.settings_manager",
+        "freeassetfilter.core.managers.theme_manager",
+        "freeassetfilter.core.managers.heartbeat_manager",
+        "freeassetfilter.core.managers.update_manager",
+        # 预览模块（保留在 preview/ 中的模块）
+        "freeassetfilter.core.preview.image_color_utils",
+        "freeassetfilter.core.preview.svg_renderer",
+        # 管理器模块（moved from preview/ and video/）
+        "freeassetfilter.core.managers.thumbnail_manager",
+        "freeassetfilter.core.managers.mpv_manager",
+        # 原生桥接模块（moved from preview/, video/, archive/）
+        "freeassetfilter.core.native.bridges.media_probe",
+        "freeassetfilter.core.native.bridges.color_extractor",
+        "freeassetfilter.core.native.bridges.lut_preview_generator",
+        "freeassetfilter.core.native.bridges.mpv_player_core",
+        "freeassetfilter.core.native.bridges.py7z_core",
         # 重要包（第一轮瘦身：移除 numpy/scipy/skimage/imageio 的强制隐藏导入，
         # 交给 PyInstaller 按实际导入链分析，避免把整套科学计算/可选插件带进产物）
         "PIL",
@@ -701,9 +720,9 @@ def clean_native_sources_from_dist():
         return
 
     removable_dirs = [
-        dist_root / "native" / "thumbnail_rust",
-        dist_root / "native" / "color_extractor_rust",
-        dist_root / "cpp_lut_preview" / "build",
+        dist_root / "native" / "src" / "thumbnail_rust",
+        dist_root / "native" / "src" / "color_extractor_rust",
+        dist_root / "native" / "src" / "cpp_lut_preview" / "build",
     ]
 
     for removable_dir in removable_dirs:
@@ -717,9 +736,9 @@ def clean_native_sources_from_dist():
     removable_patterns = [
         "native/Cargo.toml",
         "native/Cargo.lock",
-        "cpp_lut_preview/setup.py",
-        "cpp_lut_preview/setup_mingw.py",
-        "cpp_lut_preview/*.cpp",
+        "native/src/cpp_lut_preview/setup.py",
+        "native/src/cpp_lut_preview/setup_mingw.py",
+        "native/src/cpp_lut_preview/*.cpp",
         "**/*.pdb",
         "**/*.exp",
         "**/*.lib",

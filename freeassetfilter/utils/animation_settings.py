@@ -17,7 +17,7 @@ def resolve_settings_manager(settings_manager: Any = None):
         return settings_manager
 
     try:
-        from freeassetfilter.core.settings_manager import SettingsManager
+        from freeassetfilter.core.managers.settings_manager import SettingsManager
         return SettingsManager()
     except Exception:
         return None

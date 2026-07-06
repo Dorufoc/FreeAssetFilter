@@ -148,7 +148,7 @@ class _DropdownMenuItem(QPushButton):
         if settings_manager is not None:
             self.settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self.settings_manager = SettingsManager()
 
         self._index = index
@@ -296,7 +296,7 @@ class _DropdownMenuList(QWidget):
         if settings_manager is not None:
             self.settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self.settings_manager = SettingsManager()
 
         self._items: List[Dict[str, Any]] = []
@@ -583,7 +583,7 @@ class Ddropmenu(QWidget):
         if settings_manager is not None:
             self.settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self.settings_manager = SettingsManager()
 
         self._position = position if position in self.POSITION_MAP else "bottom"

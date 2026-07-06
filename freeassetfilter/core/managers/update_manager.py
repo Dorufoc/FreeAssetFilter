@@ -76,7 +76,8 @@ def _find_fafversion_file():
         exe_dir = os.path.dirname(sys.executable)
         create_path = os.path.join(exe_dir, "FAFVERSION")
     else:
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        from freeassetfilter.core._paths import core_dir
+        project_root = str(core_dir().parent)
         create_path = os.path.join(project_root, "FAFVERSION")
 
     try:

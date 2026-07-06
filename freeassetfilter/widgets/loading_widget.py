@@ -11,7 +11,7 @@ from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtSvg import QSvgRenderer
 import os
 
-from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 from freeassetfilter.utils.app_logger import warning, error
 
 

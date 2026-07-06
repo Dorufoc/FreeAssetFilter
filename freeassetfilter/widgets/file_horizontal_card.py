@@ -62,9 +62,9 @@ sys.path.insert(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
 )
 
-from freeassetfilter.core.settings_manager import SettingsManager  # noqa: E402
-from freeassetfilter.core.svg_renderer import SvgRenderer  # noqa: E402
-from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path, get_thumbnail_manager  # noqa: E402
+from freeassetfilter.core.managers.settings_manager import SettingsManager  # noqa: E402
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer  # noqa: E402
+from freeassetfilter.core.managers.thumbnail_manager import get_existing_thumbnail_path, get_thumbnail_manager  # noqa: E402
 from freeassetfilter.utils.animation_settings import is_animation_enabled  # noqa: E402
 from freeassetfilter.utils.app_logger import debug, error  # noqa: E402
 from freeassetfilter.utils.file_icon_helper import get_icon_path  # noqa: E402
@@ -208,7 +208,7 @@ class CustomFileHorizontalCard(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         self.setFont(self.global_font)

@@ -43,12 +43,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QEvent, QThreadPool, QRunnable
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QCursor
 
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
-from freeassetfilter.core.mpv_manager import MPVManager, MPVState
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.mpv_manager import MPVManager, MPVState
 from freeassetfilter.widgets.D_hover_menu import D_HoverMenu
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.message_box import CustomMessageBox
-from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.utils.global_mouse_monitor import GlobalMouseMonitor
 from freeassetfilter.utils.app_logger import info, debug, warning, error
 from freeassetfilter.services.media_metadata_service import MediaMetadataService

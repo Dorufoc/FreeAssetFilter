@@ -8,7 +8,7 @@ FreeAssetFilter 主题管理器组件
 from PySide6.QtCore import Qt, Signal, QObject
 from PySide6.QtGui import QColor
 
-from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.utils.app_logger import info, debug, warning
 
 

@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QIcon, QPixmap
 
 # 用于SVG渲染
-from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 import os
 
 

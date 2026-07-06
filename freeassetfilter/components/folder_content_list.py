@@ -119,7 +119,7 @@ class FolderContentList(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = getattr(app, 'settings_manager', SettingsManager())
         # 设置组件字体
         self.setFont(self.global_font)

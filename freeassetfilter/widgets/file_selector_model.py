@@ -55,10 +55,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from freeassetfilter.core.settings_manager import SettingsManager
-from freeassetfilter.core.svg_renderer import SvgRenderer
+from freeassetfilter.core.managers.settings_manager import SettingsManager
+from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 from freeassetfilter.services.file_service import FileService
-from freeassetfilter.core.thumbnail_manager import get_existing_thumbnail_path
+from freeassetfilter.core.managers.thumbnail_manager import get_existing_thumbnail_path
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.widgets.custom_scrollbar import FileScrollBar
 from freeassetfilter.utils.async_icon_loader import AsyncIconLoader

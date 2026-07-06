@@ -21,7 +21,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QRunnable
 
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 from freeassetfilter.utils.app_logger import warning
 
 

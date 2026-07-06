@@ -15,13 +15,59 @@ import sys
 import time
 import subprocess
 import weakref
+import atexit
 
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea, QSizePolicy, QTextBrowser
 from PySide6.QtGui import QFont
 
-from freeassetfilter.core.update_manager import (
+# ---------------------------------------------------------------------------
+# 模块级 QThread 引用集
+#
+# 用途：在应用对象（FreeAssetFilterApp、UpdateController）被销毁后，仍保持
+#       对 QThread 的 Python 引用，防止 C++ QThread 析构时底层线程仍在运行
+#       导致 "QThread: Destroyed while thread is still running" 警告。
+#
+# 工作原理：
+#   1. _retire_worker() 将退休的 QThread 同时加入此模块级集合
+#   2. atexit 处理器等待所有集合中的线程在 Python 解释器关闭前退出
+#   3. 线程完成时，finished 信号将其从集合中移除
+# ---------------------------------------------------------------------------
+_global_qthread_refs: set[QThread] = set()
+_atexit_registered = False
+
+
+def _register_qthread_atexit():
+    """注册 atexit 处理器，确保解释器关闭前等待所有遗留线程退出。"""
+    global _atexit_registered
+    if _atexit_registered:
+        return
+    _atexit_registered = True
+
+    @atexit.register
+    def _wait_global_threads():
+        threads = list(_global_qthread_refs)
+        for t in threads:
+            if t.isRunning():
+                t.wait(5000)
+
+
+def _keep_qthread_alive(worker: QThread) -> None:
+    """将 QThread 加入模块级引用集，并连接 finished 信号以自动移除。"""
+    _global_qthread_refs.add(worker)
+    _register_qthread_atexit()
+
+    def _remove_from_global(w):
+        _global_qthread_refs.discard(w)
+
+    try:
+        worker.finished.connect(lambda w=worker: _remove_from_global(w))
+    except Exception:
+        pass
+
+
+from freeassetfilter.core.managers.update_manager import (
     UpdateCancelled,
     UpdateError,
     build_request_headers,
@@ -36,7 +82,7 @@ from freeassetfilter.widgets.message_box import CustomMessageBox
 from freeassetfilter.widgets.progress_widgets import D_ProgressBar
 from freeassetfilter.widgets.loading_widget import LoadingSpinner
 from freeassetfilter.widgets.smooth_scroller import SmoothScroller
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 
 
 class UpdateCheckWorker(QThread):
@@ -364,12 +410,9 @@ class UpdateController(QObject):
                 self._silent_check_worker.requestInterruption()
                 # 不等待线程结束：HTTP 请求是同步阻塞的，无法被中断
                 # 直接退休线程，保留引用直到完成信号触发，避免阻塞关闭流程
+                # _retire_silent_worker 内部已调用 setParent(None) 断开 Qt 父子关系，
+                # 并加入了模块级 _global_qthread_refs 兜底，防止 QThread 被提前销毁
                 self._retire_silent_worker(self._silent_check_worker)
-                # 断开 Qt 父子关系，防止 QThread 对象随父窗口销毁时触发 "Destroyed while thread is still running"
-                try:
-                    self._silent_check_worker.setParent(None)
-                except Exception:
-                    pass
                 self._silent_check_worker = None
         elif self._silent_check_worker:
             debug("UpdateController: 取消静默检查 - worker 存在但已不在运行")
@@ -412,6 +455,10 @@ class UpdateController(QObject):
             worker.finished.connect(lambda w=worker, workers=retired_workers: (s := weak_self()) and s._forget_retired_worker(w, workers))
         except Exception:
             pass
+
+        # 全局引用集兜底：防止 UpdateController / FreeAssetFilterApp 销毁后
+        # QThread Python 对象被 GC 时底层线程仍在运行 → 触发 Qt 警告
+        _keep_qthread_alive(worker)
 
     def _retire_check_worker(self, worker):
         self._retire_worker(worker, self._retired_check_workers)

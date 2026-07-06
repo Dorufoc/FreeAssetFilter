@@ -24,7 +24,7 @@ from PySide6.QtGui import QGuiApplication
 import os
 import re
 
-from .settings_manager import SettingsManager
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import debug, warning

@@ -54,10 +54,10 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QIcon, QColor, QPixmap, QFont, QAction
 
 # 导入缩略图管理器
-from freeassetfilter.core.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path
+from freeassetfilter.core.managers.thumbnail_manager import get_thumbnail_manager, get_existing_thumbnail_path
 
 # 导入心跳管理器
-from freeassetfilter.core.heartbeat_manager import HeartbeatManager
+from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 
 # 导入服务
 from freeassetfilter.services.staging_pool_service import StagingPoolService
@@ -172,7 +172,7 @@ class FileStagingPool(QWidget):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         # 初始化存储池服务

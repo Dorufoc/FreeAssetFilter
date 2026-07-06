@@ -32,12 +32,12 @@ from typing import Dict, Any, Optional, List
 
 # 导入日志模块
 from freeassetfilter.utils.app_logger import info, debug, error
-from freeassetfilter.core.media_probe import (
+from freeassetfilter.core.native.bridges.media_probe import (
     get_ffprobe_path,
     get_subprocess_creationflags,
     get_video_stream_info,
 )
-from freeassetfilter.core.py7z_core import get_7z_core
+from freeassetfilter.core.native.bridges.py7z_core import get_7z_core
 from freeassetfilter.utils.path_utils import contains_injection_chars, validate_safe_path
 from freeassetfilter.utils.subprocess_utils import run_with_limited_output
 
@@ -275,7 +275,7 @@ class FileInfoPreviewer(QObject):
         if settings_manager is not None:
             self._settings_manager = settings_manager
         else:
-            from freeassetfilter.core.settings_manager import SettingsManager
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
             self._settings_manager = SettingsManager()
 
         # 主题颜色

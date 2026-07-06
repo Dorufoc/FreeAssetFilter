@@ -55,16 +55,16 @@ class RustThumbnailBridge:
         return self._available and self._dll is not None
 
     def _native_runtime_dir(self) -> Path:
-        return Path(__file__).resolve().parent / "native"
+        return Path(__file__).resolve().parent.parent / "bin"
 
     def _is_frozen_app(self) -> bool:
         return bool(getattr(sys, "frozen", False))
 
     def _candidate_paths(self) -> List[Path]:
-        core_dir = Path(__file__).resolve().parent
-        bundled_dll = core_dir / "native" / "thumbnail_generator.dll"
-        dev_release_dll = core_dir / "native" / "thumbnail_rust" / "target" / "release" / "thumbnail_generator.dll"
-        dev_debug_dll = core_dir / "native" / "thumbnail_rust" / "target" / "debug" / "thumbnail_generator.dll"
+        native_dir = Path(__file__).resolve().parent.parent
+        bundled_dll = native_dir / "bin" / "thumbnail_generator.dll"
+        dev_release_dll = native_dir / "src" / "thumbnail_rust" / "target" / "release" / "thumbnail_generator.dll"
+        dev_debug_dll = native_dir / "src" / "thumbnail_rust" / "target" / "debug" / "thumbnail_generator.dll"
 
         if self._is_frozen_app():
             return [bundled_dll]

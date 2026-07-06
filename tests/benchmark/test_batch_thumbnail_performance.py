@@ -173,7 +173,7 @@ class TestBatchThumbnailPerformance:
 
     def test_rust_bridge_availability(self):
         """Rust 缩略图引擎可用性测试"""
-        from freeassetfilter.core.rust_thumbnail_bridge import RustThumbnailBridge
+        from freeassetfilter.core.native.bridges.rust_thumbnail_bridge import RustThumbnailBridge
 
         bridge = RustThumbnailBridge()
 

@@ -6,7 +6,7 @@ from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QPoint, QPointF, QRec
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QListView, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
-from freeassetfilter.core.settings_manager import SettingsManager
+from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.services.file_service import FileService
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.utils.animation_settings import is_animation_enabled
