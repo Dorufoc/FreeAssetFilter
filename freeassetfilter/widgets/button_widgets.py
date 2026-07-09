@@ -14,9 +14,9 @@ from PySide6.QtGui import QColor, QPainter, QFont, QPen, QFontMetrics, QCursor
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QPushButton, QSizePolicy, QApplication
 
-from freeassetfilter.core.preview.svg_renderer import SvgRenderer
 from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import debug
+from freeassetfilter.ui.theme import tm
 
 
 class CustomButton(QPushButton):
@@ -484,10 +484,7 @@ class CustomButton(QPushButton):
             with open(self._icon_path, "r", encoding="utf-8") as f:
                 svg_content = f.read()
 
-            svg_content = SvgRenderer._replace_svg_colors(
-                svg_content,
-                force_black_to_base=(self.button_type == "primary"),
-            )
+            svg_content = tm.process_svg(svg_content)
 
             renderer = QSvgRenderer(svg_content.encode("utf-8"))
             if not renderer.isValid():

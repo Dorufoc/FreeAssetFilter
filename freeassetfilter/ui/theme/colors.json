@@ -1,0 +1,23 @@
+{
+  "accent": {
+    "primary": "#3A9DCB",
+    "danger": "#ef4444",
+    "warning": "#f59e0b",
+    "info": "#3b82f6",
+    "purple": "#8b5cf6"
+  },
+    "gray": {
+      "g1": "#1a1a1a",
+      "g2": "#3e3e3e",
+      "g3": "#888888",
+      "g4": "#ffffff",
+      "black": "#000000"
+    },
+    "gray_light": {
+      "g1": "#f5f5f5",
+      "g2": "#e0e0e0",
+      "g3": "#888888",
+      "g4": "#1a1a1a",
+      "black": "#000000"
+    }
+}

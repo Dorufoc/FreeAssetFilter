@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+FileCardDelegate — 文件卡片委托，视觉风格精确匹配 StyledInfoCard。
+
+两种模式：
+- card (grid): 宽>高，icon 在上，文字在下
+- list (horizontal): 高<宽，icon 在左，文字在右
+
+所有颜色从 tm 获取，零硬编码。
+"""
+
+from typing import Any, Dict, Optional
+
+from PySide6.QtCore import QModelIndex, QRectF, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPen,
+)
+from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QStyleOptionViewItem
+
+from theme import tm
+
+from components.file_list_model import (
+    FileNameRole,
+    FilePathRole,
+    IsDirRole,
+    FileSizeRole,
+    ModifiedRole,
+    SuffixRole,
+    IsSelectedRole,
+    IsPreviewingRole,
+    IconPixmapRole,
+    CardWidthRole,
+)
+
+# ── 文件类型映射 ──────────────────────────────────────────────────────────────
+
+_FILE_TYPE_MAP: Dict[str, str] = {
+    "py": "Python 源文件", "js": "JavaScript 源文件",
+    "ts": "TypeScript 源文件", "jsx": "JSX 源文件", "tsx": "TSX 源文件",
+    "html": "HTML 文档", "css": "CSS 样式表", "scss": "SCSS 样式表",
+    "less": "LESS 样式表", "json": "JSON 文件",
+    "xml": "XML 文件", "yaml": "YAML 文件", "yml": "YAML 文件",
+    "sh": "Shell 脚本", "bat": "批处理文件", "cmd": "批处理文件",
+    "ps1": "PowerShell 脚本", "psm1": "PowerShell 模块",
+    "cpp": "C++ 源文件", "c": "C 源文件", "h": "C 头文件",
+    "hpp": "C++ 头文件", "java": "Java 源文件",
+    "rs": "Rust 源文件", "go": "Go 源文件",
+    "rb": "Ruby 源文件", "php": "PHP 源文件",
+    "swift": "Swift 源文件", "kt": "Kotlin 源文件",
+    "kts": "Kotlin 脚本", "cs": "C# 源文件", "lua": "Lua 源文件",
+    "dart": "Dart 源文件", "r": "R 源文件",
+    "m": "Objective-C 源文件", "mm": "Objective-C++ 源文件",
+    "pl": "Perl 脚本", "pm": "Perl 模块",
+    "sql": "SQL 文件", "vue": "Vue 组件",
+    "svelte": "Svelte 组件", "astro": "Astro 组件",
+    "txt": "文本文档", "md": "MD 源文件",
+    "rst": "reStructuredText 文件", "tex": "LaTeX 文档",
+    "pdf": "PDF 文档",
+    "doc": "Word 文档", "docx": "Word 文档", "docm": "Word 文档",
+    "dotx": "Word 模板",
+    "xls": "Excel 表格", "xlsx": "Excel 表格", "xlsm": "Excel 表格",
+    "xlsb": "Excel 二进制工作簿", "csv": "CSV 表格",
+    "ppt": "PowerPoint 演示文稿", "pptx": "PowerPoint 演示文稿",
+    "pptm": "PowerPoint 启用宏的演示文稿", "potx": "PowerPoint 模板",
+    "rtf": "RTF 文档", "odt": "ODT 文本文档",
+    "ods": "ODS 电子表格", "odp": "ODP 演示文稿",
+    "jpg": "JPEG 图像", "jpeg": "JPEG 图像", "jpe": "JPEG 图像",
+    "png": "PNG 图像", "gif": "GIF 图像", "bmp": "BMP 图像",
+    "webp": "WebP 图像", "tiff": "TIFF 图像", "tif": "TIFF 图像",
+    "svg": "SVG 图像", "avif": "AVIF 图像",
+    "ico": "图标", "cur": "光标",
+    "heic": "HEIC 图像", "heif": "HEIF 图像",
+    "cr2": "CR2 图像", "cr3": "CR3 图像",
+    "nef": "NEF 图像", "nrw": "NRW 图像",
+    "arw": "ARW 图像", "srf": "SRF 图像",
+    "dng": "DNG 图像", "orf": "ORF 图像",
+    "raf": "RAF 图像", "rw2": "RW2 图像",
+    "pef": "PEF 图像", "x3f": "X3F 图像",
+    "psd": "PSD 图像", "psb": "PSB 图像",
+    "ai": "Adobe Illustrator 文档",
+    "eps": "EPS 文件",
+    "mp4": "MP4 视频", "mov": "MOV 视频", "avi": "AVI 视频",
+    "mkv": "MKV 视频", "wmv": "WMV 视频", "flv": "FLV 视频",
+    "webm": "WebM 视频", "m4v": "M4V 视频",
+    "mpeg": "MPEG 视频", "mpg": "MPG 视频",
+    "mxf": "MXF 视频", "3gp": "3GP 视频",
+    "vob": "VOB 视频", "m2ts": "M2TS 视频",
+    "ts": "TS 视频", "mts": "MTS 视频", "divx": "DivX 视频",
+    "mp3": "MP3 音频", "wav": "WAV 音频",
+    "flac": "FLAC 音频", "ogg": "OGG 音频",
+    "wma": "WMA 音频", "aac": "AAC 音频",
+    "m4a": "M4A 音频", "opus": "Opus 音频",
+    "mid": "MIDI 序列", "midi": "MIDI 序列",
+    "ape": "APE 音频", "ac3": "AC3 音频",
+    "tta": "TTA 音频", "dts": "DTS 音频",
+    "aiff": "AIFF 音频",
+    "zip": "Zip 压缩文件", "rar": "RAR 压缩文件",
+    "7z": "7z 压缩文件", "tar": "TAR 压缩文件",
+    "gz": "GZip 压缩文件", "bz2": "BZip2 压缩文件",
+    "xz": "XZ 压缩文件", "lzma": "LZMA 压缩文件",
+    "zst": "Zstd 压缩文件", "lz4": "LZ4 压缩文件",
+    "iso": "ISO 镜像", "cab": "CAB 压缩文件",
+    "arj": "ARJ 压缩文件", "tgz": "TGZ 压缩文件",
+    "ttf": "TTF 字体", "otf": "OTF 字体",
+    "woff": "WOFF 字体", "woff2": "WOFF2 字体",
+    "eot": "EOT 字体",
+    "exe": "应用程序", "dll": "应用程序扩展",
+    "msi": "Windows Installer 包",
+    "lnk": "快捷方式", "url": "Internet 快捷方式",
+    "torrent": "BitTorrent 文件",
+    "apk": "APK 安装包",
+    "dmg": "DMG 磁盘映像",
+    "deb": "DEB 安装包", "rpm": "RPM 安装包",
+    "appimage": "AppImage 映像",
+    "db": "数据库文件", "sqlite": "SQLite 数据库",
+    "srt": "SRT 字幕", "ass": "ASS 字幕", "ssa": "SSA 字幕",
+    "vtt": "WebVTT 字幕",
+    "log": "日志文件", "ini": "INI 配置",
+    "cfg": "配置文件", "conf": "配置文件",
+    "reg": "注册表项",
+}
+
+
+def _get_file_type_display(suffix: str, is_dir: bool = False) -> str:
+    if is_dir:
+        return "文件夹"
+    if not suffix:
+        return "文件"
+    suffix_lower = suffix.lower()
+    if suffix_lower in _FILE_TYPE_MAP:
+        return _FILE_TYPE_MAP[suffix_lower]
+    return f"{suffix_lower.upper()} 文件"
+
+
+def _get_colors() -> Dict[str, Any]:
+    return {
+        "bg": tm.alpha_of(tm.surface, 85),
+        "bg_hover": tm.alpha_of(tm.surface, 90),
+        "border": tm.alpha_of(tm.mid, 30),
+        "media_bg": tm.alpha_of(tm.mid, 40),
+        "title": tm.text,
+        "subtitle": tm.mid,
+        "desc": tm.alpha_of(tm.mid, 60),
+        "icon": tm.mid,
+        "accent": tm.accent,
+        "selected_border": tm.accent,
+        "shadow": QColor(0, 0, 0, 40),
+    }
+
+
+CARD_CONFIG: Dict[str, Any] = {
+    "padding": 20,
+    "gap": 12,
+    "radius": 6,
+    "media_size": 52,
+    "icon_size": 24,
+    "title_size": 14,
+    "title_weight": 600,
+    "subtitle_size": 13,
+    "subtitle_weight": 500,
+    "desc_size": 12,
+    "desc_weight": 400,
+}
+
+LIST_CONFIG: Dict[str, Any] = {
+    "padding": 16,
+    "gap": 14,
+    "radius": 6,
+    "media_size": 52,
+    "icon_size": 24,
+    "title_size": 14,
+    "title_weight": 600,
+    "subtitle_size": 13,
+    "subtitle_weight": 500,
+    "desc_size": 12,
+    "desc_weight": 400,
+}
+
+
+class FileCardDelegate(QStyledItemDelegate):
+    """文件卡片委托，支持 card（网格）和 list（列表）两种模式。
+
+    关键：QStyledItemDelegate 的 painter 不做坐标平移，option.rect 包含视口绝对坐标。
+    所有绘制必须基于 option.rect 的 x/y 偏移，不能假设 (0, 0) 为原点。
+    """
+
+    def __init__(self, parent: Optional[object] = None) -> None:
+        super().__init__(parent)
+        self._layout_mode: str = "card"
+
+    def set_card_mode(self) -> None:
+        self._layout_mode = "card"
+
+    def set_list_mode(self) -> None:
+        self._layout_mode = "list"
+
+    # ── 文件信息读取 ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _get_file_info(index: QModelIndex) -> Dict[str, Any]:
+        model = index.model()
+        if not model:
+            return {}
+        return {
+            "name": model.data(index, FileNameRole) or "",
+            "path": model.data(index, FilePathRole) or "",
+            "is_dir": bool(model.data(index, IsDirRole)),
+            "size": int(model.data(index, FileSizeRole) or 0),
+            "modified": model.data(index, ModifiedRole) or "",
+            "suffix": (model.data(index, SuffixRole) or "").lower(),
+            "is_selected": bool(model.data(index, IsSelectedRole)),
+            "is_previewing": bool(model.data(index, IsPreviewingRole)),
+            "icon_pixmap": model.data(index, IconPixmapRole),
+        }
+
+    # ── sizeHint ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _calc_card_size(config: Dict[str, Any]) -> tuple:
+        """根据配置计算卡片默认宽度和高度。"""
+        padding = config["padding"]
+        gap = config["gap"]
+        media_size = config["media_size"]
+        font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+        font_sub = QFont("Microsoft YaHei UI", config["subtitle_size"], config["subtitle_weight"])
+        font_desc = QFont("Microsoft YaHei UI", config["desc_size"], config["desc_weight"])
+        text_height = QFontMetrics(font_title).height() + QFontMetrics(font_sub).height() + QFontMetrics(font_desc).height() + 8
+        width = padding * 2 + max(media_size, 140)
+        height = padding * 2 + media_size + gap + text_height
+        return width, height
+
+    @staticmethod
+    def _calc_list_size(config: Dict[str, Any]) -> tuple:
+        """根据配置计算列表模式默认宽度和高度。"""
+        padding = config["padding"]
+        media_size = config["media_size"]
+        font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+        font_sub = QFont("Microsoft YaHei UI", config["subtitle_size"], config["subtitle_weight"])
+        font_desc = QFont("Microsoft YaHei UI", config["desc_size"], config["desc_weight"])
+        text_height = QFontMetrics(font_title).height() + QFontMetrics(font_sub).height() + QFontMetrics(font_desc).height() + 8
+        width = 200
+        height = padding * 2 + max(media_size, text_height)
+        return width, height
+
+    def sizeHint(
+        self,
+        option: Optional[QStyleOptionViewItem],
+        index: Optional[QModelIndex],
+    ) -> QSize:
+        if self._layout_mode == "card":
+            config = CARD_CONFIG
+            if index is not None and index.isValid():
+                model = index.model()
+                if model is not None:
+                    card_width = model.data(index, CardWidthRole)
+                    if card_width is not None and int(card_width) > 0:
+                        _, height = self._calc_card_size(config)
+                        return QSize(int(card_width), height)
+            width, height = self._calc_card_size(config)
+            return QSize(width, height)
+        else:
+            config = LIST_CONFIG
+            width, height = self._calc_list_size(config)
+            return QSize(width, height)
+
+    # ── paint ────────────────────────────────────────────────────────────
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+
+        file_info = self._get_file_info(index)
+        is_selected = file_info.get("is_selected", False)
+        is_previewing = file_info.get("is_previewing", False)
+        is_hovered = bool(option.state & QStyle.State_MouseOver)
+
+        if self._layout_mode == "card":
+            self._paint_card(painter, option.rect, file_info, is_hovered, is_selected, is_previewing)
+        else:
+            self._paint_list(painter, option.rect, file_info, is_hovered, is_selected, is_previewing)
+
+        painter.restore()
+
+    def _paint_card(
+        self,
+        painter: QPainter,
+        rect: Any,
+        file_info: Dict[str, Any],
+        is_hovered: bool,
+        is_selected: bool,
+        is_previewing: bool,
+    ) -> None:
+        colors = _get_colors()
+        config = CARD_CONFIG
+        padding = config["padding"]
+        radius = config["radius"]
+        gap = config["gap"]
+        media_size = config["media_size"]
+
+        rx = rect.x()
+        ry = rect.y()
+        w = rect.width()
+        h = rect.height()
+        card_rect = QRectF(rx, ry, w, h)
+
+        # 背景
+        bg_color = colors["bg_hover"] if (is_hovered or is_selected or is_previewing) else colors["bg"]
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(card_rect, radius, radius)
+
+        # 边框
+        painter.setBrush(Qt.NoBrush)
+        if is_previewing and is_selected:
+            painter.setPen(QPen(colors["accent"], 2))
+            painter.drawRoundedRect(card_rect, radius, radius)
+            painter.setPen(QPen(colors["selected_border"], 3))
+            painter.drawLine(rx + radius, ry, rx + radius, ry + h)
+        elif is_previewing:
+            painter.setPen(QPen(colors["accent"], 2))
+            painter.drawRoundedRect(card_rect, radius, radius)
+        elif is_selected:
+            painter.setPen(QPen(colors["border"], 1))
+            painter.drawRoundedRect(card_rect, radius, radius)
+            painter.setPen(QPen(colors["selected_border"], 3))
+            painter.drawLine(rx + radius, ry, rx + radius, ry + h)
+        else:
+            painter.setPen(QPen(colors["border"], 1))
+            painter.drawRoundedRect(card_rect, radius, radius)
+
+        # 阴影
+        if is_hovered and not is_selected and not is_previewing:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(colors["shadow"])
+            painter.drawRoundedRect(QRectF(rx, ry + 2, w, h), radius, radius)
+
+        # Media 区域
+        media_x = rx + (w - media_size) / 2.0
+        media_y = ry + padding
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(colors["media_bg"])
+        painter.drawRoundedRect(QRectF(media_x, media_y, media_size, media_size), 4, 4)
+
+        icon_pixmap = file_info.get("icon_pixmap")
+        if icon_pixmap and not icon_pixmap.isNull():
+            painter.drawPixmap(
+                int(media_x + (media_size - icon_pixmap.width()) / 2.0),
+                int(media_y + (media_size - icon_pixmap.height()) / 2.0),
+                icon_pixmap,
+            )
+        else:
+            suffix = file_info.get("suffix", "")
+            is_dir = file_info.get("is_dir", False)
+            icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
+            painter.setFont(QFont("Segoe UI", config["icon_size"], QFont.Bold))
+            painter.setPen(colors["icon"])
+            painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)
+
+        # 文字区域
+        text_x = rx + padding
+        text_y = media_y + media_size + gap
+        text_w = w - padding * 2
+        text_h = h - (text_y - ry) - padding
+        self._draw_text(painter, QRectF(text_x, text_y, text_w, text_h), config, file_info)
+
+    def _paint_list(
+        self,
+        painter: QPainter,
+        rect: Any,
+        file_info: Dict[str, Any],
+        is_hovered: bool,
+        is_selected: bool,
+        is_previewing: bool,
+    ) -> None:
+        colors = _get_colors()
+        config = LIST_CONFIG
+        padding = config["padding"]
+        radius = config["radius"]
+        gap = config["gap"]
+        media_size = config["media_size"]
+
+        rx = rect.x()
+        ry = rect.y()
+        w = rect.width()
+        h = rect.height()
+        card_rect = QRectF(rx, ry, w, h)
+
+        # 背景
+        bg_color = colors["bg_hover"] if (is_hovered or is_selected or is_previewing) else colors["bg"]
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(card_rect, radius, radius)
+
+        # 边框
+        painter.setBrush(Qt.NoBrush)
+        if is_previewing and is_selected:
+            painter.setPen(QPen(colors["accent"], 2))
+            painter.drawRoundedRect(card_rect, radius, radius)
+            painter.setPen(QPen(colors["selected_border"], 3))
+            painter.drawLine(rx + radius, ry, rx + radius, ry + h)
+        elif is_previewing:
+            painter.setPen(QPen(colors["accent"], 2))
+            painter.drawRoundedRect(card_rect, radius, radius)
+        elif is_selected:
+            painter.setPen(QPen(colors["border"], 1))
+            painter.drawRoundedRect(card_rect, radius, radius)
+            painter.setPen(QPen(colors["selected_border"], 3))
+            painter.drawLine(rx + radius, ry, rx + radius, ry + h)
+        else:
+            painter.setPen(QPen(colors["border"], 1))
+            painter.drawRoundedRect(card_rect, radius, radius)
+
+        # 阴影
+        if is_hovered and not is_selected and not is_previewing:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(colors["shadow"])
+            painter.drawRoundedRect(QRectF(rx, ry + 2, w, h), radius, radius)
+
+        # Media 区域（左）
+        media_x = rx + padding
+        media_y = ry + (h - media_size) / 2.0
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(colors["media_bg"])
+        painter.drawRoundedRect(QRectF(media_x, media_y, media_size, media_size), 4, 4)
+
+        icon_pixmap = file_info.get("icon_pixmap")
+        if icon_pixmap and not icon_pixmap.isNull():
+            painter.drawPixmap(
+                int(media_x + (media_size - icon_pixmap.width()) / 2.0),
+                int(media_y + (media_size - icon_pixmap.height()) / 2.0),
+                icon_pixmap,
+            )
+        else:
+            suffix = file_info.get("suffix", "")
+            is_dir = file_info.get("is_dir", False)
+            icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
+            painter.setFont(QFont("Segoe UI", config["icon_size"], QFont.Bold))
+            painter.setPen(colors["icon"])
+            painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)
+
+        # 文字区域（右）
+        text_x = media_x + media_size + gap
+        text_y = ry + padding
+        text_w = w - padding * 2 - media_size - gap
+        text_h = h - padding * 2
+        self._draw_text(painter, QRectF(text_x, text_y, text_w, text_h), config, file_info)
+
+    # ── 文字绘制 ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _draw_text(
+        painter: QPainter,
+        rect: QRectF,
+        config: Dict[str, Any],
+        file_info: Dict[str, Any],
+    ) -> None:
+        colors = _get_colors()
+        y = rect.y()
+        x = rect.x()
+        max_w = rect.width()
+        line_gap = 4
+
+        name = file_info.get("name", "")
+        is_dir = file_info.get("is_dir", False)
+        suffix = file_info.get("suffix", "")
+        modified = file_info.get("modified", "")
+
+        # 第一行：文件名
+        font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+        painter.setFont(font)
+        painter.setPen(colors["title"])
+        fm = QFontMetrics(font)
+        painter.drawText(QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop,
+                         fm.elidedText(name, Qt.ElideRight, int(max_w)))
+        y += fm.height() + line_gap
+
+        # 第二行：文件类型
+        font = QFont("Microsoft YaHei UI", config["subtitle_size"], config["subtitle_weight"])
+        painter.setFont(font)
+        painter.setPen(colors["subtitle"])
+        fm = QFontMetrics(font)
+        subtitle_text = "文件夹" if is_dir else _get_file_type_display(suffix)
+        painter.drawText(QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop,
+                         fm.elidedText(subtitle_text, Qt.ElideRight, int(max_w)))
+        y += fm.height() + line_gap
+
+        # 第三行：修改时间
+        font = QFont("Microsoft YaHei UI", config["desc_size"], config["desc_weight"])
+        painter.setFont(font)
+        painter.setPen(colors["desc"])
+        fm = QFontMetrics(font)
+        desc_text = modified if modified else ""
+        painter.drawText(QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop,
+                         fm.elidedText(desc_text, Qt.ElideRight, int(max_w)))
