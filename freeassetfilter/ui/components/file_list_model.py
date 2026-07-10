@@ -19,7 +19,9 @@ from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QFileIconProvider, QStyle
+from PySide6.QtWidgets import QApplication
+
+from freeassetfilter.services.file_icon_manager import FileIconManager
 
 # ── 自定义角色 ──────────────────────────────────────────────────────────────
 
@@ -35,12 +37,13 @@ IsSelectedRole: int = Qt.UserRole + 8
 IsPreviewingRole: int = Qt.UserRole + 9
 IconPixmapRole: int = Qt.UserRole + 10
 CardWidthRole: int = Qt.UserRole + 11
+GridOffsetRole: int = Qt.UserRole + 12
 
 
 class FileListModel(QAbstractListModel):
     """    轻量文件列表数据模型。
 
-    提供 11 个自定义角色用于视图数据访问，维护 O(1) 路径→行号索引。
+    提供 12 个自定义角色用于视图数据访问，维护 O(1) 路径→行号索引。
     不包含异步加载、缓存池或后台线程逻辑。
 
     角色列表：
@@ -55,6 +58,7 @@ class FileListModel(QAbstractListModel):
         IsPreviewingRole (bool): 是否正在预览
         IconPixmapRole (QPixmap): 文件图标
         CardWidthRole (int):    卡片动态宽度
+        GridOffsetRole (int):   卡片网格水平偏移量（用于居中）
     """
 
     def __init__(self, parent: Optional[object] = None) -> None:
@@ -66,9 +70,11 @@ class FileListModel(QAbstractListModel):
         super().__init__(parent)
         self._files: List[Dict[str, Any]] = []
         self._path_to_row: Dict[str, int] = {}
-        self._icon_provider = QFileIconProvider()
         self._card_width: int = 180
         self._card_height: int = 100
+        self._grid_offset_x: int = 0
+        self._icon_size: int = 48
+        FileIconManager().system_icon_loaded.connect(self._on_system_icon_loaded)
 
     # ── 公共方法 ────────────────────────────────────────────────────────────
 
@@ -188,9 +194,35 @@ class FileListModel(QAbstractListModel):
             bottom = self.index(self.rowCount() - 1, 0)
             self.dataChanged.emit(top, bottom, [CardWidthRole])
 
+    def set_grid_offset_x(self, offset: int) -> None:
+        """设置卡片网格水平偏移量，用于整体居中。
+
+        Args:
+            offset: 水平偏移像素值。
+        """
+        if self._grid_offset_x == offset:
+            return
+        self._grid_offset_x = offset
+        if self.rowCount() > 0:
+            top = self.index(0, 0)
+            bottom = self.index(self.rowCount() - 1, 0)
+            self.dataChanged.emit(top, bottom, [GridOffsetRole])
+
     def update_geometry(self, card_width: int, card_height: int) -> None:
         """兼容接口：委托给 set_card_width。"""
         self.set_card_width(card_width, card_height)
+
+    def update_theme(self) -> None:
+        """主题变更时刷新所有图标。
+
+        清空 FileIconManager 缓存（主题色敏感的缓存键会触发重新生成），
+        然后发射 dataChanged 让视图重新请求图标。
+        """
+        FileIconManager().clear_cache()
+        if self.rowCount() > 0:
+            top = self.index(0, 0)
+            bottom = self.index(self.rowCount() - 1, 0)
+            self.dataChanged.emit(top, bottom, [IconPixmapRole])
 
     def get_file_info(self, index: QModelIndex) -> Dict[str, Any]:
         """获取索引对应的文件信息字典。
@@ -274,6 +306,8 @@ class FileListModel(QAbstractListModel):
             return self._get_icon_pixmap(file_info)
         if role == CardWidthRole:
             return self._card_width
+        if role == GridOffsetRole:
+            return self._grid_offset_x
 
         return None
 
@@ -327,9 +361,13 @@ class FileListModel(QAbstractListModel):
                 self._path_to_row[path] = row
 
     def _get_icon_pixmap(self, file_info: Dict[str, Any]) -> QPixmap:
-        """获取文件图标像素图。
+        """获取文件图标像素图，委托给 FileIconManager。
 
-        使用 QFileIconProvider 获取系统图标，不涉及缓存或异步加载。
+        通过 FileIconManager 单例获取 SVG 主题图标，支持：
+        - 12 种文件类型的 SVG 图标
+        - 缩略图回退（图片/视频）
+        - 系统图标异步加载（exe/lnk/url）
+        - 双层缓存
 
         Args:
             file_info: 文件信息字典。
@@ -337,17 +375,42 @@ class FileListModel(QAbstractListModel):
         Returns:
             文件图标 QPixmap。
         """
-        path = file_info.get("path", "")
-        if not path:
+        if not file_info.get("path", ""):
             return QPixmap()
 
-        icon = self._icon_provider.icon(QFileIconProvider.File)
-        if file_info.get("is_dir", False):
-            icon = self._icon_provider.icon(QFileIconProvider.Folder)
+        icon_size = self._icon_size  # 使用专用图标尺寸（默认 48px，匹配 media_size=52 留出内边距）
+        dpr = self._get_device_pixel_ratio()
+        return FileIconManager().get_icon_pixmap(file_info, icon_size, dpr)
 
-        if icon and not icon.isNull():
-            pixmap = icon.pixmap(32, 32)
-            if pixmap and not pixmap.isNull():
-                return pixmap
+    def _get_device_pixel_ratio(self) -> float:
+        """获取设备像素比（DPI 缩放因子）。
 
-        return QPixmap()
+        Returns:
+            设备像素比，始终为正数。
+        """
+        try:
+            app = QApplication.instance()
+            if app:
+                screen = app.primaryScreen()
+                if screen:
+                    ratio = float(screen.devicePixelRatio())
+                    if ratio > 0:
+                        return ratio
+        except (RuntimeError, AttributeError, TypeError, ValueError):
+            pass
+        return 1.0
+
+    def _on_system_icon_loaded(self, file_path: str) -> None:
+        """系统图标异步加载完成回调 — 触发对应行的视图刷新。
+
+        当 FileIconManager 完成 .exe/.lnk/.url 文件的系统图标提取后，
+        此回调查找对应的行并发射 dataChanged 信号，触发委托重绘。
+
+        Args:
+            file_path: 已加载系统图标的文件路径。
+        """
+        row = self.get_row(file_path)
+        if row < 0:
+            return
+        idx = self.index(row, 0)
+        self.dataChanged.emit(idx, idx, [IconPixmapRole])

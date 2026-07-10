@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication
-from PySide6.QtCore import Qt, Signal, QSize, QTimer
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent
+from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
 from components.styled_button import StyledButton
@@ -54,6 +55,9 @@ class FileSelectorLayout(QWidget):
 
         self.setLayout(layout)
 
+        # 设置最小宽度，确保至少能显示 3 列卡片（与旧 file_selector.py 保持一致）
+        self._update_minimum_width()
+
         # ── 文件列表模型 + 委托 + 视图 ──
         self._file_model = FileListModel(self)
         self._card_delegate = FileCardDelegate(self)
@@ -67,6 +71,9 @@ class FileSelectorLayout(QWidget):
         self._file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._file_list.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._file_list.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._file_list.setUniformItemSizes(True)
+        self._file_list.setLayoutMode(QListView.Batched)
+        self._file_list.setBatchSize(50)
         # QListView 自身隐藏默认滚动条，由同级的 StyledScrollBar 接管
         self._file_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._file_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -86,18 +93,22 @@ class FileSelectorLayout(QWidget):
             }
         """)
 
+        # 防递归守卫（与旧 file_selector.py 一致——旧代码无守卫，这里仅防止极端递归）
+        self._updating_grid: bool = False
+
         # 将列表与样式滚动条作为同级放入内容区（滚动条与卡片处于同一容器层级）
         content_layout = QHBoxLayout(self._content_area)
-        content_layout.setContentsMargins(8, 6, 0, 6)  # 左=滚动条占位宽度，右=0，视觉左右均衡
+        content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(4)  # 卡片网格与右侧滚动条之间的间距
         self._file_scrollbar = StyledScrollBar(self._content_area)
+        self._file_scrollbar.setFixedWidth(max(6, int(8 * self._get_dpi_scale())))
         content_layout.addWidget(self._file_list, stretch=1)
         content_layout.addWidget(self._file_scrollbar)
 
         # 将 StyledScrollBar 连接至 QListView 的垂直滚动
         list_vbar = self._file_list.verticalScrollBar()
         self._file_scrollbar.setRange(
-            list_vbar.minimum(), list_vbar.maximum() - list_vbar.pageStep()
+            list_vbar.minimum(), list_vbar.maximum()
         )
         self._file_scrollbar.setSingleStep(list_vbar.singleStep())
         self._file_scrollbar.setPageStep(list_vbar.pageStep())
@@ -136,11 +147,18 @@ class FileSelectorLayout(QWidget):
         self._sort_btn.setToolTip("排序: 名称↑")
         self._card_btn.setToolTip("切换为列表视图")
 
-    # ── 尺寸变化 ──────────────────────────────────────────────────────────
+        # 监听 viewport 和 file_list 自身的 resize（与旧 file_selector.py 一致）
+        self._file_list.viewport().installEventFilter(self)
+        self._file_list.installEventFilter(self)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._update_grid_size()
+    # ── 事件过滤器：在 QListView resize 前更新网格 ──────────────────────
+
+    def eventFilter(self, obj, event):
+        # 同时监听 viewport 和 QListView 的 Resize（与旧 file_selector.py 一致）
+        if obj is self._file_list.viewport() or obj is self._file_list:
+            if event.type() == QEvent.Resize:
+                self._update_grid_size()
+        return super().eventFilter(obj, event)
 
     # ── 首次加载 ──────────────────────────────────────────────────────────
 
@@ -424,9 +442,8 @@ class FileSelectorLayout(QWidget):
     def _sync_scrollbar_range(self) -> None:
         """当 QListView 内部滚动范围变化时，同步 StyledScrollBar 的范围。"""
         list_vbar = self._file_list.verticalScrollBar()
-        self._file_scrollbar.setRange(
-            list_vbar.minimum(), list_vbar.maximum() - list_vbar.pageStep()
-        )
+        maximum = list_vbar.maximum()
+        self._file_scrollbar.setRange(list_vbar.minimum(), maximum)
         self._file_scrollbar.setSingleStep(list_vbar.singleStep())
         self._file_scrollbar.setPageStep(list_vbar.pageStep())
 
@@ -437,64 +454,144 @@ class FileSelectorLayout(QWidget):
         app = QApplication.instance()
         return getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
 
+    # ── Debug 计数器（每次 resize 递增） ──────────────────────────────────
+
+    _grid_debug_seq: int = 0
+
+    def _grid_debug(self, msg: str, *args) -> None:
+        """输出带序列号的 debug 信息，方便过滤。"""
+        seq = self._grid_debug_seq
+        print(f"[GRID-DEBUG #{seq}] {msg}", *args)
+
+    # ── 网格布局 ──────────────────────────────────────────────────────────
+
     def _update_grid_size(self) -> None:
         """
         自适应网格布局：根据视口宽度动态计算卡片宽度和每行数量。
-        card 模式下：
-        1. 计算卡片基础尺寸（来自 delegate 配置）
-        2. 根据视口宽度计算最大列数
-        3. 在列数不变的前提下，水平拉伸卡片以充分利用空间
-        4. 更新 gridSize 和 Model 的卡片宽度
+        防递归守卫防止 margins 改变引发的布局震荡。
         """
+        if self._updating_grid:
+            self._grid_debug("_update_grid_size 被递归拦截")
+            return
+        self._updating_grid = True
+        self._grid_debug_seq += 1
+        try:
+            self._do_update_grid_size()
+        finally:
+            self._updating_grid = False
+
+    def _do_update_grid_size(self) -> None:
         if self._view_mode == "list":
             self._update_list_grid()
             return
 
         viewport = self._file_list.viewport()
         if not viewport or viewport.width() <= 0:
+            self._grid_debug(f"跳过：viewport 不可用 (width={viewport.width() if viewport else 'None'})")
             return
 
+        self._grid_debug(f"viewport.width()={viewport.width()}")
+
+        # 直接计算并设置 gridSize，不加 setUpdatesEnabled 包裹（与旧代码一致）
+        self._apply_grid_layout(viewport)
+        self._file_list.update()
+
+    # ── 卡片尺寸与列数计算（移植自旧 CustomFileSelector）────────────────────
+
+    def _calculate_card_base_width(self) -> int:
+        """计算卡片的基础宽度（基于日期文本宽度），与旧 file_selector.py 保持一致。"""
         dpi = self._get_dpi_scale()
-        spacing = int(8 * dpi)
-        card_base_w, card_base_h = FileCardDelegate._calc_card_size(CARD_CONFIG)
+        base_min_width = int(50 * dpi)
 
-        viewport_width = viewport.width()
-        # 可用宽度 = 视口全宽（布局左边距8px + 右侧滚动条占位已由 layout/HBox 自然扣减）
-        available_width = max(0, viewport_width)
+        small_font = QFont(self.font())
+        small_font.setPointSize(int(self.font().pointSize() * 0.85))
+        small_font_metrics = QFontMetrics(small_font)
 
-        # 计算最大列数（先确定列数，再在列内放大卡片）
-        cell_base_width = card_base_w + spacing
+        date_text = "2024-12-31"
+        date_text_width = small_font_metrics.horizontalAdvance(date_text)
+        char_width = small_font_metrics.horizontalAdvance("W")
+        horizontal_margins = int(4 * dpi) * 2
+        border_width = int(1 * dpi) * 2
+
+        required_width = date_text_width + char_width + horizontal_margins + border_width
+        return max(required_width, base_min_width)
+
+    def _update_minimum_width(self) -> None:
+        """设置最小宽度，确保至少能显示 3 列卡片（与旧 file_selector.py 一致）。"""
+        dpi = self._get_dpi_scale()
+        card_width = self._calculate_card_base_width()
+        spacing = int(4 * dpi)
+        margin = int(5 * dpi)
+        cards_total_width = 3 * card_width + 2 * spacing
+        margins_total = 2 * margin
+        min_filelist_width = cards_total_width + margins_total
+
+        scrollbar_width = max(6, int(8 * dpi))
+        layout_spacing = self._content_area.layout().spacing() if self._content_area.layout() else 4
+        self.setMinimumWidth(min_filelist_width + scrollbar_width + layout_spacing)
+
+    def _apply_grid_layout(self, viewport) -> None:
+        """卡片模式网格布局：原样移植自旧 file_selector.py 的 _update_grid_size。"""
+        dpi = self._get_dpi_scale()
+
+        # 卡片网格使用完整 file_list 宽度，滚动条为同级控件，不占用卡片视口
+        file_list_width = self._file_list.width()
+        if file_list_width <= 0:
+            return
+
+        edge_padding = int(10 * dpi)
+        card_base_width = self._calculate_card_base_width()
+        spacing = int(4 * dpi)
+        margin = edge_padding
+
+        available_width = max(0, file_list_width - 2 * margin)
+        cell_base_width = card_base_width + spacing
         max_cols = max(1, available_width // max(1, cell_base_width))
 
-        # 在该列数下计算可用的卡片宽度（平滑放大，不触发回跳）
+        # 先确定列数，再在该列数内部平滑放大卡片，避免 resize 时列数来回抖动
         cell_width = max(cell_base_width, available_width // max_cols)
-        card_width = max(card_base_w, cell_width - spacing)
+        card_width = max(card_base_width, cell_width - spacing)
 
-        # 使用 delegate 计算的默认高度
-        card_height = max(card_base_h, int(100 * dpi))
+        _, card_height = FileCardDelegate._calc_card_size(CARD_CONFIG)
+        grid_cell_width = card_width + spacing
+        grid_cell_height = card_height + spacing
+
+        # 让 viewport 宽度刚好容纳 max_cols 个 grid cell，避免右侧空列或提前换行
+        desired_viewport_width = max_cols * grid_cell_width
+        total_side_margin = max(0, file_list_width - desired_viewport_width)
+        left_margin = total_side_margin // 2
+        right_margin = total_side_margin - left_margin
+
+        self._grid_debug(
+            f"file_list={file_list_width} avail={available_width} card={card_width} "
+            f"cols={max_cols} grid_total={desired_viewport_width} margins=({left_margin},{right_margin})"
+        )
 
         self._file_list.setSpacing(0)
-        grid_size = QSize(card_width + spacing, card_height + spacing)
-        self._file_list.setGridSize(grid_size)
-
-        # 水平居中网格（无额外边距扣减，视觉由 layout 左边距8px + 右侧滚动条平衡）
-        total_grid_width = max_cols * (card_width + spacing) - spacing
-        left_margin = max(0, (viewport_width - total_grid_width) // 2)
-        self._file_list.setViewportMargins(left_margin, 0, 0, 0)
-
-        # 更新 Model 中的卡片宽度，供 delegate 的 sizeHint 读取
+        self._file_list.setGridSize(QSize(grid_cell_width, grid_cell_height))
+        self._file_list.setViewportMargins(left_margin, edge_padding, right_margin, edge_padding)
+        # 保持 grid_offset_x=0，避免 hover 时卡片绘制超出自身 grid cell 产生残影
+        self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
 
     def _update_list_grid(self) -> None:
+        """列表模式布局（移植自旧 CustomFileSelector._update_list_layout）。"""
         viewport = self._file_list.viewport()
         if not viewport or viewport.width() <= 0:
             return
         dpi = self._get_dpi_scale()
-        _, card_h = FileCardDelegate._calc_list_size(LIST_CONFIG)
-        card_height = max(card_h, int(56 * dpi))
-        self._file_list.setGridSize(QSize(viewport.width(), card_height + 6))
+        viewport_width = viewport.width()
+        edge_padding = int(10 * dpi)
+        card_width = max(200, viewport_width - 2 * edge_padding)
+        border_w = max(1, int(1 * dpi))
+        icon_lm = int(4 * dpi)
+        icon_sz = int(28 * dpi)
+        card_height = int(2 * border_w + 2 * icon_lm + icon_sz)
+        gap = int(4 * dpi)
+        self._file_list.setGridSize(QSize(viewport_width, card_height + gap))
         self._file_list.setViewportMargins(0, 0, 0, 0)
-        self._file_model.set_card_width(viewport.width(), card_height)
+        self._file_model.set_grid_offset_x(0)
+        self._file_model.set_card_width(card_width, card_height)
 
     # ── 排序与视图 ────────────────────────────────────────────────────────
 

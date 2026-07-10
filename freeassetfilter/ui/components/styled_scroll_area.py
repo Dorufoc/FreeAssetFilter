@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import weakref
 import time
 
 from PySide6.QtCore import (
@@ -144,32 +143,37 @@ class StyledScrollBar(QScrollBar):
     # ------------------------------------------------------------------
 
     def _get_handle_rect(self) -> QRectF:
-        """Return the visual handle rectangle in widget coordinates (uses animated thickness)."""
+        """Return the visual handle rectangle in widget coordinates (uses animated thickness).
+
+        滑块位置公式：
+          handle_range = track_size - handle_size    ← 实际滑动距离 = 整个轨道长度 - 滑块长度
+          pos = handle_range * value / maximum
+        使用 self.value() 而非 self.sliderPosition()，因为 PySide6 下
+        QPropertyAnimation 驱动 b"value" 时不保证 sliderPosition 同步更新。
+        """
         if self.maximum() > 0:
             total = self.maximum() + self.pageStep()
             ratio = self.pageStep() / total
             min_handle = 30
             thickness = self._anim_thickness
+            cur = self.value()
 
             if self.orientation() == Qt.Vertical:
                 track_size = self.height()
                 handle_size = max(min_handle, int(track_size * ratio))
                 handle_range = track_size - handle_size
-                pos = int(handle_range * self.sliderPosition() / max(1, self.maximum()))
+                pos = int(handle_range * cur / max(1, self.maximum()))
                 x = self.width() - thickness - self._padding
                 return QRectF(float(x), float(pos), float(thickness), float(handle_size))
             else:
                 track_size = self.width()
                 handle_size = max(min_handle, int(track_size * ratio))
                 handle_range = track_size - handle_size
-                pos = int(handle_range * self.sliderPosition() / max(1, self.maximum()))
+                pos = int(handle_range * cur / max(1, self.maximum()))
                 y = self.height() - thickness - self._padding
                 return QRectF(float(pos), float(y), float(handle_size), float(thickness))
         else:
-            if self.orientation() == Qt.Vertical:
-                return QRectF(0.0, 0.0, float(self.width()), float(self.height()))
-            else:
-                return QRectF(0.0, 0.0, float(self.width()), float(self.height()))
+            return QRectF()
 
     def _value_from_pos(self, pos: float) -> int:
         """Map a mouse coordinate along the scroll axis to a slider value."""
@@ -198,6 +202,8 @@ class StyledScrollBar(QScrollBar):
     # ------------------------------------------------------------------
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        if self.maximum() <= 0:
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
@@ -236,6 +242,9 @@ class StyledScrollBar(QScrollBar):
     # ------------------------------------------------------------------
 
     def mousePressEvent(self, event) -> None:
+        if self.maximum() <= 0:
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.LeftButton:
             handle_rect = self._get_handle_rect()
             if handle_rect.contains(event.pos()):
@@ -702,8 +711,6 @@ class _WheelSmoothScrollFilter(QObject):
         self._duration = duration
         self._vertical_animation = None
         self._horizontal_animation = None
-        self._pending_vertical_target = None
-        self._pending_horizontal_target = None
         self._last_wheel_time = 0.0
         self._wheel_boost = 1.0
         self._max_wheel_boost = 2.5
@@ -764,11 +771,6 @@ class _WheelSmoothScrollFilter(QObject):
 
         if not is_animation_enabled("smooth_scrolling", default=True):
             scrollbar.setValue(int(target_value))
-            setattr(
-                self,
-                "_pending_vertical_target" if scrollbar.orientation() == Qt.Vertical else "_pending_horizontal_target",
-                None,
-            )
             return True
 
         self._animate_scrollbar(scrollbar, target_value)
@@ -813,25 +815,15 @@ class _WheelSmoothScrollFilter(QObject):
         return scaled
 
     def _calculate_target_value(self, scrollbar, current_value, step):
-        orientation = scrollbar.orientation()
-        animation_attr = "_vertical_animation" if orientation == Qt.Vertical else "_horizontal_animation"
-        pending_attr = "_pending_vertical_target" if orientation == Qt.Vertical else "_pending_horizontal_target"
-        animation = getattr(self, animation_attr, None)
-        pending_target = getattr(self, pending_attr, None)
+        """基于当前实际值计算新目标值，不依赖 pending_target 复合叠加。
+
+        移除 pending_target 链式复合，因为复合 + wheel_boost 2.5x 会使
+        目标值远超实际滚动位置，导致滑块提前触底。改用当前实际值作基准，
+        仅靠 wheel_boost 自然加速快速滚动。
+        """
         minimum = scrollbar.minimum()
         maximum = scrollbar.maximum()
-
-        if pending_target is not None:
-            base_value = max(minimum, min(maximum, int(pending_target)))
-        elif animation is not None and animation.state() == QPropertyAnimation.Running:
-            end_value = animation.endValue()
-            base_value = int(end_value) if end_value is not None else current_value
-            base_value = max(minimum, min(maximum, base_value))
-        else:
-            base_value = current_value
-
-        target_value = max(minimum, min(maximum, base_value - step))
-        setattr(self, pending_attr, target_value)
+        target_value = max(minimum, min(maximum, current_value - step))
         return target_value
 
     def _resolve_scrollbar(self, orientation):
@@ -863,10 +855,8 @@ class _WheelSmoothScrollFilter(QObject):
         return None
 
     def _animate_scrollbar(self, scrollbar, target_value):
-        weak_self = weakref.ref(self)
         orientation = scrollbar.orientation()
         animation_attr = "_vertical_animation" if orientation == Qt.Vertical else "_horizontal_animation"
-        pending_attr = "_pending_vertical_target" if orientation == Qt.Vertical else "_pending_horizontal_target"
         animation = getattr(self, animation_attr, None)
 
         start_value = scrollbar.value()
@@ -879,6 +869,5 @@ class _WheelSmoothScrollFilter(QObject):
         animation.setEasingCurve(QEasingCurve.OutQuad)
         animation.setStartValue(int(start_value))
         animation.setEndValue(int(target_value))
-        animation.finished.connect(lambda p=pending_attr: (s := weak_self()) and setattr(s, p, None))
         setattr(self, animation_attr, animation)
         animation.start()

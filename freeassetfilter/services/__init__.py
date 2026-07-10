@@ -16,6 +16,7 @@ from freeassetfilter.services.favorites_service import FavoritesService
 from freeassetfilter.services.favorites_repository import FavoritesRepository
 from freeassetfilter.services.file_service import FileService
 from freeassetfilter.services.media_metadata_service import MediaMetadataService
+from freeassetfilter.services.file_icon_manager import FileIconManager
 from freeassetfilter.services.previewer_registry import PreviewerRegistry
 from freeassetfilter.services.settings_repository import SettingsRepository
 from freeassetfilter.services.staging_pool_service import StagingPoolService
@@ -25,6 +26,7 @@ __all__ = [
     "DriveService",
     "FavoritesService",
     "FavoritesRepository",
+    "FileIconManager",
     "FileService",
     "MediaMetadataService",
     "PreviewerRegistry",

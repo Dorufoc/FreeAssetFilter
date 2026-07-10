@@ -10,7 +10,6 @@ import json
 import threading
 
 from freeassetfilter.utils.app_logger import info, debug, warning, error
-from freeassetfilter.services.settings_repository import SettingsRepository
 
 
 def _apply_private_file_permissions(file_path):
@@ -65,6 +64,7 @@ class SettingsManager:
         else:
             self._settings_file = self._settings_file
 
+        from freeassetfilter.services.settings_repository import SettingsRepository
         self._repo = SettingsRepository(self._settings_file)
 
         self.default_settings = {
