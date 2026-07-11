@@ -655,14 +655,17 @@ class TeeStream(io.TextIOBase):
     """
     将文本同时写入原始控制台流和日志文件的简单双写流。
     用于捕获 print/sys.stdout.write/sys.stderr.write/traceback.print_exc 等输出。
+    可通过 filter_patterns 过滤不需要写入日志的行。
     """
 
-    def __init__(self, original_stream, log_file_path: str, encoding: str = 'utf-8'):
+    def __init__(self, original_stream, log_file_path: str, encoding: str = 'utf-8',
+                 filter_patterns: Optional[list] = None):
         self.original_stream = original_stream
         self.log_file_path = log_file_path
         self.encoding_name = encoding or 'utf-8'
         self._log_stream = None
         self._closed = False
+        self.filter_patterns = filter_patterns or []
 
         try:
             log_dir = os.path.dirname(log_file_path)
@@ -699,6 +702,16 @@ class TeeStream(io.TextIOBase):
             raise OSError("Underlying stream is unavailable")
         return self.original_stream.fileno()
 
+    def _should_filter(self, s: str) -> bool:
+        """检查是否应过滤此行（不写入日志，但保留控制台输出）"""
+        if not self.filter_patterns:
+            return False
+        line = s.strip()
+        for pattern in self.filter_patterns:
+            if pattern in line:
+                return True
+        return False
+
     def write(self, s):
         if s is None:
             return 0
@@ -707,6 +720,7 @@ class TeeStream(io.TextIOBase):
             s = str(s)
 
         written = 0
+        filtered = self._should_filter(s)
 
         if self.original_stream is not None:
             try:
@@ -714,7 +728,7 @@ class TeeStream(io.TextIOBase):
             except (OSError, IOError, ValueError, TypeError):
                 written = 0
 
-        if self._log_stream is not None:
+        if self._log_stream is not None and not filtered:
             try:
                 self._log_stream.write(s)
             except (OSError, IOError, ValueError, TypeError):
@@ -1035,7 +1049,10 @@ def install_console_capture(log_file_path: Optional[str] = None) -> bool:
     original_stderr = _get_original_console_stream('stderr')
     if not isinstance(sys.stderr, TeeStream):
         try:
-            sys.stderr = TeeStream(original_stderr, log_file_path)
+            # 过滤 MPV "Unknown property" 等无害噪音
+            stderr_filters = ["Unknown property"]
+            sys.stderr = TeeStream(original_stderr, log_file_path,
+                                   filter_patterns=stderr_filters)
             installed = True
         except (OSError, IOError, PermissionError, FileNotFoundError, ValueError, TypeError):
             pass

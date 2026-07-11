@@ -965,7 +965,6 @@ class MPVPlayerCore(QObject):
         with self._state_lock:
             if prop_name == "time-pos" and value is not None:
                 self._position = float(value)
-                print(f"[CORE_UPDATE] time-pos={float(value)}, cached_duration={self._duration}", flush=True)
             elif prop_name == "duration" and value is not None:
                 self._duration = float(value)
             elif prop_name == "pause":
@@ -987,7 +986,6 @@ class MPVPlayerCore(QObject):
                     self._video_height = int(h_val)
 
         if prop_name == "time-pos" and value is not None:
-            print(f"[CORE_QUEUE] _queue_signal_if_changed('positionChanged', pos={self._position}, dur={self._duration})", flush=True)
             self._queue_signal_if_changed('positionChanged', self._position, self._duration)
         elif prop_name == "duration" and value is not None:
             self._queue_signal_if_changed('durationChanged', self._duration)
@@ -2088,7 +2086,6 @@ class MPVPlayerCore(QObject):
                         # 只保留最新的位置信号，防止 seek 时大量位置信号冻结 UI
                         _, position, duration = signal_data
                         if self._has_pending_signal('positionChanged'):
-                            print(f"[CORE_DROP] 队列中还有 positionChanged 待处理，跳过本次 (pos={position}, dur={duration})", flush=True)
                             continue
                         self.positionChanged.emit(position, duration)
                     elif signal_name == 'seekFinished':

@@ -1723,12 +1723,10 @@ class VideoPlayer(QWidget):
 
     def _heartbeat_sync(self):
         if not hasattr(self, '_control_bar') or self._control_bar is None:
-            print(f"[HB] _control_bar 未就绪，跳过", flush=True)
             return
         position = self._mpv_manager.get_position()
         duration = self._mpv_manager.get_duration()
         is_playing = self._mpv_manager.is_playing() if hasattr(self._mpv_manager, 'is_playing') else None
-        print(f"[HB] pos={position}, dur={duration}, playing={is_playing}, interacting={self._user_interacting}", flush=True)
         if duration is not None and duration > 0:
             if not self._user_interacting:
                 self._control_bar.set_position(position or 0.0, duration)

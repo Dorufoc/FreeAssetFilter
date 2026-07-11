@@ -113,6 +113,13 @@ class StyledButton(QPushButton):
                 self._icon = ""  # 清空文本图标，使用 SVG
         except Exception:
             pass  # 如果加载失败，保持原有文本图标
+
+    def set_svg_icon(self, svg_path: str) -> None:
+        """Change the SVG icon at runtime (for play/pause toggle etc.)."""
+        self._icon = ""
+        self._load_svg_icon(svg_path)
+        self._svg_content_cache.clear()
+        self.update()
     
     def _get_colored_svg_content(self, color: QColor) -> str:
         """获取带颜色的 SVG 内容（修改 SVG XML）"""
@@ -183,8 +190,8 @@ class StyledButton(QPushButton):
 
     def _apply_size(self):
         config = self.SIZE_CONFIG[self._size]
-        if self._icon and not self.text():
-            # Icon-only button
+        if (self._icon or self._svg_icon_path) and not self.text():
+            # Icon-only button (text icon or SVG)
             w, h = config["icon_btn"]
             self.setFixedSize(int(w * 1.2), int(h * 1.2))
         elif self._block:

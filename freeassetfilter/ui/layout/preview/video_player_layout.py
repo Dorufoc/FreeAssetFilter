@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication,
     QStackedLayout, QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer, QRect
 from PySide6.QtGui import QFont
 
 from theme import tm
@@ -308,6 +308,7 @@ class VideoPlayerLayout(QWidget):
         self._player_bar.volume_changed.connect(self._on_volume_change)
         self._player_bar.mute_changed.connect(self._on_mute_change)
         self._player_bar.speed_changed.connect(self._on_speed_change)
+        self._player_bar.fullscreen_toggled.connect(self._on_fullscreen_toggled)
 
     def _connect_manager_signals(self) -> None:
         """MPVManager → StyledPlayerBar 状态同步"""
@@ -333,7 +334,6 @@ class VideoPlayerLayout(QWidget):
         参考旧 PlayerControlBar 的模式：用户拖动进度条时不更新进度显示，
         避免 MPV 信号与用户拖动手感冲突。
         """
-        print(f"[LAYOUT_POS] _on_position_changed(pos={position:.3f}, dur={duration:.3f}, interacting={self._user_interacting})", flush=True)
         self._current_position = position
         self._duration = duration
         if not self._user_interacting:
@@ -421,6 +421,25 @@ class VideoPlayerLayout(QWidget):
         self._current_speed = speed
         self._mpv_manager.set_speed(speed, component_id=self._component_id)
 
+    def _on_fullscreen_toggled(self, fullscreen: bool) -> None:
+        """全屏按钮点击 → 切换父窗口全屏 + 浮动控制栏模式
+
+        Args:
+            fullscreen: True=进入全屏, False=退出全屏
+        """
+        if fullscreen:
+            self.window().showFullScreen()
+            # 进入全屏后启用浮动控制栏（自动隐藏 + 动画）
+            screen = QApplication.primaryScreen()
+            if screen:
+                self._player_bar.enter_floating_mode(
+                    target_widget=self._video_surface,
+                    screen_geometry=screen.geometry(),
+                )
+        else:
+            self._player_bar.exit_floating_mode()
+            self.window().showNormal()
+
     def _on_file_loaded(self, file_path: str) -> None:
         """文件加载完成"""
         info(f"文件加载完成: {file_path}")
@@ -469,7 +488,6 @@ class VideoPlayerLayout(QWidget):
             return
         duration = self._mpv_manager.get_duration()
         position = self._mpv_manager.get_position()
-        print(f"[HB] pos={position}, dur={duration}, interacting={self._user_interacting}", flush=True)
         if duration is not None and duration > 0:
             self._duration = duration
             self._current_position = position or 0.0
