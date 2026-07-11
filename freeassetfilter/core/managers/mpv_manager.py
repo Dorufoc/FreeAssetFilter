@@ -1163,16 +1163,19 @@ class MPVManager(QObject):
 
     def _on_state_changed(self, is_playing: bool):
         """播放状态变化回调"""
+        print(f"[MGR_STATE] 收到 stateChanged(playing={is_playing}) → 请求发射（16ms 节流）", flush=True)
         self._request_state_changed_emit()
 
     def _on_position_changed(self, position: float, duration: float):
         """位置变化回调"""
+        print(f"[MGR_POS] 收到 positionChanged(pos={position}, dur={duration}) → 转发", flush=True)
         self.positionChanged.emit(position, duration)
 
     def _on_duration_changed(self, duration: float):
         """时长变化回调"""
         # 从core获取当前缓存位置，避免阻塞
         position = self._mpv_core.get_position_cached() if self._mpv_core else 0.0
+        print(f"[MGR_DUR] durationChanged(dur={duration}) → 读取缓存位置 {position} → positionChanged", flush=True)
         self.positionChanged.emit(position if position is not None else 0.0, duration)
     def _on_volume_changed(self, volume: int):
         """音量变化回调"""

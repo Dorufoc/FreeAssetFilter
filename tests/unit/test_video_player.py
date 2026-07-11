@@ -180,6 +180,7 @@ class TestVideoPlayerFix:
         player = SimpleNamespace()
         player._control_bar = control_bar
         player._mpv_manager = manager
+        player._load_sequence_counter = 0
         player._current_load_sequence = 1
         player._initialize_progress_display = MagicMock()
         player._delayed_file_init = MagicMock()

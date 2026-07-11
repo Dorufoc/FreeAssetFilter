@@ -6,12 +6,15 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPoint, QPropertyAnimation,
-    QEasingCurve, Property, QTimer, QEvent,
+    QEasingCurve, Property, QTimer, QEvent, QSize,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QFont, QMouseEvent,
-    QPen, QFontMetrics, QActionEvent,
+    QPen, QFontMetrics, QActionEvent, QIcon, QPixmap,
 )
+from PySide6.QtSvg import QSvgRenderer
+import re
+from pathlib import Path
 import math
 
 from components.styled_slider import StyledSlider, SliderTrack
@@ -475,6 +478,8 @@ class StyledPlayerBar(QWidget):
     # Signals for external integration
     play_paused = Signal(bool)          # True=playing
     progress_changed = Signal(float)    # 0.0-1.0
+    progress_pressed = Signal()         # 用户开始拖动进度条
+    progress_released = Signal()        # 用户结束拖动进度条
     volume_changed = Signal(float)      # 0.0-1.0
     mute_changed = Signal(bool)
     speed_changed = Signal(str)
@@ -519,7 +524,19 @@ class StyledPlayerBar(QWidget):
         self.setFixedHeight(52)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        # Pre-create SVG icons
+        self._play_icon = self._create_svg_icon("play.svg")
+        self._pause_icon = self._create_svg_icon("pause.svg")
+        self._speaker_icon = self._create_svg_icon("speaker.svg")
+        self._speaker_slash_icon = self._create_svg_icon("speaker_slash.svg")
+        self._speed_icon = self._create_svg_icon("speed.svg")
+        self._more_icon = self._create_svg_icon("more.svg")
+        self._maxsize_icon = self._create_svg_icon("maxsize.svg")
+
         self._setup_ui()
+
+        # Regenerate icons on theme change
+        tm.theme_changed.connect(self._on_theme_changed_icons)
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)
@@ -534,7 +551,9 @@ class StyledPlayerBar(QWidget):
         left_layout.setSpacing(8)
 
         # Play/Pause
-        self._play_btn = QPushButton("▶")
+        self._play_btn = QPushButton()
+        self._play_btn.setIcon(self._play_icon)
+        self._play_btn.setIconSize(QSize(20, 20))
         self._play_btn.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
         self._play_btn.setStyleSheet(self._btn_style())
         self._play_btn.clicked.connect(self._on_play_clicked)
@@ -559,6 +578,8 @@ class StyledPlayerBar(QWidget):
         # Progress slider（自适应宽度）
         self._progress_slider = StyledSlider(value=self._progress, size="sm")
         self._progress_slider.value_changed.connect(self._on_progress_changed)
+        self._progress_slider.pressed.connect(self.progress_pressed.emit)
+        self._progress_slider.released.connect(self.progress_released.emit)
 
         # Total time
         self._time_total = QLabel(self._total_time)
@@ -587,28 +608,36 @@ class StyledPlayerBar(QWidget):
         BTN_HOVER = self._btn_style(hover=True)
 
         # Volume
-        self._vol_btn = QPushButton("🔊")
+        self._vol_btn = QPushButton()
+        self._vol_btn.setIcon(self._speaker_icon)
+        self._vol_btn.setIconSize(QSize(20, 20))
         self._vol_btn.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
         self._vol_btn.setStyleSheet(self._btn_style())
         self._vol_btn.clicked.connect(self._on_volume_clicked)
         right_layout.addWidget(self._vol_btn)
 
         # Speed
-        self._speed_btn = QPushButton("⏱")
+        self._speed_btn = QPushButton()
+        self._speed_btn.setIcon(self._speed_icon)
+        self._speed_btn.setIconSize(QSize(20, 20))
         self._speed_btn.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
         self._speed_btn.setStyleSheet(self._btn_style())
         self._speed_btn.clicked.connect(self._on_speed_clicked)
         right_layout.addWidget(self._speed_btn)
 
         # Settings
-        self._settings_btn = QPushButton("⚙")
+        self._settings_btn = QPushButton()
+        self._settings_btn.setIcon(self._more_icon)
+        self._settings_btn.setIconSize(QSize(20, 20))
         self._settings_btn.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
         self._settings_btn.setStyleSheet(self._btn_style())
         self._settings_btn.clicked.connect(self._on_settings_clicked)
         right_layout.addWidget(self._settings_btn)
 
         # Fullscreen
-        self._fs_btn = QPushButton("⛶")
+        self._fs_btn = QPushButton()
+        self._fs_btn.setIcon(self._maxsize_icon)
+        self._fs_btn.setIconSize(QSize(20, 20))
         self._fs_btn.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
         self._fs_btn.setStyleSheet(self._btn_style())
         self._fs_btn.clicked.connect(self._on_fullscreen_clicked)
@@ -646,7 +675,7 @@ class StyledPlayerBar(QWidget):
 
     def _on_play_clicked(self):
         self._playing = not self._playing
-        self._play_btn.setText("⏸" if self._playing else "▶")
+        self._play_btn.setIcon(self._pause_icon if self._playing else self._play_icon)
         self.play_paused.emit(self._playing)
 
     def _on_progress_changed(self, value: float):
@@ -699,10 +728,7 @@ class StyledPlayerBar(QWidget):
 
     def _on_fullscreen_clicked(self):
         self._fullscreen = not self._fullscreen
-        accent = tm.accent.name()
-        self._fs_btn.setStyleSheet(self._btn_style() + (f"""
-            QPushButton {{ color: {accent}; }}
-        """ if self._fullscreen else ""))
+        self._fs_btn.setStyleSheet(self._btn_style(hover=self._fullscreen))
         self.fullscreen_toggled.emit(self._fullscreen)
 
     # ── Popup callbacks ────────────────────────────────────────
@@ -711,11 +737,11 @@ class StyledPlayerBar(QWidget):
         self._volume = value
         self.volume_changed.emit(value)
         self._muted = (value < 0.01)
-        self._vol_btn.setText("🔇" if self._muted else "🔊")
+        self._vol_btn.setIcon(self._speaker_slash_icon if self._muted else self._speaker_icon)
 
     def _on_mute_toggle(self, muted: bool):
         self._muted = muted
-        self._vol_btn.setText("🔇" if muted else "🔊")
+        self._vol_btn.setIcon(self._speaker_slash_icon if muted else self._speaker_icon)
         self.mute_changed.emit(muted)
 
     def _on_speed_selected(self, speed: str):
@@ -732,6 +758,23 @@ class StyledPlayerBar(QWidget):
             self._speed_popup.close_animated()
         if exclude != "settings" and self._settings_popup and self._settings_popup.isVisible():
             self._settings_popup.close_animated()
+
+    def _on_theme_changed_icons(self):
+        """主题切换时重新生成 SVG 图标"""
+        self._play_icon = self._create_svg_icon("play.svg")
+        self._pause_icon = self._create_svg_icon("pause.svg")
+        self._speaker_icon = self._create_svg_icon("speaker.svg")
+        self._speaker_slash_icon = self._create_svg_icon("speaker_slash.svg")
+        self._speed_icon = self._create_svg_icon("speed.svg")
+        self._more_icon = self._create_svg_icon("more.svg")
+        self._maxsize_icon = self._create_svg_icon("maxsize.svg")
+
+        # Update current button icons
+        self._play_btn.setIcon(self._pause_icon if self._playing else self._play_icon)
+        self._vol_btn.setIcon(self._speaker_slash_icon if self._muted else self._speaker_icon)
+        self._speed_btn.setIcon(self._speed_icon)
+        self._settings_btn.setIcon(self._more_icon)
+        self._fs_btn.setIcon(self._maxsize_icon)
 
     # ── Paint ──────────────────────────────────────────────────
 
@@ -779,10 +822,69 @@ class StyledPlayerBar(QWidget):
 
     def set_muted(self, muted: bool):
         self._muted = muted
-        self._vol_btn.setText("🔇" if muted else "🔊")
+        self._vol_btn.setIcon(self._speaker_slash_icon if muted else self._speaker_icon)
         if self._volume_popup:
             self._volume_popup.set_muted(muted)
 
+    def set_speed(self, speed_str: str) -> None:
+        """从外部同步播放速度显示
+
+        Args:
+            speed_str: 速度字符串，如 "1.0x", "1.5x", "2.0x"
+        """
+        self._current_speed = speed_str
+        if hasattr(self, '_speed_popup') and self._speed_popup and self._speed_popup.isVisible():
+            self._speed_popup._current_speed = speed_str
+            self._speed_popup.update()
+
+    def _create_svg_icon(self, svg_name: str) -> QIcon:
+        """从 SVG 文件创建主题感知的 QIcon
+
+        1. 读取 SVG 文件
+        2. 通过 tm.process_svg() 将 #FFF/#000 替换为 surface/text 色
+        3. 为无 fill 属性的 SVG 根元素添加 tm.text 作为默认 fill
+        4. 通过 QSvgRenderer 渲染为 QPixmap → QIcon
+
+        Args:
+            svg_name: SVG 文件名，如 "play.svg"
+
+        Returns:
+            QIcon: 主题适配后的图标
+        """
+        icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
+        svg_path = icons_dir / svg_name
+        if not svg_path.exists():
+            return QIcon()
+
+        try:
+            with open(svg_path, 'r', encoding='utf-8') as f:
+                svg_content = f.read()
+
+            # 1. ThemeManager 预处理 (替换 #FFF→surface, #000→text)
+            svg_content = tm.process_svg(svg_content)
+
+            # 2. 对没有 fill 属性的 SVG 根元素添加 tm.text 作为默认 fill
+            color_hex = tm.text.name()
+            svg_content = re.sub(
+                r'(<svg\b[^>]*)(>)',
+                lambda m: f'{m.group(1)} fill="{color_hex}"{m.group(2)}'
+                if 'fill=' not in m.group(1) else m.group(0),
+                svg_content,
+                count=1
+            )
+
+            # 3. 渲染到 QPixmap
+            pixmap = QPixmap(20, 20)
+            pixmap.fill(Qt.transparent)
+            renderer = QSvgRenderer(svg_content.encode('utf-8'))
+            painter = QPainter(pixmap)
+            if renderer.isValid():
+                renderer.render(painter)
+            painter.end()
+            return QIcon(pixmap)
+        except Exception:
+            return QIcon()
+
     def set_playing(self, playing: bool):
         self._playing = playing
-        self._play_btn.setText("⏸" if playing else "▶")
+        self._play_btn.setIcon(self._pause_icon if playing else self._play_icon)

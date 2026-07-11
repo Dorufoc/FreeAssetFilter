@@ -67,7 +67,7 @@ def _make_manager_with_mock_core():
     MPVManager._instance = None
     MPVManager._initialized = False
 
-    manager = get_mpv_manager(enable_logging=False)
+    manager = get_mpv_manager()
     manager._mpv_core = _make_mock_core()
     manager._is_shutting_down = False
     return manager

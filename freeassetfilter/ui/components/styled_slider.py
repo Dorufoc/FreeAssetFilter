@@ -24,6 +24,9 @@ class StyledSlider(QWidget):
         "lg": {"track_height": 8, "thumb_radius": 10, "width": 240},
     }
 
+    pressed = Signal()
+    released = Signal()
+
     def __init__(
         self,
         value: float = 0.5,
@@ -81,6 +84,8 @@ class StyledSlider(QWidget):
             self._label_widgets = labels_layout
 
         self._track_widget.value_changed.connect(self._on_value_changed)
+        self._track_widget.pressed.connect(self.pressed.emit)
+        self._track_widget.released.connect(self.released.emit)
         # 支持自适应宽度（移除固定宽度设置）
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMinimumWidth(60 + extra * 2)
@@ -135,6 +140,8 @@ class SliderTrack(QWidget):
     """The actual track widget that handles painting and interaction."""
 
     value_changed = Signal(float)
+    pressed = Signal()
+    released = Signal()
 
     def __init__(
         self,
@@ -217,6 +224,7 @@ class SliderTrack(QWidget):
             self._dragging = True
             self._animate_drag(1.0)
             self._update_value_from_pos(event.pos().x())
+            self.pressed.emit()
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -230,8 +238,11 @@ class SliderTrack(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
+            was_dragging = self._dragging
             self._dragging = False
             self._animate_drag(0.0)
+            if was_dragging:
+                self.released.emit()
             event.accept()
         else:
             super().mouseReleaseEvent(event)

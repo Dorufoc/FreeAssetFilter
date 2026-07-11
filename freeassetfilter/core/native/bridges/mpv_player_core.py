@@ -965,6 +965,7 @@ class MPVPlayerCore(QObject):
         with self._state_lock:
             if prop_name == "time-pos" and value is not None:
                 self._position = float(value)
+                print(f"[CORE_UPDATE] time-pos={float(value)}, cached_duration={self._duration}", flush=True)
             elif prop_name == "duration" and value is not None:
                 self._duration = float(value)
             elif prop_name == "pause":
@@ -986,6 +987,7 @@ class MPVPlayerCore(QObject):
                     self._video_height = int(h_val)
 
         if prop_name == "time-pos" and value is not None:
+            print(f"[CORE_QUEUE] _queue_signal_if_changed('positionChanged', pos={self._position}, dur={self._duration})", flush=True)
             self._queue_signal_if_changed('positionChanged', self._position, self._duration)
         elif prop_name == "duration" and value is not None:
             self._queue_signal_if_changed('durationChanged', self._duration)
@@ -1045,6 +1047,7 @@ class MPVPlayerCore(QObject):
             # 强制复位 position，防止 stale time-pos 污染
             self._position = 0.0
             debug(f"FILE_LOADED: _position=0, _duration={self._duration}")
+            print(f"[CORE_FILE_LOADED] duration={duration}, _position=0, _duration={self._duration}", flush=True)
         if duration is not None and duration > 0:
             self._queue_signal_if_changed('durationChanged', self._duration)
         # 始终发送 positionChanged，确保 UI 控制栏拿到最新的位置和时长
@@ -1052,6 +1055,7 @@ class MPVPlayerCore(QObject):
             pos = self._position
             dur = self._duration
         self._enqueue_signal('positionChanged', pos, dur)
+        print(f"[CORE_FILE_LOADED] 已入队 positionChanged(pos={pos}, dur={dur})", flush=True)
 
         # 获取当前的播放状态
         is_paused = False
@@ -2084,6 +2088,7 @@ class MPVPlayerCore(QObject):
                         # 只保留最新的位置信号，防止 seek 时大量位置信号冻结 UI
                         _, position, duration = signal_data
                         if self._has_pending_signal('positionChanged'):
+                            print(f"[CORE_DROP] 队列中还有 positionChanged 待处理，跳过本次 (pos={position}, dur={duration})", flush=True)
                             continue
                         self.positionChanged.emit(position, duration)
                     elif signal_name == 'seekFinished':

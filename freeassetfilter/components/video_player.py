@@ -1110,6 +1110,7 @@ class VideoPlayer(QWidget):
         Args:
             state: 新的MPV状态
         """
+        print(f"[UI_STATE] stateChanged → set_playing(playing)", flush=True)
         debug(f"[UI_STATE] stateChanged → set_playing(playing={bool(state.is_playing and not state.is_paused)})")
         debug(f"MPV状态变化: playing={state.is_playing}, paused={state.is_paused}")
 
@@ -1125,11 +1126,11 @@ class VideoPlayer(QWidget):
             position: 当前播放位置（秒）
             duration: 总时长（秒）
         """
+        print(f"[UI_POS] 收到 positionChanged(pos={position:.3f}, dur={duration:.3f}, interacting={self._user_interacting})", flush=True)
         current_seq = getattr(self, '_load_sequence_counter', 0)
         caller_seq = getattr(self, '_current_load_sequence', 0)
         if caller_seq < current_seq:
-            debug(f"[POS_STALE] 过时 positionChanged 信号: signal_seq={caller_seq}, current_seq={current_seq}, pos={position}")
-        debug(f"[UI_POS] positionChanged(pos={position:.3f}, dur={duration:.3f}, interacting={self._user_interacting})")
+            print(f"[POS_STALE] 过时 positionChanged 信号: signal_seq={caller_seq}, current_seq={current_seq}, pos={position}", flush=True)
         # 信号来自 core 的 playback-time 属性事件，是唯一权威来源。
         # 始终更新控制栏，除非用户正在拖动进度条。
         if not self._user_interacting:
@@ -1210,6 +1211,7 @@ class VideoPlayer(QWidget):
         try:
             duration = self._mpv_manager.get_duration()
             position = self._mpv_manager.get_position()
+            print(f"[INIT_PROGRESS] duration={duration}, position={position}, retry={duration is None or duration <= 0}", flush=True)
             debug(f"初始化进度显示: get_duration()={duration}, get_position()={position}, retry={duration is None or duration <= 0}")
 
             if duration is not None and duration > 0:
@@ -1683,11 +1685,11 @@ class VideoPlayer(QWidget):
         """
         info(f"文件加载完成: {file_path}")
 
-        seq = getattr(self, '_load_sequence_counter', 0)
-        self._current_load_sequence = seq
-        debug(f"[FILE_LOADED_UI] seq={seq}, file={file_path}")
+        self._current_load_sequence = self._load_sequence_counter
+        print(f"[FILE_LOADED_UI] seq={self._load_sequence_counter}, file={file_path}", flush=True)
         if not hasattr(self, '_control_bar') or self._control_bar is None:
-            debug(f"[FILE_LOADED_UI] _control_bar 未就绪，跳过 UI 更新")
+            print(f"[FILE_LOADED_UI] _control_bar 未就绪，跳过 UI 更新", flush=True)
+            return
 
         if self._mpv_manager:
             # 文件加载完成 → 已经自动开始播放
@@ -1720,17 +1722,13 @@ class VideoPlayer(QWidget):
         self._try_auto_load_matching_subtitle()
 
     def _heartbeat_sync(self):
-        """心跳同步：周期性检查缓存状态并更新 UI，防止信号丢失导致的UI卡死"""
-        if not self._mpv_manager:
-            debug(f"[HB] _mpv_manager 未就绪，跳过")
-            return
         if not hasattr(self, '_control_bar') or self._control_bar is None:
-            debug(f"[HB] _control_bar 未就绪，跳过")
+            print(f"[HB] _control_bar 未就绪，跳过", flush=True)
             return
-        # 使用非阻塞直接缓存方法，避免操作队列阻塞主线程
-        position = self._mpv_manager.get_position_direct()
-        duration = self._mpv_manager.get_duration_direct()
+        position = self._mpv_manager.get_position()
+        duration = self._mpv_manager.get_duration()
         is_playing = self._mpv_manager.is_playing() if hasattr(self._mpv_manager, 'is_playing') else None
+        print(f"[HB] pos={position}, dur={duration}, playing={is_playing}, interacting={self._user_interacting}", flush=True)
         if duration is not None and duration > 0:
             if not self._user_interacting:
                 self._control_bar.set_position(position or 0.0, duration)
