@@ -34,6 +34,7 @@ class StyledSlider(QWidget):
         tick_count: int = 0,
         labels: list = None,
         enabled: bool = True,
+        orientation: Qt.Orientation = Qt.Horizontal,
         parent=None,
     ):
         super().__init__(parent)
@@ -42,11 +43,11 @@ class StyledSlider(QWidget):
         self._tick_count = tick_count
         self._labels = labels or []
         self._enabled = enabled
+        self._orientation = orientation
         self._dragging = False
         self._hovered = False
 
         config = self.SIZE_CONFIG[self._size]
-        thumb_diameter = config["thumb_radius"] * 2
 
         # Extra internal margin on SliderTrack so the 1.2×-scaled thumb
         # at min/max value stays within the track widget's backing store
@@ -64,36 +65,76 @@ class StyledSlider(QWidget):
             tick_count=tick_count,
             enabled=enabled,
             extra_margin=extra,
+            orientation=orientation,
         )
-        layout.addWidget(self._track_widget)
+
+        if orientation == Qt.Horizontal:
+            # 横向模式：轨道直接拉伸填满可用宽度
+            layout.addWidget(self._track_widget)
+        else:
+            # 纵向模式：用水平容器包裹，左右加 stretch 使轨道水平居中，同时允许垂直拉伸
+            track_container = QWidget()
+            container_layout = QHBoxLayout(track_container)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(0)
+            container_layout.addStretch()
+            container_layout.addWidget(self._track_widget)
+            container_layout.addStretch()
+            layout.addWidget(track_container, stretch=1)
 
         if self._labels:
-            labels_layout = QHBoxLayout()
-            labels_layout.setContentsMargins(config["thumb_radius"] + extra, 0, config["thumb_radius"] + extra, 0)
-            labels_layout.setSpacing(0)
-            for i, label_text in enumerate(self._labels):
-                lbl = QLabel(label_text)
-                font = QFont("Microsoft YaHei UI", 11)
-                lbl.setFont(font)
-                lbl.setAlignment(Qt.AlignCenter)
-                lbl.setStyleSheet(f"color: {tm.alpha_of(tm.mid, 60).name()};")
-                labels_layout.addWidget(lbl, stretch=1)
-                if i == 0:
-                    lbl.setStyleSheet(f"color: {tm.mid.name()}; font-weight: 500;")
-            layout.addLayout(labels_layout)
-            self._label_widgets = labels_layout
+            if orientation == Qt.Horizontal:
+                labels_layout = QHBoxLayout()
+                labels_layout.setContentsMargins(config["thumb_radius"] + extra, 0, config["thumb_radius"] + extra, 0)
+                labels_layout.setSpacing(0)
+                for i, label_text in enumerate(self._labels):
+                    lbl = QLabel(label_text)
+                    font = QFont("Microsoft YaHei UI", 11)
+                    lbl.setFont(font)
+                    lbl.setAlignment(Qt.AlignCenter)
+                    lbl.setStyleSheet(f"color: {tm.alpha_of(tm.mid, 60).name()};")
+                    labels_layout.addWidget(lbl, stretch=1)
+                    if i == 0:
+                        lbl.setStyleSheet(f"color: {tm.mid.name()}; font-weight: 500;")
+                layout.addLayout(labels_layout)
+                self._label_widgets = labels_layout
+            else:
+                labels_layout = QVBoxLayout()
+                labels_layout.setContentsMargins(0, config["thumb_radius"] + extra, 0, config["thumb_radius"] + extra)
+                labels_layout.setSpacing(0)
+                for i, label_text in enumerate(self._labels):
+                    lbl = QLabel(label_text)
+                    font = QFont("Microsoft YaHei UI", 11)
+                    lbl.setFont(font)
+                    lbl.setAlignment(Qt.AlignCenter)
+                    lbl.setStyleSheet(f"color: {tm.alpha_of(tm.mid, 60).name()};")
+                    labels_layout.addWidget(lbl, stretch=1)
+                    if i == 0:
+                        lbl.setStyleSheet(f"color: {tm.mid.name()}; font-weight: 500;")
+                layout.addLayout(labels_layout)
+                self._label_widgets = labels_layout
 
         self._track_widget.value_changed.connect(self._on_value_changed)
         self._track_widget.pressed.connect(self.pressed.emit)
         self._track_widget.released.connect(self.released.emit)
-        # 支持自适应宽度（移除固定宽度设置）
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setMinimumWidth(60 + extra * 2)
-        # Calculate height: track + spacing + labels
-        track_h = config["track_height"] + int(config["thumb_radius"] * 2 * 1.25) + 8
-        label_h = 28 if self._labels else 0
-        total_h = track_h + (8 if self._labels else 0) + label_h
-        self.setFixedHeight(total_h)
+
+        if orientation == Qt.Horizontal:
+            # 支持自适应宽度（移除固定宽度设置）
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.setMinimumWidth(60 + extra * 2)
+            # Calculate height: track + spacing + labels
+            track_h = config["track_height"] + int(config["thumb_radius"] * 2 * 1.25) + 8
+            label_h = 28 if self._labels else 0
+            total_h = track_h + (8 if self._labels else 0) + label_h
+            self.setFixedHeight(total_h)
+        else:
+            # 纵向模式：固定宽度、自适应高度
+            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            track_w = config["track_height"] + int(config["thumb_radius"] * 2 * 1.25) + 8
+            label_w = 32 if self._labels else 0
+            total_w = track_w + (8 if self._labels else 0) + label_w
+            self.setFixedWidth(total_w)
+            self.setMinimumHeight(60 + extra * 2)
 
     def _on_value_changed(self, value: float):
         self._value = value
@@ -133,7 +174,22 @@ class StyledSlider(QWidget):
         config = self.SIZE_CONFIG[value]
         self._track_widget.track_height = config["track_height"]
         self._track_widget.thumb_radius = config["thumb_radius"]
-        # 移除固定宽度设置，保持自适应
+        # 重新应用方向相关的尺寸约束
+        extra = max(2, math.ceil(config["thumb_radius"] * 0.3))
+        if self._orientation == Qt.Horizontal:
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.setMinimumWidth(60 + extra * 2)
+            track_h = config["track_height"] + int(config["thumb_radius"] * 2 * 1.25) + 8
+            label_h = 28 if self._labels else 0
+            total_h = track_h + (8 if self._labels else 0) + label_h
+            self.setFixedHeight(total_h)
+        else:
+            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            track_w = config["track_height"] + int(config["thumb_radius"] * 2 * 1.25) + 8
+            label_w = 32 if self._labels else 0
+            total_w = track_w + (8 if self._labels else 0) + label_w
+            self.setFixedWidth(total_w)
+            self.setMinimumHeight(60 + extra * 2)
 
 
 class SliderTrack(QWidget):
@@ -151,6 +207,7 @@ class SliderTrack(QWidget):
         tick_count: int = 0,
         enabled: bool = True,
         extra_margin: int = 0,
+        orientation: Qt.Orientation = Qt.Horizontal,
         parent=None,
     ):
         super().__init__(parent)
@@ -160,17 +217,22 @@ class SliderTrack(QWidget):
         self._extra_margin = extra_margin
         self._tick_count = tick_count
         self._enabled = enabled
+        self._orientation = orientation
         self._hovered = False
         self._dragging = False
         self._hover_progress = 0.0
         self._drag_progress = 0.0
-        total_h = track_height + int(thumb_radius * 2 * 1.25) + 4  # +25% for hover scale
-        self.setMinimumHeight(total_h)
-        self.setMinimumWidth(60 + extra_margin * 2)
-        self.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Fixed,
-        )
+
+        thumb_extra = int(thumb_radius * 2 * 1.25) + 4  # +25% for hover scale
+        if orientation == Qt.Horizontal:
+            self.setMinimumHeight(track_height + thumb_extra)
+            self.setMinimumWidth(60 + extra_margin * 2)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        else:
+            self.setMinimumWidth(track_height + thumb_extra)
+            self.setMinimumHeight(60 + extra_margin * 2)
+            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
         self.setAttribute(Qt.WA_StyledBackground, False)
@@ -201,7 +263,11 @@ class SliderTrack(QWidget):
     @track_height.setter
     def track_height(self, h: int):
         self._track_height = h
-        self.setMinimumHeight(h + int(self._thumb_radius * 2 * 1.25) + 4)
+        thumb_extra = int(self._thumb_radius * 2 * 1.25) + 4
+        if self._orientation == Qt.Horizontal:
+            self.setMinimumHeight(h + thumb_extra)
+        else:
+            self.setMinimumWidth(h + thumb_extra)
         self.update()
 
     @property
@@ -211,19 +277,35 @@ class SliderTrack(QWidget):
     @thumb_radius.setter
     def thumb_radius(self, r: int):
         self._thumb_radius = r
-        self.setMinimumHeight(self._track_height + int(r * 2 * 1.25) + 4)
+        thumb_extra = int(r * 2 * 1.25) + 4
+        if self._orientation == Qt.Horizontal:
+            self.setMinimumHeight(self._track_height + thumb_extra)
+        else:
+            self.setMinimumWidth(self._track_height + thumb_extra)
         self.update()
 
-    def _get_thumb_x(self) -> float:
+    def _get_thumb_pos(self) -> tuple[float, float]:
         margin = self._thumb_radius + self._extra_margin
-        available = self.width() - margin * 2
-        return margin + available * self._value
+        if self._orientation == Qt.Horizontal:
+            available = self.width() - margin * 2
+            x = margin + available * self._value
+            y = self.height() / 2.0
+            return x, y
+        else:
+            available = self.height() - margin * 2
+            x = self.width() / 2.0
+            # 纵向模式：底部为 0，顶部为 1
+            y = self.height() - margin - available * self._value
+            return x, y
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton and self._enabled:
             self._dragging = True
             self._animate_drag(1.0)
-            self._update_value_from_pos(event.pos().x())
+            if self._orientation == Qt.Horizontal:
+                self._update_value_from_x(event.pos().x())
+            else:
+                self._update_value_from_y(event.pos().y())
             self.pressed.emit()
             event.accept()
         else:
@@ -231,7 +313,10 @@ class SliderTrack(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if self._dragging and self._enabled:
-            self._update_value_from_pos(event.pos().x())
+            if self._orientation == Qt.Horizontal:
+                self._update_value_from_x(event.pos().x())
+            else:
+                self._update_value_from_y(event.pos().y())
             event.accept()
         else:
             super().mouseMoveEvent(event)
@@ -301,10 +386,20 @@ class SliderTrack(QWidget):
         )
         self._drag_anim.start()
 
-    def _update_value_from_pos(self, x: int):
+    def _update_value_from_x(self, x: int):
         margin = self._thumb_radius + self._extra_margin
         available = self.width() - margin * 2
         value = (x - margin) / available
+        self._apply_value(value)
+
+    def _update_value_from_y(self, y: int):
+        margin = self._thumb_radius + self._extra_margin
+        available = self.height() - margin * 2
+        # 纵向模式：底部为 0，顶部为 1
+        value = 1.0 - (y - margin) / available
+        self._apply_value(value)
+
+    def _apply_value(self, value: float):
         value = max(0.0, min(1.0, value))
 
         # Snap to ticks if present
@@ -321,54 +416,75 @@ class SliderTrack(QWidget):
         painter = QPainter(self)
         if not painter.isActive():
             return
-            
+
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setPen(Qt.PenStyle.NoPen)
 
-            track_y = self.height() / 2.0
             margin = float(self._thumb_radius + self._extra_margin)
-            available = float(self.width()) - margin * 2.0
-            
-            # Track background - rounded rectangle
-            track_h = float(self._track_height)
-            painter.setBrush(tm.alpha_of(tm.mid, 40))
-            y_pos = track_y - track_h / 2.0
-            track_rect = QRectF(margin, y_pos, available, track_h)
-            painter.drawRoundedRect(track_rect, track_h / 2.0, track_h / 2.0)
-            
-            # Track fill - rounded rectangle
-            fill_width = available * self._value
-            painter.setBrush(tm.accent)
-            fill_rect = QRectF(margin, y_pos, fill_width, track_h)
-            painter.drawRoundedRect(fill_rect, track_h / 2.0, track_h / 2.0)
-            
-            # Draw ticks - Web: 4px dots, filled=white@30%, unfilled=#6b6b6b@40%
-            if self._tick_count > 0:
-                for i in range(self._tick_count + 1):
-                    tick_x = margin + (available * i / self._tick_count)
-                    filled = i / self._tick_count <= self._value
-                    if filled:
-                        # filled: rgba(255, 255, 255, 0.3), opacity 1.0
-                        painter.setBrush(tm.alpha_of(tm.mid, 30))
-                    else:
-                        painter.setBrush(tm.alpha_of(tm.mid, 20))
-                    painter.drawEllipse(int(tick_x - 2), int(track_y - 2), 4, 4)
-            
-            # Thumb — size animated via hover/drag progress
-            thumb_x = self._get_thumb_x()
+            thumb_x, thumb_y = self._get_thumb_pos()
             thumb_r = float(self._thumb_radius)
+            track_thickness = float(self._track_height)
 
-            # Scale: default 1.0 → hover 1.1 → press 1.2
+            if self._orientation == Qt.Horizontal:
+                available = float(self.width()) - margin * 2.0
+                track_y = self.height() / 2.0
+                y_pos = track_y - track_thickness / 2.0
+
+                # Track background
+                painter.setBrush(tm.alpha_of(tm.mid, 40))
+                track_rect = QRectF(margin, y_pos, available, track_thickness)
+                painter.drawRoundedRect(track_rect, track_thickness / 2.0, track_thickness / 2.0)
+
+                # Track fill
+                fill_width = available * self._value
+                painter.setBrush(tm.accent)
+                fill_rect = QRectF(margin, y_pos, fill_width, track_thickness)
+                painter.drawRoundedRect(fill_rect, track_thickness / 2.0, track_thickness / 2.0)
+
+                # Ticks
+                if self._tick_count > 0:
+                    for i in range(self._tick_count + 1):
+                        tick_x = margin + (available * i / self._tick_count)
+                        filled = i / self._tick_count <= self._value
+                        painter.setBrush(tm.alpha_of(tm.mid, 30) if filled else tm.alpha_of(tm.mid, 20))
+                        painter.drawEllipse(int(tick_x - 2), int(track_y - 2), 4, 4)
+            else:
+                available = float(self.height()) - margin * 2.0
+                track_x = self.width() / 2.0
+                x_pos = track_x - track_thickness / 2.0
+
+                # Track background（纵向，底部到顶部）
+                painter.setBrush(tm.alpha_of(tm.mid, 40))
+                track_rect = QRectF(x_pos, margin, track_thickness, available)
+                painter.drawRoundedRect(track_rect, track_thickness / 2.0, track_thickness / 2.0)
+
+                # Track fill（从底部向上增长）
+                fill_height = available * self._value
+                fill_y = margin + available - fill_height
+                painter.setBrush(tm.accent)
+                fill_rect = QRectF(x_pos, fill_y, track_thickness, fill_height)
+                painter.drawRoundedRect(fill_rect, track_thickness / 2.0, track_thickness / 2.0)
+
+                # Ticks
+                if self._tick_count > 0:
+                    for i in range(self._tick_count + 1):
+                        # tick 0 在底部，tick_count 在顶部
+                        tick_y = margin + available - (available * i / self._tick_count)
+                        filled = i / self._tick_count <= self._value
+                        painter.setBrush(tm.alpha_of(tm.mid, 30) if filled else tm.alpha_of(tm.mid, 20))
+                        painter.drawEllipse(int(track_x - 2), int(tick_y - 2), 4, 4)
+
+            # Thumb — size animated via hover/drag progress
             scale = 1.0 + 0.1 * self._hover_progress + 0.1 * self._drag_progress
             thumb_r *= scale
-            
+
             # Thumb shadow
             shadow_offset = 2.0
             painter.setOpacity(0.4)
             painter.setBrush(tm.alpha_of(tm.black, 40))
             painter.drawEllipse(QRectF(
-                thumb_x - thumb_r, track_y - thumb_r + shadow_offset,
+                thumb_x - thumb_r, thumb_y - thumb_r + shadow_offset,
                 thumb_r * 2, thumb_r * 2,
             ))
 
@@ -376,7 +492,7 @@ class SliderTrack(QWidget):
             painter.setOpacity(1.0)
             painter.setBrush(tm.text)
             painter.drawEllipse(QRectF(
-                thumb_x - thumb_r, track_y - thumb_r,
+                thumb_x - thumb_r, thumb_y - thumb_r,
                 thumb_r * 2, thumb_r * 2,
             ))
         finally:

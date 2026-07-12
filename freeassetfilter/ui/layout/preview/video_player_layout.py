@@ -481,10 +481,8 @@ class VideoPlayerLayout(QWidget):
         确保进度条始终平滑更新（参考旧的 VideoPlayer._heartbeat_sync）。
         """
         if not self._mpv_manager or not self._mpv_manager.is_initialized():
-            print(f"[HB_SKIP] mpv_manager not initialized", flush=True)
             return
         if self._user_interacting:
-            print(f"[HB_SKIP] user interacting", flush=True)
             return
         duration = self._mpv_manager.get_duration()
         position = self._mpv_manager.get_position()

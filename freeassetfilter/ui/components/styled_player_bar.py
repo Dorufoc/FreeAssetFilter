@@ -2,7 +2,7 @@
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel,
-    QApplication, QSizePolicy, QProgressBar,
+    QApplication, QSizePolicy, QProgressBar, QLayout,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRect, QRectF, QPoint, QPropertyAnimation,
@@ -61,8 +61,8 @@ class _PlayerPopup(QWidget):
         p.end()
 
     def show_animated(self, anchor_global: QPoint, popup_w: int, popup_h: int):
-        """Fade + slide popup open, anchored above the given point."""
-        x = anchor_global.x() - popup_w + 40  # right-aligned to button
+        """Fade + slide popup open, anchored above the given point (centered horizontally)."""
+        x = anchor_global.x() - popup_w // 2  # center horizontally on anchor
         y = anchor_global.y() - popup_h - 8   # above + 8px gap
 
         # Keep on screen
@@ -200,57 +200,81 @@ class _SpeedPopup(_PlayerPopup):
 
 
 class _VolumePopup(_PlayerPopup):
-    """Volume popup with mute toggle + slider."""
+    """Volume popup with vertical slider + mute toggle."""
 
     volume_changed = Signal(float)   # 0.0-1.0
     mute_toggled = Signal(bool)
 
     def __init__(self, volume: float = 0.7, muted: bool = False, parent=None):
         super().__init__(parent)
-        self._volume = volume
-        self._muted = muted
+        self._volume = 0.0 if muted else volume
         self._radius = 8
         self._padding = 10
+        self._slider_height = 120
 
-        # Slider
-        self._slider = StyledSlider(value=volume, size="sm")
-        self._slider.setFixedWidth(140)
+        # Vertical slider
+        self._slider = StyledSlider(value=self._volume, size="sm", orientation=Qt.Vertical)
+        self._slider.setFixedHeight(self._slider_height)
         self._slider.value_changed.connect(self._on_slider_changed)
 
         # Layout
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(self._padding, self._padding, self._padding, self._padding)
-        layout.setSpacing(8)
-
-        # Mute button
-        self._mute_btn = StyledButton(text="🔊" if not muted else "🔇", variant="ghost", size="sm")
+        # Volume percent button (replaces emoji mute icon)
+        self._mute_btn = StyledButton(text=self._format_volume_text(), variant="ghost", size="sm")
+        self._mute_btn.setFixedSize(44, 32)
         self._mute_btn.clicked.connect(self._on_mute_clicked)
 
-        layout.addWidget(self._mute_btn)
-        layout.addWidget(self._slider, alignment=Qt.AlignVCenter)
-        layout.addStretch()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(self._padding, self._padding, self._padding, self._padding)
+        layout.setSpacing(8)
+        # 允许窗口在动画期间小于布局最小尺寸，避免被布局强制撑成完整高度而从下方整体平移
+        layout.setSizeConstraint(QLayout.SetNoConstraint)
+        # 顶部对齐，保证弹窗从底部向上展开时内容与倍速/设置菜单一样从顶部逐行露出
+        layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
-        w = 32 + 8 + 140 + self._padding * 2 + 8
-        # Natural height: top-padding + max(mute_btn, slider) + bottom-padding
-        nat_h = self._padding + 32 + self._padding
+        # 百分比在上，滑块在下
+        layout.addWidget(self._mute_btn, alignment=Qt.AlignCenter)
+        layout.addWidget(self._slider, alignment=Qt.AlignCenter)
+
+        # Popup size: 保证能容纳音量百分比按钮，宽度取 slider 与按钮的较大值
+        slider_width = self._slider.sizeHint().width()
+        content_w = max(slider_width, 44)
+        w = content_w + self._padding * 2
+        nat_h = self._padding + 32 + 8 + self._slider_height + self._padding
         self.resize(w, nat_h)
+
+    def _format_volume_text(self) -> str:
+        return f"{int(round(self._volume * 100))}%"
+
+    def _update_button_text(self):
+        self._mute_btn.setText(self._format_volume_text())
 
     def _on_slider_changed(self, value: float):
         self._volume = value
+        self._update_button_text()
         self.volume_changed.emit(value)
 
     def _on_mute_clicked(self):
-        self._muted = not self._muted
-        self._mute_btn.setText("🔇" if self._muted else "🔊")
-        self.mute_toggled.emit(self._muted)
+        """点击百分比按钮：非 0 时切到 0%，为 0 时切到 100%。"""
+        if self._volume > 0:
+            self.set_volume(0.0)
+            self.mute_toggled.emit(True)
+            self.volume_changed.emit(0.0)
+        else:
+            self.set_volume(1.0)
+            self.mute_toggled.emit(False)
+            self.volume_changed.emit(1.0)
 
     def set_volume(self, value: float):
         self._volume = value
         self._slider.value = value
+        self._update_button_text()
 
     def set_muted(self, muted: bool):
-        self._muted = muted
-        self._mute_btn.setText("🔇" if muted else "🔊")
+        """外部静音状态同步：静音置 0%，取消静音置 100%。"""
+        if muted:
+            self.set_volume(0.0)
+        else:
+            self.set_volume(1.0)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -284,6 +308,41 @@ class _SettingsPopup(_PlayerPopup):
         self._expand_anim = QPropertyAnimation(self, b"geometry")
         self._expand_anim.setDuration(180)
         self._expand_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+    def show_animated(self, anchor_global: QPoint, popup_w: int, popup_h: int):
+        """设置弹窗以锚点为右边缘水平右对齐、上方弹出。"""
+        x = anchor_global.x() - popup_w  # 弹窗右边缘与锚点对齐
+        y = anchor_global.y() - popup_h - 8  # 上方 + 8px 间隙
+
+        # Keep on screen
+        screen = QApplication.primaryScreen()
+        if screen:
+            sg = screen.availableGeometry()
+            x = max(sg.x() + 8, x)
+            y = max(sg.y() + 8, y)
+
+        self._target_w = popup_w
+        self._target_h = popup_h
+
+        start_h = 10
+        self.setGeometry(x, y + popup_h - start_h, popup_w, start_h)
+        self.setWindowOpacity(0.0)
+        super(_PlayerPopup, self).show()
+        self.raise_()
+        self.activateWindow()
+
+        self._fade.stop()
+        self._fade.setDuration(180)
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
+
+        self._slide.stop()
+        self._slide.setDuration(200)
+        self._slide.setStartValue(self.geometry())
+        self._slide.setEndValue(QRectF(x, y, popup_w, popup_h))
+
+        self._fade.start()
+        self._slide.start()
 
     def set_audio_tracks(self, tracks: list[dict]) -> None:
         """设置音轨列表
@@ -926,7 +985,9 @@ class StyledPlayerBar(QWidget):
         if self._float_hide_timer:
             self._float_hide_timer.stop()
         self._float_popup_widgets.add(self._volume_popup)
-        self._volume_popup.show_animated(btn_global, pw, ph)
+        # 以音量按钮底边中点为锚点，使纵向弹窗居中显示
+        anchor = QPoint(btn_global.x() + self._vol_btn.width() // 2, btn_global.y())
+        self._volume_popup.show_animated(anchor, pw, ph)
 
     def _on_speed_clicked(self):
         self._close_other_popups("speed")
@@ -944,7 +1005,9 @@ class StyledPlayerBar(QWidget):
         if self._float_hide_timer:
             self._float_hide_timer.stop()
         self._float_popup_widgets.add(self._speed_popup)
-        self._speed_popup.show_animated(btn_global, pw, ph)
+        # 以倍速按钮底边中点为锚点，使弹窗居中显示
+        anchor = QPoint(btn_global.x() + self._speed_btn.width() // 2, btn_global.y())
+        self._speed_popup.show_animated(anchor, pw, ph)
 
     def _on_settings_clicked(self):
         self._close_other_popups("settings")
@@ -969,7 +1032,9 @@ class StyledPlayerBar(QWidget):
         if self._float_hide_timer:
             self._float_hide_timer.stop()
         self._float_popup_widgets.add(self._settings_popup)
-        self._settings_popup.show_animated(btn_global, pw, ph)
+        # 以设置按钮右下角为锚点，使弹窗右对齐显示
+        anchor = QPoint(btn_global.x() + self._settings_btn.width(), btn_global.y())
+        self._settings_popup.show_animated(anchor, pw, ph)
 
     def _on_fullscreen_clicked(self):
         self._fullscreen = not self._fullscreen
