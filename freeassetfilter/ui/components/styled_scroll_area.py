@@ -704,7 +704,7 @@ class _WheelSmoothScrollFilter(QObject):
     使用 Qt 属性动画驱动 scrollbar.value，避免 Python 16ms 定时循环。
     """
 
-    def __init__(self, host_widget, target_widget, duration=140):
+    def __init__(self, host_widget, target_widget, duration=150):
         super().__init__(target_widget)
         self._host_widget = host_widget
         self._target_widget = target_widget
@@ -713,7 +713,7 @@ class _WheelSmoothScrollFilter(QObject):
         self._horizontal_animation = None
         self._last_wheel_time = 0.0
         self._wheel_boost = 1.0
-        self._max_wheel_boost = 2.5
+        self._max_wheel_boost = 6.0
         self._content_overscroll = _ElasticContentOverscrollController(target_widget)
 
     def eventFilter(self, obj, event):
@@ -794,8 +794,8 @@ class _WheelSmoothScrollFilter(QObject):
     def _normalize_delta(self, delta, is_pixel_delta):
         current_time = time.time()
         time_diff = current_time - self._last_wheel_time
-        if time_diff < 0.10:
-            self._wheel_boost = min(self._wheel_boost + 0.18, self._max_wheel_boost)
+        if time_diff < 0.24:
+            self._wheel_boost = min(self._wheel_boost + 0.28, self._max_wheel_boost)
         else:
             self._wheel_boost = 1.0
         self._last_wheel_time = current_time

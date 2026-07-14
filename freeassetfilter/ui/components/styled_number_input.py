@@ -208,6 +208,7 @@ class StyledNumberInput(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignCenter)
 
         # Decrement button: 保持正方形 (width == height)
         self._decrement_btn = _NumberButton("-", "left", self)
@@ -260,6 +261,10 @@ class StyledNumberInput(QWidget):
 
     def _get_config(self) -> dict:
         return self.SIZE_CONFIG.get(self._size, self.SIZE_CONFIG["default"])
+
+    def refresh_theme(self) -> None:
+        """Refresh stylesheet to reflect current theme colors."""
+        self._apply_stylesheet()
 
     def _apply_stylesheet(self):
         config = self._get_config()
@@ -484,7 +489,7 @@ class StyledNumberInput(QWidget):
 
             painter.setPen(QPen(border_color, 1))
             painter.setBrush(Qt.NoBrush)
-            painter.drawRoundedRect(0.5, 0.5, w - 1, h - 1, radius, radius)
+            painter.drawRoundedRect(1.0, 1.0, w - 2, h - 2, radius, radius)
 
     def eventFilter(self, obj, event):
         if obj is self._input:

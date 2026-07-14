@@ -11,3 +11,4 @@ Markdown>=3.4.0
 ExifRead>=2.3.0
 numpy>=1.21.0
 PySideSix-Frameless-Window>=0.8.1
+PyMuPDF>=1.23.0

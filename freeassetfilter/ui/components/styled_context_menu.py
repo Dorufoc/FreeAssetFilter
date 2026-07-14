@@ -42,13 +42,17 @@ class StyledContextMenu(QMenu):
         Values align with global.qss QMenu section plus extended
         states for danger, disabled, and checkable items.
         """
+
+        def _rgba(c: QColor) -> str:
+            return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha() / 255:.2f})"
+
         bg = tm.surface.name()
         text = tm.text.name()
-        border = tm.alpha_of(tm.mid, 40).name()
-        hover_bg = tm.alpha_of(tm.surface, 90).name()
-        disabled = tm.alpha_of(tm.mid, 40).name()
+        hover_bg = _rgba(tm.alpha_of(tm.fill, 60))
+        border = _rgba(tm.alpha_of(tm.mid, 40))
+        disabled = _rgba(tm.alpha_of(tm.mid, 40))
         danger = tm.danger.name()
-        separator = tm.alpha_of(tm.mid, 30).name()
+        separator = _rgba(tm.alpha_of(tm.mid, 30))
         return (
             f"StyledContextMenu {{"
             f"  background-color: {bg};"
