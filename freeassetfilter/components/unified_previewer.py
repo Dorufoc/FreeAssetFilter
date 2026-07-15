@@ -538,7 +538,7 @@ class UnifiedPreviewer(QWidget):
             else:
                 # 类名到预览类型的映射
                 class_name = cls.__name__
-                if class_name in ("PhotoViewer", "GifViewer"):
+                if class_name in ("PhotoViewer", "GifViewer", "ImagePreviewerLayout"):
                     preview_type = "image"
                 elif class_name == "VideoPlayer":
                     # 根据文件后缀区分视频/音频
@@ -1018,25 +1018,37 @@ class UnifiedPreviewer(QWidget):
                 # 图片预览组件 - 需要区分静态图片和动态图片
                 file_ext = os.path.splitext(file_path)[1].lower()
                 is_animated = False
+                is_gif = file_ext == '.gif'
                 
-                if file_ext == '.gif':
+                if is_gif:
                     is_animated = True
                 elif file_ext == '.webp':
                     is_animated = self._is_animated_image(file_path)
                 
                 # 检查当前组件类型是否匹配
                 from freeassetfilter.components.photo_viewer import GifViewer, PhotoViewer
+                from freeassetfilter.ui.layout.preview.image_previewer_layout import ImagePreviewerLayout
                 current_is_gifviewer = isinstance(self.current_preview_widget, GifViewer)
                 current_is_photoviewer = isinstance(self.current_preview_widget, PhotoViewer)
-                
-                if is_animated and not current_is_gifviewer:
+                current_is_image_layout = isinstance(self.current_preview_widget, ImagePreviewerLayout)
+
+                if current_is_image_layout:
+                    # ImagePreviewerLayout handles ALL formats via set_file (GIF, static, complex)
+                    if hasattr(self.current_preview_widget, 'set_file'):
+                        self.current_preview_widget.set_file(file_path)
+                elif is_gif:
+                    # GIF needs ImagePreviewerLayout - recreate if not already using it
+                    self._clear_preview(emit_signal=False, on_cleared=lambda: (s := weak_self()) and s._show_image_preview(file_path))
+                    return
+                elif is_animated and not current_is_gifviewer:
+                    # Animated WebP - use GifViewer
                     self._clear_preview(emit_signal=False, on_cleared=lambda: (s := weak_self()) and s._show_image_preview(file_path))
                     return
                 elif not is_animated and not current_is_photoviewer:
                     self._clear_preview(emit_signal=False, on_cleared=lambda: (s := weak_self()) and s._show_image_preview(file_path))
                     return
                 else:
-                    # 组件类型匹配，直接更新
+                    # 原有 PhotoViewer / GifViewer 路径
                     if hasattr(self.current_preview_widget, 'load_image_from_path'):
                         self.current_preview_widget.load_image_from_path(file_path)
                     elif hasattr(self.current_preview_widget, 'set_image'):
@@ -1121,12 +1133,12 @@ class UnifiedPreviewer(QWidget):
                 is_animated = False
                 is_animated_webp = False
 
-            if is_gif_path or (is_webp_path and (is_animated_webp or is_animated)):
+            # ── 动画 WebP：保留 GifViewer 路径（GIF 由 ImagePreviewerLayout 处理）──
+            if is_webp_path and (is_animated_webp or is_animated):
                 # 实际检测动画
                 if not loaded_data or not loaded_data.get('is_animated', False):
                     if not self._is_animated_image(file_path):
-                        # 不是动画，走普通图片路径
-                        pass
+                        pass  # 不是动画，走下方普通图片路径
                     else:
                         from freeassetfilter.components.photo_viewer import GifViewer
                         gif_viewer = GifViewer()
@@ -1144,14 +1156,21 @@ class UnifiedPreviewer(QWidget):
                         self.current_preview_type = "image"
                         return
 
-            from freeassetfilter.components.photo_viewer import PhotoViewer
-
-            photo_viewer = PhotoViewer()
-            photo_viewer.load_image_from_path(file_path)
-
-            self._add_preview_widget(photo_viewer)
-            self.current_preview_widget = photo_viewer
-            self.current_preview_type = "image"
+            # ── 静态图片：使用 registry 返回的类（修复 CRITICAL 缺口 #1） ──
+            cls = PreviewerRegistry.get_previewer_class(self.current_file_info)
+            if cls is not None:
+                widget = cls(
+                    parent=self,
+                    dpi_scale=self.dpi_scale,
+                    global_font=self.global_font,
+                    settings_manager=self._settings_manager,
+                )
+                widget.set_file(file_path)
+                self._add_preview_widget(widget)
+                self.current_preview_widget = widget
+                self.current_preview_type = "image"
+            else:
+                self._show_error_with_copy_button("无法确定预览组件")
         except Exception as e:
             self._show_error_with_copy_button(f"图片预览失败: {str(e)}")
 
