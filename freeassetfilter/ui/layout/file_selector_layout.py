@@ -96,14 +96,16 @@ class FileSelectorLayout(QWidget):
         # 防递归守卫（与旧 file_selector.py 一致——旧代码无守卫，这里仅防止极端递归）
         self._updating_grid: bool = False
 
-        # 将列表与样式滚动条作为同级放入内容区（滚动条与卡片处于同一容器层级）
+        # 文件列表独占内容区全宽，滚动条作为浮动覆盖层
         content_layout = QHBoxLayout(self._content_area)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(4)  # 卡片网格与右侧滚动条之间的间距
+        content_layout.setSpacing(0)
+        content_layout.addWidget(self._file_list, stretch=1)
+
+        # 滚动条作为浮动子控件覆盖在内容区右侧，置于文件列表之上
         self._file_scrollbar = StyledScrollBar(self._content_area)
         self._file_scrollbar.setFixedWidth(max(6, int(8 * self._get_dpi_scale())))
-        content_layout.addWidget(self._file_list, stretch=1)
-        content_layout.addWidget(self._file_scrollbar)
+        self._file_scrollbar.raise_()
 
         # 将 StyledScrollBar 连接至 QListView 的垂直滚动
         list_vbar = self._file_list.verticalScrollBar()
@@ -526,15 +528,14 @@ class FileSelectorLayout(QWidget):
         margins_total = 2 * margin
         min_filelist_width = cards_total_width + margins_total
 
-        scrollbar_width = max(6, int(8 * dpi))
-        layout_spacing = self._content_area.layout().spacing() if self._content_area.layout() else 4
-        self.setMinimumWidth(min_filelist_width + scrollbar_width + layout_spacing)
+        # 滚动条为浮动覆盖层，不计入最小宽度
+        self.setMinimumWidth(min_filelist_width)
 
     def _apply_grid_layout(self, viewport) -> None:
-        """卡片模式网格布局：原样移植自旧 file_selector.py 的 _update_grid_size。"""
+        """卡片模式网格布局：基于 file_list 全宽居中卡片网格，滚动条浮动覆盖在右侧边距中。"""
         dpi = self._get_dpi_scale()
 
-        # 卡片网格使用完整 file_list 宽度，滚动条为同级控件，不占用卡片视口
+        # 滚动条为浮动覆盖层，file_list 独占 content_area 全宽
         file_list_width = self._file_list.width()
         if file_list_width <= 0:
             return
@@ -556,8 +557,10 @@ class FileSelectorLayout(QWidget):
         grid_cell_width = card_width + spacing
         grid_cell_height = card_height + spacing
 
-        # 让 viewport 宽度刚好容纳 max_cols 个 grid cell，避免右侧空列或提前换行
-        desired_viewport_width = max_cols * grid_cell_width
+        # 让 viewport 宽度刚好容纳 max_cols 个 grid cell。
+        # +1 补偿 Qt QListView IconMode 换行边界检查的 off-by-one：
+        # Qt 使用 >= 而非 > 判断换行，导致 viewport == cols * grid_cell_width 时提前换行。
+        desired_viewport_width = max_cols * grid_cell_width + 1
         total_side_margin = max(0, file_list_width - desired_viewport_width)
         left_margin = total_side_margin // 2
         right_margin = total_side_margin - left_margin
@@ -573,6 +576,13 @@ class FileSelectorLayout(QWidget):
         # 保持 grid_offset_x=0，避免 hover 时卡片绘制超出自身 grid cell 产生残影
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
+
+        # 滚动条作为浮动覆盖层，定位在右侧边距内（贴右边缘）
+        scrollbar_w = self._file_scrollbar.width()
+        scrollbar_x = file_list_width - scrollbar_w
+        scrollbar_y = edge_padding
+        scrollbar_h = max(0, self._file_list.height() - 2 * edge_padding)
+        self._file_scrollbar.setGeometry(scrollbar_x, scrollbar_y, scrollbar_w, scrollbar_h)
 
     def _update_list_grid(self) -> None:
         """列表模式布局（移植自旧 CustomFileSelector._update_list_layout）。"""
@@ -592,6 +602,13 @@ class FileSelectorLayout(QWidget):
         self._file_list.setViewportMargins(0, 0, 0, 0)
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
+
+        # 滚动条定位在右侧边缘
+        scrollbar_w = self._file_scrollbar.width()
+        scrollbar_x = self._file_list.width() - scrollbar_w
+        scrollbar_y = 0
+        scrollbar_h = max(0, self._file_list.height())
+        self._file_scrollbar.setGeometry(scrollbar_x, scrollbar_y, scrollbar_w, scrollbar_h)
 
     # ── 排序与视图 ────────────────────────────────────────────────────────
 
