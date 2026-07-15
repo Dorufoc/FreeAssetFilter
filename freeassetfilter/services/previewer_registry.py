@@ -43,25 +43,36 @@ class PreviewerRegistry:
     # Extension → (module_path, class_name) for lazy import
     _EXTENSION_MAP: Dict[str, tuple[str, str]] = {
         # ── Images ──────────────────────────────────────────────────────
-        "jpg":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "jpeg": ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "png":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "gif":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "bmp":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "tiff": ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "webp": ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "svg":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "avif": ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "heic": ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "cr2":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "cr3":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "nef":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "arw":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "dng":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "orf":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "ico":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "icon": ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
-        "psd":  ("freeassetfilter.components.photo_viewer", "PhotoViewer"),
+        "jpg":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "jpeg": ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "png":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "gif":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "bmp":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "tiff": ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "webp": ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "svg":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "avif": ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "heic": ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "heif": ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "cr2":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "cr3":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "crw":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "nef":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "nrw":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "arw":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "dng":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "orf":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "srf":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "sr2":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "srw":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "raf":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "rw2":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "pef":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "ptx":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "x3f":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "ico":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "icon": ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+        "psd":  ("freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
         # ── Videos ──────────────────────────────────────────────────────
         "mp4":  ("freeassetfilter.components.video_player", "VideoPlayer"),
         "avi":  ("freeassetfilter.components.video_player", "VideoPlayer"),
@@ -133,6 +144,7 @@ class PreviewerRegistry:
 
     # Cache of imported classes keyed by "module_path.ClassName"
     _CLASS_CACHE: Dict[str, type] = {}
+    _CLASS_CACHE.clear()  # Ensure clean state after map changes
 
     # ── Public API ─────────────────────────────────────────────────────
 

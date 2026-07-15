@@ -53,13 +53,18 @@ class StyledDrawer(QWidget):
         title: str = "",
         body_widget: Optional[QWidget] = None,
         parent: Optional[QWidget] = None,
+        bare: bool = False,
     ) -> None:
+        """If *bare* is True, the drawer contains no header, body scroll-area,
+        or footer — only the raw *body_widget* (if any) is placed directly
+        in the panel.  Backdrop, animations, and Escape-key close still work."""
         super().__init__(parent)
 
         self._orientation = orientation if orientation in VALID_ORIENTATIONS else "right"
         self._size = size if size in SIZE_CONFIG else "default"
         self._is_open = False
         self._animating = False
+        self._bare = bare
 
         self.setObjectName("StyledDrawer")
         self.installEventFilter(self)
@@ -112,9 +117,15 @@ class StyledDrawer(QWidget):
         panel_layout = QVBoxLayout(self._panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(0)
-        self._build_header(title, panel_layout)
-        self._build_body(body_widget, panel_layout)
-        self._build_footer(panel_layout)
+
+        if bare:
+            if body_widget is not None:
+                body_widget.setParent(self._panel)
+                panel_layout.addWidget(body_widget)
+        else:
+            self._build_header(title, panel_layout)
+            self._build_body(body_widget, panel_layout)
+            self._build_footer(panel_layout)
         self._panel.raise_()
 
         # ── Animations ──
