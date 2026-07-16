@@ -96,6 +96,11 @@ class FileSelectorLayout(QWidget):
         # 防递归守卫（与旧 file_selector.py 一致——旧代码无守卫，这里仅防止极端递归）
         self._updating_grid: bool = False
 
+        # 卡片缩放系数（Ctrl+滚轮调整）
+        self._card_scale: float = 1.0
+        self._card_scale_min: float = 0.5
+        self._card_scale_max: float = 2.0
+
         # 文件列表独占内容区全宽，滚动条作为浮动覆盖层
         content_layout = QHBoxLayout(self._content_area)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -115,6 +120,7 @@ class FileSelectorLayout(QWidget):
         self._file_scrollbar.setSingleStep(list_vbar.singleStep())
         self._file_scrollbar.setPageStep(list_vbar.pageStep())
         list_vbar.rangeChanged.connect(self._sync_scrollbar_range)
+        list_vbar.rangeChanged.connect(self._on_list_range_changed)
         self._file_scrollbar.valueChanged.connect(list_vbar.setValue)
         list_vbar.valueChanged.connect(self._file_scrollbar.setValue)
 
@@ -160,6 +166,10 @@ class FileSelectorLayout(QWidget):
         if obj is self._file_list.viewport() or obj is self._file_list:
             if event.type() == QEvent.Resize:
                 self._update_grid_size()
+            elif event.type() == QEvent.Wheel:
+                if event.modifiers() & Qt.ControlModifier:
+                    self._handle_card_zoom(event)
+                    return True
         return super().eventFilter(obj, event)
 
     # ── 首次加载 ──────────────────────────────────────────────────────────
@@ -214,8 +224,8 @@ class FileSelectorLayout(QWidget):
                 "name": "/", "path": "/", "is_dir": True,
                 "size": 0, "modified": "", "created": "", "suffix": "",
             })
-        self._update_grid_size()
         self._file_model.set_files(entries)
+        self._update_grid_size()
         self._update_file_count(len(entries))
         self._file_list.update()
 
@@ -347,8 +357,8 @@ class FileSelectorLayout(QWidget):
                     continue
             entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
             self._apply_sort(entries)
-            self._update_grid_size()
             self._file_model.set_files(entries)
+            self._update_grid_size()
             self._current_path = path
             self._update_path_input(path)
             self._update_file_count(len(entries))
@@ -392,14 +402,21 @@ class FileSelectorLayout(QWidget):
             self._navigate_to(path)
 
     def _reload_directory(self) -> None:
-        if self._current_path:
+        if self._current_path == "All":
+            self._load_all()
+        elif self._current_path:
             self._load_directory(self._current_path)
 
     def _go_back(self) -> None:
         if self._history_index > 0:
             self._history_index -= 1
             path = self._nav_history[self._history_index]
-            self._load_directory(path)
+            if path == "All":
+                self._load_all()
+                self._current_path = "All"
+                self._update_path_input("All")
+            else:
+                self._load_directory(path)
 
     # ── 文件选择 ──────────────────────────────────────────────────────────
 
@@ -448,6 +465,25 @@ class FileSelectorLayout(QWidget):
         self._file_scrollbar.setRange(list_vbar.minimum(), maximum)
         self._file_scrollbar.setSingleStep(list_vbar.singleStep())
         self._file_scrollbar.setPageStep(list_vbar.pageStep())
+
+    def _on_list_range_changed(self, min_val: int, max_val: int) -> None:
+        """列表模式下滚动范围变化后修正卡片边距（延迟到 Qt 布局稳定后执行）。"""
+        if self._view_mode == "list":
+            QTimer.singleShot(0, self._update_list_grid)
+
+    # ── 卡片缩放（Ctrl+滚轮）──────────────────────────────────────────────
+
+    def _handle_card_zoom(self, event) -> None:
+        delta = event.angleDelta().y()
+        if delta > 0:
+            new_scale = min(self._card_scale_max, self._card_scale + 0.1)
+        elif delta < 0:
+            new_scale = max(self._card_scale_min, self._card_scale - 0.1)
+        else:
+            return
+        self._card_scale = new_scale
+        self._card_delegate.set_card_scale(new_scale)
+        self._update_grid_size()
 
     # ── 网格布局 ──────────────────────────────────────────────────────────
 
@@ -541,7 +577,7 @@ class FileSelectorLayout(QWidget):
             return
 
         edge_padding = int(10 * dpi)
-        card_base_width = self._calculate_card_base_width()
+        card_base_width = int(self._calculate_card_base_width() * self._card_scale)
         spacing = int(4 * dpi)
         margin = edge_padding
 
@@ -553,7 +589,7 @@ class FileSelectorLayout(QWidget):
         cell_width = max(cell_base_width, available_width // max_cols)
         card_width = max(card_base_width, cell_width - spacing)
 
-        _, card_height = FileCardDelegate._calc_card_size(CARD_CONFIG)
+        _, card_height = FileCardDelegate._calc_card_size(CARD_CONFIG, self._card_scale)
         grid_cell_width = card_width + spacing
         grid_cell_height = card_height + spacing
 
@@ -585,21 +621,33 @@ class FileSelectorLayout(QWidget):
         self._file_scrollbar.setGeometry(scrollbar_x, scrollbar_y, scrollbar_w, scrollbar_h)
 
     def _update_list_grid(self) -> None:
-        """列表模式布局（移植自旧 CustomFileSelector._update_list_layout）。"""
-        viewport = self._file_list.viewport()
-        if not viewport or viewport.width() <= 0:
+        """列表模式布局（移植自旧 CustomFileSelector._update_list_layout）。
+
+        直接使用 file_list 全宽而非 viewport.width()。
+        viewport.width() 受当前 viewportMargins 影响：卡片→列表切换时，
+        卡片模式遗留的 margins 会压缩 viewport 宽度，导致网格尺寸计算错误。
+        """
+        file_list_width = self._file_list.width()
+        if file_list_width <= 0:
             return
-        dpi = self._get_dpi_scale()
-        viewport_width = viewport.width()
-        edge_padding = int(10 * dpi)
-        card_width = max(200, viewport_width - 2 * edge_padding)
-        border_w = max(1, int(1 * dpi))
-        icon_lm = int(4 * dpi)
-        icon_sz = int(28 * dpi)
-        card_height = int(2 * border_w + 2 * icon_lm + icon_sz)
-        gap = int(4 * dpi)
-        self._file_list.setGridSize(QSize(viewport_width, card_height + gap))
-        self._file_list.setViewportMargins(0, 0, 0, 0)
+        edge_padding = int(10 * self._card_scale)
+        card_width = max(200, file_list_width)
+        _, card_height = FileCardDelegate._calc_list_size(LIST_CONFIG, self._card_scale)
+        gap = int(5 * self._card_scale)
+        self._file_list.setGridSize(QSize(file_list_width, card_height + gap))
+
+        scrollbar_w = self._file_scrollbar.width()
+        needs_scroll = self._file_list.verticalScrollBar().maximum() > 0
+
+        if needs_scroll:
+            total_margin = int(20 * self._card_scale)
+            left_margin = max(0, (total_margin - scrollbar_w) // 2)
+            right_margin = total_margin - left_margin
+        else:
+            left_margin = int(10 * self._card_scale)
+            right_margin = int(10 * self._card_scale)
+
+        self._file_list.setViewportMargins(left_margin, edge_padding, right_margin, edge_padding)
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
 
@@ -626,17 +674,18 @@ class FileSelectorLayout(QWidget):
         if self._view_mode == "card":
             self._view_mode = "list"
             self._card_delegate.set_list_mode()
-            self._file_list.setViewMode(QListView.ListMode)
+            self._file_list.setViewMode(QListView.IconMode)
+            self._file_list.setFlow(QListView.TopToBottom)
             self._file_list.setWrapping(False)
             self._card_btn.setToolTip("切换为卡片视图")
         else:
             self._view_mode = "card"
             self._card_delegate.set_card_mode()
             self._file_list.setViewMode(QListView.IconMode)
+            self._file_list.setFlow(QListView.LeftToRight)
             self._file_list.setWrapping(True)
             self._card_btn.setToolTip("切换为列表视图")
-        self._update_grid_size()
-        self._file_list.update()
+        QTimer.singleShot(0, self._update_grid_size)
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         section_style = f"""

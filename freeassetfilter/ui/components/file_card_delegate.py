@@ -169,11 +169,11 @@ CARD_CONFIG: Dict[str, Any] = {
 }
 
 LIST_CONFIG: Dict[str, Any] = {
-    "padding": 16,
-    "gap": 14,
+    "padding": 12,
+    "gap": 10,
     "radius": 6,
-    "media_size": 52,
-    "icon_size": 24,
+    "media_size": 40,
+    "icon_size": 20,
     "title_size": 10,
     "title_weight": 700,
     "subtitle_size": 9,
@@ -193,12 +193,16 @@ class FileCardDelegate(QStyledItemDelegate):
     def __init__(self, parent: Optional[object] = None) -> None:
         super().__init__(parent)
         self._layout_mode: str = "card"
+        self._card_scale: float = 1.0
 
     def set_card_mode(self) -> None:
         self._layout_mode = "card"
 
     def set_list_mode(self) -> None:
         self._layout_mode = "list"
+
+    def set_card_scale(self, scale: float) -> None:
+        self._card_scale = scale
 
     # ── 图标绘制 ──────────────────────────────────────────────────────────
 
@@ -267,11 +271,11 @@ class FileCardDelegate(QStyledItemDelegate):
     # ── sizeHint ────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _calc_card_size(config: Dict[str, Any]) -> tuple:
+    def _calc_card_size(config: Dict[str, Any], scale: float = 1.0) -> tuple:
         """根据配置计算卡片默认宽度和高度（支持双行文件名）。"""
-        padding = config["padding"]
-        gap = config["gap"]
-        media_size = config["media_size"]
+        padding = int(config["padding"] * scale)
+        gap = int(config["gap"] * scale)
+        media_size = int(config["media_size"] * scale)
         font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
         line_height = QFontMetrics(font_title).height() + 2  # 行高 + 行间距
         text_height = line_height * 2  # 双行
@@ -280,10 +284,10 @@ class FileCardDelegate(QStyledItemDelegate):
         return width, height
 
     @staticmethod
-    def _calc_list_size(config: Dict[str, Any]) -> tuple:
+    def _calc_list_size(config: Dict[str, Any], scale: float = 1.0) -> tuple:
         """根据配置计算列表模式默认宽度和高度（仅一行文件名）。"""
-        padding = config["padding"]
-        media_size = config["media_size"]
+        padding = int(config["padding"] * scale)
+        media_size = int(config["media_size"] * scale)
         font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
         text_height = QFontMetrics(font_title).height() + 4
         width = 200
@@ -302,13 +306,20 @@ class FileCardDelegate(QStyledItemDelegate):
                 if model is not None:
                     card_width = model.data(index, CardWidthRole)
                     if card_width is not None and int(card_width) > 0:
-                        _, height = self._calc_card_size(config)
+                        _, height = self._calc_card_size(config, self._card_scale)
                         return QSize(int(card_width), height)
-            width, height = self._calc_card_size(config)
+            width, height = self._calc_card_size(config, self._card_scale)
             return QSize(width, height)
         else:
             config = LIST_CONFIG
-            width, height = self._calc_list_size(config)
+            if index is not None and index.isValid():
+                model = index.model()
+                if model is not None:
+                    card_width = model.data(index, CardWidthRole)
+                    if card_width is not None and int(card_width) > 0:
+                        _, height = self._calc_list_size(config, self._card_scale)
+                        return QSize(int(card_width), height)
+            width, height = self._calc_list_size(config, self._card_scale)
             return QSize(width, height)
 
     # ── paint ────────────────────────────────────────────────────────────
@@ -362,6 +373,22 @@ class FileCardDelegate(QStyledItemDelegate):
             target_height,
         )
 
+    def _get_scaled_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        scale = self._card_scale
+        return {
+            "padding": int(config["padding"] * scale),
+            "gap": int(config["gap"] * scale),
+            "radius": max(1, int(config["radius"] * scale)),
+            "media_size": int(config["media_size"] * scale),
+            "icon_size": max(1, int(config["icon_size"] * scale)),
+            "title_size": config["title_size"],
+            "title_weight": config["title_weight"],
+            "subtitle_size": config["subtitle_size"],
+            "subtitle_weight": config["subtitle_weight"],
+            "desc_size": config["desc_size"],
+            "desc_weight": config["desc_weight"],
+        }
+
     def _paint_card(
         self,
         painter: QPainter,
@@ -372,7 +399,7 @@ class FileCardDelegate(QStyledItemDelegate):
         is_previewing: bool,
     ) -> None:
         colors = _get_colors()
-        config = CARD_CONFIG
+        config = self._get_scaled_config(CARD_CONFIG)
         padding = config["padding"]
         radius = config["radius"]
         gap = config["gap"]
@@ -454,7 +481,7 @@ class FileCardDelegate(QStyledItemDelegate):
         is_previewing: bool,
     ) -> None:
         colors = _get_colors()
-        config = LIST_CONFIG
+        config = self._get_scaled_config(LIST_CONFIG)
         padding = config["padding"]
         radius = config["radius"]
         gap = config["gap"]
