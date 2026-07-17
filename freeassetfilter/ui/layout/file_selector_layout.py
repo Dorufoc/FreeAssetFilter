@@ -9,8 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMenu, QMessageBox
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl
 from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
@@ -27,6 +27,8 @@ class FileSelectorLayout(QWidget):
     file_selected = Signal(dict)
     file_selection_changed = Signal(dict, bool)
     preview_cancel_requested = Signal()
+    add_to_pool_requested = Signal(dict)
+    toggle_pool_requested = Signal(dict)  # 右键直连：添加/移除文件池
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,6 +94,10 @@ class FileSelectorLayout(QWidget):
                 background: transparent;
             }
         """)
+
+        # 右键直连文件池：添加到池或从池移除
+        self._file_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._file_list.customContextMenuRequested.connect(self._on_right_click_toggle_pool)
 
         # 防递归守卫（与旧 file_selector.py 一致——旧代码无守卫，这里仅防止极端递归）
         self._updating_grid: bool = False
@@ -444,6 +450,61 @@ class FileSelectorLayout(QWidget):
         else:
             self.preview_cancel_requested.emit()
 
+    # ── 右键菜单 ──────────────────────────────────────────────────────────
+
+    def _on_right_click_toggle_pool(self, pos) -> None:
+        """右键直连：将文件添加到文件池或从中移除（无上下文菜单）。"""
+        index = self._file_list.indexAt(pos)
+        if not index.isValid():
+            return
+        file_path: str = self._file_model.data(index, FilePathRole) or ""
+        if not file_path:
+            return
+        is_dir: bool = bool(self._file_model.data(index, IsDirRole) or False)
+        file_info: Dict[str, Any] = {
+            "name": self._file_model.data(index, FileNameRole) or "",
+            "path": file_path,
+            "is_dir": is_dir,
+            "size": int(self._file_model.data(index, FileSizeRole) or 0),
+            "modified": self._file_model.data(index, ModifiedRole) or "",
+            "created": self._file_model.data(index, CreatedRole) or "",
+            "suffix": (self._file_model.data(index, SuffixRole) or "").lower(),
+        }
+        self.toggle_pool_requested.emit(file_info)
+
+    def _show_properties_dialog(self, file_info: Dict[str, Any]) -> None:
+        """显示文件 / 文件夹属性对话框"""
+        is_dir = file_info.get("is_dir", False)
+        name = file_info.get("name", "")
+        path = file_info.get("path", "")
+        lines: list[str] = [
+            f"名称: {name}",
+            f"路径: {path}",
+            f"类型: {'文件夹' if is_dir else '文件'}",
+        ]
+        if not is_dir:
+            suffix = file_info.get("suffix", "")
+            lines.append(f"后缀: .{suffix}" if suffix else "后缀: (无)")
+            size = int(file_info.get("size", 0))
+            if size >= 1024 * 1024:
+                size_str = f"{size / (1024 * 1024):.2f} MB"
+            elif size >= 1024:
+                size_str = f"{size / 1024:.2f} KB"
+            else:
+                size_str = f"{size} B"
+            lines.append(f"大小: {size_str}")
+        modified = file_info.get("modified", "")
+        if modified:
+            lines.append(f"修改时间: {modified}")
+        created = file_info.get("created", "")
+        if created:
+            lines.append(f"创建时间: {created}")
+
+        QMessageBox.information(
+            self, "属性", "\n".join(lines),
+            QMessageBox.Ok,
+        )
+
     # ── UI 更新 ────────────────────────────────────────────────────────────
 
     def _update_path_input(self, path: str) -> None:
@@ -485,21 +546,17 @@ class FileSelectorLayout(QWidget):
         self._card_delegate.set_card_scale(new_scale)
         self._update_grid_size()
 
+    def sync_pool_status(self, pool_paths: set[str]) -> None:
+        """同步文件池中的路径集合到 delegate，刷新"已在池中"边框标记。"""
+        self._card_delegate.set_pool_files(pool_paths)
+        self._file_list.viewport().update()
+
     # ── 网格布局 ──────────────────────────────────────────────────────────
 
     def _get_dpi_scale(self) -> float:
         """获取 DPI 缩放因子。"""
         app = QApplication.instance()
         return getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
-
-    # ── Debug 计数器（每次 resize 递增） ──────────────────────────────────
-
-    _grid_debug_seq: int = 0
-
-    def _grid_debug(self, msg: str, *args) -> None:
-        """输出带序列号的 debug 信息，方便过滤。"""
-        seq = self._grid_debug_seq
-        print(f"[GRID-DEBUG #{seq}] {msg}", *args)
 
     # ── 网格布局 ──────────────────────────────────────────────────────────
 
@@ -509,10 +566,8 @@ class FileSelectorLayout(QWidget):
         防递归守卫防止 margins 改变引发的布局震荡。
         """
         if self._updating_grid:
-            self._grid_debug("_update_grid_size 被递归拦截")
             return
         self._updating_grid = True
-        self._grid_debug_seq += 1
         try:
             self._do_update_grid_size()
         finally:
@@ -525,10 +580,7 @@ class FileSelectorLayout(QWidget):
 
         viewport = self._file_list.viewport()
         if not viewport or viewport.width() <= 0:
-            self._grid_debug(f"跳过：viewport 不可用 (width={viewport.width() if viewport else 'None'})")
             return
-
-        self._grid_debug(f"viewport.width()={viewport.width()}")
 
         # 直接计算并设置 gridSize，不加 setUpdatesEnabled 包裹（与旧代码一致）
         self._apply_grid_layout(viewport)
@@ -600,11 +652,6 @@ class FileSelectorLayout(QWidget):
         total_side_margin = max(0, file_list_width - desired_viewport_width)
         left_margin = total_side_margin // 2
         right_margin = total_side_margin - left_margin
-
-        self._grid_debug(
-            f"file_list={file_list_width} avail={available_width} card={card_width} "
-            f"cols={max_cols} grid_total={desired_viewport_width} margins=({left_margin},{right_margin})"
-        )
 
         self._file_list.setSpacing(0)
         self._file_list.setGridSize(QSize(grid_cell_width, grid_cell_height))

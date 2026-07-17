@@ -1,5 +1,6 @@
 import os
 import time
+import weakref
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, Signal
@@ -29,7 +30,7 @@ class FileStagingPoolListModel(FileSelectorListModel):
     def __init__(self, dpi_scale=1.0, global_font=None, parent=None):
         super().__init__(dpi_scale=dpi_scale, global_font=global_font, parent=parent)
         self._card_width = max(240, int(320 * float(dpi_scale or 1.0)))
-        self._card_height = max(30, int(30 * float(dpi_scale or 1.0)))
+        self._card_height = max(40, int(56 * float(dpi_scale or 1.0)))
         self._max_cols = 1
 
     def _normalize_path(self, file_path: str) -> str:

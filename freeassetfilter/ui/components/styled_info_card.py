@@ -1,5 +1,9 @@
 """Styled InfoCard component - matches web info-card exactly."""
 
+from __future__ import annotations
+
+from typing import Optional
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy, QGraphicsOpacityEffect,
 )
@@ -26,6 +30,8 @@ class StyledInfoCard(QWidget):
     Features: hover scale on media, press scale on card,
     hover overlay with action buttons, disabled state.
     """
+
+    clicked = Signal(str)  # emitted on left-button release, passes file_path
 
     LAYOUT_MODES = ["horizontal", "vertical"]
 
@@ -80,6 +86,7 @@ class StyledInfoCard(QWidget):
         disabled: bool = False,
         media_icon: str = "",
         overlay_enabled: bool = False,
+        size_overrides: dict | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -89,7 +96,10 @@ class StyledInfoCard(QWidget):
         self._desc = desc
         self._disabled = disabled
         self._media_icon = media_icon
+        self._media_pixmap = None  # optional QPixmap override for media area
         self._overlay_enabled = overlay_enabled
+        self._file_path = ""  # identifier for clicked signal
+        self._size_overrides = size_overrides or {}
         self._actions = []  # list of (text, icon, callback)
 
         # Animation states
@@ -159,6 +169,15 @@ class StyledInfoCard(QWidget):
         self._card_scale = value
         self.update()
 
+    # ── Config ────────────────────────────────────────────────
+
+    def _get_config(self) -> dict:
+        """获取当前布局配置，合并 size_overrides 覆盖项。"""
+        base = dict(self.SIZE_CONFIG[self._layout_mode])
+        if self._size_overrides:
+            base.update(self._size_overrides)
+        return base
+
     # ── Public API ────────────────────────────────────────────
 
     def add_action(self, text: str, icon: str = "", callback=None):
@@ -185,17 +204,40 @@ class StyledInfoCard(QWidget):
 
     def set_media_icon(self, icon: str):
         self._media_icon = icon
+        self._media_pixmap = None
         self.update()
+
+    def set_media_pixmap(self, pixmap):
+        """Set a QPixmap to draw in the media area (overrides text icon)."""
+        self._media_pixmap = pixmap
+        self.update()
+
+    def set_file_path(self, path: str):
+        """Set identifier string emitted with the clicked signal."""
+        self._file_path = path
 
     def set_overlay_enabled(self, enabled: bool):
         self._overlay_enabled = enabled
         self._rebuild_overlay()
         self.update()
 
+    def set_scale(self, scale: float) -> None:
+        """动态缩放卡片所有尺寸因子（0.5 ~ 2.0），匹配文件选择器 Ctrl+滚轮行为。"""
+        scale = max(0.5, min(2.0, scale))
+        base = self.SIZE_CONFIG[self._layout_mode]
+        overrides = {}
+        for key in ("padding", "gap", "media_size", "icon_size",
+                     "title_size", "subtitle_size", "desc_size"):
+            if key in base:
+                overrides[key] = max(1, int(base[key] * scale))
+        self._size_overrides = overrides
+        self._apply_size()
+        self.update()
+
     # ── Internal ──────────────────────────────────────────────
 
     def _apply_size(self):
-        config = self.SIZE_CONFIG[self._layout_mode]
+        config = self._get_config()
         padding = config["padding"]
 
         # Calculate text height for sizing
@@ -228,7 +270,8 @@ class StyledInfoCard(QWidget):
             total_height = padding * 2 + media_size + config["gap"] + text_height
             total_width = padding * 2 + max(media_size, 200)
 
-        self.setMinimumSize(total_width, total_height)
+        self.setFixedHeight(total_height)
+        self.setMinimumWidth(total_width)
         self.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
 
     def _rebuild_overlay(self):
@@ -253,7 +296,7 @@ class StyledInfoCard(QWidget):
         self._overlay_widget.raise_()
         self._overlay_widget.setGeometry(self.rect())
 
-        config = self.SIZE_CONFIG[self._layout_mode]
+        config = self._get_config()
         radius = config["radius"]
 
         # QGraphicsOpacityEffect — whole widget (bg + buttons) fades together
@@ -339,6 +382,8 @@ class StyledInfoCard(QWidget):
             self._pressed = False
             self._animate_card_scale(1.0, 120, QEasingCurve.OutCubic)
             self.update()
+            if self.rect().contains(event.position().toPoint()) and not self._disabled:
+                self.clicked.emit(self._file_path)
         super().mouseReleaseEvent(event)
 
     def enterEvent(self, event):
@@ -394,7 +439,7 @@ class StyledInfoCard(QWidget):
             painter.setRenderHint(QPainter.TextAntialiasing)
             painter.setPen(Qt.NoPen)
 
-            config = self.SIZE_CONFIG[self._layout_mode]
+            config = self._get_config()
             padding = config["padding"]
             radius = config["radius"]
             gap = config["gap"]
@@ -459,14 +504,31 @@ class StyledInfoCard(QWidget):
             media_rect = QRectF(media_x, media_y, media_size, media_size)
             painter.drawRoundedRect(media_rect, 4, 4)
 
-            # Media icon
-            if self._media_icon:
+            # Media content — 精确匹配 FileCardDelegate._draw_icon_pixmap
+            if self._media_pixmap and not self._media_pixmap.isNull():
+                # DPR 感知：QPixmap.width() 返回物理像素，除以 DPR 得逻辑尺寸
+                pix = self._media_pixmap
+                dpr = pix.devicePixelRatio()
+                lw = pix.width() / dpr if dpr > 0 else pix.width()
+                lh = pix.height() / dpr if dpr > 0 else pix.height()
+                if lw > 0 and lh > 0:
+                    display_size = int(media_size)
+                    if lw > display_size or lh > display_size:
+                        pix = pix.scaled(display_size, display_size,
+                                         Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        dpr = pix.devicePixelRatio()
+                        lw = pix.width() / dpr
+                        lh = pix.height() / dpr
+                    offset_x = int(media_rect.x() + (media_size - lw) / 2.0)
+                    offset_y = int(media_rect.y() + (media_size - lh) / 2.0)
+                    painter.drawPixmap(offset_x, offset_y, pix)
+            elif self._media_icon:
                 icon_font = QFont("Segoe UI Symbol", icon_size, QFont.Normal)
                 painter.setFont(icon_font)
-            if self._disabled:
-                painter.setPen(tm.alpha_of(tm.mid, 60))
-            else:
-                painter.setPen(self.COLORS["icon"])
+                if self._disabled:
+                    painter.setPen(tm.alpha_of(tm.mid, 60))
+                else:
+                    painter.setPen(self.COLORS["icon"])
                 painter.drawText(
                     media_rect,
                     Qt.AlignCenter,

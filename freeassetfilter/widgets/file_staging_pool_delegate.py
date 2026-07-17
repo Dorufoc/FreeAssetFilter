@@ -8,6 +8,7 @@ from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Sig
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionViewItem
 
+from theme import tm
 from freeassetfilter.core.managers.settings_manager import SettingsManager
 from freeassetfilter.utils.app_logger import debug
 from freeassetfilter.widgets.file_selector_delegate import FileBlockCardDelegate
@@ -102,64 +103,49 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         return QColor(red, green, blue)
 
     def _init_colors(self):
+        """初始化颜色 — 使用 tm 主题色，精确匹配 StyledInfoCard 视觉风格。"""
         try:
-            self.accent_color = self._settings_manager.get_setting(
-                "appearance.colors.accent_color",
-                "#1890ff",
+            self.base_color = tm.surface.name()
+            self.auxiliary_color = tm.alpha_of(tm.mid, 30).name()
+            self.normal_color = tm.mid.name()
+            self.accent_color = tm.accent.name()
+            self.secondary_color = tm.text.name()
+            self.warning_color = self._settings_manager.get_setting(
+                "appearance.colors.notification_error", "#F44336",
             )
-            self.base_color = settings_manager.get_setting(
-                "appearance.colors.base_color",
-                "#ffffff",
-            )
-            self.normal_color = settings_manager.get_setting(
-                "appearance.colors.normal_color",
-                "#e0e0e0",
-            )
-            self.secondary_color = settings_manager.get_setting(
-                "appearance.colors.secondary_color",
-                "#333333",
-            )
-            self.auxiliary_color = settings_manager.get_setting(
-                "appearance.colors.auxiliary_color",
-                "#f0f8ff",
-            )
-            self.warning_color = settings_manager.get_setting(
-                "appearance.colors.notification_error",
-                "#F44336",
-            )
-            notification_text = settings_manager.get_setting(
-                "appearance.colors.notification_text",
-                "#FFFFFF",
-            )
-            self.button_warning_text = settings_manager.get_setting(
-                "appearance.colors.button_warning_text",
-                notification_text,
+            self.button_warning_text = self._settings_manager.get_setting(
+                "appearance.colors.button_warning_text", "#FFFFFF",
             )
         except Exception as error:
-            debug(f"初始化存储池卡片委托颜色失败，使用默认颜色: {error}")
-            self.accent_color = "#1890ff"
-            self.base_color = "#ffffff"
-            self.normal_color = "#e0e0e0"
-            self.secondary_color = "#333333"
-            self.auxiliary_color = "#f0f8ff"
+            debug(f"初始化存储池卡片委托 tm 颜色失败，回退默认颜色: {error}")
+            self.accent_color = "#B036EE"
+            self.base_color = "#212121"
+            self.normal_color = "#717171"
+            self.secondary_color = "#FFFFFF"
+            self.auxiliary_color = "#3D3D3D"
             self.warning_color = "#F44336"
             self.button_warning_text = "#FFFFFF"
 
-        self._normal_bg = QColor(self.base_color)
-        self._hover_bg = QColor(self.auxiliary_color)
-        self._selected_bg = QColor(self.accent_color)
-        self._selected_bg.setAlpha(102)
+        # 卡片背景色 — 匹配 StyledInfoCard
+        self._normal_bg = tm.alpha_of(tm.surface, 85)
+        self._hover_bg = tm.alpha_of(tm.surface, 90)
+        self._selected_bg = QColor(tm.accent)
+        self._selected_bg.setAlpha(40)
 
-        self._normal_border = QColor(self.auxiliary_color)
-        self._hover_border = QColor(self.normal_color)
-        self._selected_border = QColor(self.accent_color)
-        self._preview_border = QColor(self.secondary_color)
-        self._text_color = QColor(self.secondary_color)
-        self._info_color = QColor(self.secondary_color)
-        self._missing_name_color = QColor(self.normal_color)
-        self._missing_info_color = QColor(self.normal_color)
-        self._hover_shadow = QColor(self.secondary_color)
-        self._hover_shadow.setAlpha(55)
+        # 边框 — 匹配 StyledInfoCard
+        self._normal_border = tm.alpha_of(tm.mid, 30)
+        self._hover_border = tm.alpha_of(tm.mid, 40)
+        self._selected_border = QColor(tm.accent)
+        self._preview_border = QColor(tm.accent)
+
+        # 文字色
+        self._text_color = QColor(tm.text)
+        self._info_color = QColor(tm.mid)
+        self._missing_name_color = QColor(tm.mid)
+        self._missing_info_color = QColor(tm.mid)
+
+        # 阴影
+        self._hover_shadow = QColor(0, 0, 0, 40)
         self._idle_shadow = QColor(0, 0, 0, 0)
 
     def _init_fonts(self):
@@ -178,6 +164,12 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
 
         self.name_font_metrics = QFontMetrics(self.name_font)
         self.button_font_metrics = QFontMetrics(self.button_font)
+
+        # 副标题字体 — 匹配 StyledInfoCard subtitle 风格
+        self._info_font = QFont(self.global_font)
+        info_size = max(1, int(self.global_font.pointSize() * 0.85))
+        self._info_font.setPointSize(info_size)
+        self._info_font_metrics = QFontMetrics(self._info_font)
 
     @staticmethod
     def _format_file_size(size_value) -> str:
@@ -243,37 +235,57 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         }
 
     def _calculate_geometry(self, rect: QRect):
+        """StyledInfoCard 水平布局尺寸计算 — media 在左，文字在右。"""
         dpi = self._dpi_scale
 
         border_width = max(1, int(1 * dpi))
         preview_border_width = border_width * 2
         radius = max(1, int(6 * dpi))
 
-        icon_size = int(12 * dpi)
-        v_margin = int(3 * dpi)
-        h_margin = int(4 * dpi)
-        icon_text_spacing = int(6 * dpi)
+        padding = int(10 * dpi)
+        gap = int(10 * dpi)
+        media_size = int(36 * dpi)
 
-        content_rect = rect.adjusted(border_width, border_width, -border_width, -border_width)
+        content_rect = rect.adjusted(padding, padding, -padding, -padding)
 
         icon_rect = QRect(
-            content_rect.x() + h_margin,
-            content_rect.y() + (content_rect.height() - icon_size) // 2,
-            icon_size,
-            icon_size,
+            content_rect.x(),
+            content_rect.y() + (content_rect.height() - media_size) // 2,
+            media_size,
+            media_size,
         )
 
-        text_x = icon_rect.right() + 1 + icon_text_spacing
-        text_width = max(0, content_rect.right() - h_margin - text_x + 1)
+        text_x = icon_rect.right() + gap
+        text_width = max(0, content_rect.right() - text_x)
 
-        name_rect = QRect(text_x, content_rect.y(), text_width, content_rect.height())
+        # 标题行 + 副标题行
+        title_height = self.name_font_metrics.height()
+        subtitle_height = getattr(self, '_info_font_metrics', self.name_font_metrics).height()
+        text_total_h = title_height + subtitle_height + int(4 * dpi)
+
+        name_rect = QRect(
+            text_x,
+            content_rect.y() + max(0, (content_rect.height() - text_total_h) // 2),
+            text_width,
+            title_height,
+        )
+        subtitle_rect = QRect(
+            text_x,
+            name_rect.bottom() + int(4 * dpi),
+            text_width,
+            subtitle_height,
+        )
 
         return {
             "border_width": border_width,
             "preview_border_width": preview_border_width,
             "radius": radius,
+            "padding": padding,
+            "gap": gap,
+            "media_size": media_size,
             "icon_rect": icon_rect,
             "name_rect": name_rect,
+            "subtitle_rect": subtitle_rect,
         }
 
     def _visible_display_name(self, file_info: dict[str, Any]) -> str:
@@ -727,16 +739,35 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         painter.save()
         painter.setOpacity(opacity)
 
+        # ── 标题行（文件名） ──
         name_font = QFont(self.name_font)
         if is_missing:
             name_font.setStrikeOut(True)
         painter.setFont(name_font)
         painter.setPen(self._missing_name_color if is_missing else self._text_color)
+        elided_name = self.name_font_metrics.elidedText(name_text, Qt.ElideRight, text_width)
+        name_rect = geometry["name_rect"]
         painter.drawText(
-            geometry["name_rect"],
+            QRect(name_rect.x(), name_rect.y(), text_width, name_rect.height()),
             Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine,
-            self.name_font_metrics.elidedText(name_text, Qt.ElideRight, text_width),
+            elided_name,
         )
+
+        # ── 副标题行（文件信息） — 匹配 StyledInfoCard subtitle ──
+        if not is_missing and hasattr(self, '_info_font_metrics'):
+            info_text = self._inline_size_text(file_info)
+            if info_text:
+                painter.setFont(getattr(self, '_info_font', self.name_font))
+                painter.setPen(self._info_color)
+                subtitle_rect = geometry.get("subtitle_rect")
+                if subtitle_rect:
+                    st_w = min(text_width, subtitle_rect.width())
+                    elided_info = self._info_font_metrics.elidedText(info_text, Qt.ElideRight, st_w)
+                    painter.drawText(
+                        QRect(subtitle_rect.x(), subtitle_rect.y(), st_w, subtitle_rect.height()),
+                        Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine,
+                        elided_info,
+                    )
 
         painter.restore()
 
@@ -797,6 +828,12 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
         painter.setPen(QPen(border_color, border_width))
         painter.setBrush(bg_color)
         painter.drawRoundedRect(draw_rect, geometry["radius"], geometry["radius"])
+
+        # Media 区域背景 — 匹配 StyledInfoCard
+        if not is_dragging_source and not for_drag_preview:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(tm.alpha_of(tm.mid, 40))
+            painter.drawRoundedRect(QRectF(geometry["icon_rect"]), 4, 4)
 
         icon_pixmap = file_info.get("icon_pixmap")
         if icon_pixmap and not icon_pixmap.isNull():
@@ -859,12 +896,18 @@ class FileStagingPoolCardDelegate(FileBlockCardDelegate):
                 if isinstance(item_size, QSize) and item_size.isValid():
                     return item_size
 
-        dpi_scale = self._dpi_scale
-        icon_size = int(12 * dpi_scale)
-        v_margin = int(3 * dpi_scale)
-        border = max(1, int(1 * dpi_scale))
-        height = int(2 * border + 2 * v_margin + icon_size)
-        return QSize(max(160, int(200 * dpi_scale)), height)
+        dpi = self._dpi_scale
+        padding = int(10 * dpi)
+        media_size = int(36 * dpi)
+        border = max(1, int(1 * dpi))
+
+        # 计算总文字高度（标题 + 副标题 + 间距）
+        text_h = self.name_font_metrics.height()
+        if hasattr(self, '_info_font_metrics'):
+            text_h += self._info_font_metrics.height() + int(4 * dpi)
+
+        height = int(2 * border + 2 * padding + max(media_size, text_h))
+        return QSize(max(200, int(280 * dpi)), height)
 
     def _event_pos(self, event) -> QPoint:
         if hasattr(event, "position"):

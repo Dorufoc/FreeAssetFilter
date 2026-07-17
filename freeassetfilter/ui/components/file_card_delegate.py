@@ -194,6 +194,19 @@ class FileCardDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._layout_mode: str = "card"
         self._card_scale: float = 1.0
+        self._pool_file_set: set[str] = set()  # 已存在于文件池中的文件路径集合
+
+    def set_pool_files(self, paths: set[str]) -> None:
+        """设置当前文件池中的文件路径集合，用于绘制"已在池中"边框标记。"""
+        import os
+        self._pool_file_set = {os.path.normcase(os.path.normpath(p)) for p in paths} if paths else set()
+
+    def _is_file_in_pool(self, file_path: str) -> bool:
+        """检查文件是否在文件池中（O(1) 查询，路径已 normcase 标准化）。"""
+        if not file_path or not self._pool_file_set:
+            return False
+        import os
+        return os.path.normcase(os.path.normpath(file_path)) in self._pool_file_set
 
     def set_card_mode(self) -> None:
         self._layout_mode = "card"
@@ -341,13 +354,14 @@ class FileCardDelegate(QStyledItemDelegate):
         is_selected = file_info.get("is_selected", False)
         is_previewing = file_info.get("is_previewing", False)
         is_hovered = bool(option.state & QStyle.State_MouseOver)
+        is_in_pool = self._is_file_in_pool(file_info.get("path", ""))
 
         card_rect = self._resolve_card_rect(option, index)
 
         if self._layout_mode == "card":
-            self._paint_card(painter, card_rect, file_info, is_hovered, is_selected, is_previewing)
+            self._paint_card(painter, card_rect, file_info, is_hovered, is_selected, is_previewing, is_in_pool=is_in_pool)
         else:
-            self._paint_list(painter, card_rect, file_info, is_hovered, is_selected, is_previewing)
+            self._paint_list(painter, card_rect, file_info, is_hovered, is_selected, is_previewing, is_in_pool=is_in_pool)
 
         painter.restore()
 
@@ -397,6 +411,7 @@ class FileCardDelegate(QStyledItemDelegate):
         is_hovered: bool,
         is_selected: bool,
         is_previewing: bool,
+        is_in_pool: bool = False,
     ) -> None:
         colors = _get_colors()
         config = self._get_scaled_config(CARD_CONFIG)
@@ -427,6 +442,9 @@ class FileCardDelegate(QStyledItemDelegate):
         elif is_previewing:
             painter.setPen(QPen(colors["accent"], 2))
             painter.drawRoundedRect(card_rect, radius, radius)
+        elif is_in_pool and not is_selected:
+            painter.setPen(QPen(colors["accent"], 3))
+            painter.drawRoundedRect(card_rect, radius, radius)
         elif is_selected:
             painter.setPen(QPen(colors["border"], 1))
             painter.drawRoundedRect(card_rect, radius, radius)
@@ -437,7 +455,7 @@ class FileCardDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(card_rect, radius, radius)
 
         # 阴影
-        if is_hovered and not is_selected and not is_previewing:
+        if is_hovered and not is_selected and not is_previewing and not is_in_pool:
             painter.setPen(Qt.NoPen)
             painter.setBrush(colors["shadow"])
             painter.drawRoundedRect(QRectF(rx, ry + 2, w, h), radius, radius)
@@ -479,6 +497,7 @@ class FileCardDelegate(QStyledItemDelegate):
         is_hovered: bool,
         is_selected: bool,
         is_previewing: bool,
+        is_in_pool: bool = False,
     ) -> None:
         colors = _get_colors()
         config = self._get_scaled_config(LIST_CONFIG)
@@ -509,6 +528,10 @@ class FileCardDelegate(QStyledItemDelegate):
         elif is_previewing:
             painter.setPen(QPen(colors["accent"], 2))
             painter.drawRoundedRect(card_rect, radius, radius)
+        elif is_in_pool and not is_selected:
+            # 文件已在文件池中 → 3px 主题强调色边框
+            painter.setPen(QPen(colors["accent"], 3))
+            painter.drawRoundedRect(card_rect, radius, radius)
         elif is_selected:
             painter.setPen(QPen(colors["border"], 1))
             painter.drawRoundedRect(card_rect, radius, radius)
@@ -519,7 +542,7 @@ class FileCardDelegate(QStyledItemDelegate):
             painter.drawRoundedRect(card_rect, radius, radius)
 
         # 阴影
-        if is_hovered and not is_selected and not is_previewing:
+        if is_hovered and not is_selected and not is_previewing and not is_in_pool:
             painter.setPen(Qt.NoPen)
             painter.setBrush(colors["shadow"])
             painter.drawRoundedRect(QRectF(rx, ry + 2, w, h), radius, radius)

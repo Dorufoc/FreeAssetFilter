@@ -8,6 +8,7 @@ FreeAssetFilter 主窗口
 import sys
 from pathlib import Path
 from typing import Optional
+import os
 
 from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSplitter
 import ctypes
@@ -46,6 +47,9 @@ from layout.file_selector_layout import FileSelectorLayout
 from layout.file_pool_layout import FilePoolLayout
 from layout.unified_previewer_layout import UnifiedPreviewerLayout
 from layout.settings_layout import SettingsLayout
+
+from freeassetfilter.utils.path_utils import get_app_data_path
+from freeassetfilter.utils.app_logger import debug, warning
 
 
 class MicaBackgroundWidget(QWidget):
@@ -314,6 +318,14 @@ class MainWindow(FramelessMainWindow):
         panel_right_layout.setSpacing(0)
         panel_right_layout.addWidget(self._previewer)
 
+        # 信号连接：文件选择器 → 文件池
+        self._file_selector.add_to_pool_requested.connect(self._on_add_to_pool_requested)
+        self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
+        self._file_selector.file_selected.connect(self._on_file_selected)
+        self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
+        # 信号连接：文件池 → 文件选择器（同步"已在池中"边框标记）
+        self._file_pool.pool_changed.connect(self._on_pool_contents_changed)
+
         self._panels = [self._panel_left, self._panel_center, self._panel_right]
 
         self._refresh_panel_styles()
@@ -539,6 +551,132 @@ class MainWindow(FramelessMainWindow):
     def _on_colors_updated(self, colors: dict) -> None:
         """颜色更新后的处理（预留）"""
         pass
+
+    # ──── 信号处理 ─────────────────────────────────────────────────────
+
+    def _on_add_to_pool_requested(self, file_info: dict) -> None:
+        """处理文件选择器右键"添加到文件池"请求"""
+        self._file_pool.add_file(file_info)
+
+    def _on_toggle_pool_requested(self, file_info: dict) -> None:
+        """右键直连：已在池中则移除，否则添加。"""
+        file_path = file_info.get("path", "")
+        if self._file_pool.has_file(file_path):
+            self._file_pool.remove_file(file_path)
+        else:
+            self._file_pool.add_file(file_info)
+
+    def _on_pool_contents_changed(self) -> None:
+        """文件池内容变更时，同步路径集合到文件选择器 delegate（边框标记）。"""
+        pool_paths = self._file_pool.get_pool_paths()
+        self._file_selector.sync_pool_status(pool_paths)
+
+    def _on_file_selected(self, file_info: dict) -> None:
+        """处理文件选择器的文件选中事件，同步预览态到文件池"""
+        self._file_pool.set_previewing_file(file_info.get("path", ""))
+
+    def _on_preview_cancelled(self) -> None:
+        """处理预览取消事件"""
+        self._file_pool.clear_previewing_state()
+
+    # ──── 备份恢复 ─────────────────────────────────────────────────────
+
+    def showEvent(self, event: QEvent) -> None:
+        """窗口显示时检查备份恢复"""
+        super().showEvent(event)
+        if not hasattr(self, '_restore_started'):
+            self._restore_started = True
+            QTimer.singleShot(100, self._check_and_restore_backup)
+
+    def _check_and_restore_backup(self) -> None:
+        """检查备份文件并恢复"""
+        backup_data = self._file_pool.load_backup()
+        items = backup_data.get("items", [])
+        if not items:
+            return
+
+        # 检查 auto_restore 设置
+        app = QApplication.instance()
+        auto_restore = True
+        if hasattr(app, 'settings_manager') and app.settings_manager is not None:
+            auto_restore = app.settings_manager.get_setting(
+                "file_staging.auto_restore_records", True
+            )
+
+        if auto_restore:
+            self._start_restore_backup(backup_data)
+        else:
+            self._ask_restore_backup(backup_data)
+
+    def _ask_restore_backup(self, backup_data: dict) -> None:
+        """询问用户是否恢复备份"""
+        from freeassetfilter.widgets.D_widgets import CustomMessageBox
+        items = backup_data.get("items", [])
+        msg_box = CustomMessageBox(self)
+        msg_box.set_title("恢复上次选中内容")
+        msg_box.set_text(f"检测到上次有 {len(items)} 个文件在文件存储池中，是否恢复？")
+        msg_box.set_buttons(["是", "否"], Qt.Horizontal, ["primary", "normal"])
+
+        result = [False]
+        def on_click(btn_idx: int) -> None:
+            result[0] = (btn_idx == 0)
+            msg_box.close()
+        msg_box.buttonClicked.connect(on_click)
+        msg_box.exec()
+
+        if result[0]:
+            self._start_restore_backup(backup_data)
+
+    def _start_restore_backup(self, backup_data: dict) -> None:
+        """启动分批恢复"""
+        items = backup_data.get("items", [])
+        if not items:
+            return
+
+        # 恢复期间暂停自动备份保存
+        self._file_pool._suspend_backup_save = True
+
+        self._restore_items = list(items)
+        self._restore_success_count = 0
+        self._restore_total_count = len(items)
+
+        QTimer.singleShot(0, self._process_restore_batch)
+
+    def _process_restore_batch(self) -> None:
+        """分批处理恢复项"""
+        batch_size = 10
+        batch = self._restore_items[:batch_size]
+        self._restore_items = self._restore_items[batch_size:]
+
+        for file_info in batch:
+            if isinstance(file_info, dict) and "path" in file_info:
+                file_path = file_info["path"]
+                if os.path.exists(file_path):
+                    self._file_pool.add_file(file_info)
+                    self._restore_success_count += 1
+
+        if self._restore_items:
+            QTimer.singleShot(0, self._process_restore_batch)
+        else:
+            self._finish_restore_backup()
+
+    def _finish_restore_backup(self) -> None:
+        """完成恢复流程"""
+        self._file_pool._suspend_backup_save = False
+        self._file_pool.flush_backup_save_now()
+
+        if self._restore_success_count > 0:
+            debug(f"备份恢复完成: {self._restore_success_count}/{self._restore_total_count} 项")
+
+    # ──── 窗口事件 ─────────────────────────────────────────────────────
+
+    def closeEvent(self, event: QEvent) -> None:
+        """窗口关闭时刷新备份保存到磁盘"""
+        try:
+            self._file_pool.flush_backup_save_now()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def eventFilter(self, obj: QWidget, event: QEvent) -> bool:
         """事件过滤器 - 处理标题栏拖拽"""
