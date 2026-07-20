@@ -221,18 +221,36 @@ class StyledInfoCard(QWidget):
         self._rebuild_overlay()
         self.update()
 
-    def set_scale(self, scale: float) -> None:
-        """动态缩放卡片所有尺寸因子（0.5 ~ 2.0），匹配文件选择器 Ctrl+滚轮行为。"""
+    def set_scale(self, scale: float, base_overrides: dict | None = None) -> None:
+        """动态缩放卡片所有尺寸因子（0.5 ~ 2.0），匹配文件选择器 Ctrl+滚轮行为。
+
+        Args:
+            scale: 缩放系数。
+            base_overrides: 缩放基准字典。传入时，从该字典的 base 值乘以 scale 计算新尺寸；
+                缺省时使用 ``SIZE_CONFIG`` 的默认值。这让调用方可以在缩放时保留自己的
+                "设计值"（如紧凑型标题 10px），保证已存在卡片与新增卡片尺寸一致。
+        """
         scale = max(0.5, min(2.0, scale))
-        base = self.SIZE_CONFIG[self._layout_mode]
+        source = base_overrides if base_overrides else self.SIZE_CONFIG[self._layout_mode]
         overrides = {}
         for key in ("padding", "gap", "media_size", "icon_size",
                      "title_size", "subtitle_size", "desc_size"):
-            if key in base:
-                overrides[key] = max(1, int(base[key] * scale))
+            if key in source:
+                overrides[key] = max(1, int(source[key] * scale))
         self._size_overrides = overrides
         self._apply_size()
         self.update()
+
+    def update_overlay(self) -> None:
+        """强制 overlay 子控件重绘（修复 QGraphicsEffect 缓存导致的不同步问题）。
+
+        原理：overlay 使用了 QGraphicsOpacityEffect，Qt 内部会缓存 sourcePixmap。
+        当父容器（QScrollArea）滚动时，子 widget 的几何位置已经跟随父容器更新，
+        但 graphics effect 的缓存 pixmap 仍是滚动前的版本，导致 overlay 视觉上
+        "跟不上"滚动。手动调用 update() 触发重新 grab pixmap 即可解决。
+        """
+        if self._overlay_widget is not None and self._overlay_widget.isVisible():
+            self._overlay_widget.update()
 
     # ── Internal ──────────────────────────────────────────────
 

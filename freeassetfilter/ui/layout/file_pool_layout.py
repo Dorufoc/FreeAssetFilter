@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_info_card import StyledInfoCard
+from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.utils.app_logger import warning
@@ -128,17 +129,37 @@ class FilePoolLayout(QWidget):
         self._card_scale_min = 0.7
         self._card_scale_max = 1.6
         self._card_scale = 1.0
+        # 卡片 base size_overrides（_card_scale=1.0 时的设计值，作为缩放基准）。
+        # 标题/副标题使用紧凑尺寸（10/9），与文件选择器（14/13）区别。
+        self._card_base_overrides: dict = {
+            "padding": 16,
+            "gap": 14,
+            "media_size": 52,
+            "icon_size": 24,
+            "title_size": 10,
+            "title_weight": 700,
+            "subtitle_size": 9,
+            "subtitle_weight": 400,
+        }
 
         # ── ScrollArea + StyledInfoCard 列表 ────────────────────────────
+        # 与 FileSelectorLayout 一致：隐藏 QScrollArea 自带滚动条，
+        # 改用独立的 StyledScrollBar 作为浮动覆盖层（自绘圆角条形 + hover 动画）。
         self._scroll_area = QScrollArea()
         self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll_area.setFrameShape(QFrame.NoFrame)
+        # 内部子布局必须保持透明，让基础底层（_content_area）的半透明 section fill 单一透出，
+        # 防止多层半透明背景叠加。主题切换由 _apply_pool_theme 再次刷新。
+        self._scroll_area.setStyleSheet(
+            "background-color: transparent; border: none;"
+        )
         self._scroll_area.viewport().installEventFilter(self)
 
         self._card_container = QWidget()
         self._card_container.setObjectName("FilePoolCardContainer")
+        self._card_container.setStyleSheet("background-color: transparent;")
         self._card_layout = QVBoxLayout(self._card_container)
         self._card_layout.setContentsMargins(6, 6, 6, 6)
         self._card_layout.setSpacing(4)
@@ -149,6 +170,30 @@ class FilePoolLayout(QWidget):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
         content_layout.addWidget(self._scroll_area)
+
+        # 浮动覆盖层滚动条（贴 _content_area 右侧，覆盖在 _scroll_area 之上）
+        self._pool_scrollbar = StyledScrollBar(self._content_area)
+        self._pool_scrollbar.setFixedWidth(max(6, int(8 * self._get_dpi_scale())))
+        self._pool_scrollbar.raise_()
+
+        # 同步浮动滚动条与 _scroll_area 垂直滚动条的范围/值
+        area_vbar = self._scroll_area.verticalScrollBar()
+        self._pool_scrollbar.setRange(area_vbar.minimum(), area_vbar.maximum())
+        self._pool_scrollbar.setSingleStep(area_vbar.singleStep())
+        self._pool_scrollbar.setPageStep(area_vbar.pageStep())
+        area_vbar.rangeChanged.connect(self._sync_pool_scrollbar_range)
+        self._pool_scrollbar.valueChanged.connect(area_vbar.setValue)
+        area_vbar.valueChanged.connect(self._pool_scrollbar.setValue)
+
+        # 滚动时刷新所有卡片的 overlay（修复 StyledInfoCard 的 QGraphicsEffect
+        # 缓存导致 hover overlay 在滚动时不同步跟随）
+        area_vbar.valueChanged.connect(self._on_pool_scrolled)
+
+        # 应用平滑滚动 + 边界回弹 + 触摸手势（与 FileSelectorLayout 一致）
+        StyledScrollArea.apply_to(self._scroll_area, enable_mouse_drag=False)
+
+        # 内容区尺寸变化时重新定位浮动滚动条
+        self._content_area.installEventFilter(self)
 
         # ── 备份系统 ────────────────────────────────────────────────────
         self.backup_file = os.path.join(get_app_data_path(), "staging_pool_backup.json")
@@ -265,13 +310,15 @@ class FilePoolLayout(QWidget):
         self._apply_pool_theme()
 
     def _apply_pool_theme(self) -> None:
-        """为卡片容器和 scroll area 应用当前主题样式"""
-        bg = tm.bg.name()
+        """为卡片容器和 scroll area 应用当前主题样式（保持透明，避免多层半透明叠加）"""
+        # 内部子布局（_scroll_area、_card_container）必须保持透明，
+        # 让基础底层（_content_area / _bottom_bar）的半透明 section fill 透出，
+        # 防止多层半透明背景叠加。
         self._scroll_area.setStyleSheet(
-            f"background-color: {bg}; border: none;"
+            "background-color: transparent; border: none;"
         )
         self._card_container.setStyleSheet(
-            f"background-color: {bg};"
+            "background-color: transparent;"
         )
         # 刷新所有卡片的颜色
         for card in self._card_widgets.values():
@@ -282,12 +329,52 @@ class FilePoolLayout(QWidget):
     # ═════════════════════════════════════════════════════════════════════
 
     def eventFilter(self, obj, event):
+        if obj is self._content_area and event.type() == QEvent.Resize:
+            # 内容区尺寸变化时重新定位浮动滚动条
+            self._update_pool_scrollbar_geometry()
         if obj is self._scroll_area.viewport():
             if event.type() == QEvent.Wheel:
                 if event.modifiers() & Qt.ControlModifier:
                     self._handle_card_zoom(event)
                     return True
         return super().eventFilter(obj, event)
+
+    def _get_dpi_scale(self) -> float:
+        """获取 DPI 缩放因子（与 FileSelectorLayout 行为一致）。"""
+        app = QApplication.instance()
+        return getattr(app, 'dpi_scale_factor', 1.0) if app else 1.0
+
+    def _sync_pool_scrollbar_range(self, min_val: int, max_val: int) -> None:
+        """当 _scroll_area 内部滚动范围变化时，同步浮动 StyledScrollBar 的范围。"""
+        self._pool_scrollbar.setRange(min_val, max_val)
+        area_vbar = self._scroll_area.verticalScrollBar()
+        self._pool_scrollbar.setSingleStep(area_vbar.singleStep())
+        self._pool_scrollbar.setPageStep(area_vbar.pageStep())
+        # 范围变化时也重定位（隐藏/显示逻辑通过 maximum==0 处理）
+        self._update_pool_scrollbar_geometry()
+
+    def _update_pool_scrollbar_geometry(self) -> None:
+        """将浮动滚动条定位到 _content_area 右侧边缘（与 FileSelectorLayout 行为一致）。"""
+        if not hasattr(self, "_pool_scrollbar") or not hasattr(self, "_content_area"):
+            return
+        if self._content_area.width() <= 0 or self._content_area.height() <= 0:
+            return
+        scrollbar_w = self._pool_scrollbar.width()
+        scrollbar_x = self._content_area.width() - scrollbar_w
+        scrollbar_y = 0
+        scrollbar_h = self._content_area.height()
+        self._pool_scrollbar.setGeometry(scrollbar_x, scrollbar_y, scrollbar_w, scrollbar_h)
+        self._pool_scrollbar.raise_()
+
+    def _on_pool_scrolled(self, _value: int) -> None:
+        """滚动时让所有卡片的 overlay 重新绘制（修复 QGraphicsEffect 缓存不同步）。"""
+        for card in self._card_widgets.values():
+            card.update_overlay()
+
+    def showEvent(self, event) -> None:
+        """首次显示时定位浮动滚动条。"""
+        super().showEvent(event)
+        self._update_pool_scrollbar_geometry()
 
     def _handle_card_zoom(self, event) -> None:
         """Ctrl+滚轮：缩放所有 StyledInfoCard 卡片尺寸。"""
@@ -299,8 +386,18 @@ class FilePoolLayout(QWidget):
         else:
             return
         self._card_scale = new_scale
+        # 传入 _card_base_overrides 作为缩放基准，保证已存在卡片缩放后仍匹配
+        # FilePoolLayout 的紧凑标题/副标题设计值（10/9），与新加入卡片一致。
         for card in self._card_widgets.values():
-            card.set_scale(new_scale)
+            card.set_scale(new_scale, base_overrides=self._card_base_overrides)
+
+    def _build_card_size_overrides(self) -> dict:
+        """根据当前 _card_scale 构建 size_overrides（与 set_scale + base_overrides 等价）。"""
+        scale = self._card_scale
+        return {
+            key: max(1, int(value * scale))
+            for key, value in self._card_base_overrides.items()
+        }
 
     # ═════════════════════════════════════════════════════════════════════
     #  备份系统
@@ -436,17 +533,13 @@ class FilePoolLayout(QWidget):
         # 创建 StyledInfoCard
         display_name = file_info.get("display_name") or file_info.get("name") or os.path.basename(file_path)
         info_text = self._build_info_text(file_info)
+        # size_overrides 基于当前 _card_scale 动态计算，使新加入卡片继承用户最新的缩放
         card = StyledInfoCard(
             layout_mode="horizontal",
             title=display_name,
             subtitle=info_text,
             overlay_enabled=True,
-            size_overrides={
-                "title_size": 10,
-                "title_weight": 700,
-                "subtitle_size": 9,
-                "subtitle_weight": 400,
-            },
+            size_overrides=self._build_card_size_overrides(),
             parent=self._card_container,
         )
         card.set_file_path(file_path)
