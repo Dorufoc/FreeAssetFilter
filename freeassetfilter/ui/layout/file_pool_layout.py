@@ -20,7 +20,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QTimer, QUrl, QEvent, QRunnable, QThreadPool
+from PySide6.QtCore import Qt, Signal, QTimer, QUrl, QEvent, QRunnable, QThreadPool, QEventLoop
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QWidget,
@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QApplication,
     QMenu,
-    QInputDialog,
     QScrollArea,
     QFileDialog,
     QProgressDialog,
@@ -40,6 +39,7 @@ from theme import tm
 from components.styled_button import StyledButton
 from components.styled_info_card import StyledInfoCard
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
+from components.styled_dialog import create_input_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 from freeassetfilter.utils.app_logger import warning
@@ -102,6 +102,9 @@ class FilePoolLayout(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 图标目录（_build_bottom_bar 与 add_file 都需要使用，必须在 _build_bottom_bar 之前初始化）
+        self._icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
@@ -216,7 +219,7 @@ class FilePoolLayout(QWidget):
 
     def _build_bottom_bar(self) -> None:
         """构建底栏：导入/导出数据 + 导出文件 + 删除"""
-        icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
+        icons_dir = self._icons_dir
         bottom_layout = QHBoxLayout(self._bottom_bar)
         bottom_layout.setContentsMargins(10, 6, 10, 6)
         bottom_layout.setSpacing(6)
@@ -549,10 +552,22 @@ class FilePoolLayout(QWidget):
         if icon_pixmap and not icon_pixmap.isNull():
             card.set_media_pixmap(icon_pixmap)
 
-        # 添加 hover 操作按钮（StyledInfoCard 原生 overlay）
+        # 添加 hover 操作按钮（StyledInfoCard 原生 overlay，使用 StyledButton）
         norm_path = file_path
-        card.add_action("重命名", callback=lambda fp=norm_path: self.rename_file_by_path(fp))
-        card.add_action("删除", callback=lambda fp=norm_path: self.remove_file(fp))
+        trash_icon = str(self._icons_dir / "trash.svg")
+        card.add_action(
+            "重命名",
+            variant="secondary",
+            size="sm",
+            callback=lambda fp=norm_path: self.rename_file_by_path(fp),
+        )
+        card.add_action(
+            "",
+            icon=trash_icon,
+            variant="danger",
+            size="sm",
+            callback=lambda fp=norm_path: self.remove_file(fp),
+        )
 
         # 点击预览
         card.clicked.connect(self._handle_card_clicked)
@@ -735,7 +750,7 @@ class FilePoolLayout(QWidget):
     # ═════════════════════════════════════════════════════════════════════
 
     def rename_file_by_path(self, file_path: str) -> None:
-        """重命名池中的文件（显示名）。"""
+        """重命名池中的文件（显示名）。使用 styled 弹窗（create_input_dialog）输入新名称。"""
         norm_path = os.path.normpath(file_path) if file_path else ""
         # 在 self.items 中查找
         current_info = None
@@ -747,15 +762,33 @@ class FilePoolLayout(QWidget):
         if not current_info:
             return
         current_name = current_info.get("display_name") or current_info.get("name", "")
-        new_name, ok = QInputDialog.getText(
-            self,
-            "重命名",
-            "请输入新的显示名称：",
-            text=current_name,
+
+        # styled 弹窗（create_input_dialog：原生的 StyledDialog + QLineEdit 主题化输入框）
+        rename_dialog = create_input_dialog(
+            title="重命名",
+            message="请输入新的显示名称：",
+            placeholder="输入新的文件名",
+            cancel_text="取消",
+            confirm_text="确定",
         )
-        if not ok:
+        # 预填当前显示名（QLineEdit 主题化样式在 create_input_dialog 中已设置）
+        rename_dialog._input_field.setText(current_name)
+        rename_dialog._input_field.selectAll()
+
+        # StyledDialog 继承自 QWidget（不是 QDialog），没有 exec()，需要用 show() + QEventLoop 阻塞等待 finished
+        result: list[int] = [0]
+        loop = QEventLoop()
+        rename_dialog.finished.connect(lambda r: result.__setitem__(0, r))
+        rename_dialog.finished.connect(loop.quit)
+        # 兜底：用户用 ESC / 关闭按钮时 finished 可能不发射，监听 closeEvent
+        rename_dialog.destroyed.connect(loop.quit)
+        rename_dialog.show()
+        loop.exec()
+
+        if result[0] != 1:
             return
-        new_name = new_name.strip()
+        new_name = rename_dialog._input_field.text().strip()
+
         # 合法性校验
         if not new_name:
             return

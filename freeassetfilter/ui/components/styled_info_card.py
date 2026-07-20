@@ -18,6 +18,7 @@ from PySide6.QtGui import (
 import math
 
 from theme import tm
+from components.styled_button import StyledButton
 
 
 class StyledInfoCard(QWidget):
@@ -62,19 +63,6 @@ class StyledInfoCard(QWidget):
             "desc_size": 12,
             "desc_weight": 400,
         },
-    }
-
-    COLORS = {
-        "bg": tm.alpha_of(tm.surface, 85),              # --bg-card
-        "bg_hover": tm.alpha_of(tm.surface, 90),  # --bg-card-hover
-        "border": tm.alpha_of(tm.mid, 30),      # --border-light
-        "media_bg": tm.alpha_of(tm.mid, 40),  # --bg-input
-        "title": tm.text,        # --text-primary
-        "subtitle": tm.mid,  # --text-secondary
-        "desc": tm.alpha_of(tm.mid, 60),          # --text-tertiary
-        "icon": tm.mid,          # --text-secondary
-        "overlay_bg": QColor(0, 0, 0, 127),              # rgba(0,0,0,0.5) — no theme token
-        "shadow": QColor(0, 0, 0, 40),                   # no theme token
     }
 
     def __init__(
@@ -139,6 +127,9 @@ class StyledInfoCard(QWidget):
         self._apply_size()
         self.update()
 
+        # Repaint automatically when the global theme changes.
+        tm.colors_updated.connect(self._on_theme_changed)
+
     # ── Properties ────────────────────────────────────────────
 
     @Property(float)
@@ -169,6 +160,10 @@ class StyledInfoCard(QWidget):
         self._card_scale = value
         self.update()
 
+    def _on_theme_changed(self, _colors: dict) -> None:
+        """Slot for ThemeManager.colors_updated: repaint with new theme colors."""
+        self.update()
+
     # ── Config ────────────────────────────────────────────────
 
     def _get_config(self) -> dict:
@@ -178,11 +173,41 @@ class StyledInfoCard(QWidget):
             base.update(self._size_overrides)
         return base
 
+    def _get_colors(self) -> dict:
+        """获取当前主题颜色（每次绘制时重新读取，支持深色/浅色模式切换）。"""
+        return {
+            "bg": tm.alpha_of(tm.surface, 85),
+            "bg_hover": tm.alpha_of(tm.surface, 90),
+            "border": tm.alpha_of(tm.mid, 30),
+            "media_bg": tm.alpha_of(tm.mid, 40),
+            "title": tm.text,
+            "subtitle": tm.mid,
+            "desc": tm.alpha_of(tm.mid, 60),
+            "icon": tm.mid,
+            "overlay_bg": QColor(0, 0, 0, 127),
+            "shadow": QColor(0, 0, 0, 40),
+        }
+
     # ── Public API ────────────────────────────────────────────
 
-    def add_action(self, text: str, icon: str = "", callback=None):
-        """Add an action button to the hover overlay."""
-        self._actions.append((text, icon, callback))
+    def add_action(
+        self,
+        text: str,
+        icon: str = "",
+        variant: str = "secondary",
+        size: str = "sm",
+        callback=None,
+    ):
+        """Add an action button to the hover overlay.
+
+        Args:
+            text: 按钮文本。
+            icon: 图标（文本字符或 SVG 文件路径）。
+            variant: 按钮变体（primary/secondary/ghost/danger/info），传给 StyledButton。
+            size: 按钮尺寸（sm/default/lg），传给 StyledButton。
+            callback: 点击回调。
+        """
+        self._actions.append((text, icon, variant, size, callback))
         self._rebuild_overlay()
 
     def clear_actions(self):
@@ -345,10 +370,12 @@ class StyledInfoCard(QWidget):
             bottom_row = QHBoxLayout()
             bottom_row.setSpacing(8)
 
-            for i, (text, icon, callback) in enumerate(self._actions):
-                btn = _OverlayButton(text, icon)
+            for i, (text, icon, variant, size, callback) in enumerate(self._actions):
+                btn = StyledButton(text, variant=variant, size=size, icon=icon)
                 if callback:
-                    btn.clicked.connect(callback)
+                    # QPushButton.clicked 携带 bool 参数，连接到一个丢弃多余参数的 lambda，
+                    # 避免 bool 被透传给仅接受 file_path 字符串的回调函数。
+                    btn.clicked.connect(lambda *args, cb=callback: cb())
                 self._overlay_buttons.append(btn)
                 if i < 2:
                     top_row.addWidget(btn, stretch=1)
@@ -361,10 +388,12 @@ class StyledInfoCard(QWidget):
             layout.addStretch()
             return
 
-        for text, icon, callback in self._actions:
-            btn = _OverlayButton(text, icon)
+        for text, icon, variant, size, callback in self._actions:
+            btn = StyledButton(text, variant=variant, size=size, icon=icon)
             if callback:
-                btn.clicked.connect(callback)
+                # QPushButton.clicked 携带 bool 参数，连接到一个丢弃多余参数的 lambda，
+                # 避免 bool 被透传给仅接受 file_path 字符串的回调函数。
+                btn.clicked.connect(lambda *args, cb=callback: cb())
             self._overlay_buttons.append(btn)
             layout.addWidget(btn)
 
@@ -458,6 +487,7 @@ class StyledInfoCard(QWidget):
             painter.setPen(Qt.NoPen)
 
             config = self._get_config()
+            colors = self._get_colors()
             padding = config["padding"]
             radius = config["radius"]
             gap = config["gap"]
@@ -470,9 +500,9 @@ class StyledInfoCard(QWidget):
 
             # Card background
             if self._hovered and not self._disabled:
-                bg_color = self.COLORS["bg_hover"]
+                bg_color = colors["bg_hover"]
             else:
-                bg_color = self.COLORS["bg"]
+                bg_color = colors["bg"]
 
             painter.setBrush(bg_color)
             card_rect = QRectF(0, 0, w, h)
@@ -480,7 +510,7 @@ class StyledInfoCard(QWidget):
 
             # Card border
             painter.setBrush(Qt.NoBrush)
-            pen = QPen(self.COLORS["border"], 1)
+            pen = QPen(colors["border"], 1)
             painter.setPen(pen)
             painter.drawRoundedRect(card_rect, radius, radius)
 
@@ -488,7 +518,7 @@ class StyledInfoCard(QWidget):
 
             # Shadow on hover
             if self._hovered and not self._disabled:
-                painter.setBrush(self.COLORS["shadow"])
+                painter.setBrush(colors["shadow"])
                 shadow_rect = QRectF(0, 2, w, h)
                 painter.drawRoundedRect(shadow_rect, radius, radius)
 
@@ -517,7 +547,7 @@ class StyledInfoCard(QWidget):
             if self._disabled:
                 painter.setBrush(tm.alpha_of(tm.mid, 50))
             else:
-                painter.setBrush(self.COLORS["media_bg"])
+                painter.setBrush(colors["media_bg"])
 
             media_rect = QRectF(media_x, media_y, media_size, media_size)
             painter.drawRoundedRect(media_rect, 4, 4)
@@ -546,7 +576,7 @@ class StyledInfoCard(QWidget):
                 if self._disabled:
                     painter.setPen(tm.alpha_of(tm.mid, 60))
                 else:
-                    painter.setPen(self.COLORS["icon"])
+                    painter.setPen(colors["icon"])
                 painter.drawText(
                     media_rect,
                     Qt.AlignCenter,
@@ -569,7 +599,7 @@ class StyledInfoCard(QWidget):
                 text_h = h - text_y - padding
 
             text_rect = QRectF(text_x, text_y, text_w, text_h)
-            self._draw_text(painter, text_rect, config)
+            self._draw_text(painter, text_rect, config, colors)
 
             # Grayscale filter for disabled
             if self._disabled:
@@ -579,7 +609,7 @@ class StyledInfoCard(QWidget):
             if painter.isActive():
                 painter.end()
 
-    def _draw_text(self, painter: QPainter, rect: QRectF, config: dict):
+    def _draw_text(self, painter: QPainter, rect: QRectF, config: dict, colors: dict):
         """Draw title, subtitle, and description text lines."""
         y = rect.y()
         x = rect.x()
@@ -593,7 +623,7 @@ class StyledInfoCard(QWidget):
             if self._disabled:
                 painter.setPen(tm.alpha_of(tm.mid, 60))
             else:
-                painter.setPen(self.COLORS["title"])
+                painter.setPen(colors["title"])
             fm = QFontMetrics(font)
             elided = fm.elidedText(self._title, Qt.ElideRight, int(max_w))
             painter.drawText(QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop, elided)
@@ -606,7 +636,7 @@ class StyledInfoCard(QWidget):
             if self._disabled:
                 painter.setPen(tm.alpha_of(tm.mid, 60))
             else:
-                painter.setPen(self.COLORS["subtitle"])
+                painter.setPen(colors["subtitle"])
             fm = QFontMetrics(font)
             elided = fm.elidedText(self._subtitle, Qt.ElideRight, int(max_w))
             painter.drawText(QRectF(x, y, max_w, fm.height()), Qt.AlignLeft | Qt.AlignTop, elided)
@@ -619,149 +649,8 @@ class StyledInfoCard(QWidget):
             if self._disabled:
                 painter.setPen(tm.alpha_of(tm.mid, 60))
             else:
-                painter.setPen(self.COLORS["desc"])
+                painter.setPen(colors["desc"])
             fm = QFontMetrics(font)
             # Word wrap the description
             text_rect = QRectF(x, y, max_w, rect.bottom() - y)
             painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, self._desc)
-
-
-class _OverlayButton(QWidget):
-    """Internal action button used inside the info-card overlay."""
-
-    clicked = Signal()
-
-    SIZE_CONFIG = {
-        "padding_h": 12,
-        "padding_v": 8,
-        "font_size": 12,
-        "radius": 4,
-        "icon_size": 14,
-    }
-
-    COLORS = {
-        "bg": tm.surface,
-        "bg_hover": tm.mid,
-        "border": tm.alpha_of(tm.mid, 40),
-        "text": tm.mid,
-        "text_hover": tm.text,
-    }
-
-    def __init__(self, text: str = "", icon: str = "", parent=None):
-        super().__init__(parent)
-        self._text = text
-        self._icon = icon
-        self._hovered = False
-        self._pressed = False
-
-        self.setAttribute(Qt.WA_Hover, True)
-        self.setAttribute(Qt.WA_StyledBackground, False)
-        self.setCursor(Qt.PointingHandCursor)
-
-        cfg = self.SIZE_CONFIG
-        fm = QFontMetrics(QFont("Microsoft YaHei UI", cfg["font_size"]))
-        text_w = fm.horizontalAdvance(text) if text else 0
-        icon_w = cfg["icon_size"] if icon else 0
-        gap = 6 if text and icon else 0
-        content_w = icon_w + gap + text_w
-        btn_w = content_w + cfg["padding_h"] * 2
-        btn_h = cfg["padding_v"] * 2 + max(cfg["icon_size"], fm.height())
-        self.setFixedSize(int(btn_w), int(btn_h))
-
-    def enterEvent(self, event):
-        self._hovered = True
-        self.update()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._hovered = False
-        self._pressed = False
-        self.update()
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.LeftButton:
-            self._pressed = True
-            self.update()
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        if event.button() == Qt.LeftButton and self._pressed:
-            self._pressed = False
-            self.clicked.emit()
-            self.update()
-        super().mouseReleaseEvent(event)
-
-    def paintEvent(self, event: QPaintEvent):
-        painter = QPainter(self)
-        if not painter.isActive():
-            return
-
-        try:
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setPen(Qt.NoPen)
-
-            w = self.width()
-            h = self.height()
-            cfg = self.SIZE_CONFIG
-            radius = cfg["radius"]
-
-            # Background
-            if self._pressed:
-                bg = tm.surface
-            elif self._hovered:
-                bg = self.COLORS["bg_hover"]
-            else:
-                bg = self.COLORS["bg"]
-
-            painter.setBrush(bg)
-            painter.drawRoundedRect(QRectF(0, 0, w, h), radius, radius)
-
-            # Border
-            pen = QPen(self.COLORS["border"], 1)
-            painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
-
-            # Text / Icon
-            text_color = self.COLORS["text_hover"] if self._hovered else self.COLORS["text"]
-            icon_size = cfg["icon_size"]
-            font_size = cfg["font_size"]
-
-            if self._icon and self._text:
-                # Icon + text
-                icon_font = QFont("Segoe UI Symbol", icon_size)
-                painter.setFont(icon_font)
-                painter.setPen(text_color)
-                fm = QFontMetrics(icon_font)
-                icon_w = fm.horizontalAdvance(self._icon)
-
-                text_font = QFont("Microsoft YaHei UI", font_size, 500)
-                painter.setFont(text_font)
-                fm2 = QFontMetrics(text_font)
-                text_w = fm2.horizontalAdvance(self._text)
-                gap = 6
-                total_w = icon_w + gap + text_w
-                start_x = (w - total_w) / 2.0
-                center_y = h / 2.0
-
-                painter.setFont(icon_font)
-                painter.drawText(QRectF(start_x, 0, icon_w, h), Qt.AlignCenter, self._icon)
-                painter.setFont(text_font)
-                painter.drawText(QRectF(start_x + icon_w + gap, 0, text_w, h), Qt.AlignCenter, self._text)
-
-            elif self._icon:
-                icon_font = QFont("Segoe UI Symbol", icon_size)
-                painter.setFont(icon_font)
-                painter.setPen(text_color)
-                painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, self._icon)
-
-            elif self._text:
-                text_font = QFont("Microsoft YaHei UI", font_size, 500)
-                painter.setFont(text_font)
-                painter.setPen(text_color)
-                painter.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, self._text)
-
-        finally:
-            if painter.isActive():
-                painter.end()

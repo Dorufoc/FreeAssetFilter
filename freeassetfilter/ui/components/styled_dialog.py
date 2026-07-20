@@ -9,7 +9,7 @@ Provides:
 from PySide6.QtWidgets import (
     QFrame, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QGraphicsDropShadowEffect,
-    QSizePolicy, QApplication,
+    QSizePolicy, QApplication, QGraphicsEffect,
 )
 from PySide6.QtCore import (
     Qt, Signal, QPropertyAnimation, QEasingCurve, Property, QRectF, QPoint, QTimer,
@@ -40,6 +40,57 @@ SIZE_CONFIG = {
     "default": {"width": 400},
     "lg": {"width": 560},
 }
+
+
+class DialogAnimationEffect(QGraphicsEffect):
+    """Combined opacity + scale effect applied to the whole dialog.
+
+    Renders the source widget (and all child widgets) into a pixmap,
+    then draws it with optional opacity and uniform scale around the
+    actual dialog center (the source widget's own rect center).
+    """
+
+    def __init__(self, dialog: QWidget):
+        super().__init__(dialog)
+        self._dialog = dialog
+        self._opacity = 1.0
+        self._scale = 1.0
+
+    @Property(float)
+    def opacity(self) -> float:
+        return self._opacity
+
+    @opacity.setter
+    def opacity(self, value: float) -> None:
+        self._opacity = max(0.0, min(1.0, value))
+        self.update()
+
+    @Property(float)
+    def scale(self) -> float:
+        return self._scale
+
+    @scale.setter
+    def scale(self, value: float) -> None:
+        self._scale = max(0.0, value)
+        self.update()
+
+    def draw(self, painter: QPainter) -> None:
+        pixmap = self.sourcePixmap(Qt.LogicalCoordinates)
+        if pixmap.isNull():
+            self.drawSource(painter)
+            return
+
+        painter.save()
+        painter.setOpacity(self._opacity)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        # Anchor at the source widget's own center, ignoring shadow expansion.
+        center = QRectF(self._dialog.rect()).center()
+        painter.translate(center)
+        painter.scale(self._scale, self._scale)
+        painter.translate(-center)
+        painter.drawPixmap(QPoint(0, 0), pixmap)
+        painter.restore()
 
 
 # ── StyledDialog ───────────────────────────────────────────────────
@@ -90,6 +141,7 @@ class StyledDialog(QWidget):
         body_widget: QWidget = None,
         footer_type: str = FOOTER_RIGHT,
         show_close: bool = True,
+        animate: bool = True,
         parent=None,
     ):
         # No parent -> top-level window
@@ -98,6 +150,9 @@ class StyledDialog(QWidget):
         self._dialog_type = dialog_type if dialog_type in self._get_type_colors() else "default"
         self._footer_type = footer_type
         self._result = 0
+        self._animate = animate
+        self._is_closing = False
+        self._shown_once = False
 
         # Drag support
         self._drag_pos: QPoint = None
@@ -106,10 +161,14 @@ class StyledDialog(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
-        # 动画属性
-        self._dialog_opacity = 1.0
-        self._dialog_scale = 1.0
-        self._dialog_translate_y = 0
+        # Animation
+        self._anim_effect: DialogAnimationEffect = None
+        self._enter_opacity_anim: QPropertyAnimation = None
+        self._enter_scale_anim: QPropertyAnimation = None
+        self._exit_opacity_anim: QPropertyAnimation = None
+        self._exit_scale_anim: QPropertyAnimation = None
+        if self._animate:
+            self._setup_animations()
 
         self.setObjectName("StyledDialog")
         # Window is larger than content to accommodate shadow
@@ -153,24 +212,6 @@ class StyledDialog(QWidget):
             self.SHADOW_MARGIN, self.SHADOW_MARGIN,
             content_width, 100  # height will be adjusted
         )
-
-    @Property(float)
-    def dialog_scale(self):
-        return self._dialog_scale
-
-    @dialog_scale.setter
-    def dialog_scale(self, v: float):
-        self._dialog_scale = v
-        self.update()
-
-    @Property(int)
-    def dialog_translate_y(self):
-        return self._dialog_translate_y
-
-    @dialog_translate_y.setter
-    def dialog_translate_y(self, v: int):
-        self._dialog_translate_y = v
-        self.update()
 
     # ── Header ─────────────────────────────────────────────────────
 
@@ -367,11 +408,67 @@ class StyledDialog(QWidget):
     def close_dialog(self, result: int = 0):
         """Close the dialog with a result code."""
         self._result = result
-        self._on_finished(result)
         self.close()
 
     def _on_finished(self, result: int):
         self.finished.emit(result)
+
+    # ── Animation ──────────────────────────────────────────────────
+
+    def _setup_animations(self) -> None:
+        self._anim_effect = DialogAnimationEffect(self)
+        self._anim_effect.opacity = 1.0
+        self._anim_effect.scale = 1.0
+        self.setGraphicsEffect(self._anim_effect)
+
+        self._enter_opacity_anim = QPropertyAnimation(self._anim_effect, b"opacity", self)
+        self._enter_opacity_anim.setDuration(280)
+        self._enter_opacity_anim.setStartValue(0.0)
+        self._enter_opacity_anim.setEndValue(1.0)
+        self._enter_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
+
+        self._enter_scale_anim = QPropertyAnimation(self._anim_effect, b"scale", self)
+        self._enter_scale_anim.setDuration(280)
+        self._enter_scale_anim.setStartValue(0.85)
+        self._enter_scale_anim.setEndValue(1.0)
+        self._enter_scale_anim.setEasingCurve(QEasingCurve.InOutCubic)
+
+        self._exit_opacity_anim = QPropertyAnimation(self._anim_effect, b"opacity", self)
+        self._exit_opacity_anim.setDuration(200)
+        self._exit_opacity_anim.setStartValue(1.0)
+        self._exit_opacity_anim.setEndValue(0.0)
+        self._exit_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
+
+        self._exit_scale_anim = QPropertyAnimation(self._anim_effect, b"scale", self)
+        self._exit_scale_anim.setDuration(200)
+        self._exit_scale_anim.setStartValue(1.0)
+        self._exit_scale_anim.setEndValue(0.95)
+        self._exit_scale_anim.setEasingCurve(QEasingCurve.InOutCubic)
+
+        self._exit_opacity_anim.finished.connect(self._finish_close)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._animate and self._anim_effect is not None and not self._shown_once:
+            self._shown_once = True
+            self._anim_effect.opacity = 0.0
+            self._anim_effect.scale = 0.85
+            self._enter_opacity_anim.start()
+            self._enter_scale_anim.start()
+
+    def closeEvent(self, event) -> None:
+        if self._animate and not self._is_closing and self._anim_effect is not None:
+            self._is_closing = True
+            event.ignore()
+            self._exit_opacity_anim.start()
+            self._exit_scale_anim.start()
+            return
+        self._is_closing = False
+        self._on_finished(self._result)
+        super().closeEvent(event)
+
+    def _finish_close(self) -> None:
+        self.close()
 
     # ── Drag support ───────────────────────────────────────────────
 
@@ -533,10 +630,11 @@ def create_basic_dialog(
     message: str = "确定要删除这个项目吗？此操作无法撤销。",
     cancel_text: str = "取消",
     confirm_text: str = "确认",
+    animate: bool = True,
 ) -> StyledDialog:
     """Basic confirmation dialog."""
     body = _make_body_label(message)
-    dialog = StyledDialog(title=title, body_widget=body)
+    dialog = StyledDialog(animate=animate, title=title, body_widget=body)
     if cancel_text:
         cancel_btn = StyledButton(cancel_text, variant="ghost")
         cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -552,10 +650,11 @@ def create_success_dialog(
     title: str = "保存成功",
     message: str = "您的设置已成功保存。所有更改已生效。",
     confirm_text: str = "好的",
+    animate: bool = True,
 ) -> StyledDialog:
     """Success dialog with green checkmark icon."""
     body = _make_body_label(message)
-    dialog = StyledDialog(dialog_type="success", title=title, body_widget=body)
+    dialog = StyledDialog(animate=animate, dialog_type="success", title=title, body_widget=body)
     confirm_btn = StyledButton(confirm_text, variant="primary")
     confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
     dialog._footer_layout.addWidget(confirm_btn)
@@ -568,10 +667,11 @@ def create_danger_dialog(
     message: str = "此操作将永久删除该项目及其所有关联数据，无法恢复。请确认是否继续？",
     cancel_text: str = "取消",
     confirm_text: str = "确认删除",
+    animate: bool = True,
 ) -> StyledDialog:
     """Danger dialog with warning icon and red confirm button."""
     body = _make_body_label(message)
-    dialog = StyledDialog(dialog_type="danger", title=title, body_widget=body)
+    dialog = StyledDialog(animate=animate, dialog_type="danger", title=title, body_widget=body)
     if cancel_text:
         cancel_btn = StyledButton(cancel_text, variant="ghost")
         cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -588,10 +688,11 @@ def create_info_dialog(
     title: str = "提示信息",
     message: str = "这是一条重要的提示信息，请仔细阅读。",
     confirm_text: str = "知道了",
+    animate: bool = True,
 ) -> StyledDialog:
     """Info dialog with blue info icon."""
     body = _make_body_label(message)
-    dialog = StyledDialog(dialog_type="info", title=title, body_widget=body)
+    dialog = StyledDialog(animate=animate, dialog_type="info", title=title, body_widget=body)
     confirm_btn = StyledButton(confirm_text, variant="info")
     confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
     dialog._footer_layout.addWidget(confirm_btn)
@@ -605,6 +706,7 @@ def create_input_dialog(
     placeholder: str = "输入新名称...",
     cancel_text: str = "取消",
     confirm_text: str = "确认",
+    animate: bool = True,
 ) -> StyledDialog:
     """Input dialog with a text field."""
     body = QWidget()
@@ -631,7 +733,7 @@ def create_input_dialog(
     """)
     body_layout.addWidget(input_field)
 
-    dialog = StyledDialog(title=title, body_widget=body)
+    dialog = StyledDialog(animate=animate, title=title, body_widget=body)
     dialog._input_field = input_field
 
     if cancel_text:
@@ -650,10 +752,11 @@ def create_small_dialog(
     message: str = "这是一个小尺寸的对话框。",
     cancel_text: str = "取消",
     confirm_text: str = "确认",
+    animate: bool = True,
 ) -> StyledDialog:
     """Small (320 px) dialog."""
     body = _make_body_label(message)
-    dialog = StyledDialog(size="sm", title=title, body_widget=body)
+    dialog = StyledDialog(animate=animate, size="sm", title=title, body_widget=body)
     if cancel_text:
         cancel_btn = StyledButton(cancel_text, variant="ghost")
         cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -673,10 +776,11 @@ def create_large_dialog(
     ),
     cancel_text: str = "关闭",
     confirm_text: str = "我知道了",
+    animate: bool = True,
 ) -> StyledDialog:
     """Large (560 px) dialog."""
     body = _make_body_label(message)
-    dialog = StyledDialog(size="lg", title=title, body_widget=body)
+    dialog = StyledDialog(animate=animate, size="lg", title=title, body_widget=body)
     if cancel_text:
         cancel_btn = StyledButton(cancel_text, variant="ghost")
         cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -696,6 +800,7 @@ def create_progress_linear_dialog(
     progress_value: float = 0.65,
     progress_label: str = "65% 已完成",
     progress_detail: str = "13/20 项",
+    animate: bool = True,
 ) -> StyledDialog:
     """Dialog with a linear progress bar."""
     body = QWidget()
@@ -727,7 +832,7 @@ def create_progress_linear_dialog(
     lr.addWidget(right)
     body_layout.addWidget(label_row)
 
-    dialog = StyledDialog(title=title, body_widget=body)
+    dialog = StyledDialog(animate=animate, title=title, body_widget=body)
     dialog._progress = progress
 
     cancel_btn = StyledButton("取消", variant="ghost")
@@ -742,6 +847,7 @@ def create_progress_circular_dialog(
     message: str = "正在同步云端数据...",
     progress_value: float = 0.70,
     confirm_text: str = "查看详情",
+    animate: bool = True,
 ) -> StyledDialog:
     """Dialog with a circular progress ring."""
     body = QWidget()
@@ -762,7 +868,7 @@ def create_progress_circular_dialog(
     )
     body_layout.addWidget(label)
 
-    dialog = StyledDialog(
+    dialog = StyledDialog(animate=animate, 
         title=title, body_widget=body, footer_type=FOOTER_CENTER,
     )
     dialog._progress_circle = circle
@@ -776,6 +882,7 @@ def create_progress_circular_dialog(
 
 def create_progress_download_dialog(
     progress_value: float = 0.35,
+    animate: bool = True,
 ) -> StyledDialog:
     """Download-progress dialog with three-button footer."""
     body = QWidget()
@@ -818,7 +925,7 @@ def create_progress_download_dialog(
     lr.addWidget(right)
     body_layout.addWidget(label_row)
 
-    dialog = StyledDialog(
+    dialog = StyledDialog(animate=animate, 
         size="lg",
         dialog_type="info",
         title="下载更新",
@@ -852,10 +959,11 @@ def create_center_button_dialog(
     title: str = "提示",
     message: str = "操作已成功完成。",
     confirm_text: str = "确 定",
+    animate: bool = True,
 ) -> StyledDialog:
     """Small dialog with a single centered button."""
     body = _make_body_label(message)
-    dialog = StyledDialog(size="sm", title=title, body_widget=body,
+    dialog = StyledDialog(animate=animate, size="sm", title=title, body_widget=body,
                           footer_type=FOOTER_CENTER)
     confirm_btn = StyledButton(confirm_text, variant="primary")
     confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
@@ -867,6 +975,7 @@ def create_center_button_dialog(
 def create_left_button_dialog(
     title: str = "导出设置",
     message: str = "请选择导出格式：",
+    animate: bool = True,
 ) -> StyledDialog:
     """Dialog with left-aligned footer buttons."""
     body = QWidget()
@@ -891,7 +1000,7 @@ def create_left_button_dialog(
     rr.addStretch()
     body_layout.addWidget(radio_row)
 
-    dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_LEFT)
+    dialog = StyledDialog(animate=animate, title=title, body_widget=body, footer_type=FOOTER_LEFT)
 
     export_btn = StyledButton("导出", variant="primary")
     export_btn.clicked.connect(lambda: dialog.close_dialog(1))
@@ -908,10 +1017,11 @@ def create_left_button_dialog(
 def create_stacked_button_dialog(
     title: str = "选择操作",
     message: str = "请选择您要进行的操作：",
+    animate: bool = True,
 ) -> StyledDialog:
     """Small dialog with full-width stacked buttons."""
     body = _make_body_label(message)
-    dialog = StyledDialog(size="sm", title=title, body_widget=body,
+    dialog = StyledDialog(animate=animate, size="sm", title=title, body_widget=body,
                           footer_type=FOOTER_STACKED)
 
     # Web CSS: .dialog-footer-stacked .btn { width: 100%; }
@@ -934,10 +1044,11 @@ def create_stacked_button_dialog(
 def create_three_button_dialog(
     title: str = "保存更改",
     message: str = "您有未保存的更改，是否保存？",
+    animate: bool = True,
 ) -> StyledDialog:
     """Dialog with left + right button groups."""
     body = _make_body_label(message)
-    dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_THREE)
+    dialog = StyledDialog(animate=animate, title=title, body_widget=body, footer_type=FOOTER_THREE)
 
     cancel_btn = StyledButton("取消", variant="ghost")
     cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -958,10 +1069,11 @@ def create_three_button_dialog(
 def create_help_link_dialog(
     title: str = "许可协议",
     message: str = "请阅读并同意我们的服务条款和隐私政策，以继续使用本软件。",
+    animate: bool = True,
 ) -> StyledDialog:
     """Dialog with a help link in the footer."""
     body = _make_body_label(message)
-    dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_WITH_HELP)
+    dialog = StyledDialog(animate=animate, title=title, body_widget=body, footer_type=FOOTER_WITH_HELP)
 
     reject_btn = StyledButton("拒绝", variant="ghost")
     reject_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -977,6 +1089,7 @@ def create_help_link_dialog(
 
 def create_no_border_dialog(
     title: str = "快捷操作",
+    animate: bool = True,
 ) -> StyledDialog:
     """Dialog with no footer border and action buttons in the body."""
     body = QWidget()
@@ -994,7 +1107,7 @@ def create_no_border_dialog(
         btn.setContentsMargins(12, 0, 0, 0)
         body_layout.addWidget(btn, alignment=Qt.AlignLeft)
 
-    dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_NO_BORDER)
+    dialog = StyledDialog(animate=animate, title=title, body_widget=body, footer_type=FOOTER_NO_BORDER)
 
     close_btn = StyledButton("关闭", variant="primary")
     close_btn.clicked.connect(lambda: dialog.close_dialog(0))
@@ -1006,6 +1119,7 @@ def create_no_border_dialog(
 
 def create_no_footer_dialog(
     title: str = "关于",
+    animate: bool = True,
 ) -> StyledDialog:
     """Dialog with no footer at all (about-style)."""
     body = QWidget()
@@ -1034,7 +1148,7 @@ def create_no_footer_dialog(
     copyright_.setStyleSheet(f"font-size: 12px; color: {tm.alpha_of(tm.mid, 60).name()}; background: transparent; margin-top: 8px;")
     body_layout.addWidget(copyright_)
 
-    dialog = StyledDialog(size="sm", title=title, body_widget=body,
+    dialog = StyledDialog(animate=animate, size="sm", title=title, body_widget=body,
                           footer_type=FOOTER_NONE, show_close=True)
     _show_dialog(dialog)
     return dialog
