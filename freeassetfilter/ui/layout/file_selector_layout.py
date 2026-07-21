@@ -19,6 +19,7 @@ from components.styled_lineedit import StyledLineEdit
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole
 from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CONFIG
+from components.animated_file_list_view import AnimatedFileListView
 
 
 class FileSelectorLayout(QWidget):
@@ -63,7 +64,7 @@ class FileSelectorLayout(QWidget):
         # ── 文件列表模型 + 委托 + 视图 ──
         self._file_model = FileListModel(self)
         self._card_delegate = FileCardDelegate(self)
-        self._file_list = QListView()
+        self._file_list = AnimatedFileListView()
         self._file_list.setViewMode(QListView.IconMode)
         self._file_list.setWrapping(True)
         self._file_list.setResizeMode(QListView.Fixed)
@@ -199,9 +200,15 @@ class FileSelectorLayout(QWidget):
     # ── All 视图 ──────────────────────────────────────────────────────────
 
     def _navigate_to_all(self) -> None:
+        direction = self._infer_navigation_direction(self._current_path, "All")
+        started = False
+        if direction != 0:
+            started = self._file_list.begin_path_transition(direction)
         self._load_all()
         self._current_path = "All"
         self._update_path_input("All")
+        if started:
+            self._file_list.finish_path_transition(direction)
         self._nav_history.append("All")
         self._history_index = len(self._nav_history) - 1
 
@@ -396,7 +403,13 @@ class FileSelectorLayout(QWidget):
         path = os.path.abspath(path)
         if not os.path.isdir(path):
             return
+        direction = self._infer_navigation_direction(self._current_path, path)
+        started = False
+        if direction != 0:
+            started = self._file_list.begin_path_transition(direction)
         self._load_directory(path)
+        if started:
+            self._file_list.finish_path_transition(direction)
         if self._history_index >= 0 and self._history_index < len(self._nav_history) - 1:
             self._nav_history = self._nav_history[:self._history_index + 1]
         self._nav_history.append(path)
@@ -417,12 +430,60 @@ class FileSelectorLayout(QWidget):
         if self._history_index > 0:
             self._history_index -= 1
             path = self._nav_history[self._history_index]
+            direction = -1
+            started = self._file_list.begin_path_transition(direction)
             if path == "All":
                 self._load_all()
                 self._current_path = "All"
                 self._update_path_input("All")
             else:
                 self._load_directory(path)
+            if started:
+                self._file_list.finish_path_transition(direction)
+
+    def _infer_navigation_direction(self, source_path: str, target_path: str) -> int:
+        """根据源路径和目标路径推断导航方向。
+
+        Returns:
+            1 表示进入子目录/前进（新内容从右侧进入），
+            -1 表示返回上级/后退（新内容从左侧进入），
+            0 表示方向不确定或无需动画。
+        """
+        if self._same_selector_path(source_path, target_path):
+            return 0
+        if source_path == "All" and target_path != "All":
+            return 1
+        if target_path == "All":
+            return -1
+        if self._is_descendant_selector_path(target_path, source_path):
+            return 1
+        if self._is_descendant_selector_path(source_path, target_path):
+            return -1
+        return 1
+
+    @staticmethod
+    def _same_selector_path(left: str, right: str) -> bool:
+        if left == right:
+            return True
+        if not left or not right or left == "All" or right == "All":
+            return False
+        try:
+            return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _is_descendant_selector_path(candidate_path: str, base_path: str) -> bool:
+        if not candidate_path or not base_path or candidate_path == "All" or base_path == "All":
+            return False
+        try:
+            candidate = os.path.normcase(os.path.normpath(candidate_path))
+            base = os.path.normcase(os.path.normpath(base_path))
+            if candidate == base:
+                return False
+            return os.path.commonpath([candidate, base]) == base
+        except (OSError, TypeError, ValueError):
+            return False
 
     # ── 文件选择 ──────────────────────────────────────────────────────────
 

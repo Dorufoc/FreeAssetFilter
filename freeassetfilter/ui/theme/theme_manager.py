@@ -70,7 +70,7 @@ _FULL_COLORS = json.loads("""\
     }
   },
   "mica": {
-    "tint_color": "#202020E8",
+    "tint_color": "#202020B4",
     "fallback_fill": "#202020"
   },
   "button": {

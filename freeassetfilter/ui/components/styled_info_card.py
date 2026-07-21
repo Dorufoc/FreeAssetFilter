@@ -94,8 +94,11 @@ class StyledInfoCard(QWidget):
         self._hovered = False
         self._pressed = False
         self._overlay_opacity = 0.0
+        self._card_opacity = 1.0
         self._card_scale = 1.0
         self._media_scale = 1.0
+        self._x_offset = 0
+        self._y_offset = 0
 
         # Shadow offset for depth
         self._shadow_offset = 0.0
@@ -158,6 +161,38 @@ class StyledInfoCard(QWidget):
     @card_scale.setter
     def card_scale(self, value: float):
         self._card_scale = value
+        self.update()
+
+    @Property(float)
+    def card_opacity(self):
+        """卡片整体绘制透明度，供 layout 动画使用（不影响子 overlay 控件）。"""
+        return self._card_opacity
+
+    @card_opacity.setter
+    def card_opacity(self, value: float):
+        self._card_opacity = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    @Property(int)
+    def x_offset(self):
+        """卡片水平绘制偏移（px），供移除动画向左滑出使用。"""
+        return self._x_offset
+
+    @x_offset.setter
+    def x_offset(self, value: int):
+        self._x_offset = int(value)
+        self._update_overlay_geometry()
+        self.update()
+
+    @Property(int)
+    def y_offset(self):
+        """卡片垂直绘制偏移（px），供移除时下方卡片整体向上位移动画使用。"""
+        return self._y_offset
+
+    @y_offset.setter
+    def y_offset(self, value: int):
+        self._y_offset = int(value)
+        self._update_overlay_geometry()
         self.update()
 
     def _on_theme_changed(self, _colors: dict) -> None:
@@ -410,12 +445,20 @@ class StyledInfoCard(QWidget):
         if visible:
             self._opacity_effect.setOpacity(min(1.0, self._overlay_opacity))
 
+    def _update_overlay_geometry(self):
+        """保持 hover overlay 与绘制内容同步，支持 x/y_offset 位移动画。"""
+        if not self._overlay_widget:
+            return
+        rect = self.rect()
+        if self._x_offset or self._y_offset:
+            rect.translate(self._x_offset, self._y_offset)
+        self._overlay_widget.setGeometry(rect)
+
     # ── Event handling ────────────────────────────────────────
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._overlay_widget:
-            self._overlay_widget.setGeometry(self.rect())
+        self._update_overlay_geometry()
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton and not self._disabled:
@@ -495,8 +538,9 @@ class StyledInfoCard(QWidget):
             w = self.width()
             h = self.height()
 
-            opacity = 0.5 if self._disabled else 1.0
+            opacity = (0.5 if self._disabled else 1.0) * self._card_opacity
             painter.setOpacity(opacity)
+            painter.translate(self._x_offset, self._y_offset)
 
             # Card background
             if self._hovered and not self._disabled:
