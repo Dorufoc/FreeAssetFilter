@@ -622,6 +622,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def _on_theme_toggle(self) -> None:
         """主题切换按钮点击事件"""
         tm.toggle_theme()
+        # 同步持久化到 SettingsManagerV2（重启后恢复）
+        try:
+            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+            v2 = SettingsManagerV2()
+            v2.load()
+            theme = "dark" if tm.is_dark_theme() else "light"
+            v2.set("appearance.theme", theme)
+            v2.set("appearance.colors", dict(tm._colors))
+            v2.save()
+        except Exception:
+            pass
         # 按钮图标和 tooltip 在 _on_theme_changed 中更新
 
     def _on_theme_changed(self, theme_name: str) -> None:

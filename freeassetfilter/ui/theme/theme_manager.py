@@ -540,14 +540,39 @@ class ThemeManager(QObject):
         self._theme_dir = theme_dir
         self._colors: Dict[str, Any] = {}
         self._load_colors()
-        self._dark_mode = True
 
     # ------------------------------------------------------------------
     # Color loading & resolution
     # ------------------------------------------------------------------
 
     def _load_colors(self):
-        """Load colors.json from theme directory."""
+        """Load colors from SettingsManagerV2 first, fall back to colors.json.
+
+        V2 是配置的唯一真实来源（single source of truth）。
+        colors.json 仅作为首次运行 / V2 缺失时的回退。
+        """
+        try:
+            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+            v2 = SettingsManagerV2()
+            v2.load()
+            colors = v2.get("appearance.colors")
+            if isinstance(colors, dict) and "accent" in colors:
+                self._colors = colors
+                # 同步 theme 模式（确保重启后恢复用户上次选择的主题）
+                saved_theme = v2.get("appearance.theme", "light")
+                self._dark_mode = (saved_theme == "dark")
+                # 同步 accent_color（确保 colors.accent.primary 一致）
+                saved_accent = v2.get("appearance.accent_color")
+                if saved_accent and "accent" in self._colors:
+                    self._colors["accent"]["primary"] = saved_accent
+                print(
+                    f"ThemeManager: loaded from V2 (theme={saved_theme}, "
+                    f"accent={saved_accent})"
+                )
+                return
+        except Exception:
+            pass
+
         colors_path = os.path.join(self._theme_dir, "colors.json")
         if not os.path.exists(colors_path):
             raise FileNotFoundError(f"Theme colors file not found: {colors_path}")
