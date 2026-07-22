@@ -416,13 +416,22 @@ class _ColorPanel(QFrame):
     closed = Signal()
 
     def __init__(self, parent=None):
-        super().__init__(None)
+        # 使用 Qt.Popup + 正确设置父控件，避免独立 Qt.Tool 窗口在 Windows
+        # 上与 FramelessMainWindow 交互导致父窗口异常退出。
+        # Popup 自动管理：置顶父窗口、点击外部关闭、无任务栏入口。
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setObjectName("colorPanel")
-        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
         self.setFrameShape(QFrame.NoFrame)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._parent_ref = parent
+
+        # C++ 对象销毁时自动清理事件过滤器，防止 eventFilter 访问
+        # 已删除对象导致 RuntimeError（如父窗口因 HWND 重建触发）
+        self.destroyed.connect(self._on_destroyed)
+
+        # Qt.Popup 自动关闭时，通过关闭事件做动画淡出而非瞬间消失
+        self.installEventFilter(self)
 
         self._color = tm.accent
         self._hue = 120
@@ -431,6 +440,7 @@ class _ColorPanel(QFrame):
         self._alpha = 255
         self._app_filter_installed = False
         self._closing_internally = False
+        self._closed_emitted = False
 
         self._build_ui()
         self._connect_signals()
@@ -690,6 +700,8 @@ class _ColorPanel(QFrame):
     # ── Show / hide ───────────────────────────────────────────
 
     def show_animated(self, anchor: QPoint):
+        self._closed_emitted = False
+        self._closing_internally = False
         self.setFixedWidth(288)
         self.adjustSize()
         x = anchor.x()
@@ -723,9 +735,37 @@ class _ColorPanel(QFrame):
 
     def _on_close_finished(self):
         self.hide()
+        self._cleanup()
         self._closing_internally = False
-        self.closed.emit()
+
+    def _cleanup(self) -> None:
+        """关闭/隐藏时统一清理：移除事件过滤器并补发 closed 信号。"""
         self._remove_event_filter()
+        if not self._closed_emitted:
+            self._closed_emitted = True
+            try:
+                self.closed.emit()
+            except RuntimeError:
+                pass
+
+    def _on_destroyed(self) -> None:
+        """C++ 对象销毁时清理事件过滤器，防止 eventFilter 访问已删除对象。"""
+        try:
+            if self._app_filter_installed:
+                QApplication.instance().removeEventFilter(self)
+                self._app_filter_installed = False
+        except RuntimeError:
+            pass
+
+    def hideEvent(self, event):
+        """隐藏时清理事件过滤器，避免被删除后仍收到事件。"""
+        self._cleanup()
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        """关闭时清理事件过滤器，避免被删除后仍收到事件。"""
+        self._cleanup()
+        super().closeEvent(event)
 
     def _install_event_filter(self):
         if not self._app_filter_installed:
@@ -744,22 +784,30 @@ class _ColorPanel(QFrame):
             self._app_filter_installed = False
 
     def eventFilter(self, obj, event):
-        if self.isVisible() and not self._closing_internally:
-            if event.type() == QEvent.MouseButtonPress:
-                pos = event.globalPosition().toPoint() if hasattr(event, 'globalPosition') else QCursor.pos()
-                # Check if click is inside the panel itself (use mapFromGlobal for accuracy)
-                local = self.mapFromGlobal(pos)
-                if self.rect().contains(local):
-                    return False
-                # Check if click is inside the parent StyledColorPicker trigger widget
-                if self._parent_ref and self._parent_ref.isVisible():
-                    parent_local = self._parent_ref.mapFromGlobal(pos)
-                    if self._parent_ref.rect().contains(parent_local):
+        try:
+            if self.isVisible() and not self._closing_internally:
+                if event.type() == QEvent.MouseButtonPress:
+                    pos = event.globalPosition().toPoint() if hasattr(event, 'globalPosition') else QCursor.pos()
+                    # Check if click is inside the panel itself (use mapFromGlobal for accuracy)
+                    local = self.mapFromGlobal(pos)
+                    if self.rect().contains(local):
                         return False
-                # Click outside → close
-                self.close_animated()
-                return False
-        return super().eventFilter(obj, event)
+                    # Check if click is inside the parent StyledColorPicker trigger widget
+                    try:
+                        parent_visible = self._parent_ref and self._parent_ref.isVisible()
+                    except RuntimeError:
+                        parent_visible = False
+                    if parent_visible:
+                        parent_local = self._parent_ref.mapFromGlobal(pos)
+                        if self._parent_ref.rect().contains(parent_local):
+                            return False
+                    # Click outside → close
+                    self.close_animated()
+                    return False
+            return super().eventFilter(obj, event)
+        except RuntimeError:
+            # C++ 对象已被删除（如事件过滤器未同步移除），安全降级。
+            return False
 
     def paintEvent(self, event: QPaintEvent):
         p = QPainter(self)

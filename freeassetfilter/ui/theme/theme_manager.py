@@ -100,6 +100,14 @@ class ThemeManager(QObject):
         if saved_accent and isinstance(self._colors.get("accent"), dict):
             self._colors["accent"]["primary"] = saved_accent
 
+        # 若强调色为 "auto"，解析为当前 Windows 系统强调色。
+        if isinstance(self._colors.get("accent"), dict):
+            primary = self._colors["accent"].get("primary", "")
+            if isinstance(primary, str) and primary.lower() == "auto":
+                from theme.system_accent import get_system_accent_color
+
+                self._colors["accent"]["primary"] = get_system_accent_color()
+
     def _count_tokens(self, d: dict, prefix: str = "") -> int:
         """Count leaf (string) values in nested dict."""
         count = 0

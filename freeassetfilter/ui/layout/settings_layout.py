@@ -4,22 +4,32 @@
 
 from __future__ import annotations
 
+import copy
+
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
     QGridLayout, QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property
-from PySide6.QtGui import QPainter, QColor, QPaintEvent, QPen
+from PySide6.QtCore import Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint
+from PySide6.QtGui import (
+    QPainter, QColor, QPaintEvent, QPen, QFont, QFontMetrics,
+    QConicalGradient, QBrush,
+)
 
 from theme import tm
+from theme.system_accent import get_system_accent_color
 from components.styled_sidebar import StyledSidebar
 from components.styled_toggle import StyledToggle
 from components.styled_button import StyledButton
+from components.styled_color_picker import _ColorPanel
+from components.theme_transition_overlay import ThemeTransitionOverlay
 from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
 
 
 # ── 预设主题色（参考旧 theme_editor.py） ──────────────────────────────
+# "auto" 表示跟随 Windows 系统强调色（DWM ColorizationColor）。
 PRESET_ACCENT_COLORS = [
+    {"name": "自动", "color": "auto"},
     {"name": "活力蓝", "color": "#007AFF"},
     {"name": "热情红", "color": "#DD5940"},
     {"name": "蜂蜜黄", "color": "#EAB348"},
@@ -34,10 +44,19 @@ class AccentColorButton(QWidget):
 
     clicked = Signal(str)  # 发送颜色 hex 字符串
 
-    def __init__(self, color_hex: str, name: str = "", parent=None):
+    def __init__(
+        self,
+        color_hex: str,
+        name: str = "",
+        center_text: str = "",
+        value: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
         self._color_hex = color_hex
+        self._value = value if value else color_hex
         self._name = name
+        self._center_text = center_text
         self._selected = False
         self._hovered = False
         self._hover_progress = 0.0
@@ -61,7 +80,8 @@ class AccentColorButton(QWidget):
 
     @property
     def color_hex(self) -> str:
-        return self._color_hex
+        """Return the logical value (may be "auto" or a concrete #RRGGBB)."""
+        return self._value
 
     @property
     def selected(self) -> bool:
@@ -118,17 +138,91 @@ class AccentColorButton(QWidget):
 
         # 主色圆
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(self._color_hex))
+        bg_color = QColor(self._color_hex)
+        painter.setBrush(bg_color)
         painter.drawEllipse(scaled_rect)
 
-        # 选中对勾
-        if self._selected:
-            painter.setPen(QPen(QColor("#FFFFFF"), 2.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        # 中央文字（例如自动模式的 "A"）
+        if self._center_text:
+            text_color = self._contrast_text_color(bg_color)
+            font = QFont("Microsoft YaHei UI", 14, QFont.Bold)
+            painter.setFont(font)
+            painter.setPen(text_color)
+            painter.drawText(scaled_rect, Qt.AlignCenter, self._center_text)
+        elif self._selected:
+            # 选中对勾
+            painter.setPen(
+                QPen(QColor("#FFFFFF"), 2.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            )
             painter.setBrush(Qt.NoBrush)
             cx = scaled_rect.center().x()
             cy = scaled_rect.center().y()
             painter.drawLine(cx - 5, cy, cx - 1, cy + 4)
             painter.drawLine(cx - 1, cy + 4, cx + 6, cy - 4)
+        painter.end()
+
+    @staticmethod
+    def _contrast_text_color(bg: QColor) -> QColor:
+        """Return white or black text color depending on background luminance."""
+        luminance = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
+        return QColor("#FFFFFF") if luminance < 128 else QColor("#000000")
+
+
+class CustomAccentButton(QWidget):
+    """自定义主题色按钮 — 360° 全色谱渐变圆 + 选中描边。"""
+
+    clicked = Signal()
+
+    def __init__(self, selected: bool = False, parent=None):
+        super().__init__(parent)
+        self._selected = selected
+        self.setFixedSize(40, 40)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setAttribute(Qt.WA_StyledBackground, False)
+
+    @property
+    def selected(self) -> bool:
+        return self._selected
+
+    @selected.setter
+    def selected(self, value: bool):
+        self._selected = value
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def paintEvent(self, event: QPaintEvent):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setClipRect(self.rect())
+        rect = QRectF(6, 6, self.width() - 12, self.height() - 12)
+
+        # 360° 全色谱锥形渐变：红 → 黄 → 绿 → 青 → 蓝 → 紫 → 红
+        gradient = QConicalGradient(rect.center(), 0)
+        gradient.setColorAt(0.0 / 6, QColor("#FF0000"))
+        gradient.setColorAt(1.0 / 6, QColor("#FFFF00"))
+        gradient.setColorAt(2.0 / 6, QColor("#00FF00"))
+        gradient.setColorAt(3.0 / 6, QColor("#00FFFF"))
+        gradient.setColorAt(4.0 / 6, QColor("#0000FF"))
+        gradient.setColorAt(5.0 / 6, QColor("#FF00FF"))
+        gradient.setColorAt(6.0 / 6, QColor("#FF0000"))
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(gradient))
+        painter.drawEllipse(rect)
+
+        # 选中描边
+        if self._selected:
+            pen = QPen(tm.accent, 3)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(rect.adjusted(-3, -3, 3, 3))
         painter.end()
 
 
@@ -138,6 +232,8 @@ class AppearanceSettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._color_buttons: list[AccentColorButton] = []
+        self._custom_btn: CustomAccentButton | None = None
+        self._custom_panel: _ColorPanel | None = None
         self._current_accent: str = ""  # tracked for save
         self._build_ui()
         self._load_v2_settings()
@@ -190,7 +286,15 @@ class AppearanceSettingsPage(QWidget):
         self._current_accent = saved_accent
 
         for i, preset in enumerate(PRESET_ACCENT_COLORS):
-            btn = AccentColorButton(preset["color"], preset["name"])
+            is_auto = preset["color"].lower() == "auto"
+            display_color = get_system_accent_color() if is_auto else preset["color"]
+            center_text = "A" if is_auto else ""
+            btn = AccentColorButton(
+                display_color,
+                preset["name"],
+                center_text=center_text,
+                value=preset["color"],
+            )
             btn.clicked.connect(self._on_color_clicked)
             if preset["color"].upper() == saved_accent.upper():
                 btn.selected = True
@@ -198,6 +302,12 @@ class AppearanceSettingsPage(QWidget):
             col = i % 6
             color_grid.addWidget(btn, row, col)
             self._color_buttons.append(btn)
+
+        # 自定义颜色按钮（360° 全色谱渐变）
+        self._custom_btn = CustomAccentButton(selected=False)
+        self._custom_btn.clicked.connect(self._on_custom_color_clicked)
+        custom_idx = len(PRESET_ACCENT_COLORS)
+        color_grid.addWidget(self._custom_btn, custom_idx // 6, custom_idx % 6)
 
         layout.addLayout(color_grid)
         layout.addStretch()
@@ -211,6 +321,61 @@ class AppearanceSettingsPage(QWidget):
         self._current_accent = color_hex
         for btn in self._color_buttons:
             btn.selected = (btn.color_hex.upper() == color_hex.upper())
+        if self._custom_btn is not None:
+            self._custom_btn.selected = False
+        # 选择预设色时关闭浮动选择面板
+        if self._custom_panel is not None:
+            self._custom_panel.close_animated()
+            self._custom_panel = None
+
+    def _on_custom_color_clicked(self) -> None:
+        """自定义颜色按钮 — 展开/折叠浮动颜色选择面板。"""
+        if self._custom_panel is not None:
+            if self._custom_panel.isVisible():
+                # 面板已展开 → 启动关闭动画并释放引用
+                # 使用 close_animated() 而非 hide()，确保事件过滤器被正确移除，
+                # 避免 C++ 对象删除后仍收到事件导致 RuntimeError。
+                self._custom_panel.close_animated()
+                self._custom_panel = None
+                return
+            # 旧面板引用已失效（隐藏状态下），丢弃
+            self._custom_panel = None
+
+        # 提前计算按钮位置，防止 _ColorPanel 创建后污染引用
+        btn_pos = self._custom_btn.mapToGlobal(
+            QPoint(self._custom_btn.width() + 4, 0)
+        )
+
+        # 传入 AppearanceSettingsPage 作为父窗口，防止 _ColorPanel.show()
+        # 触发父 SettingsWindow（含 QOpenGLWidget Mica）HWND 重建
+        self._custom_panel = _ColorPanel(parent=self)
+        self._custom_panel.color_selected.connect(self._on_panel_color_changed)
+        self._custom_panel.closed.connect(self._on_panel_closed)
+
+        initial = self._current_accent
+        if initial.lower() == "auto" or not initial.startswith("#"):
+            initial = tm.accent.name().upper()
+        self._custom_panel.set_color(initial)
+
+        # 在 show_animated 之前更新按钮状态，防止 show 触发 HWND 重建
+        # 导致 AccentColorButton 的 C++ 对象被删除后访问出错
+        for btn in self._color_buttons:
+            btn.selected = False
+        self._custom_btn.selected = True
+
+        self._custom_panel.show_animated(btn_pos)
+
+    def _on_panel_color_changed(self, hex_color: str) -> None:
+        """浮动颜色选择面板值变化 — 实时更新当前强调色。"""
+        self._current_accent = hex_color
+        for btn in self._color_buttons:
+            btn.selected = False
+        if self._custom_btn is not None:
+            self._custom_btn.selected = True
+
+    def _on_panel_closed(self) -> None:
+        """浮动面板关闭后的清理。"""
+        self._custom_panel = None
 
     def refresh_theme(self) -> None:
         """主题切换时刷新页面内文字颜色。"""
@@ -233,8 +398,15 @@ class AppearanceSettingsPage(QWidget):
 
         saved_accent = v2.get("appearance.accent_color", "#007AFF")
         self._current_accent = saved_accent
+        preset_values = {btn.color_hex.upper() for btn in self._color_buttons}
+        is_preset = saved_accent.upper() in preset_values
         for btn in self._color_buttons:
             btn.selected = (btn.color_hex.upper() == saved_accent.upper())
+        if self._custom_btn is not None:
+            # 非预设且非 auto 的值视为自定义颜色
+            self._custom_btn.selected = (
+                not is_preset and saved_accent.upper() != "AUTO"
+            )
 
     def collect_settings(self) -> dict:
         """收集当前页面的 V2 设置值。
@@ -402,19 +574,33 @@ class SettingsLayout(QWidget):
         theme = appearance.get("theme", "light")
         accent = appearance.get("accent_color", "#007AFF")
 
+        # "auto" 表示跟随 Windows 系统强调色，应用时解析为实际颜色。
+        saved_accent = accent
+        if isinstance(accent, str) and accent.lower() == "auto":
+            accent = get_system_accent_color()
+
+        # 先捕获设置窗口快照并启动过渡遮罩，再应用主题，实现平滑切换。
+        # 使用 grabWindow(HWND) 而非 grab()，避免 OpenGL Mica 背景合成花屏。
+        settings_window = self.window()
+        if settings_window is not None:
+            overlay = ThemeTransitionOverlay.from_widget(settings_window)
+            overlay.start()
+
         # 全局生效：应用到 tm
         tm.set_theme(theme)
         tm._colors["accent"]["primary"] = accent
         tm.colors_updated.emit(tm._colors)
 
-        # 持久化到 V2：theme + accent_color + 完整颜色树
-        colors_dict = dict(tm._colors)  # 当前完整 colors dict
-        colors_dict["accent"]["primary"] = accent
+        # 持久化到 V2：theme + accent_color + 完整颜色树。
+        # 强调色保留原始值（"auto" 或具体 #RRGGBB），不持久化存储 DWM 获取到的
+        # 实际颜色数值；程序下次启动时会重新从 DWM 读取。
+        colors_dict = copy.deepcopy(tm._colors)
+        colors_dict["accent"]["primary"] = saved_accent
 
         v2 = SettingsManagerV2()
         v2.load()
         v2.set("appearance.theme", theme)
-        v2.set("appearance.accent_color", accent)
+        v2.set("appearance.accent_color", saved_accent)
         v2.set("appearance.colors", colors_dict)
         v2.save()
 

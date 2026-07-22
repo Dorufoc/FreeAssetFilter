@@ -42,6 +42,7 @@ from theme import tm
 from components.mica_material import MicaMaterial
 from components.mica_window import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
+from components.theme_transition_overlay import ThemeTransitionOverlay
 
 # 导入布局模块
 from layout.file_selector_layout import FileSelectorLayout
@@ -547,34 +548,47 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._settings_btn.clicked.connect(self._open_settings_window)
         header_layout.addWidget(self._settings_btn)
 
-        # 主题切换按钮
-        self._theme_btn = StyledButton("🌙", variant="ghost", size="sm")
+        # 主题切换按钮（SVG图标，dark=深色图标，light=浅色图标）
+        light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
+        self._theme_btn = StyledButton(
+            "", variant="ghost", size="sm",
+            icon=str(light_icon_path) if light_icon_path.exists() else ""
+        )
         self._theme_btn.setFixedSize(32, 32)
-        self._theme_btn.setStyleSheet(self._title_bar_button_style(font_size="14px"))
+        self._theme_btn.setStyleSheet(self._title_bar_button_style())
         self._theme_btn.setToolTip("切换主题")
         self._theme_btn.clicked.connect(self._on_theme_toggle)
         header_layout.addWidget(self._theme_btn)
 
-        # 最小化按钮
-        self._minimize_btn = StyledButton("", variant="ghost", size="sm")
+        # 最小化按钮（SVG图标）
+        mini_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_mini.svg"
+        self._minimize_btn = StyledButton(
+            "", variant="ghost", size="sm",
+            icon=str(mini_icon_path) if mini_icon_path.exists() else ""
+        )
         self._minimize_btn.setFixedSize(32, 32)
-        self._minimize_btn.setText("−")
-        self._minimize_btn.setStyleSheet(self._title_bar_button_style(font_size="16px"))
+        self._minimize_btn.setStyleSheet(self._title_bar_button_style())
         self._minimize_btn.clicked.connect(self.showMinimized)
         header_layout.addWidget(self._minimize_btn)
 
-        # 最大化/还原按钮
-        self._maximize_btn = StyledButton("", variant="ghost", size="sm")
+        # 最大化/还原按钮（SVG图标，max_1=最大化，max_2=还原）
+        max_1_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_1.svg"
+        self._maximize_btn = StyledButton(
+            "", variant="ghost", size="sm",
+            icon=str(max_1_path) if max_1_path.exists() else ""
+        )
         self._maximize_btn.setFixedSize(32, 32)
-        self._maximize_btn.setText("▢")
-        self._maximize_btn.setStyleSheet(self._title_bar_button_style(font_size="16px"))
+        self._maximize_btn.setStyleSheet(self._title_bar_button_style())
         self._maximize_btn.clicked.connect(self._toggle_maximize)
         header_layout.addWidget(self._maximize_btn)
 
-        # 关闭按钮
-        self._close_btn = StyledButton("", variant="ghost", size="sm")
+        # 关闭按钮（SVG图标）
+        close_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_close.svg"
+        self._close_btn = StyledButton(
+            "", variant="ghost", size="sm",
+            icon=str(close_icon_path) if close_icon_path.exists() else ""
+        )
         self._close_btn.setFixedSize(32, 32)
-        self._close_btn.setText("✕")
         self._close_btn.setStyleSheet(self._title_bar_close_style())
         self._close_btn.clicked.connect(self.close)
         header_layout.addWidget(self._close_btn)
@@ -600,12 +614,18 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def _toggle_maximize(self) -> None:
         """通过 Win32 ShowWindow 切换最大化/还原，保留原生窗口动画和特性"""
         hwnd = int(self.winId())
+        max_1_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_1.svg"
+        max_2_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_2.svg"
         if self.isMaximized():
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            self._maximize_btn.setText("▢")
+            # 窗口已还原，显示最大化图标（max_1）
+            if max_1_path.exists():
+                self._maximize_btn.set_svg_icon(str(max_1_path))
         else:
             ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
-            self._maximize_btn.setText("❐")
+            # 窗口已最大化，显示还原图标（max_2）
+            if max_2_path.exists():
+                self._maximize_btn.set_svg_icon(str(max_2_path))
     
     def _open_github(self) -> None:
         """打开 GitHub 项目页面"""
@@ -621,6 +641,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     def _on_theme_toggle(self) -> None:
         """主题切换按钮点击事件"""
+        # 先捕获当前窗口快照并启动过渡遮罩，再切换主题，
+        # 使新旧主题之间通过交叉淡化平滑过渡。
+        # 使用 grabWindow(HWND) 而非 grab()，避免 OpenGL Mica 背景合成花屏。
+        overlay = ThemeTransitionOverlay.from_widget(self)
+        overlay.start()
+
         tm.toggle_theme()
         # 同步持久化到 SettingsManagerV2（重启后恢复）
         try:
@@ -640,18 +666,28 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 更新 Mica 背景（快速重烘焙 tint/luminosity，复用已模糊的 base，不再重建/重新模糊）
         if self._mica_background is not None:
             self._mica_background.sync_theme()
-        # 更新按钮图标和 tooltip
-        self._theme_btn.setText("☀️" if theme_name == "light" else "🌙")
-        self._theme_btn.setToolTip("切换为深色" if theme_name == "light" else "切换为浅色")
+        # 更新按钮图标和 tooltip（SVG，light=浅色，dark=深色）
+        light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
+        dark_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_dark.svg"
+        if theme_name == "light":
+            # 当前浅色→点击切换为深色，显示深色图标
+            if dark_icon_path.exists():
+                self._theme_btn.set_svg_icon(str(dark_icon_path))
+            self._theme_btn.setToolTip("切换为深色")
+        else:
+            # 当前深色→点击切换为浅色，显示浅色图标
+            if light_icon_path.exists():
+                self._theme_btn.set_svg_icon(str(light_icon_path))
+            self._theme_btn.setToolTip("切换为浅色")
         # 刷新标题文字颜色
         if self._title_label is not None:
             self._title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};')
         # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
         self._github_btn.setStyleSheet(self._title_bar_button_style())
         self._settings_btn.setStyleSheet(self._title_bar_button_style())
-        self._theme_btn.setStyleSheet(self._title_bar_button_style(font_size="14px"))
-        self._minimize_btn.setStyleSheet(self._title_bar_button_style(font_size="16px"))
-        self._maximize_btn.setStyleSheet(self._title_bar_button_style(font_size="16px"))
+        self._theme_btn.setStyleSheet(self._title_bar_button_style())
+        self._minimize_btn.setStyleSheet(self._title_bar_button_style())
+        self._maximize_btn.setStyleSheet(self._title_bar_button_style())
         self._close_btn.setStyleSheet(self._title_bar_close_style())
         # 刷新 QSS 样式
         self.style().unpolish(self)
@@ -899,7 +935,10 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         overlay.setSpacing(0)
 
         # 层 1：Mica 背景（鼠标穿透，避免占据窗口边缘拦截缩放命中）
-        self._mica_background = make_mica_background(self._root)
+        # 使用 CPU 光栅版而非 OpenGL 版，防止首次显示 Qt.Tool 弹窗时
+        # 触发父窗口 HWND 重建导致子控件崩溃（设置窗口尺寸小、不常调整大小，
+        # CPU 版性能完全满足要求）
+        self._mica_background = MicaBackgroundWidgetCpu(self._root)
         self._mica_background.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
         # 层 2：内容层（透明）
