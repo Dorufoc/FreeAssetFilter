@@ -50,6 +50,7 @@ from layout.settings_layout import SettingsLayout
 
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.utils.app_logger import debug, warning
+from freeassetfilter.services.staging_pool_service import StagingPoolService
 
 
 class MicaBackgroundWidget(QWidget):
@@ -671,11 +672,12 @@ class MainWindow(FramelessMainWindow):
     # ──── 窗口事件 ─────────────────────────────────────────────────────
 
     def closeEvent(self, event: QEvent) -> None:
-        """窗口关闭时刷新备份保存到磁盘"""
+        """窗口关闭时刷新备份保存到磁盘，释放服务资源"""
         try:
             self._file_pool.flush_backup_save_now()
         except Exception:
             pass
+        StagingPoolService().dispose()
         super().closeEvent(event)
 
     def eventFilter(self, obj: QWidget, event: QEvent) -> bool:

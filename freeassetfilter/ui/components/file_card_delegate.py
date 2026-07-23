@@ -378,7 +378,10 @@ class FileCardDelegate(QStyledItemDelegate):
         target_width = min(rect.width(), target_size.width())
         target_height = min(rect.height(), target_size.height())
         offset_x = max(0, (rect.width() - target_width + 1) // 2)
-        offset_y = max(0, (rect.height() - target_height) // 2)
+        # 垂直方向紧贴单元格顶部，不做居中：gridSize 为行距预留的额外高度
+        # 统一落在卡片下方，使第一排卡片距容器上边缘的间距与文件储存池一致，
+        # 且不改变卡片之间的行距。
+        offset_y = 0
 
         return QRect(
             rect.x() + offset_x,

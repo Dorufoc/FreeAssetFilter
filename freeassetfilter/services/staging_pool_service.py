@@ -45,6 +45,12 @@ class StagingPoolService(BaseService):
             service.remove_item("/foo/bar.jpg")
     """
 
+    _instance: Optional["StagingPoolService"] = None
+    """单例实例。"""
+
+    _class_lock: threading.Lock = threading.Lock()
+    """类级别锁，用于 __new__ 和 __init__ 的线程安全。"""
+
     _BACKUP_STRING_FIELDS: Tuple[str, ...] = (
         "name",
         "display_name",
@@ -61,13 +67,23 @@ class StagingPoolService(BaseService):
         "size_calculating",
     )
 
+    def __new__(cls, *args: Any, **kwargs: Any) -> "StagingPoolService":
+        with cls._class_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
+
     def __init__(self) -> None:
-        super().__init__()
-        self._items: List[Dict[str, Any]] = []
-        self._lock: threading.Lock = threading.Lock()
-        self._size_calculator_executor: Optional[ThreadPoolExecutor] = None
-        self._active_size_calculators: Dict[str, Future] = {}
-        self._size_calculator_cancel_events: Dict[str, threading.Event] = {}
+        with self._class_lock:
+            if getattr(self, "_singleton_ready", False):
+                return
+            super().__init__()
+            self._items: List[Dict[str, Any]] = []
+            self._instance_lock: threading.Lock = threading.Lock()
+            self._size_calculator_executor: Optional[ThreadPoolExecutor] = None
+            self._active_size_calculators: Dict[str, Future] = {}
+            self._size_calculator_cancel_events: Dict[str, threading.Event] = {}
+            self._singleton_ready: bool = True
 
     # ── BaseService lifecycle ────────────────────────────────────────────
 
@@ -111,7 +127,7 @@ class StagingPoolService(BaseService):
 
         normalized = os.path.normpath(file_path)
 
-        with self._lock:
+        with self._instance_lock:
             # 重复检测
             if self._has_path_locked(normalized):
                 return False
@@ -138,7 +154,7 @@ class StagingPoolService(BaseService):
         """
         normalized = os.path.normpath(path)
 
-        with self._lock:
+        with self._instance_lock:
             for i, item in enumerate(self._items):
                 item_path = item.get("path", "")
                 if item_path and os.path.normpath(item_path) == normalized:
@@ -153,12 +169,12 @@ class StagingPoolService(BaseService):
         Returns:
             项目字典列表（每个为独立副本）。
         """
-        with self._lock:
+        with self._instance_lock:
             return [item.copy() for item in self._items]
 
     def clear(self) -> None:
         """清空暂存池中的所有项目。"""
-        with self._lock:
+        with self._instance_lock:
             self._items.clear()
         debug("StagingPoolService 已清空所有项目")
 
@@ -173,7 +189,7 @@ class StagingPoolService(BaseService):
         """
         normalized = os.path.normpath(path)
 
-        with self._lock:
+        with self._instance_lock:
             for item in self._items:
                 item_path = item.get("path", "")
                 if item_path and os.path.normpath(item_path) == normalized:
@@ -192,7 +208,7 @@ class StagingPoolService(BaseService):
         """
         normalized = os.path.normpath(path)
 
-        with self._lock:
+        with self._instance_lock:
             return self._has_path_locked(normalized)
 
     def _has_path_locked(self, normalized_path: str) -> bool:

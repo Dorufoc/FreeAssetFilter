@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 from theme import tm
 from components.styled_button import StyledButton
 from components.styled_info_card import StyledInfoCard
+from components.file_card_delegate import LIST_CONFIG
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.styled_dialog import create_input_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
@@ -80,6 +81,7 @@ class FilePoolLayout(QWidget):
     item_right_clicked = Signal(dict)      # 右键点击某个池条目时发出
     preview_cancel_requested = Signal()    # 需要取消预览时发出
     update_progress = Signal(int)          # 进度更新信号（导出等操作）
+    _export_finished = Signal(int, int, object)  # 导出完成信号（成功数, 失败数, 错误列表）
     pool_changed = Signal()                # 池内容变更（添加/移除/清空），通知选择器刷新状态
 
     # ── 备份常量 ───────────────────────────────────────────────────────────
@@ -133,17 +135,9 @@ class FilePoolLayout(QWidget):
         self._card_scale_max = 1.6
         self._card_scale = 1.0
         # 卡片 base size_overrides（_card_scale=1.0 时的设计值，作为缩放基准）。
-        # 标题/副标题使用紧凑尺寸（10/9），与文件选择器（14/13）区别。
-        self._card_base_overrides: dict = {
-            "padding": 16,
-            "gap": 14,
-            "media_size": 52,
-            "icon_size": 24,
-            "title_size": 10,
-            "title_weight": 700,
-            "subtitle_size": 9,
-            "subtitle_weight": 400,
-        }
+        # 直接派生自文件选择器 list 模式 LIST_CONFIG（单一事实来源），
+        # 保证暂存池卡片与文件选择器横向卡片的高度、图标、文字排列完全一致。
+        self._card_base_overrides: dict = dict(LIST_CONFIG)
 
         # ── ScrollArea + StyledInfoCard 列表 ────────────────────────────
         # 与 FileSelectorLayout 一致：隐藏 QScrollArea 自带滚动条，
@@ -164,8 +158,14 @@ class FilePoolLayout(QWidget):
         self._card_container.setObjectName("FilePoolCardContainer")
         self._card_container.setStyleSheet("background-color: transparent;")
         self._card_layout = QVBoxLayout(self._card_container)
-        self._card_layout.setContentsMargins(6, 6, 6, 6)
-        self._card_layout.setSpacing(4)
+        # 防递归守卫：水平边距动态计算时避免 setContentsMargins 触发的布局重入
+        self._updating_pool_margins = False
+        # 初始左右边距用「无滚动条居中」默认值（10*dpi），后续由
+        # _update_pool_card_margins 根据滚动条状态动态覆盖；上下边距保留 6
+        _init_pad = int(10 * self._get_dpi_scale())
+        self._card_layout.setContentsMargins(_init_pad, 6, _init_pad, 6)
+        # 卡片间距与文件选择器 list 模式一致（其卡片间隙基准值为 5）
+        self._card_layout.setSpacing(5)
         self._card_layout.addStretch(1)  # 将所有卡片推至顶部
         self._scroll_area.setWidget(self._card_container)
 
@@ -335,6 +335,8 @@ class FilePoolLayout(QWidget):
         if obj is self._content_area and event.type() == QEvent.Resize:
             # 内容区尺寸变化时重新定位浮动滚动条
             self._update_pool_scrollbar_geometry()
+            # 宽度/高度变化后同步重算卡片左右边距
+            self._update_pool_card_margins()
         if obj is self._scroll_area.viewport():
             if event.type() == QEvent.Wheel:
                 if event.modifiers() & Qt.ControlModifier:
@@ -355,19 +357,58 @@ class FilePoolLayout(QWidget):
         self._pool_scrollbar.setPageStep(area_vbar.pageStep())
         # 范围变化时也重定位（隐藏/显示逻辑通过 maximum==0 处理）
         self._update_pool_scrollbar_geometry()
+        # 滚动条出现/消失时重算卡片左右边距（延迟到 Qt 布局稳定后执行）
+        QTimer.singleShot(0, self._update_pool_card_margins)
 
     def _update_pool_scrollbar_geometry(self) -> None:
-        """将浮动滚动条定位到 _content_area 右侧边缘（与 FileSelectorLayout 行为一致）。"""
-        if not hasattr(self, "_pool_scrollbar") or not hasattr(self, "_content_area"):
+        """将浮动滚动条定位到内层 _scroll_area 的右侧边缘（与 FileSelectorLayout 行为一致）。
+
+        参照系用内层 _scroll_area 而非外层 _content_area：_scroll_area 以 0 边距填充
+        _content_area 的 contentsRect，天然被 _content_area 的 1px QSS 边框内缩，等价于
+        FileSelectorLayout 中滚动条参照 _file_list.width()。这样滚动条落在边框内侧，
+        与文件选择器右侧间距逐像素一致，而不会压住 1px 边框与圆角。
+        """
+        if not hasattr(self, "_pool_scrollbar") or not hasattr(self, "_scroll_area"):
             return
-        if self._content_area.width() <= 0 or self._content_area.height() <= 0:
+        if self._scroll_area.width() <= 0 or self._scroll_area.height() <= 0:
             return
+        edge_padding = int(10 * self._get_dpi_scale())
         scrollbar_w = self._pool_scrollbar.width()
-        scrollbar_x = self._content_area.width() - scrollbar_w
-        scrollbar_y = 0
-        scrollbar_h = self._content_area.height()
+        scrollbar_x = self._scroll_area.width() - scrollbar_w
+        scrollbar_y = edge_padding
+        scrollbar_h = max(0, self._scroll_area.height() - 2 * edge_padding)
         self._pool_scrollbar.setGeometry(scrollbar_x, scrollbar_y, scrollbar_w, scrollbar_h)
         self._pool_scrollbar.raise_()
+
+    def _update_pool_card_margins(self) -> None:
+        """根据垂直滚动条状态动态调整卡片容器左右边距。
+
+        复刻 FileSelectorLayout._update_list_grid 的滚动条感知边距逻辑：
+        - 有滚动条：总边距 20*dpi，左右按滚动条宽度分配，使「卡片左缘到容器左缘」
+          与「卡片右缘到滚动条左缘」间距相等；
+        - 无滚动条：左右各 10*dpi，卡片水平居中。
+        仅调整左右边距，上下边距原样保留；仅当值变化时才写入，避免无谓布局刷新。
+        """
+        if self._updating_pool_margins:
+            return
+        self._updating_pool_margins = True
+        try:
+            dpi = self._get_dpi_scale()
+            scrollbar_w = self._pool_scrollbar.width()
+            needs_scroll = self._scroll_area.verticalScrollBar().maximum() > 0
+            if needs_scroll:
+                total_margin = int(20 * dpi)
+                left = max(0, (total_margin - scrollbar_w) // 2)
+                right = total_margin - left
+            else:
+                left = int(10 * dpi)
+                right = int(10 * dpi)
+            m = self._card_layout.contentsMargins()
+            if (m.left(), m.right()) != (left, right):
+                self._card_layout.setContentsMargins(left, m.top(), right, m.bottom())
+        finally:
+            self._updating_pool_margins = False
+
 
     def _on_pool_scrolled(self, _value: int) -> None:
         """滚动时让所有卡片的 overlay 重新绘制（修复 QGraphicsEffect 缓存不同步）。"""
@@ -378,6 +419,7 @@ class FilePoolLayout(QWidget):
         """首次显示时定位浮动滚动条。"""
         super().showEvent(event)
         self._update_pool_scrollbar_geometry()
+        self._update_pool_card_margins()
 
     def _handle_card_zoom(self, event) -> None:
         """Ctrl+滚轮：缩放所有 StyledInfoCard 卡片尺寸。"""
@@ -389,16 +431,21 @@ class FilePoolLayout(QWidget):
         else:
             return
         self._card_scale = new_scale
-        # 传入 _card_base_overrides 作为缩放基准，保证已存在卡片缩放后仍匹配
-        # FilePoolLayout 的紧凑标题/副标题设计值（10/9），与新加入卡片一致。
+        # 传入 _card_base_overrides 作为缩放基准（派生自选择器 LIST_CONFIG），
+        # 保证已存在卡片缩放后仍与新加入卡片尺寸一致。
         for card in self._card_widgets.values():
             card.set_scale(new_scale, base_overrides=self._card_base_overrides)
+
+    # 仅这些尺寸键参与缩放；weight/radius 等键必须原样保留，
+    # 否则 title_weight=700 会被放大为非法字重（与 StyledInfoCard.set_scale 行为对齐）。
+    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size",
+                           "title_size", "subtitle_size", "desc_size")
 
     def _build_card_size_overrides(self) -> dict:
         """根据当前 _card_scale 构建 size_overrides（与 set_scale + base_overrides 等价）。"""
         scale = self._card_scale
         return {
-            key: max(1, int(value * scale))
+            key: max(1, int(value * scale)) if key in self._SCALABLE_SIZE_KEYS else value
             for key, value in self._card_base_overrides.items()
         }
 
@@ -1245,6 +1292,10 @@ class FilePoolLayout(QWidget):
                 self.update_progress.disconnect(progress.setValue)
             except (TypeError, RuntimeError):
                 pass
+            try:
+                self._export_finished.disconnect(_on_finish)
+            except (TypeError, RuntimeError):
+                pass
             progress.close()
 
             result_box = CustomMessageBox(self)
@@ -1262,6 +1313,9 @@ class FilePoolLayout(QWidget):
             result_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
             result_box.exec()
 
+        # 连接完成信号（在主线程处理结果）
+        self._export_finished.connect(_on_finish)
+
         # 在后台线程中执行复制
         def _copy_worker():
             try:
@@ -1269,7 +1323,7 @@ class FilePoolLayout(QWidget):
                     s, f, e = self.copy_files(files, target_dir)
                 else:
                     s, f, e = self.copy_files_categorized(files, target_dir)
-                _on_finish(s, f, e)
+                self._export_finished.emit(s, f, e)
             except Exception as ex:
                 warning(f"导出线程异常: {ex}")
 
@@ -1294,7 +1348,8 @@ class FilePoolLayout(QWidget):
         errors = []
         for i, fi in enumerate(files):
             src = fi.get("path", "")
-            dst = os.path.join(target_dir, fi.get("display_name", os.path.basename(src)))
+            display_name = fi.get("display_name", os.path.basename(src))
+            dst = self._get_unique_target_path(target_dir, display_name)
             try:
                 if fi.get("is_dir"):
                     shutil.copytree(src, dst, dirs_exist_ok=True)
@@ -1376,6 +1431,7 @@ class FilePoolLayout(QWidget):
     def _calculate_folder_size(self, folder_path: str) -> None:
         """异步提交文件夹大小计算任务。"""
         service = StagingPoolService()
+        service.initialize()
         service.calculate_folder_size_async(
             folder_path,
             callback=lambda size: self._on_folder_size_ready(folder_path, size),

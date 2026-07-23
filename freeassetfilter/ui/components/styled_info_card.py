@@ -246,22 +246,29 @@ class StyledInfoCard(QWidget):
         self._rebuild_overlay()
         self.update()
 
+    # 仅这些尺寸键参与缩放；weight/radius 等键原样保留，
+    # 避免 title_weight=700 被放大为非法字重或在缩放后回落为默认值。
+    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size",
+                           "title_size", "subtitle_size", "desc_size")
+
     def set_scale(self, scale: float, base_overrides: dict | None = None) -> None:
         """动态缩放卡片所有尺寸因子（0.5 ~ 2.0），匹配文件选择器 Ctrl+滚轮行为。
 
         Args:
             scale: 缩放系数。
-            base_overrides: 缩放基准字典。传入时，从该字典的 base 值乘以 scale 计算新尺寸；
-                缺省时使用 ``SIZE_CONFIG`` 的默认值。这让调用方可以在缩放时保留自己的
+            base_overrides: 缩放基准字典。传入时，尺寸键从该字典的 base 值乘以 scale
+                计算新尺寸，非尺寸键（weight/radius 等）原样保留；缺省时使用
+                ``SIZE_CONFIG`` 的默认值。这让调用方可以在缩放时保留自己的
                 "设计值"（如紧凑型标题 10px），保证已存在卡片与新增卡片尺寸一致。
         """
         scale = max(0.5, min(2.0, scale))
         source = base_overrides if base_overrides else self.SIZE_CONFIG[self._layout_mode]
         overrides = {}
-        for key in ("padding", "gap", "media_size", "icon_size",
-                     "title_size", "subtitle_size", "desc_size"):
-            if key in source:
-                overrides[key] = max(1, int(source[key] * scale))
+        for key, value in source.items():
+            if key in self._SCALABLE_SIZE_KEYS:
+                overrides[key] = max(1, int(value * scale))
+            else:
+                overrides[key] = value
         self._size_overrides = overrides
         self._apply_size()
         self.update()
@@ -279,10 +286,12 @@ class StyledInfoCard(QWidget):
 
     # ── Internal ──────────────────────────────────────────────
 
-    def _apply_size(self):
-        config = self._get_config()
-        padding = config["padding"]
+    def _calc_text_height(self, config: dict) -> int:
+        """计算文字块（标题+副标题+描述）的实际总高度。
 
+        供 _apply_size（卡片定高）与 paintEvent（文字块垂直居中）共用，
+        保证两处对文字高度的度量一致。
+        """
         # Calculate text height for sizing
         font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
         fm = QFontMetrics(font_title)
@@ -302,7 +311,13 @@ class StyledInfoCard(QWidget):
 
         text_gap = 4  # gap between text lines
         text_lines = 1 + (1 if self._subtitle else 0) + (1 if self._desc else 0)
-        text_height = title_h + subtitle_h + desc_h + text_gap * (text_lines - 1)
+        return title_h + subtitle_h + desc_h + text_gap * (text_lines - 1)
+
+    def _apply_size(self):
+        config = self._get_config()
+        padding = config["padding"]
+
+        text_height = self._calc_text_height(config)
 
         if self._layout_mode == "horizontal":
             media_size = config["media_size"]
@@ -589,9 +604,11 @@ class StyledInfoCard(QWidget):
             # ── Text Area ──
             if self._layout_mode == "horizontal":
                 text_x = media_x + media_size + gap
-                text_y = padding
+                # 文字块整体垂直居中，与文件选择器 list 模式卡片排列一致
+                text_block_h = self._calc_text_height(config)
+                text_y = (h - text_block_h) / 2.0
                 text_w = w - text_x - padding
-                text_h = h - padding * 2
+                text_h = text_block_h
             else:
                 text_x = padding
                 text_y = media_y + media_size + gap

@@ -59,9 +59,24 @@ def icons_dir() -> Path:
     return core_dir().parent / "icons"
 
 
+def get_app_data_path() -> Path:
+    """Returns the absolute path to the application data directory.
+
+    This is the canonical location for runtime data files such as
+    ``last_path.json``.  Creates the directory if it does not exist.
+
+    Returns:
+        Path: ``freeassetfilter/data/``.
+    """
+    data_dir = core_dir().parent / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
 __all__ = [
     "core_dir",
     "native_bin_dir",
     "archive_7z_dir",
     "icons_dir",
+    "get_app_data_path",
 ]

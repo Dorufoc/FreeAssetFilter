@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl
 from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
+from freeassetfilter.core._paths import get_app_data_path
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
@@ -202,8 +203,9 @@ class FileSelectorLayout(QWidget):
         self._load_all()
         self._current_path = "All"
         self._update_path_input("All")
-        self._nav_history.append("All")
-        self._history_index = len(self._nav_history) - 1
+        self._nav_history = ["All"]
+        self._history_index = 0
+        self._clear_last_path()
 
     def _load_all(self) -> None:
         entries: List[Dict[str, Any]] = []
@@ -238,7 +240,7 @@ class FileSelectorLayout(QWidget):
     # ── 上次路径恢复 ─────────────────────────────────────────────────────
 
     def _try_restore_last_path(self) -> bool:
-        save_file = Path(__file__).resolve().parent.parent.parent / "data" / "last_path.json"
+        save_file = get_app_data_path() / "last_path.json"
         try:
             if not save_file.exists():
                 return False
@@ -252,6 +254,23 @@ class FileSelectorLayout(QWidget):
         except Exception:
             pass
         return False
+
+    def _save_last_path(self, path: str) -> None:
+        save_file = get_app_data_path() / "last_path.json"
+        try:
+            import json
+            with open(save_file, "w", encoding="utf-8") as f:
+                json.dump({"last_path": os.path.abspath(path)}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _clear_last_path(self) -> None:
+        """删除 last_path.json，使下次启动不恢复任何路径，直接落到 All。"""
+        save_file = get_app_data_path() / "last_path.json"
+        try:
+            save_file.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     # ── UI 构建 ──────────────────────────────────────────────────────────
 
@@ -401,6 +420,7 @@ class FileSelectorLayout(QWidget):
             self._nav_history = self._nav_history[:self._history_index + 1]
         self._nav_history.append(path)
         self._history_index = len(self._nav_history) - 1
+        self._save_last_path(path)
 
     def _navigate_to_input_path(self) -> None:
         path = self._path_input.text().strip()
@@ -418,11 +438,21 @@ class FileSelectorLayout(QWidget):
             self._history_index -= 1
             path = self._nav_history[self._history_index]
             if path == "All":
-                self._load_all()
-                self._current_path = "All"
-                self._update_path_input("All")
+                self._navigate_to_all()
             else:
                 self._load_directory(path)
+                self._save_last_path(path)
+        elif self._current_path and self._current_path != "All":
+            # 向上回退到上级目录，替换历史栈防止循环
+            parent = os.path.dirname(self._current_path)
+            if parent and parent != self._current_path and os.path.isdir(parent):
+                self._load_directory(parent)
+                self._nav_history = [parent]
+                self._history_index = 0
+                self._save_last_path(parent)
+            elif parent == self._current_path:
+                # 盘符根目录（如 D:\）：跳到 All 视图
+                self._navigate_to_all()
 
     # ── 文件选择 ──────────────────────────────────────────────────────────
 
@@ -655,7 +685,11 @@ class FileSelectorLayout(QWidget):
 
         self._file_list.setSpacing(0)
         self._file_list.setGridSize(QSize(grid_cell_width, grid_cell_height))
-        self._file_list.setViewportMargins(left_margin, edge_padding, right_margin, edge_padding)
+        # 顶部间距以文件储存池为基准：池 _card_layout 顶部边距为固定 6px（非 DPI 缩放）。
+        # 这里将顶部 viewport 边距对齐为 6，使第一排卡片距上边缘的间距与储存池一致；
+        # 底部边距与滚动条几何仍沿用 edge_padding，保持滚动行为不变。
+        top_padding = 6
+        self._file_list.setViewportMargins(left_margin, top_padding, right_margin, edge_padding)
         # 保持 grid_offset_x=0，避免 hover 时卡片绘制超出自身 grid cell 产生残影
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
@@ -694,15 +728,17 @@ class FileSelectorLayout(QWidget):
             left_margin = int(10 * self._card_scale)
             right_margin = int(10 * self._card_scale)
 
-        self._file_list.setViewportMargins(left_margin, edge_padding, right_margin, edge_padding)
+        # 顶部间距以文件储存池为基准，固定 6px，与卡片模式保持一致。
+        top_padding = 6
+        self._file_list.setViewportMargins(left_margin, top_padding, right_margin, edge_padding)
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
 
-        # 滚动条定位在右侧边缘
+        # 滚动条定位在右侧边缘（与卡片模式一致，保留顶部边距）
         scrollbar_w = self._file_scrollbar.width()
         scrollbar_x = self._file_list.width() - scrollbar_w
-        scrollbar_y = 0
-        scrollbar_h = max(0, self._file_list.height())
+        scrollbar_y = edge_padding
+        scrollbar_h = max(0, self._file_list.height() - 2 * edge_padding)
         self._file_scrollbar.setGeometry(scrollbar_x, scrollbar_y, scrollbar_w, scrollbar_h)
 
     # ── 排序与视图 ────────────────────────────────────────────────────────
