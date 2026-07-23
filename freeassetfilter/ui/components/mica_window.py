@@ -36,10 +36,10 @@ from components.mica_material import MicaMaterial
 # Current default config from main.py
 DEFAULT_MICA_CONFIG = {
     "blur_radius": 200,
-    "tint_color": "#202020E8",
+    "tint_color": "#202020B4",
     "luminosity": 0.65,
     "contrast": 1.5,
-    "saturation": 4.0,
+    "saturation": 4.5,
 }
 
 
@@ -109,8 +109,8 @@ class MicaWindow(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        self._mica.invalidate_cache()
+        self._mica.begin_interaction()
 
     def moveEvent(self, event: QMoveEvent) -> None:
         super().moveEvent(event)
-        self._mica.invalidate_cache()
+        self._mica.begin_interaction()

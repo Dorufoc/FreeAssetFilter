@@ -20,7 +20,13 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QTimer, QUrl, QEvent, QRunnable, QThreadPool, QEventLoop
+import time
+
+from PySide6.QtCore import (
+    Qt, Signal, QTimer, QUrl, QEvent, QRunnable, QThreadPool, QEventLoop,
+    QRect, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup,
+    QAbstractAnimation,
+)
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QWidget,
@@ -33,6 +39,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFileDialog,
     QProgressDialog,
+    QSpacerItem,
+    QSizePolicy,
 )
 
 from theme import tm
@@ -40,11 +48,39 @@ from components.styled_button import StyledButton
 from components.styled_info_card import StyledInfoCard
 from components.file_card_delegate import LIST_CONFIG
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
-from components.styled_dialog import create_input_dialog
+from components.styled_dialog import create_input_dialog, create_custom_dialog
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.services.staging_pool_service import StagingPoolService
+from freeassetfilter.utils.animation_settings import is_animation_enabled
 from freeassetfilter.utils.app_logger import warning
-from freeassetfilter.widgets.D_widgets import CustomMessageBox
+
+
+def _show_custom_dialog(parent, title, message, buttons, variants=None, vertical=False, dialog_type="default"):
+    """Styled 弹窗包装，仿 CustomMessageBox 接口（同步阻塞、返回按钮索引）。
+
+    文件池弹窗统一不显示右上角关闭按钮（所有场景都有"取消"按钮作为退出路径）。
+    """
+    dlg = create_custom_dialog(
+        title=title,
+        message=message,
+        buttons=list(buttons),
+        variants=list(variants) if variants else None,
+        vertical=vertical,
+        dialog_type=dialog_type,
+        show_close=False,
+    )
+    result = [0]
+    loop = QEventLoop()
+
+    def _on_finished(r: int) -> None:
+        result[0] = r
+        loop.quit()
+
+    dlg.finished.connect(_on_finished)
+    # 兜底：用户用 ESC / 关闭按钮时 finished 可能不发射
+    dlg.destroyed.connect(loop.quit)
+    loop.exec()
+    return result[0]
 
 
 class _MD5CalculationTask(QRunnable):
@@ -129,6 +165,16 @@ class FilePoolLayout(QWidget):
         self.items: list[dict] = []
         self.previewing_file_path: Optional[str] = None
         self._card_widgets: dict[str, StyledInfoCard] = {}  # path → card
+        self._removing_paths: set[str] = set()  # 正在播放移除动画的路径
+
+        # ── InfoCard 创建/移除动画 ──────────────────────────────────────
+        self._card_motion_duration_ms = 100
+        self._card_motion_min_slide = 28
+        self._card_motion_max_slide = 96
+        self._card_motion_slide_ratio = 0.18
+        self._active_card_animations: dict[str, dict] = {}  # path → {"group": ..., "on_finished": ..., "kind": ...}
+        self._entry_spacers: dict[str, QSpacerItem] = {}  # path → 创建动画期间占位 spacer
+        self._active_remove_motion_groups: dict[str, QParallelAnimationGroup] = {}  # path → 占位控件折叠动画组（驱动下方卡片整体上移）
 
         # ── Ctrl+滚轮 卡片缩放 ──────────────────────────────────────────
         self._card_scale_min = 0.7
@@ -189,7 +235,9 @@ class FilePoolLayout(QWidget):
         area_vbar.valueChanged.connect(self._pool_scrollbar.setValue)
 
         # 滚动时刷新所有卡片的 overlay（修复 StyledInfoCard 的 QGraphicsEffect
-        # 缓存导致 hover overlay 在滚动时不同步跟随）
+        # 缓存导致 hover overlay 在滚动时不同步跟随）。使用 singleShot 节流，
+        # 避免范围变化触发的连续 valueChanged 导致所有卡片反复重绘。
+        self._pending_scroll_overlay_update = False
         area_vbar.valueChanged.connect(self._on_pool_scrolled)
 
         # 应用平滑滚动 + 边界回弹 + 触摸手势（与 FileSelectorLayout 一致）
@@ -412,8 +460,16 @@ class FilePoolLayout(QWidget):
 
     def _on_pool_scrolled(self, _value: int) -> None:
         """滚动时让所有卡片的 overlay 重新绘制（修复 QGraphicsEffect 缓存不同步）。"""
-        for card in self._card_widgets.values():
-            card.update_overlay()
+        if self._pending_scroll_overlay_update:
+            return
+        self._pending_scroll_overlay_update = True
+
+        def _update() -> None:
+            self._pending_scroll_overlay_update = False
+            for card in self._card_widgets.values():
+                card.update_overlay()
+
+        QTimer.singleShot(0, _update)
 
     def showEvent(self, event) -> None:
         """首次显示时定位浮动滚动条。"""
@@ -619,9 +675,27 @@ class FilePoolLayout(QWidget):
         # 点击预览
         card.clicked.connect(self._handle_card_clicked)
 
-        # 插入到 stretch 之前
+        # 立即完成其它进行中的入口动画，确保它们的占位 spacer 被真实卡片替换，
+        # 避免新卡片插入到尚未释放的占位位置导致重叠。
+        self._finalize_entry_animations()
+
+        # 在插入 layout 之前预设为完全透明，避免卡片在动画启动前以完全不透明
+        # 状态被绘制一次（这会导致整个列表因新卡片突然占位而抽搐闪烁）。
+        # 动画禁用时由 _animate_card_entry 立即恢复为 1.0。
+        if is_animation_enabled("file_record_changes", default=True):
+            card.card_opacity = 0.0
+
+        # 插入到 stretch 之前。用 setUpdatesEnabled 包裹，强制 layout 同步计算，
+        # 避免 QScrollArea 异步更新 _card_container geometry 时产生中间状态，
+        # 导致已有卡片视觉位置跳变（抽搐）。
         insert_idx = self._card_layout.count() - 1
-        self._card_layout.insertWidget(insert_idx, card)
+        self._card_container.setUpdatesEnabled(False)
+        try:
+            self._card_layout.insertWidget(insert_idx, card)
+            self._card_layout.activate()
+        finally:
+            self._card_container.setUpdatesEnabled(True)
+            self._card_container.update()
         self._card_widgets[file_path] = card
 
         self.items.append(file_info)
@@ -629,9 +703,209 @@ class FilePoolLayout(QWidget):
         self._save_backup_if_needed()
         self.pool_changed.emit()
 
+        # 播放创建动画（淡入 + 从左侧滑入）
+        QTimer.singleShot(
+            0,
+            lambda c=card, fp=file_path: self._animate_card_entry(c, fp),
+        )
+
         # 如果是目录，异步计算实际大小
         if file_info.get("is_dir"):
             self._calculate_folder_size(file_path)
+
+    def _slide_offset_for_rect(self, rect: QRect) -> int:
+        """计算水平滑入/滑出偏移量（viewport 宽度的 18%，限制在 28~96px）。"""
+        width = rect.width() if rect.isValid() else self._card_container.width()
+        if width <= 0:
+            width = self._card_container.width()
+        return max(
+            self._card_motion_min_slide,
+            min(self._card_motion_max_slide, int(width * self._card_motion_slide_ratio)),
+        )
+
+    def _animate_card_entry(self, card: StyledInfoCard, file_path: str) -> None:
+        """播放卡片创建动画：从左侧淡入并滑入最终位置。
+
+        卡片保持在 layout 中，通过 paint-level 属性实现淡入 + 从左侧滑入，
+        不触发 removeWidget/insertWidget，避免 layout 重排导致其它卡片抖动。
+        卡片在 add_file 中已被预设为 card_opacity=0.0，因此不会在动画启动前
+        闪现完全不透明状态。
+        """
+        if not is_animation_enabled("file_record_changes", default=True):
+            # 动画禁用：直接恢复为完全不透明
+            card.card_opacity = 1.0
+            return
+        if file_path in self._removing_paths:
+            # 该卡片已被请求移除，清理可能已存在的 spacer 后让退出动画负责
+            self._remove_entry_spacer(file_path)
+            return
+        if card is None or card.isHidden() or not self._card_widgets:
+            return
+
+        # 若该路径已有动画在运行，先完成它，确保旧卡片的 on_finished 得到执行
+        self._finalize_card_animation(file_path)
+        self._remove_entry_spacer(file_path)
+
+        card.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        target_rect = card.geometry()
+        if not target_rect.isValid():
+            card.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+            card.card_opacity = 1.0
+            return
+
+        slide = self._slide_offset_for_rect(target_rect)
+        # 卡片已被预设为 card_opacity=0.0，这里只需设置 x_offset 并启动动画。
+        # 不调用 processEvents()，避免中间状态被绘制导致抖动。
+        card.x_offset = -slide
+
+        self._run_card_motion(
+            file_path=file_path,
+            card=card,
+            start_rect=QRect(
+                target_rect.x() - slide, target_rect.y(),
+                target_rect.width(), target_rect.height(),
+            ),
+            end_rect=target_rect,
+            start_opacity=0.0,
+            end_opacity=1.0,
+            duration=self._card_motion_duration_ms,
+            easing=QEasingCurve.OutCubic,
+            on_finished=lambda: self._finish_card_entry(card, file_path),
+            kind="entry",
+        )
+
+    def _finish_card_entry(self, card: StyledInfoCard, file_path: str) -> None:
+        """创建动画结束：恢复卡片交互状态。"""
+        if card is None:
+            return
+        card.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        card.card_opacity = 1.0
+        card.x_offset = 0
+
+    def _remove_entry_spacer(self, file_path: str) -> None:
+        """移除并清理指定路径的创建动画占位 spacer。"""
+        spacer = self._entry_spacers.pop(file_path, None)
+        if spacer is not None:
+            try:
+                self._card_layout.removeItem(spacer)
+            except RuntimeError:
+                pass
+
+    def _stop_card_animation(self, file_path: str) -> None:
+        """停止并清理指定路径的卡片动画（不执行其 on_finished 回调）。"""
+        info = self._active_card_animations.pop(file_path, None)
+        if info is None:
+            return
+        group = info.get("group")
+        if group is not None:
+            try:
+                group.stop()
+                group.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _finalize_card_animation(self, file_path: str) -> None:
+        """强制完成指定路径的卡片动画并执行其 on_finished 回调。"""
+        info = self._active_card_animations.pop(file_path, None)
+        if info is None:
+            return
+        group = info.get("group")
+        if group is not None:
+            # 暂时断开 finished 信号，避免 start 后 stop 触发 _cleanup 导致重复执行
+            try:
+                group.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                group.stop()
+            except RuntimeError:
+                pass
+            try:
+                group.deleteLater()
+            except RuntimeError:
+                pass
+        on_finished = info.get("on_finished")
+        if on_finished is not None:
+            try:
+                on_finished()
+            except Exception:
+                pass
+
+    def _finalize_entry_animations(self) -> None:
+        """立即完成所有进行中的创建（入口）动画，确保状态恢复。"""
+        for path in list(self._active_card_animations.keys()):
+            info = self._active_card_animations.get(path)
+            if info is not None and info.get("kind") == "entry":
+                self._finalize_card_animation(path)
+
+    def _run_card_motion(
+        self,
+        file_path: str,
+        card: StyledInfoCard,
+        start_rect: QRect,
+        end_rect: QRect,
+        start_opacity: float,
+        end_opacity: float,
+        duration: int,
+        easing: QEasingCurve,
+        on_finished=None,
+        kind: str = "motion",
+    ) -> None:
+        """同时播放 geometry 与透明度动画。"""
+        if card is None:
+            return
+
+        # 停止同路径旧动画，避免属性与状态冲突；旧动画的 on_finished 会恢复
+        # 卡片状态，因此要确保在启动新动画前被调用。
+        self._finalize_card_animation(file_path)
+
+        # 入场动画不再驱动 geometry（卡片保持在 layout 中），改用 x_offset
+        # 属性实现水平滑入，避免 remove/insert 导致的 layout 抖动。
+        animations: list[QPropertyAnimation] = []
+        if kind == "entry":
+            x_anim = QPropertyAnimation(card, b"x_offset")
+            x_anim.setDuration(duration)
+            x_anim.setStartValue(start_rect.x() - end_rect.x())
+            x_anim.setEndValue(0)
+            x_anim.setEasingCurve(easing)
+            animations.append(x_anim)
+        else:
+            geom_anim = QPropertyAnimation(card, b"geometry")
+            geom_anim.setDuration(duration)
+            geom_anim.setStartValue(start_rect)
+            geom_anim.setEndValue(end_rect)
+            geom_anim.setEasingCurve(easing)
+            animations.append(geom_anim)
+
+        # 使用 StyledInfoCard 的 paint-level 透明度属性，避免 QGraphicsOpacityEffect
+        # 与 overlay 子控件的 effect 嵌套导致的 painter 冲突。
+        card.card_opacity = start_opacity
+        opacity_anim = QPropertyAnimation(card, b"card_opacity")
+        opacity_anim.setDuration(duration)
+        opacity_anim.setStartValue(start_opacity)
+        opacity_anim.setEndValue(end_opacity)
+        opacity_anim.setEasingCurve(
+            QEasingCurve.OutCubic if end_opacity > start_opacity else QEasingCurve.InCubic
+        )
+        animations.append(opacity_anim)
+
+        group = QParallelAnimationGroup(self)
+        for anim in animations:
+            group.addAnimation(anim)
+        self._active_card_animations[file_path] = {
+            "group": group,
+            "on_finished": on_finished,
+            "kind": kind,
+        }
+
+        def _cleanup():
+            self._active_card_animations.pop(file_path, None)
+            if on_finished is not None:
+                on_finished()
+
+        group.finished.connect(_cleanup)
+        group.start(QAbstractAnimation.DeleteWhenStopped)
 
     def _build_info_text(self, file_info: dict) -> str:
         """构建文件信息文本（副标题）。"""
@@ -689,44 +963,237 @@ class FilePoolLayout(QWidget):
         normalized_path = os.path.normpath(file_path)
         if normalized_path not in self._card_widgets:
             return
+        if normalized_path in self._removing_paths:
+            return
         if (self.previewing_file_path
                 and os.path.normcase(normalized_path) == os.path.normcase(self.previewing_file_path)):
             self.previewing_file_path = None
             self.preview_cancel_requested.emit()
-        # 延迟后移除卡片（配合移出动画）
-        QTimer.singleShot(300, lambda: self._finalize_remove(normalized_path))
+
+        if not is_animation_enabled("file_record_changes", default=True):
+            self._finalize_remove(normalized_path)
+            return
+
+        self._removing_paths.add(normalized_path)
+        # 先结束其它进行中的移除位移动画，避免 y_offset 叠加导致位置计算错误
+        self._cancel_all_remove_motions()
+        QTimer.singleShot(
+            0, lambda p=normalized_path: self._animate_card_exit(p)
+        )
+
+    def _animate_card_exit(self, file_path: str) -> None:
+        """播放卡片移除动画：向左滑出并淡出；退出完成后再带动下方卡片整体上移。"""
+        card = self._card_widgets.get(file_path)
+        if card is None:
+            self._removing_paths.discard(file_path)
+            return
+
+        # 若该卡片正在播放创建动画，先完成它，避免创建动画的 cleanup 干扰退出动画
+        self._finalize_card_animation(file_path)
+        self._remove_entry_spacer(file_path)
+
+        QApplication.processEvents()
+        start_rect = card.geometry()
+        if not start_rect.isValid():
+            self._finalize_remove(file_path)
+            return
+
+        removed_index = self._card_layout.indexOf(card)
+
+        # 在目标位置预先插入一个等高的透明占位控件。
+        # 退出动画期间目标卡片仍在视觉上占据原位置，下方卡片不会提前上移，
+        # 避免与被移除卡片发生重叠。
+        placeholder: Optional[QWidget] = None
+        if removed_index >= 0:
+            placeholder = QWidget(self._card_container)
+            placeholder.setFixedHeight(start_rect.height())
+            placeholder.setStyleSheet("background: transparent; border: none;")
+            self._card_layout.insertWidget(removed_index, placeholder)
+
+        self._card_layout.removeWidget(card)
+        card.setGeometry(start_rect)
+        card.raise_()
+
+        def _on_exit_finished() -> None:
+            self._finalize_remove(file_path)
+            if placeholder is not None:
+                self._collapse_placeholder(file_path, placeholder)
+
+        slide = self._slide_offset_for_rect(start_rect)
+        end_rect = QRect(
+            start_rect.x() - slide, start_rect.y(),
+            start_rect.width(), start_rect.height(),
+        )
+        self._run_card_motion(
+            file_path=file_path,
+            card=card,
+            start_rect=start_rect,
+            end_rect=end_rect,
+            start_opacity=1.0,
+            end_opacity=0.0,
+            duration=self._card_motion_duration_ms,
+            easing=QEasingCurve.InCubic,
+            on_finished=_on_exit_finished,
+            kind="exit",
+        )
 
     def _finalize_remove(self, file_path: str) -> None:
         """最终移除文件（动画完成后）。"""
+        self._removing_paths.discard(file_path)
         card = self._card_widgets.pop(file_path, None)
-        if card:
-            self._card_layout.removeWidget(card)
+        if card is not None:
             card.deleteLater()
         self.items = [f for f in self.items if os.path.normpath(f.get("path", "")) != file_path]
         self.update_stats()
         self._save_backup_if_needed()
         self.pool_changed.emit()
 
+    def _collapse_placeholder(
+        self, removed_path: str, placeholder: QWidget
+    ) -> None:
+        """将占位控件高度动画到 0，通过 layout 驱动下方卡片作为整体向上平移。
+
+        占位控件仍保留在 layout 中，因此下方卡片由 layout 自动同步推动，
+        不会出现单张卡片被父容器裁切的问题。
+        """
+        if not is_animation_enabled("file_record_changes", default=True):
+            try:
+                placeholder.setParent(None)
+                placeholder.deleteLater()
+            except RuntimeError:
+                pass
+            return
+
+        start_height = placeholder.height()
+        if start_height <= 0:
+            try:
+                placeholder.setParent(None)
+                placeholder.deleteLater()
+            except RuntimeError:
+                pass
+            return
+
+        placeholder.setMinimumHeight(0)
+        placeholder.setMaximumHeight(start_height)
+
+        group = QParallelAnimationGroup(self)
+        for prop in (b"minimumHeight", b"maximumHeight"):
+            anim = QPropertyAnimation(placeholder, prop)
+            anim.setDuration(self._card_motion_duration_ms)
+            anim.setStartValue(start_height)
+            anim.setEndValue(0)
+            anim.setEasingCurve(QEasingCurve.InOutCubic)
+            group.addAnimation(anim)
+
+        group._placeholder = placeholder
+
+        def _cleanup() -> None:
+            self._active_remove_motion_groups.pop(removed_path, None)
+            try:
+                placeholder.setParent(None)
+                placeholder.deleteLater()
+            except RuntimeError:
+                pass
+
+        group.finished.connect(_cleanup)
+        self._active_remove_motion_groups[removed_path] = group
+        group.start(QAbstractAnimation.DeleteWhenStopped)
+
+    def _cancel_remove_motion(self, removed_path: str) -> None:
+        """停止指定路径关联的位移动画并清理占位控件。"""
+        group = self._active_remove_motion_groups.pop(removed_path, None)
+        if group is None:
+            return
+        try:
+            group.stop()
+        except RuntimeError:
+            pass
+        # 清理关联的占位控件
+        placeholder = getattr(group, "_placeholder", None)
+        if placeholder is not None:
+            try:
+                placeholder.setParent(None)
+                placeholder.deleteLater()
+            except RuntimeError:
+                pass
+        try:
+            group.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _cancel_all_remove_motions(self) -> None:
+        """停止所有进行中的移除位移动画。"""
+        for path in list(self._active_remove_motion_groups.keys()):
+            self._cancel_remove_motion(path)
+
     def clear_all(self) -> None:
         """清空所有项目（带确认）。"""
-        confirm_msg = CustomMessageBox(self)
-        confirm_msg.set_title("确认清空")
-        confirm_msg.set_text("确定要清空所有项目吗？")
-        confirm_msg.set_buttons(["确定", "取消"], Qt.Horizontal, ["primary", "normal"])
-        is_confirmed = False
-
-        def on_confirm_clicked(button_index: int) -> None:
-            nonlocal is_confirmed
-            is_confirmed = (button_index == 0)
-            confirm_msg.close()
-
-        confirm_msg.buttonClicked.connect(on_confirm_clicked)
-        confirm_msg.exec()
+        is_confirmed = _show_custom_dialog(
+            self,
+            "确认清空",
+            "确定要清空所有项目吗？",
+            ["确定", "取消"],
+            ["primary", "normal"],
+        ) == 0
         if is_confirmed:
             self.clear_all_without_confirmation()
 
     def clear_all_without_confirmation(self) -> None:
         """不显示确认对话框，直接清空所有项目。"""
+        if not is_animation_enabled("file_record_changes", default=True):
+            self._clear_all_immediate()
+            return
+
+        cards = list(self._card_widgets.values())
+        paths = list(self._card_widgets.keys())
+        if not cards:
+            self._clear_all_immediate()
+            return
+
+        # 停止所有可能正在进行的动画（创建动画 + 移除位移动画）
+        for path in paths:
+            self._stop_card_animation(path)
+        self._cancel_all_remove_motions()
+        for path in list(self._entry_spacers.keys()):
+            self._remove_entry_spacer(path)
+
+        QApplication.processEvents()
+        rects = {card: QRect(card.geometry()) for card in cards}
+        for card in cards:
+            self._card_layout.removeWidget(card)
+            card.setGeometry(rects[card])
+
+        # 清空数据状态
+        self._card_widgets.clear()
+        self.items.clear()
+        self.previewing_file_path = None
+        self.update_stats()
+        self._save_backup_if_needed()
+        self.pool_changed.emit()
+
+        # 统一播放淡出左移动画
+        for idx, card in enumerate(cards):
+            start_rect = rects[card]
+            slide = self._slide_offset_for_rect(start_rect)
+            end_rect = QRect(
+                start_rect.x() - slide, start_rect.y(),
+                start_rect.width(), start_rect.height(),
+            )
+            self._run_card_motion(
+                file_path=f"__clear_all_{idx}__",
+                card=card,
+                start_rect=start_rect,
+                end_rect=end_rect,
+                start_opacity=1.0,
+                end_opacity=0.0,
+                duration=self._card_motion_duration_ms,
+                easing=QEasingCurve.InCubic,
+                on_finished=lambda c=card: c.deleteLater(),
+                kind="exit",
+            )
+
+    def _clear_all_immediate(self) -> None:
+        """立即清空所有项目（无动画）。"""
         for card in list(self._card_widgets.values()):
             self._card_layout.removeWidget(card)
             card.deleteLater()
@@ -920,23 +1387,13 @@ class FilePoolLayout(QWidget):
 
     def show_import_export_dialog(self) -> None:
         """导入/导出数据选择对话框。"""
-        msg_box = CustomMessageBox(self)
-        msg_box.set_title("导入/导出数据")
-        msg_box.set_text("请选择操作：")
-        msg_box.set_buttons(
+        choice = _show_custom_dialog(
+            self,
+            "导入/导出数据",
+            "请选择操作：",
             ["导入数据", "导出数据", "取消"],
-            Qt.Horizontal,
             ["primary", "secondary", "normal"],
         )
-        choice = -1
-
-        def on_clicked(idx: int) -> None:
-            nonlocal choice
-            choice = idx
-            msg_box.close()
-
-        msg_box.buttonClicked.connect(on_clicked)
-        msg_box.exec()
 
         if choice == 0:
             self.import_data()
@@ -955,11 +1412,10 @@ class FilePoolLayout(QWidget):
             with open(file_path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
         except (json.JSONDecodeError, IOError, OSError) as e:
-            err_box = CustomMessageBox(self)
-            err_box.set_title("导入失败")
-            err_box.set_text(f"读取文件失败：{e}")
-            err_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            err_box.exec()
+            _show_custom_dialog(
+                self, "导入失败", f"读取文件失败：{e}",
+                ["确定"], ["primary"], dialog_type="danger",
+            )
             return
 
         # 支持两种格式：dict（含 items 键）或 列表
@@ -968,41 +1424,29 @@ class FilePoolLayout(QWidget):
         elif isinstance(raw, list):
             items = raw
         else:
-            err_box = CustomMessageBox(self)
-            err_box.set_title("导入失败")
-            err_box.set_text("文件格式不正确，应为 JSON 数组或备份结构。")
-            err_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            err_box.exec()
+            _show_custom_dialog(
+                self, "导入失败", "文件格式不正确，应为 JSON 数组或备份结构。",
+                ["确定"], ["primary"], dialog_type="danger",
+            )
             return
 
         if not items:
-            info_box = CustomMessageBox(self)
-            info_box.set_title("导入提示")
-            info_box.set_text("文件中没有有效的条目数据。")
-            info_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            info_box.exec()
+            _show_custom_dialog(
+                self, "导入提示", "文件中没有有效的条目数据。",
+                ["确定"], ["primary"], dialog_type="info",
+            )
             return
 
         # 询问清空或追加
-        confirm_box = CustomMessageBox(self)
-        confirm_box.set_title("确认导入")
-        confirm_box.set_text(f"即将导入 {len(items)} 个条目。是否清空现有条目？")
-        confirm_box.set_buttons(
+        import_mode = _show_custom_dialog(
+            self,
+            "确认导入",
+            f"即将导入 {len(items)} 个条目。是否清空现有条目？",
             ["清空并导入", "追加导入", "取消"],
-            Qt.Horizontal,
             ["primary", "secondary", "normal"],
         )
-        import_mode = -1
 
-        def on_mode_clicked(idx: int) -> None:
-            nonlocal import_mode
-            import_mode = idx
-            confirm_box.close()
-
-        confirm_box.buttonClicked.connect(on_mode_clicked)
-        confirm_box.exec()
-
-        if import_mode == 2 or import_mode == -1:
+        if import_mode == 2:
             return
 
         if import_mode == 0:
@@ -1026,23 +1470,21 @@ class FilePoolLayout(QWidget):
             self.show_unlinked_files_dialog(unlinked)
 
         # 显示结果
-        result_box = CustomMessageBox(self)
-        result_box.set_title("导入完成")
         msg = f"成功导入 {success_count} 个条目。"
         if unlinked:
             msg += f"\n{len(unlinked)} 个文件路径不存在（已单独列出）。"
-        result_box.set_text(msg)
-        result_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-        result_box.exec()
+        _show_custom_dialog(
+            self, "导入完成", msg,
+            ["确定"], ["primary"], dialog_type="success",
+        )
 
     def export_data(self) -> None:
         """将当前暂存池条目导出为 JSON 文件。"""
         if not self.items:
-            info_box = CustomMessageBox(self)
-            info_box.set_title("导出提示")
-            info_box.set_text("暂存池中没有数据可导出。")
-            info_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            info_box.exec()
+            _show_custom_dialog(
+                self, "导出提示", "暂存池中没有数据可导出。",
+                ["确定"], ["primary"], dialog_type="info",
+            )
             return
 
         from datetime import datetime
@@ -1058,17 +1500,16 @@ class FilePoolLayout(QWidget):
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
-            info_box = CustomMessageBox(self)
-            info_box.set_title("导出成功")
-            info_box.set_text(f"成功导出 {len(self.items)} 个条目到：\n{file_path}")
-            info_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            info_box.exec()
+            _show_custom_dialog(
+                self, "导出成功",
+                f"成功导出 {len(self.items)} 个条目到：\n{file_path}",
+                ["确定"], ["primary"], dialog_type="success",
+            )
         except (IOError, OSError, PermissionError) as e:
-            err_box = CustomMessageBox(self)
-            err_box.set_title("导出失败")
-            err_box.set_text(f"写入文件失败：{e}")
-            err_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            err_box.exec()
+            _show_custom_dialog(
+                self, "导出失败", f"写入文件失败：{e}",
+                ["确定"], ["primary"], dialog_type="danger",
+            )
 
     # ═════════════════════════════════════════════════════════════════════
     #  未链接文件对话框（Phase 3）
@@ -1080,31 +1521,19 @@ class FilePoolLayout(QWidget):
         Args:
             unlinked_items: 路径不存在的条目字典列表。
         """
-        msg_box = CustomMessageBox(self)
         names = "\n".join(
             f"• {item.get('display_name', item.get('name', '未知'))}"
             for item in unlinked_items[:20]
         )
         if len(unlinked_items) > 20:
             names += f"\n… 及其他 {len(unlinked_items) - 20} 个"
-        msg_box.set_title("未链接文件")
-        msg_box.set_text(
-            f"以下 {len(unlinked_items)} 个文件路径不存在：\n\n{names}"
-        )
-        msg_box.set_buttons(
+        choice = _show_custom_dialog(
+            self,
+            "未链接文件",
+            f"以下 {len(unlinked_items)} 个文件路径不存在：\n\n{names}",
             ["手动链接", "忽略这些文件", "取消"],
-            Qt.Horizontal,
             ["primary", "secondary", "normal"],
         )
-        choice = -1
-
-        def on_clicked(idx: int) -> None:
-            nonlocal choice
-            choice = idx
-            msg_box.close()
-
-        msg_box.buttonClicked.connect(on_clicked)
-        msg_box.exec()
 
         if choice == 0:
             # 手动链接：选择替换目录
@@ -1115,7 +1544,7 @@ class FilePoolLayout(QWidget):
                 self._relink_files(unlinked_items, dir_path)
         elif choice == 1:
             pass  # 忽略，不导入这些条目
-        # choice == 2 or -1 → 取消整个导入
+        # choice == 2 → 取消整个导入
 
     def _relink_files(self, unlinked_items: list, search_dir: str) -> list:
         """在指定目录中通过文件名匹配重新链接未链接的文件。
@@ -1139,11 +1568,10 @@ class FilePoolLayout(QWidget):
                 relinked.append(item)
 
         if relinked:
-            info_box = CustomMessageBox(self)
-            info_box.set_title("重新链接")
-            info_box.set_text(f"成功重新链接 {len(relinked)} 个文件。")
-            info_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            info_box.exec()
+            _show_custom_dialog(
+                self, "重新链接", f"成功重新链接 {len(relinked)} 个文件。",
+                ["确定"], ["primary"], dialog_type="success",
+            )
         return relinked
 
     # ═════════════════════════════════════════════════════════════════════
@@ -1153,35 +1581,25 @@ class FilePoolLayout(QWidget):
     def export_selected_files(self) -> None:
         """导出暂存池中的文件（含模式选择、空间检查、进度显示）。"""
         if not self.items:
-            info_box = CustomMessageBox(self)
-            info_box.set_title("提示")
-            info_box.set_text("暂存池中没有文件可导出。")
-            info_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            info_box.exec()
+            _show_custom_dialog(
+                self, "提示", "暂存池中没有文件可导出。",
+                ["确定"], ["primary"], dialog_type="info",
+            )
             return
 
         # 模式选择
-        mode_box = CustomMessageBox(self)
-        mode_box.set_title("选择导出方式")
-        mode_box.set_text("请选择导出模式：\n\n"
-                          "平铺导出：所有文件直接复制到目标目录\n"
-                          "分类导出：按原始文件夹分类存放")
-        mode_box.set_buttons(
+        export_mode = _show_custom_dialog(
+            self,
+            "选择导出方式",
+            "请选择导出模式：\n\n"
+            "平铺导出：所有文件直接复制到目标目录\n"
+            "分类导出：按原始文件夹分类存放",
             ["平铺导出", "分类导出", "取消"],
-            Qt.Vertical,
             ["primary", "primary", "normal"],
+            vertical=True,
         )
-        export_mode = -1
 
-        def on_mode_clicked(idx: int) -> None:
-            nonlocal export_mode
-            export_mode = idx
-            mode_box.close()
-
-        mode_box.buttonClicked.connect(on_mode_clicked)
-        mode_box.exec()
-
-        if export_mode == 2 or export_mode == -1:
+        if export_mode == 2:
             return
 
         # 选择目标目录
@@ -1225,47 +1643,26 @@ class FilePoolLayout(QWidget):
         """
         total, free = StagingPoolService().get_directory_space(target_dir)
         if total is None or free is None:
-            warn_box = CustomMessageBox(self)
-            warn_box.set_title("无法检测空间")
-            warn_box.set_text("无法获取目标目录的空间信息，是否继续？")
-            warn_box.set_buttons(
+            choice = _show_custom_dialog(
+                self,
+                "无法检测空间",
+                "无法获取目标目录的空间信息，是否继续？",
                 ["继续", "重新选择", "取消"],
-                Qt.Horizontal,
                 ["primary", "normal", "normal"],
             )
-            choice = -1
-
-            def _on_click(idx: int) -> None:
-                nonlocal choice
-                choice = idx
-                warn_box.close()
-
-            warn_box.buttonClicked.connect(_on_click)
-            warn_box.exec()
             return {0: True, 1: "reselect"}.get(choice, False)
 
         if free is not None and free < needed_bytes:
-            err_box = CustomMessageBox(self)
-            err_box.set_title("空间不足")
-            err_box.set_text(
+            choice = _show_custom_dialog(
+                self,
+                "空间不足",
                 f"所需空间：{FilePoolLayout._format_file_size(needed_bytes)}\n"
                 f"可用空间：{FilePoolLayout._format_file_size(free)}\n"
-                f"缺少：{FilePoolLayout._format_file_size(needed_bytes - free)}"
-            )
-            err_box.set_buttons(
+                f"缺少：{FilePoolLayout._format_file_size(needed_bytes - free)}",
                 ["重新选择", "取消"],
-                Qt.Horizontal,
                 ["primary", "normal"],
+                dialog_type="danger",
             )
-            choice = -1
-
-            def _on_err_click(idx: int) -> None:
-                nonlocal choice
-                choice = idx
-                err_box.close()
-
-            err_box.buttonClicked.connect(_on_err_click)
-            err_box.exec()
             return "reselect" if choice == 0 else False
 
         return True
@@ -1298,20 +1695,20 @@ class FilePoolLayout(QWidget):
                 pass
             progress.close()
 
-            result_box = CustomMessageBox(self)
             if failed == 0:
-                result_box.set_title("导出完成")
-                result_box.set_text(f"成功导出 {success} 个文件。")
+                _show_custom_dialog(
+                    self, "导出完成", f"成功导出 {success} 个文件。",
+                    ["确定"], ["primary"], dialog_type="success",
+                )
             else:
                 detail = "\n".join(errors[:5])
                 if len(errors) > 5:
                     detail += f"\n… 及其他 {len(errors) - 5} 个错误"
-                result_box.set_title("导出结果")
-                result_box.set_text(
-                    f"成功 {success} 个，失败 {failed} 个。\n\n{detail}"
+                _show_custom_dialog(
+                    self, "导出结果",
+                    f"成功 {success} 个，失败 {failed} 个。\n\n{detail}",
+                    ["确定"], ["primary"], dialog_type="danger",
                 )
-            result_box.set_buttons(["确定"], Qt.Horizontal, ["primary"])
-            result_box.exec()
 
         # 连接完成信号（在主线程处理结果）
         self._export_finished.connect(_on_finish)

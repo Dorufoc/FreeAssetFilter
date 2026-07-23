@@ -66,6 +66,7 @@ from components.styled_player_bar import StyledPlayerBar
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.file_list_model import FileListModel
 from components.file_card_delegate import FileCardDelegate
+from components.animated_file_list_view import AnimatedFileListView
 
 __all__ = [
     "StyledButton",
@@ -140,4 +141,5 @@ __all__ = [
     "StyledPlayerBar",
     "FileListModel",
     "FileCardDelegate",
+    "AnimatedFileListView",
 ]

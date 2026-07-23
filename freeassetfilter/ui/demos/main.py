@@ -744,10 +744,10 @@ class SettingsWindow(FramelessMainWindow):
     # Mica配置参数
     MICA_CONFIG = {
         "blur_radius": 200,
-        "tint_color": "#202020E8",
+        "tint_color": "#202020B4",
         "luminosity": 0.65,
         "contrast": 1.5,
-        "saturation": 4.0,
+        "saturation": 4.5,
     }
 
     def __init__(self, parent=None):

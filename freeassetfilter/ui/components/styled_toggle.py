@@ -46,6 +46,7 @@ class StyledToggle(QWidget):
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
         self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
         # Toggle animation (On/Off)
         self._toggle_anim = QPropertyAnimation(self, b"anim_progress")

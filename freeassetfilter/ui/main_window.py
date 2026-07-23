@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Optional
 import os
 
-from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSplitter
+from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSplitter, QGridLayout
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 import ctypes
 from ctypes import wintypes
 
@@ -41,6 +42,7 @@ from theme import tm
 from components.mica_material import MicaMaterial
 from components.mica_window import DEFAULT_MICA_CONFIG
 from components.styled_button import StyledButton
+from components.theme_transition_overlay import ThemeTransitionOverlay
 
 # 导入布局模块
 from layout.file_selector_layout import FileSelectorLayout
@@ -53,41 +55,33 @@ from freeassetfilter.utils.app_logger import debug, warning
 from freeassetfilter.services.staging_pool_service import StagingPoolService
 
 
-class MicaBackgroundWidget(QWidget):
+class _MicaBackgroundMixin:
     """
-    Mica 背景 Widget - 负责绘制模糊壁纸和半透明遮罩
-    
-    层级结构：
-    1. 纯色不透明基底（挡住 win32 控件）
-    2. 自绘模糊壁纸（Mica 层）
-    3. 半透明遮罩（tint_color + luminosity）
-    
-    主题由 ThemeManager（tm）统一管理
+    MicaBackgroundWidget 的共享逻辑（GPU 与 CPU 两种实现复用）。
+
+    宿主类须为 QWidget 子类（依赖 palette()/update()/backgroundRole() 等）。
+    主题由 ThemeManager（tm）统一管理。
     """
-    
-    def __init__(
+
+    def _init_mica_common(
         self,
-        parent: Optional[QWidget] = None,
-        blur_radius: int = 200,
-        tint_color: str = "#202020E8",
-        luminosity: float = 0.65,
-        contrast: float = 1.5,
-        saturation: float = 4.0,
+        blur_radius: int,
+        tint_color: str,
+        luminosity: float,
+        contrast: float,
+        saturation: float,
     ) -> None:
-        super().__init__(parent)
-        
-        # Mica 效果参数 — tint_color 和 luminosity 根据当前主题动态设置
+        """按当前主题设置 tint/luminosity，创建 MicaMaterial 并设置基底色。"""
         self._blur_radius = blur_radius
         self._contrast = contrast
         self._saturation = saturation
         if tm.is_dark_theme():
-            self._tint_color = "#202020E8"
+            self._tint_color = "#202020B4"
             self._luminosity = 0.65
         else:
-            self._tint_color = "#FFFFFFE8"
+            self._tint_color = "#FFFFFFB4"
             self._luminosity = 0.85
-        
-        # 创建 Mica 效果
+
         self._mica = MicaMaterial(
             self,
             self._blur_radius,
@@ -96,43 +90,29 @@ class MicaBackgroundWidget(QWidget):
             self._contrast,
             self._saturation,
         )
-        
-        # 设置纯色不透明基底（挡住 win32 控件），颜色来自 tm.surface
-        self.setAutoFillBackground(True)
+
+        # 纯色不透明基底颜色（来自 tm.surface）
         palette = self.palette()
         palette.setColor(self.backgroundRole(), tm.surface)
         self.setPalette(palette)
-    
-    def paintEvent(self, event: QPaintEvent) -> None:
-        """绘制 Mica 效果（模糊壁纸 + 半透明遮罩）"""
-        painter = QPainter(self)
-        # 先绘制纯色基底（已通过 palette 设置）
-        # 然后绘制 Mica 效果（模糊壁纸 + 半透明遮罩）
-        self._mica.paint(painter, event)
-        painter.end()
 
     def sync_theme(self) -> None:
         """根据当前主题刷新 tint_color、luminosity 和基底颜色"""
         if tm.is_dark_theme():
-            self._tint_color = "#202020E8"
+            self._tint_color = "#202020B4"
             self._luminosity = 0.65
         else:
-            self._tint_color = "#FFFFFFE8"
+            self._tint_color = "#FFFFFFB4"
             self._luminosity = 0.85
-
-        # 更新 MicaMaterial 的 tint/luminosity
-        self._mica._tint_color = self._parse_tint(self._tint_color)
-        self._mica._luminosity = max(0.0, min(1.0, self._luminosity))
 
         # 更新基底颜色
         palette = self.palette()
         palette.setColor(self.backgroundRole(), tm.surface)
         self.setPalette(palette)
 
-        # 刷新背景并重绘
+        # 快速重烘焙 tint/luminosity（复用已模糊的 base，不再重新模糊）
         if self._mica is not None:
-            self._mica.invalidate_cache()
-            self._mica.refresh()
+            self._mica.set_theme_tint(self._tint_color, self._luminosity)
             self.update()
 
     @staticmethod
@@ -149,21 +129,171 @@ class MicaBackgroundWidget(QWidget):
         """刷新背景（例如壁纸更改后）"""
         if self._mica is not None:
             self._mica.refresh()
-    
+
+
+class MicaBackgroundWidgetGL(QOpenGLWidget, _MicaBackgroundMixin):
+    """
+    GPU 合成版 Mica 背景（QOpenGLWidget）。
+
+    背景在 GPU 上以「带缓存纹理的四边形」绘制，每帧成本与窗口大小近乎无关，
+    最大化 / 多屏拖动依旧跟手。三栏面板作为子控件位于其上，透明区域正确
+    透出 GL 背景。视觉与 CPU 版严格一致（同一 _bake() 纹理 + 抖动）。
+    """
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        blur_radius: int = 200,
+        tint_color: str = "#202020B4",
+        luminosity: float = 0.65,
+        contrast: float = 1.5,
+        saturation: float = 4.5,
+    ) -> None:
+        super().__init__(parent)
+        self._init_mica_common(blur_radius, tint_color, luminosity, contrast, saturation)
+        # 背景恒不透明并铺满整窗，声明不透明绘制
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+
+    def paintGL(self) -> None:
+        """在 GPU 光栅引擎上绘制 Mica 背景（烘焙纹理的子区域 blit）"""
+        painter = QPainter(self)
+        self._mica.paint_gpu(painter)
+        painter.end()
+
+    def handle_window_resize(self) -> None:
+        """处理窗口大小改变（由 MainWindow 调用）——GPU 重绘廉价，直接刷新"""
+        self.update()
+
+    def handle_window_move(self) -> None:
+        """处理窗口移动（由 MainWindow 调用）——GPU 重绘廉价，直接刷新"""
+        self.update()
+
+
+class MicaBackgroundWidgetCpu(QWidget, _MicaBackgroundMixin):
+    """
+    CPU 光栅版 Mica 背景（QWidget）——OpenGL 不可用时的回退实现。
+
+    行为与历史实现一致：paintEvent 走 MicaMaterial.paint（含交互态快速缩放
+    与沉降定时器）；拖动大窗口可能有残留掉帧，但保证无 GPU 环境可用。
+    """
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        blur_radius: int = 200,
+        tint_color: str = "#202020B4",
+        luminosity: float = 0.65,
+        contrast: float = 1.5,
+        saturation: float = 4.5,
+    ) -> None:
+        super().__init__(parent)
+        # 纯色不透明基底（挡住 win32 控件）
+        self.setAutoFillBackground(True)
+        self._init_mica_common(blur_radius, tint_color, luminosity, contrast, saturation)
+        # 烘焙后 paint 始终铺满整个 rect 且不透明，声明不透明绘制
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """绘制 Mica 效果（模糊壁纸 + 半透明遮罩）"""
+        painter = QPainter(self)
+        self._mica.paint(painter, event)
+        painter.end()
+
     def handle_window_resize(self) -> None:
         """处理窗口大小改变（由 MainWindow 调用）"""
         if self._mica is not None:
-            self._mica.invalidate_cache()
-            self.update()
-    
+            self._mica.begin_interaction()
+
     def handle_window_move(self) -> None:
         """处理窗口移动（由 MainWindow 调用）"""
         if self._mica is not None:
-            self._mica.invalidate_cache()
-            self.update()
+            self._mica.begin_interaction()
 
 
-class MainWindow(FramelessMainWindow):
+def _opengl_available() -> bool:
+    """检测能否创建 OpenGL 上下文（决定 Mica 背景用 GPU 还是 CPU 实现）。"""
+    try:
+        from PySide6.QtGui import QOpenGLContext
+        return bool(QOpenGLContext().create())
+    except Exception:
+        return False
+
+
+def make_mica_background(
+    parent: Optional[QWidget] = None,
+    blur_radius: int = 200,
+    tint_color: str = "#202020B4",
+    luminosity: float = 0.65,
+    contrast: float = 1.5,
+    saturation: float = 4.5,
+) -> QWidget:
+    """
+    创建 Mica 背景控件：OpenGL 可用返回 GPU 合成版，否则回退 CPU 版。
+
+    两者公共 API 一致（sync_theme / refresh_background / handle_window_resize /
+    handle_window_move / _mica），调用方无需区分。
+    """
+    cls = MicaBackgroundWidgetGL if _opengl_available() else MicaBackgroundWidgetCpu
+    return cls(
+        parent,
+        blur_radius=blur_radius,
+        tint_color=tint_color,
+        luminosity=luminosity,
+        contrast=contrast,
+        saturation=saturation,
+    )
+
+
+# 向后兼容别名：默认指向工厂（含 OpenGL 回退）；调用 MicaBackgroundWidget(...) 等价于 make_mica_background(...)
+MicaBackgroundWidget = make_mica_background
+
+
+class _FramelessNativeEffectsMixin:
+    """在 GPU 表面导致 HWND 重建后，重新应用 qframelesswindow 的原生窗口效果。
+
+    QOpenGLWidget / QRhiWidget 等「渲染到纹理」控件在附加 GPU 表面时，会让 Qt
+    重建顶层原生窗口（HWND）。这发生在 qframelesswindow 于 __init__ 阶段设置好
+    WS_THICKFRAME（边框缩放）/ WS_CAPTION 样式与 DwmExtendFrameIntoClientArea
+    （窗口阴影 + Win11 圆角）之后——重建后的新 HWND 会丢失这些原生能力，且
+    qframelesswindow 不会自动重新应用。
+
+    本 Mixin 监听 QEvent.WinIdChange：每当 HWND 变化，就在新句柄上重新应用窗口
+    动画样式与 DWM 阴影/圆角，并触发一次非客户区重算。这样即可在保留 GPU 合成
+    Mica 背景的同时，完整保留边框拖拽拉伸、最大化/最小化动画、窗口阴影与圆角。
+
+    注意：该问题对 QOpenGLWidget 与 QRhiWidget 一致（两者都会触发 HWND 重建），
+    因此此修复与底层图形 API 无关，切换到 QRhi 也仍需同样的重应用逻辑。
+    """
+
+    def event(self, e: QEvent) -> bool:
+        if e.type() == QEvent.Type.WinIdChange:
+            self._reapply_native_window_effects()
+        return super().event(e)
+
+    def _reapply_native_window_effects(self) -> None:
+        """在当前 HWND 上重新应用 win32 窗口样式与 DWM 阴影/圆角。"""
+        # windowEffect 仅存在于 Windows 原生 frameless 实现；回退到普通 QMainWindow 时跳过
+        window_effect = getattr(self, "windowEffect", None)
+        if window_effect is None:
+            return
+        try:
+            hwnd = int(self.winId())
+        except Exception:
+            return
+        if not hwnd:
+            return
+        try:
+            window_effect.addWindowAnimation(hwnd)  # 恢复 WS_THICKFRAME / 最大化最小化动画样式
+            window_effect.addShadowEffect(hwnd)      # 恢复 DWM 阴影 + Win11 圆角
+            # 触发非客户区重算（SWP_FRAMECHANGED），让样式与 frame 立即生效
+            swp_flags = 0x0002 | 0x0001 | 0x0004 | 0x0020  # NOMOVE|NOSIZE|NOZORDER|FRAMECHANGED
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, swp_flags)
+        except Exception:
+            # 原生效果重应用失败不应影响窗口正常使用
+            pass
+
+
+class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     """
     主窗口类 - 使用无边框窗口和 Mica 效果
 
@@ -196,6 +326,8 @@ class MainWindow(FramelessMainWindow):
         """
         # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
         self._mica_background = None
+        self._root = None
+        self._content = None
         self._panels = []
         self._splitter = None
         self._github_btn = None
@@ -257,23 +389,42 @@ class MainWindow(FramelessMainWindow):
 
     def _setup_content(self) -> None:
         """设置窗口内容"""
-        # 创建 Mica 背景 Widget（层级 1-3：纯色基底 + 模糊壁纸 + 半透明遮罩）
-        self._mica_background = MicaBackgroundWidget(
-            self,
+        # 中央部件用纯 QWidget，保留 qframelesswindow 的原生窗口特性
+        # （边框拖拽拉伸 / 窗口阴影 / 最大化动画 / Aero Snap 均由顶层 HWND 处理）。
+        # Mica 背景与内容作为它的两个叠放子层——避免让 GPU 表面占据窗口边缘、
+        # 干扰 WM_NCHITTEST 的缩放边框命中。
+        self._root = QWidget(self)
+        self.setCentralWidget(self._root)
+
+        overlay = QGridLayout(self._root)
+        overlay.setContentsMargins(0, 0, 0, 0)
+        overlay.setSpacing(0)
+
+        # 层 1：Mica 背景（GPU 合成，OpenGL 不可用时回退 CPU），内嵌在 frameless 窗口内。
+        # 设为鼠标穿透，使窗口边缘事件仍落到顶层窗口，保证边框拉伸/系统菜单等原生行为。
+        self._mica_background = make_mica_background(
+            self._root,
             blur_radius=self._blur_radius,
             tint_color=self._tint_color,
             luminosity=self._luminosity,
             contrast=self._contrast,
             saturation=self._saturation,
         )
-        
-        # 创建主布局（Mica 背景 Widget 作为根容器）
-        main_layout = QVBoxLayout(self._mica_background)
+        self._mica_background.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        # 层 2：内容层（透明容器，叠在 Mica 之上）
+        self._content = QWidget(self._root)
+
+        # 两层叠放在同一网格单元：Mica 在下、内容在上
+        overlay.addWidget(self._mica_background, 0, 0)
+        overlay.addWidget(self._content, 0, 0)
+        self._mica_background.lower()
+        self._content.raise_()
+
+        # 创建主布局（内容层作为根容器）
+        main_layout = QVBoxLayout(self._content)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        
-        # 设置 Mica 背景 Widget 为中央部件
-        self.setCentralWidget(self._mica_background)
 
         # 创建标题栏（层级 5：上方控件）
         self._create_title_bar(main_layout)
@@ -398,34 +549,47 @@ class MainWindow(FramelessMainWindow):
         self._settings_btn.clicked.connect(self._open_settings_window)
         header_layout.addWidget(self._settings_btn)
 
-        # 主题切换按钮
-        self._theme_btn = StyledButton("🌙", variant="ghost", size="sm")
+        # 主题切换按钮（SVG图标，dark=深色图标，light=浅色图标）
+        light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
+        self._theme_btn = StyledButton(
+            "", variant="ghost", size="sm",
+            icon=str(light_icon_path) if light_icon_path.exists() else ""
+        )
         self._theme_btn.setFixedSize(32, 32)
-        self._theme_btn.setStyleSheet(self._title_bar_button_style(font_size="14px"))
+        self._theme_btn.setStyleSheet(self._title_bar_button_style())
         self._theme_btn.setToolTip("切换主题")
         self._theme_btn.clicked.connect(self._on_theme_toggle)
         header_layout.addWidget(self._theme_btn)
 
-        # 最小化按钮
-        self._minimize_btn = StyledButton("", variant="ghost", size="sm")
+        # 最小化按钮（SVG图标）
+        mini_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_mini.svg"
+        self._minimize_btn = StyledButton(
+            "", variant="ghost", size="sm",
+            icon=str(mini_icon_path) if mini_icon_path.exists() else ""
+        )
         self._minimize_btn.setFixedSize(32, 32)
-        self._minimize_btn.setText("−")
-        self._minimize_btn.setStyleSheet(self._title_bar_button_style(font_size="16px"))
+        self._minimize_btn.setStyleSheet(self._title_bar_button_style())
         self._minimize_btn.clicked.connect(self.showMinimized)
         header_layout.addWidget(self._minimize_btn)
 
-        # 最大化/还原按钮
-        self._maximize_btn = StyledButton("", variant="ghost", size="sm")
+        # 最大化/还原按钮（SVG图标，max_1=最大化，max_2=还原）
+        max_1_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_1.svg"
+        self._maximize_btn = StyledButton(
+            "", variant="ghost", size="sm",
+            icon=str(max_1_path) if max_1_path.exists() else ""
+        )
         self._maximize_btn.setFixedSize(32, 32)
-        self._maximize_btn.setText("▢")
-        self._maximize_btn.setStyleSheet(self._title_bar_button_style(font_size="16px"))
+        self._maximize_btn.setStyleSheet(self._title_bar_button_style())
         self._maximize_btn.clicked.connect(self._toggle_maximize)
         header_layout.addWidget(self._maximize_btn)
 
-        # 关闭按钮
-        self._close_btn = StyledButton("", variant="ghost", size="sm")
+        # 关闭按钮（SVG图标）
+        close_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_close.svg"
+        self._close_btn = StyledButton(
+            "", variant="ghost", size="sm",
+            icon=str(close_icon_path) if close_icon_path.exists() else ""
+        )
         self._close_btn.setFixedSize(32, 32)
-        self._close_btn.setText("✕")
         self._close_btn.setStyleSheet(self._title_bar_close_style())
         self._close_btn.clicked.connect(self.close)
         header_layout.addWidget(self._close_btn)
@@ -451,12 +615,18 @@ class MainWindow(FramelessMainWindow):
     def _toggle_maximize(self) -> None:
         """通过 Win32 ShowWindow 切换最大化/还原，保留原生窗口动画和特性"""
         hwnd = int(self.winId())
+        max_1_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_1.svg"
+        max_2_path = Path(__file__).resolve().parent.parent / "icons" / "title_max_2.svg"
         if self.isMaximized():
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            self._maximize_btn.setText("▢")
+            # 窗口已还原，显示最大化图标（max_1）
+            if max_1_path.exists():
+                self._maximize_btn.set_svg_icon(str(max_1_path))
         else:
             ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
-            self._maximize_btn.setText("❐")
+            # 窗口已最大化，显示还原图标（max_2）
+            if max_2_path.exists():
+                self._maximize_btn.set_svg_icon(str(max_2_path))
     
     def _open_github(self) -> None:
         """打开 GitHub 项目页面"""
@@ -472,45 +642,53 @@ class MainWindow(FramelessMainWindow):
 
     def _on_theme_toggle(self) -> None:
         """主题切换按钮点击事件"""
+        # 先捕获当前窗口快照并启动过渡遮罩，再切换主题，
+        # 使新旧主题之间通过交叉淡化平滑过渡。
+        # 使用 grabWindow(HWND) 而非 grab()，避免 OpenGL Mica 背景合成花屏。
+        overlay = ThemeTransitionOverlay.from_widget(self)
+        overlay.start()
+
         tm.toggle_theme()
+        # 同步持久化到 SettingsManagerV2（重启后恢复）
+        try:
+            from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+            v2 = SettingsManagerV2()
+            v2.load()
+            theme = "dark" if tm.is_dark_theme() else "light"
+            v2.set("appearance.theme", theme)
+            v2.set("appearance.colors", dict(tm._colors))
+            v2.save()
+        except Exception:
+            pass
         # 按钮图标和 tooltip 在 _on_theme_changed 中更新
 
     def _on_theme_changed(self, theme_name: str) -> None:
         """主题切换后的处理"""
-        # 更新 Mica 背景参数
+        # 更新 Mica 背景（快速重烘焙 tint/luminosity，复用已模糊的 base，不再重建/重新模糊）
         if self._mica_background is not None:
-            if theme_name == "dark":
-                self._mica_background._tint_color = "#202020E8"
-                self._mica_background._luminosity = 0.65
-            else:
-                self._mica_background._tint_color = "#FFFFFFE8"
-                self._mica_background._luminosity = 0.85
-            # 更新基底色
-            palette = self._mica_background.palette()
-            palette.setColor(self._mica_background.backgroundRole(), tm.surface)
-            self._mica_background.setPalette(palette)
-            # 重建 Mica 效果
-            self._mica_background._mica = MicaMaterial(
-                self._mica_background,
-                self._mica_background._blur_radius,
-                self._mica_background._tint_color,
-                self._mica_background._luminosity,
-                self._mica_background._contrast,
-                self._mica_background._saturation,
-            )
-            self._mica_background.update()
-        # 更新按钮图标和 tooltip
-        self._theme_btn.setText("☀️" if theme_name == "light" else "🌙")
-        self._theme_btn.setToolTip("切换为深色" if theme_name == "light" else "切换为浅色")
+            self._mica_background.sync_theme()
+        # 更新按钮图标和 tooltip（SVG，light=浅色，dark=深色）
+        light_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_light.svg"
+        dark_icon_path = Path(__file__).resolve().parent.parent / "icons" / "title_dark.svg"
+        if theme_name == "light":
+            # 当前浅色→点击切换为深色，显示深色图标
+            if dark_icon_path.exists():
+                self._theme_btn.set_svg_icon(str(dark_icon_path))
+            self._theme_btn.setToolTip("切换为深色")
+        else:
+            # 当前深色→点击切换为浅色，显示浅色图标
+            if light_icon_path.exists():
+                self._theme_btn.set_svg_icon(str(light_icon_path))
+            self._theme_btn.setToolTip("切换为浅色")
         # 刷新标题文字颜色
         if self._title_label is not None:
             self._title_label.setStyleSheet(f'font-size: 14px; font-weight: 600; color: {tm.text.name()};')
         # 刷新所有标题栏按钮的 styleSheet（tm 颜色值已变化）
         self._github_btn.setStyleSheet(self._title_bar_button_style())
         self._settings_btn.setStyleSheet(self._title_bar_button_style())
-        self._theme_btn.setStyleSheet(self._title_bar_button_style(font_size="14px"))
-        self._minimize_btn.setStyleSheet(self._title_bar_button_style(font_size="16px"))
-        self._maximize_btn.setStyleSheet(self._title_bar_button_style(font_size="16px"))
+        self._theme_btn.setStyleSheet(self._title_bar_button_style())
+        self._minimize_btn.setStyleSheet(self._title_bar_button_style())
+        self._maximize_btn.setStyleSheet(self._title_bar_button_style())
         self._close_btn.setStyleSheet(self._title_bar_close_style())
         # 刷新 QSS 样式
         self.style().unpolish(self)
@@ -729,7 +907,7 @@ class MainWindow(FramelessMainWindow):
             self._mica_background.handle_window_move()
 
 
-class SettingsWindow(FramelessMainWindow):
+class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     """
     设置窗口 — 独立窗口，使用 Mica 效果
     
@@ -739,6 +917,8 @@ class SettingsWindow(FramelessMainWindow):
     def __init__(self, parent=None):
         # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
         self._mica_background = None
+        self._root = None
+        self._content = None
         self._title_label = None
         self._close_btn = None
 
@@ -747,12 +927,32 @@ class SettingsWindow(FramelessMainWindow):
         self.setMinimumSize(700, 400)
         self.resize(700, 500)
 
-        # Mica 背景
-        self._mica_background = MicaBackgroundWidget(self)
-        self.setCentralWidget(self._mica_background)
+        # 中央部件用纯 QWidget，保留 qframelesswindow 原生窗口特性；
+        # Mica 背景与内容作为叠放子层内嵌其中
+        self._root = QWidget(self)
+        self.setCentralWidget(self._root)
 
-        # 主布局
-        layout = QVBoxLayout(self._mica_background)
+        overlay = QGridLayout(self._root)
+        overlay.setContentsMargins(0, 0, 0, 0)
+        overlay.setSpacing(0)
+
+        # 层 1：Mica 背景（鼠标穿透，避免占据窗口边缘拦截缩放命中）
+        # 使用 CPU 光栅版而非 OpenGL 版，防止首次显示 Qt.Tool 弹窗时
+        # 触发父窗口 HWND 重建导致子控件崩溃（设置窗口尺寸小、不常调整大小，
+        # CPU 版性能完全满足要求）
+        self._mica_background = MicaBackgroundWidgetCpu(self._root)
+        self._mica_background.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        # 层 2：内容层（透明）
+        self._content = QWidget(self._root)
+
+        overlay.addWidget(self._mica_background, 0, 0)
+        overlay.addWidget(self._content, 0, 0)
+        self._mica_background.lower()
+        self._content.raise_()
+
+        # 主布局（内容层作为根容器）
+        layout = QVBoxLayout(self._content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -760,7 +960,7 @@ class SettingsWindow(FramelessMainWindow):
         self._create_title_bar(layout)
 
         # 设置内容区
-        self._settings_layout = SettingsLayout(self._mica_background)
+        self._settings_layout = SettingsLayout(self._content)
         layout.addWidget(self._settings_layout)
 
         # 监听主题变化以刷新背景和按钮颜色

@@ -321,6 +321,18 @@ class SidebarIconWidget(QWidget):
                 # Right chevron pointing right (to expand the panel)
                 self._draw_line(painter, 14, 8, 18, 12, offset, scale)
                 self._draw_line(painter, 18, 12, 14, 16, offset, scale)
+
+            elif icon == "sun":
+                # 中心圆
+                self._draw_circle(painter, 12, 12, 4, offset, scale)
+                # 8 条射线
+                for i in range(8):
+                    angle = i * math.pi / 4
+                    x1 = 12 + math.cos(angle) * 6.5 * scale
+                    y1 = 12 + math.sin(angle) * 6.5 * scale
+                    x2 = 12 + math.cos(angle) * 9.5 * scale
+                    y2 = 12 + math.sin(angle) * 9.5 * scale
+                    painter.drawLine(x1, y1, x2, y2)
         finally:
             painter.end()
 

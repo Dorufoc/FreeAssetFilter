@@ -15,6 +15,7 @@ from PySide6.QtCore import (
     Qt, Signal, QPropertyAnimation, QEasingCurve, Property, QRectF, QPoint, QTimer,
 )
 from PySide6.QtGui import QPainter, QColor, QPaintEvent, QFont, QCursor, QMouseEvent
+from typing import Dict, List, Optional
 
 from theme import tm
 
@@ -161,6 +162,12 @@ class StyledDialog(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
+        # Register the OS-level window title with the dialog's own title so
+        # taskbars / Win32 tools (Alt+Tab, Spy++, accessibility) don't show
+        # the generic "python" placeholder. The visual header is built later
+        # via _build_header(), so we capture the title here and sync it then.
+        self._registered_title: str = ""
+
         # Animation
         self._anim_effect: DialogAnimationEffect = None
         self._enter_opacity_anim: QPropertyAnimation = None
@@ -199,7 +206,14 @@ class StyledDialog(QWidget):
         content_layout.setSpacing(0)
 
         if title or show_close:
+            self._registered_title = title or "Dialog"
+            self.setWindowTitle(self._registered_title)
             self._build_header(title, show_close, content_layout)
+        else:
+            # 没有 header（FOOTER_NONE 等场景）也要设置窗口标题，否则
+            # Alt+Tab/Spy++ 会显示默认的 "python"。
+            self._registered_title = "Dialog"
+            self.setWindowTitle(self._registered_title)
 
         if body_widget:
             self._build_body(body_widget, content_layout)
@@ -422,27 +436,27 @@ class StyledDialog(QWidget):
         self.setGraphicsEffect(self._anim_effect)
 
         self._enter_opacity_anim = QPropertyAnimation(self._anim_effect, b"opacity", self)
-        self._enter_opacity_anim.setDuration(280)
+        self._enter_opacity_anim.setDuration(180)
         self._enter_opacity_anim.setStartValue(0.0)
         self._enter_opacity_anim.setEndValue(1.0)
         self._enter_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
 
         self._enter_scale_anim = QPropertyAnimation(self._anim_effect, b"scale", self)
-        self._enter_scale_anim.setDuration(280)
-        self._enter_scale_anim.setStartValue(0.85)
+        self._enter_scale_anim.setDuration(180)
+        self._enter_scale_anim.setStartValue(0.9)
         self._enter_scale_anim.setEndValue(1.0)
         self._enter_scale_anim.setEasingCurve(QEasingCurve.InOutCubic)
 
         self._exit_opacity_anim = QPropertyAnimation(self._anim_effect, b"opacity", self)
-        self._exit_opacity_anim.setDuration(200)
+        self._exit_opacity_anim.setDuration(180)
         self._exit_opacity_anim.setStartValue(1.0)
         self._exit_opacity_anim.setEndValue(0.0)
         self._exit_opacity_anim.setEasingCurve(QEasingCurve.InOutCubic)
 
         self._exit_scale_anim = QPropertyAnimation(self._anim_effect, b"scale", self)
-        self._exit_scale_anim.setDuration(200)
+        self._exit_scale_anim.setDuration(180)
         self._exit_scale_anim.setStartValue(1.0)
-        self._exit_scale_anim.setEndValue(0.95)
+        self._exit_scale_anim.setEndValue(0.9)
         self._exit_scale_anim.setEasingCurve(QEasingCurve.InOutCubic)
 
         self._exit_opacity_anim.finished.connect(self._finish_close)
@@ -452,7 +466,7 @@ class StyledDialog(QWidget):
         if self._animate and self._anim_effect is not None and not self._shown_once:
             self._shown_once = True
             self._anim_effect.opacity = 0.0
-            self._anim_effect.scale = 0.85
+            self._anim_effect.scale = 0.95
             self._enter_opacity_anim.start()
             self._enter_scale_anim.start()
 
@@ -609,14 +623,17 @@ def _show_dialog(dialog: StyledDialog):
     window_height = content_height + dialog.SHADOW_MARGIN * 2
     dialog.setFixedSize(window_width, window_height)
     
-    # Move to screen center
+    # Move to screen center (cursor's screen so multi-monitor setups are honored)
     cursor_pos = QCursor.pos()
     screen = QApplication.screenAt(cursor_pos)
     if not screen:
         screen = QApplication.primaryScreen()
-    screen_geom = screen.geometry()
-    cx = screen_geom.x() + (screen_geom.width() - window_width) // 2
-    cy = screen_geom.y() + (screen_geom.height() - window_height) // 2
+    screen_geom = screen.availableGeometry()
+    # Center the visible content area (excluding the shadow margin) on the
+    # screen. Computing the offset from the content's own center prevents the
+    # visual drift caused by the shadow margin being double-counted.
+    cx = screen_geom.x() + (screen_geom.width() - content_width) // 2 - dialog.SHADOW_MARGIN
+    cy = screen_geom.y() + (screen_geom.height() - content_height) // 2 - dialog.SHADOW_MARGIN
     dialog.move(max(screen_geom.x(), cx), max(screen_geom.y(), cy))
     
     # Show at correct size and position
@@ -642,6 +659,59 @@ def create_basic_dialog(
     confirm_btn = StyledButton(confirm_text, variant="primary")
     confirm_btn.clicked.connect(lambda: dialog.close_dialog(1))
     dialog._footer_layout.addWidget(confirm_btn)
+    _show_dialog(dialog)
+    return dialog
+
+
+# Maps CustomMessageBox style names to StyledButton variants.
+_VARIANT_MAP: Dict[str, str] = {
+    "primary": "primary",
+    "secondary": "secondary",
+    "ghost": "ghost",
+    "danger": "danger",
+    "info": "info",
+    "normal": "ghost",
+}
+
+
+def create_custom_dialog(
+    title: str,
+    message: str,
+    buttons: List[str],
+    variants: Optional[List[str]] = None,
+    vertical: bool = False,
+    dialog_type: str = "default",
+    show_close: bool = False,
+    animate: bool = True,
+) -> StyledDialog:
+    """兼容 CustomMessageBox 接口的多按钮弹窗。
+
+    Args:
+        title: 弹窗标题。
+        message: 主体文本。
+        buttons: 按钮文案列表（从左到右/从上到下）。
+        variants: 与 buttons 一一对应的变体名（primary/secondary/ghost/danger/info/normal）。
+        vertical: True 则按钮纵向排列，否则横向。
+        dialog_type: 弹窗类型（default/success/danger/info），影响图标。
+        show_close: 是否显示右上角关闭按钮。
+        animate: 是否启用入场/出场动画。
+    """
+    body = _make_body_label(message)
+    footer_type = FOOTER_STACKED if vertical else FOOTER_RIGHT
+    dialog = StyledDialog(
+        animate=animate,
+        dialog_type=dialog_type if dialog_type in ("success", "danger", "info", "default") else "default",
+        title=title,
+        body_widget=body,
+        footer_type=footer_type,
+        show_close=show_close,
+    )
+    for idx, text in enumerate(buttons):
+        variant_name = variants[idx] if variants and idx < len(variants) else "primary"
+        variant = _VARIANT_MAP.get(variant_name, "primary")
+        btn = StyledButton(text, variant=variant)
+        btn.clicked.connect(lambda *args, i=idx, d=dialog: d.close_dialog(i))
+        dialog._footer_layout.addWidget(btn)
     _show_dialog(dialog)
     return dialog
 
@@ -706,6 +776,7 @@ def create_input_dialog(
     placeholder: str = "输入新名称...",
     cancel_text: str = "取消",
     confirm_text: str = "确认",
+    show_close: bool = False,
     animate: bool = True,
 ) -> StyledDialog:
     """Input dialog with a text field."""
@@ -733,7 +804,9 @@ def create_input_dialog(
     """)
     body_layout.addWidget(input_field)
 
-    dialog = StyledDialog(animate=animate, title=title, body_widget=body)
+    dialog = StyledDialog(
+        animate=animate, title=title, body_widget=body, show_close=show_close,
+    )
     dialog._input_field = input_field
 
     if cancel_text:
