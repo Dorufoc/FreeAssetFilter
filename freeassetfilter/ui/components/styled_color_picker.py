@@ -17,7 +17,7 @@ from __future__ import annotations
 from colorsys import hsv_to_rgb, rgb_to_hsv
 
 from theme import tm
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QEvent, QPoint, QRect
+from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QEvent, QPoint, QRect, QTimer, QSize
 from PySide6.QtGui import (
     QPainter,
     QColor,
@@ -30,6 +30,8 @@ from PySide6.QtGui import (
     QFont,
     QPixmap,
     QCursor,
+    QRegion,
+    QTransform,
 )
 from PySide6.QtWidgets import (
     QWidget,
@@ -422,7 +424,12 @@ class _ColorPanel(QFrame):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setObjectName("colorPanel")
         self.setFrameShape(QFrame.NoFrame)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # 关键：popup 自身绝不能设 WA_TranslucentBackground，否则会被设为
+        # WS_EX_LAYERED 窗口；也不挂 QGraphicsEffect，否则 Qt 会创建 offscreen
+        # 渲染目标，每帧 effect 重合成都会触发 DWM 重合成，与 SettingsWindow
+        # （Mica CPU cold cache）首次绘制冲突，导致 FramelessMainWindow 整页崩溃。
+        # 改为：普通顶层窗口（不透明、走 GDI），setMask() 圆角裁剪，
+        # paintEvent 中用 QPainter.setOpacity 手动控制透明度，QTimer 驱动帧更新。
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._parent_ref = parent
 
@@ -430,7 +437,8 @@ class _ColorPanel(QFrame):
         # 已删除对象导致 RuntimeError（如父窗口因 HWND 重建触发）
         self.destroyed.connect(self._on_destroyed)
 
-        # Qt.Popup 自动关闭时，通过关闭事件做动画淡出而非瞬间消失
+        # 监听自身事件（用于在 QApplication 级过滤器之前截获流向
+        # popup 自身的事件，做统一的可见性/关闭互斥判断）
         self.installEventFilter(self)
 
         self._color = tm.accent
@@ -442,7 +450,20 @@ class _ColorPanel(QFrame):
         self._closing_internally = False
         self._closed_emitted = False
 
+        # 动画状态：QTimer 驱动 paintEvent 重绘，QPainter.setOpacity 控制
+        # 背景透明度。完全绕开 QGraphicsEffect / QPropertyAnimation。
+        # 透明度只影响 popup 自身 paintEvent 绘制的内容；色控件作为子控件
+        # 由 Qt 独立渲染，所以在淡入淡出期间临时 hide/show，避免出现
+        # "控件已显示但背景仍透明"的穿帮状态。
+        self._current_opacity = 0.0
+        self._target_opacity = 1.0
+        self._content_widgets: list[QWidget] = []
+        self._animation_timer = QTimer(self)
+        self._animation_timer.setInterval(16)  # ~60fps
+        self._animation_timer.timeout.connect(self._advance_animation)
+
         self._build_ui()
+        self._collect_content_widgets()
         self._connect_signals()
         self._sync_all()
 
@@ -467,6 +488,9 @@ class _ColorPanel(QFrame):
         return tm.alpha_of(tm.mid, 60)
 
     def _build_ui(self):
+        # 控件直接以 self 为父，不再使用 _FadeContainer。
+        # 圆角背景由 popup 自身的 paintEvent 绘制（见 paintEvent），
+        # 因此外层布局的 margins 直接控制内容与圆角边的距离。
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
@@ -508,6 +532,20 @@ class _ColorPanel(QFrame):
             swatch_layout.addWidget(sw)
             self._swatches.append(sw)
         layout.addLayout(swatch_layout)
+
+    def _collect_content_widgets(self) -> None:
+        """收集 popup 内所有需要随背景同步淡入淡出的内容子控件。
+
+        只收录直接父级是 self 的顶层子控件；它们在淡入淡出期间会被临时
+        hide/show，避免"控件已显示但背景仍透明"的穿帮画面。
+        """
+        self._content_widgets = []
+        for child in self.findChildren(QWidget):
+            if child is self:
+                continue
+            # 必须是 popup 的直接子级（layout 顶层项），不递归 deep-hide
+            if child.parent() is self:
+                self._content_widgets.append(child)
 
     def _make_spinbox(self, label: str) -> QWidget:
         w = QWidget()
@@ -700,43 +738,102 @@ class _ColorPanel(QFrame):
     # ── Show / hide ───────────────────────────────────────────
 
     def show_animated(self, anchor: QPoint):
+        # 淡入动画完全在 popup 自身的 paintEvent 中完成，QTimer 每 16ms
+        # 推进一次不透明度并触发重绘。绕开 QGraphicsEffect / QPropertyAnimation，
+        # 避免 offscreen 渲染目标触发 DWM 重合成导致父 SettingsWindow 崩溃。
+        # 淡入期间临时 hide 所有内容子控件，背景完成后再 show，避免穿帮。
         self._closed_emitted = False
         self._closing_internally = False
+
+        # 1. 先在所有控件可见的情况下计算尺寸，确保 setFixedSize 锁定的
+        #    是「完整显示」时的尺寸，避免后续 hide 控件时布局塌陷。
         self.setFixedWidth(288)
         self.adjustSize()
-        x = anchor.x()
-        self.move(x, anchor.y())
-        self.setWindowOpacity(0.0)
-        super().show()
-        self.raise_()
-        # Fade in
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
-        self._fade = QPropertyAnimation(self, b"windowOpacity")
-        self._fade.setDuration(180)
-        self._fade.setStartValue(0.0)
-        self._fade.setEndValue(1.0)
-        self._fade.setEasingCurve(QEasingCurve.OutCubic)
-        self._fade.start()
+        full_size = QSize(self.size())
 
+        # 2. 临时隐藏内容子控件（背景淡入期间不显示），固定窗口尺寸
+        for w in self._content_widgets:
+            w.hide()
+        self.setFixedSize(full_size)
+
+        # 3. 定位 + 圆角遮罩 + 事件过滤器
+        self.move(anchor.x(), anchor.y())
+        self._apply_round_mask()
         self._install_event_filter()
 
+        # 4. 启动 QTimer 驱动的淡入
+        self._current_opacity = 0.0
+        self._target_opacity = 1.0
+        self._animation_timer.start()
+
+        super().show()
+        self.raise_()
+
+    def _apply_round_mask(self) -> None:
+        """用 setMask() 实现圆角裁剪（popup 不设 WA_TranslucentBackground）。
+
+        Qt.Popup 设了 WA_TranslucentBackground 就会被当作 WS_EX_LAYERED
+        窗口，每帧的 effect 重合成都会触发 DWM 重合成。改用 setMask()
+        走窗口级 region 裁剪，popup 保持普通顶层窗口，effect 重合成只
+        走 GDI 路径，零 DWM 参与。
+        """
+        radius = 8
+        path = QPainterPath()
+        path.addRoundedRect(
+            QRectF(0, 0, self.width(), self.height()),
+            radius, radius,
+        )
+        # QPainterPath → QPolygonF → QPolygon → QRegion
+        polygon = path.toFillPolygon(QTransform()).toPolygon()
+        self.setMask(QRegion(polygon))
+
     def close_animated(self):
+        # 淡出动画同样在 popup 自身 paintEvent 中完成，QTimer 推进透明度。
+        # 关闭开始即 hide 内容子控件，只让背景淡出消失。
         if self._closing_internally:
             return
         self._closing_internally = True
-        from PySide6.QtCore import QPropertyAnimation, QEasingCurve
-        self._fade = QPropertyAnimation(self, b"windowOpacity")
-        self._fade.setDuration(150)
-        self._fade.setStartValue(self.windowOpacity())
-        self._fade.setEndValue(0.0)
-        self._fade.setEasingCurve(QEasingCurve.InCubic)
-        self._fade.finished.connect(self._on_close_finished)
-        self._fade.start()
+        for w in self._content_widgets:
+            w.hide()
+        self._target_opacity = 0.0
+        self._animation_timer.start()
+
+    def _advance_animation(self) -> None:
+        """QTimer 回调：每 16ms 推进一次透明度，触发 paintEvent 重绘。
+
+        到达目标值后停止计时器；淡出到位时调用 _on_close_finished 完成关闭。
+        淡入到位时把内容子控件 show 出来。
+        """
+        target = self._target_opacity
+        if self._current_opacity < target:
+            self._current_opacity = min(target, self._current_opacity + 0.08)
+        elif self._current_opacity > target:
+            self._current_opacity = max(target, self._current_opacity - 0.1)
+        else:
+            self._animation_timer.stop()
+            return
+
+        self.update()
+
+        if self._current_opacity == target:
+            self._animation_timer.stop()
+            if target >= 1.0:
+                # 淡入到位：show 所有内容子控件
+                for w in self._content_widgets:
+                    w.show()
+            elif target <= 0.0:
+                # 淡出到位：完成关闭
+                self._on_close_finished()
 
     def _on_close_finished(self):
         self.hide()
         self._cleanup()
         self._closing_internally = False
+        # 重置为不可见状态，方便下次 show_animated 从 0 重新淡入
+        self._current_opacity = 0.0
+        # 恢复内容子控件为可见，下次 show_animated 会再次 hide 后淡入
+        for w in self._content_widgets:
+            w.show()
 
     def _cleanup(self) -> None:
         """关闭/隐藏时统一清理：移除事件过滤器并补发 closed 信号。"""
@@ -810,16 +907,20 @@ class _ColorPanel(QFrame):
             return False
 
     def paintEvent(self, event: QPaintEvent):
+        # 在 popup 自身绘制圆角背景与边框，setOpacity 应用当前动画透明度。
+        # 这替代了原 _FadeContainer 的作用：完全走 GDI 路径，不触发 DWM 重合成。
+        # 子控件（已在淡入淡出期间被 hide）由 Qt 独立渲染在背景之上。
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        r = 8
+        radius = 8
+        p.setOpacity(self._current_opacity)
         p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(self._bg_card))
-        p.drawRoundedRect(QRectF(0, 0, w, h), r, r)
-        p.setPen(QPen(self._border_color, 1))
+        p.setBrush(QBrush(tm.surface))
+        p.drawRoundedRect(QRectF(0, 0, w, h), radius, radius)
+        p.setPen(QPen(tm.mid, 1))
         p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), r, r)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
         p.end()
 
 
