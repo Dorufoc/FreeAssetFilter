@@ -88,14 +88,16 @@ class StyledTooltip(QWidget):
     # ── Sizing ──────────────────────────────────────────────────────
 
     def _base_font(self) -> QFont:
-        """返回跟随应用默认字号的字体（无全局设置时回退到 FONT_SIZE）。"""
+        """返回跟随父控件字号的字体；父控件无有效字号时回退到全局字体或 FONT_SIZE。"""
+        font = QFont(self._parent.font())
+        if font.pointSize() > 0:
+            return font
+
         app = QApplication.instance()
-        fallback = QFont("Microsoft YaHei UI", FONT_SIZE)
-        base = fallback
+        base = QFont("Microsoft YaHei UI", FONT_SIZE)
         if app is not None:
             global_font = getattr(app, "global_font", None)
-            if global_font is not None:
-                base = QFont(global_font)
+            base = QFont(global_font) if global_font is not None else QFont(app.font())
         font = QFont(base)
         if font.pointSize() <= 0:
             font.setPointSize(FONT_SIZE)

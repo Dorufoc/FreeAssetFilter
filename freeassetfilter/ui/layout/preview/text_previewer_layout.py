@@ -2275,6 +2275,13 @@ class TextPreviewerLayout(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
+    # 与主程序 main.py 保持一致的全局字体环境，
+    # 确保按钮 / 列表 / 工具提示等控件字号统一（默认 10pt）。
+    _default_font = QFont("Microsoft YaHei", 10, QFont.Normal)
+    app.setFont(_default_font)
+    app.global_font = QFont(_default_font)
+    app.default_font_size = 10
+
     window = QWidget()
     window.setWindowTitle("文本预览器 (独立测试)")
     window.resize(960, 600)
