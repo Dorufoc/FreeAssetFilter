@@ -1331,13 +1331,19 @@ class MPVManager(QObject):
 
     # ==================== 公共API接口 ====================
 
-    def initialize(self, timeout: float = 10.0, wait_for_cleanup: bool = True) -> bool:
+    def initialize(
+        self,
+        timeout: float = 10.0,
+        wait_for_cleanup: bool = True,
+        initial_window_id: Optional[int] = None,
+    ) -> bool:
         """
         初始化MPV管理器
 
         Args:
             timeout: 初始化超时时间（秒）
             wait_for_cleanup: 是否等待上次清理完成（默认为True）
+            initial_window_id: 首次初始化时嵌入视频输出的原生窗口句柄
 
         Returns:
             是否初始化成功
@@ -1362,6 +1368,8 @@ class MPVManager(QObject):
         # 在主线程上创建MPV核心（确保QObject/QTimer拥有正确的事件循环）
         if self._mpv_core is None:
             self._mpv_core = MPVPlayerCore()
+        if initial_window_id is not None:
+            self._mpv_core.set_initial_window_id(initial_window_id)
 
         self._start_operation_thread()
 

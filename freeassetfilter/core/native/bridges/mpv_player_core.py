@@ -582,6 +582,20 @@ class MPVPlayerCore(QObject):
         self._worker_exit_expected = False
         self._worker_crash_lock = threading.Lock()
 
+    def set_initial_window_id(self, window_id: int) -> None:
+        """设置首次初始化时使用的视频输出窗口句柄。
+
+        ``wid`` 必须在 ``mpv_initialize`` 前配置；初始化后请使用
+        :meth:`set_window_id` 完成窗口重绑定。
+
+        Args:
+            window_id: 宿主视频表面的原生窗口句柄。
+        """
+        with self._state_lock:
+            if self._initialized:
+                return
+            self._window_id = window_id
+
     def _worker_thread_func(self):
         """MPV工作线程主函数 - 所有MPV操作都在此线程执行"""
         mpv_handle = None

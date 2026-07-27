@@ -841,10 +841,8 @@ class VideoPlayer(QWidget):
         video_layout = QVBoxLayout(video_container)
         video_layout.setContentsMargins(0, 0, 0, 0)
         
-        self._video_surface = QWidget()
+        self._video_surface = QWidget(video_container)
         self._video_surface.setStyleSheet("background-color: transparent;")
-        self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
-        self._video_surface.setAttribute(Qt.WA_NativeWindow)
         # 禁用视频表面的焦点，让父窗口处理键盘事件
         self._video_surface.setFocusPolicy(Qt.NoFocus)
         self._video_surface.installEventFilter(self)
@@ -978,13 +976,11 @@ class VideoPlayer(QWidget):
         if self._is_mpv_embedded or not self._mpv_manager:
             return
         
-        # 初始化MPV管理器
-        if not self._mpv_manager.initialize():
-            self.errorOccurred.emit("无法初始化MPV播放器")
-            return
-        
         # 音频模式不需要嵌入MPV窗口，但同样需要应用初始设置
         if self._playback_mode == self.AUDIO_MODE:
+            if not self._mpv_manager.initialize():
+                self.errorOccurred.emit("无法初始化MPV播放器")
+                return
             self._is_mpv_embedded = True
             # 应用初始设置（音量和倍速）
             self._mpv_manager.set_volume(self._initial_volume, component_id=self._component_id)
@@ -995,15 +991,18 @@ class VideoPlayer(QWidget):
         self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
         self._video_surface.setAttribute(Qt.WA_NativeWindow, True)
         
-        # 确保视频渲染区域可见
-        if not self._video_surface.isVisible():
-            self._video_surface.show()
-        
         # 获取窗口ID
         win_id = int(self._video_surface.winId())
         debug(f"视频渲染窗口ID: {win_id}")
-        
-        if self._mpv_manager.set_window_id(win_id, component_id=self._component_id):
+
+        if self._mpv_manager.is_initialized():
+            embedded = self._mpv_manager.set_window_id(
+                win_id, component_id=self._component_id
+            )
+        else:
+            embedded = self._mpv_manager.initialize(initial_window_id=win_id)
+
+        if embedded:
             self._is_mpv_embedded = True
             # 嵌入后立即同步几何尺寸
             self._sync_mpv_geometry()

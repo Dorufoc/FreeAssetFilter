@@ -412,9 +412,7 @@ class VideoPlayerLayout(QWidget):
         self._stack = QStackedLayout()
 
         # ── 视频渲染表面（index 0）──
-        self._video_surface = QWidget()
-        self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors)
-        self._video_surface.setAttribute(Qt.WA_NativeWindow)
+        self._video_surface = QWidget(self)
         self._video_surface.setStyleSheet("background-color: #000;")
         self._video_surface.setFocusPolicy(Qt.NoFocus)
         self._stack.addWidget(self._video_surface)
@@ -524,20 +522,21 @@ class VideoPlayerLayout(QWidget):
         if self._is_mpv_embedded or not self._mpv_manager:
             return
 
-        if not self._mpv_manager.initialize():
-            error("无法初始化 MPV 播放器")
-            return
-
         # Ensure video surface is current before embedding
         self._stack.setCurrentIndex(0)
 
         self._video_surface.setAttribute(Qt.WA_DontCreateNativeAncestors, True)
         self._video_surface.setAttribute(Qt.WA_NativeWindow, True)
-        if not self._video_surface.isVisible():
-            self._video_surface.show()
 
         win_id = int(self._video_surface.winId())
-        if self._mpv_manager.set_window_id(win_id, component_id=self._component_id):
+        if self._mpv_manager.is_initialized():
+            embedded = self._mpv_manager.set_window_id(
+                win_id, component_id=self._component_id
+            )
+        else:
+            embedded = self._mpv_manager.initialize(initial_window_id=win_id)
+
+        if embedded:
             self._is_mpv_embedded = True
             # 应用初始音量/倍速
             self._mpv_manager.set_volume(70, component_id=self._component_id)
@@ -811,10 +810,14 @@ if __name__ == "__main__":
     y = (screen.height() - 600) // 2 + screen.y()
     window.move(x, y)
 
-    player = VideoPlayerLayout(standalone=True)
+    player = VideoPlayerLayout(window, standalone=True)
     layout = QVBoxLayout(window)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.addWidget(player)
+
+    # 先显示宿主窗口，再创建/绑定 native 视频表面，避免隐藏宿主下的
+    # WA_NativeWindow 子控件在 Windows 上短暂成为独立顶层窗口。
+    window.show()
 
     if len(sys.argv) > 1:
         file_path = sys.argv[1]
@@ -830,5 +833,4 @@ if __name__ == "__main__":
         player._placeholder.setText("拖放播放文件或选择文件以播放")
         player._stack.setCurrentIndex(1)
 
-    window.show()
     sys.exit(app.exec())
