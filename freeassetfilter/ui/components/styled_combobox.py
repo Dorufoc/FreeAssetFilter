@@ -364,6 +364,9 @@ class StyledComboBox(QWidget):
             self.current_index_changed.emit(self._current_index)
             self.update()
 
+    def count(self) -> int:
+        return len(self._items)
+
     def sizeHint(self):
         cfg = self.SIZE_CONFIG[self._size]
         fm = QApplication.fontMetrics()
@@ -394,14 +397,11 @@ class StyledComboBox(QWidget):
         rad = cfg["rad"]
 
         # Background — smooth hover transition
-        input_bg = tm.alpha_of(tm.mid, 40)
-        input_hover = tm.alpha_of(tm.mid, 50)
-        bg_r = int(input_bg.red() + (input_hover.red() - input_bg.red()) * self._hover_progress)
-        bg_g = int(input_bg.green() + (input_hover.green() - input_bg.green()) * self._hover_progress)
-        bg_b = int(input_bg.blue() + (input_hover.blue() - input_bg.blue()) * self._hover_progress)
-        bg = QColor(bg_r, bg_g, bg_b)
+        # 保持 alpha，作为半透明叠加层绘制，不要变成不透明的实色块
+        bg = tm.alpha_of(tm.mid, 12 + 10 * self._hover_progress)
 
         p.setPen(Qt.NoPen)
+
         p.setBrush(bg)
         p.drawRoundedRect(QRectF(0, 0, w, h), rad, rad)
 
@@ -427,10 +427,7 @@ class StyledComboBox(QWidget):
         if text:
             font = QFont("Microsoft YaHei UI", cfg["font_sz"])
             p.setFont(font)
-            text_primary = tm.text
-            text_secondary = tm.mid
-            tc = text_primary if self._open else text_secondary
-            p.setPen(tc)
+            p.setPen(tm.text)
             arrow_x = w - cfg["h_pad"] - 22
             text_w = arrow_x - cfg["h_pad"] - 4
             p.drawText(QRectF(cfg["h_pad"], 0, max(text_w, 0), h),

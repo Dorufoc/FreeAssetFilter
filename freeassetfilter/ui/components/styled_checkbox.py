@@ -1,6 +1,6 @@
 """Styled Checkbox component - matches web checkbox exactly."""
 
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QApplication
 from PySide6.QtCore import Qt, Signal, Property, QRectF, QPropertyAnimation, QEasingCurve, QSize
 from PySide6.QtGui import QPainter, QColor, QPen, QPaintEvent, QFont, QFontMetrics
 
@@ -112,7 +112,22 @@ class StyledCheckbox(QWidget):
         self.setMinimumSize(w, h)
 
     def _make_font(self) -> QFont:
-        font = QFont("Segoe UI", self._label_font_size)
+        app = QApplication.instance()
+        if app is not None:
+            base_font = getattr(app, "global_font", None)
+            if base_font is None:
+                base_font = app.font()
+            font = QFont(base_font)
+            base_size = base_font.pointSize()
+            if base_size <= 0:
+                base_size = base_font.pixelSize()
+            if base_size <= 0:
+                base_size = self._label_font_size
+            font.setPointSize(base_size)
+        else:
+            font = QFont()
+            font.setPointSize(self._label_font_size)
+        font.setWeight(QFont.Normal)
         return font
 
     # ── Qt properties for animation ──────────────────────────────

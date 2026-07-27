@@ -88,7 +88,8 @@ class HoverTooltip(QWidget):
         else:
             global_size = 10.0
 
-        new_size = max(1, int(global_size * 0.8))
+        # tooltip 字号与全局默认控件字号保持一致，便于阅读。
+        new_size = max(1, int(global_size))
         font.setPointSize(new_size)
         self.label.setFont(font)
 

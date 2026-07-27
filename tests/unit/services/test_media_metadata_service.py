@@ -4,12 +4,15 @@ MediaMetadataService 单元测试
 测试 freeassetfilter/services/media_metadata_service.py 模块的功能。
 """
 
+import importlib
 import os
+import sys
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from freeassetfilter.services import media_metadata_service
 from freeassetfilter.services.media_metadata_service import (
     MediaMetadataService,
 )
@@ -193,6 +196,259 @@ class TestExtractAudioCover:
             side_effect=RuntimeError("意外错误"),
         ):
             assert service.extract_audio_cover(temp_audio_file) is None
+
+
+# =========================================================================
+# extract_audio_tags
+# =========================================================================
+
+
+class TestExtractAudioTags:
+    """测试 extract_audio_tags() 的返回 schema 与各标签格式映射。"""
+
+    def _make_id3_frame(self, text: str | list[str]) -> MagicMock:
+        """构造一个模拟 ID3 帧对象，支持 .text 列表接口。"""
+        frame = MagicMock()
+        frame.text = [text] if isinstance(text, str) else text
+        return frame
+
+    def _make_id3_tags(
+        self,
+        title: str | None = None,
+        artist: str | None = None,
+        album: str | None = None,
+    ) -> MagicMock:
+        """构造支持 get/__getitem__ 的模拟 ID3 tags 对象。"""
+        tags = MagicMock()
+        frames: Dict[str, MagicMock | None] = {
+            "TIT2": self._make_id3_frame(title) if title else None,
+            "TPE1": self._make_id3_frame(artist) if artist else None,
+            "TALB": self._make_id3_frame(album) if album else None,
+        }
+
+        def _get(key: str, default: Any = None) -> Any:
+            return frames.get(key, default)
+
+        def _getitem(key: str) -> Any:
+            val = _get(key)
+            if val is None:
+                raise KeyError(key)
+            return val
+
+        tags.get.side_effect = _get
+        tags.__getitem__.side_effect = _getitem
+        return tags
+
+    def _make_vorbis_tags(
+        self,
+        title: str | None = None,
+        artist: str | None = None,
+        album: str | None = None,
+    ) -> Dict[str, list[str]]:
+        """构造 Vorbis Comment 风格的字典（值为字符串列表）。"""
+        tags: Dict[str, list[str]] = {}
+        if title is not None:
+            tags["TITLE"] = [title]
+        if artist is not None:
+            tags["ARTIST"] = [artist]
+        if album is not None:
+            tags["ALBUM"] = [album]
+        return tags
+
+    def test_extract_audio_tags_returns_none_for_nonexistent_path(
+        self, service: MediaMetadataService
+    ):
+        """非存在路径返回 None。"""
+        result = service.extract_audio_tags(r"C:\nonexistent\song.mp3")
+        assert result is None
+
+    def test_extract_audio_tags_mutagen_unavailable_returns_empty_schema(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """mutagen 未安装时返回字段全为空的 schema。"""
+        with patch.object(
+            media_metadata_service, "mutagen_file", None
+        ):
+            result = service.extract_audio_tags(temp_audio_file)
+            assert isinstance(result, dict)
+            assert result["title"] == ""
+            assert result["artist"] == ""
+            assert result["album"] == ""
+            assert result["cover_data"] is None
+
+    def test_extract_audio_tags_id3(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """MP3 ID3 标签 TIT2/TPE1/TALB 被正确映射。"""
+        mock_audio = _make_mock_audio()
+        mock_audio.tags = self._make_id3_tags(
+            title="Song Title", artist="Song Artist", album="Song Album"
+        )
+
+        with patch.object(
+            media_metadata_service, "mutagen_file", return_value=mock_audio
+        ):
+            result = service.extract_audio_tags(temp_audio_file)
+            assert result == {
+                "title": "Song Title",
+                "artist": "Song Artist",
+                "album": "Song Album",
+                "cover_data": None,
+            }
+
+    def test_extract_audio_tags_vorbis(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """Vorbis Comment TITLE/ARTIST/ALBUM 被正确映射。"""
+        mock_audio = _make_mock_audio()
+        mock_audio.tags = self._make_vorbis_tags(
+            title="Flac Title", artist="Flac Artist", album="Flac Album"
+        )
+
+        with patch.object(
+            media_metadata_service, "mutagen_file", return_value=mock_audio
+        ):
+            result = service.extract_audio_tags(temp_audio_file)
+            assert result == {
+                "title": "Flac Title",
+                "artist": "Flac Artist",
+                "album": "Flac Album",
+                "cover_data": None,
+            }
+
+    def test_extract_audio_tags_mp4(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """MP4 ©nam/©ART/©alb 标签被正确映射。"""
+        mock_audio = _make_mock_audio()
+        mock_audio.tags = {
+            "\u00a9nam": ["M4a Title"],
+            "\u00a9ART": ["M4a Artist"],
+            "\u00a9alb": ["M4a Album"],
+        }
+
+        with patch.object(
+            media_metadata_service, "mutagen_file", return_value=mock_audio
+        ):
+            result = service.extract_audio_tags(temp_audio_file)
+            assert result == {
+                "title": "M4a Title",
+                "artist": "M4a Artist",
+                "album": "M4a Album",
+                "cover_data": None,
+            }
+
+    def test_extract_audio_tags_missing_fields_fallback_to_empty_strings(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """缺失字段返回空字符串而非 None。"""
+        mock_audio = _make_mock_audio()
+        mock_audio.tags = self._make_id3_tags(title="Only Title")
+
+        with patch.object(
+            media_metadata_service, "mutagen_file", return_value=mock_audio
+        ):
+            result = service.extract_audio_tags(temp_audio_file)
+            assert result["title"] == "Only Title"
+            assert result["artist"] == ""
+            assert result["album"] == ""
+            assert result["cover_data"] is None
+
+    def test_extract_audio_tags_multi_value_collapsed(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """多值标签被逗号连接并返回字符串。"""
+        mock_audio = _make_mock_audio()
+        mock_audio.tags = self._make_vorbis_tags(
+            title="A", artist="B", album="C"
+        )
+        mock_audio.tags["ARTIST"] = ["Artist A", "Artist B"]
+
+        with patch.object(
+            media_metadata_service, "mutagen_file", return_value=mock_audio
+        ):
+            result = service.extract_audio_tags(temp_audio_file)
+            assert isinstance(result["artist"], str)
+            assert result["artist"] == "Artist A, Artist B"
+
+    def test_extract_audio_tags_cover_data_reuses_extract_audio_cover(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """cover_data 通过复用 extract_audio_cover 返回。"""
+        jpeg_header = b"\xff\xd8\xff\xe0" + b"\x00" * 50
+        mock_audio = _make_mock_audio()
+        mock_audio.tags = self._make_id3_tags(
+            title="T", artist="A", album="L"
+        )
+
+        with patch.object(
+            service, "extract_audio_cover", return_value=jpeg_header
+        ):
+            with patch.object(
+                media_metadata_service, "mutagen_file", return_value=mock_audio
+            ):
+                result = service.extract_audio_tags(temp_audio_file)
+                assert result["cover_data"] == jpeg_header
+
+    def test_extract_audio_tags_corrupt_file_returns_empty_schema(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """mutagen 解析失败时不抛异常，返回空 schema。"""
+        with patch.object(
+            media_metadata_service,
+            "mutagen_file",
+            side_effect=RuntimeError("corrupt"),
+        ):
+            result = service.extract_audio_tags(temp_audio_file)
+            assert isinstance(result, dict)
+            assert result["title"] == ""
+            assert result["artist"] == ""
+            assert result["album"] == ""
+            assert result["cover_data"] is None
+
+    def test_extract_audio_tags_unsupported_format_returns_empty_schema(
+        self, service: MediaMetadataService, temp_audio_file: str
+    ):
+        """mutagen 返回 None 时返回空 schema。"""
+        with patch.object(
+            media_metadata_service, "mutagen_file", return_value=None
+        ):
+            result = service.extract_audio_tags(temp_audio_file)
+            assert isinstance(result, dict)
+            assert result["title"] == ""
+            assert result["artist"] == ""
+            assert result["album"] == ""
+            assert result["cover_data"] is None
+
+    def test_extract_audio_tags_unimportable_mutagen_via_sys_modules(self, tmp_path):
+        """通过 sys.modules 模拟 mutagen 彻底不可导入，验证模块降级。"""
+        real_mutagen = sys.modules.pop("mutagen", None)
+        with patch.dict(sys.modules, {"mutagen": None}, clear=False):
+            importlib.reload(media_metadata_service)
+            svc = MediaMetadataService()
+            svc.initialize()
+
+            try:
+                audio_path = tmp_path / "fake.mp3"
+                audio_path.write_bytes(b"\xff\xfb" + b"\x00" * 100)
+                result = svc.extract_audio_tags(str(audio_path))
+                assert result is not None
+                assert set(result.keys()) == {
+                    "title",
+                    "artist",
+                    "album",
+                    "cover_data",
+                }
+                assert result["title"] == ""
+                assert result["artist"] == ""
+                assert result["album"] == ""
+                assert result["cover_data"] is None
+            finally:
+                svc.dispose()
+
+        importlib.reload(media_metadata_service)
+        if real_mutagen is not None:
+            sys.modules["mutagen"] = real_mutagen
 
 
 # =========================================================================

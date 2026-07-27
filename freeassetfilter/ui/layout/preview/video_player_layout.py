@@ -1,33 +1,97 @@
+"""Video player layout embedding MPV + StyledPlayerBar controls.
+
+FreeAssetFilter - 多功能文件预览与管理工具
+Copyright (c) 2026 Dorufoc <dorufoc@outlook.com>
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
 """
-视频播放器布局 — 嵌入 MPV + StyledPlayerBar 控制栏
-"""
+# allow: SIZE_OK — single UI layout integrating MPV video embedding,
+# audio-mode fluid background + music info panel, control-bar signal wiring
+# and standalone demo entry as required by the music-previewer-layout plan.
 
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
-# 独立运行时的 sys.path 引导（在模块级导入前执行）
-_this_file = Path(__file__).resolve()
-_ui_root = str(_this_file.parent.parent.parent)  # freeassetfilter/ui/
-if _ui_root not in sys.path:
-    sys.path.insert(0, _ui_root)
-_project_root = str(_this_file.parent.parent.parent.parent.parent)  # 项目根
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+# 独立运行时的 sys.path 引导（在模块级导入前执行）。
+# `python -m` 与测试运行器已保证项目根在 sys.path；直接执行时回退到 cwd。
+try:
+    from freeassetfilter.core._paths import core_dir
+except ImportError:  # pragma: no cover
+    _cwd = os.getcwd()
+    if _cwd not in sys.path:
+        sys.path.insert(0, _cwd)
+    from freeassetfilter.core._paths import core_dir
+
+_freeassetfilter_dir = core_dir().parent
+_ui_root = str(_freeassetfilter_dir / "ui")
+_project_root = str(_freeassetfilter_dir.parent)
+for __entry in (_ui_root, _project_root):
+    if __entry not in sys.path:
+        sys.path.insert(0, __entry)
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication,
-    QStackedLayout, QPushButton,
+    QStackedLayout, QPushButton, QGridLayout,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QRect
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QImage, QPixmap, QColor
 
 from theme import tm
 from components.styled_player_bar import StyledPlayerBar
+from components.styled_fluid_background import StyledFluidBackground
+from components.styled_music_info_panel import StyledMusicInfoPanel
 from freeassetfilter.core.managers.mpv_manager import MPVManager, MPVState
 from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
+from freeassetfilter.services.media_metadata_service import MediaMetadataService
 from freeassetfilter.utils.app_logger import info, debug, warning, error
+
+# 独立入口与文件对话框使用的扩展名白名单。
+# 列表保留友好的显示顺序；集合用于快速查找。
+_AUDIO_FILTER_ORDER = [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus", ".aiff"]
+_VIDEO_FILTER_ORDER = [".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".mpg", ".mpeg"]
+
+AUDIO_EXTENSIONS = set(_AUDIO_FILTER_ORDER)
+VIDEO_EXTENSIONS = set(_VIDEO_FILTER_ORDER)
+SUPPORTED_MEDIA_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+
+# ``_on_browse_file`` 的文件选择过滤器（音频 + 视频）
+_PLAYABLE_SUFFIXES = " ".join(f"*{ext}" for ext in _AUDIO_FILTER_ORDER + _VIDEO_FILTER_ORDER)
+PLAYABLE_FILE_FILTER = f"播放文件 ({_PLAYABLE_SUFFIXES});;所有文件 (*.*)"
+
+
+def _is_audio_file(file_path: str) -> bool:
+    """Infer audio mode from the file extension (case-insensitive).
+
+    Args:
+        file_path: Path to the candidate file.
+
+    Returns:
+        ``True`` when the suffix belongs to :data:`AUDIO_EXTENSIONS`.
+    """
+    return Path(file_path).suffix.lower() in AUDIO_EXTENSIONS
+
+
+def _is_supported_media_file(file_path: str) -> bool:
+    """Return ``True`` for any audio or video extension known to the layout.
+
+    Args:
+        file_path: Path to the candidate file.
+
+    Returns:
+        ``True`` when the suffix belongs to :data:`SUPPORTED_MEDIA_EXTENSIONS`.
+    """
+    return Path(file_path).suffix.lower() in SUPPORTED_MEDIA_EXTENSIONS
 
 
 class VideoPlayerLayout(QWidget):
@@ -94,6 +158,26 @@ class VideoPlayerLayout(QWidget):
             warning(f"文件不存在: {file_path}")
             return False
 
+        if is_audio:
+            return self._load_audio_file(file_path)
+
+        return self._load_video_file(file_path)
+
+    @property
+    def is_audio_mode(self) -> bool:
+        """当前是否处于音频预览模式"""
+        return self._stack.currentIndex() == self._audio_surface_index
+
+    def _current_preview_widget(self) -> QWidget:
+        """返回当前可见的预览控件。
+
+        音频模式下返回 ``_audio_surface``，视频模式下返回 ``_video_surface``，
+        用作浮动控制栏的鼠标检测目标。
+        """
+        return self._audio_surface if self.is_audio_mode else self._video_surface
+
+    def _load_video_file(self, file_path: str) -> bool:
+        """加载视频文件并嵌入 MPV 窗口。"""
         if not self._is_mpv_embedded:
             self._embed_mpv_window()
 
@@ -101,7 +185,7 @@ class VideoPlayerLayout(QWidget):
             return False
 
         self._current_file = file_path
-        result = self._mpv_manager.load_file(file_path, component_id=self._component_id)
+        result = self._mpv_manager.load_file(file_path, is_audio=False, component_id=self._component_id)
         if result:
             self._stack.setCurrentIndex(0)  # Show video surface
             self._mpv_manager.play(component_id=self._component_id)
@@ -109,6 +193,132 @@ class VideoPlayerLayout(QWidget):
             self._placeholder.setText("无法加载文件")
 
         return result
+
+    def _load_audio_file(self, file_path: str) -> bool:
+        """加载音频文件并显示流体背景 + 音乐信息面板。
+
+        不嵌入 MPV 视频窗口；MPV 只负责音频播放。
+
+        Args:
+            file_path: 现有音频文件路径。
+
+        Returns:
+            bool: 加载是否成功。
+        """
+        if not self._mpv_manager:
+            return False
+
+        if not self._mpv_manager.is_initialized():
+            if not self._mpv_manager.initialize():
+                error("无法初始化 MPV 播放器")
+                return False
+
+        result = self._mpv_manager.load_file(
+            file_path, is_audio=True, component_id=self._component_id
+        )
+        if not result:
+            self._placeholder.setText("无法加载文件")
+            return False
+
+        self._current_file = file_path
+        self._update_audio_metadata(file_path)
+
+        # 先切换到音频表面，让流体背景所在页面可见后再初始化渲染器，
+        # 否则 QOpenGLWidget 无法创建有效的 OpenGL context。
+        self._stack.setCurrentIndex(self._audio_surface_index)
+        self._fluid_background.load()
+        self._mpv_manager.play(component_id=self._component_id)
+
+        return True
+
+    def _update_audio_metadata(self, file_path: str) -> None:
+        """读取音频标签并更新流体背景与音乐信息面板。
+
+        Args:
+            file_path: 音频文件路径。
+        """
+        metadata_service = MediaMetadataService()
+        metadata_service.initialize()
+        try:
+            tags = metadata_service.extract_audio_tags(file_path)
+            if tags is None:
+                tags = {
+                    "title": "",
+                    "artist": "",
+                    "album": "",
+                    "cover_data": None,
+                }
+        finally:
+            metadata_service.dispose()
+
+        cover_data: Optional[bytes] = tags.get("cover_data")
+
+        # 流体背景配色：有封面取封面主色，否则使用主题强调色
+        if cover_data:
+            colors = self._extract_palette_from_cover(cover_data)
+            if len(colors) >= 2:
+                self._fluid_background.set_custom_colors(colors)
+            else:
+                self._fluid_background.use_accent_theme()
+        else:
+            self._fluid_background.use_accent_theme()
+
+        # 音乐信息面板
+        self._music_info_panel.set_title(tags.get("title", ""))
+        self._music_info_panel.set_artist(tags.get("artist", ""))
+
+        pixmap = QPixmap()
+        if cover_data and pixmap.loadFromData(cover_data):
+            self._music_info_panel.set_cover_pixmap(pixmap)
+        else:
+            self._music_info_panel.set_placeholder()
+
+    @staticmethod
+    def _extract_palette_from_cover(cover_data: bytes) -> list[QColor]:
+        """从封面图像数据中抽取 2-5 个主导色。
+
+        实现为轻量级量化：缩放到 64x64 后按 32 步长对 RGB 分桶，
+        返回出现频率最高的颜色。若可抽取颜色少于 2 个则返回空列表，
+        让调用方回退到主题强调色。
+
+        Args:
+            cover_data: 封面图像二进制数据（JPEG/PNG）。
+
+        Returns:
+            2-5 个 QColor 组成的列表；失败时返回空列表。
+        """
+        image = QImage.fromData(cover_data)
+        if image.isNull():
+            return []
+
+        image = image.scaled(
+            64, 64, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+        )
+
+        buckets: Counter = Counter()
+        for y in range(image.height()):
+            for x in range(image.width()):
+                color = QColor(image.pixel(x, y))
+                if color.alpha() <= 0:
+                    continue
+                key = (
+                    (color.red() // 32) * 32,
+                    (color.green() // 32) * 32,
+                    (color.blue() // 32) * 32,
+                )
+                buckets[key] += 1
+
+        if not buckets:
+            return []
+
+        top_colors = buckets.most_common(5)
+        palette = [QColor(r, g, b) for (r, g, b), _ in top_colors]
+
+        if len(palette) == 1:
+            # 单主导色时扩展为类 Apple Music 风格的 5 色类比色板。
+            palette = StyledFluidBackground._build_from_seed(palette[0])
+
+        return palette if len(palette) >= 2 else []
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由 MainWindow 调用）"""
@@ -126,6 +336,24 @@ class VideoPlayerLayout(QWidget):
             self._mpv_manager.stop(component_id=self._component_id)
             self._mpv_manager.unregister_component(self._component_id)
 
+        # 注销布局自身的心跳回调
+        HeartbeatManager().unregister_tick_callback(
+            f"video_player_layout_sync_{id(self)}"
+        )
+
+        # 停止流体背景动画并释放其资源
+        if self._fluid_background is not None:
+            try:
+                self._fluid_background.unload()
+            except RuntimeError:
+                # 允许重复 cleanup 或已释放时忽略
+                pass
+
+        # 隐藏音乐信息面板，避免随上层 surface 一起被 dispose 时产生闪烁
+        if self._music_info_panel is not None:
+            self._music_info_panel.hide()
+
+        if self._mpv_manager:
             # 断开 MPVManager 信号
             try:
                 self._mpv_manager.positionChanged.disconnect(self._on_position_changed)
@@ -180,7 +408,7 @@ class VideoPlayerLayout(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Stacked layout: 0=video_surface, 1=overlay
+        # Stacked layout: 0=video_surface, 1=overlay, 2=audio_surface
         self._stack = QStackedLayout()
 
         # ── 视频渲染表面（index 0）──
@@ -239,6 +467,22 @@ class VideoPlayerLayout(QWidget):
             overlay_layout.addWidget(self._browse_btn, alignment=Qt.AlignCenter)
 
         self._stack.addWidget(self._overlay)
+
+        # ── 音频渲染表面（index 2，音频模式时代替视频窗口）──
+        self._audio_surface = QWidget()
+        self._audio_surface.setStyleSheet("background-color: #000;")
+        audio_layout = QGridLayout(self._audio_surface)
+        audio_layout.setContentsMargins(0, 0, 0, 0)
+        audio_layout.setSpacing(0)
+
+        self._fluid_background = StyledFluidBackground(self._audio_surface)
+        self._music_info_panel = StyledMusicInfoPanel(self._audio_surface)
+
+        # 背景与信息面板共享同一单元格，信息面板居中浮于背景之上
+        audio_layout.addWidget(self._fluid_background, 0, 0)
+        audio_layout.addWidget(self._music_info_panel, 0, 0, alignment=Qt.AlignCenter)
+
+        self._audio_surface_index = self._stack.addWidget(self._audio_surface)
 
         main_layout.addLayout(self._stack, stretch=1)
 
@@ -433,7 +677,7 @@ class VideoPlayerLayout(QWidget):
             screen = QApplication.primaryScreen()
             if screen:
                 self._player_bar.enter_floating_mode(
-                    target_widget=self._video_surface,
+                    target_widget=self._current_preview_widget(),
                     screen_geometry=screen.geometry(),
                 )
         else:
@@ -457,16 +701,16 @@ class VideoPlayerLayout(QWidget):
         debug(f"播放结束, 原因码: {reason}")
 
     def _on_browse_file(self) -> None:
-        """打开文件对话框选择视频文件（仅 standalone 模式）"""
+        """打开文件对话框选择播放文件（仅 standalone 模式）"""
         from PySide6.QtWidgets import QFileDialog
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "选择视频文件",
+            "选择播放文件",
             "",
-            "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.mpg *.mpeg);;所有文件 (*.*)",
+            PLAYABLE_FILE_FILTER,
         )
         if file_path:
-            self.set_file(file_path)
+            self.set_file(file_path, is_audio=_is_audio_file(file_path))
 
     def _on_theme_changed(self, theme_name: str) -> None:
         """主题变更时刷新样式"""
@@ -536,14 +780,21 @@ class VideoPlayerLayout(QWidget):
 
 
 if __name__ == "__main__":
-    # 配置 sys.path 使导入可工作
-    _this_file = Path(__file__).resolve()
-    _ui_root = str(_this_file.parent.parent.parent)  # freeassetfilter/ui/ (from preview/)
-    if _ui_root not in sys.path:
-        sys.path.insert(0, _ui_root)
-    _project_root = str(_this_file.parent.parent.parent.parent.parent)  # 项目根
-    if _project_root not in sys.path:
-        sys.path.insert(0, _project_root)
+    # 配置 sys.path 使导入可工作；直接运行时回退到 cwd。
+    try:
+        from freeassetfilter.core._paths import core_dir
+    except ImportError:  # pragma: no cover
+        _cwd = os.getcwd()
+        if _cwd not in sys.path:
+            sys.path.insert(0, _cwd)
+        from freeassetfilter.core._paths import core_dir
+
+    _freeassetfilter_dir = core_dir().parent
+    _ui_root = str(_freeassetfilter_dir / "ui")
+    _project_root = str(_freeassetfilter_dir.parent)
+    for __entry in (_ui_root, _project_root):
+        if __entry not in sys.path:
+            sys.path.insert(0, __entry)
 
     from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout
 
@@ -566,7 +817,18 @@ if __name__ == "__main__":
     layout.addWidget(player)
 
     if len(sys.argv) > 1:
-        player.set_file(sys.argv[1])
+        file_path = sys.argv[1]
+        if not _is_supported_media_file(file_path):
+            player._placeholder.setText("不支持的文件格式，请选择音频或视频文件")
+            player._stack.setCurrentIndex(1)
+        else:
+            loaded = player.set_file(file_path, is_audio=_is_audio_file(file_path))
+            if not loaded:
+                player._placeholder.setText("无法加载文件，请检查路径或格式")
+                player._stack.setCurrentIndex(1)
+    else:
+        player._placeholder.setText("拖放播放文件或选择文件以播放")
+        player._stack.setCurrentIndex(1)
 
     window.show()
     sys.exit(app.exec())

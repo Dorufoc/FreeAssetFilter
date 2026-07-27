@@ -87,9 +87,23 @@ class StyledTooltip(QWidget):
 
     # ── Sizing ──────────────────────────────────────────────────────
 
+    def _base_font(self) -> QFont:
+        """返回跟随应用默认字号的字体（无全局设置时回退到 FONT_SIZE）。"""
+        app = QApplication.instance()
+        fallback = QFont("Microsoft YaHei UI", FONT_SIZE)
+        base = fallback
+        if app is not None:
+            global_font = getattr(app, "global_font", None)
+            if global_font is not None:
+                base = QFont(global_font)
+        font = QFont(base)
+        if font.pointSize() <= 0:
+            font.setPointSize(FONT_SIZE)
+        return font
+
     def _compute_sizes(self) -> None:
         """Calculate bubble content size and total widget size."""
-        font = QFont("Microsoft YaHei UI", FONT_SIZE)
+        font = self._base_font()
         fm = QFontMetrics(font)
         text_w = fm.horizontalAdvance(self._text) if self._text else 0
         text_h = fm.height()

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QGraphicsProxyWidget,
 )
 from PySide6.QtCore import Qt, Signal, QEvent, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QTimer, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QFont, QPixmap, QImageReader, QWheelEvent, QPainter, QPen, QColor, QPaintEvent, QMouseEvent, QAction, QTransform, QMovie
+from PySide6.QtGui import QFont, QPixmap, QImageReader, QWheelEvent, QPainter, QPainterPath, QPen, QColor, QPaintEvent, QMouseEvent, QAction, QTransform, QMovie
 
 from theme import tm
 from components.styled_button import StyledButton
@@ -63,6 +63,32 @@ class _ToolbarFrame(QFrame):
         for btn in reversed(self._right_buttons):
             btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
             right = btn.geometry().left() - 6
+
+    def _get_colors(self) -> dict[str, QColor]:
+        """获取当前主题下的顶栏颜色（paintEvent 中动态读取，确保主题切换生效）。"""
+        return {
+            "bg": tm.fill,
+            "border": tm.alpha_of(tm.mid, 25),
+        }
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """自绘顶栏圆角背景与边框，颜色跟随当前主题。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        colors = self._get_colors()
+        rect = QRectF(self.rect())
+        radius = 8.0
+
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(colors["bg"])
+        painter.drawPath(path)
+
+        painter.setPen(QPen(colors["border"], 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
 
 
 class _StyledHScrollBar(StyledScrollBar):
@@ -390,7 +416,7 @@ class ImagePreviewerLayout(QWidget):
         self._image_view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self._image_view.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self._image_view.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate)
-        self._image_view.setStyleSheet("background-color: #1a1a1a; border: none;")
+        self._image_view.setStyleSheet(f"background-color: {tm.surface.name()}; border: none;")
         self._image_view.setFrameShape(QFrame.NoFrame)
 
         # 使用 StyledScrollBar 替换默认滚动条
@@ -425,7 +451,9 @@ class ImagePreviewerLayout(QWidget):
         # 提示文字
         self._placeholder = QLabel("选择图片文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet("color: #888; font-size: 14px; background: transparent;")
+        self._placeholder.setStyleSheet(
+            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
+        )
         overlay_layout.addWidget(self._placeholder)
 
         # "选择文件"按钮（仅 standalone 模式）
@@ -966,23 +994,27 @@ class ImagePreviewerLayout(QWidget):
             return f"hsv({h}, {s}%, {v}%)"
 
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #2a2a2a;
-                border: 1px solid #555;
+        menu_bg = tm.surface.name()
+        menu_border = tm.mid.name()
+        menu_text = tm.text.name()
+        menu_selected = tm.fill.name()
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {menu_bg};
+                border: 1px solid {menu_border};
                 border-radius: 6px;
                 padding: 4px;
-            }
-            QMenu::item {
-                color: #eee;
+            }}
+            QMenu::item {{
+                color: {menu_text};
                 padding: 6px 24px 6px 12px;
                 border-radius: 4px;
                 font-size: 12px;
                 font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif;
-            }
-            QMenu::item:selected {
-                background-color: #444;
-            }
+            }}
+            QMenu::item:selected {{
+                background-color: {menu_selected};
+            }}
         """)
 
         items = [
@@ -1108,11 +1140,7 @@ class ImagePreviewerLayout(QWidget):
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由 MainWindow 调用）。"""
-        self._top_bar.setStyleSheet("""
-            background-color: transparent;
-            border: 1px solid transparent;
-            border-radius: 8px;
-        """)
+        self._top_bar.setStyleSheet("border-radius: 8px;")
         self._content_area.setStyleSheet(f"""
             background-color: {tm.surface.name()};
             border: 1px solid transparent;
@@ -1131,6 +1159,8 @@ class ImagePreviewerLayout(QWidget):
     def _on_theme_changed(self, theme_name: str) -> None:
         """主题变更时刷新样式。"""
         self._style_browse_button()
+        self.set_section_styles("", "")
+        self._top_bar.update()
         self.update()
 
     def _on_maxsize_toggle(self) -> None:

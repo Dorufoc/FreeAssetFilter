@@ -67,6 +67,32 @@ class _ToolbarFrame(QFrame):
             btn.move(right - btn.width(), (self.height() - btn.height()) // 2)
             right = btn.geometry().left() - 6  # 按钮间距 6px
 
+    def _get_colors(self) -> dict[str, QColor]:
+        """获取当前主题下的顶栏颜色（paintEvent 中动态读取，确保主题切换生效）。"""
+        return {
+            "bg": tm.fill,
+            "border": tm.alpha_of(tm.mid, 25),
+        }
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """自绘顶栏圆角背景与边框，颜色跟随当前主题。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        colors = self._get_colors()
+        rect = QRectF(self.rect())
+        radius = 8.0
+
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(colors["bg"])
+        painter.drawPath(path)
+
+        painter.setPen(QPen(colors["border"], 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+
 
 class _ZoomPopup(QWidget):
     """缩放弹出面板：含横向滑动条 + StyledButton 显示百分比。"""
@@ -316,10 +342,10 @@ class _IndexPageThumbnail(QWidget):
 
         if self._is_current:
             badge_bg = tm.accent
-            badge_fg = QColor("#ffffff")
+            badge_fg = tm.white
         else:
             badge_bg = tm.alpha_of(tm.mid, 80)
-            badge_fg = QColor("#ffffff")
+            badge_fg = tm.white
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(badge_bg)
@@ -457,7 +483,9 @@ class PdfPreviewerLayout(QWidget):
         # 提示文字
         self._placeholder = QLabel("打开 PDF 文件开始预览")
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet("color: #888; font-size: 14px; background: transparent;")
+        self._placeholder.setStyleSheet(
+            f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
+        )
         overlay_layout.addWidget(self._placeholder)
 
         # "选择文件"按钮（仅 standalone 模式，视频播放器模式）
@@ -995,12 +1023,8 @@ class PdfPreviewerLayout(QWidget):
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
         """应用面板样式（主题切换时由 MainWindow 调用）。"""
-        # 顶栏控制栏：背景与边框均透明
-        self._top_bar.setStyleSheet("""
-            background-color: transparent;
-            border: 1px solid transparent;
-            border-radius: 8px;
-        """)
+        # 顶栏控制栏：仅保留圆角，背景由 paintEvent 自绘
+        self._top_bar.setStyleSheet("border-radius: 8px;")
         # 内容区：背景使用 G1（主题 surface 色），边框透明
         self._content_area.setStyleSheet(f"""
             background-color: {tm.surface.name()};
@@ -1016,6 +1040,8 @@ class PdfPreviewerLayout(QWidget):
         """主题变更时刷新样式。"""
         self._refresh_text_colors()
         self._style_browse_button()
+        self.set_section_styles("", "")
+        self._top_bar.update()
         self.update()
 
     def _refresh_text_colors(self) -> None:

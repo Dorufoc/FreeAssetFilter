@@ -62,6 +62,8 @@ from components.styled_steps import StyledSteps
 from components.styled_table import StyledTable
 from components.styled_timeline import StyledTimeline
 from components.styled_info_card import StyledInfoCard
+from components.styled_music_info_panel import StyledMusicInfoPanel
+from components.styled_fluid_background import StyledFluidBackground
 from components.styled_player_bar import StyledPlayerBar
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.file_list_model import FileListModel
@@ -138,6 +140,8 @@ __all__ = [
     "StyledTable",
     "StyledTimeline",
     "StyledInfoCard",
+    "StyledMusicInfoPanel",
+    "StyledFluidBackground",
     "StyledPlayerBar",
     "FileListModel",
     "FileCardDelegate",

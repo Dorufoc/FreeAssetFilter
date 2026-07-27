@@ -101,6 +101,75 @@ class MediaMetadataService(BaseService):
         except Exception:  # noqa: BLE001  — 外部库可能抛出任意异常，宽泛捕获以保证健壮性
             return None
 
+    def extract_audio_tags(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """从音频文件中提取常见标签与封面数据。
+
+        返回的字段均为固定 schema，缺失字段使用空字符串填充，以保证 UI
+        调用方无需做 ``None`` 检查：
+
+        - ``title``: 曲目名
+        - ``artist``: 艺术家
+        - ``album``: 专辑名
+        - ``cover_data``: 封面图像二进制数据（JPEG/PNG）
+
+        支持的标签映射：
+
+        - **MP3 ID3**: ``TIT2`` / ``TPE1`` / ``TALB``
+        - **Vorbis Comment**: ``TITLE`` / ``ARTIST`` / ``ALBUM``
+        - **MP4 / M4A**: ``©nam`` / ``©ART`` / ``©alb``
+
+        Args:
+            file_path: 音频文件路径。
+
+        Returns:
+            包含 ``title`` / ``artist`` / ``album`` / ``cover_data`` 的字典；
+            文件不存在时返回 ``None``；解析失败或缺少 mutagen 时返回空 schema。
+        """
+        if not os.path.isfile(file_path):
+            return None
+
+        empty_schema: Dict[str, Any] = {
+            "title": "",
+            "artist": "",
+            "album": "",
+            "cover_data": None,
+        }
+
+        if not mutagen_file:
+            return empty_schema
+
+        try:
+            audio = mutagen_file(file_path)
+            if audio is None:
+                return empty_schema
+
+            tags = getattr(audio, "tags", None)
+            result: Dict[str, Any] = {
+                "title": "",
+                "artist": "",
+                "album": "",
+            }
+
+            tag_mapping = {
+                "title": ["TIT2", "TITLE", "\u00a9nam"],
+                "artist": ["TPE1", "ARTIST", "\u00a9ART"],
+                "album": ["TALB", "ALBUM", "\u00a9alb"],
+            }
+
+            for field, keys in tag_mapping.items():
+                for key in keys:
+                    raw = self._get_tag_value(tags, key)
+                    if raw is not None:
+                        value = self._collapse_tag(raw)
+                        if value:
+                            result[field] = value
+                            break
+
+            result["cover_data"] = self.extract_audio_cover(file_path)
+            return result
+        except Exception:  # noqa: BLE001
+            return empty_schema
+
     def extract_basic_info(self, file_path: str) -> Dict[str, Any]:
         """提取文件基本元数据。
 
@@ -230,6 +299,37 @@ class MediaMetadataService(BaseService):
         return f"{bitrate / 1_000_000:.1f} Mbps"
 
     # ── 内部辅助 ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _get_tag_value(tags: Any, key: str) -> Any:
+        """从 tags 对象中安全读取指定 key 的原始值。
+
+        同时兼容 dict 风格的 Vorbis/MP4 tags 和 ID3 风格的 frame 容器。
+        """
+        if tags is None:
+            return None
+        try:
+            if isinstance(tags, dict):
+                return tags.get(key)
+            return tags[key]
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _collapse_tag(value: Any) -> str:
+        """把标签原始值折叠为单一字符串。
+
+        - ID3 frame 对象会读取其 ``text`` 属性（列表）
+        - 列表/元组会按 ``, `` 连接
+        - 其它类型按 ``str()`` 转换
+        """
+        if value is None:
+            return ""
+        if hasattr(value, "text"):
+            value = value.text
+        if isinstance(value, (list, tuple)):
+            return ", ".join(str(item) for item in value)
+        return str(value)
 
     @staticmethod
     def _looks_like_image(data: bytes) -> bool:

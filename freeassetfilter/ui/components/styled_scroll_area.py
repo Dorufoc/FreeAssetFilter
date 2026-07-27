@@ -413,6 +413,7 @@ class StyledScrollArea(QScrollArea):
         widget: QWidget,
         enable_mouse_drag: bool = False,
         profile: dict | None = None,
+        wheel_step_scale: float = 1.0,
     ) -> QScroller | None:
         """Apply smooth scrolling and touch gestures to any widget.
 
@@ -445,7 +446,9 @@ class StyledScrollArea(QScrollArea):
         StyledScrollArea._apply_scroller_profile(
             scroller, profile or StyledScrollArea.DEFAULT_PROFILE
         )
-        StyledScrollArea._install_wheel_filter_to(target, widget)
+        StyledScrollArea._install_wheel_filter_to(
+            target, widget, wheel_step_scale=wheel_step_scale
+        )
 
         return scroller
 
@@ -523,11 +526,17 @@ class StyledScrollArea(QScrollArea):
         scroller.setScrollerProperties(props)
 
     @staticmethod
-    def _install_wheel_filter_to(target: QWidget, host_widget: QWidget) -> None:
+    def _install_wheel_filter_to(
+        target: QWidget,
+        host_widget: QWidget,
+        wheel_step_scale: float = 1.0,
+    ) -> None:
         """Install wheel smooth filter on the target widget."""
         if hasattr(target, "_smooth_wheel_filter") and target._smooth_wheel_filter:
             return
-        target._smooth_wheel_filter = _WheelSmoothScrollFilter(host_widget, target)
+        target._smooth_wheel_filter = _WheelSmoothScrollFilter(
+            host_widget, target, wheel_step_scale=wheel_step_scale
+        )
         target.installEventFilter(target._smooth_wheel_filter)
 
     def _install_wheel_filter(self, target: QWidget) -> None:
@@ -704,17 +713,28 @@ class _WheelSmoothScrollFilter(QObject):
     使用 Qt 属性动画驱动 scrollbar.value，避免 Python 16ms 定时循环。
     """
 
-    def __init__(self, host_widget, target_widget, duration=150):
+    def __init__(
+        self,
+        host_widget,
+        target_widget,
+        duration: int = 150,
+        wheel_step_scale: float = 1.0,
+    ):
         super().__init__(target_widget)
         self._host_widget = host_widget
         self._target_widget = target_widget
         self._duration = duration
+        self._wheel_step_scale: float = float(wheel_step_scale)
         self._vertical_animation = None
         self._horizontal_animation = None
         self._last_wheel_time = 0.0
         self._wheel_boost = 1.0
         self._max_wheel_boost = 6.0
         self._content_overscroll = _ElasticContentOverscrollController(target_widget)
+
+    def set_wheel_step_scale(self, scale: float) -> None:
+        """Adjust the wheel step scale at runtime (e.g. after font changes)."""
+        self._wheel_step_scale = float(scale)
 
     def eventFilter(self, obj, event):
         if event.type() != QEvent.Wheel:
@@ -802,17 +822,17 @@ class _WheelSmoothScrollFilter(QObject):
 
         if is_pixel_delta:
             # Chrome 风格更接近触控板原始位移，尽量少做额外放大
-            scaled = int(delta * 1.05 * self._wheel_boost)
-            if scaled == 0:
-                scaled = 1 if delta > 0 else -1
-            return scaled
+            scaled = delta * 1.05 * self._wheel_boost
+        else:
+            # 传统滚轮 angleDelta 典型单格为 ±120，直接按单格放大，
+            # 这样修改基础步进系数时才会真实生效。
+            scaled = (delta / 120.0) * 4.0 * 120 * self._wheel_boost / 8.0
 
-        # 传统滚轮 angleDelta 典型单格为 ±120，直接按单格放大，
-        # 这样修改基础步进系数时才会真实生效。
-        scaled = int((delta / 120.0) * 4.0 * 120 * self._wheel_boost / 8.0)
-        if scaled == 0:
-            scaled = 1 if delta > 0 else -1
-        return scaled
+        scaled = scaled * self._wheel_step_scale
+        result = int(scaled)
+        if result == 0:
+            result = 1 if scaled > 0 else -1
+        return result
 
     def _calculate_target_value(self, scrollbar, current_value, step):
         """基于当前实际值计算新目标值，不依赖 pending_target 复合叠加。

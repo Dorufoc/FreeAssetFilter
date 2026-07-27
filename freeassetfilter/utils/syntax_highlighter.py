@@ -238,7 +238,7 @@ class ColorSchemes:
                 TokenType.VARIABLE: "#001080",
                 TokenType.CONSTANT: "#0070c1",
                 TokenType.TAG: "#800000",
-                TokenType.ATTRIBUTE: "#ff0000",
+                TokenType.ATTRIBUTE: "#e50000",
                 TokenType.VALUE: "#0000ff",
                 TokenType.PREPROCESSOR: "#af00db",
                 TokenType.DEFAULT: "#000000",
@@ -1816,12 +1816,15 @@ class SyntaxHighlighter:
 
 
 # 便捷函数
-def create_highlighter(theme: str = 'github_dark') -> SyntaxHighlighter:
+def create_highlighter(theme: str = 'github_dark',
+                       dark_mode: Optional[bool] = None) -> SyntaxHighlighter:
     """创建语法高亮器
 
     Args:
         theme: 主题名称 ('github_dark', 'github_light', 'vscode_dark', 'vscode_light', 'auto')
                'auto' 会根据当前主题模式自动选择
+        dark_mode: 可选的暗色模式覆盖；仅在 ``theme`` 为 ``'auto'`` 时使用。
+            为 ``None`` 时从设置中读取。
 
     Returns:
         SyntaxHighlighter 实例
@@ -1829,7 +1832,7 @@ def create_highlighter(theme: str = 'github_dark') -> SyntaxHighlighter:
     debug(f"创建语法高亮器，主题: {theme}")
     if theme == 'auto':
         # 自动根据暗色模式选择配色方案
-        color_scheme = get_auto_theme_scheme()
+        color_scheme = get_auto_theme_scheme(dark_mode=dark_mode)
     else:
         scheme_map = {
             'github_dark': ColorSchemes.github_dark(),
@@ -1838,7 +1841,7 @@ def create_highlighter(theme: str = 'github_dark') -> SyntaxHighlighter:
             'vscode_light': ColorSchemes.vscode_light(),
         }
         color_scheme = scheme_map.get(theme, ColorSchemes.github_dark())
-    
+
     return SyntaxHighlighter(color_scheme)
 
 
@@ -1850,13 +1853,27 @@ def get_supported_languages() -> List[str]:
 def is_dark_mode() -> bool:
     """检测是否为深色模式
 
-    从应用设置中获取主题设置，判断是否为深色模式
+    优先从 SettingsManagerV2 读取 ``appearance.theme``，
+    不可用时回退到旧版 SettingsManager。
 
     Returns:
         是否为深色模式
     """
     try:
+        from freeassetfilter.core.managers.settings_manager_v2 import SettingsManagerV2
+
+        sm = SettingsManagerV2()
+        # SettingsManagerV2.get() assumes data is already loaded; otherwise it
+        # deadlocks because it acquires _lock and then calls load() which also
+        # acquires _lock. Explicitly load once first.
+        sm.load()
+        return sm.get("appearance.theme", "dark") == "dark"
+    except Exception:
+        pass
+
+    try:
         from freeassetfilter.core.managers.settings_manager import SettingsManager
+
         sm = SettingsManager()
         theme = sm.get_setting("appearance.theme", "default")
         return theme == "dark"
@@ -1867,19 +1884,25 @@ def is_dark_mode() -> bool:
     return False
 
 
-def get_auto_theme_scheme() -> ColorScheme:
+def get_auto_theme_scheme(dark_mode: Optional[bool] = None) -> ColorScheme:
     """根据系统主题获取自动配色方案
 
-    暗色模式使用 github_dark
-    亮色模式使用 vscode_light（前景色更深，对比度更好）
+    暗色模式使用 VS Code Dark+，亮色模式使用 VS Code Light+。
+
+    Args:
+        dark_mode: 可选的暗色模式覆盖；为 ``None`` 时从设置中读取。
 
     Returns:
         合适的颜色方案
     """
-    if is_dark_mode():
-        return ColorSchemes.github_dark()
+    if dark_mode is None:
+        dark = is_dark_mode()
     else:
-        return ColorSchemes.vscode_light()
+        dark = dark_mode
+
+    if dark:
+        return ColorSchemes.vscode_dark()
+    return ColorSchemes.vscode_light()
 
 
 def guess_language_from_filename(filename: str) -> Optional[str]:
