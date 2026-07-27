@@ -8,11 +8,14 @@ import copy
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
-    QGridLayout, QSizePolicy,
+    QGridLayout,
 )
-from PySide6.QtCore import Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint
+from PySide6.QtCore import (
+    Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint,
+    QEvent, QObject,
+)
 from PySide6.QtGui import (
-    QPainter, QColor, QPaintEvent, QPen, QFont, QFontMetrics,
+    QPainter, QColor, QPaintEvent, QPen, QFont, QHideEvent, QCloseEvent,
     QConicalGradient, QBrush,
 )
 
@@ -235,6 +238,8 @@ class AppearanceSettingsPage(QWidget):
         self._custom_btn: CustomAccentButton | None = None
         self._custom_panel: _ColorPanel | None = None
         self._current_accent: str = ""  # tracked for save
+        self._event_filter_installed: bool = False  # track event filter state
+        self._event_filter_targets: list[QObject] = []
         self._build_ui()
         self._load_v2_settings()
 
@@ -314,7 +319,7 @@ class AppearanceSettingsPage(QWidget):
 
     def _on_dark_toggle(self, checked: bool) -> None:
         """深色模式开关切换 — 仅记录状态，点击「应用」才全局生效。"""
-        pass  # 状态已记录在 self._dark_toggle.checked 中
+        # 状态已记录在 self._dark_toggle.checked 中
 
     def _on_color_clicked(self, color_hex: str) -> None:
         """主题色选择 — 仅记录状态，点击「应用」才全局生效。"""
@@ -326,44 +331,133 @@ class AppearanceSettingsPage(QWidget):
         # 选择预设色时关闭浮动选择面板
         if self._custom_panel is not None:
             self._custom_panel.close_animated()
-            self._custom_panel = None
 
     def _on_custom_color_clicked(self) -> None:
-        """自定义颜色按钮 — 展开/折叠浮动颜色选择面板。"""
-        if self._custom_panel is not None:
-            if self._custom_panel.isVisible():
-                # 面板已展开 → 启动关闭动画并释放引用
-                # 使用 close_animated() 而非 hide()，确保事件过滤器被正确移除，
-                # 避免 C++ 对象删除后仍收到事件导致 RuntimeError。
-                self._custom_panel.close_animated()
-                self._custom_panel = None
-                return
-            # 旧面板引用已失效（隐藏状态下），丢弃
-            self._custom_panel = None
+        """自定义颜色按钮 — 展开/折叠浮动颜色选择面板。
+        
+        严格的切换行为：
+        - 第一张点击：打开面板
+        - 面板可见时的点击：关闭面板
+        - 关闭动画进行中的点击：取消关闭并重新打开
+        - 打开动画进行中的点击：关闭面板
+        
+        面板引用在页面生命周期内持久存在，不因关闭而丢失。
+        """
+        # 确保面板存在（只创建一次）
+        if self._custom_panel is None:
+            self._custom_panel = _ColorPanel(parent=self)
+            self._custom_panel.color_selected.connect(self._on_panel_color_changed)
+            self._custom_panel.closed.connect(self._on_panel_closed)
+        
+        panel = self._custom_panel
+        
+        # 严格切换逻辑：先检查关闭中状态（isVisible 在淡出时仍为 True）
+        if panel.is_closing:
+            # 面板正在关闭中 → 取消关闭并重新打开
+            panel.reopen()
+            
+            # 更新按钮状态
+            for btn in self._color_buttons:
+                btn.selected = False
+            self._custom_btn.selected = True
+        elif panel.isVisible():
+            # 面板可见且未在关闭中 → 关闭
+            panel.close_animated()
+        else:
+            # 面板隐藏 → 打开
+            btn_pos = self._custom_btn.mapToGlobal(
+                QPoint(self._custom_btn.width() + 4, 0)
+            )
+            
+            initial = self._current_accent
+            if initial.lower() == "auto" or not initial.startswith("#"):
+                initial = tm.accent.name().upper()
+            panel.set_color(initial)
+            
+            # 更新按钮状态
+            for btn in self._color_buttons:
+                btn.selected = False
+            self._custom_btn.selected = True
+            
+            panel.show_animated(btn_pos)
+            # 安装外部点击事件过滤器（在面板显示后安装）
+            self._install_outside_click_filter()
 
-        # 提前计算按钮位置，防止 _ColorPanel 创建后污染引用
-        btn_pos = self._custom_btn.mapToGlobal(
-            QPoint(self._custom_btn.width() + 4, 0)
-        )
+    def _install_outside_click_filter(self) -> None:
+        """Install event filter on the top-level SettingsWindow.
+        
+        Safe when no top-level window exists yet (no-op).
+        Idempotent: repeated calls have no effect.
+        """
+        if self._event_filter_installed:
+            return
+        
+        top_window = self.window()
+        if top_window is None:
+            return
+        
+        targets: list[QObject] = [top_window, self]
+        targets.extend(self.findChildren(QWidget))
+        unique_targets = list(dict.fromkeys(targets))
+        for target in unique_targets:
+            target.installEventFilter(self)
+        self._event_filter_targets = unique_targets
+        self._event_filter_installed = True
 
-        # 传入 AppearanceSettingsPage 作为父窗口，防止 _ColorPanel.show()
-        # 触发父 SettingsWindow（含 QOpenGLWidget Mica）HWND 重建
-        self._custom_panel = _ColorPanel(parent=self)
-        self._custom_panel.color_selected.connect(self._on_panel_color_changed)
-        self._custom_panel.closed.connect(self._on_panel_closed)
+    def _remove_outside_click_filter(self) -> None:
+        """Remove event filter from the top-level SettingsWindow.
+        
+        Idempotent: repeated calls have no effect.
+        Safe when no top-level window exists or filter was not installed.
+        """
+        if not self._event_filter_installed:
+            return
+        
+        for target in self._event_filter_targets:
+            target.removeEventFilter(self)
+        self._event_filter_targets.clear()
+        self._event_filter_installed = False
 
-        initial = self._current_accent
-        if initial.lower() == "auto" or not initial.startswith("#"):
-            initial = tm.accent.name().upper()
-        self._custom_panel.set_color(initial)
-
-        # 在 show_animated 之前更新按钮状态，防止 show 触发 HWND 重建
-        # 导致 AccentColorButton 的 C++ 对象被删除后访问出错
-        for btn in self._color_buttons:
-            btn.selected = False
-        self._custom_btn.selected = True
-
-        self._custom_panel.show_animated(btn_pos)
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Event filter for outside-click dismissal of _ColorPanel.
+        
+        Intercepts MouseButtonPress on the top-level SettingsWindow.
+        - If click is inside the panel's global rect → ignore (let panel handle it)
+        - If click is inside the custom button's global rect → ignore (let button handle toggle)
+        - Otherwise → close panel with fade animation
+        
+        Returns False always to let the original event continue propagation.
+        """
+        if event.type() == QEvent.Type.MouseButtonPress:
+            global_pos = event.globalPosition().toPoint()
+            
+            # Check if panel exists and is visible
+            if self._custom_panel is None or not self._custom_panel.isVisible():
+                return False
+            
+            # Check if click is inside the panel
+            panel_global_rect = QRectF(
+                self._custom_panel.mapToGlobal(QPoint(0, 0)),
+                self._custom_panel.size(),
+            )
+            if panel_global_rect.contains(global_pos):
+                # Click inside panel → ignore, let panel handle it
+                return False
+            
+            # Check if click is inside the custom button
+            if self._custom_btn is not None:
+                btn_global_rect = QRectF(
+                    self._custom_btn.mapToGlobal(QPoint(0, 0)),
+                    self._custom_btn.size(),
+                )
+                if btn_global_rect.contains(global_pos):
+                    # Click inside button → ignore, let button handler toggle
+                    return False
+            
+            # Click outside panel and button → close panel
+            self._custom_panel.close_animated()
+        
+        return False
 
     def _on_panel_color_changed(self, hex_color: str) -> None:
         """浮动颜色选择面板值变化 — 实时更新当前强调色。"""
@@ -374,8 +468,28 @@ class AppearanceSettingsPage(QWidget):
             self._custom_btn.selected = True
 
     def _on_panel_closed(self) -> None:
-        """浮动面板关闭后的清理。"""
-        self._custom_panel = None
+        """浮动面板关闭后的处理。
+        
+        注意：不将 _custom_panel 设为 None，保持面板引用。
+        页面销毁时 Qt 父子关系会自动清理面板。
+        """
+        # 仅重置按钮状态，不丢弃面板引用
+        # 移除外部点击事件过滤器
+        self._remove_outside_click_filter()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        """宿主页面隐藏时同步关闭浮动面板并移除事件过滤器。"""
+        if self._custom_panel is not None:
+            self._custom_panel.close_animated()
+        self._remove_outside_click_filter()
+        super().hideEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """宿主页面关闭时同步关闭浮动面板并移除事件过滤器。"""
+        if self._custom_panel is not None:
+            self._custom_panel.close_animated()
+        self._remove_outside_click_filter()
+        super().closeEvent(event)
 
     def refresh_theme(self) -> None:
         """主题切换时刷新页面内文字颜色。"""
@@ -565,7 +679,6 @@ class SettingsLayout(QWidget):
 
     def _on_reset_clicked(self) -> None:
         """重置按钮 — 无功能（占位）。"""
-        pass
 
     def _on_apply_clicked(self) -> None:
         """应用按钮 — 将设置全局生效（应用到 tm）并持久化到 SettingsManagerV2。"""
