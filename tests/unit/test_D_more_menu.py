@@ -14,8 +14,8 @@ class TestDMoreMenuBasic:
     
     def test_module_import(self):
         """测试模块可以导入"""
-        from freeassetfilter.widgets.D_more_menu import MoreMenu
-        assert MoreMenu is not None
+        from freeassetfilter.widgets.D_more_menu import D_MoreMenu
+        assert D_MoreMenu is not None
     
     def test_module_has_required_attributes(self):
         """测试模块有必要的属性"""

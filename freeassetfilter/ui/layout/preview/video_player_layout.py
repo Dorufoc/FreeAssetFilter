@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QApplication,
     QStackedLayout, QPushButton, QGridLayout,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QRect
+from PySide6.QtCore import Qt, Signal, QTimer, QRect, QEvent
 from PySide6.QtGui import QFont, QImage, QPixmap, QColor
 
 from theme import tm
@@ -529,6 +529,10 @@ class VideoPlayerLayout(QWidget):
         self._video_surface.setAttribute(Qt.WA_NativeWindow, True)
 
         win_id = int(self._video_surface.winId())
+        # 监听自身 WinIdChange：顶层窗口重建（如切换背景效果）会销毁重建
+        # 本原生子窗，旧 wid 失效，需标记下次加载时重新嵌入
+        self._embedded_win_id = win_id
+        self._video_surface.installEventFilter(self)
         if self._mpv_manager.is_initialized():
             embedded = self._mpv_manager.set_window_id(
                 win_id, component_id=self._component_id
@@ -541,6 +545,16 @@ class VideoPlayerLayout(QWidget):
             # 应用初始音量/倍速
             self._mpv_manager.set_volume(70, component_id=self._component_id)
             self._mpv_manager.set_speed(self._current_speed, component_id=self._component_id)
+
+    def eventFilter(self, watched, event) -> bool:
+        """检测视频面原生句柄变化（顶层重建导致），失效时重新嵌入 MPV。"""
+        if watched is getattr(self, "_video_surface", None) and event.type() == QEvent.Type.WinIdChange:
+            new_id = int(self._video_surface.winId()) if self._video_surface.internalWinId() else 0
+            if self._is_mpv_embedded and new_id and new_id != getattr(self, "_embedded_win_id", 0):
+                self._embedded_win_id = new_id
+                if self._mpv_manager and self._mpv_manager.is_initialized():
+                    self._mpv_manager.set_window_id(new_id, component_id=self._component_id)
+        return super().eventFilter(watched, event)
 
     def _connect_player_signals(self) -> None:
         """StyledPlayerBar → VideoPlayerLayout → MPVManager"""

@@ -149,6 +149,10 @@ class MicaBackgroundWidgetGL(QOpenGLWidget, _MicaBackgroundMixin):
         contrast: float = 1.5,
         saturation: float = 4.5,
     ) -> None:
+        # 应用级防护（静态属性，重复设置无副作用）：阻止原生子窗（MPV 视频面等）
+        # 连带把兄弟控件原生化。否则嵌入视频时本 GL 背景被原生化→合成失效→
+        # 客户区未绘制像素在 DWM 玻璃板上直接透出桌面（窗口“全透明”bug）。
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings, True)
         super().__init__(parent)
         self._init_mica_common(blur_radius, tint_color, luminosity, contrast, saturation)
         # 背景恒不透明并铺满整窗，声明不透明绘制
@@ -395,6 +399,12 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 干扰 WM_NCHITTEST 的缩放边框命中。
         self._root = QWidget(self)
         self.setCentralWidget(self._root)
+        # 不透明兜底：正常时被 Mica 层完全盖住；若 GL 合成因任何原因缺画，
+        # 窗口显示主题表面色而非透出桌面（DWM 玻璃板上未绘制像素会全透明）
+        root_palette = self._root.palette()
+        root_palette.setColor(self._root.backgroundRole(), tm.surface)
+        self._root.setPalette(root_palette)
+        self._root.setAutoFillBackground(True)
 
         overlay = QGridLayout(self._root)
         overlay.setContentsMargins(0, 0, 0, 0)
@@ -477,6 +487,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
         # 信号连接：文件池 → 文件选择器（同步"已在池中"边框标记）
         self._file_pool.pool_changed.connect(self._on_pool_contents_changed)
+        # 信号连接：文件池 → 统一预览器（左键点击文件池卡片时预览）
+        self._file_pool.item_left_clicked.connect(self._on_pool_item_clicked)
+        # 信号连接：文件池右键点击 → 移除文件池并取消选中
+        self._file_pool.item_right_clicked.connect(self._on_pool_item_right_clicked)
 
         self._panels = [self._panel_left, self._panel_center, self._panel_right]
 
@@ -753,10 +767,26 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     def _on_file_selected(self, file_info: dict) -> None:
         """处理文件选择器的文件选中事件，同步预览态到文件池"""
         self._file_pool.set_previewing_file(file_info.get("path", ""))
+        self._previewer.set_file(file_info)
+
+    def _on_pool_item_clicked(self, file_info: dict) -> None:
+        """处理文件池卡片的左键点击事件，预览该文件"""
+        self._previewer.set_file(file_info)
 
     def _on_preview_cancelled(self) -> None:
         """处理预览取消事件"""
         self._file_pool.clear_previewing_state()
+
+    def _on_pool_item_right_clicked(self, file_info: dict) -> None:
+        """右键点击文件池卡片：移除文件池并取消文件选择器内的选中"""
+        file_path = file_info.get("path", "")
+        self._file_pool.remove_file(file_path)
+        self._sync_selection_to_selector(file_path, False)
+
+    def _sync_selection_to_selector(self, file_path: str, selected: bool) -> None:
+        """同步选中状态到文件选择器"""
+        pool_paths = self._file_pool.get_pool_paths()
+        self._file_selector.sync_pool_status(pool_paths)
 
     # ──── 备份恢复 ─────────────────────────────────────────────────────
 
@@ -909,16 +939,17 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
 class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     """
-    设置窗口 — 独立窗口，使用 Mica 效果
-    
+    设置窗口 — 独立窗口，tm.surface 纯色背景（不使用 Mica）
+
+    不构造 Mica（壁纸加载+模糊+烘焙开销大），以加快窗口打开速度；
+    背景色与 styled 弹窗 DialogContent 一致（tm.surface）。
     点击主窗口标题栏的设置按钮后弹出
     """
 
     def __init__(self, parent=None):
         # 先初始化属性，防止父类初始化期间触发的事件访问未定义属性
-        self._mica_background = None
+        self._mica_background = None  # 设置窗口不使用 Mica，保留属性做防御
         self._root = None
-        self._content = None
         self._title_label = None
         self._close_btn = None
 
@@ -928,31 +959,16 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self.resize(700, 500)
 
         # 中央部件用纯 QWidget，保留 qframelesswindow 原生窗口特性；
-        # Mica 背景与内容作为叠放子层内嵌其中
+        # tm.surface 不透明纯色背景（styled 弹窗同款），无 Mica 开销
         self._root = QWidget(self)
         self.setCentralWidget(self._root)
+        root_palette = self._root.palette()
+        root_palette.setColor(self._root.backgroundRole(), tm.surface)
+        self._root.setPalette(root_palette)
+        self._root.setAutoFillBackground(True)
 
-        overlay = QGridLayout(self._root)
-        overlay.setContentsMargins(0, 0, 0, 0)
-        overlay.setSpacing(0)
-
-        # 层 1：Mica 背景（鼠标穿透，避免占据窗口边缘拦截缩放命中）
-        # 使用 CPU 光栅版而非 OpenGL 版，防止首次显示 Qt.Tool 弹窗时
-        # 触发父窗口 HWND 重建导致子控件崩溃（设置窗口尺寸小、不常调整大小，
-        # CPU 版性能完全满足要求）
-        self._mica_background = MicaBackgroundWidgetCpu(self._root)
-        self._mica_background.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-
-        # 层 2：内容层（透明）
-        self._content = QWidget(self._root)
-
-        overlay.addWidget(self._mica_background, 0, 0)
-        overlay.addWidget(self._content, 0, 0)
-        self._mica_background.lower()
-        self._content.raise_()
-
-        # 主布局（内容层作为根容器）
-        layout = QVBoxLayout(self._content)
+        # 主布局直接建在根容器上
+        layout = QVBoxLayout(self._root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -960,7 +976,7 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._create_title_bar(layout)
 
         # 设置内容区
-        self._settings_layout = SettingsLayout(self._content)
+        self._settings_layout = SettingsLayout(self._root)
         layout.addWidget(self._settings_layout)
 
         # 监听主题变化以刷新背景和按钮颜色
@@ -1008,7 +1024,7 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         """
 
     def _on_theme_changed(self, _theme: str) -> None:
-        """主题切换时刷新 Mica 效果和标题栏样式"""
+        """主题切换时刷新背景色和标题栏样式"""
         self._sync_theme()
 
     def showEvent(self, event) -> None:
@@ -1018,9 +1034,11 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
     def _sync_theme(self) -> None:
         """强制刷新当前主题下的所有样式"""
-        # Mica 背景（同步 tint/luminosity/基底颜色 + 刷新壁纸）
-        if self._mica_background is not None:
-            self._mica_background.sync_theme()
+        # 纯色背景（tm.surface 随主题变化）
+        if self._root is not None:
+            palette = self._root.palette()
+            palette.setColor(self._root.backgroundRole(), tm.surface)
+            self._root.setPalette(palette)
         # 标题栏文字
         if self._title_label is not None:
             self._title_label.setStyleSheet(
@@ -1055,18 +1073,6 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             return True
 
         return False
-
-    def moveEvent(self, event) -> None:
-        """窗口移动时刷新背景"""
-        super().moveEvent(event)
-        if self._mica_background is not None:
-            self._mica_background.handle_window_move()
-
-    def resizeEvent(self, event) -> None:
-        """窗口调整大小时刷新背景"""
-        super().resizeEvent(event)
-        if self._mica_background is not None:
-            self._mica_background.handle_window_resize()
 
 
 def main() -> int:

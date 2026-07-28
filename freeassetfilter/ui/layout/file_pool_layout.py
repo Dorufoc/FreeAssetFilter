@@ -674,6 +674,15 @@ class FilePoolLayout(QWidget):
 
         # 点击预览
         card.clicked.connect(self._handle_card_clicked)
+        # 右键处理
+        card.right_clicked.connect(self._handle_card_right_clicked)
+
+        # 设置初始状态
+        is_selected = file_info.get("is_selected", False)
+        if is_selected:
+            card.set_selected(True)
+        if file_info.get("is_previewing"):
+            card.set_previewing(True)
 
         # 立即完成其它进行中的入口动画，确保它们的占位 spacer 被真实卡片替换，
         # 避免新卡片插入到尚未释放的占位位置导致重叠。
@@ -1259,6 +1268,20 @@ class FilePoolLayout(QWidget):
                     self.item_left_clicked.emit(fi)
                     break
 
+    def _handle_card_right_clicked(self, file_path: str) -> None:
+        """处理 StyledInfoCard 右键点击：发射 item_right_clicked 信号。
+
+        Args:
+            file_path: 被右键点击的文件路径。
+        """
+        norm_path = os.path.normpath(file_path) if file_path else ""
+        # 查找对应的 file_info
+        for fi in self.items:
+            p = fi.get("path")
+            if p and os.path.normpath(str(p)) == norm_path:
+                self.item_right_clicked.emit(fi)
+                break
+
     # ═════════════════════════════════════════════════════════════════════
     #  重命名
     # ═════════════════════════════════════════════════════════════════════
@@ -1326,12 +1349,32 @@ class FilePoolLayout(QWidget):
     # ═════════════════════════════════════════════════════════════════════
 
     def set_previewing_file(self, file_path: str) -> None:
-        """标记指定路径为正在预览状态。"""
-        self.previewing_file_path = os.path.normpath(file_path) if file_path else None
-        # 更新 items 中的标记（StyledInfoCard 暂不支持预览高亮边框）
+        """设置预览态：清除旧预览，设置新预览。
+
+        Args:
+            file_path: 要预览的文件路径，若为空则仅清除旧预览。
+        """
+        normalized = os.path.normpath(file_path) if file_path else None
+
+        # 清除旧预览
+        if self.previewing_file_path:
+            old_card = self._card_widgets.get(self.previewing_file_path)
+            if old_card:
+                old_card.set_previewing(False)
+
+        # 设置新预览
+        self.previewing_file_path = normalized
+        if normalized:
+            new_card = self._card_widgets.get(normalized)
+            if new_card:
+                new_card.set_previewing(True)
 
     def clear_previewing_state(self) -> None:
-        """清除所有预览状态标记。"""
+        """清除所有卡片的预览状态。"""
+        if self.previewing_file_path:
+            card = self._card_widgets.get(self.previewing_file_path)
+            if card:
+                card.set_previewing(False)
         self.previewing_file_path = None
 
     # ═════════════════════════════════════════════════════════════════════

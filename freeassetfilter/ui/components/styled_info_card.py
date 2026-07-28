@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve,
-    Property, QPoint, QEvent,
+    Property, QPoint, QEvent, QParallelAnimationGroup,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QFont, QFontMetrics,
@@ -33,6 +33,9 @@ class StyledInfoCard(QWidget):
     """
 
     clicked = Signal(str)  # emitted on left-button release, passes file_path
+    right_clicked = Signal(str)  # emitted on right-button release, passes file_path
+    selection_changed = Signal(bool, str)  # (selected, file_path) - state first, path second
+    preview_state_changed = Signal(bool, str)  # (previewing, file_path) - state first, path second
 
     LAYOUT_MODES = ["horizontal", "vertical"]
 
@@ -100,6 +103,14 @@ class StyledInfoCard(QWidget):
         self._x_offset = 0
         self._y_offset = 0
 
+        # Selection and preview states
+        self._is_selected = False
+        self._is_previewing = False
+        self._anim_bg_color = QColor(tm.surface)
+        self._anim_border_color = QColor(tm.mid)
+        self._border_width = 1
+        self._style_colors: dict = {}
+
         # Shadow offset for depth
         self._shadow_offset = 0.0
 
@@ -128,6 +139,7 @@ class StyledInfoCard(QWidget):
         self._overlay_buttons = []
 
         self._apply_size()
+        self._init_style_colors()
         self.update()
 
         # Repaint automatically when the global theme changes.
@@ -163,6 +175,26 @@ class StyledInfoCard(QWidget):
         self._card_scale = value
         self.update()
 
+    @Property(QColor)
+    def anim_bg_color(self):
+        return self._anim_bg_color
+
+    @anim_bg_color.setter
+    def anim_bg_color(self, color: QColor):
+        if self._anim_bg_color != color:
+            self._anim_bg_color = QColor(color)
+            self.update()
+
+    @Property(QColor)
+    def anim_border_color(self):
+        return self._anim_border_color
+
+    @anim_border_color.setter
+    def anim_border_color(self, color: QColor):
+        if self._anim_border_color != color:
+            self._anim_border_color = QColor(color)
+            self.update()
+
     @Property(float)
     def card_opacity(self):
         """卡片整体绘制透明度，供 layout 动画使用（不影响子 overlay 控件）。"""
@@ -197,6 +229,14 @@ class StyledInfoCard(QWidget):
 
     def _on_theme_changed(self, _colors: dict) -> None:
         """Slot for ThemeManager.colors_updated: repaint with new theme colors."""
+        self._init_style_colors()
+        # 如果当前处于选中/预览态，重新应用状态样式
+        if self._is_selected:
+            self._anim_bg_color = self._style_colors["selected_bg"]
+            self._anim_border_color = self._style_colors["selected_border"]
+        elif not self._is_previewing:
+            self._anim_bg_color = self._style_colors["normal_bg"]
+            self._anim_border_color = self._style_colors["normal_border"]
         self.update()
 
     # ── Config ────────────────────────────────────────────────
@@ -222,6 +262,226 @@ class StyledInfoCard(QWidget):
             "overlay_bg": QColor(0, 0, 0, 127),
             "shadow": QColor(0, 0, 0, 40),
         }
+
+    def _init_style_colors(self) -> None:
+        """从 SettingsManager 获取选中/预览态颜色配置。"""
+        try:
+            from freeassetfilter.core.managers.settings_manager import SettingsManager
+            settings = SettingsManager()
+            accent_color = settings.get_setting("appearance.colors.accent_color", "#B036EE")
+            secondary_color = settings.get_setting("appearance.colors.secondary_color", "#FFFFFF")
+            base_color = settings.get_setting("appearance.colors.base_color", "#212121")
+            auxiliary_color = settings.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
+        except Exception:
+            accent_color = "#B036EE"
+            secondary_color = "#FFFFFF"
+            base_color = "#212121"
+            auxiliary_color = "#3D3D3D"
+
+        # 构建颜色字典
+        normal_bg = QColor(base_color)
+        normal_border = QColor(auxiliary_color)
+        hover_bg = QColor(auxiliary_color)
+        hover_border = QColor(auxiliary_color)
+        selected_bg = QColor(accent_color)
+        selected_bg.setAlpha(102)
+        selected_border = QColor(accent_color)
+
+        self._style_colors = {
+            "normal_bg": normal_bg,
+            "normal_border": normal_border,
+            "hover_bg": hover_bg,
+            "hover_border": hover_border,
+            "selected_bg": selected_bg,
+            "selected_border": selected_border,
+        }
+
+        # 无条件初始化动画颜色属性（确保从 SettingsManager 正确加载）
+        self._anim_bg_color = QColor(normal_bg)
+        self._anim_border_color = QColor(normal_border)
+
+        self._secondary_color = secondary_color
+
+    def _get_secondary_color(self) -> QColor:
+        """获取预览态边框颜色（从 SettingsManager 配置）。"""
+        return QColor(self._secondary_color)
+
+    def set_selected(self, selected: bool) -> None:
+        """设置选中状态。
+
+        Args:
+            selected: True 表示选中，False 表示取消选中。
+        """
+        if self._is_selected != selected:
+            self._is_selected = selected
+            if selected:
+                self._hovered = False
+                self._trigger_select_animation()
+            else:
+                self._trigger_deselect_animation()
+            self.selection_changed.emit(selected, self._file_path)
+
+    def set_previewing(self, previewing: bool) -> None:
+        """设置预览状态。
+
+        Args:
+            previewing: True 表示预览中，False 表示取消预览。
+        """
+        if self._is_previewing != previewing:
+            self._is_previewing = previewing
+            if previewing:
+                self._hovered = False
+                self._trigger_preview_animation()
+            else:
+                self._trigger_unpreview_animation()
+            self.preview_state_changed.emit(previewing, self._file_path)
+
+    def _trigger_select_animation(self) -> None:
+        """触发选中动画：背景和边框过渡到选中态颜色。"""
+        if not self._style_colors:
+            self._init_style_colors()
+            return
+
+        colors = self._style_colors
+        self._hover_anim.stop()
+        self._media_scale_anim.stop()
+
+        # 创建并行动画组
+        if not hasattr(self, "_select_anim_group"):
+            self._anim_select_bg = QPropertyAnimation(self, b"anim_bg_color")
+            self._anim_select_border = QPropertyAnimation(self, b"anim_border_color")
+            self._select_anim_group = QParallelAnimationGroup()
+            self._select_anim_group.addAnimation(self._anim_select_bg)
+            self._select_anim_group.addAnimation(self._anim_select_border)
+        else:
+            self._select_anim_group.stop()
+
+        self._anim_select_bg.setDuration(180)
+        self._anim_select_bg.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim_select_bg.setStartValue(self._anim_bg_color)
+        self._anim_select_bg.setEndValue(colors["selected_bg"])
+
+        self._anim_select_border.setDuration(180)
+        self._anim_select_border.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim_select_border.setStartValue(self._anim_border_color)
+        self._anim_select_border.setEndValue(colors["selected_border"])
+
+        self._select_anim_group.start()
+
+    def _trigger_deselect_animation(self) -> None:
+        """触发取消选中动画：背景和边框恢复到正常态颜色。"""
+        if not self._style_colors:
+            self._init_style_colors()
+            return
+
+        colors = self._style_colors
+
+        if hasattr(self, "_select_anim_group"):
+            self._select_anim_group.stop()
+
+        # 创建并行动画组
+        if not hasattr(self, "_deselect_anim_group"):
+            self._anim_deselect_bg = QPropertyAnimation(self, b"anim_bg_color")
+            self._anim_deselect_border = QPropertyAnimation(self, b"anim_border_color")
+            self._deselect_anim_group = QParallelAnimationGroup()
+            self._deselect_anim_group.addAnimation(self._anim_deselect_bg)
+            self._deselect_anim_group.addAnimation(self._anim_deselect_border)
+        else:
+            self._deselect_anim_group.stop()
+
+        self._anim_deselect_bg.setDuration(200)
+        self._anim_deselect_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        self._anim_deselect_bg.setStartValue(self._anim_bg_color)
+        self._anim_deselect_bg.setEndValue(colors["normal_bg"])
+
+        self._anim_deselect_border.setDuration(200)
+        self._anim_deselect_border.setEasingCurve(QEasingCurve.InOutQuad)
+        self._anim_deselect_border.setStartValue(self._anim_border_color)
+        self._anim_deselect_border.setEndValue(colors["normal_border"])
+
+        self._deselect_anim_group.start()
+
+    def _trigger_preview_animation(self) -> None:
+        """触发预览动画：保持背景，边框过渡到 secondary_color，宽度翻倍。"""
+        if not self._style_colors:
+            self._init_style_colors()
+            return
+
+        self._hover_anim.stop()
+        self._media_scale_anim.stop()
+        if hasattr(self, "_select_anim_group"):
+            self._select_anim_group.stop()
+        if hasattr(self, "_deselect_anim_group"):
+            self._deselect_anim_group.stop()
+
+        secondary_qcolor = self._get_secondary_color()
+        colors = self._style_colors
+
+        # 目标背景：保持选中态或正常态
+        target_bg = colors["selected_bg"] if self._is_selected else colors["normal_bg"]
+
+        # 创建并行动画组
+        if not hasattr(self, "_preview_anim_group"):
+            self._anim_preview_bg = QPropertyAnimation(self, b"anim_bg_color")
+            self._anim_preview_border = QPropertyAnimation(self, b"anim_border_color")
+            self._preview_anim_group = QParallelAnimationGroup()
+            self._preview_anim_group.addAnimation(self._anim_preview_bg)
+            self._preview_anim_group.addAnimation(self._anim_preview_border)
+        else:
+            self._preview_anim_group.stop()
+
+        self._anim_preview_bg.setDuration(180)
+        self._anim_preview_bg.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim_preview_bg.setStartValue(self._anim_bg_color)
+        self._anim_preview_bg.setEndValue(target_bg)
+
+        self._anim_preview_border.setDuration(180)
+        self._anim_preview_border.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim_preview_border.setStartValue(self._anim_border_color)
+        self._anim_preview_border.setEndValue(secondary_qcolor)
+
+        self._preview_anim_group.start()
+
+    def _trigger_unpreview_animation(self) -> None:
+        """触发取消预览动画：根据选中态恢复对应颜色。"""
+        if not self._style_colors:
+            self._init_style_colors()
+            return
+
+        colors = self._style_colors
+
+        if hasattr(self, "_preview_anim_group"):
+            self._preview_anim_group.stop()
+
+        # 根据选中态决定目标颜色
+        if self._is_selected:
+            target_bg = colors["selected_bg"]
+            target_border = colors["selected_border"]
+        else:
+            target_bg = colors["normal_bg"]
+            target_border = colors["normal_border"]
+
+        # 创建并行动画组
+        if not hasattr(self, "_unpreview_anim_group"):
+            self._anim_unpreview_bg = QPropertyAnimation(self, b"anim_bg_color")
+            self._anim_unpreview_border = QPropertyAnimation(self, b"anim_border_color")
+            self._unpreview_anim_group = QParallelAnimationGroup()
+            self._unpreview_anim_group.addAnimation(self._anim_unpreview_bg)
+            self._unpreview_anim_group.addAnimation(self._anim_unpreview_border)
+        else:
+            self._unpreview_anim_group.stop()
+
+        self._anim_unpreview_bg.setDuration(200)
+        self._anim_unpreview_bg.setEasingCurve(QEasingCurve.InOutQuad)
+        self._anim_unpreview_bg.setStartValue(self._anim_bg_color)
+        self._anim_unpreview_bg.setEndValue(target_bg)
+
+        self._anim_unpreview_border.setDuration(200)
+        self._anim_unpreview_border.setEasingCurve(QEasingCurve.InOutQuad)
+        self._anim_unpreview_border.setStartValue(self._anim_border_color)
+        self._anim_unpreview_border.setEndValue(target_border)
+
+        self._unpreview_anim_group.start()
 
     # ── Public API ────────────────────────────────────────────
 
@@ -489,9 +749,16 @@ class StyledInfoCard(QWidget):
             self.update()
             if self.rect().contains(event.position().toPoint()) and not self._disabled:
                 self.clicked.emit(self._file_path)
+        elif event.button() == Qt.RightButton:
+            if self.rect().contains(event.position().toPoint()) and not self._disabled:
+                self.right_clicked.emit(self._file_path)
         super().mouseReleaseEvent(event)
 
     def enterEvent(self, event):
+        # 选中态或预览态不响应 hover
+        if self._is_selected or self._is_previewing:
+            super().enterEvent(event)
+            return
         self._hovered = True
         if not self._disabled:
             self._animate_overlay(1.0)
@@ -499,6 +766,10 @@ class StyledInfoCard(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        # 选中态或预览态不响应 hover
+        if self._is_selected or self._is_previewing:
+            super().leaveEvent(event)
+            return
         self._hovered = False
         self._pressed = False
         self._animate_overlay(0.0)
@@ -555,42 +826,72 @@ class StyledInfoCard(QWidget):
 
             opacity = (0.5 if self._disabled else 1.0) * self._card_opacity
             painter.setOpacity(opacity)
-            painter.translate(self._x_offset, self._y_offset)
+            # 不使用 painter.translate()，避免边框和背景渲染问题
+            # 所有绘制坐标直接使用控件坐标系统
 
-            # Card background
-            if self._hovered and not self._disabled:
+            # Card background and border - 考虑选中态和预览态
+            # 边框宽度：预览态 2px，其他状态 1px
+            border_width = 2 if self._is_previewing else 1
+
+            # 背景色 - 根据状态选择
+            if self._is_previewing:
+                # 预览态保持当前背景色
+                bg_color = self._anim_bg_color
+            elif self._is_selected:
+                # 选中态使用动画背景色（已设置 alpha 102）
+                bg_color = self._anim_bg_color
+            elif self._hovered and not self._disabled:
                 bg_color = colors["bg_hover"]
             else:
-                bg_color = colors["bg"]
+                bg_color = self._anim_bg_color
 
+            # 边框色 - 根据状态选择
+            if self._is_previewing:
+                # 预览态使用 secondary_color
+                border_color = self._get_secondary_color()
+            elif self._is_selected:
+                # 选中态使用动画边框色
+                border_color = self._anim_border_color
+            elif self._hovered and not self._disabled:
+                border_color = colors["border"]
+            else:
+                border_color = self._anim_border_color
+
+            # 使用内缩绘制方式，确保边框不被裁切（参考 file_horizontal_card._paint_card_surface）
+            # drawRect 从 (0,0) 开始绘制，边框宽度的一半会超出控件边界被裁切
+            # 解决方法：使用 adjusted 将矩形向内收缩 border_width/2
+            # 注意：translate 后坐标原点已偏移，draw_rect 从 (0,0) 开始是相对于偏移后的原点
+            draw_rect = QRectF(0, 0, w, h).adjusted(
+                border_width / 2.0,
+                border_width / 2.0,
+                -border_width / 2.0,
+                -border_width / 2.0,
+            )
+
+            # 同时设置画笔和画刷，一次调用绘制背景和边框
+            painter.setPen(QPen(border_color, border_width))
             painter.setBrush(bg_color)
-            card_rect = QRectF(0, 0, w, h)
-            painter.drawRoundedRect(card_rect, radius, radius)
-
-            # Card border
-            painter.setBrush(Qt.NoBrush)
-            pen = QPen(colors["border"], 1)
-            painter.setPen(pen)
-            painter.drawRoundedRect(card_rect, radius, radius)
+            painter.drawRoundedRect(draw_rect, radius, radius)
 
             painter.setPen(Qt.NoPen)
 
-            # Shadow on hover
+            # Shadow on hover - 应用偏移
             if self._hovered and not self._disabled:
                 painter.setBrush(colors["shadow"])
-                shadow_rect = QRectF(0, 2, w, h)
+                shadow_rect = QRectF(self._x_offset, 2 + self._y_offset, w, h)
                 painter.drawRoundedRect(shadow_rect, radius, radius)
 
             # ── Media Area ──
             media_size = config["media_size"]
             icon_size = config["icon_size"]
 
+            # 应用 x/y_offset 偏移到媒体布局
             if self._layout_mode == "horizontal":
-                media_x = padding
-                media_y = (h - media_size) / 2.0
+                media_x = padding + self._x_offset
+                media_y = (h - media_size) / 2.0 + self._y_offset
             else:
-                media_x = (w - media_size) / 2.0
-                media_y = padding
+                media_x = (w - media_size) / 2.0 + self._x_offset
+                media_y = padding + self._y_offset
 
             # Scale media on hover
             current_media_scale = self._media_scale
@@ -646,16 +947,17 @@ class StyledInfoCard(QWidget):
                 painter.restore()
 
             # ── Text Area ──
+            # 应用 x/y_offset 偏移到文字布局
             if self._layout_mode == "horizontal":
-                text_x = media_x + media_size + gap
+                text_x = media_x + media_size + gap + self._x_offset
                 # 文字块整体垂直居中，与文件选择器 list 模式卡片排列一致
                 text_block_h = self._calc_text_height(config)
-                text_y = (h - text_block_h) / 2.0
+                text_y = (h - text_block_h) / 2.0 + self._y_offset
                 text_w = w - text_x - padding
                 text_h = text_block_h
             else:
-                text_x = padding
-                text_y = media_y + media_size + gap
+                text_x = padding + self._x_offset
+                text_y = media_y + media_size + gap + self._y_offset
                 text_w = w - padding * 2
                 text_h = h - text_y - padding
 

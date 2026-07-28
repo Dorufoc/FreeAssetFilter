@@ -58,12 +58,12 @@ class TestGetPreviewerClass:
     @pytest.mark.parametrize(
         "suffix, expected_module, expected_class",
         [
-            ("jpg", "freeassetfilter.components.photo_viewer", "PhotoViewer"),
-            ("pdf", "freeassetfilter.components.pdf_previewer", "PDFPreviewer"),
-            ("mp4", "freeassetfilter.components.video_player", "VideoPlayer"),
+            ("jpg", "freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"),
+            ("pdf", "freeassetfilter.ui.layout.preview.pdf_previewer_layout", "PdfPreviewerLayout"),
+            ("mp4", "freeassetfilter.ui.layout.preview.video_player_layout", "VideoPlayerLayout"),
             ("zip", "freeassetfilter.components.archive_browser", "ArchiveBrowser"),
-            ("ttf", "freeassetfilter.components.font_previewer", "FontPreviewWidget"),
-            ("txt", "freeassetfilter.components.text_previewer", "TextPreviewWidget"),
+            ("ttf", "freeassetfilter.ui.layout.preview.font_previewer_layout", "FontPreviewerLayout"),
+            ("txt", "freeassetfilter.ui.layout.preview.text_previewer_layout", "TextPreviewerLayout"),
         ],
     )
     def test_known_extension_returns_correct_class(
@@ -160,14 +160,14 @@ class TestGetPreviewerClass:
 
         Given a suffix in upper case
         When  ``get_previewer_class`` is called
-        Then  it still resolves to ``PhotoViewer``.
+        Then  it still resolves to ``ImagePreviewerLayout``.
         """
         with patch.object(PreviewerRegistry, "_import_class") as mock_import:
             mock_import.return_value = MagicMock(spec=type)
             result = PreviewerRegistry.get_previewer_class({"suffix": "JPG"})
             assert result is mock_import.return_value
             mock_import.assert_called_once_with(
-                "freeassetfilter.components.photo_viewer", "PhotoViewer"
+                "freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"
             )
 
     def test_leading_dot_is_stripped(self) -> None:
@@ -182,7 +182,7 @@ class TestGetPreviewerClass:
             result = PreviewerRegistry.get_previewer_class({"suffix": ".jpg"})
             assert result is mock_import.return_value
             mock_import.assert_called_once_with(
-                "freeassetfilter.components.photo_viewer", "PhotoViewer"
+                "freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"
             )
 
     def test_is_dir_takes_priority_over_suffix(self) -> None:
@@ -354,7 +354,7 @@ class TestUnregister:
         """
         # Directly populate the cache since _import_class is not being
         # tested here — we only verify unregister's side-effect on _CLASS_CACHE.
-        cache_key = "freeassetfilter.components.photo_viewer.PhotoViewer"
+        cache_key = "freeassetfilter.ui.layout.preview.image_previewer_layout.ImagePreviewerLayout"
         PreviewerRegistry._CLASS_CACHE[cache_key] = MagicMock(spec=type)
         assert cache_key in PreviewerRegistry._CLASS_CACHE
 
@@ -391,7 +391,7 @@ class TestCache:
             "freeassetfilter.services.previewer_registry.importlib.import_module"
         ) as mock_import:
             mock_module = MagicMock()
-            mock_module.PhotoViewer = MagicMock(spec=type)
+            mock_module.ImagePreviewerLayout = MagicMock(spec=type)
             mock_import.return_value = mock_module
 
             cls1 = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
@@ -405,7 +405,7 @@ class TestCache:
     def test_different_extensions_same_class_share_cache(self) -> None:
         """不同扩展名映射到同一类时共享缓存。
 
-        Given ``jpg`` and ``jpeg`` both map to ``PhotoViewer``
+        Given ``jpg`` and ``jpeg`` both map to ``ImagePreviewerLayout``
         When  both are queried
         Then  only one import is performed.
         """
@@ -413,7 +413,7 @@ class TestCache:
             "freeassetfilter.services.previewer_registry.importlib.import_module"
         ) as mock_import:
             mock_module = MagicMock()
-            mock_module.PhotoViewer = MagicMock(spec=type)
+            mock_module.ImagePreviewerLayout = MagicMock(spec=type)
             mock_import.return_value = mock_module
 
             cls1 = PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
@@ -421,7 +421,7 @@ class TestCache:
 
             assert cls1 is cls2
             # Only one import because both share the same cache key
-            # (photo_viewer.PhotoViewer)
+            # (image_previewer_layout.ImagePreviewerLayout)
             mock_import.assert_called_once()
 
     def test_cache_key_is_module_dot_class(self) -> None:
@@ -435,13 +435,13 @@ class TestCache:
             "freeassetfilter.services.previewer_registry.importlib.import_module"
         ) as mock_import:
             mock_module = MagicMock()
-            mock_module.PhotoViewer = MagicMock(spec=type)
+            mock_module.ImagePreviewerLayout = MagicMock(spec=type)
             mock_import.return_value = mock_module
 
             PreviewerRegistry.get_previewer_class({"suffix": "jpg"})
 
             assert (
-                "freeassetfilter.components.photo_viewer.PhotoViewer"
+                "freeassetfilter.ui.layout.preview.image_previewer_layout.ImagePreviewerLayout"
                 in PreviewerRegistry._CLASS_CACHE
             )
 
@@ -566,17 +566,17 @@ class TestIntegration:
             assert result is mock_import.return_value
             mock_import.assert_called_once_with("second.module", "SecondClass")
 
-    def test_all_image_extensions_map_to_photo_viewer(self) -> None:
-        """所有图像扩展名都映射到 ``PhotoViewer``。
+    def test_all_image_extensions_map_to_image_previewer(self) -> None:
+        """所有图像扩展名都映射到 ``ImagePreviewerLayout``。
 
         Given all image extensions listed in ``_EXTENSION_MAP``
         When  ``get_previewer_class`` is called
-        Then  each one delegates to ``_import_class`` with ``photo_viewer``.
+        Then  each one delegates to ``_import_class`` with ``image_previewer_layout``.
         """
         image_extensions = [
             ext
             for ext, (mod, _) in PreviewerRegistry._EXTENSION_MAP.items()
-            if mod == "freeassetfilter.components.photo_viewer"
+            if mod == "freeassetfilter.ui.layout.preview.image_previewer_layout"
         ]
 
         with patch.object(PreviewerRegistry, "_import_class") as mock_import:
@@ -585,7 +585,7 @@ class TestIntegration:
                 PreviewerRegistry.get_previewer_class({"suffix": ext})
             for ext in image_extensions:
                 mock_import.assert_any_call(
-                    "freeassetfilter.components.photo_viewer", "PhotoViewer"
+                    "freeassetfilter.ui.layout.preview.image_previewer_layout", "ImagePreviewerLayout"
                 )
 
     def test_unregister_only_affects_specified_extension(self) -> None:

@@ -14,8 +14,8 @@ class TestDVolumeBasic:
     
     def test_module_import(self):
         """测试模块可以导入"""
-        from freeassetfilter.widgets.D_volume import VolumeWidget
-        assert VolumeWidget is not None
+        from freeassetfilter.widgets.D_volume import D_Volume
+        assert D_Volume is not None
     
     def test_module_has_required_attributes(self):
         """测试模块有必要的属性"""

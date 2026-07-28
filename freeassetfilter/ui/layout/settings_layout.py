@@ -8,7 +8,6 @@ import copy
 
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QStackedWidget,
-    QGridLayout,
 )
 from PySide6.QtCore import (
     Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, Property, QPoint,
@@ -284,9 +283,10 @@ class AppearanceSettingsPage(QWidget):
         )
         layout.addWidget(accent_label)
 
-        color_grid = QGridLayout()
-        color_grid.setContentsMargins(0, 0, 0, 0)
-        color_grid.setSpacing(12)
+        # 单行布局：所有配色按钮放在同一行
+        color_row = QHBoxLayout()
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.setSpacing(8)  # 缩小间距
 
         self._current_accent = saved_accent
 
@@ -303,18 +303,16 @@ class AppearanceSettingsPage(QWidget):
             btn.clicked.connect(self._on_color_clicked)
             if preset["color"].upper() == saved_accent.upper():
                 btn.selected = True
-            row = i // 6
-            col = i % 6
-            color_grid.addWidget(btn, row, col)
+            color_row.addWidget(btn)
             self._color_buttons.append(btn)
 
         # 自定义颜色按钮（360° 全色谱渐变）
         self._custom_btn = CustomAccentButton(selected=False)
         self._custom_btn.clicked.connect(self._on_custom_color_clicked)
-        custom_idx = len(PRESET_ACCENT_COLORS)
-        color_grid.addWidget(self._custom_btn, custom_idx // 6, custom_idx % 6)
+        color_row.addWidget(self._custom_btn)
 
-        layout.addLayout(color_grid)
+        color_row.addStretch()  # 右侧弹性空间
+        layout.addLayout(color_row)
         layout.addStretch()
 
     def _on_dark_toggle(self, checked: bool) -> None:

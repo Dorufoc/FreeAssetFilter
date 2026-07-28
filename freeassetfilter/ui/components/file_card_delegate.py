@@ -150,6 +150,8 @@ def _get_colors() -> Dict[str, Any]:
         "icon": tm.mid,
         "accent": tm.accent,
         "selected_border": tm.accent,
+        "selected_bg": tm.alpha_of(tm.accent, 40),  # accent alpha≈102，与 FileBlockCard 选中填充一致
+        "secondary": tm.text,  # 预览态边框色，对应 FileBlockCard 的 secondary_color
         "shadow": QColor(0, 0, 0, 40),
     }
 
@@ -429,33 +431,41 @@ class FileCardDelegate(QStyledItemDelegate):
         h = rect.height()
         card_rect = QRectF(rx, ry, w, h)
 
-        # 背景
-        bg_color = colors["bg_hover"] if (is_hovered or is_selected or is_previewing) else colors["bg"]
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(bg_color)
-        painter.drawRoundedRect(card_rect, radius, radius)
-
-        # 边框
-        painter.setBrush(Qt.NoBrush)
-        if is_previewing and is_selected:
-            painter.setPen(QPen(colors["accent"], 2))
-            painter.drawRoundedRect(card_rect, radius, radius)
-            painter.setPen(QPen(colors["selected_border"], 3))
-            painter.drawLine(rx + radius, ry, rx + radius, ry + h)
-        elif is_previewing:
-            painter.setPen(QPen(colors["accent"], 2))
-            painter.drawRoundedRect(card_rect, radius, radius)
+        # 状态解析 — 匹配旧文件选择器 FileBlockCard 的状态样式：
+        # 预览态：secondary 色边框、宽度翻倍，背景保持；
+        # 选中态：accent 完整边框 + 半透明 accent 填充；
+        # 已在池中：3px accent 边框标记
+        if is_previewing:
+            border_width = 2
+            border_color = colors["secondary"]
         elif is_in_pool and not is_selected:
-            painter.setPen(QPen(colors["accent"], 3))
-            painter.drawRoundedRect(card_rect, radius, radius)
+            border_width = 3
+            border_color = colors["accent"]
         elif is_selected:
-            painter.setPen(QPen(colors["border"], 1))
-            painter.drawRoundedRect(card_rect, radius, radius)
-            painter.setPen(QPen(colors["selected_border"], 3))
-            painter.drawLine(rx + radius, ry, rx + radius, ry + h)
+            border_width = 1
+            border_color = colors["selected_border"]
         else:
-            painter.setPen(QPen(colors["border"], 1))
-            painter.drawRoundedRect(card_rect, radius, radius)
+            border_width = 1
+            border_color = colors["border"]
+
+        if is_selected:
+            bg_color = colors["selected_bg"]
+        elif is_hovered and not is_previewing:
+            bg_color = colors["bg_hover"]
+        else:
+            bg_color = colors["bg"]
+
+        # 内缩 border_width/2 绘制，避免边框被 item 的 clipRect 裁切
+        # （参考 FileBlockCard._paint_card 的 adjusted 内缩方案）
+        draw_rect = card_rect.adjusted(
+            border_width / 2.0,
+            border_width / 2.0,
+            -border_width / 2.0,
+            -border_width / 2.0,
+        )
+        painter.setPen(QPen(border_color, border_width))
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(draw_rect, radius, radius)
 
         # 阴影
         if is_hovered and not is_selected and not is_previewing and not is_in_pool:
@@ -515,34 +525,42 @@ class FileCardDelegate(QStyledItemDelegate):
         h = rect.height()
         card_rect = QRectF(rx, ry, w, h)
 
-        # 背景
-        bg_color = colors["bg_hover"] if (is_hovered or is_selected or is_previewing) else colors["bg"]
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(bg_color)
-        painter.drawRoundedRect(card_rect, radius, radius)
-
-        # 边框
-        painter.setBrush(Qt.NoBrush)
-        if is_previewing and is_selected:
-            painter.setPen(QPen(colors["accent"], 2))
-            painter.drawRoundedRect(card_rect, radius, radius)
-            painter.setPen(QPen(colors["selected_border"], 3))
-            painter.drawLine(rx + radius, ry, rx + radius, ry + h)
-        elif is_previewing:
-            painter.setPen(QPen(colors["accent"], 2))
-            painter.drawRoundedRect(card_rect, radius, radius)
+        # 状态解析 — 匹配旧文件选择器 FileBlockCard 的状态样式：
+        # 预览态：secondary 色边框、宽度翻倍，背景保持；
+        # 选中态：accent 完整边框 + 半透明 accent 填充；
+        # 已在池中：3px accent 边框标记
+        if is_previewing:
+            border_width = 2
+            border_color = colors["secondary"]
         elif is_in_pool and not is_selected:
             # 文件已在文件池中 → 3px 主题强调色边框
-            painter.setPen(QPen(colors["accent"], 3))
-            painter.drawRoundedRect(card_rect, radius, radius)
+            border_width = 3
+            border_color = colors["accent"]
         elif is_selected:
-            painter.setPen(QPen(colors["border"], 1))
-            painter.drawRoundedRect(card_rect, radius, radius)
-            painter.setPen(QPen(colors["selected_border"], 3))
-            painter.drawLine(rx + radius, ry, rx + radius, ry + h)
+            border_width = 1
+            border_color = colors["selected_border"]
         else:
-            painter.setPen(QPen(colors["border"], 1))
-            painter.drawRoundedRect(card_rect, radius, radius)
+            border_width = 1
+            border_color = colors["border"]
+
+        if is_selected:
+            bg_color = colors["selected_bg"]
+        elif is_hovered and not is_previewing:
+            bg_color = colors["bg_hover"]
+        else:
+            bg_color = colors["bg"]
+
+        # 内缩 border_width/2 绘制，避免边框被 item 的 clipRect 裁切
+        # （参考 FileBlockCard._paint_card 的 adjusted 内缩方案）
+        draw_rect = card_rect.adjusted(
+            border_width / 2.0,
+            border_width / 2.0,
+            -border_width / 2.0,
+            -border_width / 2.0,
+        )
+        painter.setPen(QPen(border_color, border_width))
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(draw_rect, radius, radius)
 
         # 阴影
         if is_hovered and not is_selected and not is_previewing and not is_in_pool:
