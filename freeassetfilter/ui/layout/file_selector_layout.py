@@ -18,7 +18,7 @@ from freeassetfilter.core._paths import get_app_data_path
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
-from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole
+from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole, IsPreviewingRole
 from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CONFIG
 from components.animated_file_list_view import AnimatedFileListView
 
@@ -34,6 +34,7 @@ class FileSelectorLayout(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._previewing_file_path: str = ""  # 当前预览态卡片的文件路径（空 = 无）
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
@@ -85,6 +86,8 @@ class FileSelectorLayout(QWidget):
         self._file_list.setMouseTracking(True)
         self._file_list.setModel(self._file_model)
         self._file_list.setItemDelegate(self._card_delegate)
+        # 注入视图引用：delegate 的 hover 图标缩放动画每帧触发 viewport 重绘
+        self._card_delegate.set_view(self._file_list)
         self._file_list.setFrameShape(QFrame.NoFrame)
         self._file_list.setStyleSheet("""
             QListView {
@@ -518,6 +521,10 @@ class FileSelectorLayout(QWidget):
     # ── 文件选择 ──────────────────────────────────────────────────────────
 
     def _on_file_clicked(self, index) -> None:
+        """点击文件 = 预览（不隐式切换选中态，预览只替换边框、背景保持原状态）。
+
+        再次点击当前预览文件 = 取消预览；点击目录 = 进入目录。
+        """
         file_path = self._file_model.data(index, FilePathRole)
         if not file_path:
             return
@@ -525,7 +532,6 @@ class FileSelectorLayout(QWidget):
         if is_dir:
             self._navigate_to(file_path)
             return
-        is_selected = self._file_model.toggle_selected(file_path)
         info = {
             "name": self._file_model.data(index, FileNameRole) or "",
             "path": file_path,
@@ -535,11 +541,15 @@ class FileSelectorLayout(QWidget):
             "created": self._file_model.data(index, CreatedRole) or "",
             "suffix": (self._file_model.data(index, SuffixRole) or "").lower(),
         }
-        self.file_selection_changed.emit(info, is_selected)
-        if is_selected:
-            self.file_selected.emit(info)
-        else:
+        # 再次点击当前预览文件 → 取消预览；否则预览
+        import os
+
+        if (self._previewing_file_path
+                and os.path.normcase(os.path.normpath(self._previewing_file_path))
+                == os.path.normcase(os.path.normpath(file_path))):
             self.preview_cancel_requested.emit()
+        else:
+            self.file_selected.emit(info)
 
     # ── 右键菜单 ──────────────────────────────────────────────────────────
 
@@ -641,6 +651,42 @@ class FileSelectorLayout(QWidget):
         """同步文件池中的路径集合到 delegate，刷新"已在池中"边框标记。"""
         self._card_delegate.set_pool_files(pool_paths)
         self._file_list.viewport().update()
+
+    # ── 预览状态管理 ────────────────────────────────────────────────────────
+
+    def set_previewing_file(self, file_path: str) -> None:
+        """设置文件选择器卡片的预览态：清除旧预览，设置新预览。
+
+        预览态由 delegate 绘制为流光渐变边框（角锥渐变旋转动画），
+        与文件池 `set_previewing_file` 行为一致。
+
+        Args:
+            file_path: 要预览的文件路径，若为空则仅清除旧预览。
+        """
+        import os
+
+        # 清除旧预览
+        if self._previewing_file_path:
+            row = self._file_model.get_row(self._previewing_file_path)
+            if row >= 0:
+                idx = self._file_model.index(row, 0)
+                self._file_model.setData(idx, False, IsPreviewingRole)
+        self._previewing_file_path = ""
+
+        # 设置新预览（路径规范化后匹配，与文件池保持一致）
+        if file_path:
+            normalized = os.path.normpath(file_path)
+            row = self._file_model.get_row(normalized)
+            if row >= 0:
+                idx = self._file_model.index(row, 0)
+                self._file_model.setData(idx, True, IsPreviewingRole)
+                self._previewing_file_path = normalized
+
+        self._file_list.viewport().update()
+
+    def clear_previewing_state(self) -> None:
+        """清除所有卡片的预览状态。"""
+        self.set_previewing_file("")
 
     # ── 网格布局 ──────────────────────────────────────────────────────────
 

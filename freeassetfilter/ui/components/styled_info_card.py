@@ -8,17 +8,24 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy, QGraphicsOpacityEffect,
 )
 from PySide6.QtCore import (
-    Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve,
+    Qt, Signal, QRectF, QPropertyAnimation, QEasingCurve, QTimer,
     Property, QPoint, QEvent, QParallelAnimationGroup,
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QFont, QFontMetrics,
-    QPen, QBrush, QMouseEvent, QActionEvent,
+    QPen, QBrush, QMouseEvent, QActionEvent, QConicalGradient,
 )
-import math
 
 from theme import tm
 from components.styled_button import StyledButton
+
+
+# 图标相对 media 区域的放大系数：>1 时图标超出 media 区域边界绘制，视觉更大。
+# 当前试探值 1.10 = 放大 10%，后续可按需调整。
+_MEDIA_ICON_SCALE: float = 1.10
+
+# hover 图标缩放动画总开关：暂时禁用（False），恢复动画时改为 True。
+_HOVER_MEDIA_ANIM_ENABLED: bool = False
 
 
 class StyledInfoCard(QWidget):
@@ -133,6 +140,12 @@ class StyledInfoCard(QWidget):
         self._card_scale_anim = QPropertyAnimation(self, b"card_scale")
         self._card_scale_anim.setDuration(120)
         self._card_scale_anim.setEasingCurve(QEasingCurve.OutBack)
+
+        # 预览态渐变边框旋转动画：焦点绕卡片中心旋转（16ms/帧，循环）
+        self._preview_angle: float = 0.0
+        self._preview_anim_timer = QTimer(self)
+        self._preview_anim_timer.setInterval(16)
+        self._preview_anim_timer.timeout.connect(self._advance_preview_gradient)
 
         # Overlay buttons (created as child widgets, hidden by default)
         self._overlay_widget = None
@@ -252,40 +265,35 @@ class StyledInfoCard(QWidget):
         """获取当前主题颜色（每次绘制时重新读取，支持深色/浅色模式切换）。"""
         return {
             "bg": tm.alpha_of(tm.surface, 85),
-            "bg_hover": tm.alpha_of(tm.surface, 90),
             "border": tm.alpha_of(tm.mid, 30),
-            "media_bg": tm.alpha_of(tm.mid, 40),
             "title": tm.text,
             "subtitle": tm.mid,
             "desc": tm.alpha_of(tm.mid, 60),
             "icon": tm.mid,
             "overlay_bg": QColor(0, 0, 0, 127),
-            "shadow": QColor(0, 0, 0, 40),
+            "hover_overlay": tm.alpha_of(tm.accent, 25),  # hover 反馈：25% 主题色覆盖层（所有状态统一）
         }
 
     def _init_style_colors(self) -> None:
-        """从 SettingsManager 获取选中/预览态颜色配置。"""
-        try:
-            from freeassetfilter.core.managers.settings_manager import SettingsManager
-            settings = SettingsManager()
-            accent_color = settings.get_setting("appearance.colors.accent_color", "#B036EE")
-            secondary_color = settings.get_setting("appearance.colors.secondary_color", "#FFFFFF")
-            base_color = settings.get_setting("appearance.colors.base_color", "#212121")
-            auxiliary_color = settings.get_setting("appearance.colors.auxiliary_color", "#3D3D3D")
-        except Exception:
-            accent_color = "#B036EE"
-            secondary_color = "#FFFFFF"
-            base_color = "#212121"
-            auxiliary_color = "#3D3D3D"
+        """从全局主题（tm）获取卡片状态颜色，与 FileCardDelegate 保持一致。
 
-        # 构建颜色字典
-        normal_bg = QColor(base_color)
-        normal_border = QColor(auxiliary_color)
-        hover_bg = QColor(auxiliary_color)
-        hover_border = QColor(auxiliary_color)
-        selected_bg = QColor(accent_color)
-        selected_bg.setAlpha(102)
-        selected_border = QColor(accent_color)
+        背景/边框/选中态颜色全部取自 V2 主题令牌（surface/mid/accent/text），
+        保证深色/浅色模式下卡片颜色始终跟随全局主题切换，而不是旧的
+        SettingsManager V1 颜色配置（V1 的 base_color 等是旧 UI 的浅色默认值，
+        在深色模式下会导致卡片背景错误地呈现为白色）。
+        """
+        # 与 FileCardDelegate._get_colors() 的取值一致：
+        # - 正常/选中态背景：surface 85% 透明度
+        # - hover 背景：surface 90% 透明度
+        # - 边框：mid 30% / 40% 透明度
+        # - 选中态：accent 40% 填充（alpha≈102）+ accent 完整边框
+        # - 预览态边框：text 色（对应 FileBlockCard 的 secondary_color 语义）
+        normal_bg = tm.alpha_of(tm.surface, 85)
+        normal_border = tm.alpha_of(tm.mid, 30)
+        hover_bg = tm.alpha_of(tm.surface, 90)
+        hover_border = tm.alpha_of(tm.mid, 40)
+        selected_bg = tm.alpha_of(tm.accent, 40)
+        selected_border = QColor(tm.accent)
 
         self._style_colors = {
             "normal_bg": normal_bg,
@@ -296,15 +304,49 @@ class StyledInfoCard(QWidget):
             "selected_border": selected_border,
         }
 
-        # 无条件初始化动画颜色属性（确保从 SettingsManager 正确加载）
+        # 无条件初始化动画颜色属性（确保从全局主题正确加载）
         self._anim_bg_color = QColor(normal_bg)
         self._anim_border_color = QColor(normal_border)
 
-        self._secondary_color = secondary_color
+        self._secondary_color = tm.text.name()
 
     def _get_secondary_color(self) -> QColor:
-        """获取预览态边框颜色（从 SettingsManager 配置）。"""
+        """获取预览态边框颜色（主题 text 色，取自全局主题 tm）。"""
         return QColor(self._secondary_color)
+
+    def _advance_preview_gradient(self) -> None:
+        """推进预览态边框渐变焦点旋转（循环动画，16ms/帧）。"""
+        self._preview_angle = (self._preview_angle + 1.0) % 360.0
+        self.update()
+
+    def _make_preview_gradient(self, rect: QRectF, angle_deg: float) -> QConicalGradient:
+        """构建预览态边框流光渐变（角锥渐变，光斑沿圆周旋转）。
+
+        角锥渐变颜色只与角度相关：沿边框一周颜色从主题色 30% 透明度 →
+        峰值色 → 主题色 30% 透明度平滑过渡，两道光斑位于对侧并随
+        start_angle 递增沿边框流动。峰值色主题感知：深色模式为白色，
+        浅色模式为黑色（与背景形成对比）；谷值为主题色 30% 透明度。
+
+        Args:
+            rect: 卡片矩形（逻辑坐标）。
+            angle_deg: 渐变起始角度（度），动画每帧递增实现旋转。
+
+        Returns:
+            可用于 QPen 笔刷的角锥渐变。
+        """
+        cx = rect.center().x()
+        cy = rect.center().y()
+
+        accent_30 = tm.alpha_of(tm.accent, 30)  # 主题色 30% 透明度
+        peak = QColor(tm.white) if tm.is_dark_theme() else QColor(tm.black)
+
+        gradient = QConicalGradient(cx, cy, angle_deg)
+        gradient.setColorAt(0.0, accent_30)
+        gradient.setColorAt(0.25, peak)         # 光斑 1 峰值（深色=白/浅色=黑）
+        gradient.setColorAt(0.5, accent_30)
+        gradient.setColorAt(0.75, peak)         # 光斑 2 峰值（对侧）
+        gradient.setColorAt(1.0, accent_30)
+        return gradient
 
     def set_selected(self, selected: bool) -> None:
         """设置选中状态。
@@ -315,7 +357,7 @@ class StyledInfoCard(QWidget):
         if self._is_selected != selected:
             self._is_selected = selected
             if selected:
-                self._hovered = False
+                # 保留当前 hover 状态：新规范下选中态 hover 仍叠加 25% 主题色覆盖层
                 self._trigger_select_animation()
             else:
                 self._trigger_deselect_animation()
@@ -330,9 +372,14 @@ class StyledInfoCard(QWidget):
         if self._is_previewing != previewing:
             self._is_previewing = previewing
             if previewing:
-                self._hovered = False
+                # 保留当前 hover 状态：新规范下预览态 hover 仍叠加 25% 主题色覆盖层
                 self._trigger_preview_animation()
+                # 预览态启动渐变边框旋转动画（循环，退出预览时停止）
+                if not self._preview_anim_timer.isActive():
+                    self._preview_anim_timer.start()
             else:
+                self._preview_anim_timer.stop()
+                self._preview_angle = 0.0
                 self._trigger_unpreview_animation()
             self.preview_state_changed.emit(previewing, self._file_path)
 
@@ -541,10 +588,11 @@ class StyledInfoCard(QWidget):
         self._rebuild_overlay()
         self.update()
 
-    # 仅这些尺寸键参与缩放；weight/radius 等键原样保留，
+    # 仅布局尺寸键参与缩放；文字字号（title/subtitle/desc）必须原样保留，
+    # 与 FileCardDelegate._get_scaled_config 行为一致——Ctrl+滚轮缩放卡片
+    # 时文字大小不跟随变化。weight/radius 等键同样原样保留，
     # 避免 title_weight=700 被放大为非法字重或在缩放后回落为默认值。
-    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size",
-                           "title_size", "subtitle_size", "desc_size")
+    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size")
 
     def set_scale(self, scale: float, base_overrides: dict | None = None) -> None:
         """动态缩放卡片所有尺寸因子（0.5 ~ 2.0），匹配文件选择器 Ctrl+滚轮行为。
@@ -755,25 +803,23 @@ class StyledInfoCard(QWidget):
         super().mouseReleaseEvent(event)
 
     def enterEvent(self, event):
-        # 选中态或预览态不响应 hover
-        if self._is_selected or self._is_previewing:
-            super().enterEvent(event)
-            return
+        # 选中/预览态同样维护 _hovered（用于背景遮罩反馈），
+        # 但不显示操作按钮 overlay（保留原设计：状态卡片不浮出按钮层）
         self._hovered = True
         if not self._disabled:
-            self._animate_overlay(1.0)
-            self._animate_media_scale(1.05)
+            if not (self._is_selected or self._is_previewing):
+                self._animate_overlay(1.0)
+            if _HOVER_MEDIA_ANIM_ENABLED:
+                self._animate_media_scale(1.05)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        # 选中态或预览态不响应 hover
-        if self._is_selected or self._is_previewing:
-            super().leaveEvent(event)
-            return
         self._hovered = False
         self._pressed = False
-        self._animate_overlay(0.0)
-        self._animate_media_scale(1.0)
+        if not (self._is_selected or self._is_previewing):
+            self._animate_overlay(0.0)
+        if _HOVER_MEDIA_ANIM_ENABLED:
+            self._animate_media_scale(1.0)
         self._animate_card_scale(1.0)
         super().leaveEvent(event)
 
@@ -788,9 +834,15 @@ class StyledInfoCard(QWidget):
         self._hover_anim.start()
 
     def _animate_media_scale(self, target: float):
+        """动画过渡图标缩放（非线性缓动 OutBack）。
+
+        固定时长保证缓动可见：原实现按位移比例计算时长，hover 目标位移仅
+        0.05 时被 max(50) 压缩成 50ms 瞬移，OutBack 缓动几乎不可见。
+        220ms 与 overlay 淡入（250ms OutCubic）节奏协调，hover 进入时
+        图标轻微回弹放大，离开时平滑复位。
+        """
         self._media_scale_anim.stop()
-        d = abs(target - self._media_scale)
-        self._media_scale_anim.setDuration(max(50, int(250 * d)))
+        self._media_scale_anim.setDuration(220)
         self._media_scale_anim.setStartValue(self._media_scale)
         self._media_scale_anim.setEndValue(target)
         self._media_scale_anim.start()
@@ -833,29 +885,25 @@ class StyledInfoCard(QWidget):
             # 边框宽度：预览态 2px，其他状态 1px
             border_width = 2 if self._is_previewing else 1
 
-            # 背景色 - 根据状态选择
-            if self._is_previewing:
-                # 预览态保持当前背景色
-                bg_color = self._anim_bg_color
-            elif self._is_selected:
-                # 选中态使用动画背景色（已设置 alpha 102）
-                bg_color = self._anim_bg_color
-            elif self._hovered and not self._disabled:
-                bg_color = colors["bg_hover"]
-            else:
-                bg_color = self._anim_bg_color
+            # 背景：选中态 = accent 40% 覆盖层，其余 = 默认背景
+            bg_color = (
+                self._anim_bg_color
+                if self._is_selected
+                else colors["bg"]
+            )
 
-            # 边框色 - 根据状态选择
+            # 边框：预览态 = 主题色→G1 径向渐变（焦点旋转动画）；其余按状态
             if self._is_previewing:
-                # 预览态使用 secondary_color
-                border_color = self._get_secondary_color()
+                border_brush = QBrush(
+                    self._make_preview_gradient(QRectF(0, 0, w, h), self._preview_angle)
+                )
             elif self._is_selected:
                 # 选中态使用动画边框色
-                border_color = self._anim_border_color
+                border_brush = QBrush(self._anim_border_color)
             elif self._hovered and not self._disabled:
-                border_color = colors["border"]
+                border_brush = QBrush(colors["border"])
             else:
-                border_color = self._anim_border_color
+                border_brush = QBrush(self._anim_border_color)
 
             # 使用内缩绘制方式，确保边框不被裁切（参考 file_horizontal_card._paint_card_surface）
             # drawRect 从 (0,0) 开始绘制，边框宽度的一半会超出控件边界被裁切
@@ -869,17 +917,16 @@ class StyledInfoCard(QWidget):
             )
 
             # 同时设置画笔和画刷，一次调用绘制背景和边框
-            painter.setPen(QPen(border_color, border_width))
+            painter.setPen(QPen(border_brush, border_width))
             painter.setBrush(bg_color)
             painter.drawRoundedRect(draw_rect, radius, radius)
 
             painter.setPen(Qt.NoPen)
 
-            # Shadow on hover - 应用偏移
+            # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层
             if self._hovered and not self._disabled:
-                painter.setBrush(colors["shadow"])
-                shadow_rect = QRectF(self._x_offset, 2 + self._y_offset, w, h)
-                painter.drawRoundedRect(shadow_rect, radius, radius)
+                painter.setBrush(colors["hover_overlay"])
+                painter.drawRoundedRect(draw_rect, radius, radius)
 
             # ── Media Area ──
             media_size = config["media_size"]
@@ -903,16 +950,10 @@ class StyledInfoCard(QWidget):
                 painter.scale(current_media_scale, current_media_scale)
                 painter.translate(-cx, -cy)
 
-            # Media background
-            if self._disabled:
-                painter.setBrush(tm.alpha_of(tm.mid, 50))
-            else:
-                painter.setBrush(colors["media_bg"])
-
             media_rect = QRectF(media_x, media_y, media_size, media_size)
-            painter.drawRoundedRect(media_rect, 4, 4)
 
-            # Media content — 精确匹配 FileCardDelegate._draw_icon_pixmap
+            # Media content — 无灰色背景填充，图标直接绘制，尺寸为 media 区域 × _MEDIA_ICON_SCALE
+            # （与 FileCardDelegate._draw_icon_pixmap 一致，参考 FileBlockCard._draw_scaled_pixmap）
             if self._media_pixmap and not self._media_pixmap.isNull():
                 # DPR 感知：QPixmap.width() 返回物理像素，除以 DPR 得逻辑尺寸
                 pix = self._media_pixmap
@@ -920,18 +961,28 @@ class StyledInfoCard(QWidget):
                 lw = pix.width() / dpr if dpr > 0 else pix.width()
                 lh = pix.height() / dpr if dpr > 0 else pix.height()
                 if lw > 0 and lh > 0:
-                    display_size = int(media_size)
-                    if lw > display_size or lh > display_size:
-                        pix = pix.scaled(display_size, display_size,
+                    display_size = int(media_size * _MEDIA_ICON_SCALE)
+                    # 等比缩放至填满显示尺寸。注意 scaled() 保留原 DPR：目标尺寸必须用
+                    # 物理像素（display_size × dpr），否则高 DPI 下逻辑尺寸会缩小 dpr 倍
+                    #（恰好同尺寸时跳过缩放，避免无谓拷贝）
+                    if lw != display_size or lh != display_size:
+                        target_phys = max(1, int(display_size * dpr))
+                        pix = pix.scaled(target_phys, target_phys,
                                          Qt.KeepAspectRatio, Qt.SmoothTransformation)
                         dpr = pix.devicePixelRatio()
                         lw = pix.width() / dpr
                         lh = pix.height() / dpr
-                    offset_x = int(media_rect.x() + (media_size - lw) / 2.0)
-                    offset_y = int(media_rect.y() + (media_size - lh) / 2.0)
+                    # 以 media 区域中心为基准居中
+                    offset_x = int(media_rect.center().x() - lw / 2.0)
+                    offset_y = int(media_rect.center().y() - lh / 2.0)
                     painter.drawPixmap(offset_x, offset_y, pix)
             elif self._media_icon:
-                icon_font = QFont("Segoe UI Symbol", icon_size, QFont.Normal)
+                # 字号按放大后的图标尺寸比例计算，视觉占比与填满的图标一致
+                icon_font = QFont(
+                    "Segoe UI Symbol",
+                    max(icon_size, int(media_size * 0.6 * _MEDIA_ICON_SCALE)),
+                    QFont.Normal,
+                )
                 painter.setFont(icon_font)
                 if self._disabled:
                     painter.setPen(tm.alpha_of(tm.mid, 60))

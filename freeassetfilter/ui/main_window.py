@@ -765,16 +765,22 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._file_selector.sync_pool_status(pool_paths)
 
     def _on_file_selected(self, file_info: dict) -> None:
-        """处理文件选择器的文件选中事件，同步预览态到文件池"""
-        self._file_pool.set_previewing_file(file_info.get("path", ""))
+        """处理文件选择器的文件选中事件，同步预览态到文件池与自身卡片"""
+        file_path = file_info.get("path", "")
+        self._file_selector.set_previewing_file(file_path)
+        self._file_pool.set_previewing_file(file_path)
         self._previewer.set_file(file_info)
 
     def _on_pool_item_clicked(self, file_info: dict) -> None:
         """处理文件池卡片的左键点击事件，预览该文件"""
+        file_path = file_info.get("path", "")
+        self._file_selector.set_previewing_file(file_path)
+        self._file_pool.set_previewing_file(file_path)
         self._previewer.set_file(file_info)
 
     def _on_preview_cancelled(self) -> None:
         """处理预览取消事件"""
+        self._file_selector.clear_previewing_state()
         self._file_pool.clear_previewing_state()
 
     def _on_pool_item_right_clicked(self, file_info: dict) -> None:

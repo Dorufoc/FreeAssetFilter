@@ -492,10 +492,11 @@ class FilePoolLayout(QWidget):
         for card in self._card_widgets.values():
             card.set_scale(new_scale, base_overrides=self._card_base_overrides)
 
-    # 仅这些尺寸键参与缩放；weight/radius 等键必须原样保留，
+    # 仅布局尺寸键参与缩放；文字字号（title/subtitle/desc）必须原样保留，
+    # 与 FileCardDelegate._get_scaled_config / StyledInfoCard.set_scale 行为一致——
+    # Ctrl+滚轮缩放卡片时文字大小不跟随变化。weight/radius 等键同样原样保留，
     # 否则 title_weight=700 会被放大为非法字重（与 StyledInfoCard.set_scale 行为对齐）。
-    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size",
-                           "title_size", "subtitle_size", "desc_size")
+    _SCALABLE_SIZE_KEYS = ("padding", "gap", "media_size", "icon_size")
 
     def _build_card_size_overrides(self) -> dict:
         """根据当前 _card_scale 构建 size_overrides（与 set_scale + base_overrides 等价）。"""

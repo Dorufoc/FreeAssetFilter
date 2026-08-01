@@ -12,9 +12,22 @@ FileCardDelegate — 文件卡片委托，视觉风格精确匹配 StyledInfoCar
 
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QModelIndex, QRect, QRectF, QSize, Qt
+from PySide6.QtCore import (
+    QAbstractAnimation,
+    QEasingCurve,
+    QModelIndex,
+    QPropertyAnimation,
+    Property,
+    QRect,
+    QRectF,
+    QSize,
+    QTimer,
+    Qt,
+)
 from PySide6.QtGui import (
+    QBrush,
     QColor,
+    QConicalGradient,
     QFont,
     QFontMetrics,
     QPainter,
@@ -37,6 +50,13 @@ from components.file_list_model import (
     CardWidthRole,
     GridOffsetRole,
 )
+
+# 图标相对 media 区域的放大系数：>1 时图标超出 media 区域边界绘制，视觉更大。
+# 当前试探值 1.10 = 放大 10%，后续可按需调整（与 StyledInfoCard 保持一致）。
+_MEDIA_ICON_SCALE: float = 1.10
+
+# hover 图标缩放动画总开关：暂时禁用（False），恢复动画时改为 True（与 StyledInfoCard 保持一致）。
+_HOVER_MEDIA_ANIM_ENABLED: bool = False
 
 # ── 文件类型映射 ──────────────────────────────────────────────────────────────
 
@@ -141,18 +161,15 @@ def _get_file_type_display(suffix: str, is_dir: bool = False) -> str:
 def _get_colors() -> Dict[str, Any]:
     return {
         "bg": tm.alpha_of(tm.surface, 85),
-        "bg_hover": tm.alpha_of(tm.surface, 90),
         "border": tm.alpha_of(tm.mid, 30),
-        "media_bg": tm.alpha_of(tm.mid, 40),
         "title": tm.text,
         "subtitle": tm.mid,
         "desc": tm.alpha_of(tm.mid, 60),
         "icon": tm.mid,
         "accent": tm.accent,
-        "selected_border": tm.accent,
-        "selected_bg": tm.alpha_of(tm.accent, 40),  # accent alpha≈102，与 FileBlockCard 选中填充一致
-        "secondary": tm.text,  # 预览态边框色，对应 FileBlockCard 的 secondary_color
-        "shadow": QColor(0, 0, 0, 40),
+        "selected_bg": tm.alpha_of(tm.accent, 40),  # 选中态（已加入文件池）背景覆盖层：半透明主题色
+        "secondary": tm.text,  # 预览态文字辅助色（渐变边框不再直接使用该色）
+        "hover_overlay": tm.alpha_of(tm.accent, 25),  # hover 反馈：25% 主题色覆盖层（所有状态统一）
     }
 
 
@@ -198,6 +215,113 @@ class FileCardDelegate(QStyledItemDelegate):
         self._card_scale: float = 1.0
         self._pool_file_set: set[str] = set()  # 已存在于文件池中的文件路径集合
 
+        # hover 图标缩放动画（与 StyledInfoCard 一致：1.0 → 1.05，OutBack 缓动）
+        self._hover_row: int = -1        # 当前 hover 动画绑定的行（-1 = 无）
+        self._hover_progress: float = 0.0  # 该行图标缩放进度（0~1）
+        self._view: Optional[object] = None  # 关联视图，动画每帧触发 viewport 重绘
+        self._media_scale_anim = QPropertyAnimation(self, b"media_scale")
+        self._media_scale_anim.setDuration(220)
+        self._media_scale_anim.setEasingCurve(QEasingCurve.OutBack)
+
+        # 预览态渐变边框旋转动画：焦点绕卡片中心旋转（16ms/帧）
+        self._preview_angle: float = 0.0          # 渐变焦点当前角度（度）
+        self._preview_painted: bool = False        # 最近一帧是否有预览态卡片被绘制
+        self._preview_anim_timer = QTimer(self)
+        self._preview_anim_timer.setInterval(16)
+        self._preview_anim_timer.timeout.connect(self._advance_preview_gradient)
+
+    @Property(float)
+    def media_scale(self) -> float:
+        """hover 图标缩放进度（0~1），由 QPropertyAnimation 驱动。"""
+        return self._hover_progress
+
+    @media_scale.setter
+    def media_scale(self, value: float) -> None:
+        self._hover_progress = float(value)
+        if self._view is not None:
+            self._view.viewport().update()
+
+    def set_view(self, view) -> None:
+        """设置关联视图：hover 动画每帧通过其 viewport 触发重绘。
+
+        Args:
+            view: 使用本 delegate 的 QListView 实例。
+        """
+        self._view = view
+
+    def _animate_media_scale(self, target: float) -> None:
+        """动画过渡 hover 图标缩放进度（OutBack 缓动，220ms）。"""
+        self._media_scale_anim.stop()
+        self._media_scale_anim.setStartValue(self._hover_progress)
+        self._media_scale_anim.setEndValue(target)
+        self._media_scale_anim.start()
+
+    def _advance_preview_gradient(self) -> None:
+        """推进预览态边框渐变焦点旋转（循环动画）。
+
+        仅当最近一帧有预览态卡片被绘制时保持运行；预览消失后自动停止，
+        避免持续重绘消耗。
+        """
+        if not self._preview_painted:
+            self._preview_anim_timer.stop()
+            return
+        self._preview_painted = False
+        self._preview_angle = (self._preview_angle + 1.0) % 360.0
+        if self._view is not None:
+            self._view.viewport().update()
+
+    @staticmethod
+    def _make_preview_gradient(rect: QRectF, angle_deg: float) -> QConicalGradient:
+        """构建预览态边框流光渐变（角锥渐变，光斑沿圆周旋转）。
+
+        角锥渐变颜色只与角度相关：沿边框一周颜色从主题色 30% 透明度 →
+        峰值色 → 主题色 30% 透明度平滑过渡，两道光斑位于对侧并随
+        start_angle 递增沿边框流动。峰值色主题感知：深色模式为白色，
+        浅色模式为黑色（与背景形成对比）；谷值为主题色 30% 透明度。
+
+        Args:
+            rect: 卡片矩形（逻辑坐标）。
+            angle_deg: 渐变起始角度（度），动画每帧递增实现旋转。
+
+        Returns:
+            可用于 QPen 笔刷的角锥渐变。
+        """
+        cx = rect.center().x()
+        cy = rect.center().y()
+
+        accent_30 = tm.alpha_of(tm.accent, 30)  # 主题色 30% 透明度
+        peak = QColor(tm.white) if tm.is_dark_theme() else QColor(tm.black)
+
+        gradient = QConicalGradient(cx, cy, angle_deg)
+        gradient.setColorAt(0.0, accent_30)
+        gradient.setColorAt(0.25, peak)         # 光斑 1 峰值（深色=白/浅色=黑）
+        gradient.setColorAt(0.5, accent_30)
+        gradient.setColorAt(0.75, peak)         # 光斑 2 峰值（对侧）
+        gradient.setColorAt(1.0, accent_30)
+        return gradient
+
+    def _sync_hover_animation(self, index: QModelIndex, is_hovered: bool) -> None:
+        """hover 状态翻转时驱动图标缩放动画（每张卡片独立进度）。
+
+        进入：进度重置为 0 后动画到 1（OutBack 缓动，与 StyledInfoCard 一致）；
+        离开：从当前进度动画回 0，动画期间该卡片继续绘制缩小过程。
+        防抖：离开分支仅当动画未运行时才启动，避免 paint 每帧重启动画。
+        """
+        row = index.row()
+        if not _HOVER_MEDIA_ANIM_ENABLED:
+            return
+        if is_hovered:
+            if self._hover_row != row:
+                self._hover_row = row
+                self._hover_progress = 0.0
+                self._animate_media_scale(1.0)
+        elif (
+            self._hover_row == row
+            and self._hover_progress > 0.0
+            and self._media_scale_anim.state() != QAbstractAnimation.Running
+        ):
+            self._animate_media_scale(0.0)
+
     def set_pool_files(self, paths: set[str]) -> None:
         """设置当前文件池中的文件路径集合，用于绘制"已在池中"边框标记。"""
         import os
@@ -226,31 +350,36 @@ class FileCardDelegate(QStyledItemDelegate):
         painter: QPainter,
         icon_pixmap: object,
         media_rect: QRectF,
+        hover_scale: float = 1.0,
     ) -> None:
-        """在 media 区域中居中绘制图标，完整填充背景区。
+        """在 media 区域中居中绘制图标，完整填充满整个区域（无背景）。
 
         设计原则：
         - 图标在 media 区域中严格居中（考虑 DPR 转换逻辑尺寸）
-        - 完整填充 media 背景区域，无额外内边距
-        - 自适应缩放：超出 display 尺寸时等比缩放适配
+        - 完整填充满 media 区域（尺寸 = media 区域 × _MEDIA_ICON_SCALE），无额外内边距
+        - 始终等比缩放适配：小于区域时放大填满，大于区域时缩小适配
         - DPR 感知：QPixmap.width() 返回物理像素，需除以 DPR 得到逻辑尺寸
 
         Args:
             painter: 已激活的 QPainter。
             icon_pixmap: 要绘制的 QPixmap。
-            media_rect: media 背景区域的 QRectF（逻辑坐标）。
+            media_rect: media 区域的 QRectF（逻辑坐标）。
+            hover_scale: hover 缩放系数（1.0 = 不放大）。
         """
         dpr = icon_pixmap.devicePixelRatio()
         logical_w = icon_pixmap.width() / dpr
         logical_h = icon_pixmap.height() / dpr
 
-        # 图标显示尺寸 = media 区域全尺寸（无内边距）
-        display_size = int(media_rect.width())
+        # 图标显示尺寸 = media 区域尺寸 × 放大系数 × hover 缩放（无内边距）
+        display_size = int(media_rect.width() * _MEDIA_ICON_SCALE * hover_scale)
 
-        # 自适应缩放：仅当图标逻辑尺寸超出显示尺寸时才缩放
-        if logical_w > display_size or logical_h > display_size:
+        # 等比缩放至填满 media 区域。注意 scaled() 保留原 DPR：目标尺寸必须用
+        # 物理像素（display_size × dpr），否则高 DPI 下逻辑尺寸会缩小 dpr 倍
+        #（恰好同尺寸时跳过缩放，避免无谓拷贝）
+        if logical_w != display_size or logical_h != display_size:
+            target_phys = max(1, int(display_size * dpr))
             icon_pixmap = icon_pixmap.scaled(
-                display_size, display_size,
+                target_phys, target_phys,
                 Qt.KeepAspectRatio,
                 Qt.SmoothTransformation,
             )
@@ -259,9 +388,9 @@ class FileCardDelegate(QStyledItemDelegate):
             logical_w = icon_pixmap.width() / dpr
             logical_h = icon_pixmap.height() / dpr
 
-        # 在 media 区域中居中（使用逻辑尺寸）
-        offset_x = int(media_rect.x() + (media_rect.width() - logical_w) / 2.0)
-        offset_y = int(media_rect.y() + (media_rect.height() - logical_h) / 2.0)
+        # 在 media 区域中居中（使用逻辑尺寸，以区域中心为基准）
+        offset_x = int(media_rect.center().x() - logical_w / 2.0)
+        offset_y = int(media_rect.center().y() - logical_h / 2.0)
         painter.drawPixmap(offset_x, offset_y, icon_pixmap)
 
     # ── 文件信息读取 ───────────────────────────────────────────────────────
@@ -360,10 +489,17 @@ class FileCardDelegate(QStyledItemDelegate):
 
         card_rect = self._resolve_card_rect(option, index)
 
+        # hover 图标缩放动画同步（进入/离开时启动 OutBack 缓动）
+        self._sync_hover_animation(index, is_hovered)
+        # hover 缩放系数：1.0 → 1.05（与 StyledInfoCard 一致），仅作用于动画绑定行
+        hover_scale = 1.0 + 0.05 * (
+            self._hover_progress if self._hover_row == index.row() else 0.0
+        )
+
         if self._layout_mode == "card":
-            self._paint_card(painter, card_rect, file_info, is_hovered, is_selected, is_previewing, is_in_pool=is_in_pool)
+            self._paint_card(painter, card_rect, file_info, is_hovered, is_selected, is_previewing, is_in_pool=is_in_pool, hover_scale=hover_scale)
         else:
-            self._paint_list(painter, card_rect, file_info, is_hovered, is_selected, is_previewing, is_in_pool=is_in_pool)
+            self._paint_list(painter, card_rect, file_info, is_hovered, is_selected, is_previewing, is_in_pool=is_in_pool, hover_scale=hover_scale)
 
         painter.restore()
 
@@ -417,6 +553,7 @@ class FileCardDelegate(QStyledItemDelegate):
         is_selected: bool,
         is_previewing: bool,
         is_in_pool: bool = False,
+        hover_scale: float = 1.0,
     ) -> None:
         colors = _get_colors()
         config = self._get_scaled_config(CARD_CONFIG)
@@ -431,29 +568,26 @@ class FileCardDelegate(QStyledItemDelegate):
         h = rect.height()
         card_rect = QRectF(rx, ry, w, h)
 
-        # 状态解析 — 匹配旧文件选择器 FileBlockCard 的状态样式：
-        # 预览态：secondary 色边框、宽度翻倍，背景保持；
-        # 选中态：accent 完整边框 + 半透明 accent 填充；
-        # 已在池中：3px accent 边框标记
+        # 状态解析：
+        # 预览态：流光渐变边框（宽度翻倍），背景保持（在池中=主题色背景/否则默认）；
+        # 选中态（已加入文件池）：accent 完整边框 + 半透明 accent 填充（40% 覆盖层）
         if is_previewing:
             border_width = 2
-            border_color = colors["secondary"]
-        elif is_in_pool and not is_selected:
-            border_width = 3
-            border_color = colors["accent"]
-        elif is_selected:
+            border_brush = QBrush(
+                self._make_preview_gradient(card_rect, self._preview_angle)
+            )
+            self._preview_painted = True
+            if not self._preview_anim_timer.isActive():
+                self._preview_anim_timer.start()
+        elif is_in_pool:
             border_width = 1
-            border_color = colors["selected_border"]
+            border_brush = QBrush(colors["accent"])
         else:
             border_width = 1
-            border_color = colors["border"]
+            border_brush = QBrush(colors["border"])
 
-        if is_selected:
-            bg_color = colors["selected_bg"]
-        elif is_hovered and not is_previewing:
-            bg_color = colors["bg_hover"]
-        else:
-            bg_color = colors["bg"]
+        # 背景：选中态（已在文件池）= accent 40% 覆盖层，其余 = 默认背景
+        bg_color = colors["selected_bg"] if is_in_pool else colors["bg"]
 
         # 内缩 border_width/2 绘制，避免边框被 item 的 clipRect 裁切
         # （参考 FileBlockCard._paint_card 的 adjusted 内缩方案）
@@ -463,22 +597,19 @@ class FileCardDelegate(QStyledItemDelegate):
             -border_width / 2.0,
             -border_width / 2.0,
         )
-        painter.setPen(QPen(border_color, border_width))
+        painter.setPen(QPen(border_brush, border_width))
         painter.setBrush(bg_color)
         painter.drawRoundedRect(draw_rect, radius, radius)
 
-        # 阴影
-        if is_hovered and not is_selected and not is_previewing and not is_in_pool:
+        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层
+        if is_hovered:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(colors["shadow"])
-            painter.drawRoundedRect(QRectF(rx, ry + 2, w, h), radius, radius)
+            painter.setBrush(colors["hover_overlay"])
+            painter.drawRoundedRect(draw_rect, radius, radius)
 
-        # Media 区域
+        # Media 区域 — 无灰色背景填充，图标直接绘制并填充满整个区域
         media_x = rx + (w - media_size) / 2.0
         media_y = ry + padding
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(colors["media_bg"])
-        painter.drawRoundedRect(QRectF(media_x, media_y, media_size, media_size), 4, 4)
 
         icon_pixmap = file_info.get("icon_pixmap")
         if icon_pixmap and not icon_pixmap.isNull():
@@ -486,12 +617,15 @@ class FileCardDelegate(QStyledItemDelegate):
                 painter,
                 icon_pixmap,
                 QRectF(media_x, media_y, media_size, media_size),
+                hover_scale=hover_scale,
             )
         else:
             suffix = file_info.get("suffix", "")
             is_dir = file_info.get("is_dir", False)
             icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
-            painter.setFont(QFont("Segoe UI", config["icon_size"], QFont.Bold))
+            # 字号按放大后的图标尺寸比例计算，视觉占比与填满的图标一致
+            icon_font_size = max(config["icon_size"], int(media_size * 0.6 * _MEDIA_ICON_SCALE * hover_scale))
+            painter.setFont(QFont("Segoe UI", icon_font_size, QFont.Bold))
             painter.setPen(colors["icon"])
             painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)
 
@@ -511,6 +645,7 @@ class FileCardDelegate(QStyledItemDelegate):
         is_selected: bool,
         is_previewing: bool,
         is_in_pool: bool = False,
+        hover_scale: float = 1.0,
     ) -> None:
         colors = _get_colors()
         config = self._get_scaled_config(LIST_CONFIG)
@@ -525,30 +660,26 @@ class FileCardDelegate(QStyledItemDelegate):
         h = rect.height()
         card_rect = QRectF(rx, ry, w, h)
 
-        # 状态解析 — 匹配旧文件选择器 FileBlockCard 的状态样式：
-        # 预览态：secondary 色边框、宽度翻倍，背景保持；
-        # 选中态：accent 完整边框 + 半透明 accent 填充；
-        # 已在池中：3px accent 边框标记
+        # 状态解析：
+        # 预览态：流光渐变边框（宽度翻倍），背景保持（在池中=主题色背景/否则默认）；
+        # 选中态（已加入文件池）：accent 完整边框 + 半透明 accent 填充（40% 覆盖层）
         if is_previewing:
             border_width = 2
-            border_color = colors["secondary"]
-        elif is_in_pool and not is_selected:
-            # 文件已在文件池中 → 3px 主题强调色边框
-            border_width = 3
-            border_color = colors["accent"]
-        elif is_selected:
+            border_brush = QBrush(
+                self._make_preview_gradient(card_rect, self._preview_angle)
+            )
+            self._preview_painted = True
+            if not self._preview_anim_timer.isActive():
+                self._preview_anim_timer.start()
+        elif is_in_pool:
             border_width = 1
-            border_color = colors["selected_border"]
+            border_brush = QBrush(colors["accent"])
         else:
             border_width = 1
-            border_color = colors["border"]
+            border_brush = QBrush(colors["border"])
 
-        if is_selected:
-            bg_color = colors["selected_bg"]
-        elif is_hovered and not is_previewing:
-            bg_color = colors["bg_hover"]
-        else:
-            bg_color = colors["bg"]
+        # 背景：选中态（已在文件池）= accent 40% 覆盖层，其余 = 默认背景
+        bg_color = colors["selected_bg"] if is_in_pool else colors["bg"]
 
         # 内缩 border_width/2 绘制，避免边框被 item 的 clipRect 裁切
         # （参考 FileBlockCard._paint_card 的 adjusted 内缩方案）
@@ -558,22 +689,19 @@ class FileCardDelegate(QStyledItemDelegate):
             -border_width / 2.0,
             -border_width / 2.0,
         )
-        painter.setPen(QPen(border_color, border_width))
+        painter.setPen(QPen(border_brush, border_width))
         painter.setBrush(bg_color)
         painter.drawRoundedRect(draw_rect, radius, radius)
 
-        # 阴影
-        if is_hovered and not is_selected and not is_previewing and not is_in_pool:
+        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层
+        if is_hovered:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(colors["shadow"])
-            painter.drawRoundedRect(QRectF(rx, ry + 2, w, h), radius, radius)
+            painter.setBrush(colors["hover_overlay"])
+            painter.drawRoundedRect(draw_rect, radius, radius)
 
-        # Media 区域（左）
+        # Media 区域（左）— 无灰色背景填充，图标直接绘制并填充满整个区域
         media_x = rx + padding
         media_y = ry + (h - media_size) / 2.0
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(colors["media_bg"])
-        painter.drawRoundedRect(QRectF(media_x, media_y, media_size, media_size), 4, 4)
 
         icon_pixmap = file_info.get("icon_pixmap")
         if icon_pixmap and not icon_pixmap.isNull():
@@ -581,12 +709,15 @@ class FileCardDelegate(QStyledItemDelegate):
                 painter,
                 icon_pixmap,
                 QRectF(media_x, media_y, media_size, media_size),
+                hover_scale=hover_scale,
             )
         else:
             suffix = file_info.get("suffix", "")
             is_dir = file_info.get("is_dir", False)
             icon_char = "D" if is_dir else (suffix[0].upper() if suffix else "?")
-            painter.setFont(QFont("Segoe UI", config["icon_size"], QFont.Bold))
+            # 字号按放大后的图标尺寸比例计算，视觉占比与填满的图标一致
+            icon_font_size = max(config["icon_size"], int(media_size * 0.6 * _MEDIA_ICON_SCALE * hover_scale))
+            painter.setFont(QFont("Segoe UI", icon_font_size, QFont.Bold))
             painter.setPen(colors["icon"])
             painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)
 
