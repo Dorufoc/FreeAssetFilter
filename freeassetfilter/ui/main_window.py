@@ -15,7 +15,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 import ctypes
 from ctypes import wintypes
 
-from PySide6.QtCore import Qt, QEvent, QUrl, QTimer
+from PySide6.QtCore import Qt, QEvent, QUrl, QTimer, QAbstractNativeEventFilter
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtGui import QPainter, QPaintEvent, QResizeEvent, QMoveEvent, QMouseEvent, QColor, QCursor
 
@@ -262,6 +262,91 @@ def make_mica_background(
 MicaBackgroundWidget = make_mica_background
 
 
+class _EdgeHitTestPassthroughFilter(QAbstractNativeEventFilter):
+    """
+    原生子窗口覆盖窗口边缘时，让 WM_NCHITTEST 命中测试穿透回主窗口。
+
+    背景：qframelesswindow 的边缘拖拽缩放依赖顶层窗口（主窗口）收到
+    ``WM_NCHITTEST`` 并返回 ``HTLEFT/HTRIGHT/...`` 命中码，之后由系统以
+    原生 ``WM_SYSCOMMAND/SC_SIZE`` 通道执行缩放。当视频播放布局嵌入 MPV 时，
+    视频渲染面（``WA_NativeWindow`` 原生子窗口）铺满预览器区域，会覆盖主窗口
+    的右边缘（及视频面所在的下边缘）；鼠标移到这些位置时，``WM_NCHITTEST``
+    发送给子窗口而非主窗口，子窗口默认返回 ``HTCLIENT``，于是该段边缘无法
+    拖拽缩放。
+
+    本过滤器在应用级原生消息层（QAbstractNativeEventFilter，等价于 win32
+    消息钩子，不改动任何控件类）拦截 ``WM_NCHITTEST``：
+    1. 消息目标不是主窗口本身（主窗口的命中测试仍由 qframelesswindow 的
+       ``nativeEvent`` 原样处理），而是主窗口的原生后代子窗口；
+    2. 鼠标屏幕坐标落在主窗口边缘带（与 qframelesswindow 的 BORDER_WIDTH
+       一致）内；
+    则返回 ``HTTRANSPARENT``——系统会把命中测试继续交给同线程的下层窗口
+    （即主窗口），由 qframelesswindow 原有逻辑返回正确的边缘命中码。
+
+    结果：边缘缩放完全复用 qframelesswindow + win32 原生缩放通道，不引入
+    任何 Qt 事件层面的手动拖拽逻辑；视频面内部（非边缘带）不受影响。
+    """
+
+    # WM_NCHITTEST / HTTRANSPARENT（让系统向同线程下层窗口继续发送命中测试）
+    WM_NCHITTEST = 0x0084
+    HTTRANSPARENT = -1
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__()
+        self._window = window
+
+    def nativeEventFilter(self, eventType: bytes, message: object) -> tuple:
+        """拦截 WM_NCHITTEST，边缘命中穿透回主窗口。"""
+        if eventType != b"windows_generic_MSG":
+            return False, 0
+        try:
+            msg = wintypes.MSG.from_address(int(message))
+        except Exception:
+            return False, 0
+        if msg.message != self.WM_NCHITTEST or not msg.hWnd:
+            return False, 0
+
+        window = self._window
+        main_hwnd = int(window.winId())
+        hwnd = int(msg.hWnd)
+        if hwnd == main_hwnd:
+            # 主窗口自身的命中测试交给 qframelesswindow.nativeEvent 处理
+            return False, 0
+
+        # 仅处理主窗口的原生后代（视频面等嵌入子窗口），不干扰其他顶层窗口
+        if not _is_native_descendant(hwnd, main_hwnd):
+            return False, 0
+
+        # lParam 高 16 位为屏幕 Y，低 16 位为屏幕 X（带符号，支持负坐标副屏）
+        lp = int(msg.lParam)
+        x = ctypes.c_short(lp & 0xFFFF).value
+        y = ctypes.c_short((lp >> 16) & 0xFFFF).value
+
+        rect = wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(main_hwnd, ctypes.byref(rect))
+        border = 5  # 与 qframelesswindow WindowsFramelessWindowBase.BORDER_WIDTH 一致
+        in_edge = (
+            x - rect.left < border
+            or rect.right - x < border
+            or y - rect.top < border
+            or rect.bottom - y < border
+        )
+        if in_edge:
+            # 穿透：系统会向同线程下层窗口（主窗口）重新发送 WM_NCHITTEST
+            return True, self.HTTRANSPARENT
+        return False, 0
+
+
+def _is_native_descendant(hwnd: int, ancestor: int) -> bool:
+    """判断 hwnd 是否为 ancestor 的原生后代窗口（沿父链上溯）。"""
+    cur = ctypes.windll.user32.GetAncestor(hwnd, 1)  # GA_PARENT
+    while cur:
+        if cur == ancestor:
+            return True
+        cur = ctypes.windll.user32.GetAncestor(cur, 1)
+    return False
+
+
 class _FramelessNativeEffectsMixin:
     """在 GPU 表面导致 HWND 重建后，重新应用 qframelesswindow 的原生窗口效果。
 
@@ -283,6 +368,21 @@ class _FramelessNativeEffectsMixin:
         if e.type() == QEvent.Type.WinIdChange:
             self._reapply_native_window_effects()
         return super().event(e)
+
+    def _install_edge_hit_test_passthrough(self) -> None:
+        """安装 WM_NCHITTEST 边缘穿透过滤器（幂等）。
+
+        让覆盖窗口边缘的原生子窗口（如 MPV 视频面）不再截胡边缘命中测试，
+        恢复 qframelesswindow 的 win32 原生边缘拖拽缩放。见
+        :class:`_EdgeHitTestPassthroughFilter` 的说明。
+        """
+        if getattr(self, "_edge_hit_test_filter", None) is not None:
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        self._edge_hit_test_filter = _EdgeHitTestPassthroughFilter(self)
+        app.installNativeEventFilter(self._edge_hit_test_filter)
 
     def _reapply_native_window_effects(self) -> None:
         """在当前 HWND 上重新应用 win32 窗口样式与 DWM 阴影/圆角。"""
@@ -362,6 +462,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
 
         # 调用父类初始化
         super().__init__(parent)
+
+        # 安装 WM_NCHITTEST 边缘穿透过滤器：嵌入 MPV 等原生子窗口覆盖窗口
+        # 边缘时，仍由 qframelesswindow + win32 原生通道执行边缘拖拽缩放
+        self._install_edge_hit_test_passthrough()
 
         # 设置窗口属性
         self._setup_window()
