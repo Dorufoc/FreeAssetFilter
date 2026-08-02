@@ -111,11 +111,32 @@ class UnifiedPreviewerLayout(QWidget):
         bottom_layout.addWidget(self._close_btn)
 
     def set_section_styles(self, fill_color: str, border_color: str) -> None:
-        """应用面板样式到内容区、底栏（主题切换时由 MainWindow 调用）"""
+        """应用面板样式到内容区、底栏（主题切换时由 MainWindow 调用）。
+
+        注意：规则必须用 objectName 选择器限定到各 QFrame 自身——
+        无选择器的裸规则等价于 `*`，会级联到 _content_top 的所有后代，
+        导致内嵌的 preview 子控件错误继承边框/圆角/背景。
+
+        Args:
+            fill_color: 填充色。
+            border_color: 边框色。
+        """
         section_style = f"""
-            background-color: {fill_color};
-            border: 1px solid {border_color};
-            border-radius: 8px;
+            QFrame#PreviewerTop {{
+                background-color: {fill_color};
+                border: 1px solid {border_color};
+                border-radius: 8px;
+            }}
+            QFrame#PreviewerBottom {{
+                background-color: {fill_color};
+                border: 1px solid {border_color};
+                border-radius: 8px;
+            }}
+            QFrame#PreviewerBottomBar {{
+                background-color: {fill_color};
+                border: 1px solid {border_color};
+                border-radius: 8px;
+            }}
         """
         self._content_top.setStyleSheet(section_style)
         self._content_bottom.setStyleSheet(section_style)
@@ -213,9 +234,10 @@ class UnifiedPreviewerLayout(QWidget):
                 f"color: {tm.mid.name()}; font-size: 14px; background: transparent;"
             )
         
-        # 添加到布局
+        # 添加到布局并确保可见（_cleanup_current_preview 会 hide 它）
         if self._content_layout is not None:
             self._content_layout.addWidget(self._placeholder_label)
+            self._placeholder_label.show()
     
     def _ensure_content_layout(self) -> None:
         """确保 _content_top 有且仅有一个 QVBoxLayout，避免布局泄漏。"""
@@ -288,13 +310,11 @@ class UnifiedPreviewerLayout(QWidget):
         same_type = (self._current_preview_type == previewer_class)
         
         if same_type and self._current_preview_widget is not None:
-            # 同类型，复用预览器
-            # 先停止当前播放（视频/音频）
-            if hasattr(self._current_preview_widget, "stop_playback"):
-                try:
-                    self._current_preview_widget.stop_playback()
-                except (RuntimeError, AttributeError):
-                    pass
+            # 同类型，复用预览器。
+            # 注意：不在此处调用 stop_playback()——mpv 的 loadfile 命令会直接替换
+            # 当前播放项；先 stop 反而会清空播放列表，使 mpv（idle=no 默认行为）
+            # 触发 SHUTDOWN 退出核心，导致同实例后续所有加载失败。
+            pass
         else:
             # 不同类型或无当前预览器，清理并创建新的
             self._cleanup_current_preview()

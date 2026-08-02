@@ -58,6 +58,42 @@ _MEDIA_ICON_SCALE: float = 1.10
 # hover 图标缩放动画总开关：暂时禁用（False），恢复动画时改为 True（与 StyledInfoCard 保持一致）。
 _HOVER_MEDIA_ANIM_ENABLED: bool = False
 
+# ── 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中）────────────────────────────────
+_STATE_IN_POOL: int = 1       # 状态位：已在文件池（选中态）
+_STATE_PREVIEWING: int = 2    # 状态位：预览中
+_STATE_ANIM_DURATION_MS: int = 200   # 状态过渡时长
+_STATE_ANIM_INTERVAL_MS: int = 16    # 动画帧间隔
+_HOVER_ANIM_DURATION_MS: int = 120   # hover 覆盖层过渡时长（比状态过渡短）
+
+
+class _VisualState:
+    """某一状态组合下的视觉参数（背景色、边框样式、边框宽度）。"""
+
+    __slots__ = ("bg", "border_kind", "border_color", "width")
+
+    def __init__(
+        self,
+        bg: QColor,
+        border_kind: str,
+        border_color: Optional[QColor],
+        width: float,
+    ) -> None:
+        self.bg = bg
+        self.border_kind = border_kind  # "plain"（纯色）| "gradient"（预览流光渐变）
+        self.border_color = border_color
+        self.width = width
+
+
+class _StateTransition:
+    """单张卡片的状态过渡动画：from 视觉 → to 视觉，t 为进度（0~1）。"""
+
+    __slots__ = ("from_v", "to_v", "t")
+
+    def __init__(self, from_v: _VisualState, to_v: _VisualState) -> None:
+        self.from_v = from_v
+        self.to_v = to_v
+        self.t = 0.0
+
 # ── 文件类型映射 ──────────────────────────────────────────────────────────────
 
 _FILE_TYPE_MAP: Dict[str, str] = {
@@ -169,7 +205,7 @@ def _get_colors() -> Dict[str, Any]:
         "accent": tm.accent,
         "selected_bg": tm.alpha_of(tm.accent, 40),  # 选中态（已加入文件池）背景覆盖层：半透明主题色
         "secondary": tm.text,  # 预览态文字辅助色（渐变边框不再直接使用该色）
-        "hover_overlay": tm.alpha_of(tm.accent, 25),  # hover 反馈：25% 主题色覆盖层（所有状态统一）
+        "hover_overlay": tm.alpha_of(tm.mid, 25),  # hover 反馈：25% 灰度覆盖层（所有状态统一）
     }
 
 
@@ -230,6 +266,17 @@ class FileCardDelegate(QStyledItemDelegate):
         self._preview_anim_timer.setInterval(16)
         self._preview_anim_timer.timeout.connect(self._advance_preview_gradient)
 
+        # 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中：背景/边框颜色插值 + 交叉淡化）
+        self._last_state: Dict[int, int] = {}       # row → 最近一次绘制时的状态位
+        self._last_path: Dict[int, str] = {}        # row → 最近一次绘制的文件路径（检测 row 复用）
+        self._transitions: Dict[int, _StateTransition] = {}  # row → 进行中的过渡
+        # hover 覆盖层透明度过渡（进入淡入 / 离开淡出，120ms）
+        self._hover_overlay_progress: Dict[int, float] = {}  # row → 覆盖层当前透明度（0~1）
+        self._hover_targets: Dict[int, bool] = {}            # row → hover 目标状态（True=淡入/False=淡出）
+        self._state_anim_timer = QTimer(self)
+        self._state_anim_timer.setInterval(_STATE_ANIM_INTERVAL_MS)
+        self._state_anim_timer.timeout.connect(self._advance_state_transitions)
+
     @Property(float)
     def media_scale(self) -> float:
         """hover 图标缩放进度（0~1），由 QPropertyAnimation 驱动。"""
@@ -269,6 +316,309 @@ class FileCardDelegate(QStyledItemDelegate):
         self._preview_angle = (self._preview_angle + 1.0) % 360.0
         if self._view is not None:
             self._view.viewport().update()
+
+    # ── 卡片状态过渡动画（默认 ↔ 池中 ↔ 预览中）─────────────────────────────
+
+    def _advance_state_transitions(self) -> None:
+        """推进所有进行中的卡片状态过渡与 hover 覆盖层过渡；无动画时停止定时器。"""
+        # 推进卡片状态过渡（默认 ↔ 池中 ↔ 预览中）
+        if self._transitions:
+            step = _STATE_ANIM_INTERVAL_MS / float(_STATE_ANIM_DURATION_MS)
+            finished = []
+            for row, tr in self._transitions.items():
+                tr.t = min(1.0, tr.t + step)
+                if tr.t >= 1.0:
+                    finished.append(row)
+            for row in finished:
+                del self._transitions[row]
+
+        # 推进 hover 覆盖层透明度过渡（进入淡入 / 离开淡出）
+        if self._hover_targets:
+            hover_step = _STATE_ANIM_INTERVAL_MS / float(_HOVER_ANIM_DURATION_MS)
+            for row, target in list(self._hover_targets.items()):
+                cur = self._hover_overlay_progress.get(row, 0.0)
+                if target:
+                    cur = min(1.0, cur + hover_step)
+                else:
+                    cur = max(0.0, cur - hover_step)
+                self._hover_overlay_progress[row] = cur
+                if (target and cur >= 1.0) or (not target and cur <= 0.0):
+                    del self._hover_targets[row]
+                    if cur <= 0.0:
+                        self._hover_overlay_progress.pop(row, None)
+
+        if not self._transitions and not self._hover_targets:
+            self._state_anim_timer.stop()
+            return
+        if self._view is not None:
+            self._view.viewport().update()
+
+    def _sync_hover_overlay(self, index: QModelIndex, is_hovered: bool) -> None:
+        """检测 hover 状态变化，驱动覆盖层透明度过渡（淡入/淡出）。
+
+        Args:
+            index: 当前绘制项的索引。
+            is_hovered: 是否处于 hover 状态。
+        """
+        row = index.row()
+        current = self._hover_overlay_progress.get(row, 0.0)
+        if is_hovered:
+            if current >= 1.0:
+                self._hover_targets.pop(row, None)
+                return
+            self._hover_targets[row] = True
+        else:
+            if current <= 0.0:
+                self._hover_targets.pop(row, None)
+                return
+            self._hover_targets[row] = False
+        if not self._state_anim_timer.isActive():
+            self._state_anim_timer.start()
+
+    def _sync_state_transition(
+        self,
+        index: QModelIndex,
+        file_info: Dict[str, Any],
+        is_in_pool: bool,
+        is_previewing: bool,
+    ) -> None:
+        """检测卡片状态变化，启动背景/边框过渡动画（默认 ↔ 池中 ↔ 预览中）。
+
+        虚拟化滚动导致 row 复用时，以路径变化为准重置该行的状态缓存，
+        避免对错误文件播放过渡。
+
+        Args:
+            index: 当前绘制项的索引。
+            file_info: 文件信息字典。
+            is_in_pool: 是否已在文件池。
+            is_previewing: 是否处于预览态。
+        """
+        row = index.row()
+        path = file_info.get("path", "") or ""
+        mask = (_STATE_IN_POOL if is_in_pool else 0) | (_STATE_PREVIEWING if is_previewing else 0)
+
+        if self._last_path.get(row) != path:
+            # 该行内容已变化（滚动复用）：重置缓存，直接显示新状态，不做过渡
+            self._last_path[row] = path
+            self._last_state[row] = mask
+            self._transitions.pop(row, None)
+            self._hover_overlay_progress.pop(row, None)
+            self._hover_targets.pop(row, None)
+            return
+
+        last = self._last_state.get(row)
+        if last is None:
+            self._last_state[row] = mask
+            return
+
+        if last != mask:
+            from_v = self._current_visual(row, last)
+            to_v = self._resolve_visual(mask)
+            self._transitions[row] = _StateTransition(from_v, to_v)
+            self._last_state[row] = mask
+            if not self._state_anim_timer.isActive():
+                self._state_anim_timer.start()
+
+    def _resolve_visual(self, mask: int) -> _VisualState:
+        """根据状态位解析卡片的静态视觉参数。
+
+        Args:
+            mask: 状态位组合（_STATE_IN_POOL | _STATE_PREVIEWING）。
+
+        Returns:
+            对应的视觉参数。
+        """
+        colors = _get_colors()
+        in_pool = bool(mask & _STATE_IN_POOL)
+        previewing = bool(mask & _STATE_PREVIEWING)
+        if previewing:
+            return _VisualState(
+                bg=colors["selected_bg"] if in_pool else colors["bg"],
+                border_kind="gradient",
+                border_color=None,
+                width=2.0,
+            )
+        if in_pool:
+            return _VisualState(
+                bg=colors["selected_bg"],
+                border_kind="plain",
+                border_color=colors["accent"],
+                width=1.0,
+            )
+        return _VisualState(
+            bg=colors["bg"],
+            border_kind="plain",
+            border_color=colors["border"],
+            width=1.0,
+        )
+
+    def _current_visual(self, row: int, fallback_mask: int) -> _VisualState:
+        """获取某行当前视觉参数：过渡中取插值结果，否则按状态位解析。
+
+        Args:
+            row: 行号。
+            fallback_mask: 无过渡时的状态位。
+
+        Returns:
+            当前视觉参数。
+        """
+        tr = self._transitions.get(row)
+        if tr is None:
+            return self._resolve_visual(fallback_mask)
+        t = self._ease_out_cubic(tr.t)
+        if tr.from_v.border_kind == "plain" and tr.to_v.border_kind == "plain":
+            return _VisualState(
+                bg=self._lerp_color(tr.from_v.bg, tr.to_v.bg, t),
+                border_kind="plain",
+                border_color=self._lerp_color(tr.from_v.border_color, tr.to_v.border_color, t),
+                width=tr.from_v.width + (tr.to_v.width - tr.from_v.width) * t,
+            )
+        # 涉及预览渐变：渐变无法插值，取目标视觉（绘制阶段交叉淡化）
+        return tr.to_v
+
+    @staticmethod
+    def _ease_out_cubic(t: float) -> float:
+        """OutCubic 缓动，用于状态过渡的颜色/透明度插值。"""
+        t = min(1.0, max(0.0, t))
+        return 1.0 - (1.0 - t) ** 3
+
+    @staticmethod
+    def _lerp_color(a: QColor, b: QColor, t: float) -> QColor:
+        """线性插值两个颜色（含 alpha 通道）。
+
+        Args:
+            a: 起始颜色。
+            b: 结束颜色。
+            t: 插值进度（0~1）。
+
+        Returns:
+            插值后的颜色。
+        """
+        return QColor(
+            int(a.red() + (b.red() - a.red()) * t),
+            int(a.green() + (b.green() - a.green()) * t),
+            int(a.blue() + (b.blue() - a.blue()) * t),
+            int(a.alpha() + (b.alpha() - a.alpha()) * t),
+        )
+
+    @staticmethod
+    def _scaled_color(color: QColor, factor: float) -> QColor:
+        """按比例缩放颜色透明度（用于交叉淡化）。"""
+        factor = min(1.0, max(0.0, factor))
+        return QColor(
+            color.red(),
+            color.green(),
+            color.blue(),
+            int(color.alpha() * factor),
+        )
+
+    def _scaled_gradient(self, gradient: QConicalGradient, factor: float) -> QConicalGradient:
+        """按比例缩放渐变所有颜色带的透明度（用于交叉淡化）。"""
+        scaled = QConicalGradient(gradient.center(), gradient.angle())
+        for pos, color in gradient.stops():
+            scaled.setColorAt(pos, self._scaled_color(color, factor))
+        return scaled
+
+    def _paint_state_surface(
+        self,
+        painter: QPainter,
+        draw_rect: QRectF,
+        radius: int,
+        is_previewing: bool,
+        is_in_pool: bool,
+        transition: Optional[_StateTransition],
+    ) -> None:
+        """绘制卡片边框与背景。
+
+        无过渡时按状态直接绘制；有过渡时背景颜色插值、边框交叉淡化，
+        实现 默认 ↔ 池中 ↔ 预览中 之间的平滑颜色混合过渡。
+
+        Args:
+            painter: 已激活的 QPainter。
+            draw_rect: 内缩后的绘制矩形。
+            radius: 圆角半径。
+            is_previewing: 是否处于预览态。
+            is_in_pool: 是否已在文件池。
+            transition: 进行中的状态过渡（无则为 None）。
+        """
+        colors = _get_colors()
+
+        if transition is None:
+            if is_previewing:
+                border_width = 2
+                border_brush = QBrush(
+                    self._make_preview_gradient(draw_rect, self._preview_angle)
+                )
+                self._preview_painted = True
+                if not self._preview_anim_timer.isActive():
+                    self._preview_anim_timer.start()
+            elif is_in_pool:
+                border_width = 1
+                border_brush = QBrush(colors["accent"])
+            else:
+                border_width = 1
+                border_brush = QBrush(colors["border"])
+            bg_color = colors["selected_bg"] if is_in_pool else colors["bg"]
+            painter.setPen(QPen(border_brush, border_width))
+            painter.setBrush(bg_color)
+            painter.drawRoundedRect(draw_rect, radius, radius)
+            return
+
+        t = self._ease_out_cubic(transition.t)
+        bg = self._lerp_color(transition.from_v.bg, transition.to_v.bg, t)
+        width = transition.from_v.width + (transition.to_v.width - transition.from_v.width) * t
+
+        if transition.from_v.border_kind == "plain" and transition.to_v.border_kind == "plain":
+            # 纯色 ↔ 纯色：直接插值颜色，单层绘制
+            border_color = self._lerp_color(
+                transition.from_v.border_color,
+                transition.to_v.border_color,
+                t,
+            )
+            painter.setPen(QPen(QBrush(border_color), width))
+            painter.setBrush(bg)
+            painter.drawRoundedRect(draw_rect, radius, radius)
+            return
+
+        # 涉及预览渐变边框：背景 + 两层半透明边框交叉淡化（颜色混合过渡）
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(draw_rect, radius, radius)
+        if t < 1.0:
+            self._draw_border_layer(painter, draw_rect, radius, transition.from_v, 1.0 - t, width)
+        if t > 0.0:
+            self._draw_border_layer(painter, draw_rect, radius, transition.to_v, t, width)
+
+    def _draw_border_layer(
+        self,
+        painter: QPainter,
+        draw_rect: QRectF,
+        radius: int,
+        visual: _VisualState,
+        alpha_factor: float,
+        width: float,
+    ) -> None:
+        """以指定透明度绘制一层边框（纯色或预览流光渐变）。
+
+        Args:
+            painter: 已激活的 QPainter。
+            draw_rect: 绘制矩形。
+            radius: 圆角半径。
+            visual: 边框视觉参数。
+            alpha_factor: 透明度缩放系数（0~1）。
+            width: 边框宽度。
+        """
+        if visual.border_kind == "gradient":
+            grad = self._make_preview_gradient(draw_rect, self._preview_angle)
+            brush = QBrush(self._scaled_gradient(grad, alpha_factor))
+            self._preview_painted = True
+            if not self._preview_anim_timer.isActive():
+                self._preview_anim_timer.start()
+        else:
+            brush = QBrush(self._scaled_color(visual.border_color, alpha_factor))
+        painter.setPen(QPen(brush, width))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(draw_rect, radius, radius)
 
     @staticmethod
     def _make_preview_gradient(rect: QRectF, angle_deg: float) -> QConicalGradient:
@@ -496,10 +846,32 @@ class FileCardDelegate(QStyledItemDelegate):
             self._hover_progress if self._hover_row == index.row() else 0.0
         )
 
+        # 卡片状态过渡动画：检测状态位变化并启动背景/边框过渡
+        self._sync_state_transition(index, file_info, is_in_pool, is_previewing)
+        transition = self._transitions.get(index.row()) if self._transitions else None
+        if transition is not None and transition.t >= 1.0:
+            # 兜底清理（正常由定时器移除）
+            self._transitions.pop(index.row(), None)
+            transition = None
+
+        # hover 覆盖层透明度过渡：淡入/淡出（比状态过渡更短）
+        # 注意：默认值必须为 0.0 并与 _sync_hover_overlay 内部一致——若首次
+        # hover paint 时默认取 1.0，会先画一帧全量覆盖层再回落淡入，造成闪烁
+        self._sync_hover_overlay(index, is_hovered)
+        hover_overlay_progress = self._hover_overlay_progress.get(index.row(), 0.0)
+
         if self._layout_mode == "card":
-            self._paint_card(painter, card_rect, file_info, is_hovered, is_selected, is_previewing, is_in_pool=is_in_pool, hover_scale=hover_scale)
+            self._paint_card(
+                painter, card_rect, file_info, is_hovered, is_selected, is_previewing,
+                is_in_pool=is_in_pool, hover_scale=hover_scale, transition=transition,
+                hover_overlay_progress=hover_overlay_progress,
+            )
         else:
-            self._paint_list(painter, card_rect, file_info, is_hovered, is_selected, is_previewing, is_in_pool=is_in_pool, hover_scale=hover_scale)
+            self._paint_list(
+                painter, card_rect, file_info, is_hovered, is_selected, is_previewing,
+                is_in_pool=is_in_pool, hover_scale=hover_scale, transition=transition,
+                hover_overlay_progress=hover_overlay_progress,
+            )
 
         painter.restore()
 
@@ -554,6 +926,8 @@ class FileCardDelegate(QStyledItemDelegate):
         is_previewing: bool,
         is_in_pool: bool = False,
         hover_scale: float = 1.0,
+        transition: Optional[_StateTransition] = None,
+        hover_overlay_progress: float = 1.0,
     ) -> None:
         colors = _get_colors()
         config = self._get_scaled_config(CARD_CONFIG)
@@ -568,26 +942,15 @@ class FileCardDelegate(QStyledItemDelegate):
         h = rect.height()
         card_rect = QRectF(rx, ry, w, h)
 
-        # 状态解析：
-        # 预览态：流光渐变边框（宽度翻倍），背景保持（在池中=主题色背景/否则默认）；
-        # 选中态（已加入文件池）：accent 完整边框 + 半透明 accent 填充（40% 覆盖层）
-        if is_previewing:
+        # 状态表面（边框+背景）：无过渡按状态直绘；有过渡颜色插值/交叉淡化
+        if transition is not None:
+            border_width = transition.from_v.width + (
+                transition.to_v.width - transition.from_v.width
+            ) * self._ease_out_cubic(transition.t)
+        elif is_previewing:
             border_width = 2
-            border_brush = QBrush(
-                self._make_preview_gradient(card_rect, self._preview_angle)
-            )
-            self._preview_painted = True
-            if not self._preview_anim_timer.isActive():
-                self._preview_anim_timer.start()
-        elif is_in_pool:
-            border_width = 1
-            border_brush = QBrush(colors["accent"])
         else:
             border_width = 1
-            border_brush = QBrush(colors["border"])
-
-        # 背景：选中态（已在文件池）= accent 40% 覆盖层，其余 = 默认背景
-        bg_color = colors["selected_bg"] if is_in_pool else colors["bg"]
 
         # 内缩 border_width/2 绘制，避免边框被 item 的 clipRect 裁切
         # （参考 FileBlockCard._paint_card 的 adjusted 内缩方案）
@@ -597,14 +960,14 @@ class FileCardDelegate(QStyledItemDelegate):
             -border_width / 2.0,
             -border_width / 2.0,
         )
-        painter.setPen(QPen(border_brush, border_width))
-        painter.setBrush(bg_color)
-        painter.drawRoundedRect(draw_rect, radius, radius)
+        self._paint_state_surface(
+            painter, draw_rect, radius, is_previewing, is_in_pool, transition
+        )
 
-        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层
-        if is_hovered:
+        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
+        if is_hovered or hover_overlay_progress > 0.003:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(colors["hover_overlay"])
+            painter.setBrush(self._scaled_color(colors["hover_overlay"], hover_overlay_progress))
             painter.drawRoundedRect(draw_rect, radius, radius)
 
         # Media 区域 — 无灰色背景填充，图标直接绘制并填充满整个区域
@@ -646,6 +1009,8 @@ class FileCardDelegate(QStyledItemDelegate):
         is_previewing: bool,
         is_in_pool: bool = False,
         hover_scale: float = 1.0,
+        transition: Optional[_StateTransition] = None,
+        hover_overlay_progress: float = 1.0,
     ) -> None:
         colors = _get_colors()
         config = self._get_scaled_config(LIST_CONFIG)
@@ -660,26 +1025,15 @@ class FileCardDelegate(QStyledItemDelegate):
         h = rect.height()
         card_rect = QRectF(rx, ry, w, h)
 
-        # 状态解析：
-        # 预览态：流光渐变边框（宽度翻倍），背景保持（在池中=主题色背景/否则默认）；
-        # 选中态（已加入文件池）：accent 完整边框 + 半透明 accent 填充（40% 覆盖层）
-        if is_previewing:
+        # 状态表面（边框+背景）：无过渡按状态直绘；有过渡颜色插值/交叉淡化
+        if transition is not None:
+            border_width = transition.from_v.width + (
+                transition.to_v.width - transition.from_v.width
+            ) * self._ease_out_cubic(transition.t)
+        elif is_previewing:
             border_width = 2
-            border_brush = QBrush(
-                self._make_preview_gradient(card_rect, self._preview_angle)
-            )
-            self._preview_painted = True
-            if not self._preview_anim_timer.isActive():
-                self._preview_anim_timer.start()
-        elif is_in_pool:
-            border_width = 1
-            border_brush = QBrush(colors["accent"])
         else:
             border_width = 1
-            border_brush = QBrush(colors["border"])
-
-        # 背景：选中态（已在文件池）= accent 40% 覆盖层，其余 = 默认背景
-        bg_color = colors["selected_bg"] if is_in_pool else colors["bg"]
 
         # 内缩 border_width/2 绘制，避免边框被 item 的 clipRect 裁切
         # （参考 FileBlockCard._paint_card 的 adjusted 内缩方案）
@@ -689,14 +1043,14 @@ class FileCardDelegate(QStyledItemDelegate):
             -border_width / 2.0,
             -border_width / 2.0,
         )
-        painter.setPen(QPen(border_brush, border_width))
-        painter.setBrush(bg_color)
-        painter.drawRoundedRect(draw_rect, radius, radius)
+        self._paint_state_surface(
+            painter, draw_rect, radius, is_previewing, is_in_pool, transition
+        )
 
-        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层
-        if is_hovered:
+        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
+        if is_hovered or hover_overlay_progress > 0.003:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(colors["hover_overlay"])
+            painter.setBrush(self._scaled_color(colors["hover_overlay"], hover_overlay_progress))
             painter.drawRoundedRect(draw_rect, radius, radius)
 
         # Media 区域（左）— 无灰色背景填充，图标直接绘制并填充满整个区域

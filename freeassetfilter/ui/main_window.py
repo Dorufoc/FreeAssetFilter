@@ -489,6 +489,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._file_pool.pool_changed.connect(self._on_pool_contents_changed)
         # 信号连接：文件池 → 统一预览器（左键点击文件池卡片时预览）
         self._file_pool.item_left_clicked.connect(self._on_pool_item_clicked)
+        # 信号连接：文件池再次点击当前预览卡片 → 取消预览
+        self._file_pool.preview_cancel_requested.connect(self._on_preview_cancelled)
         # 信号连接：文件池右键点击 → 移除文件池并取消选中
         self._file_pool.item_right_clicked.connect(self._on_pool_item_right_clicked)
 
@@ -779,9 +781,10 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._previewer.set_file(file_info)
 
     def _on_preview_cancelled(self) -> None:
-        """处理预览取消事件"""
+        """处理预览取消事件：清除卡片预览态并清空预览器"""
         self._file_selector.clear_previewing_state()
         self._file_pool.clear_previewing_state()
+        self._previewer.clear_preview()
 
     def _on_pool_item_right_clicked(self, file_info: dict) -> None:
         """右键点击文件池卡片：移除文件池并取消文件选择器内的选中"""

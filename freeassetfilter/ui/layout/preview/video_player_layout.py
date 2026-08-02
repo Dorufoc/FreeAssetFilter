@@ -52,6 +52,7 @@ from components.styled_player_bar import StyledPlayerBar
 from components.styled_fluid_background import StyledFluidBackground
 from components.styled_music_info_panel import StyledMusicInfoPanel
 from freeassetfilter.core.managers.mpv_manager import MPVManager, MPVState
+from freeassetfilter.core.native.bridges.mpv_player_core import MpvEndFileReason
 from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
 from freeassetfilter.services.media_metadata_service import MediaMetadataService
 from freeassetfilter.utils.app_logger import info, debug, warning, error
@@ -185,6 +186,7 @@ class VideoPlayerLayout(QWidget):
             return False
 
         self._current_file = file_path
+        self._current_media_is_audio = False
         result = self._mpv_manager.load_file(file_path, is_audio=False, component_id=self._component_id)
         if result:
             self._stack.setCurrentIndex(0)  # Show video surface
@@ -213,6 +215,7 @@ class VideoPlayerLayout(QWidget):
                 error("无法初始化 MPV 播放器")
                 return False
 
+        self._current_media_is_audio = True
         result = self._mpv_manager.load_file(
             file_path, is_audio=True, component_id=self._component_id
         )
@@ -505,6 +508,7 @@ class VideoPlayerLayout(QWidget):
         # MPV 管理器在首次加载文件时惰性初始化
         self._is_mpv_embedded = False
         self._current_file = ""
+        self._current_media_is_audio = False
         self._duration = 0.0
         self._current_position = 0.0
         self._current_speed = 1.0
@@ -700,6 +704,13 @@ class VideoPlayerLayout(QWidget):
     def _on_file_loaded(self, file_path: str) -> None:
         """文件加载完成"""
         info(f"文件加载完成: {file_path}")
+        # 文件加载成功后，确保 stack 切到对应的渲染表面。
+        # 切换文件时 mpv 会先触发旧文件的 END_FILE，可能导致 stack 被切到 overlay，
+        # 这里在 FILE_LOADED 时主动纠正，确保视频/音频表面可见。
+        if self._current_media_is_audio:
+            self._stack.setCurrentIndex(self._audio_surface_index)
+        else:
+            self._stack.setCurrentIndex(0)  # 视频表面
         # 参考旧 VideoPlayer._initialize_progress_display，延迟初始化进度显示
         QTimer.singleShot(200, self._initialize_progress_display)
         # 文件加载完成后再设置循环模式（避免与 loadfile 命令竞争）
@@ -708,9 +719,12 @@ class VideoPlayerLayout(QWidget):
 
     def _on_file_ended(self, reason: int) -> None:
         """播放结束"""
+        # REDIRECT 表示 loadfile 替换了当前文件（切换到下一个视频），
+        # 新文件的 FILE_LOADED 事件会随后到达并刷新 UI。
+        if reason == MpvEndFileReason.REDIRECT:
+            debug(f"文件被 loadfile 替换（REDIRECT），跳过 overlay 切换")
+            return
         self._player_bar.set_playing(False)
-        self._placeholder.setText("拖放视频文件或选择文件以播放")
-        self._stack.setCurrentIndex(1)  # Show overlay
         debug(f"播放结束, 原因码: {reason}")
 
     def _on_browse_file(self) -> None:
