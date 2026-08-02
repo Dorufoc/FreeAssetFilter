@@ -37,6 +37,16 @@ _TOKEN_TO_PROP: Dict[str, str] = {
     "accent.purple": "purple",
 }
 
+# 颜色解析缓存：hex 字符串 → QColor。主题颜色在主题切换前恒定不变，
+# 拖拽 resize 等高频重绘路径（delegate/按钮 paintEvent）会反复访问
+# tm.surface/mid/text 等属性，缓存可消除大量重复字符串解析。
+# 注意：返回的 QColor 为共享对象，调用方如需修改必须先行拷贝
+# （如 QColor(color) 后再 setAlpha），否则会污染缓存。
+_HEX_COLOR_CACHE: Dict[str, Optional[QColor]] = {}
+
+# alpha_of / accent_alpha 缓存：(rgba, alpha) → QColor（共享对象，同上）。
+_ALPHA_COLOR_CACHE: Dict[tuple, QColor] = {}
+
 
 def _qcolor_to_hex(color: QColor) -> str:
     """Convert QColor to #RRGGBB or #RRGGBBAA hex string."""
@@ -144,7 +154,14 @@ class ThemeManager(QObject):
         PySide6's QColor(str) interprets 8-digit hex as #AARRGGBB (Qt 5 legacy),
         but colors.json stores colors as #RRGGBBAA (web standard).
         This method handles both correctly.
+
+        Results are cached (theme colors are constant until the next
+        ``set_theme``); the returned QColor is a shared object and must be
+        copied before modification (e.g. ``QColor(color)`` then ``setAlpha``).
         """
+        cached = _HEX_COLOR_CACHE.get(value)
+        if value in _HEX_COLOR_CACHE:
+            return cached
         s = value.lstrip("#").strip()
         if len(s) == 8:
             # #RRGGBBAA → parse manually (QColor would interpret as #AARRGGBB)
@@ -153,11 +170,20 @@ class ThemeManager(QObject):
                 g = int(s[2:4], 16)
                 b = int(s[4:6], 16)
                 a = int(s[6:8], 16)
-                return QColor(r, g, b, a)
+                color = QColor(r, g, b, a)
             except (ValueError, IndexError):
-                return None
-        # 6-digit, 3-digit, or named colors → delegate to QColor
-        return QColor(value)
+                color = None
+        else:
+            # 6-digit, 3-digit, or named colors → delegate to QColor
+            color = QColor(value)
+        _HEX_COLOR_CACHE[value] = color
+        return color
+
+    @classmethod
+    def _clear_color_cache(cls) -> None:
+        """清空颜色解析缓存（主题/配色变更时调用）。"""
+        _HEX_COLOR_CACHE.clear()
+        _ALPHA_COLOR_CACHE.clear()
 
     # ------------------------------------------------------------------
     # New property-based API — surface / fill / mid / text / black / transparent
@@ -212,6 +238,7 @@ class ThemeManager(QObject):
         if theme not in ("dark", "light"):
             return
         self._dark_mode = (theme == "dark")
+        self._clear_color_cache()
         self.theme_changed.emit(theme)
         self.colors_updated.emit(self._colors)
 
@@ -248,8 +275,13 @@ class ThemeManager(QObject):
 
     def accent_alpha(self, alpha: int) -> QColor:
         """Accent colour at a given alpha value (0–255)."""
+        key = (self.accent.rgba(), max(0, min(255, alpha)))
+        cached = _ALPHA_COLOR_CACHE.get(key)
+        if cached is not None:
+            return cached
         c = QColor(self.accent)
-        c.setAlpha(max(0, min(255, alpha)))
+        c.setAlpha(key[1])
+        _ALPHA_COLOR_CACHE[key] = c
         return c
 
     # ------------------------------------------------------------------
@@ -292,9 +324,19 @@ class ThemeManager(QObject):
 
     @staticmethod
     def alpha_of(color: QColor, pct: float) -> QColor:
-        """Return *color* at a given opacity percentage (0–100)."""
+        """Return *color* at a given opacity percentage (0–100).
+
+        Cached by (rgba, alpha): shared result object — callers must copy
+        before mutating.
+        """
+        alpha = max(0, min(255, int(pct * 2.55)))
+        key = (color.rgba(), alpha)
+        cached = _ALPHA_COLOR_CACHE.get(key)
+        if cached is not None:
+            return cached
         c = QColor(color)
-        c.setAlpha(max(0, min(255, int(pct * 2.55))))
+        c.setAlpha(alpha)
+        _ALPHA_COLOR_CACHE[key] = c
         return c
 
     # ------------------------------------------------------------------

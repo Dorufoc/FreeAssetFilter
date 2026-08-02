@@ -9,6 +9,19 @@ from pathlib import Path
 import math
 from theme import tm
 
+# 按钮配色映射缓存：(is_dark) → color_map。主题切换时以 is_dark_theme()
+# 为 key 自动失效，避免每次 paintEvent 重复解析主题颜色；并监听
+# theme_changed 兜底清空（覆盖同主题重设/热更新场景）。
+_COLOR_MAP_CACHE: dict = {}
+
+
+def _clear_color_map_cache(*_args) -> None:
+    _COLOR_MAP_CACHE.clear()
+
+
+tm.theme_changed.connect(_clear_color_map_cache)
+
+
 class StyledButton(QPushButton):
     """A styled button matching the web component exactly.
     
@@ -20,7 +33,13 @@ class StyledButton(QPushButton):
 
     @staticmethod
     def _get_color_map():
-        return {
+        # 结果缓存：配色只依赖主题（dark/light），主题切换后 tm 颜色变化，
+        # 以 is_dark_theme() 为 key 自然失效，避免每次 paintEvent 重复解析。
+        cache_key = tm.is_dark_theme()
+        cached = _COLOR_MAP_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        color_map = {
             ("primary", "bg"): tm.accent,
             ("primary", "bg_hover"): tm.accent_hover,
             ("primary", "bg_active"): tm.accent_active,
@@ -47,6 +66,8 @@ class StyledButton(QPushButton):
             ("info", "bg_active"): tm.alpha_of(tm.info, 10),
             ("info", "text"): tm.info,
         }
+        _COLOR_MAP_CACHE[cache_key] = color_map
+        return color_map
 
     VARIANTS = ["primary", "secondary", "ghost", "danger", "info"]
     SIZES = ["sm", "default", "lg"]
@@ -75,6 +96,7 @@ class StyledButton(QPushButton):
         self._svg_renderer = None  # 存储 SVG 渲染器（矢量渲染）
         self._svg_icon_path = None  # 存储 SVG 文件路径
         self._svg_content_cache = {}  # 缓存不同颜色的 SVG 渲染器
+        self._svg_xml_cache = {}  # 缓存 (icon_path, color_hex) → 着色后的 SVG XML
         self._block = block
         self._loading = loading
         self._icon_position = icon_position if icon_position in ("left", "right") else "left"
@@ -119,24 +141,34 @@ class StyledButton(QPushButton):
         self._icon = ""
         self._load_svg_icon(svg_path)
         self._svg_content_cache.clear()
+        self._svg_xml_cache.clear()
         self.update()
-    
+
     def _get_colored_svg_content(self, color: QColor) -> str:
-        """获取带颜色的 SVG 内容（修改 SVG XML）"""
+        """获取带颜色的 SVG 内容（修改 SVG XML）。
+
+        结果按 (icon_path, color_hex) 缓存：SVG 文件内容与替换后的颜色不随
+        重绘变化，避免每次 paintEvent 都执行磁盘 IO 与正则替换。
+        """
         if not self._svg_icon_path:
             return ""
-        
+
+        color_hex = color.name()
+        # key 含主题维度：tm.process_svg 的 #FFF→surface/#000→text 映射依赖
+        # 当前主题，固定色按钮（如 primary 的白色）在主题切换后必须重建。
+        cache_key = (self._svg_icon_path, color_hex, tm.is_dark_theme())
+        cached = self._svg_xml_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             # 读取 SVG 文件
             with open(self._svg_icon_path, 'r', encoding='utf-8') as f:
                 svg_content = f.read()
-            
+
             # 先通过 tm.process_svg() 将 #FFF→surface, #000→text
             svg_content = tm.process_svg(svg_content)
-            
-            # 将颜色转换为 SVG 格式（#RRGGBB）
-            color_hex = color.name()
-            
+
             # 替换所有剩余的 fill 和 stroke 颜色（保留 transparent）
             import re
             svg_content = re.sub(
@@ -144,7 +176,7 @@ class StyledButton(QPushButton):
                 lambda m: f'{m.group(1)}="{color_hex}"',
                 svg_content
             )
-            
+
             # 对没有 fill 属性的 SVG 根元素添加默认 fill
             # 处理例如 github.svg/setting.svg 中 path 元素无 fill 属性的情况
             svg_content = re.sub(
@@ -154,7 +186,8 @@ class StyledButton(QPushButton):
                 svg_content,
                 count=1
             )
-            
+
+            self._svg_xml_cache[cache_key] = svg_content
             return svg_content
         except Exception:
             return ""
@@ -434,8 +467,8 @@ class StyledButton(QPushButton):
                 colored_svg = self._get_colored_svg_content(text_color)
                 
                 if colored_svg:
-                    # 检查缓存中是否有该颜色的渲染器
-                    color_key = text_color.name()
+                    # 检查缓存中是否有该颜色的渲染器（key 含主题维度，见 _get_colored_svg_content）
+                    color_key = (text_color.name(), tm.is_dark_theme())
                     if color_key not in self._svg_content_cache:
                         # 创建新的渲染器（动态修改颜色的 SVG）
                         renderer = QSvgRenderer(colored_svg.encode('utf-8'))

@@ -232,12 +232,22 @@ def make_mica_background(
     saturation: float = 4.5,
 ) -> QWidget:
     """
-    创建 Mica 背景控件：OpenGL 可用返回 GPU 合成版，否则回退 CPU 版。
+    创建 Mica 背景控件：默认 CPU 光栅版，环境变量 ``FAF_USE_GL_MICA=1`` 强制 GPU 版。
+
+    为什么默认 CPU 版（2026-08 实测结论）：
+    - 在 Windows 上 QOpenGLWidget 需要把 GL 表面与 raster 内容合成到同一窗口，
+      每次 resize 都有 FBO 重建 + 纹理合成等待，实测每步多出 ~8-13ms，
+      且 GL 内容滞后时窗口边缘会露出未绘制底板（DWM 玻璃板透出桌面）。
+    - CPU 版交互路径（fast scaling blit 模糊纹理）在 1200x800 与 2560x1440
+      下均更快，且与内容层同属 raster 引擎、同步绘制、无合成滞后。
+    - GPU 版保留：设置 FAF_USE_GL_MICA=1 且 OpenGL 可用时启用（大窗口
+      低内存带宽机器可手动选择）。
 
     两者公共 API 一致（sync_theme / refresh_background / handle_window_resize /
     handle_window_move / _mica），调用方无需区分。
     """
-    cls = MicaBackgroundWidgetGL if _opengl_available() else MicaBackgroundWidgetCpu
+    use_gl = os.environ.get("FAF_USE_GL_MICA", "") == "1"
+    cls = MicaBackgroundWidgetGL if (use_gl and _opengl_available()) else MicaBackgroundWidgetCpu
     return cls(
         parent,
         blur_radius=blur_radius,

@@ -143,11 +143,6 @@ class FileIconManager(QObject):
 
         file_path = file_info.get("path", "")
 
-        # 2. 获取 SVG 路径
-        icon_path = get_file_icon_path(file_info)
-        if not icon_path or not os.path.exists(icon_path):
-            return QPixmap()
-
         # 3. 读取主题色
         base_color, auxiliary_color, normal_color, accent_color, secondary_color = (
             self._get_theme_colors()
@@ -166,7 +161,10 @@ class FileIconManager(QObject):
             secondary_color,
         )
 
-        # 5. L1 缓存查询（OrderedDict，线程安全）
+        # 5. L1 缓存查询（OrderedDict，线程安全）——命中时跳过下方全部
+        #    icon_path 磁盘 stat 与渲染，这是 resize 重绘热路径的关键。
+        #    注意行为变化：缓存命中不再实时 stat 图标文件，图标文件被删除后
+        #    视觉上仍保留旧图标，直到缓存淘汰（256 项 LRU）或主题变化。
         with self._cache_lock:
             cached = self._icon_cache.get(cache_key)
             if cached is not None and not cached.isNull():
@@ -205,7 +203,12 @@ class FileIconManager(QObject):
                 if sys_cached is not None and not sys_cached.isNull():
                     return sys_cached
 
-        # 7. 计算图标（SVG 管线）
+        # 7. 缓存 miss：此时才解析图标路径（磁盘 stat 每文件仅首次发生）
+        icon_path = get_file_icon_path(file_info)
+        if not icon_path or not os.path.exists(icon_path):
+            return QPixmap()
+
+        # 计算图标（SVG 管线）
         icon_path_lower = icon_path.replace("\\", "/")
         is_unknown = "未知底板" in icon_path_lower
         is_archive = "压缩文件" in icon_path_lower

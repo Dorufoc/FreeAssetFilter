@@ -493,8 +493,10 @@ class MicaMaterial:
         if self._interacting:
             # Cheap path: one sub-rect blit with fast scaling. The source is
             # heavily blurred, so fast vs. smooth scaling is visually identical.
+            # 交互期间跳过 dither 平铺（拖拽时人眼注意不到），省去大窗口下
+            # 每帧 drawTiledPixmap 的全屏平铺开销。
             painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
-            self._blit(painter, rect, self._compute_source_rect(window_geo))
+            self._blit(painter, rect, self._compute_source_rect(window_geo), dither=False)
             self._last_window_geo = window_geo
             return
 
@@ -512,12 +514,14 @@ class MicaMaterial:
 
         painter.drawPixmap(rect, self._cached_pixmap)
 
-    def _blit(self, painter: QPainter, target: QRect, src_rect: Optional[QRect]) -> None:
+    def _blit(self, painter: QPainter, target: QRect, src_rect: Optional[QRect], dither: bool = True) -> None:
         """Draw the baked wallpaper (sub-rect to target) plus a light dither tile."""
         if src_rect is None:
             painter.drawPixmap(target, self._blurred_full)
         else:
             painter.drawPixmap(target, self._blurred_full, src_rect)
+        if not dither:
+            return
         # Light residual dither at final resolution (cheap tiled blit)
         painter.setOpacity(0.04)
         painter.drawTiledPixmap(target, self._noise_tile)

@@ -27,6 +27,19 @@ _MEDIA_ICON_SCALE: float = 1.10
 # hover 图标缩放动画总开关：暂时禁用（False），恢复动画时改为 True。
 _HOVER_MEDIA_ANIM_ENABLED: bool = False
 
+# 绘制热路径缓存：配色只依赖主题（dark/light），切换时以 is_dark_theme 为 key 失效；
+# 配置缓存按 (layout_mode, size_overrides) 失效。
+_INFO_CARD_COLORS_CACHE: dict = {}
+_CARD_CONFIG_CACHE: dict = {}
+
+
+def _clear_info_card_color_cache(*_args) -> None:
+    """主题变化时清空配色缓存（兜底覆盖同主题重设/热更新）。"""
+    _INFO_CARD_COLORS_CACHE.clear()
+
+
+tm.theme_changed.connect(_clear_info_card_color_cache)
+
 
 class StyledInfoCard(QWidget):
     """A styled info card matching the web component exactly.
@@ -255,15 +268,24 @@ class StyledInfoCard(QWidget):
     # ── Config ────────────────────────────────────────────────
 
     def _get_config(self) -> dict:
-        """获取当前布局配置，合并 size_overrides 覆盖项。"""
+        """获取当前布局配置，合并 size_overrides 覆盖项（结果缓存）。"""
+        key = (self._layout_mode, tuple(sorted(self._size_overrides.items())) if self._size_overrides else None)
+        cached = _CARD_CONFIG_CACHE.get(key)
+        if cached is not None:
+            return cached
         base = dict(self.SIZE_CONFIG[self._layout_mode])
         if self._size_overrides:
             base.update(self._size_overrides)
+        _CARD_CONFIG_CACHE[key] = base
         return base
 
     def _get_colors(self) -> dict:
-        """获取当前主题颜色（每次绘制时重新读取，支持深色/浅色模式切换）。"""
-        return {
+        """获取当前主题颜色（按主题缓存，切换时以 is_dark_theme 为 key 失效）。"""
+        key = tm.is_dark_theme()
+        cached = _INFO_CARD_COLORS_CACHE.get(key)
+        if cached is not None:
+            return cached
+        colors = {
             "bg": tm.alpha_of(tm.surface, 85),
             "border": tm.alpha_of(tm.mid, 30),
             "title": tm.text,
@@ -273,6 +295,8 @@ class StyledInfoCard(QWidget):
             "overlay_bg": QColor(0, 0, 0, 127),
             "hover_overlay": tm.alpha_of(tm.accent, 25),  # hover 反馈：25% 主题色覆盖层（所有状态统一）
         }
+        _INFO_CARD_COLORS_CACHE[key] = colors
+        return colors
 
     def _init_style_colors(self) -> None:
         """从全局主题（tm）获取卡片状态颜色，与 FileCardDelegate 保持一致。

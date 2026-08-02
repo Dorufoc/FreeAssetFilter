@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMenu, QMessageBox
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl, QMargins
 from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
@@ -791,12 +791,16 @@ class FileSelectorLayout(QWidget):
         right_margin = total_side_margin - left_margin
 
         self._file_list.setSpacing(0)
-        self._file_list.setGridSize(QSize(grid_cell_width, grid_cell_height))
+        new_grid = QSize(grid_cell_width, grid_cell_height)
+        if self._file_list.gridSize() != new_grid:
+            self._file_list.setGridSize(new_grid)
         # 顶部间距以文件储存池为基准：池 _card_layout 顶部边距为固定 6px（非 DPI 缩放）。
         # 这里将顶部 viewport 边距对齐为 6，使第一排卡片距上边缘的间距与储存池一致；
         # 底部边距与滚动条几何仍沿用 edge_padding，保持滚动行为不变。
         top_padding = 6
-        self._file_list.setViewportMargins(left_margin, top_padding, right_margin, edge_padding)
+        new_margins = QMargins(left_margin, top_padding, right_margin, edge_padding)
+        if self._file_list.viewportMargins() != new_margins:
+            self._file_list.setViewportMargins(new_margins)
         # 保持 grid_offset_x=0，避免 hover 时卡片绘制超出自身 grid cell 产生残影
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
@@ -822,7 +826,9 @@ class FileSelectorLayout(QWidget):
         card_width = max(200, file_list_width)
         _, card_height = FileCardDelegate._calc_list_size(LIST_CONFIG, self._card_scale)
         gap = int(5 * self._card_scale)
-        self._file_list.setGridSize(QSize(file_list_width, card_height + gap))
+        new_grid = QSize(file_list_width, card_height + gap)
+        if self._file_list.gridSize() != new_grid:
+            self._file_list.setGridSize(new_grid)
 
         scrollbar_w = self._file_scrollbar.width()
         needs_scroll = self._file_list.verticalScrollBar().maximum() > 0
@@ -837,7 +843,9 @@ class FileSelectorLayout(QWidget):
 
         # 顶部间距以文件储存池为基准，固定 6px，与卡片模式保持一致。
         top_padding = 6
-        self._file_list.setViewportMargins(left_margin, top_padding, right_margin, edge_padding)
+        new_margins = QMargins(left_margin, top_padding, right_margin, edge_padding)
+        if self._file_list.viewportMargins() != new_margins:
+            self._file_list.setViewportMargins(new_margins)
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
 

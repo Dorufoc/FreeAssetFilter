@@ -194,19 +194,52 @@ def _get_file_type_display(suffix: str, is_dir: bool = False) -> str:
     return f"{suffix_lower.upper()} 文件"
 
 
+_COLORS_CACHE: Dict[bool, Dict[str, Any]] = {}
+
+
+def _clear_colors_cache(*_args) -> None:
+    """主题变化时清空配色缓存（兜底覆盖同主题重设/热更新）。"""
+    _COLORS_CACHE.clear()
+
+
+tm.theme_changed.connect(_clear_colors_cache)
+
+# 缩放配置缓存：(id(config), scale) → dict（scale 档位有限，内存占用极小）
+_SCALED_CONFIG_CACHE: Dict[tuple, Dict[str, Any]] = {}
+
+# 卡片/列表尺寸缓存：(id(config), scale) → (width, height)
+# _calc_card_size 与 _calc_list_size 分开缓存，避免同构 key 串值。
+_CARD_SIZE_CACHE: Dict[tuple, tuple] = {}
+_LIST_SIZE_CACHE: Dict[tuple, tuple] = {}
+
+# QFont / QFontMetrics 缓存：(point_size, weight) → 对象（绘制热路径复用）
+_FONT_CACHE: Dict[tuple, "QFont"] = {}
+_FONT_METRICS_CACHE: Dict[tuple, "QFontMetrics"] = {}
+
+
 def _get_colors() -> Dict[str, Any]:
-    return {
-        "bg": tm.alpha_of(tm.surface, 85),
-        "border": tm.alpha_of(tm.mid, 30),
-        "title": tm.text,
-        "subtitle": tm.mid,
-        "desc": tm.alpha_of(tm.mid, 60),
-        "icon": tm.mid,
-        "accent": tm.accent,
-        "selected_bg": tm.alpha_of(tm.accent, 40),  # 选中态（已加入文件池）背景覆盖层：半透明主题色
-        "secondary": tm.text,  # 预览态文字辅助色（渐变边框不再直接使用该色）
-        "hover_overlay": tm.alpha_of(tm.mid, 25),  # hover 反馈：25% 灰度覆盖层（所有状态统一）
-    }
+    """当前主题的卡片配色字典（缓存：主题切换前恒定不变）。
+
+    resize 重绘热路径中每帧每卡片都会调用；缓存避免反复解析
+    tm.surface/mid/text/accent 等颜色字符串。
+    """
+    key = tm.is_dark_theme()
+    cached = _COLORS_CACHE.get(key)
+    if cached is None:
+        cached = {
+            "bg": tm.alpha_of(tm.surface, 85),
+            "border": tm.alpha_of(tm.mid, 30),
+            "title": tm.text,
+            "subtitle": tm.mid,
+            "desc": tm.alpha_of(tm.mid, 60),
+            "icon": tm.mid,
+            "accent": tm.accent,
+            "selected_bg": tm.alpha_of(tm.accent, 40),  # 选中态（已加入文件池）背景覆盖层：半透明主题色
+            "secondary": tm.text,  # 预览态文字辅助色（渐变边框不再直接使用该色）
+            "hover_overlay": tm.alpha_of(tm.mid, 25),  # hover 反馈：25% 灰度覆盖层（所有状态统一）
+        }
+        _COLORS_CACHE[key] = cached
+    return cached
 
 
 CARD_CONFIG: Dict[str, Any] = {
@@ -767,26 +800,54 @@ class FileCardDelegate(QStyledItemDelegate):
     @staticmethod
     def _calc_card_size(config: Dict[str, Any], scale: float = 1.0) -> tuple:
         """根据配置计算卡片默认宽度和高度（支持双行文件名）。"""
+        key = (id(config), scale)
+        cached = _CARD_SIZE_CACHE.get(key)
+        if cached is not None:
+            return cached
         padding = int(config["padding"] * scale)
         gap = int(config["gap"] * scale)
         media_size = int(config["media_size"] * scale)
-        font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
-        line_height = QFontMetrics(font_title).height() + 2  # 行高 + 行间距
+        font_key = (config["title_size"], config["title_weight"])
+        font = _FONT_CACHE.get(font_key)
+        if font is None:
+            font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+            _FONT_CACHE[font_key] = font
+        fm = _FONT_METRICS_CACHE.get(font_key)
+        if fm is None:
+            fm = QFontMetrics(font)
+            _FONT_METRICS_CACHE[font_key] = fm
+        line_height = fm.height() + 2  # 行高 + 行间距
         text_height = line_height * 2  # 双行
         width = padding * 2 + media_size
         height = padding * 2 + media_size + gap + text_height
-        return width, height
+        result = (width, height)
+        _CARD_SIZE_CACHE[key] = result
+        return result
 
     @staticmethod
     def _calc_list_size(config: Dict[str, Any], scale: float = 1.0) -> tuple:
         """根据配置计算列表模式默认宽度和高度（仅一行文件名）。"""
+        key = (id(config), scale)
+        cached = _LIST_SIZE_CACHE.get(key)
+        if cached is not None:
+            return cached
         padding = int(config["padding"] * scale)
         media_size = int(config["media_size"] * scale)
-        font_title = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
-        text_height = QFontMetrics(font_title).height() + 4
+        font_key = (config["title_size"], config["title_weight"])
+        font = _FONT_CACHE.get(font_key)
+        if font is None:
+            font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+            _FONT_CACHE[font_key] = font
+        fm = _FONT_METRICS_CACHE.get(font_key)
+        if fm is None:
+            fm = QFontMetrics(font)
+            _FONT_METRICS_CACHE[font_key] = fm
+        text_height = fm.height() + 4
         width = 200
         height = padding * 2 + max(media_size, text_height)
-        return width, height
+        result = (width, height)
+        _LIST_SIZE_CACHE[key] = result
+        return result
 
     def sizeHint(
         self,
@@ -901,8 +962,13 @@ class FileCardDelegate(QStyledItemDelegate):
         )
 
     def _get_scaled_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """获取缩放后的绘制配置（结果按 (config, scale) 缓存，避免每帧重算）。"""
         scale = self._card_scale
-        return {
+        key = (id(config), scale)
+        cached = _SCALED_CONFIG_CACHE.get(key)
+        if cached is not None:
+            return cached
+        result = {
             "padding": int(config["padding"] * scale),
             "gap": int(config["gap"] * scale),
             "radius": max(1, int(config["radius"] * scale)),
@@ -915,6 +981,8 @@ class FileCardDelegate(QStyledItemDelegate):
             "desc_size": config["desc_size"],
             "desc_weight": config["desc_weight"],
         }
+        _SCALED_CONFIG_CACHE[key] = result
+        return result
 
     def _paint_card(
         self,
@@ -1095,10 +1163,17 @@ class FileCardDelegate(QStyledItemDelegate):
         colors = _get_colors()
         name = file_info.get("name", "")
 
-        font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+        font_key = (config["title_size"], config["title_weight"])
+        font = _FONT_CACHE.get(font_key)
+        if font is None:
+            font = QFont("Microsoft YaHei UI", config["title_size"], config["title_weight"])
+            _FONT_CACHE[font_key] = font
         painter.setFont(font)
         painter.setPen(colors["title"])
-        fm = QFontMetrics(font)
+        fm = _FONT_METRICS_CACHE.get(font_key)
+        if fm is None:
+            fm = QFontMetrics(font)
+            _FONT_METRICS_CACHE[font_key] = fm
 
         max_w = int(rect.width())
         line_height = fm.height()
@@ -1115,13 +1190,17 @@ class FileCardDelegate(QStyledItemDelegate):
             )
             return
 
-        # 双行：第一行尽量放满，第二行省略
-        # 找出第一行能容纳的最大字符数
-        first_line = ""
-        for i in range(len(name), 0, -1):
-            if fm.horizontalAdvance(name[:i]) <= max_w:
-                first_line = name[:i]
-                break
+        # 双行：第一行尽量放满，第二行省略。
+        # 二分查找第一行能容纳的最大字符数（替代逐字符递减线性扫描，
+        # 将每次绘制的测量次数从 O(n) 降到 O(log n)）。
+        lo, hi = 0, len(name)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if fm.horizontalAdvance(name[:mid]) <= max_w:
+                lo = mid
+            else:
+                hi = mid - 1
+        first_line = name[:lo]
 
         painter.drawText(
             QRectF(rect.x(), rect.y(), max_w, line_height),
