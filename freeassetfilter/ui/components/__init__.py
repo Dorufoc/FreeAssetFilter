@@ -52,6 +52,7 @@ from .styled_context_menu import StyledContextMenu
 from .styled_file_picker import StyledFilePicker
 from .styled_number_input import StyledNumberInput
 from .styled_tabs import StyledTabWidget
+from .styled_segmented import StyledSegmented
 from .styled_textarea import StyledTextarea
 from .styled_tooltip import StyledTooltip
 from .styled_drawer import StyledDrawer
@@ -129,6 +130,7 @@ __all__ = [
     "StyledFilePicker",
     "StyledNumberInput",
     "StyledTabWidget",
+    "StyledSegmented",
     "StyledTextarea",
     "StyledTooltip",
     "StyledDrawer",
