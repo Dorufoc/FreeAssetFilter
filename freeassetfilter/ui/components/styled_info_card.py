@@ -14,6 +14,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QPainter, QColor, QPaintEvent, QFont, QFontMetrics,
     QPen, QBrush, QMouseEvent, QActionEvent, QConicalGradient,
+    QLinearGradient, QPainterPath,
 )
 
 from theme import tm
@@ -117,6 +118,7 @@ class StyledInfoCard(QWidget):
         self._hovered = False
         self._pressed = False
         self._overlay_opacity = 0.0
+        self._overlay_slide = 0.0  # 0=遮罩完全在卡片右侧外，1=完全就位（从右侧滑入）
         self._card_opacity = 1.0
         self._card_scale = 1.0
         self._media_scale = 1.0
@@ -141,8 +143,13 @@ class StyledInfoCard(QWidget):
 
         # Hover animation (media scale + overlay fade)
         self._hover_anim = QPropertyAnimation(self, b"overlay_opacity")
-        self._hover_anim.setDuration(250)
+        self._hover_anim.setDuration(400)
         self._hover_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        # Overlay slide animation — 遮罩整体从右侧平移进入/滑出
+        self._slide_anim = QPropertyAnimation(self, b"overlay_slide")
+        self._slide_anim.setDuration(400)
+        self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         # Media scale animation — OutBack gives a subtle spring overshoot (non-linear)
         self._media_scale_anim = QPropertyAnimation(self, b"media_scale")
@@ -181,6 +188,16 @@ class StyledInfoCard(QWidget):
     def overlay_opacity(self, value: float):
         self._overlay_opacity = value
         self._update_overlay_visibility()
+        self.update()
+
+    @Property(float)
+    def overlay_slide(self):
+        return self._overlay_slide
+
+    @overlay_slide.setter
+    def overlay_slide(self, value: float):
+        self._overlay_slide = value
+        self._update_overlay_geometry()
         self.update()
 
     @Property(float)
@@ -263,6 +280,11 @@ class StyledInfoCard(QWidget):
         elif not self._is_previewing:
             self._anim_bg_color = self._style_colors["normal_bg"]
             self._anim_border_color = self._style_colors["normal_border"]
+        # 主题切换后刷新 overlay 渐变背景（G 色随深色/亮色模式变化）
+        if self._overlay_widget:
+            self._overlay_widget.setStyleSheet(
+                self._overlay_background_stylesheet(self._get_config()["radius"])
+            )
         self.update()
 
     # ── Config ────────────────────────────────────────────────
@@ -292,8 +314,8 @@ class StyledInfoCard(QWidget):
             "subtitle": tm.mid,
             "desc": tm.alpha_of(tm.mid, 60),
             "icon": tm.mid,
-            "overlay_bg": QColor(0, 0, 0, 127),
-            "hover_overlay": tm.alpha_of(tm.accent, 25),  # hover 反馈：25% 主题色覆盖层（所有状态统一）
+            # hover 反馈遮罩：G4 色（text token）低透明度，左端全透明 → 右端 G4 色的水平渐变
+            "hover_overlay": tm.alpha_of(tm.text, 25),
         }
         _INFO_CARD_COLORS_CACHE[key] = colors
         return colors
@@ -729,11 +751,8 @@ class StyledInfoCard(QWidget):
         self._opacity_effect.setOpacity(0.0)
         self._overlay_widget.setGraphicsEffect(self._opacity_effect)
 
-        # Solid semi-transparent background; the opacity effect handles the fade
-        self._overlay_widget.setStyleSheet(
-            f"background: rgba(0,0,0,128);"
-            f"border-radius: {radius}px;"
-        )
+        # G 色水平渐变背景：左端全透明 → 右端 G 色低透明度；整体淡入淡出交给 opacity effect
+        self._overlay_widget.setStyleSheet(self._overlay_background_stylesheet(radius))
 
         if self._layout_mode == "horizontal":
             # Horizontal row — buttons right-aligned
@@ -783,6 +802,22 @@ class StyledInfoCard(QWidget):
         # effect can animate from 0 → 1 on hover)
         self._overlay_widget.setVisible(False)
 
+    def _overlay_background_stylesheet(self, radius: int) -> str:
+        """生成 overlay 背景的 G4 色水平渐变 QSS（左端透明 → 右端 G4 色低透明度）。
+
+        G4 色取自 text token（gray.g4 / gray_light.g4），随主题切换；
+        透明度取 25%，避免纯色填满整卡。
+        """
+        g = tm.text
+        base = f"rgba({g.red()},{g.green()},{g.blue()}"
+        alpha = int(255 * 0.25)
+        return (
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            f"stop:0 {base},0), stop:0.2 {base},0), "
+            f"stop:0.8 {base},{alpha}), stop:1 {base},{alpha});"
+            f"border-radius: {radius}px;"
+        )
+
     def _update_overlay_visibility(self):
         """Sync the overlay widget's opacity effect + visibility with _overlay_opacity."""
         if not self._overlay_widget or not self._opacity_effect:
@@ -793,12 +828,16 @@ class StyledInfoCard(QWidget):
             self._opacity_effect.setOpacity(min(1.0, self._overlay_opacity))
 
     def _update_overlay_geometry(self):
-        """保持 hover overlay 与绘制内容同步，支持 x/y_offset 位移动画。"""
+        """保持 hover overlay 与绘制内容同步，支持 x/y_offset 位移动画与右侧滑入。"""
         if not self._overlay_widget:
             return
         rect = self.rect()
         if self._x_offset or self._y_offset:
             rect.translate(self._x_offset, self._y_offset)
+        # 滑入动画：slide=0 时整体位于卡片右侧外，slide=1 时完全就位
+        x_shift = rect.width() * (1.0 - self._overlay_slide)
+        if x_shift:
+            rect.translate(x_shift, 0)
         self._overlay_widget.setGeometry(rect)
 
     # ── Event handling ────────────────────────────────────────
@@ -850,12 +889,19 @@ class StyledInfoCard(QWidget):
     # ── Animations ────────────────────────────────────────────
 
     def _animate_overlay(self, target: float):
+        """同时驱动遮罩淡入淡出与从右侧滑入/滑出（opacity + slide 同步）。"""
         self._hover_anim.stop()
+        self._slide_anim.stop()
         d = abs(target - self._overlay_opacity)
-        self._hover_anim.setDuration(max(50, int(250 * d)))
+        duration = max(50, int(400 * d))
+        self._hover_anim.setDuration(duration)
         self._hover_anim.setStartValue(self._overlay_opacity)
         self._hover_anim.setEndValue(target)
         self._hover_anim.start()
+        self._slide_anim.setDuration(duration)
+        self._slide_anim.setStartValue(self._overlay_slide)
+        self._slide_anim.setEndValue(target)
+        self._slide_anim.start()
 
     def _animate_media_scale(self, target: float):
         """动画过渡图标缩放（非线性缓动 OutBack）。
@@ -947,10 +993,32 @@ class StyledInfoCard(QWidget):
 
             painter.setPen(Qt.NoPen)
 
-            # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层
-            if self._hovered and not self._disabled:
-                painter.setBrush(colors["hover_overlay"])
-                painter.drawRoundedRect(draw_rect, radius, radius)
+            # hover 反馈（所有状态统一）：G4 色水平渐变遮罩，整体从右侧滑入 + 淡入淡出
+            # 渐变映射（相对卡片宽度）：0–0.2 全透明，0.2–0.8 渐变到 G4 色，0.8–1.0 保持 G4 色
+            # 绘制条件含动画进行中：鼠标移出（_hovered=False）时动画仍反向滑出/淡出，不会直接消失
+            if (self._hovered or self._overlay_slide > 0.01 or self._overlay_opacity > 0.01) and not self._disabled:
+                x_shift = w * (1.0 - self._overlay_slide)
+                painter.save()
+                # 遮罩面板整体平移，超出的右半部分裁掉（只显示卡片内部）
+                clip_path = QPainterPath()
+                clip_path.addRoundedRect(draw_rect, radius, radius)
+                painter.setClipPath(clip_path)
+                # 透明度随动画进度缩放（拷贝共享缓存色，不修改缓存对象）
+                overlay_color = QColor(colors["hover_overlay"])
+                overlay_color.setAlpha(
+                    int(colors["hover_overlay"].alpha() * self._overlay_opacity)
+                )
+                hover_grad = QLinearGradient(0, 0, w, 0)
+                hover_grad.setColorAt(0.0, tm.transparent)
+                hover_grad.setColorAt(0.2, tm.transparent)
+                hover_grad.setColorAt(0.8, overlay_color)
+                hover_grad.setColorAt(1.0, overlay_color)
+                painter.setBrush(QBrush(hover_grad))
+                panel_rect = QRectF(
+                    draw_rect.x() + x_shift, draw_rect.y(), w, draw_rect.height()
+                )
+                painter.drawRoundedRect(panel_rect, radius, radius)
+                painter.restore()
 
             # ── Media Area ──
             media_size = config["media_size"]
