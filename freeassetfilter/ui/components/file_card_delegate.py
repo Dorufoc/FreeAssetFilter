@@ -1143,11 +1143,13 @@ class FileCardDelegate(QStyledItemDelegate):
             painter.setPen(colors["icon"])
             painter.drawText(QRectF(media_x, media_y, media_size, media_size), Qt.AlignCenter, icon_char)
 
-        # 文字区域（右）
+        # 文字区域（右）：垂直方向覆盖卡片全高，由 _draw_text 内部
+        # 将文本块整体垂直居中（不再硬编码距卡片顶部的 padding 偏移，
+        # 卡片随缩放变矮时文本始终保持垂直居中）。
         text_x = media_x + media_size + gap
-        text_y = ry + padding
+        text_y = ry
         text_w = w - padding * 2 - media_size - gap
-        text_h = h - padding * 2
+        text_h = h
         self._draw_text(painter, QRectF(text_x, text_y, text_w, text_h), config, file_info)
 
     # ── 文字绘制 ──────────────────────────────────────────────────────────
@@ -1180,11 +1182,16 @@ class FileCardDelegate(QStyledItemDelegate):
         spacing = 2  # 行间距
         two_line_h = line_height * 2 + spacing
 
-        # 单行能放下 → 在双行区域内垂直居中
-        if fm.horizontalAdvance(name) <= max_w:
-            y_offset = int((two_line_h - line_height) / 2)
+        # 文本块（单行 = 一行高，双行 = 两行高）整体在 rect 内垂直居中。
+        # 不硬编码与 rect 顶部的间距：rect 高度随卡片缩放变化时，
+        # 文本始终保持在卡片垂直中部；rect 高度不足时贴顶，避免溢出卡片底部。
+        block_h = line_height if fm.horizontalAdvance(name) <= max_w else two_line_h
+        block_y = rect.y() + max(0, int((rect.height() - block_h) / 2))
+
+        # 单行能放下 → 在文本块区域内垂直居中
+        if block_h == line_height:
             painter.drawText(
-                QRectF(rect.x(), rect.y() + y_offset, max_w, line_height),
+                QRectF(rect.x(), block_y, max_w, line_height),
                 align | Qt.AlignVCenter,
                 name,
             )
@@ -1203,7 +1210,7 @@ class FileCardDelegate(QStyledItemDelegate):
         first_line = name[:lo]
 
         painter.drawText(
-            QRectF(rect.x(), rect.y(), max_w, line_height),
+            QRectF(rect.x(), block_y, max_w, line_height),
             align | Qt.AlignTop,
             first_line,
         )
@@ -1212,7 +1219,7 @@ class FileCardDelegate(QStyledItemDelegate):
         if remaining:
             second_line = fm.elidedText(remaining, Qt.ElideRight, max_w)
             painter.drawText(
-                QRectF(rect.x(), rect.y() + line_height + spacing, max_w, line_height),
+                QRectF(rect.x(), block_y + line_height + spacing, max_w, line_height),
                 align | Qt.AlignTop,
                 second_line,
             )

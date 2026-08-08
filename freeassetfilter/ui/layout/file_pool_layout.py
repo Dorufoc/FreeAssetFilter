@@ -210,8 +210,9 @@ class FilePoolLayout(QWidget):
         # _update_pool_card_margins 根据滚动条状态动态覆盖；上下边距保留 6
         _init_pad = int(10 * self._get_dpi_scale())
         self._card_layout.setContentsMargins(_init_pad, 6, _init_pad, 6)
-        # 卡片间距与文件选择器 list 模式一致（其卡片间隙基准值为 5）
-        self._card_layout.setSpacing(5)
+        # 卡片间距与文件选择器 list 模式一致（其卡片间隙基准值为 5，
+        # 且随 _card_scale 缩放：gap = int(5 * scale)），此处同样按当前缩放计算。
+        self._card_layout.setSpacing(int(5 * self._card_scale))
         self._card_layout.addStretch(1)  # 将所有卡片推至顶部
         self._scroll_area.setWidget(self._card_container)
 
@@ -491,6 +492,9 @@ class FilePoolLayout(QWidget):
         # 保证已存在卡片缩放后仍与新加入卡片尺寸一致。
         for card in self._card_widgets.values():
             card.set_scale(new_scale, base_overrides=self._card_base_overrides)
+        # 卡片间距随缩放同步变化（与 FileSelectorLayout._update_list_grid 的
+        # gap = int(5 * self._card_scale) 保持一致），缩放时卡片间空隙等比例缩放。
+        self._card_layout.setSpacing(int(5 * new_scale))
 
     # 仅布局尺寸键参与缩放；文字字号（title/subtitle/desc）必须原样保留，
     # 与 FileCardDelegate._get_scaled_config / StyledInfoCard.set_scale 行为一致——

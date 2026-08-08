@@ -805,12 +805,14 @@ class FileSelectorLayout(QWidget):
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
 
-        # 滚动条作为浮动覆盖层，定位在右侧边距内（贴右边缘）
+        # 滚动条作为浮动覆盖层，定位在右侧边距内（贴右边缘）；
+        # 每次定位后 raise_() 保持悬浮覆盖层层级，避免与卡片列表同级堆叠。
         scrollbar_w = self._file_scrollbar.width()
         scrollbar_x = file_list_width - scrollbar_w
         scrollbar_y = edge_padding
         scrollbar_h = max(0, self._file_list.height() - 2 * edge_padding)
         self._file_scrollbar.setGeometry(scrollbar_x, scrollbar_y, scrollbar_w, scrollbar_h)
+        self._file_scrollbar.raise_()
 
     def _update_list_grid(self) -> None:
         """列表模式布局（移植自旧 CustomFileSelector._update_list_layout）。
@@ -822,7 +824,10 @@ class FileSelectorLayout(QWidget):
         file_list_width = self._file_list.width()
         if file_list_width <= 0:
             return
-        edge_padding = int(10 * self._card_scale)
+        dpi = self._get_dpi_scale()
+        # 边距以 dpi 为恒定基准，不随卡片缩放（_card_scale）变化，
+        # 保证 ctrl+滚轮缩放时卡片列表距视口左右的距离始终不变。
+        edge_padding = int(10 * dpi)
         card_width = max(200, file_list_width)
         _, card_height = FileCardDelegate._calc_list_size(LIST_CONFIG, self._card_scale)
         gap = int(5 * self._card_scale)
@@ -830,16 +835,12 @@ class FileSelectorLayout(QWidget):
         if self._file_list.gridSize() != new_grid:
             self._file_list.setGridSize(new_grid)
 
+        # 左右边距恒定且对称：右侧预留滚动条浮动覆盖层宽度，
+        # 滚动条浮在预留空间内，不与卡片重叠、不改变卡片边缘位置。
         scrollbar_w = self._file_scrollbar.width()
-        needs_scroll = self._file_list.verticalScrollBar().maximum() > 0
-
-        if needs_scroll:
-            total_margin = int(20 * self._card_scale)
-            left_margin = max(0, (total_margin - scrollbar_w) // 2)
-            right_margin = total_margin - left_margin
-        else:
-            left_margin = int(10 * self._card_scale)
-            right_margin = int(10 * self._card_scale)
+        side_margin = int(10 * dpi)
+        left_margin = side_margin
+        right_margin = max(side_margin, scrollbar_w + int(2 * dpi))
 
         # 顶部间距以文件储存池为基准，固定 6px，与卡片模式保持一致。
         top_padding = 6
@@ -849,12 +850,13 @@ class FileSelectorLayout(QWidget):
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
 
-        # 滚动条定位在右侧边缘（与卡片模式一致，保留顶部边距）
-        scrollbar_w = self._file_scrollbar.width()
+        # 滚动条定位在右侧边缘（与卡片模式一致，保留顶部边距）；
+        # 每次定位后 raise_() 保持其悬浮覆盖层层级，不与卡片列表同级堆叠。
         scrollbar_x = self._file_list.width() - scrollbar_w
         scrollbar_y = edge_padding
         scrollbar_h = max(0, self._file_list.height() - 2 * edge_padding)
         self._file_scrollbar.setGeometry(scrollbar_x, scrollbar_y, scrollbar_w, scrollbar_h)
+        self._file_scrollbar.raise_()
 
     # ── 排序与视图 ────────────────────────────────────────────────────────
 
