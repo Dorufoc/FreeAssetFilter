@@ -280,10 +280,12 @@ class StyledInfoCard(QWidget):
         elif not self._is_previewing:
             self._anim_bg_color = self._style_colors["normal_bg"]
             self._anim_border_color = self._style_colors["normal_border"]
-        # 主题切换后刷新 overlay 渐变背景（G 色随深色/亮色模式变化）
+        # 主题切换后刷新 overlay 渐变背景（G 色随深色/亮色模式变化，保留当前 slide）
         if self._overlay_widget:
             self._overlay_widget.setStyleSheet(
-                self._overlay_background_stylesheet(self._get_config()["radius"])
+                self._overlay_background_stylesheet(
+                    self._get_config()["radius"], self._overlay_slide
+                )
             )
         self.update()
 
@@ -314,8 +316,8 @@ class StyledInfoCard(QWidget):
             "subtitle": tm.mid,
             "desc": tm.alpha_of(tm.mid, 60),
             "icon": tm.mid,
-            # hover 反馈遮罩：G4 色（text token）低透明度，左端全透明 → 右端 G4 色的水平渐变
-            "hover_overlay": tm.alpha_of(tm.text, 25),
+            # hover 反馈遮罩：infocard 背景 G 色（surface/g1 token），左端全透明 → 右端 G 色 90% 不透明度
+            "hover_overlay": tm.alpha_of(tm.surface, 90),
         }
         _INFO_CARD_COLORS_CACHE[key] = colors
         return colors
@@ -752,7 +754,10 @@ class StyledInfoCard(QWidget):
         self._overlay_widget.setGraphicsEffect(self._opacity_effect)
 
         # G 色水平渐变背景：左端全透明 → 右端 G 色低透明度；整体淡入淡出交给 opacity effect
-        self._overlay_widget.setStyleSheet(self._overlay_background_stylesheet(radius))
+        # slide 传入当前值，避免重建后渐变窗口跳回全宽
+        self._overlay_widget.setStyleSheet(
+            self._overlay_background_stylesheet(radius, self._overlay_slide)
+        )
 
         if self._layout_mode == "horizontal":
             # Horizontal row — buttons right-aligned
@@ -802,19 +807,26 @@ class StyledInfoCard(QWidget):
         # effect can animate from 0 → 1 on hover)
         self._overlay_widget.setVisible(False)
 
-    def _overlay_background_stylesheet(self, radius: int) -> str:
-        """生成 overlay 背景的 G4 色水平渐变 QSS（左端透明 → 右端 G4 色低透明度）。
+    def _overlay_background_stylesheet(self, radius: int, slide: float = 1.0) -> str:
+        """生成 overlay 背景的 G 色水平渐变 QSS（左端透明 → 右端 G 色低透明度）。
 
-        G4 色取自 text token（gray.g4 / gray_light.g4），随主题切换；
-        透明度取 25%，避免纯色填满整卡。
+        G 色取自 surface token（gray.g1 / gray_light.g1，即 infocard 背景色），
+        随主题切换；右端不透明度取 90%。
+
+        slide 控制渐变窗口起点 x1（0~1 比例）：slide=1 时窗口为整卡宽度
+        [0,1]，slide<1 时窗口右移为 [1-slide, 1]——右缘始终固定于卡片右缘，
+        widget 保持整卡几何不出界，四角由 border-radius 圆角约束，
+        滑入/滑出动画期间不会以矩形边缘遮挡卡片圆角。
         """
-        g = tm.text
+        g = tm.surface
         base = f"rgba({g.red()},{g.green()},{g.blue()}"
-        alpha = int(255 * 0.25)
+        alpha = int(255 * 0.9)
+        x1 = max(0.0, min(1.0, 1.0 - slide))
         return (
-            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "background: qlineargradient(x1:"
+            f"{x1:.3f}, y1:0, x2:1, y2:0, "
             f"stop:0 {base},0), stop:0.2 {base},0), "
-            f"stop:0.8 {base},{alpha}), stop:1 {base},{alpha});"
+            f"stop:0.8 {base},{alpha}), stop:1 {base},{alpha}));"
             f"border-radius: {radius}px;"
         )
 
@@ -828,17 +840,25 @@ class StyledInfoCard(QWidget):
             self._opacity_effect.setOpacity(min(1.0, self._overlay_opacity))
 
     def _update_overlay_geometry(self):
-        """保持 hover overlay 与绘制内容同步，支持 x/y_offset 位移动画与右侧滑入。"""
+        """保持 hover overlay 与绘制内容同步，支持 x/y_offset 位移动画。
+
+        滑入/滑出动画通过动态重建背景渐变 QSS（x1 随 slide 变化）实现，
+        widget 始终占满整卡几何、右缘固定于卡片右缘，四角由 border-radius
+        圆角约束——动画期间不会以矩形边缘遮挡卡片圆角。
+        """
         if not self._overlay_widget:
             return
         rect = self.rect()
         if self._x_offset or self._y_offset:
             rect.translate(self._x_offset, self._y_offset)
-        # 滑入动画：slide=0 时整体位于卡片右侧外，slide=1 时完全就位
-        x_shift = rect.width() * (1.0 - self._overlay_slide)
-        if x_shift:
-            rect.translate(x_shift, 0)
         self._overlay_widget.setGeometry(rect)
+        # 渐变窗口起点随 slide 变化（右缘固定于卡片右缘），重建背景 QSS
+        if self._overlay_enabled and self._actions:
+            self._overlay_widget.setStyleSheet(
+                self._overlay_background_stylesheet(
+                    self._get_config()["radius"], self._overlay_slide
+                )
+            )
 
     # ── Event handling ────────────────────────────────────────
 
@@ -993,15 +1013,16 @@ class StyledInfoCard(QWidget):
 
             painter.setPen(Qt.NoPen)
 
-            # hover 反馈（所有状态统一）：G4 色水平渐变遮罩，整体从右侧滑入 + 淡入淡出
-            # 渐变映射（相对卡片宽度）：0–0.2 全透明，0.2–0.8 渐变到 G4 色，0.8–1.0 保持 G4 色
+            # hover 反馈（所有状态统一）：infocard 背景 G 色（surface）水平渐变遮罩，整体从右侧滑入 + 淡入淡出
+            # 渐变映射（相对卡片宽度）：0–0.2 全透明，0.2–0.8 渐变到 G 色，0.8–1.0 保持 G 色
             # 绘制条件含动画进行中：鼠标移出（_hovered=False）时动画仍反向滑出/淡出，不会直接消失
             if (self._hovered or self._overlay_slide > 0.01 or self._overlay_opacity > 0.01) and not self._disabled:
                 x_shift = w * (1.0 - self._overlay_slide)
                 painter.save()
-                # 遮罩面板整体平移，超出的右半部分裁掉（只显示卡片内部）
+                # 遮罩受整卡圆角裁切：clip 用整卡 (0,0,w,h) 圆角，
+                # 滑入过程中遮罩右缘轮廓与卡片圆角完全重合，不会遮盖卡片圆角
                 clip_path = QPainterPath()
-                clip_path.addRoundedRect(draw_rect, radius, radius)
+                clip_path.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
                 painter.setClipPath(clip_path)
                 # 透明度随动画进度缩放（拷贝共享缓存色，不修改缓存对象）
                 overlay_color = QColor(colors["hover_overlay"])
@@ -1014,9 +1035,9 @@ class StyledInfoCard(QWidget):
                 hover_grad.setColorAt(0.8, overlay_color)
                 hover_grad.setColorAt(1.0, overlay_color)
                 painter.setBrush(QBrush(hover_grad))
-                panel_rect = QRectF(
-                    draw_rect.x() + x_shift, draw_rect.y(), w, draw_rect.height()
-                )
+                # 面板尺寸与卡片同轮廓（整卡 (0,0,w,h)），随 slide 平移；
+                # 无论滑入滑出，右缘轮廓始终由整卡圆角 clip 决定，与卡片圆角完全重合
+                panel_rect = QRectF(x_shift, 0, w, h)
                 painter.drawRoundedRect(panel_rect, radius, radius)
                 painter.restore()
 

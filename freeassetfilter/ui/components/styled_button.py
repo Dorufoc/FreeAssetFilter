@@ -144,6 +144,20 @@ class StyledButton(QPushButton):
         self._svg_xml_cache.clear()
         self.update()
 
+    def set_variant(self, variant: str) -> None:
+        """Change the button variant at runtime (e.g. ``ghost`` -> ``primary``).
+
+        Args:
+            variant: One of ``primary`` / ``secondary`` / ``ghost`` /
+                ``danger`` / ``info``.
+        """
+        if variant not in self.VARIANTS:
+            variant = "primary"
+        self._variant = variant
+        self._svg_content_cache.clear()
+        self._svg_xml_cache.clear()
+        self.update()
+
     def _get_colored_svg_content(self, color: QColor) -> str:
         """获取带颜色的 SVG 内容（修改 SVG XML）。
 

@@ -406,7 +406,7 @@ class FilePoolLayout(QWidget):
         self._pool_scrollbar.setPageStep(area_vbar.pageStep())
         # 范围变化时也重定位（隐藏/显示逻辑通过 maximum==0 处理）
         self._update_pool_scrollbar_geometry()
-        # 滚动条出现/消失时重算卡片左右边距（延迟到 Qt 布局稳定后执行）
+        # 滚动范围变化后刷新卡片边距（恒定对称值，幂等防御性刷新）
         QTimer.singleShot(0, self._update_pool_card_margins)
 
     def _update_pool_scrollbar_geometry(self) -> None:
@@ -430,13 +430,13 @@ class FilePoolLayout(QWidget):
         self._pool_scrollbar.raise_()
 
     def _update_pool_card_margins(self) -> None:
-        """根据垂直滚动条状态动态调整卡片容器左右边距。
+        """恒定对称边距，完全复刻 FileSelectorLayout._update_list_grid。
 
-        复刻 FileSelectorLayout._update_list_grid 的滚动条感知边距逻辑：
-        - 有滚动条：总边距 20*dpi，左右按滚动条宽度分配，使「卡片左缘到容器左缘」
-          与「卡片右缘到滚动条左缘」间距相等；
-        - 无滚动条：左右各 10*dpi，卡片水平居中。
-        仅调整左右边距，上下边距原样保留；仅当值变化时才写入，避免无谓布局刷新。
+        滚动条是完全浮动的覆盖层，不参与布局、不改变卡片边缘位置：
+        - 左右边距恒定 10*dpi，与滚动条状态无关，卡片永不因滚动条出现/消失而左右移动；
+        - 右侧 10*dpi 预留空间内浮着 8*dpi 宽的滚动条（距卡片 2*dpi），
+          与文件选择器 list 模式的右侧间距逐像素一致。
+        仅当值变化时才写入，避免无谓布局刷新。
         """
         if self._updating_pool_margins:
             return
@@ -444,14 +444,9 @@ class FilePoolLayout(QWidget):
         try:
             dpi = self._get_dpi_scale()
             scrollbar_w = self._pool_scrollbar.width()
-            needs_scroll = self._scroll_area.verticalScrollBar().maximum() > 0
-            if needs_scroll:
-                total_margin = int(20 * dpi)
-                left = max(0, (total_margin - scrollbar_w) // 2)
-                right = total_margin - left
-            else:
-                left = int(10 * dpi)
-                right = int(10 * dpi)
+            side_margin = int(10 * dpi)
+            left = side_margin
+            right = max(side_margin, scrollbar_w + int(2 * dpi))
             m = self._card_layout.contentsMargins()
             if (m.left(), m.right()) != (left, right):
                 self._card_layout.setContentsMargins(left, m.top(), right, m.bottom())

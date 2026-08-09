@@ -4,12 +4,13 @@
 
 import ctypes
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMenu, QMessageBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMenu, QMessageBox, QListWidget, QListWidgetItem
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl, QMargins
 from PySide6.QtGui import QFont, QFontMetrics
 
@@ -17,10 +18,13 @@ from theme import tm
 from freeassetfilter.core._paths import get_app_data_path
 from components.styled_button import StyledButton
 from components.styled_lineedit import StyledLineEdit
+from components.styled_context_menu import StyledContextMenu
+from components.styled_dialog import StyledDialog, FOOTER_RIGHT, FOOTER_CENTER, create_basic_dialog, _show_dialog
 from components.styled_scroll_area import StyledScrollBar, StyledScrollArea
 from components.file_list_model import FileListModel, FilePathRole, FileNameRole, IsDirRole, FileSizeRole, ModifiedRole, CreatedRole, SuffixRole, IsPreviewingRole
 from components.file_card_delegate import FileCardDelegate, CARD_CONFIG, LIST_CONFIG
 from components.animated_file_list_view import AnimatedFileListView
+from freeassetfilter.services.favorites_service import FavoritesService
 
 
 class FileSelectorLayout(QWidget):
@@ -146,25 +150,37 @@ class FileSelectorLayout(QWidget):
         self._sort_mode: int = 0
         self._first_show: bool = True
 
+        # 收藏夹与筛选状态
+        self._favorites_service = FavoritesService()
+        self._filter_pattern: str = ""
+        self._active_dialogs: List = []  # 保持弹窗引用，防止被 GC
+
         # ── 信号连接 ──
         self._path_input.returnPressed.connect(self._navigate_to_input_path)
         self._arrow_btn.clicked.connect(self._navigate_to_input_path)
         self._refresh_btn.clicked.connect(self._reload_directory)
         self._undo_btn.clicked.connect(self._go_back)
-        self._sort_btn.clicked.connect(self._cycle_sort_mode)
+        self._sort_btn.clicked.connect(self._show_sort_menu)
         self._card_btn.clicked.connect(self._toggle_view_mode)
         self._file_list.clicked.connect(self._on_file_clicked)
 
         # 占位 / 初次导航
-        self._tool_star_btn.clicked.connect(lambda: None)
-        self._sift_btn.clicked.connect(lambda: None)
+        self._tool_star_btn.clicked.connect(self._show_favorites_dialog)
+        self._sift_btn.clicked.connect(self._show_filter_dialog)
         self._driver_btn.clicked.connect(self._navigate_to_all)
-        self._star_btn.clicked.connect(lambda: None)
+        self._star_btn.clicked.connect(self._add_current_path_to_favorites)
         self._gen_thumb_btn.clicked.connect(lambda: None)
         self._clean_btn.clicked.connect(lambda: None)
 
         self._sort_btn.setToolTip("排序: 名称↑")
         self._card_btn.setToolTip("切换为列表视图")
+        self._refresh_btn.setToolTip("刷新")
+        self._tool_star_btn.setToolTip("收藏夹")
+        self._sift_btn.setToolTip("筛选文件")
+        self._star_btn.setToolTip("添加当前路径到收藏夹")
+        self._undo_btn.setToolTip("返回上一级")
+        self._driver_btn.setToolTip("全部磁盘")
+        self._arrow_btn.setToolTip("跳转路径")
 
         # 监听 viewport 和 file_list 自身的 resize（与旧 file_selector.py 一致）
         self._file_list.viewport().installEventFilter(self)
@@ -181,7 +197,25 @@ class FileSelectorLayout(QWidget):
                 if event.modifiers() & Qt.ControlModifier:
                     self._handle_card_zoom(event)
                     return True
+            elif event.type() == QEvent.MouseButtonPress:
+                if self._is_back_navigation_button(event.button()):
+                    # 鼠标侧键（后退键）返回上一层级目录，与顶栏"返回上一级"按钮行为一致
+                    self._go_back()
+                    return True
         return super().eventFilter(obj, event)
+
+    @staticmethod
+    def _is_back_navigation_button(button: Any) -> bool:
+        """判断是否为鼠标侧键（后退键）。
+
+        兼容不同 Qt 枚举名：Qt6 中 XButton1 是 BackButton 的别名，
+        旧版环境可能仅有 ExtraButton1 / BackButton 之一，因此逐一探测。
+        """
+        for button_name in ("BackButton", "XButton1", "ExtraButton1"):
+            back_button = getattr(Qt, button_name, None)
+            if back_button is not None and button == back_button:
+                return True
+        return False
 
     # ── 首次加载 ──────────────────────────────────────────────────────────
 
@@ -344,7 +378,7 @@ class FileSelectorLayout(QWidget):
         self._sort_btn.setFixedSize(28, 28)
         tool_row.addWidget(self._sort_btn)
 
-        card_icon = str(icons_dir / "card.svg")
+        card_icon = str(icons_dir / "list.svg")  # card 模式下显示"列表"图标
         self._card_btn = StyledButton("", variant="ghost", size="sm", icon=card_icon)
         self._card_btn.setFixedSize(28, 28)
         tool_row.addWidget(self._card_btn)
@@ -390,6 +424,8 @@ class FileSelectorLayout(QWidget):
                     })
                 except (PermissionError, OSError):
                     continue
+            if self._filter_pattern:
+                entries = [e for e in entries if self._matches_filter(e["name"])]
             entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
             self._apply_sort(entries)
             self._file_model.set_files(entries)
@@ -418,6 +454,10 @@ class FileSelectorLayout(QWidget):
             entries.sort(key=lambda x: (not x["is_dir"], x.get("size", 0)), reverse=True)
         elif mode == 5:
             entries.sort(key=lambda x: (not x["is_dir"], x.get("size", 0)))
+        elif mode == 6:
+            entries.sort(key=lambda x: (not x["is_dir"], x.get("created", "")), reverse=True)
+        elif mode == 7:
+            entries.sort(key=lambda x: (not x["is_dir"], x.get("created", "")))
 
     # ── 导航 ──────────────────────────────────────────────────────────────
 
@@ -450,6 +490,8 @@ class FileSelectorLayout(QWidget):
             self._load_directory(self._current_path)
 
     def _go_back(self) -> None:
+        started = False
+        direction = 0
         if self._history_index > 0:
             self._history_index -= 1
             path = self._nav_history[self._history_index]
@@ -605,6 +647,344 @@ class FileSelectorLayout(QWidget):
             self, "属性", "\n".join(lines),
             QMessageBox.Ok,
         )
+
+    # ── 收藏夹 ────────────────────────────────────────────────────────────
+
+    def _get_favorites(self) -> List[Dict[str, str]]:
+        """读取收藏夹并归一化为 [{"name": ..., "path": ...}]。
+
+        兼容两种持久化格式：List[str]（纯路径）与 List[Dict]（旧版 name/path）。
+        """
+        result: List[Dict[str, str]] = []
+        for entry in self._favorites_service.load():
+            if isinstance(entry, dict) and entry.get("path"):
+                path = str(entry["path"])
+                name = str(entry.get("name") or "") or os.path.basename(path.rstrip("\\/")) or path
+                result.append({"name": name, "path": path})
+            elif isinstance(entry, str) and entry:
+                result.append({
+                    "name": os.path.basename(entry.rstrip("\\/")) or entry,
+                    "path": entry,
+                })
+        return result
+
+    def _add_current_path_to_favorites(self) -> None:
+        """添加当前路径到收藏夹（路径栏星标按钮）。"""
+        current_path = self._current_path
+        if not current_path or current_path == "All":
+            self._show_message_dialog("提示", "请先进入一个文件夹再添加到收藏夹")
+            return
+        favorites = self._get_favorites()
+        if any(f["path"] == current_path for f in favorites):
+            self._show_message_dialog("提示", "该路径已在收藏夹中")
+            return
+        default_name = os.path.basename(current_path.rstrip("\\/")) or current_path
+        self._prompt_input(
+            "添加到收藏夹", "请输入收藏名称:", default_name,
+            on_confirm=lambda name: self._commit_add_favorite(name, current_path),
+        )
+
+    def _commit_add_favorite(self, name: str, path: str) -> None:
+        """确认添加：名称非空时写入收藏夹并持久化。"""
+        if not name:
+            return
+        service = self._favorites_service
+        raw = service.load()
+        raw.append({"name": name, "path": path})
+        service.save(raw)
+
+    def _show_favorites_dialog(self) -> None:
+        """显示收藏夹对话框（工具栏星标按钮）。"""
+        favorites = self._get_favorites()
+
+        body = QWidget()
+        body.setStyleSheet("background: transparent;")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(8)
+
+        list_widget: Optional[QListWidget] = None
+        if not favorites:
+            empty_label = QLabel("暂无收藏，点击路径栏的 ★ 可添加当前路径")
+            empty_label.setWordWrap(True)
+            empty_label.setAlignment(Qt.AlignCenter)
+            empty_label.setStyleSheet(
+                f"font-size: 12px; color: {tm.mid.name()}; background: transparent;"
+            )
+            empty_label.setFixedHeight(120)
+            body_layout.addWidget(empty_label)
+        else:
+            list_widget = QListWidget()
+            list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            list_widget.setSelectionMode(QAbstractItemView.NoSelection)
+            list_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            list_widget.setMouseTracking(True)
+            list_widget.setStyleSheet(f"""
+                QListWidget {{
+                    background: transparent; border: none;
+                    color: {tm.text.name()}; font-size: 13px;
+                }}
+                QListWidget::item {{
+                    padding: 8px 10px; border-radius: 6px;
+                }}
+                QListWidget::item:hover {{
+                    background-color: {tm.alpha_of(tm.fill, 60).name()};
+                }}
+            """)
+            for fav in favorites:
+                item = QListWidgetItem(f"{fav['name']}  -  {fav['path']}")
+                item.setData(Qt.UserRole, fav["path"])
+                item.setToolTip(fav["path"])
+                list_widget.addItem(item)
+            list_widget.setFixedHeight(280)
+
+            list_widget.itemDoubleClicked.connect(
+                lambda item: self._on_favorite_activated(item, list_widget)
+            )
+            list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            list_widget.customContextMenuRequested.connect(
+                lambda pos: self._show_favorite_context_menu(list_widget, pos)
+            )
+            body_layout.addWidget(list_widget)
+
+        dialog = StyledDialog(
+            size="lg", title="收藏夹", body_widget=body, footer_type=FOOTER_RIGHT,
+        )
+        dialog._favorites_list_widget = list_widget
+        self._track_dialog(dialog)
+
+        close_btn = StyledButton("关闭", variant="primary")
+        close_btn.clicked.connect(lambda: dialog.close_dialog(0))
+        dialog._footer_layout.addWidget(close_btn)
+        _show_dialog(dialog)
+
+    def _on_favorite_activated(self, item, list_widget) -> None:
+        """双击收藏项 → 跳转到对应路径并关闭对话框。"""
+        path = item.data(Qt.UserRole)
+        if not path:
+            return
+        if os.path.isdir(path):
+            self._navigate_to(path)
+        dialog = list_widget.window()
+        if isinstance(dialog, StyledDialog):
+            dialog.close_dialog(1)
+
+    def _show_favorite_context_menu(self, list_widget, pos) -> None:
+        """收藏夹项的右键菜单：打开 / 重命名 / 删除。"""
+        item = list_widget.itemAt(pos)
+        if not item:
+            return
+        menu = StyledContextMenu(parent=list_widget)
+        menu.add_item("打开", callback=lambda: self._on_favorite_activated(item, list_widget))
+        menu.add_separator()
+        menu.add_item(
+            "重命名",
+            callback=lambda: self._rename_favorite(item, list_widget),
+        )
+        menu.add_item(
+            "删除",
+            danger=True,
+            callback=lambda: self._delete_favorite(item, list_widget),
+        )
+        menu.exec(list_widget.mapToGlobal(pos))
+
+    def _rename_favorite(self, item, list_widget) -> None:
+        """重命名收藏项（弹输入框）。"""
+        path = item.data(Qt.UserRole)
+        favorites = self._get_favorites()
+        fav = next((f for f in favorites if f["path"] == path), None)
+        if not fav:
+            return
+        self._prompt_input(
+            "重命名收藏", "请输入新的收藏名称:", fav["name"],
+            on_confirm=lambda name: self._commit_rename_favorite(path, name, item),
+        )
+
+    def _commit_rename_favorite(self, path: str, name: str, item) -> None:
+        """确认重命名：更新名称并持久化（纯字符串格式自动升级为 dict）。"""
+        if not name:
+            return
+        service = self._favorites_service
+        raw = service.load()
+        for i, entry in enumerate(raw):
+            if isinstance(entry, dict) and entry.get("path") == path:
+                entry["name"] = name
+                break
+            elif isinstance(entry, str) and entry == path:
+                raw[i] = {"name": name, "path": path}
+                break
+        service.save(raw)
+        item.setText(f"{name}  -  {path}")
+
+    def _delete_favorite(self, item, list_widget) -> None:
+        """删除收藏项（带确认对话框）。"""
+        path = item.data(Qt.UserRole)
+        text = item.text()
+        name = text.split("  -  ", 1)[0] if "  -  " in text else path
+        dialog = create_basic_dialog(
+            title="确认删除",
+            message=f"确定要删除收藏 '{name}' 吗？",
+            cancel_text="取消",
+            confirm_text="删除",
+        )
+        self._track_dialog(dialog)
+        dialog.finished.connect(
+            lambda result: self._do_delete_favorite(path, item, list_widget)
+            if result == 1 else None
+        )
+
+    def _do_delete_favorite(self, path: str, item, list_widget) -> None:
+        """确认删除后移除收藏项并刷新列表。"""
+        service = self._favorites_service
+        raw = service.load()
+        raw = [
+            e for e in raw
+            if not (
+                (isinstance(e, dict) and e.get("path") == path)
+                or (isinstance(e, str) and e == path)
+            )
+        ]
+        service.save(raw)
+        row = list_widget.row(item)
+        list_widget.takeItem(row)
+
+    def _prompt_input(self, title: str, label_text: str, default_text: str,
+                      on_confirm) -> None:
+        """通用输入弹窗：StyledDialog + StyledLineEdit，确认回调 on_confirm(text)。"""
+        body = QWidget()
+        body.setStyleSheet("background: transparent;")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(8)
+
+        tip = QLabel(label_text)
+        tip.setStyleSheet(f"font-size: 13px; color: {tm.mid.name()}; background: transparent;")
+        body_layout.addWidget(tip)
+
+        edit = StyledLineEdit(size="default")
+        edit.setText(default_text)
+        body_layout.addWidget(edit)
+
+        dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_RIGHT)
+        self._track_dialog(dialog)
+
+        cancel_btn = StyledButton("取消", variant="ghost")
+        ok_btn = StyledButton("确定", variant="primary")
+        cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
+        ok_btn.clicked.connect(lambda: (on_confirm(edit.text().strip()), dialog.close_dialog(1)))
+        dialog._footer_layout.addWidget(cancel_btn)
+        dialog._footer_layout.addWidget(ok_btn)
+        edit.returnPressed.connect(ok_btn.click)
+        _show_dialog(dialog)
+
+    def _show_message_dialog(self, title: str, message: str) -> None:
+        """通用消息提示弹窗（StyledDialog）。"""
+        body = QWidget()
+        body.setStyleSheet("background: transparent;")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(8)
+
+        msg = QLabel(message)
+        msg.setWordWrap(True)
+        msg.setStyleSheet(f"font-size: 13px; color: {tm.text.name()}; background: transparent;")
+        body_layout.addWidget(msg)
+
+        dialog = StyledDialog(title=title, body_widget=body, footer_type=FOOTER_CENTER)
+        self._track_dialog(dialog)
+
+        ok_btn = StyledButton("确定", variant="primary")
+        ok_btn.clicked.connect(lambda: dialog.close_dialog(0))
+        dialog._footer_layout.addWidget(ok_btn)
+        _show_dialog(dialog)
+
+    def _track_dialog(self, dialog: StyledDialog) -> None:
+        """保持弹窗引用，finished 后自动释放，防止被 GC。"""
+        self._active_dialogs.append(dialog)
+        dialog.finished.connect(
+            lambda *_: self._active_dialogs.remove(dialog)
+            if dialog in self._active_dialogs else None
+        )
+
+    # ── 筛选 ──────────────────────────────────────────────────────────────
+
+    def _show_filter_dialog(self) -> None:
+        """显示筛选弹窗：输入文件名正则（不区分大小写），应用后重载目录。"""
+        body = QWidget()
+        body.setStyleSheet("background: transparent;")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(8)
+
+        tip = QLabel("输入文件名筛选正则（不区分大小写）。\n例如：\\.png$ 仅显示 png，项目 匹配名称含“项目”的文件。")
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"font-size: 12px; color: {tm.mid.name()}; background: transparent;")
+        body_layout.addWidget(tip)
+
+        edit = StyledLineEdit(size="default")
+        edit.setPlaceholderText("例如: \\.png$ 或 项目")
+        edit.setText(self._filter_pattern)
+        body_layout.addWidget(edit)
+
+        dialog = StyledDialog(title="筛选文件", body_widget=body, footer_type=FOOTER_RIGHT)
+        self._track_dialog(dialog)
+
+        clear_btn = StyledButton("移除筛选", variant="ghost")
+        cancel_btn = StyledButton("取消", variant="ghost")
+        apply_btn = StyledButton("应用", variant="primary")
+
+        def on_apply() -> None:
+            pattern = edit.text().strip()
+            if pattern and not self._is_valid_regex(pattern):
+                self._show_message_dialog("筛选", "正则表达式无效，请检查后重试")
+                return
+            self._filter_pattern = pattern
+            self._update_filter_button_state()
+            dialog.close_dialog(1)
+            self._reload_directory()
+
+        def on_clear() -> None:
+            self._filter_pattern = ""
+            self._update_filter_button_state()
+            dialog.close_dialog(1)
+            self._reload_directory()
+
+        apply_btn.clicked.connect(on_apply)
+        clear_btn.clicked.connect(on_clear)
+        cancel_btn.clicked.connect(lambda: dialog.close_dialog(0))
+        dialog._footer_layout.addWidget(clear_btn)
+        dialog._footer_layout.addWidget(cancel_btn)
+        dialog._footer_layout.addWidget(apply_btn)
+        edit.returnPressed.connect(apply_btn.click)
+        _show_dialog(dialog)
+
+    def _update_filter_button_state(self) -> None:
+        """筛选激活时高亮筛选按钮（ghost → info）并更新 tooltip。"""
+        has_filter = bool(self._filter_pattern)
+        self._sift_btn.set_variant("info" if has_filter else "ghost")
+        self._sift_btn.setToolTip(
+            f"筛选: {self._filter_pattern}" if has_filter else "筛选文件"
+        )
+
+    def _matches_filter(self, name: str) -> bool:
+        """判断文件名是否匹配当前筛选正则（不区分大小写）。"""
+        pattern = self._filter_pattern
+        if not pattern:
+            return True
+        try:
+            return re.search(pattern, name, re.IGNORECASE) is not None
+        except re.error:
+            return True
+
+    @staticmethod
+    def _is_valid_regex(pattern: str) -> bool:
+        """校验正则是否可编译。"""
+        try:
+            re.compile(pattern)
+            return True
+        except re.error:
+            return False
 
     # ── UI 更新 ────────────────────────────────────────────────────────────
 
@@ -860,23 +1240,44 @@ class FileSelectorLayout(QWidget):
 
     # ── 排序与视图 ────────────────────────────────────────────────────────
 
-    def _cycle_sort_mode(self) -> None:
-        self._sort_mode = (self._sort_mode + 1) % 6
-        mode_names = {
-            0: "名称↑", 1: "名称↓", 2: "修改时间↓",
-            3: "修改时间↑", 4: "大小↓", 5: "大小↑",
-        }
-        self._sort_btn.setToolTip(f"排序: {mode_names[self._sort_mode]}")
+    SORT_MODE_NAMES: Dict[int, str] = {
+        0: "名称↑", 1: "名称↓", 2: "修改时间↓",
+        3: "修改时间↑", 4: "大小↓", 5: "大小↑",
+        6: "创建时间↓", 7: "创建时间↑",
+    }
+
+    def _show_sort_menu(self) -> None:
+        """显示排序方式下拉菜单（8 种模式，当前模式打勾）。
+
+        使用 StyledContextMenu 实现，与 web 端下拉样式保持一致。
+        """
+        menu = StyledContextMenu(parent=self._sort_btn)
+        for mode in range(8):
+            menu.add_item(
+                self.SORT_MODE_NAMES[mode],
+                checkable=True,
+                checked=(mode == self._sort_mode),
+                callback=lambda m=mode: self._set_sort_mode(m),
+            )
+        btn = self._sort_btn
+        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def _set_sort_mode(self, mode: int) -> None:
+        """切换排序模式并重新加载当前目录。"""
+        self._sort_mode = mode
+        self._sort_btn.setToolTip(f"排序: {self.SORT_MODE_NAMES[mode]}")
         if self._current_path:
             self._reload_directory()
 
     def _toggle_view_mode(self) -> None:
+        icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
         if self._view_mode == "card":
             self._view_mode = "list"
             self._card_delegate.set_list_mode()
             self._file_list.setViewMode(QListView.IconMode)
             self._file_list.setFlow(QListView.TopToBottom)
             self._file_list.setWrapping(False)
+            self._card_btn.set_svg_icon(str(icons_dir / "card.svg"))
             self._card_btn.setToolTip("切换为卡片视图")
         else:
             self._view_mode = "card"
@@ -884,6 +1285,7 @@ class FileSelectorLayout(QWidget):
             self._file_list.setViewMode(QListView.IconMode)
             self._file_list.setFlow(QListView.LeftToRight)
             self._file_list.setWrapping(True)
+            self._card_btn.set_svg_icon(str(icons_dir / "list.svg"))
             self._card_btn.setToolTip("切换为列表视图")
         QTimer.singleShot(0, self._update_grid_size)
 

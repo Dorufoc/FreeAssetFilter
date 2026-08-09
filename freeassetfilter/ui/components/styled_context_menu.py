@@ -104,6 +104,9 @@ class StyledContextMenu(QMenu):
             label:        Display text.
             shortcut:     Keyboard shortcut (e.g. ``"Ctrl+C"``).
             callback:     Callable invoked when the item is triggered.
+                          Always called with **no arguments** — the
+                          ``triggered(bool)`` checked-state argument from
+                          checkable items is swallowed internally.
             disabled:     Gray out and block interaction.
             danger:       Render text in red (#ef4444).
             checkable:    Show a checkable toggle.
@@ -129,7 +132,13 @@ class StyledContextMenu(QMenu):
                 action.setChecked(True)
 
         if callback:
-            action.triggered.connect(callback)
+            # QAction.triggered(bool) 会把勾选状态作为唯一实参传给槽函数，
+            # checkable 菜单项触发时会向业务回调泄漏该布尔值（例如
+            # lambda m=mode: ... 的默认参数会被 True 覆盖）。统一用
+            # lambda 吸收信号参数，保证业务回调始终以零参调用。
+            action.triggered.connect(
+                lambda *args, cb=callback: cb()
+            )
 
         self.addAction(action)
         return action
