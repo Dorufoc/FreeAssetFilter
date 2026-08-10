@@ -13,7 +13,7 @@ from PySide6.QtGui import (
     QPen, QFontMetrics, QActionEvent, QCursor,
 )
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from components.styled_button import StyledButton
 from components.styled_slider import StyledSlider, SliderTrack
@@ -852,6 +852,7 @@ class StyledPlayerBar(QWidget):
         self._float_bar_visible = True
         self._float_popup_open = False
         self._float_popup_widgets: set[QWidget] = set()
+        self._float_focus_guard: Optional[Callable[[], bool]] = None  # 浮动模式可见性守卫
 
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setFixedHeight(52)
@@ -1259,15 +1260,18 @@ class StyledPlayerBar(QWidget):
         # 1. 停止自动隐藏
         self._stop_float_auto_hide()
 
-        # 2. 从容器中取出内容
+        # 2. 清理焦点守卫
+        self._float_focus_guard = None
+
+        # 3. 从容器中取出内容
         self._float_container.clear_content()
 
-        # 3. 销毁容器
+        # 4. 销毁容器
         self._float_container.hide()
         self._float_container.deleteLater()
         self._float_container = None
 
-        # 4. 恢复到原父控件
+        # 5. 恢复到原父控件
         if self._float_parent_layout:
             self.setParent(self._float_parent)
             self._float_parent_layout.addWidget(self)
@@ -1315,6 +1319,41 @@ class StyledPlayerBar(QWidget):
         self._float_bar_visible = True
         self._float_popup_open = False
 
+    def set_float_focus_guard(self, guard: Optional[Callable[[], bool]]) -> None:
+        """设置浮动控制栏可见性守卫。
+
+        守卫返回 False 时：鼠标移动/底部区域检测不会唤出控制栏；
+        已显示的控制栏（光标不在控制栏或弹窗上）会在下一次鼠标
+        检测轮询中立即隐藏。guard 为 None 时恢复默认行为（无焦点限制）。
+
+        Args:
+            guard: 无参可调用对象，返回 True 表示允许显示，False 表示禁止显示
+        """
+        self._float_focus_guard = guard
+
+    def is_float_cursor_in_bar_area(self) -> bool:
+        """检查光标是否在浮动控制栏自身或已注册弹窗上。
+
+        Returns:
+            bool: 光标是否在控制栏区域内
+        """
+        return self._is_float_cursor_in_bar_area()
+
+    def hide_float_bar(self) -> None:
+        """立即隐藏浮动控制栏（用于全屏宿主失焦等场景）。
+
+        若音量/速度/设置弹窗打开会一并关闭，避免悬浮弹窗残留在
+        全屏画面上。
+        """
+        if self._float_container is None:
+            return
+        if self._float_popup_open:
+            self._close_other_popups()
+        if self._float_bar_visible:
+            self._float_bar_visible = False
+            self._float_container.hide_with_animation()
+            self.floating_bar_hidden.emit()
+
     def _is_float_cursor_in_bar_area(self) -> bool:
         """检查光标是否在控制栏自身或已注册弹窗上"""
         if not self._float_container or not self._float_container.isVisible():
@@ -1350,6 +1389,15 @@ class StyledPlayerBar(QWidget):
     def _check_float_mouse_position(self) -> None:
         """检查鼠标位置：控制栏区域或底部 100px → 显示/保持控制栏"""
         if not self._float_container or not self._float_target_widget:
+            return
+
+        # 焦点守卫：全屏宿主失焦时禁止唤出控制栏；
+        # 已显示的控制栏（光标不在控制栏/弹窗上）在此立即隐藏
+        if self._float_focus_guard is not None and not self._float_focus_guard():
+            if self._float_bar_visible and not self._is_float_cursor_in_bar_area():
+                self._float_bar_visible = False
+                self._float_container.hide_with_animation()
+                self.floating_bar_hidden.emit()
             return
 
         cursor_pos = QCursor.pos()

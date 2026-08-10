@@ -26,6 +26,7 @@ from theme import tm
 from components.styled_button import StyledButton
 from components.styled_drawer import StyledDrawer
 from components.styled_number_input import StyledNumberInput
+from layout.preview.fullscreen_host import PreviewFullscreenHost
 from freeassetfilter.core._paths import icons_dir
 from freeassetfilter.components.native_pdf_renderer import NativePdfRenderer
 from freeassetfilter.ui.components.styled_scroll_area import StyledScrollArea
@@ -391,7 +392,7 @@ class PdfPreviewerLayout(QWidget):
         self._current_page = 1
         self._total_pages = 1
         self._fullscreen: bool = False
-        self._saved_geometry = None
+        self._fullscreen_host: Optional[PreviewFullscreenHost] = None
         self._thumbnail_widgets: list[_IndexPageThumbnail] = []
 
         self._init_ui()
@@ -783,23 +784,45 @@ class PdfPreviewerLayout(QWidget):
             self._update_scroll_range(self._renderer._view.zoom_level)
 
     def _on_maxsize_toggle(self) -> None:
-        """切换全屏 / 还原窗口（参考 video_player_layout，不改变窗口 flags）。"""
-        win = self.window()
-        if win is None:
-            return
+        """切换全屏 / 还原窗口（分离到独立 frameless 宿主，不改变窗口 flags）。
+
+        全屏时把自身分离到独立 frameless 宿主窗口（PreviewFullscreenHost），
+        而不是全屏主窗口；退出时还原回原内嵌布局。
+        """
         if not self._fullscreen:
-            self._saved_geometry = win.geometry()
-            win.showFullScreen()
-            self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
-            self._maxsize_btn.setToolTip("还原")
-            self._fullscreen = True
+            self._enter_fullscreen()
         else:
-            win.showNormal()
-            if self._saved_geometry:
-                win.setGeometry(self._saved_geometry)
-            self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
-            self._maxsize_btn.setToolTip("最大化")
+            self._exit_fullscreen()
+
+    def _enter_fullscreen(self) -> None:
+        """分离到独立 frameless 全屏窗口。"""
+        if self._fullscreen_host is None:
+            self._fullscreen_host = PreviewFullscreenHost()
+            self._fullscreen_host.escapePressed.connect(self._on_maxsize_toggle)
+            self._fullscreen_host.closed.connect(self._on_maxsize_toggle)
+        if not self._fullscreen_host.attach(self):
+            return
+        self._fullscreen_host.show_fullscreen()
+        self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
+        self._maxsize_btn.setToolTip("还原")
+        self._fullscreen = True
+
+    def _exit_fullscreen(self) -> None:
+        """退出全屏：还原回主窗口内嵌布局。"""
+        if self._fullscreen_host is None:
             self._fullscreen = False
+            return
+        self._fullscreen_host.exit_fullscreen()
+        self._fullscreen_host.deleteLater()
+        self._fullscreen_host = None
+        self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
+        self._maxsize_btn.setToolTip("最大化")
+        self._fullscreen = False
+
+    def cleanup(self) -> None:
+        """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
+        if self._fullscreen:
+            self._exit_fullscreen()
 
     def _on_app_mouse_press(self, event: QMouseEvent) -> None:
         """全局鼠标点击：点击菜单外部时关闭缩放弹窗。"""

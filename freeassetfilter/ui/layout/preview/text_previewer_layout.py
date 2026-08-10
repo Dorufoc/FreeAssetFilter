@@ -86,6 +86,7 @@ from components.styled_lineedit import StyledLineEdit
 from components.styled_slider import StyledSlider
 from components.styled_combobox import StyledComboBox
 from components.styled_drawer import StyledDrawer
+from layout.preview.fullscreen_host import PreviewFullscreenHost
 from components.styled_tooltip import (
     StyledTooltip,
     GAP,
@@ -1231,7 +1232,7 @@ class TextPreviewerLayout(QWidget):
         self._current_mode: str = "plain"
         self._highlighter: Optional[_TextHighlighter] = None
         self._fullscreen: bool = False
-        self._saved_geometry = None
+        self._fullscreen_host: Optional[PreviewFullscreenHost] = None
 
         self._word_wrap: bool = True
         # 预览器正文字号固定为 14px，独立于全局控件字号，确保代码/文本/Markdown 可读。
@@ -1947,6 +1948,8 @@ class TextPreviewerLayout(QWidget):
 
     def cleanup(self) -> None:
         """清理预览内容并重置为覆盖层。"""
+        if self._fullscreen:
+            self._exit_fullscreen()
         if hasattr(self, "_search_drawer") and self._search_drawer is not None:
             self._search_drawer.close_drawer()
         if hasattr(self, "_ai_drawer") and self._ai_drawer is not None:
@@ -2203,23 +2206,40 @@ class TextPreviewerLayout(QWidget):
             self._render_toggle_btn.setText("渲染")
 
     def _on_maxsize_toggle(self) -> None:
-        """切换全屏 / 还原窗口（参考其他 previewer_layout 的现有实现）。"""
-        win = self.window()
-        if win is None:
-            return
+        """切换全屏 / 还原窗口。
+
+        全屏时把自身分离到独立 frameless 宿主窗口（PreviewFullscreenHost），
+        而不是全屏主窗口；退出时还原回原内嵌布局。
+        """
         if not self._fullscreen:
-            self._saved_geometry = win.geometry()
-            win.showFullScreen()
-            self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
-            self._maxsize_btn.setToolTip("还原")
-            self._fullscreen = True
+            self._enter_fullscreen()
         else:
-            win.showNormal()
-            if self._saved_geometry:
-                win.setGeometry(self._saved_geometry)
-            self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
-            self._maxsize_btn.setToolTip("最大化")
+            self._exit_fullscreen()
+
+    def _enter_fullscreen(self) -> None:
+        """分离到独立 frameless 全屏窗口。"""
+        if self._fullscreen_host is None:
+            self._fullscreen_host = PreviewFullscreenHost()
+            self._fullscreen_host.escapePressed.connect(self._on_maxsize_toggle)
+            self._fullscreen_host.closed.connect(self._on_maxsize_toggle)
+        if not self._fullscreen_host.attach(self):
+            return
+        self._fullscreen_host.show_fullscreen()
+        self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
+        self._maxsize_btn.setToolTip("还原")
+        self._fullscreen = True
+
+    def _exit_fullscreen(self) -> None:
+        """退出全屏：还原回主窗口内嵌布局。"""
+        if self._fullscreen_host is None:
             self._fullscreen = False
+            return
+        self._fullscreen_host.exit_fullscreen()
+        self._fullscreen_host.deleteLater()
+        self._fullscreen_host = None
+        self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
+        self._maxsize_btn.setToolTip("最大化")
+        self._fullscreen = False
 
     def resizeEvent(self, event) -> None:
         """窗口尺寸变化时同步更新左右侧边栏的遮罩和面板尺寸。"""

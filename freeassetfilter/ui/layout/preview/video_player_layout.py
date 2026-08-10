@@ -51,6 +51,7 @@ from theme import tm
 from components.styled_player_bar import StyledPlayerBar
 from components.styled_fluid_background import StyledFluidBackground
 from components.styled_music_info_panel import StyledMusicInfoPanel
+from layout.preview.fullscreen_host import PreviewFullscreenHost
 from freeassetfilter.core.managers.mpv_manager import MPVManager, MPVState
 from freeassetfilter.core.native.bridges.mpv_player_core import MpvEndFileReason
 from freeassetfilter.core.managers.heartbeat_manager import HeartbeatManager
@@ -122,6 +123,9 @@ class VideoPlayerLayout(QWidget):
         self._global_font = global_font or QFont("Segoe UI", 9)
         self._settings_manager = settings_manager
         self._standalone = standalone
+
+        self._fullscreen: bool = False
+        self._fullscreen_host: Optional[PreviewFullscreenHost] = None
 
         self._init_ui()
         self._init_mpv()
@@ -335,6 +339,8 @@ class VideoPlayerLayout(QWidget):
 
     def cleanup(self) -> None:
         """清理资源，断开所有信号"""
+        if self._fullscreen:
+            self._exit_fullscreen()
         if self._mpv_manager:
             self._mpv_manager.stop(component_id=self._component_id)
             self._mpv_manager.unregister_component(self._component_id)
@@ -683,23 +689,83 @@ class VideoPlayerLayout(QWidget):
         self._mpv_manager.set_speed(speed, component_id=self._component_id)
 
     def _on_fullscreen_toggled(self, fullscreen: bool) -> None:
-        """全屏按钮点击 → 切换父窗口全屏 + 浮动控制栏模式
+        """全屏按钮点击 → 分离到独立 frameless 全屏窗口 + 浮动控制栏模式
 
         Args:
             fullscreen: True=进入全屏, False=退出全屏
         """
         if fullscreen:
-            self.window().showFullScreen()
-            # 进入全屏后启用浮动控制栏（自动隐藏 + 动画）
-            screen = QApplication.primaryScreen()
-            if screen:
-                self._player_bar.enter_floating_mode(
-                    target_widget=self._current_preview_widget(),
-                    screen_geometry=screen.geometry(),
-                )
+            self._enter_fullscreen()
         else:
-            self._player_bar.exit_floating_mode()
-            self.window().showNormal()
+            self._exit_fullscreen()
+
+    def _enter_fullscreen(self) -> None:
+        """分离到独立 frameless 全屏窗口。"""
+        if self._fullscreen_host is None:
+            self._fullscreen_host = PreviewFullscreenHost()
+            self._fullscreen_host.escapePressed.connect(
+                lambda: self._on_fullscreen_toggled(False)
+            )
+            # 全屏宿主失焦时立即隐藏已显示的浮动控制栏
+            self._fullscreen_host.activated_changed.connect(
+                self._on_fullscreen_host_active_changed
+            )
+        if not self._fullscreen_host.attach(self):
+            return
+        self._fullscreen_host.show_fullscreen()
+        # 进入全屏后启用浮动控制栏（自动隐藏 + 动画），目标改为宿主所在屏幕
+        screen = self._fullscreen_host.screen() or QApplication.primaryScreen()
+        if screen:
+            self._player_bar.enter_floating_mode(
+                target_widget=self._current_preview_widget(),
+                screen_geometry=screen.geometry(),
+            )
+            # 焦点守卫：全屏宿主失焦时禁止鼠标唤出浮动控制栏
+            self._player_bar.set_float_focus_guard(self._allow_floating_bar_show)
+        self._fullscreen = True
+
+    def _exit_fullscreen(self) -> None:
+        """退出全屏：还原回主窗口内嵌布局。"""
+        if self._fullscreen_host is None:
+            self._fullscreen = False
+            return
+        self._player_bar.exit_floating_mode()
+        self._player_bar.set_float_focus_guard(None)
+        self._fullscreen_host.exit_fullscreen()
+        self._fullscreen_host.deleteLater()
+        self._fullscreen_host = None
+        self._fullscreen = False
+
+    def _allow_floating_bar_show(self) -> bool:
+        """浮动控制栏可见性守卫回调。
+
+        全屏宿主激活时允许显示；宿主失焦后禁止显示，仅当光标正在
+        控制栏或其弹出菜单上操作时放行（点击控制栏按钮会使焦点短暂
+        转移到 Tool 窗口，需避免误隐藏）。
+
+        Returns:
+            bool: True 允许显示，False 禁止显示
+        """
+        host = self._fullscreen_host
+        if host is None or not host.isVisible():
+            return False
+        if host.isActiveWindow():
+            return True
+        if self._player_bar.is_float_cursor_in_bar_area():
+            return True
+        return False
+
+    def _on_fullscreen_host_active_changed(self, active: bool) -> None:
+        """全屏宿主激活状态变化：失焦时立即隐藏已显示的浮动控制栏。
+
+        Args:
+            active: 宿主是否获得激活
+        """
+        if active or not self._fullscreen:
+            return
+        # 正在控制栏/弹窗上操作时不打断交互（点击控制栏按钮会短暂抢走焦点）
+        if not self._player_bar.is_float_cursor_in_bar_area():
+            self._player_bar.hide_float_bar()
 
     def _on_file_loaded(self, file_path: str) -> None:
         """文件加载完成"""

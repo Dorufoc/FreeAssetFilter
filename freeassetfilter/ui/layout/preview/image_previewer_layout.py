@@ -25,6 +25,7 @@ from PySide6.QtGui import QFont, QPixmap, QImageReader, QWheelEvent, QPainter, Q
 
 from theme import tm
 from components.styled_button import StyledButton
+from layout.preview.fullscreen_host import PreviewFullscreenHost
 from freeassetfilter.core._paths import icons_dir
 from freeassetfilter.services.image_decode_worker import ImageDecodeWorker
 from freeassetfilter.services.image_decoder_service import ImageDecoderService
@@ -362,7 +363,7 @@ class ImagePreviewerLayout(QWidget):
         self._standalone = standalone
 
         self._fullscreen: bool = False
-        self._saved_geometry = None
+        self._fullscreen_host: Optional[PreviewFullscreenHost] = None
         self._current_file: str = ""
         self._zoom_pct: int = 100       # 50-500, 100 = fit to view
         self._base_scale: float = 1.0   # QGraphicsView scale at fit-to-view
@@ -1164,23 +1165,45 @@ class ImagePreviewerLayout(QWidget):
         self.update()
 
     def _on_maxsize_toggle(self) -> None:
-        """切换全屏 / 还原窗口。"""
-        win = self.window()
-        if win is None:
-            return
+        """切换全屏 / 还原窗口。
+
+        全屏时把自身分离到独立 frameless 宿主窗口（PreviewFullscreenHost），
+        而不是全屏主窗口；退出时还原回原内嵌布局。
+        """
         if not self._fullscreen:
-            self._saved_geometry = win.geometry()
-            win.showFullScreen()
-            self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
-            self._maxsize_btn.setToolTip("还原")
-            self._fullscreen = True
+            self._enter_fullscreen()
         else:
-            win.showNormal()
-            if self._saved_geometry:
-                win.setGeometry(self._saved_geometry)
-            self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
-            self._maxsize_btn.setToolTip("最大化")
+            self._exit_fullscreen()
+
+    def _enter_fullscreen(self) -> None:
+        """分离到独立 frameless 全屏窗口。"""
+        if self._fullscreen_host is None:
+            self._fullscreen_host = PreviewFullscreenHost()
+            self._fullscreen_host.escapePressed.connect(self._on_maxsize_toggle)
+            self._fullscreen_host.closed.connect(self._on_maxsize_toggle)
+        if not self._fullscreen_host.attach(self):
+            return
+        self._fullscreen_host.show_fullscreen()
+        self._maxsize_btn.set_svg_icon(self._minisize_icon_path)
+        self._maxsize_btn.setToolTip("还原")
+        self._fullscreen = True
+
+    def _exit_fullscreen(self) -> None:
+        """退出全屏：还原回主窗口内嵌布局。"""
+        if self._fullscreen_host is None:
             self._fullscreen = False
+            return
+        self._fullscreen_host.exit_fullscreen()
+        self._fullscreen_host.deleteLater()
+        self._fullscreen_host = None
+        self._maxsize_btn.set_svg_icon(self._maxsize_icon_path)
+        self._maxsize_btn.setToolTip("最大化")
+        self._fullscreen = False
+
+    def cleanup(self) -> None:
+        """清理资源；若处于全屏先退出，避免内嵌 widget 被直接销毁。"""
+        if self._fullscreen:
+            self._exit_fullscreen()
 
     def _on_browse_file(self) -> None:
         """打开文件选择对话框选择图片（仅 standalone 模式）。"""
