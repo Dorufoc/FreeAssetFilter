@@ -87,20 +87,53 @@ _SYMBOL_MAP: dict[str, str] = {
 
 __all__ = sorted(list(_MODULE_MAP.keys()) + list(_SYMBOL_MAP.keys()))
 
+
+class _LazyModuleAlias(types.ModuleType):
+    """延迟导入的旧式扁平模块别名（代替原先的 eager 导入循环）。
+
+    原先在包导入时强制导入全部 14 个核心模块，连锁拉入 PIL / numpy /
+    QtSvg 等重依赖（数百 ms），拖慢应用首屏。本类在 ``sys.modules`` 中
+    注册一个占位模块：首次属性访问（如 ``from
+    freeassetfilter.core.settings_manager import SettingsManager`` 的
+    ``getattr``）时才真正导入目标模块，并把 ``sys.modules`` 条目替换为
+    真实模块，使后续导入直接命中真实模块，行为与 eager 完全一致。
+    """
+
+    def __init__(self, name: str, target: str) -> None:
+        super().__init__(name)
+        self._target_module = target
+
+    def __getattr__(self, name: str) -> object:
+        # dunder/内省属性（如 inspect 检查的 __file__、__name__ 等）绝不
+        # 触发真实导入：模块加载早期 logging/inspect 的 hasattr 探测若
+        # 无条件导入会制造循环（如 perf_metrics 半初始化时被拉入）。
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(
+                f"module {self.__name__!r} has no attribute {name!r}"
+            )
+        target = self.__dict__.get("_target_module")
+        if not target:
+            raise AttributeError(
+                f"module {self.__name__!r} has no attribute {name!r}"
+            )
+        module = importlib.import_module(target)
+        if sys.modules.get(self.__name__) is self:
+            sys.modules[self.__name__] = module
+        return getattr(module, name)
+
+
 # ---------------------------------------------------------------------------
-# Eagerly install module aliases into sys.modules so that
+# Install lazy module aliases into sys.modules so that
 # ``from freeassetfilter.core.settings_manager import SettingsManager``
 # (sub-module import pattern) resolves correctly.  Python's ``__getattr__``
 # is only called for *attribute* access on the package, not for
-# sub-module import resolution.
+# sub-module import resolution — hence the placeholder modules above.
 # ---------------------------------------------------------------------------
 for _old_name, _new_path in _MODULE_MAP.items():
-    try:
-        _mod = importlib.import_module(_new_path)
-        sys.modules[f"freeassetfilter.core.{_old_name}"] = _mod
-    except ImportError:
-        pass
-del _old_name, _new_path, _mod
+    sys.modules[f"freeassetfilter.core.{_old_name}"] = _LazyModuleAlias(
+        f"freeassetfilter.core.{_old_name}", _new_path
+    )
+del _old_name, _new_path
 
 
 def __getattr__(name: str) -> types.ModuleType | object:

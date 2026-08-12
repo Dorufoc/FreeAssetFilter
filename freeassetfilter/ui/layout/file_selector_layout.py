@@ -6,6 +6,7 @@ import ctypes
 import os
 import re
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -35,6 +36,8 @@ class FileSelectorLayout(QWidget):
     preview_cancel_requested = Signal()
     add_to_pool_requested = Signal(dict)
     toggle_pool_requested = Signal(dict)  # 右键直连：添加/移除文件池
+    # 异步目录加载：后台线程收集完成后发射（path, entries 或 None, token）
+    _dir_entries_ready = Signal(str, object, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,6 +152,9 @@ class FileSelectorLayout(QWidget):
         self._history_index: int = -1
         self._sort_mode: int = 0
         self._first_show: bool = True
+        # 异步目录加载：递增 token 丢弃过期结果（快速连续导航场景）
+        self._async_load_token: int = 0
+        self._dir_entries_ready.connect(self._on_dir_entries_ready)
 
         # 收藏夹与筛选状态
         self._favorites_service = FavoritesService()
@@ -229,7 +235,8 @@ class FileSelectorLayout(QWidget):
         app = QApplication.instance()
         initial_navigate_path = getattr(app, "initial_navigate_path", None)
         if initial_navigate_path and os.path.exists(initial_navigate_path):
-            self._navigate_to(initial_navigate_path)
+            # 启动首次加载走异步路径，避免大目录 listdir+stat 阻塞首屏
+            self._navigate_to_async(initial_navigate_path)
             return
         if self._try_restore_last_path():
             return
@@ -293,7 +300,7 @@ class FileSelectorLayout(QWidget):
                 data = json.load(f)
             last_path = data.get("last_path")
             if last_path and os.path.exists(last_path):
-                self._navigate_to(last_path)
+                self._navigate_to_async(last_path)
                 return True
         except Exception:
             pass
@@ -407,7 +414,13 @@ class FileSelectorLayout(QWidget):
 
     # ── 目录加载 ──────────────────────────────────────────────────────────
 
-    def _load_directory(self, path: str) -> None:
+    @staticmethod
+    def _collect_directory_entries(path: str) -> Optional[List[Dict[str, Any]]]:
+        """纯 IO 收集目录条目（listdir + 逐文件 stat）。
+
+        可在后台线程执行——不触碰任何 Qt/主线程状态。返回条目列表；
+        目录不可读时返回 None（调用方执行与同步路径一致的清空处理）。
+        """
         try:
             entries: List[Dict[str, Any]] = []
             for name in os.listdir(path):
@@ -424,21 +437,78 @@ class FileSelectorLayout(QWidget):
                     })
                 except (PermissionError, OSError):
                     continue
-            if self._filter_pattern:
-                entries = [e for e in entries if self._matches_filter(e["name"])]
-            entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
-            self._apply_sort(entries)
-            self._file_model.set_files(entries)
-            self._update_grid_size()
-            self._current_path = path
-            self._update_path_input(path)
-            self._update_file_count(len(entries))
-            self._file_list.update()
+            return entries
         except (PermissionError, FileNotFoundError, OSError):
+            return None
+
+    def _load_directory(self, path: str) -> None:
+        """同步加载目录（收集 + 应用），行为与旧实现逐字节等价。"""
+        entries = self._collect_directory_entries(path)
+        if entries is None:
             self._file_model.clear()
             self._current_path = ""
             self._update_file_count(0)
             self._file_list.update()
+            return
+        self._apply_directory_entries(path, entries)
+
+    def _apply_directory_entries(self, path: str, entries: List[Dict[str, Any]]) -> None:
+        """在主线程应用收集到的目录条目：过滤 + 排序 + 更新 model/路径/计数。"""
+        if self._filter_pattern:
+            entries = [e for e in entries if self._matches_filter(e["name"])]
+        entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        self._apply_sort(entries)
+        self._file_model.set_files(entries)
+        self._update_grid_size()
+        self._current_path = path
+        self._update_path_input(path)
+        self._update_file_count(len(entries))
+        self._file_list.update()
+
+    def _load_directory_async(self, path: str) -> None:
+        """异步加载目录：后台线程收集条目，完成后回到主线程应用。
+
+        仅用于启动首次加载等无交互动画的场景（避免与路径过渡动画竞态）。
+        递增 token 保证快速连续导航时只应用最后一次请求的结果。
+        """
+        self._async_load_token += 1
+        token = self._async_load_token
+
+        def _worker() -> None:
+            entries = self._collect_directory_entries(path)
+            self._dir_entries_ready.emit(path, entries, token)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_dir_entries_ready(
+        self, path: str, entries: Optional[List[Dict[str, Any]]], token: int
+    ) -> None:
+        """后台收集完成（主线程槽）：过期结果直接丢弃。"""
+        if token != self._async_load_token:
+            return
+        if entries is None:
+            self._file_model.clear()
+            self._current_path = ""
+            self._update_file_count(0)
+            self._file_list.update()
+            return
+        self._apply_directory_entries(path, entries)
+
+    def _navigate_to_async(self, path: str) -> None:
+        """轻量异步导航（无过渡动画）：校验 + 异步加载 + 历史栈 + 保存路径。
+
+        仅用于启动首次加载/恢复上次路径，避免大目录 listdir+stat
+        阻塞主线程导致首屏卡顿。
+        """
+        path = os.path.abspath(path)
+        if not os.path.isdir(path):
+            return
+        self._load_directory_async(path)
+        if self._history_index >= 0 and self._history_index < len(self._nav_history) - 1:
+            self._nav_history = self._nav_history[:self._history_index + 1]
+        self._nav_history.append(path)
+        self._history_index = len(self._nav_history) - 1
+        self._save_last_path(path)
 
     def _apply_sort(self, entries: List[Dict[str, Any]]) -> None:
         mode = self._sort_mode

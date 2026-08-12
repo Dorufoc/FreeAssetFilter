@@ -353,6 +353,7 @@ class MicaMaterial:
         luminosity: float = 0.65,
         contrast: float = 1.5,
         saturation: float = 4.5,
+        lazy: bool = False,
     ):
         """
         Args:
@@ -362,6 +363,10 @@ class MicaMaterial:
             luminosity: Brightness multiplier for the blurred image (0.0–1.0).
             contrast: Contrast multiplier. 1.0 = normal, 1.5 = +50%, 0.5 = -50%.
             saturation: Saturation multiplier. 1.0 = normal, 0.0 = grayscale.
+            lazy: When True, defer the expensive wallpaper load + blur + bake
+                until ``refresh()`` is called explicitly (e.g. from a QTimer
+                after the window is shown). Until then the widget paints the
+                solid theme surface fallback.
         """
         self._widget = widget
         self._blur_radius = blur_radius
@@ -399,8 +404,10 @@ class MicaMaterial:
         self._update_timer.setInterval(50)
         self._update_timer.timeout.connect(self._do_update)
 
-        # Init
-        self.refresh()
+        # Init — lazy mode defers the heavy wallpaper load/blur/bake until an
+        # explicit refresh() (see the `lazy` flag docstring).
+        if not lazy:
+            self.refresh()
 
     # ------------------------------------------------------------------
     # Public API

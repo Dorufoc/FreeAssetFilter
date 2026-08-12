@@ -48,7 +48,8 @@ from components.theme_transition_overlay import ThemeTransitionOverlay
 from layout.file_selector_layout import FileSelectorLayout
 from layout.file_pool_layout import FilePoolLayout
 from layout.unified_previewer_layout import UnifiedPreviewerLayout
-from layout.settings_layout import SettingsLayout
+# SettingsLayout 仅设置窗口使用，延迟到 _open_settings_window / SettingsWindow
+# 实例化时再导入，避免启动路径加载 styled_sidebar / color_picker 等组件。
 
 from freeassetfilter.utils.path_utils import get_app_data_path
 from freeassetfilter.utils.app_logger import debug, warning
@@ -89,6 +90,7 @@ class _MicaBackgroundMixin:
             self._luminosity,
             self._contrast,
             self._saturation,
+            lazy=True,  # 延迟壁纸加载/模糊到窗口显示后（首帧提速，见 showEvent）
         )
 
         # 纯色不透明基底颜色（来自 tm.surface）
@@ -920,6 +922,19 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             self._restore_started = True
             QTimer.singleShot(100, self._check_and_restore_backup)
 
+        # 首帧提速：Mica 壁纸加载/高斯模糊/烘焙在 __init__ 阶段被延迟
+        # （MicaMaterial lazy=True），这里在窗口显示后的第一轮事件循环里
+        # 再执行。窗口先以纯色主题背景出现，模糊完成后无缝替换为 Mica。
+        if not getattr(self, '_mica_refresh_started', False) and self._mica_background is not None:
+            self._mica_refresh_started = True
+            QTimer.singleShot(0, self._start_mica_refresh)
+
+    def _start_mica_refresh(self) -> None:
+        """延迟执行 Mica 壁纸处理（幂等：壁纸未变时 refresh() 直接返回）。"""
+        mica = getattr(self._mica_background, "_mica", None)
+        if mica is not None:
+            mica.refresh()
+
     def _check_and_restore_backup(self) -> None:
         """检查备份文件并恢复"""
         backup_data = self._file_pool.load_backup()
@@ -1099,6 +1114,8 @@ class SettingsWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._create_title_bar(layout)
 
         # 设置内容区
+        from layout.settings_layout import SettingsLayout  # 延迟导入（启动提速）
+
         self._settings_layout = SettingsLayout(self._root)
         layout.addWidget(self._settings_layout)
 
