@@ -1037,6 +1037,24 @@ class StyledPlayerBar(QWidget):
         anchor = QPoint(btn_global.x() + self._settings_btn.width(), btn_global.y())
         self._settings_popup.show_animated(anchor, pw, ph)
 
+    def set_fullscreen(self, fullscreen: bool):
+        """同步全屏状态与按钮图标（供外部全屏切换链路调用，如 Esc 退出全屏）。
+
+        与点击按钮（``_on_fullscreen_clicked``）的图标切换逻辑保持一致，
+        但不重新发出 ``fullscreen_toggled`` 信号，避免与调用方形成循环。
+
+        Args:
+            fullscreen: True 表示处于全屏状态（显示还原图标 minisize.svg），
+                False 表示内嵌状态（显示全屏图标 maxsize.svg）。
+        """
+        fullscreen = bool(fullscreen)
+        if fullscreen == self._fullscreen:
+            return
+        self._fullscreen = fullscreen
+        self._fs_btn.set_svg_icon(
+            f"{self._icons_dir}/{'minisize.svg' if fullscreen else 'maxsize.svg'}"
+        )
+
     def _on_fullscreen_clicked(self):
         self._fullscreen = not self._fullscreen
         self._fs_btn.set_svg_icon(f"{self._icons_dir}/{'minisize.svg' if self._fullscreen else 'maxsize.svg'}")

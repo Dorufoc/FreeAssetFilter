@@ -221,6 +221,21 @@ class PreviewFullscreenHost(QWidget):
             self.escapePressed.emit()
             event.accept()
             return
+        # 非 Esc 按键转发给承载的内容 widget（如 VideoPlayerLayout），
+        # 使其键盘快捷操作（空格/方向键/数字键等）在全屏模式下可用，
+        # 与旧版 DetachedVideoWindow 捕获 Esc、其余按键由播放器处理的行为一致。
+        content = self._content
+        if content is not None:
+            # 焦点已在内容 widget（或其子树）上时，按键已由 content 处理并
+            # 沿父链冒泡至宿主，避免二次投递回 content 造成重复处理。
+            focused = self.focusWidget()
+            in_content = focused is not None and (
+                focused is content or content.isAncestorOf(focused)
+            )
+            if not in_content:
+                QApplication.sendEvent(content, event)
+                if event.isAccepted():
+                    return
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:

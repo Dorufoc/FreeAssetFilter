@@ -413,6 +413,9 @@ class VideoPlayerLayout(QWidget):
 
     def _init_ui(self) -> None:
         """构建 UI：视频表面 + 占位覆盖层 + StyledPlayerBar"""
+        # 可聚焦以接收键盘快捷操作（空格/方向键/数字键等）
+        self.setFocusPolicy(Qt.StrongFocus)
+
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -506,6 +509,9 @@ class VideoPlayerLayout(QWidget):
         )
         main_layout.addWidget(self._player_bar)
 
+        # OSD 默认定位到视频表面顶部居中（音频模式在 _on_file_loaded 中更新目标）
+        self._player_bar.set_osd_target(self._video_surface)
+
     def _init_mpv(self) -> None:
         """初始化 MPV 管理器"""
         self._mpv_manager = MPVManager()
@@ -564,7 +570,169 @@ class VideoPlayerLayout(QWidget):
                 self._embedded_win_id = new_id
                 if self._mpv_manager and self._mpv_manager.is_initialized():
                     self._mpv_manager.set_window_id(new_id, component_id=self._component_id)
+        # 点击视频渲染表面时把键盘焦点交还给本组件，保证内嵌模式下
+        # 空格/方向键等快捷操作能送达（参考旧版分离窗口的键盘行为）
+        if (
+            watched is getattr(self, "_video_surface", None)
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
+            self.setFocus()
         return super().eventFilter(watched, event)
+
+    # ── 键盘快捷操作（移植自旧版 VideoPlayer / DetachedVideoWindow） ──
+
+    def keyPressEvent(self, event) -> None:
+        """键盘快捷操作：空格播放/暂停、方向键 seek/音量、数字键倍速。
+
+        Esc 键不在此处理——全屏模式下由 PreviewFullscreenHost 捕获并发出
+        escapePressed 退出全屏，与旧版 DetachedVideoWindow 捕获 Esc 后
+        reattach 的行为保持一致。
+        """
+        key = event.key()
+        if key == Qt.Key_Space:
+            self.toggle_play_pause()
+            event.accept()
+        elif key == Qt.Key_Left:
+            self.seek_backward()
+            event.accept()
+        elif key == Qt.Key_Right:
+            self.seek_forward()
+            event.accept()
+        elif key == Qt.Key_Up:
+            self.volume_up()
+            event.accept()
+        elif key == Qt.Key_Down:
+            self.volume_down()
+            event.accept()
+        elif key == Qt.Key_1:
+            self.set_speed(1.0)
+            event.accept()
+        elif key == Qt.Key_2:
+            self.set_speed(2.0)
+            event.accept()
+        elif key == Qt.Key_3:
+            self.set_speed(3.0)
+            event.accept()
+        elif key == Qt.Key_QuoteLeft:  # ` 键
+            self.set_speed(0.5)
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        """点击预览区域（占位覆盖层等）时获取键盘焦点。"""
+        super().mousePressEvent(event)
+        self.setFocus()
+
+    def toggle_play_pause(self) -> bool:
+        """切换播放/暂停状态（键盘空格键），并显示 OSD 提示。
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            return False
+        if self._mpv_manager.is_paused() or not self._mpv_manager.is_playing():
+            result = self._mpv_manager.play(component_id=self._component_id)
+            if result:
+                self._player_bar.show_osd("播放")
+            return result
+        result = self._mpv_manager.pause(component_id=self._component_id)
+        if result:
+            self._player_bar.show_osd("暂停")
+        return result
+
+    def seek_forward(self, seconds: float = 5.0) -> bool:
+        """向前跳转指定秒数（键盘右方向键），并显示 seek 进度 OSD。
+
+        Args:
+            seconds: 跳转秒数，默认为 5 秒
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            return False
+        current_position = self._mpv_manager.get_position() or 0.0
+        duration = self._mpv_manager.get_duration() or 0.0
+        new_position = min(current_position + seconds, duration)
+        result = self._mpv_manager.seek(new_position, component_id=self._component_id)
+        if result:
+            self._player_bar.show_seek_osd(new_position, duration, "forward")
+        return result
+
+    def seek_backward(self, seconds: float = 5.0) -> bool:
+        """向后跳转指定秒数（键盘左方向键），并显示 seek 进度 OSD。
+
+        Args:
+            seconds: 跳转秒数，默认为 5 秒
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            return False
+        current_position = self._mpv_manager.get_position() or 0.0
+        duration = self._mpv_manager.get_duration() or 0.0
+        new_position = max(current_position - seconds, 0.0)
+        result = self._mpv_manager.seek(new_position, component_id=self._component_id)
+        if result:
+            self._player_bar.show_seek_osd(new_position, duration, "backward")
+        return result
+
+    def volume_up(self, step: int = 5) -> bool:
+        """增加音量（键盘上方向键），并显示音量 OSD。
+
+        Args:
+            step: 音量步进值，默认为 5
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            return False
+        current_volume = self._mpv_manager.get_volume() or 0
+        new_volume = min(current_volume + step, 100)
+        result = self._mpv_manager.set_volume(new_volume, component_id=self._component_id)
+        if result:
+            self._player_bar.show_osd(f"音量 {new_volume}%")
+        return result
+
+    def volume_down(self, step: int = 5) -> bool:
+        """减少音量（键盘下方向键），并显示音量 OSD。
+
+        Args:
+            step: 音量步进值，默认为 5
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            return False
+        current_volume = self._mpv_manager.get_volume() or 0
+        new_volume = max(current_volume - step, 0)
+        result = self._mpv_manager.set_volume(new_volume, component_id=self._component_id)
+        if result:
+            self._player_bar.show_osd(f"音量 {new_volume}%")
+        return result
+
+    def set_speed(self, speed: float) -> bool:
+        """设置播放倍速（键盘 1/2/3/` 键），并显示倍速 OSD。
+
+        Args:
+            speed: 播放倍速，如 0.5, 1.0, 2.0, 3.0
+
+        Returns:
+            bool: 操作是否成功
+        """
+        if not self._mpv_manager or not self._mpv_manager.is_initialized():
+            return False
+        success = self._mpv_manager.set_speed(speed, component_id=self._component_id)
+        if success:
+            self._current_speed = speed
+            self._player_bar.set_speed(f"{speed:.1f}x")
+            self._player_bar.show_osd(f"{speed:.1f}x")
+        return success
 
     def _connect_player_signals(self) -> None:
         """StyledPlayerBar → VideoPlayerLayout → MPVManager"""
@@ -713,6 +881,8 @@ class VideoPlayerLayout(QWidget):
         if not self._fullscreen_host.attach(self):
             return
         self._fullscreen_host.show_fullscreen()
+        # 同步控制栏全屏按钮状态（进入全屏 → 显示还原图标）
+        self._player_bar.set_fullscreen(True)
         # 进入全屏后启用浮动控制栏（自动隐藏 + 动画），目标改为宿主所在屏幕
         screen = self._fullscreen_host.screen() or QApplication.primaryScreen()
         if screen:
@@ -731,6 +901,9 @@ class VideoPlayerLayout(QWidget):
             return
         self._player_bar.exit_floating_mode()
         self._player_bar.set_float_focus_guard(None)
+        # 同步控制栏全屏按钮状态（退出全屏 → 显示全屏图标），
+        # 覆盖 Esc / 宿主关闭等非按钮触发的退出链路（与旧版 set_detached(False) 一致）
+        self._player_bar.set_fullscreen(False)
         self._fullscreen_host.exit_fullscreen()
         self._fullscreen_host.deleteLater()
         self._fullscreen_host = None
@@ -777,6 +950,8 @@ class VideoPlayerLayout(QWidget):
             self._stack.setCurrentIndex(self._audio_surface_index)
         else:
             self._stack.setCurrentIndex(0)  # 视频表面
+        # OSD 定位目标跟随当前渲染表面（音频模式 → 音频表面，视频模式 → 视频表面）
+        self._player_bar.set_osd_target(self._current_preview_widget())
         # 参考旧 VideoPlayer._initialize_progress_display，延迟初始化进度显示
         QTimer.singleShot(200, self._initialize_progress_display)
         # 文件加载完成后再设置循环模式（避免与 loadfile 命令竞争）
