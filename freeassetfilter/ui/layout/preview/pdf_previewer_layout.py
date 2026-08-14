@@ -1058,6 +1058,9 @@ class PdfPreviewerLayout(QWidget):
         self._overlay.setStyleSheet(f"""
             background-color: {tm.surface.name()};
         """)
+        for _w in (self._top_bar, self._content_area, self._overlay):
+            _w.style().unpolish(_w)
+            _w.style().polish(_w)
 
     def _on_theme_changed(self, theme_name: str) -> None:
         """主题变更时刷新样式。"""

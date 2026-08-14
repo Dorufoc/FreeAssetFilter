@@ -36,7 +36,7 @@ except ImportError:
     from PySide6.QtWidgets import QMainWindow as FramelessMainWindow
 
 # tm 别名已在 theme/__init__.py 中注册
-# from theme import tm 与 from freeassetfilter.ui.theme import tm 指向同一实例
+# from theme import tm 与从 freeassetfilter.ui.theme import tm 指向同一实例
 from theme import tm
 
 from components.mica_material import MicaMaterial
@@ -446,6 +446,14 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._content = None
         self._panels = []
         self._splitter = None
+        # 三栏布局延迟构建，先置 None 避免提前访问未定义属性
+        self._file_selector = None
+        self._file_pool = None
+        self._previewer = None
+        # 面板占位标签（加载中…），真实布局构建后移除
+        self._panel_left_placeholder = None
+        self._panel_center_placeholder = None
+        self._panel_right_placeholder = None
         self._github_btn = None
         self._settings_btn = None
         self._theme_btn = None
@@ -566,59 +574,41 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             }}
         """)
 
+        # 三栏面板：先创建空 QFrame（含"加载中"占位），延后到窗口显示后
+        # 再构建重型布局，使窗口先以主题色外壳 + 标题栏快速出现，避免白屏等加载。
         self._panel_left = QFrame()
         self._panel_left.setObjectName("PanelLeft")
-        # 最小尺寸由内部 layout 的子控件自动决定（确保所有按钮完整显示）
-        # 嵌入文件选择器布局
-        self._file_selector = FileSelectorLayout(self._panel_left)
-        panel_left_layout = QVBoxLayout(self._panel_left)
-        panel_left_layout.setContentsMargins(0, 0, 0, 0)
-        panel_left_layout.setSpacing(0)
-        panel_left_layout.addWidget(self._file_selector)
+        self._panel_left.setStyleSheet("background-color: transparent; border: none;")
+        self._panel_left_layout = QVBoxLayout(self._panel_left)
+        self._panel_left_layout.setContentsMargins(0, 0, 0, 0)
+        self._panel_left_layout.setSpacing(0)
+        self._panel_left_placeholder = self._make_panel_placeholder()
+        self._panel_left_layout.addWidget(self._panel_left_placeholder)
 
         self._panel_center = QFrame()
         self._panel_center.setObjectName("PanelCenter")
-        # 最小尺寸由内部 FilePoolLayout 的子控件自动决定
-        # 嵌入文件池布局
-        self._file_pool = FilePoolLayout(self._panel_center)
-        panel_center_layout = QVBoxLayout(self._panel_center)
-        panel_center_layout.setContentsMargins(0, 0, 0, 0)
-        panel_center_layout.setSpacing(0)
-        panel_center_layout.addWidget(self._file_pool)
+        self._panel_center.setStyleSheet("background-color: transparent; border: none;")
+        self._panel_center_layout = QVBoxLayout(self._panel_center)
+        self._panel_center_layout.setContentsMargins(0, 0, 0, 0)
+        self._panel_center_layout.setSpacing(0)
+        self._panel_center_placeholder = self._make_panel_placeholder()
+        self._panel_center_layout.addWidget(self._panel_center_placeholder)
 
         self._panel_right = QFrame()
         self._panel_right.setObjectName("PanelRight")
-        # 最小尺寸由内部 UnifiedPreviewerLayout 的子控件自动决定
-        # 嵌入统一预览器布局
-        self._previewer = UnifiedPreviewerLayout(self._panel_right)
-        panel_right_layout = QVBoxLayout(self._panel_right)
-        panel_right_layout.setContentsMargins(0, 0, 0, 0)
-        panel_right_layout.setSpacing(0)
-        panel_right_layout.addWidget(self._previewer)
-
-        # 信号连接：文件选择器 → 文件池
-        self._file_selector.add_to_pool_requested.connect(self._on_add_to_pool_requested)
-        self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
-        self._file_selector.file_selected.connect(self._on_file_selected)
-        self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
-        # 信号连接：文件池 → 文件选择器（同步"已在池中"边框标记）
-        self._file_pool.pool_changed.connect(self._on_pool_contents_changed)
-        # 信号连接：文件池 → 统一预览器（左键点击文件池卡片时预览）
-        self._file_pool.item_left_clicked.connect(self._on_pool_item_clicked)
-        # 信号连接：文件池再次点击当前预览卡片 → 取消预览
-        self._file_pool.preview_cancel_requested.connect(self._on_preview_cancelled)
-        # 信号连接：文件池右键点击 → 移除文件池并取消选中
-        self._file_pool.item_right_clicked.connect(self._on_pool_item_right_clicked)
+        self._panel_right.setStyleSheet("background-color: transparent; border: none;")
+        self._panel_right_layout = QVBoxLayout(self._panel_right)
+        self._panel_right_layout.setContentsMargins(0, 0, 0, 0)
+        self._panel_right_layout.setSpacing(0)
+        self._panel_right_placeholder = self._make_panel_placeholder()
+        self._panel_right_layout.addWidget(self._panel_right_placeholder)
 
         self._panels = [self._panel_left, self._panel_center, self._panel_right]
-
-        self._refresh_panel_styles()
-
         for panel in self._panels:
             self._splitter.addWidget(panel)
 
-        # 窗口完成布局后等分三栏为 1:1:1
-        QTimer.singleShot(0, self._equalize_splitter)
+        # 窗口显示后再分阶段构建三栏重型布局（首屏提速，见 _build_panels_deferred）
+        QTimer.singleShot(0, self._build_panels_deferred)
 
         # 外层容器提供四周 10px 边距
         splitter_container = QWidget()
@@ -632,6 +622,86 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         # 连接主题切换信号
         tm.theme_changed.connect(self._on_theme_changed)
         tm.colors_updated.connect(self._on_colors_updated)
+
+    # ──── 分阶段延迟构建三栏（首屏提速） ─────────────────────────────────
+
+    def _make_panel_placeholder(self) -> QLabel:
+        """生成面板加载占位标签（'加载中…'），真实布局构建后移除。"""
+        label = QLabel("加载中…", self)
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet(
+            f"color: {tm.text.name()}; background-color: transparent; font-size: 13px;"
+        )
+        return label
+
+    def _build_panels_deferred(self) -> None:
+        """窗口显示后分阶段构建三栏重型布局，避免启动白屏/长阻塞。
+
+        左栏（文件选择器，最重）优先构建并显示，中/右栏随后补齐；
+        全部就绪后连接跨栏信号、刷新样式并等分三栏。
+        """
+        QTimer.singleShot(0, lambda: self._build_panel("left"))
+        QTimer.singleShot(30, lambda: self._build_panel("center"))
+        QTimer.singleShot(60, lambda: self._build_panel("right"))
+        QTimer.singleShot(90, self._finalize_panels)
+
+    def _build_panel(self, side: str) -> None:
+        """构建指定栏的真实布局，替换占位标签。单栏失败不应拖垮整体启动。"""
+        try:
+            if side == "left":
+                self._file_selector = FileSelectorLayout(self._panel_left)
+                self._panel_left_layout.removeWidget(self._panel_left_placeholder)
+                self._panel_left_placeholder.deleteLater()
+                self._panel_left_placeholder = None
+                self._panel_left_layout.addWidget(self._file_selector)
+            elif side == "center":
+                self._file_pool = FilePoolLayout(self._panel_center)
+                self._panel_center_layout.removeWidget(self._panel_center_placeholder)
+                self._panel_center_placeholder.deleteLater()
+                self._panel_center_placeholder = None
+                self._panel_center_layout.addWidget(self._file_pool)
+            elif side == "right":
+                self._previewer = UnifiedPreviewerLayout(self._panel_right)
+                self._panel_right_layout.removeWidget(self._panel_right_placeholder)
+                self._panel_right_placeholder.deleteLater()
+                self._panel_right_placeholder = None
+                self._panel_right_layout.addWidget(self._previewer)
+        except Exception as exc:  # 单栏构建失败不应拖垮整个启动
+            warning(f"面板构建失败（{side}）: {exc}")
+            return
+        # 该栏刚就绪即刷新其边框/填充：即使其它栏尚未构建，也能让已就绪栏正确显示
+        self._refresh_panel_styles()
+
+    def _finalize_panels(self) -> None:
+        """三栏全部就绪后：连接跨栏信号、刷新样式、等分三栏。
+
+        右栏预览器较重，90ms 时可能仍未构建完成；故逐栏守卫连接已就绪者，
+        并在仍有栏缺失时延后重试，确保跨栏信号最终全部连上（边框/填充已由
+        _build_panel 渐进套用，不受此影响）。
+        """
+        if self._file_selector is not None:
+            # 信号连接：文件选择器 → 文件池
+            self._file_selector.add_to_pool_requested.connect(self._on_add_to_pool_requested)
+            self._file_selector.toggle_pool_requested.connect(self._on_toggle_pool_requested)
+            self._file_selector.file_selected.connect(self._on_file_selected)
+            self._file_selector.preview_cancel_requested.connect(self._on_preview_cancelled)
+        if self._file_pool is not None:
+            # 信号连接：文件池 → 文件选择器（同步"已在池中"边框标记）
+            self._file_pool.pool_changed.connect(self._on_pool_contents_changed)
+            # 信号连接：文件池 → 统一预览器（左键点击文件池卡片时预览）
+            self._file_pool.item_left_clicked.connect(self._on_pool_item_clicked)
+            # 信号连接：文件池再次点击当前预览卡片 → 取消预览
+            self._file_pool.preview_cancel_requested.connect(self._on_preview_cancelled)
+            # 信号连接：文件池右键点击 → 移除文件池并取消选中
+            self._file_pool.item_right_clicked.connect(self._on_pool_item_right_clicked)
+
+        self._refresh_panel_styles()
+
+        # 仍有栏尚未就绪：延后重试连接（样式已由 _build_panel 渐进套用）
+        if self._file_selector is None or self._file_pool is None or self._previewer is None:
+            QTimer.singleShot(60, self._finalize_panels)
+            return
+        QTimer.singleShot(0, self._equalize_splitter)
 
     def _create_title_bar(self, parent_layout: QVBoxLayout) -> None:
         """创建标题栏"""
@@ -829,27 +899,38 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._refresh_panel_styles()
 
     def _refresh_panel_styles(self) -> None:
-        """刷新三个面板的 styleSheet（主题切换时调用）"""
+        """刷新三个面板的 styleSheet（主题切换 / 延迟构建逐栏就绪时调用）。
+
+        逐栏守卫：仅对当前已构建的栏套用边框/填充，因此可在三栏尚未全部就绪时
+        被 ``_build_panel`` 渐进调用——已就绪栏立即正确显示，缺失栏留待其构建后
+        的调用补齐（无需等三栏齐了才一次性刷新）。
+
+        注意：延迟构建时本方法在窗口已显示之后被调用，而对已显示控件设置
+        styleSheet 不会自动重绘，必须对各分区控件强制 unpolish/polish 才能让
+        边框/填充生效（与主题切换路径一致）。
+        """
         mid = tm.mid
         txt = tm.text
         # QColor.name() 不包含 alpha, 需要用 rgba() 格式保留透明度
         fill_color = f"rgba({txt.red()},{txt.green()},{txt.blue()},{5 / 100})"
         border_color = f"rgba({mid.red()},{mid.green()},{mid.blue()},{50 / 100})"
 
-        # 左侧栏 PanelLeft — 完全透明，样式下放给 FileSelectorLayout 内部
-        self._panel_left.setStyleSheet("background-color: transparent; border: none;")
+        if self._file_selector is not None:
+            # 左侧栏 PanelLeft — 完全透明，样式下放给 FileSelectorLayout 内部
+            self._panel_left.setStyleSheet("background-color: transparent; border: none;")
+            self._file_selector.set_section_styles(fill_color, border_color)
+        if self._file_pool is not None:
+            # 中间栏 PanelCenter — 完全透明，样式下放给 FilePoolLayout 内部
+            self._panel_center.setStyleSheet("background-color: transparent; border: none;")
+            self._file_pool.set_section_styles(fill_color, border_color)
+        if self._previewer is not None:
+            # 右侧栏 PanelRight — 完全透明，样式下放给 UnifiedPreviewerLayout 内部
+            self._panel_right.setStyleSheet("background-color: transparent; border: none;")
+            self._previewer.set_section_styles(fill_color, border_color)
 
-        # 中间栏 PanelCenter — 完全透明，样式下放给 FilePoolLayout 内部
-        self._panel_center.setStyleSheet("background-color: transparent; border: none;")
-
-        # 右侧栏 PanelRight — 完全透明，样式下放给 UnifiedPreviewerLayout 内部
-        self._panel_right.setStyleSheet("background-color: transparent; border: none;")
-
-        # 将面板样式下发给各 Layout 内部区域
-        self._file_selector.set_section_styles(fill_color, border_color)
-        self._file_pool.set_section_styles(fill_color, border_color)
-        self._previewer.set_section_styles(fill_color, border_color)
-        self._file_pool.set_section_styles(fill_color, border_color)
+        # 整窗级重刷（与主题切换路径一致，作为兜底确保所有已显示控件套用样式）
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def _equalize_splitter(self) -> None:
         """等分三栏为 1:1:1（窗口完成布局后调用）"""
@@ -860,8 +941,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
         self._splitter.setSizes([third, third, third])
 
     def _on_colors_updated(self, colors: dict) -> None:
-        """颜色更新后的处理（预留）"""
-        pass
+        """配色加载完成后的处理：重新套用三栏面板样式（确保颜色就绪后边框/填充正确）。"""
+        self._refresh_panel_styles()
 
     # ──── 信号处理 ─────────────────────────────────────────────────────
 
@@ -930,10 +1011,16 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
             QTimer.singleShot(0, self._start_mica_refresh)
 
     def _start_mica_refresh(self) -> None:
-        """延迟执行 Mica 壁纸处理（幂等：壁纸未变时 refresh() 直接返回）。"""
+        """延迟在后台线程执行 Mica 壁纸处理（不阻塞主线程/UI）。"""
         mica = getattr(self._mica_background, "_mica", None)
         if mica is not None:
-            mica.refresh()
+            mica.refresh_async()
+
+    def _dispose_mica(self) -> None:
+        """回收后台 Mica 刷新线程，避免退出时残留野线程。"""
+        mica = getattr(self._mica_background, "_mica", None)
+        if mica is not None and hasattr(mica, "dispose"):
+            mica.dispose()
 
     def _check_and_restore_backup(self) -> None:
         """检查备份文件并恢复"""
@@ -1018,7 +1105,8 @@ class MainWindow(_FramelessNativeEffectsMixin, FramelessMainWindow):
     # ──── 窗口事件 ─────────────────────────────────────────────────────
 
     def closeEvent(self, event: QEvent) -> None:
-        """窗口关闭时刷新备份保存到磁盘，释放服务资源"""
+        """窗口关闭时刷新备份保存到磁盘，释放服务资源，并回收后台 Mica 线程。"""
+        self._dispose_mica()
         try:
             self._file_pool.flush_backup_save_now()
         except Exception:
@@ -1234,6 +1322,9 @@ def main() -> int:
         print("正在显示窗口...")
         window.show()
         print("窗口已显示")
+
+        # 退出兜底：确保后台 Mica 线程在应用退出时被回收，避免野线程残留
+        app.aboutToQuit.connect(window._dispose_mica)
 
         print("启动事件循环...")
         return app.exec()

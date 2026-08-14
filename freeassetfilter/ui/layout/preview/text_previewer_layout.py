@@ -2009,6 +2009,9 @@ class TextPreviewerLayout(QWidget):
         self._overlay.setStyleSheet(f"""
             background-color: {tm.surface.name()};
         """)
+        for _w in (self._top_bar, self._content_area, self._overlay):
+            _w.style().unpolish(_w)
+            _w.style().polish(_w)
 
     # ── 内部辅助 ────────────────────────────────────────────────────────────
 

@@ -1265,6 +1265,9 @@ class FontPreviewerLayout(QWidget):
         self._overlay.setStyleSheet(
             f"background-color: {tm.surface.name()};"
         )
+        for _w in (self._top_bar, self._content_area, self._overlay):
+            _w.style().unpolish(_w)
+            _w.style().polish(_w)
 
     def _apply_default_panel_styles(self) -> None:
         """应用默认面板样式。"""
