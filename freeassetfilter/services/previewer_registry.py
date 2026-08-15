@@ -140,6 +140,13 @@ class PreviewerRegistry:
         "woff":  ("freeassetfilter.ui.layout.preview.font_previewer_layout", "FontPreviewerLayout"),
         "woff2": ("freeassetfilter.ui.layout.preview.font_previewer_layout", "FontPreviewerLayout"),
         "eot":   ("freeassetfilter.ui.layout.preview.font_previewer_layout", "FontPreviewerLayout"),
+        # ── Office ──────────────────────────────────────────────────────
+        "doc":   ("freeassetfilter.ui.layout.preview.office_previewer_layout", "OfficePreviewerLayout"),
+        "docx":  ("freeassetfilter.ui.layout.preview.office_previewer_layout", "OfficePreviewerLayout"),
+        "xls":   ("freeassetfilter.ui.layout.preview.office_previewer_layout", "OfficePreviewerLayout"),
+        "xlsx":  ("freeassetfilter.ui.layout.preview.office_previewer_layout", "OfficePreviewerLayout"),
+        "ppt":   ("freeassetfilter.ui.layout.preview.office_previewer_layout", "OfficePreviewerLayout"),
+        "pptx":  ("freeassetfilter.ui.layout.preview.office_previewer_layout", "OfficePreviewerLayout"),
     }
 
     # Cache of imported classes keyed by "module_path.ClassName"

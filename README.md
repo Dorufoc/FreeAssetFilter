@@ -200,7 +200,7 @@ MP3, WAV, FLAC, OGG, WMA, AAC, M4A, OPUS, AIFF, APE, MKA, AC3
 | 类别                  | 格式                                               |
 | ------------------- | ------------------------------------------------ |
 | **PDF**             | PDF（完整预览、缩放）                                     |
-| **Office（需单独安装插件）** | DOC, DOCX, XLS, XLSX, PPT, PPTX                  |
+| **Office**              | DOC, DOCX, XLS, XLSX, PPT, PPTX（随应用自动安装，开箱即用） |
 | **文本**              | TXT, MD, RST, RTF, CSV, JSON, XML, YAML          |
 | **代码**              | Python, JavaScript, C++, Java, Go, Rust 等 50+ 语言 |
 

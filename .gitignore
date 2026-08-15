@@ -72,6 +72,8 @@ EXIT_BLOCK_FIX_SUMMARY.md
 # --- Test/demo scripts ---
 test_*.py
 !tests/
+!tests/test_*.py
+!tests/**/test_*.py
 
 # ============================================================
 # CORE/NATIVE/ — track source code, ignore build intermediates

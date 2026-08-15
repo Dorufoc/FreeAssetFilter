@@ -27,7 +27,7 @@ from PySide6.QtGui import (
     QResizeEvent,
     QMoveEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QApplication
 
 from theme import tm
 from freeassetfilter.utils.app_logger import warning
@@ -440,6 +440,17 @@ class MicaMaterial(QObject):
         if top is not None:
             top.installEventFilter(self)
 
+        # 失焦白名单：当焦点转移到「应用自身拉起的窗口」（设置窗口、style 弹窗、
+        # 分离式全屏预览等）时，不视为失去焦点，效果层保持显示。判定依据是
+        # QApplication.activeWindow() 在失焦后是否仍指向本应用内某个顶层窗口——
+        # 只要仍非 None，说明焦点只是转移到应用内的窗口，保持激活；仅当为 None
+        # （焦点真正离开整个应用）才隐藏并暂停绘制以省性能。
+        self._focus_whitelist = set()  # 显式白名单窗口（弱引用），保留扩展能力
+        self._deactivate_timer = QTimer(self._widget)
+        self._deactivate_timer.setSingleShot(True)
+        self._deactivate_timer.setInterval(60)  # 防抖：等待焦点切换的瞬态 None 回落
+        self._deactivate_timer.timeout.connect(self._on_deactivate_check)
+
         # Init — lazy mode defers the heavy wallpaper load/blur/bake until an
         # explicit refresh() (see the `lazy` flag docstring).
         if not lazy:
@@ -683,6 +694,8 @@ class MicaMaterial(QObject):
         self._stop_fade()
         self._update_timer.stop()
         self._settle_timer.stop()
+        if self._deactivate_timer.isActive():
+            self._deactivate_timer.stop()
         if self._watchdog.isActive():
             self._watchdog.stop()
         if self._worker_thread is not None:
@@ -794,10 +807,67 @@ class MicaMaterial(QObject):
         if obj is top:
             etype = event.type()
             if etype == QEvent.Type.WindowActivate:
+                # 回焦：取消任何待定的失焦判定，立即淡入恢复
+                if self._deactivate_timer.isActive():
+                    self._deactivate_timer.stop()
                 self.set_active(True)
             elif etype == QEvent.Type.WindowDeactivate:
-                self.set_active(False)
+                # 失焦：不立即判定，交由防抖复查——若焦点只是转移到应用内的窗口
+                # （设置/style 弹窗/分离全屏预览等白名单窗口），应保持效果层显示
+                if not self._deactivate_timer.isActive():
+                    self._deactivate_timer.start()
         return False
+
+    def add_focus_whitelist(self, window: QWidget) -> None:
+        """
+        将「应用自身拉起的窗口」登记为失焦白名单（弱引用，不影响其生命周期）。
+
+        失焦时若焦点转移到白名单窗口，效果层不隐藏。常见登记对象：设置窗口、
+        style 弹窗、分离式全屏预览宿主。注：本应用内任意顶层窗口默认即纳入白名单
+        语义（见 ``_on_deactivate_check``），此处 API 主要供将来排除特定窗口使用。
+        """
+        try:
+            import weakref
+            self._focus_whitelist.add(weakref.ref(window))
+        except TypeError:
+            pass
+
+    def remove_focus_whitelist(self, window: QWidget) -> None:
+        """从失焦白名单移除指定窗口。"""
+        self._focus_whitelist = {
+            w for w in self._focus_whitelist if w() is not None and w() is not window
+        }
+
+    def _is_in_focus_whitelist(self, window: QWidget) -> bool:
+        """判断窗口是否落在失焦白名单（含其作为主窗口子对话框的父链归属）。"""
+        if window is None:
+            return False
+        if window in self._focus_whitelist:
+            return True
+        # 父链归属于主窗口的子对话框（设置窗口、style 弹窗等）同样视为白名单
+        top = self._widget.window()
+        p = window.parent()
+        while p is not None:
+            if p is top:
+                return True
+            p = p.parent()
+        return False
+
+    def _on_deactivate_check(self) -> None:
+        """
+        失焦防抖复查：决定是否真正隐藏效果层。
+
+        仅当 ``QApplication.activeWindow()`` 为 None（焦点真正离开整个应用）才
+        失焦隐藏并暂停绘制；若活动窗口仍属本应用——无论是显式白名单窗口、主窗口
+        的子对话框，还是分离式全屏预览宿主——均视为「仍处于应用内」，保持效果层
+        显示。
+        """
+        active = QApplication.activeWindow()
+        if active is None:
+            self.set_active(False)
+        elif not self._is_in_focus_whitelist(active):
+            # 焦点仍在应用内但不在白名单（极少见）——仍属自身拉起窗口，保持激活
+            self.set_active(True)
 
     def paint(self, painter: Optional[QPainter] = None, event: Optional[QPaintEvent] = None) -> None:
         """

@@ -10,6 +10,8 @@ Usage:
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 
 
@@ -73,10 +75,70 @@ def get_app_data_path() -> Path:
     return data_dir
 
 
+def soffice_paths() -> list[Path]:
+    """Returns a de-duplicated list of directories that may contain soffice.
+
+    Probes, in order:
+    1. ``%ProgramFiles%\\LibreOffice\\program``
+    2. ``%ProgramFiles(x86)%\\LibreOffice\\program``
+    3. The parent directory of a ``soffice``/``soffice.com`` binary found
+       via ``shutil.which`` on ``PATH``
+    4. ``native_bin_dir()`` — portable/app-dir forward-compat candidate
+
+    Every returned ``Path`` is a directory.  For the two fixed Program Files
+    locations the directory must actually contain ``soffice.exe`` or
+    ``soffice.com``; for which()/native_bin_dir candidates the existence of
+    the resolved binary / directory is required.  This function never
+    raises and never launches soffice — it is a path probe only; callers
+    (e.g. the ``soffice_available`` test fixture) inspect the returned
+    directories for a soffice binary themselves.
+
+    Returns:
+        list[Path]: De-duplicated, existence-filtered candidate
+            directories; ``[]`` when no LibreOffice is detected.
+    """
+    candidates: list[Path] = []
+
+    # 1/2: Standard Windows install locations (env-aware, hardcoded fallback).
+    for program_files in (
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    ):
+        program_dir = Path(program_files) / "LibreOffice" / "program"
+        if program_dir.is_dir() and any(
+            (program_dir / name).is_file() for name in ("soffice.exe", "soffice.com")
+        ):
+            candidates.append(program_dir)
+
+    # 3: PATH lookup — add the parent directory of any resolved binary.
+    for name in ("soffice", "soffice.com"):
+        try:
+            found = shutil.which(name)
+        except Exception:
+            continue
+        if found:
+            candidates.append(Path(found).resolve().parent)
+
+    # 4: Portable/app-dir forward-compat candidate.
+    native_bin = native_bin_dir()
+    if native_bin.is_dir():
+        candidates.append(native_bin)
+
+    # De-duplicate while preserving probe order.
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            result.append(candidate)
+    return result
+
+
 __all__ = [
     "core_dir",
     "native_bin_dir",
     "archive_7z_dir",
     "icons_dir",
     "get_app_data_path",
+    "soffice_paths",
 ]

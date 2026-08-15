@@ -520,3 +520,100 @@ def mpv_available():
 
     return False
 
+
+@pytest.fixture(scope="session")
+def soffice_available():
+    """检测 LibreOffice soffice 可执行文件是否可用（session scope）。
+
+    复用 T2 在 ``freeassetfilter.core._paths`` 提供的 ``soffice_paths()``：
+    - 该函数从不抛出异常，未找到 LO 时返回空列表。
+    - 这里在 fixture 调用点（而非模块导入点）导入并包裹 try/except，
+      避免与并行任务对 ``core/_paths.py`` 的修改产生 import 时序耦合 ——
+      导入失败时视为不可用（返回 False）。
+
+    Returns:
+        bool: 至少一个候选路径存在 soffice 可执行文件则为 True，否则为 False。
+    """
+    try:
+        from freeassetfilter.core._paths import soffice_paths
+    except (ImportError, AttributeError):
+        return False
+
+    try:
+        candidates = soffice_paths()
+    except Exception:
+        return False
+
+    return any(
+        Path(p).is_dir()
+        and any((Path(p) / name).is_file() for name in ("soffice.exe", "soffice.com"))
+        for p in candidates
+    )
+
+
+@pytest.fixture(scope="session")
+def com_available():
+    """检测 MS Office / WPS COM 组件是否可用（session scope）。
+
+    优先使用注册表探测（不启动任何进程）：
+    依次检查 ``HKEY_CLASSES_ROOT`` 下的 Word.Application /
+    Excel.Application / PowerPoint.Application / Kwps.Application /
+    Ket.Application / Kwpp.Application 六个 ProgID，任一存在即视为可用。
+
+    仅当注册表探测不可行时回退到 ``win32com.client.Dispatch`` try/except
+    （Dispatch 可能短暂启动一个隐藏实例，成功后在 finally 中立即 Quit）。
+
+    从不抛出异常 — 探测失败时返回 False。
+
+    Returns:
+        bool: 任一 Office/WPS ProgID 可实例化则为 True，否则为 False。
+    """
+    prog_ids = [
+        "Word.Application",
+        "Excel.Application",
+        "PowerPoint.Application",
+        "Kwps.Application",
+        "Ket.Application",
+        "Kwpp.Application",
+    ]
+
+    # 优先注册表探测
+    try:
+        import winreg
+    except ImportError:
+        winreg = None
+
+    if winreg is not None:
+        try:
+            for prog_id in prog_ids:
+                try:
+                    winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id)
+                    return True
+                except OSError:
+                    continue
+        except Exception:
+            return False
+
+    # 回退：COM Dispatch 探测（可能短暂启动隐藏实例）
+    try:
+        import win32com.client
+    except Exception:
+        return False
+
+    app = None
+    for prog_id in prog_ids:
+        try:
+            app = win32com.client.Dispatch(prog_id)
+            return True
+        except Exception:
+            continue
+        finally:
+            if app is not None:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass
+                app = None
+
+    return False
+

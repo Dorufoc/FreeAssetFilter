@@ -607,3 +607,94 @@ class TestIntegration:
                 PreviewerRegistry.get_previewer_class({"suffix": "mp4"})
                 is mock_import.return_value
             )
+
+
+# ===========================================================================
+# Office 扩展名注册（T11）
+# ===========================================================================
+
+
+class TestOfficeExtensionRegistration:
+    """T11: 6 个 Office 扩展名注册到 ``OfficePreviewerLayout``。
+
+    验证 ``_EXTENSION_MAP`` 中的 doc/docx/xls/xlsx/ppt/pptx 均解析到
+    ``freeassetfilter.ui.layout.preview.office_previewer_layout.OfficePreviewerLayout``，
+    并 verify-only 确认 6 个后缀在 ``get_file_icon_path`` 中已有图标映射
+    （只断言，不修改 ``file_icon_helper.py``）。
+    """
+
+    OFFICE_EXTENSIONS: tuple[str, ...] = ("doc", "docx", "xls", "xlsx", "ppt", "pptx")
+
+    def setup_method(self) -> None:
+        _reset_registry()
+
+    @pytest.mark.parametrize("suffix", OFFICE_EXTENSIONS)
+    def test_office_extension_returns_office_previewer_class(self, suffix: str) -> None:
+        """已知 Office 扩展名应返回 ``OfficePreviewerLayout`` 类。
+
+        Given a registered Office extension
+        When  ``get_previewer_class`` is called
+        Then  it lazily imports and returns the real ``OfficePreviewerLayout``
+              class (asserted via ``.__name__``).
+        """
+        cls = PreviewerRegistry.get_previewer_class(
+            {"suffix": suffix, "path": "dummy"}
+        )
+        assert cls is not None
+        assert cls.__name__ == "OfficePreviewerLayout"
+
+    @pytest.mark.parametrize("suffix", ("DOCX", "XLS", "PPT"))
+    def test_office_extension_upper_case(self, suffix: str) -> None:
+        """大写后缀也应解析到 ``OfficePreviewerLayout``。
+
+        Given a suffix in upper case
+        When  ``get_previewer_class`` is called
+        Then  it is lowercased internally and resolves normally.
+        """
+        cls = PreviewerRegistry.get_previewer_class(
+            {"suffix": suffix, "path": "dummy"}
+        )
+        assert cls is not None
+        assert cls.__name__ == "OfficePreviewerLayout"
+
+    @pytest.mark.parametrize("suffix", (".docx", ".xlsx", ".pptx"))
+    def test_office_extension_leading_dot(self, suffix: str) -> None:
+        """带前导点的后缀也应解析到 ``OfficePreviewerLayout``。
+
+        Given a suffix with a leading dot
+        When  ``get_previewer_class`` is called
+        Then  the dot is stripped internally and resolution succeeds.
+        """
+        cls = PreviewerRegistry.get_previewer_class(
+            {"suffix": suffix, "path": "dummy"}
+        )
+        assert cls is not None
+        assert cls.__name__ == "OfficePreviewerLayout"
+
+    def test_unknown_extension_still_returns_none(self) -> None:
+        """未知后缀（如 ``zzz``）仍应返回 ``None``。
+
+        Given an unregistered extension
+        When  ``get_previewer_class`` is called
+        Then  it returns ``None``.
+        """
+        result = PreviewerRegistry.get_previewer_class(
+            {"suffix": "zzz", "path": "dummy"}
+        )
+        assert result is None
+
+    @pytest.mark.parametrize("suffix", OFFICE_EXTENSIONS)
+    def test_office_extension_has_icon_path(self, suffix: str) -> None:
+        """verify-only: 6 个 Office 后缀在图标映射中返回非空路径。
+
+        Given an Office extension
+        When  ``get_file_icon_path`` is called
+        Then  it returns a non-empty string path (existing mapping, not
+              modified here).
+        """
+        from freeassetfilter.utils.file_icon_helper import get_file_icon_path
+
+        icon_path = get_file_icon_path({"suffix": suffix, "path": "dummy"})
+        assert icon_path is not None
+        assert isinstance(icon_path, str)
+        assert icon_path != ""

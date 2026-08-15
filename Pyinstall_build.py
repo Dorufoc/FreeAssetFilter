@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import argparse
 import glob
+import importlib.util
 from pathlib import Path
 from typing import List, Dict, Set, Tuple
 
@@ -382,7 +383,28 @@ def collect_hidden_imports() -> List[str]:
         "PySide6.QtPdf",
         "shiboken6",
     ]
-    
+
+    # Office 转换后端（T12 / Metis B1-E10）：office_converter.py 的这些第三方库
+    # 都在方法内部惰性导入（docx→mammoth、pptx→python-pptx、xlsx→openpyxl、
+    # COM→pythoncom/win32com.client）。PyInstaller 静态分析对函数体内 import 的
+    # 识别不可靠，必须显式声明。逐个探测，缺失时跳过——单库缺失不能拖垮整个打包。
+    office_hidden_imports = (
+        "mammoth",      # docx → HTML 降级（office_converter.py `import mammoth`）
+        "pptx",         # pptx → 大纲（office_converter.py `from pptx import Presentation`）
+        "openpyxl",     # xlsx → TSV 表格（office_converter.py `import openpyxl`）
+        "docx",         # python-docx（requirements.txt 声明依赖；运行时由 mammoth 处理）
+        "pythoncom",    # COM 后端（office_converter.py `import pythoncom`）
+        "pywintypes",   # pythoncom 的伴随 DLL 模块（hook-pywintypes 收集 pywintypes311.dll）
+        "win32com",     # win32com.client 根包（office_converter.py `import win32com.client`）
+        "win32com.client",
+    )
+    for _mod in office_hidden_imports:
+        if importlib.util.find_spec(_mod) is not None:
+            hidden_imports.append(_mod)
+            print_info(f"收集 Office 隐藏导入: {_mod}")
+        else:
+            print_warning(f"跳过缺失的 Office 模块: {_mod}")
+
     print_success(f"共收集到 {len(hidden_imports)} 个隐藏导入")
     return hidden_imports
 
@@ -516,6 +538,29 @@ def build_pyinstaller_command(data_files: List[Tuple[str, str]],
         "--collect-all", "pillow_heif",
         "--collect-all", "psutil",
     ])
+
+    # ── Office 转换后端收集（T12 / Metis B1-E10）────────────────────────
+    # office_converter.py 的 win32com.client / pythoncom / pywintypes 在方法体内
+    # 惰性导入，win32com 需要整个子模块树（client、gen_py 等），pythoncom/pywintypes
+    # 是需要随包携带的 DLL 模块（pythoncom311.dll / pywintypes311.dll，由
+    # pyinstaller-hooks-contrib 的 hook-pythoncom / hook-pywintypes 一并收集）。
+    # 全部逐个探测；包缺失时跳过对应 flag，绝不因单个后端依赖导致打包失败。
+    for _pkg in ("win32com", "pythoncom", "pywintypes"):
+        if importlib.util.find_spec(_pkg) is not None:
+            cmd.extend(["--collect-all", _pkg])
+            print_info(f"Office 收集 --collect-all: {_pkg}")
+        else:
+            print_warning(f"跳过缺失的 Office 收集包: {_pkg}")
+    if importlib.util.find_spec("win32com") is not None:
+        cmd.extend(["--collect-submodules", "win32com"])
+        print_info("Office 收集 --collect-submodules: win32com")
+    # python-pptx 默认模板（templates/default.pptx）是运行时数据文件，
+    # 必须显式收集，否则新建/加载默认演示文稿会失败。
+    if importlib.util.find_spec("pptx") is not None:
+        cmd.extend(["--collect-data", "pptx"])
+        print_info("Office 收集 --collect-data: pptx")
+    else:
+        print_warning("跳过缺失的 Office 数据包: pptx")
     
     # 添加入口文件
     cmd.append(str(entry_point))
