@@ -1607,6 +1607,8 @@ class FileSelectorLayout(QWidget):
             border: 1px solid {border_color};
             border-radius: 8px;
         """
-        self._top_bar.setStyleSheet(section_style)
-        self._content_area.setStyleSheet(section_style)
-        self._bottom_bar.setStyleSheet(section_style)
+        for _w in (self._top_bar, self._content_area, self._bottom_bar):
+            _w.setStyleSheet(section_style)
+            # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
+            _w.style().unpolish(_w)
+            _w.style().polish(_w)

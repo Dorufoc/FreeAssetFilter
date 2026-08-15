@@ -15,9 +15,9 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 
-from PySide6.QtCore import Qt, QRect, QPoint, QTimer
+from PySide6.QtCore import Qt, QRect, QPoint, QTimer, QThread, QObject, Signal, QElapsedTimer, QEvent
 from PySide6.QtGui import (
     QPixmap,
     QImage,
@@ -30,6 +30,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from theme import tm
+from freeassetfilter.utils.app_logger import warning
 
 # ---------------------------------------------------------------------------
 # Win32 API helpers
@@ -40,6 +41,16 @@ MAX_PATH = 260
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 gdi32 = ctypes.windll.gdi32
+
+# ── 后台刷新（refresh_async）生命周期常量 ──────────────────────────────────
+# 单次壁纸计算（读取+增强+高斯模糊+烘焙）的最长容忍时间；超时即强制 terminate，
+# 防止线程卡死成野线程。
+REFRESH_WATCHDOG_MS = 15000
+# 后台刷新失败后的最大重试次数（共尝试 MAX_RETRIES+1 次）。超过即放弃，
+# 走纯色兜底，绝不死循环重启拖垮 CPU。
+REFRESH_MAX_RETRIES = 2
+# 重试退避延迟基数（毫秒），第 N 次重试延迟 = REFRESH_RETRY_DELAY_MS * N。
+REFRESH_RETRY_DELAY_MS = 500
 
 
 def _get_wallpaper_path() -> str:
@@ -192,45 +203,6 @@ def _enhance_pil_image(pil_img, contrast: float = 1.0, saturation: float = 1.0):
     return pil_img
 
 
-def _apply_gaussian_blur(pixmap: QPixmap, radius: int = 30) -> QPixmap:
-    """
-    Apply Gaussian blur to a QPixmap (fallback path when the PIL-direct
-    pipeline in MicaMaterial.refresh() is unavailable).
-
-    Args:
-        pixmap: Source pixmap
-        radius: Gaussian blur radius (higher = more blur)
-
-    Returns:
-        Blurred QPixmap
-    """
-    if radius <= 0:
-        return QPixmap(pixmap)
-
-    # Pillow path: direct memory transfer, no PNG encode/decode
-    try:
-        from PIL import ImageFilter
-        pil_img = _qimage_to_pil(pixmap.toImage())
-        blurred = pil_img.filter(ImageFilter.GaussianBlur(radius=radius))
-        qimg = _pil_to_qimage(blurred)
-        return QPixmap.fromImage(qimg)
-    except (ImportError, Exception):
-        pass
-
-    # Fallback: multi-pass pyramid blur (avoids banding from aggressive single-pass)
-    w, h = pixmap.width(), pixmap.height()
-    # Each pass uses a moderate factor; multiple passes accumulate blur smoothly
-    per_pass_factor = max(2, min(8, radius // 10))
-    passes = max(1, min(10, radius // (per_pass_factor * 3)))
-    result = QPixmap(pixmap)
-    for _ in range(passes):
-        sw = max(1, w // per_pass_factor)
-        sh = max(1, h // per_pass_factor)
-        small = result.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        result = small.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    return result
-
-
 def _apply_gaussian_blur_pil(pil_img, radius: int = 30):
     """
     Apply Gaussian blur directly to a PIL Image (avoids conversion overhead).
@@ -334,7 +306,35 @@ def _parse_color(value: Union[str, QColor, None], fallback: QColor) -> QColor:
     return fallback
 
 
-class MicaMaterial:
+class _MicaRefreshWorker(QObject):
+    """
+    在独立 QThread 中执行 Mica 重型计算（壁纸读取+模糊+烘焙）的 worker。
+
+    只产出 QImage（不创建 QPixmap），因此可在任意线程安全运行；结果通过
+    信号回传主线程，由 MicaMaterial 在主线程完成 QPixmap 转换与重绘。
+    """
+
+    # (path, blurred_base_qimage, baked_full_qimage)
+    finished = Signal(str, QImage, QImage)
+    failed = Signal()
+
+    def __init__(self, mica: "MicaMaterial") -> None:
+        super().__init__()
+        self._mica = mica
+
+    def run(self) -> None:
+        """执行后台计算；异常/空结果统一走 failed，绝不向外抛异常。"""
+        try:
+            path, base, full = self._mica._compute()
+            if base is None or full is None:
+                self.failed.emit()
+                return
+            self.finished.emit(path, base, full)
+        except Exception:
+            self.failed.emit()
+
+
+class MicaMaterial(QObject):
     """
     Manages the Mica background effect for a window.
 
@@ -368,6 +368,7 @@ class MicaMaterial:
                 after the window is shown). Until then the widget paints the
                 solid theme surface fallback.
         """
+        super().__init__()
         self._widget = widget
         self._blur_radius = blur_radius
         self._tint_color = _parse_color(tint_color, QColor(32, 32, 32, 160))
@@ -404,6 +405,41 @@ class MicaMaterial:
         self._update_timer.setInterval(50)
         self._update_timer.timeout.connect(self._do_update)
 
+        # ── 后台刷新（refresh_async）生命周期状态 ──────────────────────────
+        self._worker_thread = None          # 正在运行的后台 QThread（若有）
+        self._worker = None                 # _MicaRefreshWorker 实例
+        self._refresh_retries = 0           # 已失败重试次数
+        self._pending_path = ""             # 本次刷新使用的壁纸路径（主线程赋值）
+        self._refresh_outcome: Optional[str] = None  # "ok" | "fail" | "timeout"
+        self._watchdog = QTimer(self._widget)  # 卡死看门狗（父对象须为 QObject）
+        self._watchdog.setSingleShot(True)
+        self._watchdog.setInterval(REFRESH_WATCHDOG_MS)
+        self._watchdog.timeout.connect(self._on_refresh_timeout)
+
+        # ── Mica 淡入/淡出（避免后台算完后“闪现”，以及失焦时平滑隐藏） ──────
+        # _fade_alpha: Mica 当前绘制透明度（0.0→1.0）。paint() 先在实色兜底层
+        # (tm.surface) 上铺满，再以此透明度叠加 Mica，形成 surface→Mica 的线性
+        # 过渡——视觉上即“实色覆盖层透明度 100→0 渐变显露出 Mica”。
+        self._fade_alpha = 1.0
+        self._fade_from = 1.0        # 本次渐变起点透明度
+        self._fade_to = 1.0          # 本次渐变目标透明度（0=隐藏，1=显示）
+        self._fade_duration_ms = 175
+        self._fade_clock = QElapsedTimer()
+        self._fade_timer = QTimer(self._widget)
+        self._fade_timer.setInterval(16)  # ~60fps
+        self._fade_timer.timeout.connect(self._on_fade_tick)
+        # 焦点/暂停状态：失焦时淡出并停止 Mica 绘制以省性能，回焦时淡入恢复。
+        self._active = True           # 主窗口是否处于焦点
+        self._paused = False          # 已淡出完成、停止绘制 Mica（仅画实色兜底）
+
+        # 自动感知主窗口焦点：失焦→淡出并暂停绘制；回焦→淡入恢复。
+        # 采用顶层窗口的 WindowActivate/WindowDeactivate 事件过滤器（而非对比
+        # QApplication.focusWindowChanged 的窗口对象）——frameless 窗口的焦点窗口
+        # 可能是内部包装对象，is 比较会误判为失焦，导致 Mica 被永久隐藏。
+        top = self._widget.window()
+        if top is not None:
+            top.installEventFilter(self)
+
         # Init — lazy mode defers the heavy wallpaper load/blur/bake until an
         # explicit refresh() (see the `lazy` flag docstring).
         if not lazy:
@@ -417,29 +453,57 @@ class MicaMaterial:
         """
         Reload wallpaper and rebuild the enhanced + blurred base, then bake.
 
-        The heavy work (enhance + Gaussian blur) runs here and is cached in
-        ``_blurred_base`` until the wallpaper path changes. Luminosity / tint /
-        dither are applied cheaply on top in ``_bake()`` (see ``set_theme_tint``).
+        Synchronous (main-thread) path — used for manual refresh and as the
+        fallback when the background thread cannot run. The heavy work (enhance
+        + Gaussian blur) runs here and is cached in ``_blurred_base`` until the
+        wallpaper path changes. Luminosity / tint / dither are baked on top via
+        ``_bake_image()``.
         """
-        path = _get_wallpaper_path()
-        if not path:
+        old_present = self._blurred_full is not None
+        path, base, full = self._compute()
+        if base is None or full is None:
             self._blurred_base = None
             self._blurred_full = None
             return
 
+        # Wallpaper unchanged; blurred base still valid (cache hit)
         if path == self._wallpaper_path and self._blurred_base is not None:
-            return  # Wallpaper unchanged; blurred base still valid
+            return
 
         self._wallpaper_path = path
         self._wallpaper_placement = _get_wallpaper_placement()
         self._virtual_rect = _get_virtual_desktop_rect()
+        self._blurred_base = base
+        self._blurred_full = QPixmap.fromImage(full)
+        # 窗口已可见且此前无 Mica（首次/重新出现）→ 淡入，避免唐突闪现
+        if self._widget.isVisible() and not old_present:
+            if self._active:
+                self._start_fade_in(reset=True)
+            else:
+                self._hide_immediately()
+        else:
+            self._schedule_update()
 
-        # Load wallpaper
-        src = QPixmap(path)
+    def _compute(self) -> Tuple[str, Optional[QImage], Optional[QImage]]:
+        """
+        Heavy, thread-safe computation of the Mica background.
+
+        Runs on the calling thread (main thread for ``refresh()``, background
+        thread for ``refresh_async()``). Produces **QImage only** — never a
+        ``QPixmap`` — so it is safe to execute off the GUI thread.
+
+        Returns:
+            (wallpaper_path, blurred_base_qimage, baked_full_qimage). Any ``None``
+            component signals failure (e.g. no wallpaper / load error).
+        """
+        path = _get_wallpaper_path()
+        if not path:
+            return ("", None, None)
+
+        # QImage load is thread-safe (no native GUI handle), unlike QPixmap.
+        src = QImage(path)
         if src.isNull():
-            self._blurred_base = None
-            self._blurred_full = None
-            return
+            return ("", None, None)
 
         # Scale down for performance (blur on smaller image)
         max_dim = 1920
@@ -453,20 +517,186 @@ class MicaMaterial:
         try:
             from PIL import Image  # noqa: F401
 
-            pil_img = _qimage_to_pil(src.toImage())
+            pil_img = _qimage_to_pil(src)
             if self._contrast != 1.0 or self._saturation != 1.0:
                 pil_img = _enhance_pil_image(pil_img, self._contrast, self._saturation)
             pil_img = _apply_gaussian_blur_pil(pil_img, self._blur_radius)
-            self._blurred_base = _pil_to_qimage(pil_img)
-
+            base = _pil_to_qimage(pil_img)
         except (ImportError, Exception):
-            # Fallback: QPixmap-based enhance + blur
-            if self._contrast != 1.0 or self._saturation != 1.0:
-                src = self._enhance_pixmap(src)
-            self._blurred_base = _apply_gaussian_blur(src, self._blur_radius).toImage()
+            # PIL unavailable: QImage-based pyramid blur fallback (no QPixmap).
+            base = self._blur_qimage_fallback(src)
 
-        # Bake luminosity / tint / dither into the paint-ready pixmap
-        self._bake()
+        if base is None or base.isNull():
+            return ("", None, None)
+
+        # 将 base 作为参数传入，避免后台线程直接写 self._blurred_base（共享状态）
+        full = self._bake_image(base)
+        return (path, base, full)
+
+    def _blur_qimage_fallback(self, src: QImage) -> QImage:
+        """Thread-safe QImage-only blur used when PIL is unavailable."""
+        w, h = src.width(), src.height()
+        factor = max(2, self._blur_radius // 4)
+        small = src.scaled(
+            max(1, w // factor), max(1, h // factor),
+            Qt.IgnoreAspectRatio, Qt.SmoothTransformation,
+        )
+        return small.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+    # ------------------------------------------------------------------
+    # Background refresh (refresh_async)
+    # ------------------------------------------------------------------
+
+    def refresh_async(self) -> None:
+        """
+        Refresh the Mica background on a background thread (non-blocking).
+
+        The heavy wallpaper load + Gaussian blur + bake run in a ``QThread``;
+        results are delivered back to the main thread via signals and applied
+        without ever blocking the UI. Failures are retried with bounded backoff
+        (see ``REFRESH_MAX_RETRIES``); repeated failures gracefully give up and
+        leave the solid-color fallback in place.
+
+        Safe to call from the main thread. No-op while a refresh is already in
+        flight or after the retry budget is exhausted.
+        """
+        # 防重入：已有后台刷新在跑
+        if self._worker_thread is not None:
+            return
+        # 已放弃（重试超限 / dispose）：不再重启，避免 CPU 空转
+        if self._refresh_retries > REFRESH_MAX_RETRIES:
+            return
+
+        path = _get_wallpaper_path()
+        if not path:
+            return
+        if path == self._wallpaper_path and self._blurred_base is not None:
+            return  # 壁纸未变，缓存仍有效
+
+        self._pending_path = path
+        self._refresh_outcome = None
+        self._worker = _MicaRefreshWorker(self)
+        self._worker_thread = QThread()
+        self._worker.moveToThread(self._worker_thread)
+        # MicaMaterial 是主线程 QObject，因此以下连接自动以 Queued 方式在主线程派发，
+        # 保证 _on_refresh_done/_failed/_cleanup_worker 均在主线程执行（避免单帧定时器
+        # 被挂到后台线程而永不触发）。
+        self._worker.finished.connect(self._on_refresh_done)
+        self._worker.failed.connect(self._on_refresh_failed)
+        self._worker_thread.finished.connect(self._cleanup_worker)
+        self._worker_thread.started.connect(self._worker.run)
+        self._watchdog.start(REFRESH_WATCHDOG_MS)
+        self._worker_thread.start()
+
+    def _on_refresh_done(self, path: str, base: QImage, full: QImage) -> None:
+        """主线程槽：应用后台计算结果并触发线程回收。"""
+        self._watchdog.stop()
+        # 记录刷新前是否已在显示：首次就绪需从 0 揭示（淡入），已显示态的壁纸
+        # 热替换则不重闪（原地更新）。
+        was_shown = self._blurred_full is not None
+        self._wallpaper_path = path
+        self._wallpaper_placement = _get_wallpaper_placement()
+        self._virtual_rect = _get_virtual_desktop_rect()
+        self._blurred_base = base
+        self._blurred_full = QPixmap.fromImage(full)
+        self._refresh_retries = 0
+        self._refresh_outcome = "ok"
+        # 后台算完且已完全渲染：窗口处于焦点 → 首次出现从 0 淡入；失焦 → 直接隐藏，回焦再淡入
+        if self._active:
+            self._start_fade_in(reset=not was_shown)
+        else:
+            self._hide_immediately()
+        # 停止 worker 线程事件循环，触发 finished → _cleanup_worker（异步、无阻塞）。
+        if self._worker_thread is not None:
+            self._worker_thread.quit()
+
+    def _on_refresh_failed(self) -> None:
+        """主线程槽：后台计算失败 → 标记结果，由 _cleanup_worker 按规则重试/放弃。"""
+        self._watchdog.stop()
+        self._refresh_retries += 1
+        self._refresh_outcome = "fail"
+        if self._worker_thread is not None:
+            self._worker_thread.quit()
+
+    def _on_refresh_timeout(self) -> None:
+        """看门狗：计算超时（疑似卡死）→ 强制终止，避免野线程，交由回收逻辑重试/放弃。"""
+        if self._worker_thread is None:
+            return
+        self._watchdog.stop()
+        # 强制杀死卡死线程；terminate 后线程会发出 finished → _cleanup_worker。
+        self._worker_thread.terminate()
+        self._refresh_retries += 1
+        self._refresh_outcome = "timeout"
+
+    def _cleanup_worker(self) -> None:
+        """
+        彻底回收后台 worker 与线程（由 ``QThread.finished`` 异步触发，运行于主线程）。
+
+        回收后根据本次刷新结果决定是否退避重试：成功则不重试；失败/超时则在预算内
+        退避重启，超预算则放弃并回退纯色背景，杜绝 CPU 空转与野线程。
+        """
+        self._watchdog.stop()
+        thread = self._worker_thread
+        worker = self._worker
+        self._worker_thread = None
+        self._worker = None
+        if thread is None:
+            return
+
+        outcome = self._refresh_outcome
+        if outcome == "ok":
+            # 成功：仅清理，无需重试
+            pass
+        elif self._refresh_retries <= REFRESH_MAX_RETRIES:
+            # 退避重启：第 N 次重试延迟 = 基数 * N
+            QTimer.singleShot(
+                REFRESH_RETRY_DELAY_MS * self._refresh_retries, self.refresh_async
+            )
+        else:
+            # 超过上限：放弃，回退纯色背景，不再重启
+            self._blurred_base = None
+            self._blurred_full = None
+            warning("Mica 后台刷新多次失败，已放弃，回退纯色背景")
+
+        if worker is not None:
+            worker.deleteLater()
+        thread.deleteLater()
+
+    def dispose(self) -> None:
+        """
+        释放资源：标记放弃并强制回收任何在途的后台刷新线程。
+
+        应在窗口关闭 / 应用退出时调用，确保无残留线程（野进程）。
+        """
+        # 标记放弃，阻止任何挂起的重试重启
+        self._refresh_retries = REFRESH_MAX_RETRIES + 1
+        self._refresh_outcome = "fail"
+        # 移除焦点感知事件过滤器，停止任何渐变与绘制
+        top = self._widget.window()
+        if top is not None:
+            try:
+                top.removeEventFilter(self)
+            except (TypeError, RuntimeError):
+                pass
+        self._active = False
+        self._paused = True
+        self._stop_fade()
+        self._update_timer.stop()
+        self._settle_timer.stop()
+        if self._watchdog.isActive():
+            self._watchdog.stop()
+        if self._worker_thread is not None:
+            thread = self._worker_thread
+            worker = self._worker
+            self._worker_thread = None
+            self._worker = None
+            # 非阻塞回收：请求退出并安排删除；若线程卡死则强制终止。
+            thread.quit()
+            if not thread.wait(0) and not thread.isFinished():
+                thread.terminate()
+            if worker is not None:
+                worker.deleteLater()
+            thread.deleteLater()
 
     def invalidate_cache(self) -> None:
         """Mark cached pixmap as dirty – repaint will regenerate."""
@@ -475,6 +705,99 @@ class MicaMaterial:
     def schedule_update(self) -> None:
         """Schedule a background repaint (debounced)."""
         self._schedule_update()
+
+    def _start_fade_in(self, reset: bool = False) -> None:
+        """Mica 叠加层线性淡入（由当前透明度 → 1.0）。
+
+        reset=True 时强制从完全隐藏（透明度 0）揭示，用于「首次渲染完成」与
+        「重新获得焦点」这类本就该从隐藏态显现的场景；已显示态下的刷新（如壁纸
+        热替换）不重闪，保持当前透明度原地更新。
+        """
+        if reset:
+            self._fade_alpha = 0.0
+        self._start_fade_to(1.0)
+
+    def _start_fade_out(self) -> None:
+        """Mica 叠加层线性淡出（由当前透明度 → 0.0）。用于失去焦点隐藏。"""
+        self._start_fade_to(0.0)
+
+    def _start_fade_to(self, target: float) -> None:
+        """
+        启动 Mica 透明度的线性渐变（target ∈ [0,1]）：0=实色覆盖完全透出（隐藏
+        Mica），1=完整显示 Mica。渐变期间持续重绘，淡出完成且仍处于失焦时停止绘制
+        以省性能。
+        """
+        target = max(0.0, min(1.0, target))
+        # 任何渐变都意味着需要绘制 Mica，取消暂停态
+        self._paused = False
+        self._fade_from = self._fade_alpha
+        self._fade_to = target
+        self._fade_clock.start()
+        if not self._fade_timer.isActive():
+            self._fade_timer.start()
+        self._widget.update()
+
+    def _on_fade_tick(self) -> None:
+        """渐变逐帧推进：线性插值 _fade_alpha，到达目标时停表。"""
+        if not self._fade_clock.isValid():
+            self._fade_alpha = self._fade_to
+            self._fade_timer.stop()
+            self._widget.update()
+            return
+        t = self._fade_clock.elapsed() / self._fade_duration_ms
+        if t >= 1.0:
+            self._fade_alpha = self._fade_to
+            self._fade_timer.stop()
+            # 淡出完成且仍失焦 → 暂停绘制，彻底停止 Mica 渲染开销
+            if self._fade_to == 0.0 and not self._active:
+                self._paused = True
+                self._update_timer.stop()
+                self._settle_timer.stop()
+        else:
+            self._fade_alpha = self._fade_from + (self._fade_to - self._fade_from) * t
+        # 直接请求重绘（绕过 debounce），保证渐变帧率平滑
+        self._widget.update()
+
+    def _stop_fade(self) -> None:
+        """立即结束渐变并复位为完整显示（如资源回收/主题重置时）。"""
+        self._fade_alpha = 1.0
+        self._fade_to = 1.0
+        if self._fade_timer.isActive():
+            self._fade_timer.stop()
+
+    def _hide_immediately(self) -> None:
+        """失焦且 Mica 才就绪时：直接隐藏并停止绘制，不进行淡入动画。"""
+        self._paused = True
+        self._fade_alpha = 0.0
+        self._fade_to = 0.0
+        self._update_timer.stop()
+        self._settle_timer.stop()
+
+    def set_active(self, active: bool) -> None:
+        """
+        设置主窗口焦点状态：失焦时淡出隐藏并停止绘制，回焦时淡入恢复。
+
+        由顶层窗口的 ``WindowActivate``/``WindowDeactivate`` 事件过滤器自动调用，
+        亦可由外部显式调用（如窗口最小化/隐藏时）。
+        """
+        if active == self._active:
+            return
+        self._active = active
+        if active:
+            self._start_fade_in()      # 回焦：淡入恢复
+        else:
+            self._start_fade_out()     # 失焦：淡出隐藏
+
+    def eventFilter(self, obj, event) -> bool:
+        """顶层窗口激活/失焦事件：驱动 Mica 的淡入恢复 / 淡出隐藏。"""
+        top = self._widget.window()
+        if obj is top:
+            etype = event.type()
+            if etype == QEvent.Type.WindowActivate:
+                self.set_active(True)
+            elif etype == QEvent.Type.WindowDeactivate:
+                self.set_active(False)
+        return False
 
     def paint(self, painter: Optional[QPainter] = None, event: Optional[QPaintEvent] = None) -> None:
         """
@@ -494,6 +817,15 @@ class MicaMaterial:
             # No wallpaper – paint solid fallback
             painter.fillRect(rect, tm.surface)
             return
+
+        # 失焦且已淡出完成（暂停）：仅画实色兜底，不做任何 Mica 绘制，省去渲染开销
+        if self._paused:
+            painter.fillRect(rect, tm.surface)
+            return
+
+        # 先铺实色兜底层，再以 _fade_alpha 叠加 Mica，形成 surface→Mica 的线性渐变
+        # （淡入期间实色覆盖透明度 100→0，避免算完后“闪现”）。
+        painter.fillRect(rect, tm.surface)
 
         window_geo = self._get_window_global_rect()
 
@@ -519,7 +851,9 @@ class MicaMaterial:
             self._cached_pixmap = self._make_settled_cache(widget.size(), src_rect)
             self._last_window_geo = window_geo
 
+        painter.setOpacity(self._fade_alpha)
         painter.drawPixmap(rect, self._cached_pixmap)
+        painter.setOpacity(1.0)
 
     def _blit(self, painter: QPainter, target: QRect, src_rect: Optional[QRect], dither: bool = True) -> None:
         """Draw the baked wallpaper (sub-rect to target) plus a light dither tile."""
@@ -548,8 +882,16 @@ class MicaMaterial:
         if self._blurred_full is None or self._blurred_full.isNull():
             painter.fillRect(rect, tm.surface)
             return
+        # 失焦暂停：仅画实色兜底
+        if self._paused:
+            painter.fillRect(rect, tm.surface)
+            return
+        # 实色兜底层 + 线性淡入（与 paint() 一致）
+        painter.fillRect(rect, tm.surface)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.setOpacity(self._fade_alpha)
         self._blit(painter, rect, self._compute_source_rect(self._get_window_global_rect()))
+        painter.setOpacity(1.0)
 
     def paint_event(self, event: QPaintEvent) -> None:
         """Convenience: handle a QPaintEvent directly."""
@@ -566,7 +908,9 @@ class MicaMaterial:
         """
         self._tint_color = _parse_color(tint_color, self._tint_color)
         self._luminosity = max(0.0, min(1.0, luminosity))
-        self._bake()
+        full = self._bake_image()
+        if full is not None:
+            self._blurred_full = QPixmap.fromImage(full)
         self._cached_pixmap = None
         self._widget.update()
 
@@ -603,18 +947,27 @@ class MicaMaterial:
         self._cached_pixmap = None
         self._widget.update()
 
-    def _bake(self) -> None:
+    def _bake_image(self, base: Optional[QImage] = None) -> Optional[QImage]:
         """
-        Bake luminosity + tint + dithering into ``_blurred_full`` (once).
+        Bake luminosity + tint + dithering into a QImage (thread-safe, no QPixmap).
 
         The composite runs in the float domain so the final 8-bit quantization
         can be TPDF-dithered, which removes the color banding that a heavy blur
         plus saturation boost otherwise produces in 8-bit.
+
+        Args:
+            base: Source blurred base (QImage). If omitted, uses ``self._blurred_base``
+                (main-thread callers). Passing it explicitly keeps the background
+                worker from writing shared state.
+
+        Returns:
+            The baked full background as a QImage, or ``None`` if no base exists.
+            Callers convert to ``QPixmap`` on the main thread before painting.
         """
-        base = self._blurred_base
         if base is None:
-            self._blurred_full = None
-            return
+            base = self._blurred_base
+        if base is None:
+            return None
 
         try:
             import numpy as np
@@ -650,20 +1003,16 @@ class MicaMaterial:
 
             arr[:, :, :3] = np.clip(np.rint(rgb), 0.0, 255.0)
             arr[:, :, 3] = 255.0  # fully opaque
-            self._blurred_full = QPixmap.fromImage(_ndarray_to_qimage(arr.astype(np.uint8)))
+            return _ndarray_to_qimage(arr.astype(np.uint8))
         except (ImportError, Exception):
-            self._blurred_full = self._bake_fallback(base)
+            return self._bake_fallback(base)
 
-        self._cached_pixmap = None
-        self._schedule_update()
-
-    def _bake_fallback(self, base: QImage) -> QPixmap:
-        """QPainter-based bake used when numpy is unavailable. Runs once."""
-        pm = QPixmap.fromImage(base)
-        result = QPixmap(pm.size())
+    def _bake_fallback(self, base: QImage) -> QImage:
+        """QPainter-based bake used when numpy is unavailable. Returns a QImage."""
+        result = QImage(base.size(), QImage.Format_RGBA8888)
         result.fill(Qt.transparent)
         painter = QPainter(result)
-        painter.drawPixmap(0, 0, pm)
+        painter.drawImage(0, 0, base)
         if self._luminosity < 1.0:
             dark_alpha = int((1.0 - self._luminosity) * 255)
             if dark_alpha > 0:
@@ -803,19 +1152,6 @@ class MicaMaterial:
             )
 
         return None
-
-    def _enhance_pixmap(self, pixmap: QPixmap) -> QPixmap:
-        """Apply contrast and saturation to a QPixmap via PIL ImageEnhance."""
-        try:
-            from PIL import ImageEnhance
-            pil_img = _qimage_to_pil(pixmap.toImage())
-            if self._contrast != 1.0:
-                pil_img = ImageEnhance.Contrast(pil_img).enhance(self._contrast)
-            if self._saturation != 1.0:
-                pil_img = ImageEnhance.Color(pil_img).enhance(self._saturation)
-            return QPixmap.fromImage(_pil_to_qimage(pil_img))
-        except (ImportError, Exception):
-            return pixmap
 
     @staticmethod
     def _make_noise_tile(size: int = 64) -> QPixmap:

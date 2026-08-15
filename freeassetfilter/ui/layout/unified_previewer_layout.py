@@ -140,6 +140,11 @@ class UnifiedPreviewerLayout(QWidget):
         """
         self._content_top.setStyleSheet(section_style)
         self._content_bottom.setStyleSheet(section_style)
+        # 强制已显示控件重新套用样式（延迟构建场景下必须，否则边框/填充不重绘）
+        self._content_top.style().unpolish(self._content_top)
+        self._content_top.style().polish(self._content_top)
+        self._content_bottom.style().unpolish(self._content_bottom)
+        self._content_bottom.style().polish(self._content_bottom)
         self._bottom_bar.setStyleSheet(section_style)
 
     def _on_theme_changed(self, theme: str) -> None:
