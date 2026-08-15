@@ -915,10 +915,11 @@ class FileCardDelegate(QStyledItemDelegate):
             self._transitions.pop(index.row(), None)
             transition = None
 
-        # hover 覆盖层透明度过渡：淡入/淡出（比状态过渡更短）
+        # hover/选中覆盖层透明度过渡：淡入/淡出（比状态过渡更短）
         # 注意：默认值必须为 0.0 并与 _sync_hover_overlay 内部一致——若首次
         # hover paint 时默认取 1.0，会先画一帧全量覆盖层再回落淡入，造成闪烁
-        self._sync_hover_overlay(index, is_hovered)
+        # 选中态复用同一覆盖层机制：选中卡片保持 hover 式底色变化（淡入淡出一致）
+        self._sync_hover_overlay(index, is_hovered or is_selected)
         hover_overlay_progress = self._hover_overlay_progress.get(index.row(), 0.0)
 
         if self._layout_mode == "card":
@@ -1032,8 +1033,8 @@ class FileCardDelegate(QStyledItemDelegate):
             painter, draw_rect, radius, is_previewing, is_in_pool, transition
         )
 
-        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
-        if is_hovered or hover_overlay_progress > 0.003:
+        # hover/选中反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
+        if is_hovered or is_selected or hover_overlay_progress > 0.003:
             painter.setPen(Qt.NoPen)
             painter.setBrush(self._scaled_color(colors["hover_overlay"], hover_overlay_progress))
             painter.drawRoundedRect(draw_rect, radius, radius)
@@ -1115,8 +1116,8 @@ class FileCardDelegate(QStyledItemDelegate):
             painter, draw_rect, radius, is_previewing, is_in_pool, transition
         )
 
-        # hover 反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
-        if is_hovered or hover_overlay_progress > 0.003:
+        # hover/选中反馈（所有状态统一）：叠加 25% 主题色覆盖层（透明度过渡动画）
+        if is_hovered or is_selected or hover_overlay_progress > 0.003:
             painter.setPen(Qt.NoPen)
             painter.setBrush(self._scaled_color(colors["hover_overlay"], hover_overlay_progress))
             painter.drawRoundedRect(draw_rect, radius, radius)

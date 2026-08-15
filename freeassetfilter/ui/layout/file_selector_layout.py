@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMenu, QMessageBox, QListWidget, QListWidgetItem
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl, QMargins
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListView, QLabel, QAbstractItemView, QApplication, QMenu, QMessageBox, QListWidget, QListWidgetItem, QRubberBand
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QEvent, QUrl, QMargins, QPoint, QRect, QItemSelectionModel
 from PySide6.QtGui import QFont, QFontMetrics
 
 from theme import tm
@@ -192,6 +192,18 @@ class FileSelectorLayout(QWidget):
         self._file_list.viewport().installEventFilter(self)
         self._file_list.installEventFilter(self)
 
+        # ── 框选多选状态（鼠标左键按住拖拽 = 橡皮筋框选）────────────────
+        self._rubber_band: Optional[QRubberBand] = None
+        self._rubber_start_pos: Optional[QPoint] = None  # 按下起点（viewport 坐标），None = 未按下
+        self._rubber_rect: Optional[QRect] = None        # 当前框选矩形
+        self._rubber_active: bool = False                # 是否已超过拖拽阈值进入框选态
+        self._rubber_ctrl: bool = False                  # 按下时是否按住 Ctrl（追加模式）
+        self._rubber_pressed_row: int = -1               # 按下位置所在行（空白处 = -1）
+        self._rubber_preselect: set = set()              # 按下时已选中的行集合（Ctrl 追加基准）
+        self._rubber_last_rows: Optional[set] = None     # 上次应用的行集合（无变化时跳过刷新）
+        # 网格指标（由 _apply_grid_layout / _update_list_grid 维护，用于框选时 O(1) 定位行）
+        self._grid_metrics: Dict[str, int] = {}
+
     # ── 事件过滤器：在 QListView resize 前更新网格 ──────────────────────
 
     def eventFilter(self, obj, event):
@@ -208,7 +220,206 @@ class FileSelectorLayout(QWidget):
                     # 鼠标侧键（后退键）返回上一层级目录，与顶栏"返回上一级"按钮行为一致
                     self._go_back()
                     return True
+                if event.button() == Qt.LeftButton:
+                    return self._on_rubber_press(event)
+            elif event.type() == QEvent.MouseMove:
+                if self._rubber_start_pos is not None:
+                    return self._on_rubber_move(event)
+            elif event.type() == QEvent.MouseButtonRelease:
+                if event.button() == Qt.LeftButton and self._rubber_start_pos is not None:
+                    return self._on_rubber_release(event)
         return super().eventFilter(obj, event)
+
+    # ── 框选多选（橡皮筋）─────────────────────────────────────────────
+
+    def _on_rubber_press(self, event) -> bool:
+        """左键按下：记录框选起点（不立即激活，等待移动超过拖拽阈值）。
+
+        空白处按下会吞掉事件，防止 Qt 原生 IconMode 橡皮筋与自定义框选同时启动；
+        卡片上按下放行给 Qt，保持普通点击的选中/预览语义不变。
+        """
+        self._abort_rubber_selection()
+        index = self._file_list.indexAt(event.position().toPoint())
+        self._rubber_pressed_row = index.row() if index.isValid() else -1
+        self._rubber_start_pos = event.position().toPoint()
+        self._rubber_ctrl = bool(event.modifiers() & Qt.ControlModifier)
+        self._rubber_preselect = set(self._file_model.get_selected_rows())
+        self._rubber_last_rows = None
+        if self._rubber_pressed_row < 0:
+            return True
+        return False
+
+    def _on_rubber_move(self, event) -> bool:
+        """左键拖拽：超过阈值后激活橡皮筋，实时更新框内卡片选中态。"""
+        if not self._rubber_active:
+            delta = event.position().toPoint() - self._rubber_start_pos
+            threshold = max(4, QApplication.startDragDistance())
+            if abs(delta.x()) < threshold and abs(delta.y()) < threshold:
+                return False
+            self._rubber_active = True
+            self._show_rubber_band()
+        self._update_rubber_selection(event.position().toPoint())
+        return True
+
+    def _on_rubber_release(self, event) -> bool:
+        """左键松开：框选拖拽只保留选中态（不入池，等待右键批量入池或左键取消）；未拖拽恢复普通点击语义。"""
+        if self._rubber_active:
+            self._abort_rubber_selection()
+            return True
+        # 未发生拖拽 = 普通点击
+        self._rubber_start_pos = None
+        self._rubber_preselect = set()
+        if self._rubber_pressed_row < 0:
+            # 空白处单击：清空选中（兼容 Qt 默认行为）
+            self._clear_selector_selection()
+            return True
+        # 卡片上单击：放行给 Qt，触发 clicked → 预览（_on_file_clicked 内会清除选中）
+        return False
+
+    def _show_rubber_band(self) -> None:
+        """创建（首次）并显示橡皮筋矩形，使用主题强调色。"""
+        if self._rubber_band is None:
+            self._rubber_band = QRubberBand(QRubberBand.Rectangle, self._file_list.viewport())
+            self._rubber_band.setStyleSheet(
+                f"QRubberBand {{ border: 1px solid {tm.accent.name()};"
+                f" background: {tm.alpha_of(tm.accent, 36).name()}; }}"
+            )
+        self._rubber_band.setGeometry(QRect(self._rubber_start_pos, QSize(0, 0)))
+        self._rubber_band.show()
+        self._rubber_band.raise_()
+
+    def _update_rubber_selection(self, pos: QPoint) -> None:
+        """根据当前框选矩形更新卡片选中态（模型驱动，delegate 同步高亮）。"""
+        start = self._rubber_start_pos
+        if start is None:
+            return
+        rect = QRect(start, pos).normalized()
+        self._rubber_rect = rect
+        if self._rubber_band is not None:
+            self._rubber_band.setGeometry(rect)
+
+        band_rows = self._rows_in_rect(rect)
+        target_rows = band_rows | self._rubber_preselect if self._rubber_ctrl else band_rows
+        if target_rows == self._rubber_last_rows:
+            return
+        self._rubber_last_rows = set(target_rows)
+
+        model = self._file_model
+        current_rows = model.get_selected_rows()
+        to_select = target_rows - current_rows
+        to_deselect = current_rows - target_rows
+        model.set_rows_selected(to_select, True)
+        model.set_rows_selected(to_deselect, False)
+        # 同步 QItemSelectionModel，保证视图内部选中态一致
+        selection_model = self._file_list.selectionModel()
+        if selection_model is not None:
+            for row in to_deselect:
+                selection_model.select(
+                    model.index(row, 0), QItemSelectionModel.Deselect | QItemSelectionModel.Rows
+                )
+            for row in to_select:
+                selection_model.select(
+                    model.index(row, 0), QItemSelectionModel.Select | QItemSelectionModel.Rows
+                )
+
+    def _rows_in_rect(self, rect: QRect) -> set:
+        """计算与框选矩形相交的行号集合。
+
+        以可见参考行的 visualRect 推导流布局原点（含滚动偏移），
+        再按网格间距解析式展开候选行 —— 与 Qt 实际 item 布局逐像素一致
+        （Qt6 的 QListView IconMode 不受 viewportMargins 影响 item 位置）。
+        """
+        metrics = self._grid_metrics
+        row_count = self._file_model.rowCount()
+        if row_count <= 0 or not metrics:
+            return set()
+        cell_w = metrics.get("cell_w", 0)
+        cell_h = metrics.get("cell_h", 0)
+        cols = metrics.get("cols", 0)
+        if cell_w <= 0 or cell_h <= 0 or cols <= 0:
+            return set()
+        origin = self._resolve_flow_origin(rect)
+        if origin is None:
+            return set()
+        x0, y0 = origin
+        first_row = max(0, ((rect.top() - y0) // cell_h) * cols)
+        last_row = min(row_count - 1, ((rect.bottom() - y0) // cell_h) * cols + cols - 1)
+        hit_rows = set()
+        for row in range(first_row, last_row + 1):
+            if self._row_rect(row, x0, y0, metrics).intersects(rect):
+                hit_rows.add(row)
+        return hit_rows
+
+    def _resolve_flow_origin(self, rect: QRect) -> Optional[tuple]:
+        """从框选矩形附近可见的参考行解析流布局原点（viewport 坐标，含滚动偏移）。"""
+        model = self._file_model
+        view = self._file_list
+        ref_row = -1
+        for point in (rect.center(), rect.topLeft() + QPoint(1, 1), rect.bottomRight() - QPoint(1, 1), QPoint(2, 0)):
+            index = view.indexAt(point)
+            if index.isValid():
+                ref_row = index.row()
+                break
+        if ref_row < 0:
+            return None
+        ref_rect = view.visualRect(model.index(ref_row, 0))
+        if not ref_rect.isValid():
+            return None
+        cols = self._grid_metrics["cols"]
+        x0 = ref_rect.x() - (ref_row % cols) * self._grid_metrics["cell_w"]
+        y0 = ref_rect.y() - (ref_row // cols) * self._grid_metrics["cell_h"]
+        return x0, y0
+
+    @staticmethod
+    def _row_rect(row: int, x0: int, y0: int, metrics: Dict[str, int]) -> QRect:
+        """计算指定行的网格单元格矩形（基于流布局原点 + 网格间距）。"""
+        col = row % metrics["cols"]
+        line = row // metrics["cols"]
+        return QRect(
+            x0 + col * metrics["cell_w"],
+            y0 + line * metrics["cell_h"],
+            metrics["cell_w"],
+            metrics["cell_h"],
+        )
+
+    def _add_selected_to_pool(self) -> None:
+        """将当前所有选中卡片追加加入存储池（add-only，已在池中的保持不变）。"""
+        model = self._file_model
+        for file_path in model.get_selected_files():
+            row = model.get_row(file_path)
+            if row < 0:
+                continue
+            idx = model.index(row, 0)
+            info: Dict[str, Any] = {
+                "name": model.data(idx, FileNameRole) or "",
+                "path": file_path,
+                "is_dir": bool(model.data(idx, IsDirRole)),
+                "size": int(model.data(idx, FileSizeRole) or 0),
+                "modified": model.data(idx, ModifiedRole) or "",
+                "created": model.data(idx, CreatedRole) or "",
+                "suffix": (model.data(idx, SuffixRole) or "").lower(),
+            }
+            self.add_to_pool_requested.emit(info)
+
+    def _clear_selector_selection(self) -> None:
+        """清空文件选择器内所有卡片的选中态。"""
+        model = self._file_model
+        model.set_rows_selected(model.get_selected_rows(), False)
+        selection_model = self._file_list.selectionModel()
+        if selection_model is not None:
+            selection_model.clearSelection()
+
+    def _abort_rubber_selection(self) -> None:
+        """终止框选状态（隐藏橡皮筋、复位记录；不影响已应用的选中态）。"""
+        self._rubber_active = False
+        self._rubber_start_pos = None
+        self._rubber_rect = None
+        self._rubber_ctrl = False
+        self._rubber_pressed_row = -1
+        self._rubber_preselect = set()
+        self._rubber_last_rows = None
+        if self._rubber_band is not None:
+            self._rubber_band.hide()
 
     @staticmethod
     def _is_back_navigation_button(button: Any) -> bool:
@@ -259,6 +470,7 @@ class FileSelectorLayout(QWidget):
             self._file_list.finish_path_transition(direction)
 
     def _load_all(self) -> None:
+        self._abort_rubber_selection()
         entries: List[Dict[str, Any]] = []
         if sys.platform == "win32":
             kernel32 = ctypes.windll.kernel32
@@ -289,7 +501,6 @@ class FileSelectorLayout(QWidget):
         self._file_list.update()
 
     # ── 上次路径恢复 ─────────────────────────────────────────────────────
-
     def _try_restore_last_path(self) -> bool:
         save_file = get_app_data_path() / "last_path.json"
         try:
@@ -445,6 +656,7 @@ class FileSelectorLayout(QWidget):
         """同步加载目录（收集 + 应用），行为与旧实现逐字节等价。"""
         entries = self._collect_directory_entries(path)
         if entries is None:
+            self._abort_rubber_selection()
             self._file_model.clear()
             self._current_path = ""
             self._update_file_count(0)
@@ -454,6 +666,7 @@ class FileSelectorLayout(QWidget):
 
     def _apply_directory_entries(self, path: str, entries: List[Dict[str, Any]]) -> None:
         """在主线程应用收集到的目录条目：过滤 + 排序 + 更新 model/路径/计数。"""
+        self._abort_rubber_selection()
         if self._filter_pattern:
             entries = [e for e in entries if self._matches_filter(e["name"])]
         entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
@@ -487,6 +700,7 @@ class FileSelectorLayout(QWidget):
         if token != self._async_load_token:
             return
         if entries is None:
+            self._abort_rubber_selection()
             self._file_model.clear()
             self._current_path = ""
             self._update_file_count(0)
@@ -633,10 +847,12 @@ class FileSelectorLayout(QWidget):
     # ── 文件选择 ──────────────────────────────────────────────────────────
 
     def _on_file_clicked(self, index) -> None:
-        """点击文件 = 预览（不隐式切换选中态，预览只替换边框、背景保持原状态）。
+        """点击文件 = 预览（先清除框选选中态，预览只替换边框、背景保持原状态）。
 
         再次点击当前预览文件 = 取消预览；点击目录 = 进入目录。
         """
+        # 左键点击任意卡片：清除框选选中态（"点击其他地方"即取消多选）
+        self._clear_selector_selection()
         file_path = self._file_model.data(index, FilePathRole)
         if not file_path:
             return
@@ -666,12 +882,22 @@ class FileSelectorLayout(QWidget):
     # ── 右键菜单 ──────────────────────────────────────────────────────────
 
     def _on_right_click_toggle_pool(self, pos) -> None:
-        """右键直连：将文件添加到文件池或从中移除（无上下文菜单）。"""
+        """右键直连文件池。
+
+        - 右键点击"已选中的卡片"：将全部选中卡片追加加入文件池（add-only，
+          已在池中的保持不变、绝不移出），加入后清除选中态；
+        - 否则（未多选或点的是未选中卡片）：保留原有单卡片"添加/移除"切换。
+        """
         index = self._file_list.indexAt(pos)
         if not index.isValid():
             return
         file_path: str = self._file_model.data(index, FilePathRole) or ""
         if not file_path:
+            return
+        # 命中已选中的卡片 → 批量添加全部选中项
+        if file_path in self._file_model.get_selected_files():
+            self._add_selected_to_pool()
+            self._clear_selector_selection()
             return
         is_dir: bool = bool(self._file_model.data(index, IsDirRole) or False)
         file_info: Dict[str, Any] = {
@@ -1255,6 +1481,14 @@ class FileSelectorLayout(QWidget):
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
 
+        # 网格指标（框选行定位用）：单元格间距 + 列数，行矩形由 _resolve_flow_origin
+        # 从 Qt 实际 item 布局推导原点后再解析展开，不依赖 viewportMargins。
+        self._grid_metrics = {
+            "cell_w": grid_cell_width,
+            "cell_h": grid_cell_height,
+            "cols": max_cols,
+        }
+
         # 滚动条作为浮动覆盖层，定位在右侧边距内（贴右边缘）；
         # 每次定位后 raise_() 保持悬浮覆盖层层级，避免与卡片列表同级堆叠。
         scrollbar_w = self._file_scrollbar.width()
@@ -1300,6 +1534,13 @@ class FileSelectorLayout(QWidget):
         self._file_model.set_grid_offset_x(0)
         self._file_model.set_card_width(card_width, card_height)
 
+        # 网格指标（框选行定位用）：列表模式单列，行距 = 卡片高 + 间距
+        self._grid_metrics = {
+            "cell_w": file_list_width,
+            "cell_h": card_height + gap,
+            "cols": 1,
+        }
+
         # 滚动条定位在右侧边缘（与卡片模式一致，保留顶部边距）；
         # 每次定位后 raise_() 保持其悬浮覆盖层层级，不与卡片列表同级堆叠。
         scrollbar_x = self._file_list.width() - scrollbar_w
@@ -1340,6 +1581,7 @@ class FileSelectorLayout(QWidget):
             self._reload_directory()
 
     def _toggle_view_mode(self) -> None:
+        self._abort_rubber_selection()
         icons_dir = Path(__file__).resolve().parent.parent.parent / "icons"
         if self._view_mode == "card":
             self._view_mode = "list"

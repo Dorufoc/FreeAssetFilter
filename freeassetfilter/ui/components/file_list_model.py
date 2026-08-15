@@ -171,6 +171,33 @@ class FileListModel(QAbstractListModel):
         """
         return [f["path"] for f in self._files if f.get("is_selected", False)]
 
+    def get_selected_rows(self) -> set:
+        """获取所有选中文件的行号集合。
+
+        Returns:
+            选中文件的 0-based 行号集合。
+        """
+        return {row for row, f in enumerate(self._files) if f.get("is_selected", False)}
+
+    def set_rows_selected(self, rows, selected: bool) -> None:
+        """批量设置多行选中状态，只发射一次 dataChanged（框选拖拽高频场景）。
+
+        Args:
+            rows: 待更新的行号集合（超出范围的行自动忽略）。
+            selected: 目标选中状态。
+        """
+        if not rows:
+            return
+        changed = False
+        for row in rows:
+            if 0 <= row < len(self._files) and self._files[row].get("is_selected", False) != selected:
+                self._files[row]["is_selected"] = selected
+                changed = True
+        if changed:
+            top = self.index(0, 0)
+            bottom = self.index(self.rowCount() - 1, 0)
+            self.dataChanged.emit(top, bottom, [IsSelectedRole])
+
     def clear(self) -> None:
         """清空文件列表和路径索引。"""
         self.beginResetModel()
